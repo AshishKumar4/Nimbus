@@ -860,6 +860,7 @@ const __fsMod = (() => {
       type: kind === 1 ? "directory" : kind === 2 ? "symlink" : "file",
       size: Number(row.size), mode: Number(row.mode), uid: Number(row.uid), gid: Number(row.gid),
       atime: Number(row.atime), mtime: Number(row.mtime), ctime: Number(row.ctime),
+      ino: Number(row.ino),
     };
   }
 
@@ -1353,6 +1354,7 @@ const __fsMod = (() => {
       mtime,
       ctime: mtime,
       birthtime: mtime,
+      atimeMs, mtimeMs, ctimeMs: mtimeMs, birthtimeMs: mtimeMs,
       mode: localMode === undefined ? fullMode : typeMode | localMode,
       uid: Number(uid),
       gid: Number(gid),
@@ -2524,8 +2526,8 @@ const __fsMod = (() => {
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
     const size = Number(meta?.size || 0);
-    const mtime = new Date(Number(meta?.mtime || Date.now()));
-    const atime = new Date(Number(meta?.atime || meta?.mtime || Date.now()));
+    const mtime = new Date(Number(meta?.mtime ?? Date.now()));
+    const atime = new Date(Number(meta?.atime ?? meta?.mtime ?? Date.now()));
     const mode = Number(meta?.mode ?? (isDir ? 0o755 : 0o644));
     const stat = _localStatObject(key, isDir, isSymlink, size, mode, meta?.uid, meta?.gid);
     // This process's own utimes, until it is reported back, ahead of the
@@ -2535,6 +2537,11 @@ const __fsMod = (() => {
     stat.mtime = own && Number.isFinite(own.mtimeMs) ? new Date(own.mtimeMs) : mtime;
     stat.ctime = new Date(Number(meta?.ctime ?? meta?.mtime ?? Date.now()));
     stat.birthtime = stat.ctime;
+    stat.atimeMs = stat.atime.getTime();
+    stat.mtimeMs = stat.mtime.getTime();
+    stat.ctimeMs = stat.ctime.getTime();
+    stat.birthtimeMs = stat.birthtime.getTime();
+    if (meta?.ino !== undefined) stat.ino = Number(meta.ino);
     return stat;
   }
 
@@ -4817,8 +4824,10 @@ const __fsMod = (() => {
       // A resident-store read reassembles a fresh byte buffer every time;
       // object identity is not file identity. It also changes representation
       // when data is hydrated, without a filesystem mutation. Compare the
-      // namespace's authoritative inode/revision instead, without reading any
-      // content. Heap-only embedders have no namespace, so compare bytes.
+      // namespace's inode metadata instead, without reading content. Its
+      // revision is a listing cursor, not an inode edit: a relist after an
+      // unrelated write must not restart every watched configuration file.
+      // Heap-only embedders have no namespace, so compare bytes.
       const absPath = _resolve(filename);
       const key = _strip(absPath);
       function snapshot() {
@@ -4830,7 +4839,7 @@ const __fsMod = (() => {
           const found = __nsResolve(key, true);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
-          return { stamp: [row.ino, row.rev, row.kind, row.size, row.mtime, row.ctime].join(":"), absent: false };
+          return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
         }
         const cell = _bundleLookup(absPath);
         return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
