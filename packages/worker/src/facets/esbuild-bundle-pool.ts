@@ -2,25 +2,22 @@
  * EsbuildBundlePool — the session's single esbuild facet pool.
  *
  * Install-time pre-bundling and on-demand /@modules/ bundling dispatch the
- * same worker (the pre-bundle preamble + esbuild.wasm, one slot). When each
- * pipeline built its own IsolatePool the supervisor retained two copies of
- * the ~12 MiB wasm bytes and warmed two loader slots per session, and the
- * two pools never queued behind each other. One pool, owned by the session,
- * holds one wasm copy — leased once from the shared supervisor allocation
- * budget, the way the pre-bundler already accounted for its own — for as
- * long as the installer and dev server live, and is disposed with them.
+ * same worker (the pre-bundle preamble + esbuild.wasm, one slot). One pool,
+ * owned by the session, warms one loader slot for as long as the installer
+ * and dev server live, and is disposed with them.
+ *
+ * The wasm is the host Worker's own compiled esbuild module
+ * (runtime/host-wasm.ts), shared with the facet. The pool keeps no copy of
+ * the bytes, so it holds no supervisor allocation credit: it used to fetch
+ * and retain the ~12 MiB wasm for its whole life, leased from the shared
+ * supervisor budget as a resident owner.
  *
  * Construction is lazy and everything heavy is imported on first use so
- * the fabric/preamble/wasm subgraph stays out of the cold script-eval
- * graph of sessions that never bundle.
+ * the fabric/preamble subgraph stays out of the cold script-eval graph of
+ * sessions that never bundle.
  */
 import type { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { acquireResidentSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import {
-  PRE_BUNDLE_CONCURRENCY,
-  PRE_BUNDLE_SLICE_CAP_BYTES,
-  SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
-} from '@nimbus-sh/platform/limits.js';
+import { PRE_BUNDLE_CONCURRENCY } from '@nimbus-sh/platform/limits.js';
 import type { EsbuildWasmFetchEnv } from '../runtime/esbuild-wasm-bytes.js';
 
 /** The pool surface both bundling pipelines dispatch through. */
@@ -41,8 +38,6 @@ function hasAssetsFetcher(env: unknown): env is EsbuildWasmFetchEnv {
 export class EsbuildBundlePool implements BundlePoolProvider {
   private pool: IsolatePool | null = null;
   private pending: Promise<IsolatePool> | null = null;
-  /** Releases the wasm bytes' supervisor credit; held until dispose(). */
-  private releaseWasmCredit: (() => void) | null = null;
   /** Bumped by dispose() so a construction it interrupted tears itself down. */
   private generation = 0;
 
@@ -51,25 +46,17 @@ export class EsbuildBundlePool implements BundlePoolProvider {
     private readonly ctx: DurableObjectState,
   ) {}
 
-  /**
-   * Callers MUST acquire the pool before taking any slice lease: the
-   * first construction reserves the full supervisor budget while the wasm
-   * bytes are fetched, so a caller already holding slice credit would
-   * wait on itself.
-   */
   acquire(): Promise<IsolatePool> {
     if (this.pool) return Promise.resolve(this.pool);
     if (this.pending) return this.pending;
     const generation = this.generation;
-    const pending = this.construct().then(({ pool, releaseWasmCredit }) => {
+    const pending = this.construct().then((pool) => {
       if (this.generation !== generation) {
-        // dispose() ran while the wasm bytes were in flight.
+        // dispose() ran while the adapter was in flight.
         try { pool.dispose(); } catch { /* best-effort */ }
-        releaseWasmCredit();
         throw new Error('EsbuildBundlePool: disposed during construction');
       }
       this.pool = pool;
-      this.releaseWasmCredit = releaseWasmCredit;
       return pool;
     }).finally(() => {
       if (this.pending === pending) this.pending = null;
@@ -78,55 +65,26 @@ export class EsbuildBundlePool implements BundlePoolProvider {
     return pending;
   }
 
-  private async construct(): Promise<{ pool: IsolatePool; releaseWasmCredit: () => void }> {
+  private async construct(): Promise<IsolatePool> {
     if (!hasAssetsFetcher(this.env)) {
-      throw new Error('EsbuildBundlePool: env.ASSETS binding missing — the esbuild wasm asset cannot be fetched');
+      throw new Error('EsbuildBundlePool: env.ASSETS binding missing — the esbuild JS adapter cannot be fetched');
     }
     const env = this.env;
-    const [{ IsolatePool }, { preBundlePreamble }, { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes }] = await Promise.all([
+    const [{ IsolatePool }, { preBundlePreamble }, { fetchEsbuildJsFnBody }, { esbuildWasmModule }] = await Promise.all([
       import('@nimbus-sh/fabric/isolate-pool.js'),
       import('../loaders/pre-bundle-preamble.js'),
       import('../runtime/esbuild-wasm-bytes.js'),
+      import('../runtime/host-wasm.js'),
     ]);
-    // Resident, and sized to what the pool will KEEP — not the whole budget.
-    //
-    // The full-budget claim this used to make is grantable exactly once: the
-    // lease it shrinks to becomes a permanent floor, so a second pool
-    // construction asked for 40 MiB against 28.1 MiB that could ever be free
-    // and parked in the FIFO with no error and no CPU. Measured on a
-    // deployed worker: capacity 41,943,040, resident 11,907,565, queued 1 for
-    // 222 s with the isolate healthy the whole time — and because the queue
-    // refuses everyone behind a waiter, the whole session stopped making
-    // progress. The bound below is the same one the payload is checked
-    // against, so the slice cap stays free for the work the pool exists for.
-    const maxRetainedWasmBytes =
-      SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES - PRE_BUNDLE_SLICE_CAP_BYTES;
-    const setupAllocation = await acquireResidentSupervisorAllocation(maxRetainedWasmBytes);
-    let retained = false;
-    try {
-      const [wasmBytes, jsFnBody] = await Promise.all([fetchEsbuildWasmBytes(env), fetchEsbuildJsFnBody(env)]);
-      if (wasmBytes.byteLength > maxRetainedWasmBytes) {
-        throw new RangeError(
-          `esbuild wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`,
-        );
-      }
-      // IsolatePool keeps the constructor-time module bytes until dispose(),
-      // so retain their exact credit rather than treating construction as a
-      // handoff that immediately frees the ArrayBuffer.
-      setupAllocation.shrinkTo(wasmBytes.byteLength);
-      const pool = new IsolatePool(env, this.ctx, {
-        concurrency: PRE_BUNDLE_CONCURRENCY,
-        timeoutMs: 60_000,
-        retries: 0,
-        tag: 'esbuild-bundle',
-        preamble: preBundlePreamble(jsFnBody),
-        wasmModules: { 'esbuild.wasm': wasmBytes },
-      });
-      retained = true;
-      return { pool, releaseWasmCredit: setupAllocation.release };
-    } finally {
-      if (!retained) setupAllocation.release();
-    }
+    const [wasmModule, jsFnBody] = await Promise.all([esbuildWasmModule(), fetchEsbuildJsFnBody(env)]);
+    return new IsolatePool(env, this.ctx, {
+      concurrency: PRE_BUNDLE_CONCURRENCY,
+      timeoutMs: 60_000,
+      retries: 0,
+      tag: 'esbuild-bundle',
+      preamble: preBundlePreamble(jsFnBody),
+      wasmModules: { 'esbuild.wasm': wasmModule },
+    });
   }
 
   /**
@@ -141,8 +99,5 @@ export class EsbuildBundlePool implements BundlePoolProvider {
     if (pool) {
       try { pool.dispose(); } catch { /* best-effort */ }
     }
-    const release = this.releaseWasmCredit;
-    this.releaseWasmCredit = null;
-    release?.();
   }
 }

@@ -141,6 +141,11 @@ export interface AuthorityFilesystemOptions {
    * with the descriptor.
    */
   retainResident?: boolean;
+  /**
+   * Where the resident copies are kept, when the guest's owner outlives one
+   * instance and clears them itself (a bash process reused for another fork).
+   */
+  resident?: Map<string, { revision: number; bytes: Uint8Array }>;
 }
 
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
@@ -182,7 +187,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     return e;
   };
   // Content by inode, valid while the stat revision matches the one it was read at.
-  const resident = new Map<string, { revision: number; bytes: Uint8Array }>();
+  const resident = options.resident ?? new Map<string, { revision: number; bytes: Uint8Array }>();
   const residentBytes = options.residentBytes ?? 0;
   const residentContent = (fs: Fs, target: RuntimeFsPath, st: RuntimeVfsStat): Awaitable<Uint8Array> => {
     if (options.retainResident === false) return after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));

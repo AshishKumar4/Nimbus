@@ -37,7 +37,7 @@ import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
+import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '@nimbus-sh/platform/w7-frame.js';
 import { Fanout } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
@@ -1678,29 +1678,46 @@ export class NpmInstaller {
                 await target.fs.writeFile(file.path, file.data, { mode: file.mode });
             return;
         }
+        // One W7 stream owns at most W7_MAX_PATHS_PER_BATCH paths: the shims go
+        // in waves, the directory with the first, the manifest with the last. A
+        // file is carried in CHUNK_SIZE chunks (a manifest of hundreds of bins
+        // outgrows one).
         const mtime = Date.now();
-        const binEntries = files.map((file) => ({
-            path: file.path,
-            parentPath: binDir,
-            isDir: false,
-            size: file.data.length,
-            mtime,
-            mode: file.mode,
-            chunkCount: 1,
-        }));
-        binEntries.push({
-            path: binDir,
-            parentPath: parentOf(binDir),
-            isDir: true,
-            size: 0,
-            mtime,
-            mode: 0o755,
-            chunkCount: 0,
-        });
-        await this.writeStreamPayload(target.engine, {
-            inodes: binEntries,
-            chunks: files.map((file) => ({ path: file.path, chunkId: 0, data: file.data })),
-        });
+        for (let at = 0; at < files.length; at += BIN_WAVE_PATHS) {
+            const wave = files.slice(at, at + BIN_WAVE_PATHS);
+            const inodes = wave.map((file) => ({
+                path: file.path,
+                parentPath: binDir,
+                isDir: false,
+                size: file.data.length,
+                mtime,
+                mode: file.mode,
+                chunkCount: Math.ceil(file.data.length / CHUNK_SIZE),
+            }));
+            if (at === 0) {
+                inodes.push({
+                    path: binDir,
+                    parentPath: parentOf(binDir),
+                    isDir: true,
+                    size: 0,
+                    mtime,
+                    mode: 0o755,
+                    chunkCount: 0,
+                });
+            }
+            const chunks = [];
+            for (const file of wave) {
+                if (file.data.length <= CHUNK_SIZE) {
+                    chunks.push({ path: file.path, chunkId: 0, data: file.data });
+                    continue;
+                }
+                // Each chunk its own buffer: the byte stream detaches what it enqueues.
+                for (let chunkId = 0; chunkId * CHUNK_SIZE < file.data.length; chunkId++) {
+                    chunks.push({ path: file.path, chunkId, data: file.data.slice(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
+                }
+            }
+            await this.writeStreamPayload(target.engine, { inodes, chunks });
+        }
     }
     async writeStreamPayload(vfs, payload) {
         const result = await vfs.writeStream(encodeWriteBatchStream(payload));
@@ -2466,6 +2483,8 @@ function parentOf(path) {
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
 const COPY_PREFIX = '.nimbus-copy-';
+/** Bin shims one W7 stream carries: its path limit, less room for the directory. */
+const BIN_WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 /** `src`'s tree on the engine written into `dst` through `to`; with `packageJsonLast`, its own package.json goes last. */
 async function copyTreeInto(from, src, to, dst, packageJsonLast) {
     await to.mkdir(dst, { recursive: true });

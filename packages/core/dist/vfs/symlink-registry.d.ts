@@ -34,6 +34,8 @@ export declare class SymlinkRegistry {
     /** Remove a symlink. Returns true if it existed. */
     delete(linkPath: string): boolean;
     assertMutable(...paths: string[]): void;
+    /** How many links the registry holds (none, in a session that never had an older one). */
+    get size(): number;
     /** Check if `path` is registered as a symlink (no chain resolution). */
     isSymlink(path: string): boolean;
     /** Get the immediate target of a symlink. Returns null if not a symlink. */

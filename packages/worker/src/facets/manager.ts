@@ -401,7 +401,7 @@ function __nimbusLiveHandles() {
   if (__servers && typeof __servers.values === "function") {
     for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;
   }
-  return __nimbusPendingStartupWork() + __bound;
+  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles");
 }
 
 async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {

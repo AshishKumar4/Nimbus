@@ -33,14 +33,15 @@ const countedJsFnBody = [
   'api.stop = () => { globalThis.__stops = (globalThis.__stops || 0) + 1; return stop(); };',
   'return api;',
 ].join('\n');
-const facetSource = esbuildFacetWorkerCode(wasmBytes.buffer, countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH))
+const wasmModule = await WebAssembly.compile(wasmBytes);
+const facetSource = esbuildFacetWorkerCode(wasmModule, countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH))
   .modules['worker.js']
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
   .replace('import wasmModule from "esbuild.wasm";', 'const { wasmModule } = globalThis.__facetImports;');
 assert.doesNotMatch(facetSource, /^import /m);
 globalThis.__facetImports = {
   DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
-  wasmModule: await WebAssembly.compile(wasmBytes),
+  wasmModule,
 };
 
 let moduleCopy = 0;

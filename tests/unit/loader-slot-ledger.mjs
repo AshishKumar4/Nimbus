@@ -11,7 +11,7 @@
 //   (1) a pool's dispatches are distinct workers in flight while they run
 //       and give their slots back when they settle;
 //   (2) holds on one worker nest and count once; ending one twice is a no-op;
-//   (3) "Too many concurrent dynamic workers" is classified in the taxonomy,
+//   (3) the platform's limit message is classified in the taxonomy,
 //       and the failure names the workers that were in flight;
 //   (4) a resident process holds its worker for as long as it is resident,
 //       and a one-shot for its run, on the same per-DO ledger.
@@ -34,7 +34,8 @@ import {
   createFacetWorld,
 } from './facet-host-harness.mjs';
 
-const CAP_MESSAGE = 'Too many concurrent dynamic workers';
+// The platform's words for the limit, as a deployed Durable Object received them.
+const CAP_MESSAGE = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
 
 // ── (3a) the taxonomy knows the limit ───────────────────────────────────────
 assert.equal(
@@ -101,7 +102,7 @@ assert.equal(
   await assert.rejects(
     pool.submit((value) => value, 'payload'),
     (error) => {
-      assert.match(error.message, /Too many concurrent dynamic workers/);
+      assert.ok(error.message.startsWith(CAP_MESSAGE), error.message);
       assert.ok(error.message.includes('nimbus-process:resident-7'), 'the failure names the worker holding a slot');
       assert.match(error.message, new RegExp(`limit of ${DO_DYNAMIC_WORKER_LIMIT}`));
       return true;

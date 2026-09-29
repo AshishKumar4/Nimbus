@@ -4,16 +4,20 @@
 // scripts/dist-integrity.mjs, which every deploy path in the repo calls.
 //
 // Two callers, two lifetimes, one set of mechanics:
-//   _throwaway-target.mjs — `nimbus-tw-*`, deployed and deleted per run.
+//   _throwaway-target.mjs — `nimbus-tw-*`, a Worker Preview of
+//                           `nimbus-probe-previews`, deployed and deleted
+//                           per run.
 //   _staging-target.mjs   — `nimbus-staging` + `nimbus-probe-staging`,
-//                           persistent, redeployed in place.
+//                           persistent Workers, redeployed in place.
 //
 // The one rule worth reading before editing: **a deploy is verified by its
-// version id, never by wrangler's exit status.** `wrangler deploy` can die
-// in the asset-upload phase with a bare `fetch failed` and still exit 0 —
-// measured 2026-08-02, when a full green probe suite ran against a
-// two-builds-stale Worker. `deployAndVerify` therefore reads the active
-// version back from the API and refuses a deploy that did not change it.
+// version (or Preview deployment) id, never by wrangler's exit status.**
+// `wrangler deploy` can die in the asset-upload phase with a bare `fetch
+// failed` and still exit 0 — measured 2026-08-02, when a full green probe
+// suite ran against a two-builds-stale Worker. `deployAndVerify` therefore
+// reads the active version back from the API and refuses a deploy that did
+// not change it; the throwaway reads its Preview's latest deployment back
+// the same way.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -131,6 +135,42 @@ export function workersDevSubdomain(base) {
 
 export function putSecret({ cwd, account, name, key, value }) {
   wrangle(WRANGLER, ['secret', 'put', key, '--name', name], { cwd, account, input: value });
+}
+
+// ── Cloudflare API ───────────────────────────────────────────────────
+//
+// For what wrangler has no command for: reading a Preview and its latest
+// deployment back, and provisioning a Preview parent Worker.
+
+const CF_API = 'https://api.cloudflare.com/client/v4';
+
+/**
+ * A token for the REST API: CLOUDFLARE_API_TOKEN when set (CI), otherwise
+ * the one wrangler's own login holds (`wrangler auth token --json`).
+ */
+export function apiToken({ cwd, account }) {
+  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
+  const out = wrangle(WRANGLER, ['auth', 'token', '--json'], { cwd, account });
+  const token = JSON.parse(out.stdout).token;
+  if (typeof token !== 'string' || !token) throw new Error('wrangler auth token --json printed no token');
+  return token;
+}
+
+/**
+ * One API call under the account. Answers `{ ok, status, result, errors }`;
+ * a transport failure throws.
+ */
+export async function cfApi(path, { account, token, method = 'GET', body, contentType = 'application/json' }) {
+  const response = await fetch(`${CF_API}/accounts/${account}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'Content-Type': contentType }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await response.json().catch(() => ({}));
+  return { ok: response.ok && json.success === true, status: response.status, result: json.result ?? null, errors: json.errors ?? [] };
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────

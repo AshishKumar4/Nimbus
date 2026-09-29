@@ -495,6 +495,8 @@ class InodeTable {
     held;
     young = new Map();
     old = new Map();
+    /** Counts the changes to what a path's entry is (set, delete, clear); a cache fill is no change. */
+    epoch = 0;
     constructor(capacity, load, held) {
         this.capacity = capacity;
         this.load = load;
@@ -523,14 +525,17 @@ class InodeTable {
         return this.young.get(path) ?? this.old.get(path);
     }
     set(path, inode) {
+        this.epoch++;
         this.old.delete(path);
         this.admit(path, inode);
     }
     delete(path) {
+        this.epoch++;
         this.young.delete(path);
         this.old.delete(path);
     }
     clear() {
+        this.epoch++;
         this.young = new Map();
         this.old = new Map();
     }
@@ -1388,6 +1393,17 @@ export class SqliteVFS {
      * unregistered credential, so the ordinary session user is untouched.
      */
     confinedTmpRoots = new Map();
+    /**
+     * The last walk resolveName completed on the live tree. The operation a
+     * caller runs next on the name it returned (a stat, a read, its revision)
+     * finds the walk here instead of repeating it (resolvePath). It holds only
+     * while nothing that could move a resolution has happened since: no change
+     * to the inode table, no mutation (bumpRevision), no change to confinement.
+     * Keyed by the view's credential object. Adjacent entries can share the
+     * parent search proof; resolveName still consults the namespace each time.
+     */
+    lastResolution = null;
+    resolutionEpoch = 0;
     sharedDirectories = new Map();
     /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
     registerSharedDirectory(path) {
@@ -1461,6 +1477,7 @@ export class SqliteVFS {
         if (root === '')
             throw vfsError('EINVAL', 'a private /tmp root cannot be the filesystem root');
         this.confinedTmpRoots.set(uid, root);
+        this.resolutionEpoch++;
     }
     /**
      * A confined principal owns its own triad and nothing else. Refusing chmod
@@ -1531,6 +1548,7 @@ export class SqliteVFS {
     /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
     releasePrincipal(uid) {
         this.confinedTmpRoots.delete(uid);
+        this.resolutionEpoch++;
     }
     /**
      * Logical path -> storage key, for one credential.
@@ -1634,12 +1652,14 @@ export class SqliteVFS {
             isDirectory: (path) => this.isDirectory(path, bound),
             isFile: (path) => this.isFile(path, bound),
             isSymlink: (path) => this.isSymlink(path, bound),
+            kind: (path) => this.probeInode(path, bound)?.kind ?? null,
             access: (path, mode) => { this.checkAccess(path, mode, bound); },
             mkdir: (path, options) => this.mkdir(path, options, bound),
             writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
             symlink: (target, path) => this.symlink(target, path, bound),
             readlink: (path) => this.readlink(path, bound),
             resolveSymlink: (path) => this.resolveSymlink(path, bound),
+            resolveName: (path, followLeaf, stop) => this.resolveName(path, bound, followLeaf, stop),
             readFile: (path) => this.readFile(path, bound),
             readFileUncached: (path) => this.readFileUncached(path, bound),
             readRange: (path, offset, length) => this.readRange(path, offset, length, bound),
@@ -1747,6 +1767,14 @@ export class SqliteVFS {
     resolvePath(path, cred, followLeaf, allowMissing, tree = this.inodes) {
         const root = this.confinedTmpRoots.get(cred.uid);
         let current = this.nameOf(path, cred);
+        // The walk resolveName just did for this name, when nothing since could
+        // have changed where it leads (see lastResolution).
+        const last = this.lastResolution;
+        if (last !== null && last.name === current && last.cred === cred && tree === this.inodes
+            && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch
+            && !(followLeaf && last.leafIsLink)) {
+            return { path: last.key, inode: last.inode, name: current };
+        }
         // Hops are counted, never deduplicated (Linux, MAXSYMLINKS 40): a link
         // met again on a longer path (`loop -> .`) is one more hop, not a cycle.
         for (let hops = 0; hops <= 40; hops++) {
@@ -1785,6 +1813,65 @@ export class SqliteVFS {
             return { path: key, inode: tree.get(key), name: current };
         }
         throw vfsError('ELOOP', path);
+    }
+    /**
+     * Walk a plain SQLite path once, checking ancestor search permission. A
+     * link that needs following, or a name claimed by the namespace, returns
+     * null for the existing component walk. Thus mount shadowing, link-hop
+     * limits and physical `..` traversal keep their namespace semantics.
+     * `stop` must include mount ancestors: declining the first component
+     * declines this descent, but not a link target. `end` distinguishes a
+     * missing entry from a non-directory component without throwing merely
+     * to report absence. The returned name's engine operations share this
+     * traversal proof (lastResolution), rather than walking it again.
+     */
+    resolveName(path, cred, followLeaf, stop, tree = this.inodes) {
+        const root = this.confinedTmpRoots.get(cred.uid);
+        const current = this.nameOf(path, cred);
+        // A namespace's claim includes every ancestor of a mount. Even a
+        // reusable inode walk asks the current namespace first: mount/unmount
+        // is not an engine mutation.
+        const firstEnd = current.indexOf('/');
+        if (current !== '' && stop?.(firstEnd === -1 ? current : current.slice(0, firstEnd)))
+            return null;
+        const last = this.lastResolution;
+        const reusable = last !== null && tree === this.inodes && last.cred === cred
+            && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch;
+        if (reusable && last.name === current) {
+            return followLeaf && last.leafIsLink ? null : { name: current, end: 'found' };
+        }
+        // Adjacent directory entries share the traversal/search proof, not a
+        // routing table. Any mutation invalidates it, and the leaf is always
+        // looked up anew (including links and absence).
+        const parentEnd = current.lastIndexOf('/');
+        const sameParent = reusable && parentEnd >= 0 && parentEnd === last.name.lastIndexOf('/')
+            && current.slice(0, parentEnd) === last.name.slice(0, parentEnd);
+        const parts = current === '' ? [] : sameParent ? [current.slice(parentEnd + 1)] : current.split('/');
+        let prefix = sameParent ? current.slice(0, parentEnd) : '';
+        let found;
+        for (let index = 0; index < parts.length; index++) {
+            prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
+            const inode = tree.get(this.keyOfName(prefix, root));
+            found = inode;
+            const leaf = index === parts.length - 1;
+            if (!inode)
+                return { name: current, end: 'absent' };
+            if (inode.kind === 'symlink' && (!leaf || followLeaf))
+                return null;
+            if (!leaf) {
+                if (inode.kind !== 'directory')
+                    return { name: current, end: 'not-directory' };
+                if (!this.accessInode(inode, 0o1, cred))
+                    throw vfsError('EACCES', prefix);
+            }
+        }
+        if (found !== undefined && tree === this.inodes) {
+            this.lastResolution = {
+                epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name: current,
+                key: this.keyOfName(current, root), inode: found, leafIsLink: found.kind === 'symlink',
+            };
+        }
+        return { name: current, end: 'found' };
     }
     checkAccess(path, want, cred, options = {}) {
         const resolved = this.resolvePath(path, cred, options.followLeaf ?? true, options.allowMissingLeaf ?? false, options.tree);
@@ -1932,6 +2019,7 @@ export class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     bumpRevision(paths, structural = NO_STRUCTURAL_CHANGES) {
+        this.resolutionEpoch++;
         for (const opened of this.openNodes) {
             if (opened.path === null)
                 continue;
@@ -4736,6 +4824,7 @@ export class SqliteVFS {
             isDirectory: (path) => probe(path)?.kind === 'directory',
             isFile: (path) => probe(path)?.kind === 'file',
             isSymlink: (path) => probe(path)?.kind === 'symlink',
+            kind: (path) => probe(path)?.kind ?? null,
             access: (path, mode) => { resolve(path, mode); },
             mkdir: readOnly,
             writeFile: readOnly,
@@ -4752,6 +4841,7 @@ export class SqliteVFS {
                     throw error;
                 }
             },
+            resolveName: (path, followLeaf, stop) => { pinned(); return this.resolveName(path, bound, followLeaf, stop, tree); },
             readFile: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, true); },
             readFileUncached: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, false); },
             readRange: range,
@@ -8431,22 +8521,42 @@ export function pendingChunkError(path) {
     });
 }
 /**
+ * Each listed entry's encoded bytes less its path's, as first measured. A
+ * listing entry is not changed once listed except for its path (a lister
+ * re-rooting it into another path space), so the same entry measured again
+ * under another path costs only that path's encoding.
+ */
+const entryBytesBesidePath = new WeakMap();
+const ASCII = /^[\x00-\x7f]*$/;
+/** The UTF-8 length of `text`: its length when it is ASCII, as a listing's JSON almost always is. */
+function utf8Length(text) {
+    return ASCII.test(text) ? text.length : enc.encode(text).byteLength;
+}
+/**
  * The byte bound of one listing page (VfsListPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
  * the last one leaves in `next` (its path in place of `null`). The returned
- * check admits an entry while the page still fits the RPC frame with it; an
- * entry that cannot fit a page on its own is E2BIG.
+ * check admits an entry, listed under `path` (its own by default), while the
+ * page still fits the RPC frame with it; an entry that cannot fit a page on
+ * its own is E2BIG.
  */
 export function listPageBudget(epoch, rev) {
-    const frameBytes = enc.encode(JSON.stringify({ epoch, rev, entries: [], next: null })).byteLength;
+    const frameBytes = utf8Length(JSON.stringify({ epoch, rev, entries: [], next: null }));
     let entriesBytes = 0;
     let count = 0;
-    return (entry) => {
-        const bytes = enc.encode(JSON.stringify(entry)).byteLength;
-        const cursorBytes = Math.max(4, enc.encode(JSON.stringify(entry.path)).byteLength) - 4;
+    return (entry, path = entry.path) => {
+        const pathBytes = utf8Length(JSON.stringify(path));
+        let beside = entryBytesBesidePath.get(entry);
+        if (beside === undefined) {
+            const ownPathBytes = path === entry.path ? pathBytes : utf8Length(JSON.stringify(entry.path));
+            beside = utf8Length(JSON.stringify(entry)) - ownPathBytes;
+            entryBytesBesidePath.set(entry, beside);
+        }
+        const bytes = beside + pathBytes;
+        const cursorBytes = Math.max(4, pathBytes) - 4;
         if (frameBytes + entriesBytes + (count ? 1 : 0) + bytes + cursorBytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
             if (count === 0)
-                throw vfsError('E2BIG', `${entry.path}: listing entry exceeds the RPC byte budget`);
+                throw vfsError('E2BIG', `${path}: listing entry exceeds the RPC byte budget`);
             return false;
         }
         entriesBytes += bytes + (count ? 1 : 0);

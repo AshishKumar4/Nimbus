@@ -80,7 +80,6 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
 import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
-import { fetchEsbuildWasmBytes, ESBUILD_JS_L2_KEY, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 import { Fanout, MAX_PEER_FANOUT, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
 import { z } from 'zod/v4';
 
@@ -1412,9 +1411,6 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
 //          integrity string to bench against.
 //   GET  /api/_test/cache/tarball/bench?integrity=sha512-...&n=N
 //        → similar.
-//   GET  /api/_test/cache/wasm/bench?n=N
-//        → run N sequential fetchEsbuildWasmBytes() calls. The first
-//          is asset-fetch + L2 write; subsequent should hit L2.
 async function handleCacheTestEndpoint(
   self: RoutesHost,
   url: URL,
@@ -1503,30 +1499,6 @@ async function handleCacheTestEndpoint(
     }
     const stats = r2.stats();
     return Response.json({ integrity, n, latencies, lastBytes, nullCount, stats });
-  }
-
-  if (path === '/api/_test/cache/wasm/reset' && request.method === 'POST') {
-    // Purge the L2 entry so the next bench call goes cold (re-runs
-    // env.ASSETS.fetch + L2 write-back). The L2 key is exported
-    // from esbuild-wasm-bytes.ts so the test endpoint stays in
-    // lockstep with the runtime module's key shape across any
-    // future ESBUILD_VERSION bump.
-    await Promise.all([purgeL2(ESBUILD_WASM_L2_KEY), purgeL2(ESBUILD_JS_L2_KEY)]);
-    return Response.json({ purged: true });
-  }
-
-  if (path === '/api/_test/cache/wasm/bench' && request.method === 'GET') {
-    const n = Math.max(1, Math.min(10, parseInt(url.searchParams.get('n') || '3', 10)));
-    const latencies: number[] = [];
-    let lastBytes = 0;
-    for (let i = 0; i < n; i++) {
-      const t0 = performance.now();
-      const ab = await fetchEsbuildWasmBytes(env);
-      const t1 = performance.now();
-      latencies.push(t1 - t0);
-      lastBytes = ab.byteLength;
-    }
-    return Response.json({ n, latencies, lastBytes });
   }
 
   return new Response('unknown cache _test endpoint', { status: 404 });

@@ -6282,6 +6282,58 @@ const __childProcessMod = (() => {
     return ["pipe", "pipe", "pipe"];
   }
 
+  // An inherited descriptor has no public ChildProcess stream, but its
+  // relay writes through the parent's stream just like the parent's own
+  // writes. Ending the child closes only this relay, never the parent.
+  function _inheritOutput(child, fd) {
+    let ended = false;
+    return {
+      write(bytes) {
+        if (!ended) (fd === 1 ? __processMod.stdout : __processMod.stderr).write(bytes);
+      },
+      end() {
+        if (ended) return;
+        ended = true;
+        if (fd === 1) child._stdoutEnded = true;
+        else child._stderrEnded = true;
+        _maybeFireClose(child);
+      },
+    };
+  }
+
+  // Read the parent's actual stdin (seeded input or the live terminal
+  // pump), not an empty spawn payload. The private relay remains absent
+  // from child.stdin, and relinquishes the input when the child exits.
+  function _inheritStdin(child) {
+    const input = __processMod.stdin;
+    let stopped = false;
+    const cleanup = () => {
+      stopped = true;
+      input.removeListener('data', forward);
+      input.removeListener('end', end);
+      if (input.listenerCount('data') === 0) input.pause();
+    };
+    const end = () => { if (!stopped) void _queueStdinEnd(child); };
+    const forward = (chunk) => {
+      if (stopped) return;
+      input.pause();
+      const task = _queueStdinWrite(child, _toBytes(chunk)).then(() => {
+        if (!stopped) input.resume();
+      }, (error) => {
+        if (!stopped) child.emit('error', error);
+      });
+      __pendingIO.push(task);
+    };
+    child.once('exit', cleanup);
+    // Attach the byte consumer before starting the stdin pump. Bypass only
+    // stdin's optional text-decoding listener wrapper: an inherited fd
+    // carries its bytes, not the parent's chosen listener encoding.
+    __eventsMod.prototype.on.call(input, 'data', forward);
+    input.once('end', end);
+    input.resume();
+    if (input.readableEnded) end();
+  }
+
   /** Build a fresh ChildProcess emitter with real streams. */
   function _makeChild(opts) {
     const stdio = _normalizeStdio((opts || {}).stdio);
@@ -6291,14 +6343,15 @@ const __childProcessMod = (() => {
     child.killed = false;
     child.exitCode = null;
     child.signalCode = null;
-    // For 'inherit' or 'ignore', set the corresponding stream to null
-    // (Node-doc semantics). 'inherit' → parent's stdio; we don't have
-    // one, so null is the closest honest value. Consumers that try to
-    // attach .on('data', ...) on null will throw — same as real Node.
-    child.stdin  = stdio[0] === "pipe" ? _makeWritable(child) : null;
-    child.stdout = stdio[1] === "pipe" ? _makeReadable() : null;
-    child.stderr = stdio[2] === "pipe" ? _makeReadable() : null;
+    // Node exposes null for inherited/ignored descriptors. The inherited
+    // descriptors nevertheless have private relays to the parent.
+    child.stdin  = stdio[0] === 'pipe' ? _makeWritable(child) : null;
+    child.stdout = stdio[1] === 'pipe' ? _makeReadable() : null;
+    child.stderr = stdio[2] === 'pipe' ? _makeReadable() : null;
     child.stdio = [child.stdin, child.stdout, child.stderr];
+    child._stdioModes = stdio;
+    child._stdoutSink = child.stdout || (stdio[1] === 'inherit' ? _inheritOutput(child, 1) : null);
+    child._stderrSink = child.stderr || (stdio[2] === 'inherit' ? _inheritOutput(child, 2) : null);
     child._pendingKill = null;       // {signal} if kill called before pid
     child._exitFired = false;
     child._closeFired = false;
@@ -6326,10 +6379,11 @@ const __childProcessMod = (() => {
       _trackCloseInterest(event);
       return _childOnce(event, listener);
     };
-    // For non-piped fds, treat them as already-ended so 'close' can
-    // fire after exit without waiting for end events that never come.
-    child._stdoutEnded = stdio[1] !== "pipe";
-    child._stderrEnded = stdio[2] !== "pipe";
+    // Inherited streams must be drained before close too. Only ignored
+    // output has no relay to wait for.
+    child._stdoutEnded = stdio[1] === 'ignore';
+    child._stderrEnded = stdio[2] === 'ignore';
+    if (stdio[1] === 'inherit' || stdio[2] === 'inherit') _trackCloseInterest('close');
     // Listen to the underlying streams' 'end' events so 'close' fires
     // only after actual data has flushed.
     if (child.stdout) {
@@ -6493,8 +6547,8 @@ const __childProcessMod = (() => {
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
-        try { child.stdout && child.stdout.end(); } catch {}
-        try { child.stderr && child.stderr.end(); } catch {}
+        try { child._stdoutSink && child._stdoutSink.end(); } catch {}
+        try { child._stderrSink && child._stderrSink.end(); } catch {}
         _maybeFireClose(child);
       });
       return child;
@@ -6550,21 +6604,21 @@ const __childProcessMod = (() => {
           ).catch(() => {}));
         }
 
-        // Start the loops.  Each of these is its own async task pushed
-        // onto __pendingIO so the facet's main drain knows to await.
-        // For non-piped fds (stdio: 'inherit' or 'ignore'), the stream
-        // is null and we skip the read-loop entirely.
+        // Both piped and inherited output have read loops; the latter use
+        // private sinks and finish without ending the parent's streams.
+        if (child._stdioModes[0] === 'inherit') _inheritStdin(child);
+        else if (child._stdioModes[0] === 'ignore') await _queueStdinEnd(child);
         const stdoutSeq = { value: 0 };
         const stderrSeq = { value: 0 };
-        if (child.stdout) void _runReadLoop(child, 1, child.stdout, stdoutSeq);
-        if (child.stderr) void _runReadLoop(child, 2, child.stderr, stderrSeq);
+        if (child._stdoutSink) void _runReadLoop(child, 1, child._stdoutSink, stdoutSeq);
+        if (child._stderrSink) void _runReadLoop(child, 2, child._stderrSink, stderrSeq);
         void _runWaitLoop(child);
       } catch (e) {
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
         try { child.emit("exit", 1, null); } catch {}
-        try { child.stdout && child.stdout.end(); } catch {}
-        try { child.stderr && child.stderr.end(); } catch {}
+        try { child._stdoutSink && child._stdoutSink.end(); } catch {}
+        try { child._stderrSink && child._stderrSink.end(); } catch {}
         _maybeFireClose(child);
       }
     })());
@@ -6948,12 +7002,24 @@ function __makeProcessStdin() {
     r.isRaw = mode !== false;
     return r;
   };
-  r.ref = function() { return r; };
-  r.unref = function() { return r; };
+  r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
+  r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
   const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
     ? Number(env.NIMBUS_CP_CHILD_PID)
     : 0;
+  // The polling infrastructure is unref'd, but a program actively consuming
+  // live stdin owns a referenced input handle, as in Node. Otherwise an
+  // interactive child exits after its prompt, before a keystroke arrives.
+  let inputReferenced = true, inputHeld = false;
+  function holdInput(want) {
+    const held = !!(want && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
+    if (held === inputHeld) return;
+    inputHeld = held;
+    globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+  }
+  __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
+  __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
   if (liveChildPid) {
     try {
       globalThis.__nimbusProcessStdin = r;
@@ -7069,9 +7135,11 @@ function __makeProcessStdin() {
   const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
   r.resume = function() {
     seed();
+    holdInput(true);
     return origResume ? origResume() : r;
   };
   r.pause = function() {
+    holdInput(false);
     return origPause ? origPause() : r;
   };
   const origOn = r.on.bind(r);

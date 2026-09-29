@@ -24,13 +24,15 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const wasmBytes = await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm'));
 const staged = (path) => readFile(new URL(`../../packages/worker/public${path}`, import.meta.url), 'utf8');
+// The loader resolves the facet's two imports; bound here to what it would
+// supply: the host's compiled esbuild module, handed over as is.
+const wasmModule = await WebAssembly.compile(wasmBytes);
 const facetSource = esbuildFacetWorkerCode(
-  wasmBytes.buffer, await staged(ESBUILD_JS_ASSET_PATH), await staged(ESBUILD_CLI_ASSET_PATH),
+  wasmModule, await staged(ESBUILD_JS_ASSET_PATH), await staged(ESBUILD_CLI_ASSET_PATH),
 ).modules['worker.js'];
-// The loader resolves these two imports; bound here to what it would supply.
 globalThis.__facetImports = {
   DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
-  wasmModule: await WebAssembly.compile(wasmBytes),
+  wasmModule,
 };
 const facetModule = facetSource
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')

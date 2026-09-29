@@ -52,6 +52,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // R2_RACE_TIMEOUT_MS - SPECULATIVE_FETCH_DELAY_MS would otherwise be dead
     // air before the download could start.
     const SPECULATIVE_FETCH_DELAY_MS = 75;
+    // How long a package waits on its best-effort R2 cache write. A tarball is
+    // at most MAX_R2_TARBALL_BYTES (30 MiB); a write still unanswered past this
+    // is abandoned, and the next install that misses the cache writes it.
+    const CACHE_WRITE_DEADLINE_MS = 30_000;
     const concurrency = Math.max(1, Math.min(batch.concurrency ?? 3, 8));
     // ── pLimit (inlined; preamble doesn't carry a limiter helper) ────────
     // Waiting package tasks enter in arrival order.
@@ -775,20 +779,26 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             totalFileInodes += 1;
             totalBytesWritten += completionMarker.data.length;
             // Write tarballs to R2 only after a successful network install so the
-            // next tenant can skip the round-trip to npm. This must be awaited:
-            // the facet lifecycle ends when this function returns.
+            // next tenant can skip the round-trip to npm. This is awaited, because
+            // the facet lifecycle ends when this function returns, but only for
+            // CACHE_WRITE_DEADLINE_MS: the write is best-effort, and an RPC the
+            // transport drops without a word (as writeBatchStream's were, above)
+            // would otherwise hold this package, and the install, until the
+            // batch deadline.
             //
             // Counter only increments tarballsCompleted on the network-fetch
             // path (R2-hit path bumps it earlier). Avoids double counting.
             if (!r2HitBytes) {
                 tarballsCompleted++;
                 if (capturedTgzBytes && typeof env.SUPERVISOR.putCachedTarball === 'function') {
-                    try {
-                        await __nimbusUseRpcResult(env.SUPERVISOR.putCachedTarball(spec.integrity, capturedTgzBytes), () => undefined);
-                    }
-                    catch {
-                        // Best-effort cache write — never fail the install on R2 errors.
-                    }
+                    // Best-effort cache write — never fail the install on R2 errors.
+                    const write = __nimbusUseRpcResult(env.SUPERVISOR.putCachedTarball(spec.integrity, capturedTgzBytes), () => undefined).catch(() => { });
+                    let deadline = null;
+                    await Promise.race([
+                        write,
+                        new Promise((resolve) => { deadline = setTimeout(resolve, CACHE_WRITE_DEADLINE_MS); }),
+                    ]);
+                    clearTimeout(deadline);
                 }
             }
             return {

@@ -235,8 +235,8 @@ const REQUIRED_BINDINGS = [
     breaks: 'almost everything. Four unguarded paths, none of which is the ' +
       'bundled real-vite mode people expect: npm install\'s pre-bundler ' +
       '(npm/installer.ts) and the DEFAULT in-process vite shim ' +
-      '(facets/vite-dev-server.ts) both call fetchEsbuildWasmBytes, which ' +
-      'fetches env.ASSETS bare; the generated vite/cirrus/tailwind modules ' +
+      '(facets/vite-dev-server.ts) both call fetchEsbuildJsFnBody, which ' +
+      'fetches esbuild\'s staged JS adapter from env.ASSETS bare; the generated vite/cirrus/tailwind modules ' +
       'call loadAssetText, which rejects E_ASSETS_BINDING_MISSING. The ' +
       '`if (env.ASSETS)` guards in router/index.ts cover only the router\'s ' +
       'own static fallthrough and say nothing about these. Assets-free is ' +

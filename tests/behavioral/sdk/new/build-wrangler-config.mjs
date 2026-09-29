@@ -43,11 +43,17 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
     !c.durable_objects.bindings.find((b) => b.name === 'NIMBUS_PUBLIC_DIRECTORY'));
 }
 
-// 1a. A date before nodejs_compat is on by date names the flag.
+// 1a. An older date keeps itself; the config names each flag Nimbus needs
+// that the date does not enable.
 {
   const c = buildNimbusWranglerConfig({ name: 'older', compatibilityDate: '2026-05-01' });
   a.check('compat date passed through', c.compatibility_date === '2026-05-01');
-  a.check('nodejs_compat named before 2026-08-04', c.compatibility_flags.includes('nodejs_compat'));
+  a.check('2026-05-01: nodejs_compat only',
+    JSON.stringify(c.compatibility_flags) === '["nodejs_compat"]', JSON.stringify(c.compatibility_flags));
+  const kinu = buildNimbusWranglerConfig({ name: 'kinu', compatibilityDate: '2025-12-01' });
+  a.check('2025-12-01: nodejs_compat and enhanced_error_serialization',
+    JSON.stringify(kinu.compatibility_flags) === '["nodejs_compat","enhanced_error_serialization"]',
+    JSON.stringify(kinu.compatibility_flags));
 }
 
 // 1b. nimbusPublicDirectory opts the public routing directory in.

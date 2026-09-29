@@ -216,8 +216,12 @@ const session = namespace.get(namespace.idFromName(`tenant:owner:${SID}`));
         name: 'cloudflare-workers-test-stub',
         setup(builder) {
           builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
+          // What the bundle imports from the runtime module: the base classes,
+          // and `tracing`, which the Worker's entry adopts at module scope. An
+          // untraced invocation's span, as workerd runs one without sampling.
           builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-            contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
+            contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};'
+              + ' export const tracing = { enterSpan: (name, callback) => callback({ isTraced: false }) };',
             loader: 'js',
           }));
         },

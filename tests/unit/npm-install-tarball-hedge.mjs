@@ -214,5 +214,33 @@ async function install(supervisor) {
   console.log('  case3: stalled R2 leg arms the hedge and still installs');
 }
 
+// ── 4. A cache write-back the transport never answers does not hold the install
+//
+// The write-back is best-effort. An RPC dropped without a word (the way
+// writeBatchStream calls were, 2026-09-28) never settles, and the package
+// waited on it until the batch deadline. Timers run a thousand times faster
+// here, so the write's own deadline passes in milliseconds; an install that
+// never settles fails the case instead of hanging the suite.
+{
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, Math.ceil((ms ?? 0) / 1000), ...rest);
+  let writes = 0;
+  let result;
+  try {
+    result = await Promise.race([
+      install({ ...supervisorFor(null), putCachedTarball: () => { writes++; return new Promise(() => {}); } }),
+      new Promise((_, reject) => realSetTimeout(
+        () => reject(new Error('the install never settled: it waited on the unanswered cache write')),
+        5_000,
+      )),
+    ]);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.equal(writes, 1, 'the registry tarball is offered to the cache');
+  assert.ok(!result.perPackage[0].errorText, result.perPackage[0].errorText);
+  console.log('  case4: an unanswered cache write-back is abandoned and the install completes');
+}
+
 globalThis.fetch = originalFetch;
 console.log('npm-install-tarball-hedge: ok');

@@ -14,6 +14,7 @@ import {
   DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   assertModuleMapWithinCodeLimit,
 } from '../../packages/fabric/src/budgets.ts';
+import { describeHostWasm } from '../../packages/fabric/src/host-wasm.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -25,6 +26,8 @@ import {
 } from './facet-host-harness.mjs';
 
 const MIB = 1024 * 1024;
+/** The smallest valid module: the magic number and version 1. */
+const EMPTY_WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 
 // ── the helper: over-ceiling lists the top members, sorted, with bytes ──────
 {
@@ -53,6 +56,29 @@ assertModuleMapWithinCodeLimit({
   'worker.js': 'export default {}',
   'big-but-fine.wasm': { wasm: new ArrayBuffer(40 * MIB) },
 });
+
+// ── a compiled module a host hands over counts the size it described ────────
+// Its wire bytes still count toward the platform's limit, and a Module does
+// not say how large it is: the host's description is the only size there is.
+{
+  const described = describeHostWasm(new WebAssembly.Module(EMPTY_WASM), { id: 'host-big', bytes: 60 * MIB });
+  assert.throws(
+    () => assertModuleMapWithinCodeLimit({
+      'worker.js': 'x'.repeat(5 * MIB),
+      'bare.wasm': described,
+    }),
+    /'bare\.wasm' \(62,914,560 bytes\)/,
+    'a bare module member counts its described size',
+  );
+  assert.throws(
+    () => assertModuleMapWithinCodeLimit({
+      'worker.js': 'x'.repeat(5 * MIB),
+      'wrapped.wasm': { wasm: described },
+    }),
+    /'wrapped\.wasm' \(62,914,560 bytes\)/,
+    'and so does one wrapped as { wasm }',
+  );
+}
 
 // ── the resident seam: an over-ceiling boot spec fails at assembly ──────────
 adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
@@ -131,6 +157,41 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
     "the pool's assembled map is under the same ceiling check",
   );
   pool.dispose();
+}
+
+// ── the pool seam: a compiled module is keyed and sized by its description ──
+{
+  const loaded = [];
+  const poolWith = (wasm) => new IsolatePool(
+    { LOADER: { get: (id, code) => { loaded.push({ id, code }); return { getEntrypoint: () => ({ async execute() { return 'ran'; } }) }; } } },
+    { id: { toString: () => 'pool-host-wasm-id' } },
+    { omitSupervisor: true, wasmModules: { 'esbuild.wasm': wasm } },
+  );
+
+  // Nobody said what it is: no identity to key warm slots by, no size to count.
+  assert.throws(
+    () => poolWith(new WebAssembly.Module(EMPTY_WASM)),
+    /'esbuild\.wasm'.*describeHostWasm/,
+    'an undescribed module is refused at construction',
+  );
+
+  // Two builds of the host carry different modules; a warm slot of one must
+  // not serve the other, as with bytes.
+  const v1 = poolWith(describeHostWasm(new WebAssembly.Module(EMPTY_WASM), { id: 'esbuild@1', bytes: 1000 }));
+  const v2 = poolWith(describeHostWasm(new WebAssembly.Module(EMPTY_WASM), { id: 'esbuild@2', bytes: 1000 }));
+  assert.equal(await v1.submit((value) => value, 'payload'), 'ran');
+  assert.equal(await v2.submit((value) => value, 'payload'), 'ran');
+  assert.equal(loaded.length, 2);
+  assert.notEqual(loaded[0].id, loaded[1].id, 'different host modules key different warm slots');
+  const code = await loaded[0].code();
+  assert.ok(code.modules['esbuild.wasm'].wasm instanceof WebAssembly.Module, 'the module is handed over, not bytes');
+
+  // Over the ceiling by its described size, the pool refuses it naming it.
+  const giant = poolWith(describeHostWasm(new WebAssembly.Module(EMPTY_WASM), {
+    id: 'giant', bytes: DYNAMIC_WORKER_CODE_LIMIT_BYTES,
+  }));
+  await assert.rejects(giant.submit((value) => value, 'payload'), /'esbuild\.wasm'/);
+  for (const pool of [v1, v2, giant]) pool.dispose();
 }
 
 console.log('ok - module-map-code-limit (ceiling named, members listed largest-first, all assembly seams checked)');

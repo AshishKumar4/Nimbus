@@ -727,6 +727,8 @@ export async function _rpcStdout(self, pid, data) {
     // its output must not merge into this generation's logs or shell.
     if (isPriorGenerationPid(self, pid))
         return;
+    if (self.facetProcessManager?.routeOutput(pid, 1, data))
+        return;
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
     // output. Skip pid=0 (the supervisor-rpc fallback when no props.pid
@@ -756,6 +758,8 @@ export async function _rpcStdout(self, pid, data) {
 }
 export async function _rpcStderr(self, pid, data) {
     if (isPriorGenerationPid(self, pid))
+        return;
+    if (self.facetProcessManager?.routeOutput(pid, 2, data))
         return;
     try {
         if (pid > 0)
