@@ -8720,9 +8720,7 @@ Object.defineProperty(builtins, "http", {
       ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
     const ports = globalThis.__portRegistry ??= new Map();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
-    globalThis.__nimbusHttpContext = context;
     const patchKey = Symbol.for("nimbus.native-http.patch");
-    const ownerKey = Symbol.for("nimbus.native-http.owner");
     if (!http.Server.prototype[patchKey]) {
       const proto = http.Server.prototype;
       // workerd v1.20260926.1 _storeHeader calls headers.hasOwnProperty:
@@ -8745,17 +8743,22 @@ Object.defineProperty(builtins, "http", {
         };
       }
       const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref;
-      Object.defineProperty(proto, patchKey, { value: true });
+      // Keep RPC capabilities inside this closure, not on globals or server
+      // properties visible to guest code. The setter refreshes the context
+      // when an isolate is reused, without revealing its current value.
+      let activeContext = context;
+      const owners = new WeakMap();
+      Object.defineProperty(proto, patchKey, { value: next => { activeContext = next; } });
       proto.listen = function (...args) {
-        const ctx = globalThis.__nimbusHttpContext;
+        const ctx = activeContext;
         const [options, callback] = net._normalizeArgs(args);
-        if (this.listening || this[ownerKey]?.pending) {
+        if (this.listening || owners.get(this)?.pending) {
           const err = new Error("Listen method has been called more than once without closing.");
           err.code = "ERR_SERVER_ALREADY_LISTEN";
           throw err;
         }
         const state = { ctx, pending: false, cancelled: false, port: null };
-        this[ownerKey] = state;
+        owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const start = (port) => {
           state.pending = false;
@@ -8787,7 +8790,7 @@ Object.defineProperty(builtins, "http", {
         return this;
       };
       proto.close = function (callback) {
-        const state = this[ownerKey];
+        const state = owners.get(this);
         if (state) {
           state.cancelled = true;
           if (state.pending) {
@@ -8803,7 +8806,7 @@ Object.defineProperty(builtins, "http", {
       };
       proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
       proto.unref = function () { this.__nimbusUnrefed = true; return Reflect.apply(unref, this, []); };
-    }
+    } else http.Server.prototype[patchKey](context);
     globalThis.__nimbusServeHttp = async (request) => {
       const port = Number(request.headers.get("X-Nimbus-Port") || 0);
       const server = port ? ports.get(port) : ports.values().next().value;
