@@ -1188,7 +1188,12 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
 ${VFS_CURSOR_SEED_SOURCE}
     const __supervisor = workerEnv?.SUPERVISOR || null;
     __nimbusRuntimeCodeReporter = () => {
-      const report = __nimbusFlushRuntimeCode(__supervisor);
+      const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
+        // Report failure to the guest's stderr, not only the platform log:
+        // its next-launch guidance would otherwise conceal a failed write.
+        if (__supervisor) await __supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+        throw error;
+      });
       // Code may be produced by a timer after boot has returned, not by an
       // HTTP request that will call our flush. Own this asynchronous write.
       workerCtx.waitUntil(report);
@@ -5456,7 +5461,7 @@ export class FacetManager {
         if (!this.esbuild) throw new Error('No transformer for a staged data URL module');
         const result = await this.esbuild.transform(entry.text, {
           loader: 'js', format: 'cjs', target: 'esnext',
-          moduleMetadata: true, dynamicImportParent: entry.path,
+          moduleMetadata: true, dynamicImportParent: 'data:text/javascript,',
         });
         modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
         continue;
