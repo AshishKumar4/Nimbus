@@ -22,6 +22,7 @@ import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
   commonJsEntryModuleName,
+  declaresWrapperBinding,
   runtimeCodeModuleName,
   runtimeFunctionModule,
   wrapCommonJsCell,
@@ -680,12 +681,15 @@ interface GeneratedNodeFacetCode {
 
 /**
  * The entry code as a module of the map, named for the script it came from so
- * its stack frames carry that path; `-e` code is `[eval]`.
+ * its stack frames carry that path; `-e` code is `[eval]`. The runtime may
+ * have lowered it from ESM (runtime-registry.ts), which nothing here records,
+ * so its scope is read off the code itself (declaresWrapperBinding).
  */
 function entryModule(userCode: string, filename: string | undefined): { name: string; text: string } {
+  const code = rewriteProvidedCommonJsModules(userCode);
   return {
     name: commonJsEntryModuleName(filename || '[eval]'),
-    text: wrapCommonJsCell(rewriteProvidedCommonJsModules(userCode)).text,
+    text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
   };
 }
 
@@ -830,9 +834,10 @@ ${RESIDENCY_MISS_REPORT}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
-      // Compiled here, by the registry, the first time; a syntax error in
-      // the entry is this run's error, with the entry's own line numbers.
-      const __entryResult = __nimbusRegistryRequire(${JSON.stringify('./' + entry.name)})(
+      // Compiled here, by the registry, the first time. A SyntaxError in the
+      // entry has no location of its own; the wrapper leads its stack with
+      // the file, as Node does.
+      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
@@ -1281,9 +1286,10 @@ ${RESIDENCY_MISS_REPORT}
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     try {
-      // Compiled here, by the registry, the first time; a syntax error in
-      // the entry is this launch's error, with the entry's own line numbers.
-      const __entryResult = __nimbusRegistryRequire(${JSON.stringify('./' + entry.name)})(
+      // Compiled here, by the registry, the first time. A SyntaxError in the
+      // entry has no location of its own; the wrapper leads its stack with
+      // the file, as Node does.
+      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       if (attachedTty) {
@@ -1513,6 +1519,12 @@ interface FacetVfsState {
    * its transformed text replaces it in `bundle` and serves both.
    */
   emits?: Map<string, string>;
+  /**
+   * The JavaScript cells lowered from ESM (transformEsmInBundle), whose
+   * module wraps them in the block scope (commonjs-cell.ts, THE WRAPPER).
+   * Every other code cell is CommonJS as Node would run it.
+   */
+  lowered?: Set<string>;
   /** What the module map costs the facet's store, taken before its cells are released (N18). */
   moduleStorageBytes?: number;
   /**
@@ -1612,6 +1624,7 @@ export function releaseSerializedSources(vfsState: FacetVfsState): void {
   if (!vfsState.bundleSource) return;
   vfsState.bundle = {};
   vfsState.emits = undefined;
+  vfsState.lowered = undefined;
 }
 
 /**
@@ -1658,7 +1671,8 @@ async function facetVfsBundleSourceFor(
   }
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
-      vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, { emits: vfsState.emits },
+      vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
+      { emits: vfsState.emits, lowered: vfsState.lowered },
     );
 }
 
@@ -1771,6 +1785,7 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
     if (typeof cell === 'string' || cell instanceof Uint8Array) bytes += _bundleCellLength(cell);
   }
   for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
+  for (const path of state.lowered ?? []) bytes += path.length;
   const source = state.bundleSource;
   if (source) {
     bytes += source.expression.length + source.imports.length + source.codeCells.length + source.runtimeCode.length;
@@ -2053,10 +2068,13 @@ export async function buildFacetVfsBundleSource(
   {
     consume = false,
     emits,
+    lowered,
     runtimeCode,
   }: {
     consume?: boolean;
     emits?: ReadonlyMap<string, string>;
+    /** Cells lowered from ESM, wrapped in the block scope. */
+    lowered?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
   } = {},
@@ -2075,10 +2093,10 @@ export async function buildFacetVfsBundleSource(
     const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
-      const wrapped = wrapCommonJsCell(code);
+      const wrapped = wrapCommonJsCell(code, emit !== undefined || lowered?.has(path) ? 'block' : 'function');
       const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
-      rows.push([path, name, wrapped.head, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0]);
+      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0]);
       if (pacer) await pacer.spend(code.length);
     }
     if (adopt) {
@@ -3644,11 +3662,14 @@ export function isTypescriptDeclarationFile(path: string): boolean {
  * `transformMany`, so a launch costs one round trip and this isolate never
  * grows esbuild's heap. Transforms that run here are paced like any pass.
  *
- * Returns the count of files transformed (for diagnostics).
+ * Returns the count of files transformed (for diagnostics). Every JavaScript
+ * cell lowered from ESM is added to `lowered` (its module's block scope,
+ * commonjs-cell.ts THE WRAPPER); a TypeScript source's emit always is.
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
   emits: Map<string, string>,
+  lowered: Set<string>,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
 ): Promise<{ transformed: number; failed: number }> {
@@ -3714,15 +3735,16 @@ async function transformEsmInBundle(
     const absUrl = 'file:///' + path.replace(/^\/+/, '');
     // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
     const key = __cacheKey(original + '\0' + absUrl);
+    // Every cell's dynamic import() is the process's: the transform keeps
+    // them, and the facet rewrites each to the process's ESM loader.
+    const moduleMetadata = !path.endsWith('.cjs') && (loader !== null || looksLikeEsm(path, original));
     const cached = __esmTransformCacheGet(key);
     if (cached !== undefined) {
+      if (moduleMetadata && !typescript) lowered.add(path);
       place({ path, typescript }, cached);
       transformed++;
       continue;
     }
-    // Every cell's dynamic import() is the process's: the transform keeps
-    // them, and the facet rewrites each to the process's ESM loader.
-    const moduleMetadata = !path.endsWith('.cjs') && (loader !== null || looksLikeEsm(path, original));
     const cellFor = (code: string, rewriteOnly = false): EsmCell => ({
       path,
       typescript,
@@ -3745,6 +3767,7 @@ async function transformEsmInBundle(
     }
     // CommonJS already: only its dynamic import() calls change.
     const cell = path.endsWith('.cjs') || (loader === null && !looksLikeEsm(path, src)) ? cellFor(src, true) : cellFor(src);
+    if (cell.request.options?.rewriteOnly !== true && !typescript) lowered.add(path);
     if (cell.request.options?.rewriteOnly !== true && loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
       // The bounded rewrite is computation in this isolate, however large.
       if (pacer) await pacer.spend(src.length);
@@ -3989,11 +4012,12 @@ async function _buildPrefetchBundle(
   //     the guest as CommonJS (commonjs-cell.ts says why the registry cannot
   //     take the ES module itself).
   const emits = new Map<string, string>();
+  const lowered = new Set<string>();
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    await transformEsmInBundle(bundle, emits, esbuild, pacer);
+    await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
@@ -4131,6 +4155,7 @@ async function _buildPrefetchBundle(
       evicted.push([k, rawBytes.get(k) ?? 0]);
       delete bundle[k];
       emits.delete(k);
+      lowered.delete(k);
       size.remove(k);
     }
     if (evicted.length > 0) {
@@ -4155,6 +4180,7 @@ async function _buildPrefetchBundle(
   return {
     bundle,
     ...(emits.size > 0 ? { emits } : {}),
+    ...(lowered.size > 0 ? { lowered } : {}),
     cursor,
     reachableCount: fileCount,
     truncated,
@@ -5305,7 +5331,8 @@ export class FacetManager {
       {
         consume: true,
         emits: vfsState.emits,
-        runtimeCode: await this._stagedRuntimeCode(key, new Set(vfsState.bundlePaths), pacer),
+        lowered: vfsState.lowered,
+        runtimeCode: await this._stagedRuntimeCode(key, pacer),
       },
     );
     vfsState.cacheHit = false;
@@ -5377,15 +5404,13 @@ export class FacetManager {
 
   /**
    * The runtime code recorded for an entry, as `{ cjs }` module text by key:
-   * a constructor call as the function module, a file lowered and wrapped as
-   * a module cell is. A file the launch already stages by its path is left
-   * to that cell — it is the file as it is now.
+   * a constructor call as the function module (or the SyntaxError the
+   * constructor would throw), a file lowered and wrapped as a module cell is.
+   * A file is staged by its content key even when the launch also carries its
+   * path as a cell: the guest looks a path up first and the key only for a
+   * path the map lacks — the same text written under a fresh name.
    */
-  private async _stagedRuntimeCode(
-    key: string,
-    stagedPaths: ReadonlySet<string>,
-    pacer: TurnBudget,
-  ): Promise<Map<string, string> | undefined> {
+  private async _stagedRuntimeCode(key: string, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of await this.runtimeCode.forLaunch(key)) {
       if (entry.kind !== 'module') {
@@ -5393,10 +5418,10 @@ export class FacetManager {
         continue;
       }
       const path = entry.path.replace(/^\/+/, '');
-      if (stagedPaths.has(path)) continue;
       const file: Record<string, string | Uint8Array> = { [path]: entry.text };
       const emits = new Map<string, string>();
-      if (this.esbuild) await transformEsmInBundle(file, emits, this.esbuild, pacer);
+      const lowered = new Set<string>();
+      if (this.esbuild) await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer);
       else _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
       let code = emits.get(path) ?? file[path] as string;
       try {
@@ -5404,7 +5429,8 @@ export class FacetManager {
       } catch {
         // Unparseable: it stays as written, and requiring it says why.
       }
-      modules.set(codeKey, wrapCommonJsCell(code).text);
+      const scope = emits.has(path) || lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
+      modules.set(codeKey, wrapCommonJsCell(code, scope).text);
     }
     return modules.size > 0 ? modules : undefined;
   }

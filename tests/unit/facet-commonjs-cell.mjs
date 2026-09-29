@@ -2,15 +2,19 @@
 // facet-commonjs-cell — a node process's module cell as the `{ cjs }` module
 // its guest's registry compiles on first require. The module's export is Node's
 // module wrapper function; the shims call it with their own exports, require,
-// module, __filename and __dirname. What must hold is Node's meaning of the
-// cell inside it, plus one deliberate difference: an ES module esbuild lowered
-// to CommonJS keeps its own top-level `const require` / `const __dirname`.
+// module, __filename and __dirname. What must hold is Node's meaning of a
+// CommonJS cell, an ES module lowered to CommonJS keeping its own top-level
+// `const require` / `const __dirname`, module names that stay distinct and
+// stable under the registry's URL parsing, and runtime code that builds what
+// the Function constructor would build and nothing else.
 import assert from 'node:assert/strict';
 import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
-  COMMONJS_CELL_TAIL,
+  declaresWrapperBinding,
+  runtimeCodeKey,
   runtimeFunctionModule,
+  runtimeFunctionSyntaxError,
   wrapCommonJsCell,
 } from '../../packages/core/src/_shared/commonjs-cell.ts';
 
@@ -22,92 +26,97 @@ function load(text) {
   return moduleObject.exports;
 }
 
-function run(cell, requireImpl = () => 'required') {
+function run(cell, scope = 'function', requireImpl = () => 'required') {
   const mod = { exports: {} };
-  load(wrapCommonJsCell(cell).text)(mod.exports, requireImpl, mod, '/app/cell.js', '/app');
+  load(wrapCommonJsCell(cell, scope).text)(mod.exports, requireImpl, mod, '/app/cell.js', '/app');
   return mod.exports;
 }
 
-// esbuild's lowering of an ES module that builds its own require: the
-// module's binding wins, and it is not a SyntaxError.
+// A CommonJS cell is Node's function body: what Node accepts, it accepts —
+// including what a block would reject.
 {
-  const out = run('const require = (id) => "own:" + id;\nmodule.exports = require("z");', () => 'wrapper');
-  assert.equal(out, 'own:z');
-  const dirs = run('const __dirname = "/from-module";\nconst __filename = __dirname + "/cell.js";\nmodule.exports = { __dirname, __filename, req: require("y") };');
-  assert.deepEqual(dirs, { __dirname: '/from-module', __filename: '/from-module/cell.js', req: 'required' });
-  console.log('  [1] a top-level lexical require/__dirname/__filename is the module\'s own');
-}
-
-// Text that only mentions a declaration keeps the real parameter.
-{
-  const out = run('const banner = `const require = createRequire(import.meta.url);`;\nmodule.exports = { got: require("x"), banner };');
-  assert.equal(out.got, 'required');
-  console.log('  [2] a declaration inside a template literal leaves the parameter bound');
-}
-
-// `var` redeclares the parameter as in Node: its value holds until assigned.
-{
-  const out = run('const before = typeof require;\nvar require = require;\nvar exports = module.exports = { before, after: require("q") };');
-  assert.deepEqual(out, { before: 'function', after: 'required' });
-  console.log('  [3] var redeclaration keeps the parameter\'s value, as in Node');
-}
-
-// Strictness is the cell's: a "use strict" prologue applies, its absence
-// leaves the cell sloppy.
-{
-  const strict = run('"use strict";\nmodule.exports = (function () { return this; })();');
-  assert.equal(strict, undefined, 'a strict cell\'s plain call has an undefined this');
-  const commented = run('/* license */\n// header\n\'use strict\'\nmodule.exports = (function () { return this; })();');
-  assert.equal(commented, undefined, 'a directive after comments and ended by ASI is still the prologue');
+  assert.equal(run('var f = 1;\nfunction f() {}\nmodule.exports = typeof f;'), 'number');
+  assert.equal(run('"use strict";\nfunction g() { return 1; }\nfunction g() { return 2; }\nmodule.exports = g();'), 2);
   const sloppy = run('module.exports = (function () { return this; })();');
   assert.equal(sloppy, globalThis, 'a cell with no directive stays sloppy');
-  const notDirective = run('"use strict".length;\nmodule.exports = (function () { return this; })();');
-  assert.equal(notDirective, globalThis, 'a string that begins an expression is not a directive');
-  console.log('  [4] a "use strict" prologue is honoured, and only a real one');
+  assert.equal(run('"use strict";\nmodule.exports = (function () { return this; })();'), undefined, 'its own prologue applies');
+  const out = run('const before = typeof require;\nvar require = require;\nvar exports = module.exports = { before, after: require("q") };');
+  assert.deepEqual(out, { before: 'function', after: 'required' }, 'var redeclares a parameter and keeps its value');
+  assert.equal(run('module.exports = arguments.length;\nreturn;\nmodule.exports = "unreached";'), 5, 'top-level return and the five arguments');
+  console.log('  [1] a CommonJS cell runs as Node\'s own wrapper runs it');
 }
 
-// Top-level return and arguments mean what they mean in Node's wrapper.
+// A lowered ES module is in a block: its own bindings of the wrapper's names
+// shadow the parameters instead of being a SyntaxError.
 {
-  const out = run('module.exports = arguments.length;\nreturn;\nmodule.exports = "unreached";');
-  assert.equal(out, 5);
-  console.log('  [5] top-level return ends the cell; arguments is the wrapper\'s five');
+  const out = run('const require = (id) => "own:" + id;\nmodule.exports = require("z");', 'block', () => 'wrapper');
+  assert.equal(out, 'own:z');
+  const dirs = run('const __dirname = "/from-module";\nclass exports {}\nmodule.exports = { __dirname, req: require("y"), cls: typeof exports };', 'block');
+  assert.deepEqual(dirs, { __dirname: '/from-module', req: 'required', cls: 'function' });
+  assert.throws(() => load(wrapCommonJsCell('const require = 1;', 'function').text), SyntaxError, 'as a function body it would not compile');
+  assert.equal(run('"use strict";\nmodule.exports = (function () { return this; })();', 'block'), undefined, 'the prologue is restated where it applies');
+  console.log('  [2] a lowered module keeps its own require/__dirname/exports');
+}
+
+// Which cells need the block, when nothing says whether they were lowered.
+{
+  assert.equal(declaresWrapperBinding('const require = createRequire(import.meta.url);'), true);
+  assert.equal(declaresWrapperBinding('const { __dirname: d, x: [module] } = y;'), true, 'destructured');
+  assert.equal(declaresWrapperBinding('let a = 1, exports = 2;'), true, 'second declarator');
+  assert.equal(declaresWrapperBinding('class __filename {}'), true);
+  assert.equal(declaresWrapperBinding('const banner = `const require = createRequire(import.meta.url);`;'), false, 'text in a template is not a declaration');
+  assert.equal(declaresWrapperBinding('function f() { const require = 1; }\nvar module = 2;'), false, 'nested or var bindings are Node\'s too');
+  assert.equal(declaresWrapperBinding('const = ;'), false, 'unparseable: its SyntaxError surfaces either way');
+  console.log('  [3] a top-level lexical binding of a wrapper name is found by parsing');
 }
 
 // A shebang is a comment of the same length: line numbers do not move.
 {
-  const { text, hashbang } = wrapCommonJsCell('#!/usr/bin/env node\nmodule.exports = new Error("at line 2").stack;');
-  assert.equal(hashbang, true);
-  assert.equal(text.split('\n').length, 3, 'the wrapper adds no line before the cell');
-  assert.equal(run('#!/usr/bin/env node\nmodule.exports = 42;'), 42);
-  console.log('  [6] a shebang is stripped without moving lines');
-}
-
-// A syntax error is still a syntax error.
-{
-  assert.throws(() => load(wrapCommonJsCell('const = ;').text), SyntaxError);
-  console.log('  [7] other syntax errors surface unchanged');
-}
-
-// The text between head and tail is the cell, byte for byte: what the guest
-// reads back to answer readFileSync.
-{
-  for (const cell of ['#!/usr/bin/env node\n"use strict";\nmodule.exports = 1;\n', 'x', '', '// a\n']) {
-    const w = wrapCommonJsCell(cell);
-    const inner = w.text.slice(w.head, w.text.length - COMMONJS_CELL_TAIL.length);
-    assert.equal(w.hashbang ? '#!' + inner.slice(2) : inner, cell);
+  for (const scope of ['function', 'block']) {
+    const { text, hashbang } = wrapCommonJsCell('#!/usr/bin/env node\nmodule.exports = 42;', scope);
+    assert.equal(hashbang, true);
+    assert.equal(text.split('\n').length, 3, `the wrapper adds no line before the cell (${scope})`);
+    assert.equal(run('#!/usr/bin/env node\nmodule.exports = 42;', scope), 42);
   }
-  console.log('  [8] head and tail frame the cell exactly');
+  console.log('  [4] a shebang is stripped without moving lines');
 }
 
-// Module names: the path, with the four characters URL parsing would alter escaped.
+// Head and tail frame the cell exactly: what the guest reads back to answer readFileSync.
 {
-  assert.equal(commonJsCellModuleName('home/user/a b/[id].js'), 'vfs/home/user/a b/[id].js');
-  assert.equal(commonJsCellModuleName('home/user/q#x?.js'), 'vfs/home/user/q%23x%3F.js');
-  assert.equal(commonJsCellModuleName('home/user/50%\\x.js'), 'vfs/home/user/50%25%5Cx.js');
+  for (const scope of ['function', 'block']) {
+    for (const cell of ['#!/usr/bin/env node\n"use strict";\nmodule.exports = 1;\n', 'x', '', '// a\n']) {
+      const w = wrapCommonJsCell(cell, scope);
+      const inner = w.text.slice(w.head, w.text.length - w.tail);
+      assert.equal(w.hashbang ? '#!' + inner.slice(2) : inner, cell);
+    }
+  }
+  console.log('  [5] head and tail frame the cell exactly');
+}
+
+// Module names are distinct for distinct paths and stable under the WHATWG
+// URL parser the registry resolves them with — including the characters it
+// drops (tab, newline), trims (trailing space), rewrites (backslash) or ends
+// the path at (? and #).
+{
+  const paths = [
+    'home/user/tr', 'home/user/tr ', 'home/user/tab\tx.js', 'home/user/tabx.js', 'home/user/nl\nx.js', 'home/user/nlx.js',
+    'home/user/a\\b.js', 'home/user/a/b.js', 'home/user/a%b.js', 'home/user/a%25b.js', 'home/user/%2e', 'home/user/%2E%2E',
+    'home/user/q#x.js', 'home/user/q?y.js', 'home/user/ü.js', 'home/user/😀.js', 'home/user/[id].js', 'home/user/{x}.js',
+    'home/user/"q".js', 'home/user/<t>.js', 'home/user/`b`.js', 'home/user/\x7f.js', 'home/user/\x01.js',
+  ];
+  const hrefs = new Map();
+  for (const path of paths) {
+    const name = commonJsCellModuleName(path);
+    const url = new URL('./' + name, 'file:///bundle/');
+    assert.equal(url.pathname, '/bundle/' + name, `${JSON.stringify(path)} is kept as written`);
+    assert.ok(!hrefs.has(url.href), `${JSON.stringify(path)} collides with ${JSON.stringify(hrefs.get(url.href))}`);
+    hrefs.set(url.href, path);
+  }
+  assert.equal(commonJsCellModuleName('home/user/app/index.js'), 'vfs/home/user/app/index.js', 'an ordinary path is itself');
   assert.equal(commonJsCellReadsBack('home/user/q#x?.js'), true);
   assert.equal(commonJsCellReadsBack('home/user/50%.js'), false);
   assert.equal(commonJsCellReadsBack('home/user/a\\b.js'), false);
-  console.log('  [9] module names escape exactly %, #, ? and \\');
+  console.log('  [6] module names are injective and survive URL parsing');
 }
 
 // Runtime code: the module for a Function-constructor call builds what the
@@ -118,7 +127,9 @@ function run(cell, requireImpl = () => 'required') {
     ['function', Function, ['a', 'b'], 'return a * b'],
     ['async', (async () => {}).constructor, ['x'], 'return await x'],
     ['generator', (function* () {}).constructor, [], 'yield 1'],
-    ['asyncGenerator', (async function* () {}).constructor, ['n = 2'], 'yield n'],
+    ['asyncGenerator', (async function* () {}).constructor, ['n = (2)', '/* c */ m'], 'yield n'],
+    ['function', Function, ['a'], '// a trailing comment'],
+    ['function', Function, [], '"use strict"; return "}"'],
   ];
   for (const [kind, Ctor, params, body] of cases) {
     const built = load(runtimeFunctionModule(kind, params, body));
@@ -129,7 +140,38 @@ function run(cell, requireImpl = () => 'required') {
   assert.equal(load(runtimeFunctionModule('function', ['a', 'b'], 'return a * b'))(6, 7), 42);
   assert.equal(load(runtimeFunctionModule('function', [], 'return typeof module + typeof require + typeof exports'))(),
     'undefinedundefinedundefined', 'the body sees the global scope, not the CommonJS module\'s');
-  console.log('  [10] a Function-constructor module builds the constructor\'s function');
+  console.log('  [7] a Function-constructor module builds the constructor\'s function');
+}
+
+// Text the constructor refuses is refused, and never runs.
+{
+  const refused = [
+    ['function', [], '}, globalThis.__nimbusBreakout = "body", function () {'],
+    ['function', ['a) {}, globalThis.__nimbusBreakout = "params", function (b'], ''],
+    ['function', [], '})(); globalThis.__nimbusBreakout = "call"; (function () {'],
+    ['function', ['a /*'], ''],
+    ['function', ['a = 1'], '"use strict";'],
+    ['function', [], 'return 1; }'],
+    ['async', [], 'yield 1'],
+  ];
+  for (const [kind, params, body] of refused) {
+    const Ctor = kind === 'async' ? (async () => {}).constructor : Function;
+    assert.throws(() => new Ctor(...params, body), SyntaxError, `the premise: V8 refuses ${JSON.stringify([params, body])}`);
+    assert.notEqual(runtimeFunctionSyntaxError(kind, params, body), null, `refused: ${JSON.stringify([params, body])}`);
+    assert.throws(() => load(runtimeFunctionModule(kind, params, body)), SyntaxError);
+  }
+  assert.equal(globalThis.__nimbusBreakout, undefined, 'no refused text ran');
+  console.log('  [8] text the constructor refuses throws its SyntaxError, and does not run');
+}
+
+// A written module's key is its text with its directory and extension: a
+// fresh name converges, a different extension or directory does not.
+{
+  const key = (path, text = 'export default 1;\n') => runtimeCodeKey({ kind: 'module', path, text });
+  assert.equal(key('home/user/app/.vite-temp/vite.config.ts.timestamp-1-a.mjs'), key('home/user/app/.vite-temp/vite.config.ts.timestamp-2-b.mjs'));
+  assert.notEqual(key('home/user/app/x.mjs'), key('home/user/app/x.json'), 'the extension decides how it is lowered');
+  assert.notEqual(key('home/user/app/x.mjs'), key('home/user/other/x.mjs'), 'the directory decides its relative imports');
+  console.log('  [9] runtime modules are keyed by text, directory and extension');
 }
 
 console.log('facet-commonjs-cell OK');

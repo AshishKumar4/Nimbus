@@ -227,29 +227,40 @@ published independently in the `@nimbus-sh` npm scope.
   (a dynamic worker has no module fallback), so this launch still refuses it —
   now with `EvalError` code `ERR_NIMBUS_CODE_NEXT_LAUNCH` — but the run's
   report (the one-shot envelope, the resident exit report) carries the text,
-  the supervisor keeps it by SHA-256 of its content in the session's Durable
-  Object storage (8 MiB, least recently recorded out; a relaunch after the
-  isolate was evicted or hibernated still gets it), and the next launch
-  carries it as `gen/<key>.js` modules compiled on
-  first use. Two shapes: a file written then required or imported (a fresh
-  file name each run, like Vite's `.vite-temp/*.timestamp-*.mjs`, converges
-  because the key is the text), and text handed to
-  `globalThis.__nimbusRuntimeCode.compileFunction(kind, params, body)`, which
-  builds the function the `Function`/`AsyncFunction`/generator constructors
-  would (same source text, body on line 3, global scope). Text that changes on
+  the supervisor keeps it by SHA-256 in the session's Durable Object storage
+  (at most 1024 pieces and 8 MiB, each charged its text plus a fixed
+  overhead, least recently recorded out; a relaunch after the isolate was
+  evicted or hibernated still gets it), and the next launch carries it as
+  `gen/<key>.js` modules compiled on first use. It is reached without any
+  opt-in: at request time the global `Function` and the
+  `AsyncFunction`/generator constructors (each kind's
+  `prototype.constructor`), `vm.compileFunction`, `Module.prototype._compile`
+  and a `require`/`import()` of a file the map lacks all go to it. A
+  constructor's arguments build the function the constructor would (same
+  source text, body on line 3, global scope), and arguments it would refuse
+  throw its SyntaxError and never run. A file is keyed by its text,
+  directory and extension, not its name, so a fresh file name each run
+  (Vite's `.vite-temp/*.timestamp-*.mjs`) converges. Text that changes on
   every run — a module runner's transform of an edited file — needs one
   relaunch per change.
 
 - A node process compiles a module the first time it requires it, not at
   startup. Each code file of the launch's closure, and its entry, is now a
-  `{ cjs }` module of the facet's map (`vfs/<path>`, `entry/<path>`) that the
-  guest's module registry (`new_module_registry`) compiles on first require;
-  the shims' `require` still resolves the path and calls the module's Node
-  wrapper with its own `require`, `module` and `exports`. The facet no longer
-  compiles the whole closure with `new Function` at module evaluation, and a
-  module's stack frames name its file and line
-  (`file:///bundle/vfs/home/user/app/a.js:2:7`) instead of `eval at
-  __mkCompiledFn`. A code file is carried once: the process's store takes the
+  `{ cjs }` module of the facet's map (`vfs/<path>`, `entry/<path>`, each
+  character URL parsing would drop, trim or rewrite percent-encoded, so every
+  path is its own module) that the guest's module registry
+  (`new_module_registry`) compiles on first require; the shims' `require`
+  still resolves the path and calls the module's Node wrapper with its own
+  `require`, `module` and `exports`. A CommonJS file runs as Node's wrapper
+  runs it; an ES module lowered to CommonJS runs in a block inside the
+  wrapper, so its own top-level `const require`/`const __dirname` shadow the
+  parameters. The facet no longer compiles the whole closure with
+  `new Function` at module evaluation, and a module's stack frames name its
+  module and line (`file:///bundle/vfs/home/user/app/a.js:2:7`; a column on
+  the first line is offset by the wrapper) instead of `eval at
+  __mkCompiledFn`. A SyntaxError carries no location of its own: the entry's
+  stack leads with its file, as Node's does, and a required module's message
+  names it. A code file is carried once: the process's store takes the
   file's content from the module's own text, read back through the bundle
   filesystem, so the map holds no second copy. A TypeScript source stays the
   file a program reads and its emit is the module. A resident launch ships
