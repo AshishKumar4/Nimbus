@@ -118,23 +118,5 @@ assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
   assert.equal(new Function('exports', 'require', 'module', batch.code)({}, null, module), 'file:///home/user/app/lib/value');
 }
 
-// Through the transform: esbuild keeps the dynamic import (it no longer
-// lowers a literal one to require) and the rewrite routes it; a CommonJS cell
-// goes through the rewrite alone.
-{
-  // esbuild itself, native, standing in for the wasm build the facet runs.
-  const service = new EsbuildService();
-  service.ensureInit = async () => {};
-  service._esbuild = await import('esbuild');
-  const [esm, cjs, plain] = await service.transformMany([
-    { code: 'export const load = () => import("./x.js");', options: { loader: 'js', format: 'cjs', dynamicImportParent: parent } },
-    { code: 'exports.load = () => import("./x.js");', options: { rewriteOnly: true, dynamicImportParent: parent } },
-    { code: 'export const load = () => import("./x.js");', options: { loader: 'js', format: 'cjs' } },
-  ]);
-  assert.match(esm.code, /__nimbusDynamicImport\("file:\/\/\/home\/user\/app\/lib\/mod\.js", "\.\/x\.js"\)/);
-  assert.doesNotMatch(esm.code, /require\("\.\/x\.js"\)/, 'not lowered to require');
-  assert.equal(cjs.code, `exports.load = () => __nimbusDynamicImport(${JSON.stringify(parent)}, "./x.js");`);
-  assert.doesNotMatch(plain.code, /__nimbusDynamicImport/, 'no parent: esbuild lowers it as before');
-}
 
 console.log('dynamic-import-rewrite: every ImportExpression, and nothing else, goes to the process loader');

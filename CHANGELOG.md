@@ -108,6 +108,20 @@ published independently in the `@nimbus-sh` npm scope.
   canonical form as it is. The tools that now read a project through the
   caller's view (git, npm, vite build) gain the same.
 
+- Native HTTP client I/O now remains live until the request's response body
+  completes, errors or is cancelled, rather than ending at response headers.
+  Referenced `listen(0)` allocations also keep the process alive until binding
+  finishes. Closing a pending allocation emits `close`, permits immediate
+  relisten, and retires late replies without disturbing the new listener.
+  Import rewriting uses Acorn's full lexical/grammar context in one pass:
+  regexp text after `await`, template text and comments are never rewritten
+  as imports. Sloppy CommonJS, methods and ASI retain their native grammar.
+  The Bun HTTP test adapter no longer charges its internal TCP connection
+  sweep as a guest timer: refinement boots no longer wait out the one-second
+  startup budget. Application option getters and listening callbacks remain
+  guest-accounted; only the native connection-sweep listener uses host timers.
+  Real workerd retains its native scheduling unchanged.
+
 - Node HTTP guests now use workerd's native `node:http` server and
   `cloudflare:node.handleAsNodeRequest` instead of Nimbus's synthetic
   IncomingMessage/ServerResponse/Server classes. Native HTTP/HTTPS clients
@@ -120,12 +134,13 @@ published independently in the `@nimbus-sh` npm scope.
   removed: its ESM imports share the patched native Server prototype. This
   does not add WebSocket upgrade support to workerd's HTTP dispatcher.
 
-- Large Node CLI launches no longer build and walk a whole AST to route a
-  handful of dynamic imports. The transform facet uses Acorn tokens and
-  delimiter boundaries instead, preserving strings, templates, methods,
-  metadata bindings and directive prologues. On pi's 4 MiB chunk this reduced
-  rewrite CPU from 571–822 ms to 119–209 ms locally. Transform calls are
-  capped at 256 KiB / 32 files so small modules cannot monopolize one guest
+- Large Node CLI launches collect dynamic imports directly from Acorn's
+  parser productions, without a second AST walk or a hand-maintained
+  regex-versus-division heuristic. Completed top-level trees are discarded.
+  On pi's 4,345,609-byte chunk the complete rewrite takes 278–297 ms locally
+  (283 ms median over five runs), versus 571–822 ms for the old AST walk.
+  Transform calls are capped at 256 KiB / 32 files so small modules cannot
+  monopolize one guest
   invocation. If a resident launch fails before its guest is created, its
   already-returned pid now exits with the cause rather than remaining
   "running" behind an empty terminal. This exposed the actual cause of the

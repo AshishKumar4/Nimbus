@@ -6087,110 +6087,81 @@ return globalThis.Go;
     lineBreakG,
     nonASCIIwhitespace
   };
-  function tokenizer2(input, options) {
-    return Parser.tokenizer(input, options);
-  }
 
   var DYNAMIC_IMPORT_HELPER = "__nimbusDynamicImport";
   function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
   }
-  var CONTINUES_EXPRESSION =   new Set([
-    types$1.parenL,
-    types$1.bracketL,
-    types$1.dot,
-    types$1.questionDot,
-    types$1.backQuote,
-    types$1.comma,
-    types$1.question,
-    types$1.eq,
-    types$1.assign,
-    types$1.plusMin,
-    types$1.modulo,
-    types$1.star,
-    types$1.slash,
-    types$1.starstar,
-    types$1.logicalOR,
-    types$1.logicalAND,
-    types$1.bitwiseOR,
-    types$1.bitwiseXOR,
-    types$1.bitwiseAND,
-    types$1.equality,
-    types$1.relational,
-    types$1.bitShift,
-    types$1.coalesce,
-    types$1._in,
-    types$1._instanceof
-  ]);
   function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
     const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
     if (!mayHaveDynamicImport(code) && !metadata) return code;
+    const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
     const edits = [];
     const metas = [];
     const names = metadata ?   new Set() : null;
-    const parens = [];
-    const brackets = [];
-    const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
-    let previous;
-    let importToken;
-    let metaStart;
-    let closedImport = null;
-    let directive;
-    let prologue = true;
-    let insertion = -1;
-    try {
-      const tokens = tokenizer2(code, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
-      for (; ; ) {
-        const token = tokens.getToken();
-        const type = token.type;
-        if (insertion < 0) insertion = token.start;
-        if (prologue) {
-          if (directive) {
-            if (type === types$1.semi) {
-              insertion = token.end;
-              directive = void 0;
-            } else if (type === types$1.eof || /[\r\n\u2028\u2029]/.test(code.slice(directive.end, token.start)) && !CONTINUES_EXPRESSION.has(type)) {
-              insertion = directive.end;
-              directive = type === types$1.string ? token : void 0;
-              prologue = type === types$1.string;
-            } else prologue = false;
-          } else if (type === types$1.string) directive = token;
-          else prologue = false;
+    let StreamingParser = Parser.extend((Base) => {
+      const parseStatement = Reflect.get(Base.prototype, "parseStatement");
+      const parseDynamicImport = Reflect.get(Base.prototype, "parseDynamicImport");
+      return class extends Base {
+        parseDynamicImport(node) {
+          const end = Reflect.get(this, "end");
+          const parsed = Reflect.apply(parseDynamicImport, this, [node]);
+          edits.push({ start: node.start, end, text: call });
+          return parsed;
         }
-        if (closedImport) {
-          if (type !== types$1.braceL) edits.push({ ...closedImport, text: call });
-          closedImport = null;
-        }
-        if (metaStart) {
-          if (type === types$1.name && code.slice(token.start, token.end) === "meta") {
-            metas.push({ start: metaStart.start, end: token.end });
+        parseStatement(context, topLevel, exports) {
+          const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
+          if (!topLevel) return node;
+          if (node.type === "ExpressionStatement") {
+            const expression = Reflect.get(node, "expression");
+            if (expression?.type === "Literal" && typeof expression.value === "string") return node;
           }
-          metaStart = void 0;
+          return { type: "EmptyStatement", start: node.start, end: node.end };
         }
-        if (type === types$1.name) names?.add(String(Reflect.get(token, "value")));
-        if (type === types$1.parenL) {
-          parens.push(importToken ? { start: importToken.start, end: token.end } : null);
-          brackets.push("(");
-        } else if (type === types$1.parenR) {
-          if (brackets.pop() !== "(") return code;
-          closedImport = parens.pop() ?? null;
-        } else if (type === types$1.braceL || type === types$1.dollarBraceL) brackets.push("{");
-        else if (type === types$1.braceR) {
-          if (brackets.pop() !== "{") return code;
-        } else if (type === types$1.bracketL) brackets.push("[");
-        else if (type === types$1.bracketR) {
-          if (brackets.pop() !== "[") return code;
+      };
+    });
+    if (metadata) StreamingParser = StreamingParser.extend((Base) => {
+      const parseIdent = Reflect.get(Base.prototype, "parseIdent");
+      const parseImportMeta = Reflect.get(Base.prototype, "parseImportMeta");
+      return class extends Base {
+        parseImportMeta(node) {
+          const parsed = Reflect.apply(parseImportMeta, this, [node]);
+          metas.push({ start: node.start, end: node.end });
+          return parsed;
         }
-        if (metadata && importToken && type === types$1.dot) metaStart = importToken;
-        const isKeyword = type === types$1._import && code.slice(token.start, token.end) === "import";
-        importToken = isKeyword && previous?.type !== types$1.dot && previous?.type !== types$1.questionDot ? token : void 0;
-        previous = token;
-        if (type === types$1.eof) break;
+        parseIdent(liberal) {
+          const node = Reflect.apply(parseIdent, this, [liberal]);
+          names.add(Reflect.get(node, "name"));
+          return node;
+        }
+      };
+    });
+    for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
+      edits.length = 0;
+      metas.length = 0;
+      names?.clear();
+      let program;
+      try {
+        program = StreamingParser.parse(code, {
+          ecmaVersion: "latest",
+          sourceType,
+          allowReturnOutsideFunction: true,
+          allowAwaitOutsideFunction: true,
+          allowHashBang: true
+        });
+      } catch {
+        continue;
       }
-    } catch {
-      return code;
+      let insertion = program.body[0]?.start ?? code.length;
+      for (const statement of program.body) {
+        if (typeof Reflect.get(statement, "directive") !== "string") break;
+        insertion = statement.end;
+      }
+      return applyEdits(code, edits, metas, names, insertion);
     }
-    if (brackets.length || parens.length) return code;
+    return code;
+  }
+  function applyEdits(code, edits, metas, names, insertion) {
     if (metas.length) {
       let binding = "__nimbusMetadataModule";
       while (names.has(binding)) binding += "_";

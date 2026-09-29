@@ -11,6 +11,8 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-http.ts';
+import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
+import { clientLifetime, pendingListenLifetime, pendingCloseLifetime } from './lib/native-http-lifetimes.mjs';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -119,6 +121,7 @@ writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/worke
 const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
 import * as __real_http from 'node:http';
+import * as __real_https from 'node:https';
 import * as __real_net from 'node:net';
 import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
 const builtins = {}, __pendingIO = [], registered = new Map();
@@ -129,11 +132,22 @@ const __supervisor = {
   async unregisterPort(port) { registered.delete(port); },
 };
 const __nimbusInboundBarrier = async () => {};
+const __nimbusProcessExitPromise = Promise.withResolvers().promise;
+globalThis.__nimbusRawSetTimeout = setTimeout;
+${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
 const exercise = ${exercise.toString()};
+const clientLifetime = ${clientLifetime.toString()};
+const pendingListenLifetime = ${pendingListenLifetime.toString()};
+const pendingCloseLifetime = ${pendingCloseLifetime.toString()};
+const drain = async () => { while (__pendingIO.length) await Promise.all(__pendingIO.splice(0)); };
 export default { async fetch(request) {
   if (new URL(request.url).pathname === '/ready') return new Response('ready');
   const http = builtins.http;
+  const mode = new URL(request.url).searchParams.get('case');
+  if (mode === 'client' || mode === 'error' || mode === 'cancel') return Response.json(await clientLifetime(builtins.https, __nimbusRunEntrypointToExit, mode));
+  if (mode === 'pending') return Response.json(await pendingListenLifetime(http, __nimbusRunEntrypointToExit, __supervisor, drain));
+  if (mode === 'close') return Response.json(await pendingCloseLifetime(http, __supervisor, registered, drain));
   const result = await exercise(http, (port, request) => {
     const headers = new Headers(request.headers); headers.set('X-Nimbus-Port', String(port));
     return globalThis.__nimbusServeHttp(new Request(request, { headers }));
@@ -155,6 +169,19 @@ try {
   const actual = await response.json();
   assert.deepEqual(actual.result, expected, logs);
   assert.deepEqual(actual.registered, [], 'closing native servers releases Nimbus ports');
+  const snapshots = {};
+  for (const mode of ['client', 'error', 'cancel', 'pending', 'close']) {
+    const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
+    assert.equal(reply.status, 200, logs);
+    snapshots[mode] = await reply.json();
+  }
+  assert.deepEqual(snapshots, {
+    client: { ended: true, errored: false, closed: true, streamed: true, body: 'firstsecond', cancelled: false, pending: 0 },
+    error: { ended: false, errored: true, closed: true, streamed: true, body: 'first', cancelled: false, pending: 0 },
+    cancel: { ended: false, errored: false, closed: true, streamed: true, body: 'first', cancelled: true, pending: 0 },
+    pending: { listening: true, pending: 0 },
+    close: { closes: 1, callbacks: 1, listening: true, relistenError: null, port: 55001, oldReleased: true, newRetained: true },
+  }, 'the process may exit only after native I/O has completed, and pending close must permit a new listen');
   console.log('native-http-workerd: Node parity for binary, streams, HEAD/204, listen errors and lifecycle');
 } finally {
   child.kill('SIGTERM');

@@ -83,6 +83,8 @@ const FILES = {
     'let result; try { result = require(process.cwd()+"/node_modules/"+["late","module"].join("-")+"/deep/"+["hid","den"].join("")+".cjs"); } catch(e) { result="CAUGHT "+e.message; }',
     'require("fs").writeFileSync("/home/user/w/caught.txt",String(result));',
   ].join('\n'),
+  'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
+  'grammar-dep.js': 'module.exports = { value: 7 };',
   'bad.js': 'const x = ;\n',
 };
 
@@ -99,6 +101,10 @@ try {
 
     const cells = await terminal.run(`cd ${W} && node cells.js`);
     assert.match(cells.stdout, /CELLS number,2,tr,tr-space,tab,tabx function:\/own\n/, cells.stdout);
+
+    const grammar = await terminal.run(`cd ${W} && node grammar.js`);
+    assert.equal(grammar.status, 0, grammar.stdout);
+    assert.match(grammar.stdout, /^GRAMMAR true 7$/m, grammar.stdout);
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,
@@ -148,11 +154,25 @@ try {
     assert.equal(await caughtFile(), 'learned-live-file', 'a caught file miss survives a forced kill without an exit report');
 
 
+    // Real workerd uses its own HTTP scheduling, not the Bun fixture's TCP
+    // connection sweep. Measure the guest counter while each server is bound
+    // and verify natural one-shot exit after close or unref (no runner deadline).
+    const closeStart = performance.now();
+    const closing = await terminal.run(
+      `node -e "const s=require('http').createServer();s.listen(0,()=>{console.log('BOUND_TIMERS='+globalThis.__nimbusPendingTimers);s.close(()=>console.log('CLOSED_TIMERS='+globalThis.__nimbusPendingTimers))})"`, 15000,
+    );
+    assert.equal(closing.status, 0, closing.stdout);
+    assert.match(closing.stdout, /^BOUND_TIMERS=0$/m);
+    assert.match(closing.stdout, /^CLOSED_TIMERS=0$/m);
+    console.log('workerd native listen/close natural exit: ' + Math.round(performance.now() - closeStart) + 'ms');
+    const unrefStart = performance.now();
     const unref = await terminal.run(
-      `node -e "require('http').createServer().listen(0).unref(); console.log('UNREF_OK')"`, 15000,
+      `node -e "const s=require('http').createServer();s.listen(0,()=>{console.log('UNREF_TIMERS='+globalThis.__nimbusPendingTimers);s.unref();console.log('UNREF_OK')})"`, 15000,
     );
     assert.equal(unref.status, 0, unref.stdout);
+    assert.match(unref.stdout, /^UNREF_TIMERS=0$/m);
     assert.match(unref.stdout, /^UNREF_OK$/m, 'an unrefed native listener does not keep the process alive');
+    console.log('workerd native listen/unref natural exit: ' + Math.round(performance.now() - unrefStart) + 'ms');
 
     const bad = await terminal.run(`cd ${W} && node bad.js`);
     assert.match(bad.stdout, /\/home\/user\/w\/bad\.js\n\nSyntaxError/, bad.stdout);
