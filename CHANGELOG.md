@@ -117,7 +117,10 @@ published independently in the `@nimbus-sh` npm scope.
   it; a mount the launch does not name, or one under a directory the process
   cannot search, is not walked. A change of the mount table is a poison at
   the process's next barrier, which relists. A namespace that is SQLite alone
-  lists and acquires exactly as before, synchronously. A synchronous call on
+  lists and acquires exactly as before, synchronously. With a mount, the
+  page's byte bound measures each SQLite name once, when SQLite lists it,
+  and then only the path the process sees (a 40,429-name listing
+  stringifies 18.1M characters instead of 32.5M). A synchronous call on
   a mounted path the launch did not list (or past the bound) answers EAGAIN,
   "<mount> is an asynchronous mount; this caller cannot wait for it", naming
   the `fs.promises` form that reads it; `require` of one reports the same,
