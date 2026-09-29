@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npm install` links every command of a project with more than about 120
+  of them. The installer wrote all of `node_modules/.bin` in one W7 stream,
+  which owns at most 128 paths, so the install failed at link-bins with
+  "w7-frame: batch exceeds 128 owned paths"; a bin manifest past one chunk
+  (a few hundred commands) failed with "expected 2 chunks, got 1". The shims
+  now go in waves, and each file in chunks.
+
 - A bash fork costs a fraction of what it did. Every fork instantiated
   bash anew, grew the child's memory to the parent's (about 17 MB, mostly
   the asyncify arena) and copied all of it, so a command-substitution loop
