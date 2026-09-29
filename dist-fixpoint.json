@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "35484eda7f4839a0de28b323a1a7331ac3489e0fe9436cda316a01abf8f6f69d",
+  "fingerprint": "16dba38809b59217c39b73585d96932a879df544464c3c8d81f25d96e1987715",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1639,8 +1639,8 @@
     "packages/worker/dist/npm/install-facet.d.ts.map": "d36b7af62f702d100a48149ee389c84d9f1c6d611c53b5143d35a70c973bdf3b",
     "packages/worker/dist/npm/install-facet.js": "673b299556efd7ba53882396dc81e22a53fffdbb49366c5811c4169a8d613f78",
     "packages/worker/dist/npm/installer.d.ts": "dec80dda2453a51ac7ee9f82c23d1cb1d4bea1045f72406d104d5810d3f4f9be",
-    "packages/worker/dist/npm/installer.d.ts.map": "c4dbf39071cd36eef4b5e79a7a2a5a65e9e473aa4f638efecc41dcb0dab1a85b",
-    "packages/worker/dist/npm/installer.js": "b6707975ab925db74faa1c3b1e572328e0d2d0287ef8d59f597a4461c254e672",
+    "packages/worker/dist/npm/installer.d.ts.map": "1ac8b9c08d06952db24d663c9b571d59c8ebe277da5d7568c49f536398804767",
+    "packages/worker/dist/npm/installer.js": "8c3ca1bc41a6913a0b55b907ebfced9c0a5bbefbeca5ab603aeadf5add30cab2",
     "packages/worker/dist/npm/npx-install.d.ts": "eed9aeb3379cf2013c9e5afa03994878a42dab69b624eb8c23397b0b9a1fcf04",
     "packages/worker/dist/npm/npx-install.d.ts.map": "b3ac5851d3059a33b962f1265f9ac7332138c27cd899096769b3876c4426c1ec",
     "packages/worker/dist/npm/npx-install.js": "ae011383e60d50825d38bb0fb77c48ae08ae49403a6e5061d6e2d8ad4fcb0d57",
@@ -2065,7 +2065,7 @@
     "packages/worker/src/npm/cache.ts": "25d977cf44607800e73eaaf9c7394ee36b4a5d50582f8031de3a5112fd445d89",
     "packages/worker/src/npm/install-batch-facet.ts": "e215001d7d04f6948b01e844bb635271c42b5179dc63604670647d50ff0fca1d",
     "packages/worker/src/npm/install-facet.ts": "8b64f36023ba7023307d367437eacf3aea542f00f7d7319e7e47836844885ae7",
-    "packages/worker/src/npm/installer.ts": "e0c3f957c52e8a987f7a09a065ab59a4d94cc0bdd7b8e89706f9dc0c9fbf6071",
+    "packages/worker/src/npm/installer.ts": "9c11649f409286a2301d91729f2d2546ca0f91aa1cbef2c6b0f24ffe36fe0f85",
     "packages/worker/src/npm/npx-install.ts": "7518ee797bb7c5a17a5bd8496014e4a6fe2ee1776cc4498663ff4e649158e916",
     "packages/worker/src/npm/package-lock.ts": "0513a4071cca50c83f63476d824573b87dbd4350dd9b920d03d0285995a7a033",
     "packages/worker/src/npm/placement.ts": "e2f78c6aedc02718aceff365e363fc6cf10beeea366baf0e5051dfff2f8a2553",
