@@ -213,6 +213,18 @@ WebSocket upgrades. A configured Vite 8 build measured 38,404,096 bytes
 (36.625 MiB) of live wasm linear memory; the 128 MiB isolate ceiling also
 covers JavaScript and native overhead, which this measurement does not expose.
 
+Learned executable files and the imports of retained generated configurations
+join the required dependency graph before optional package enrichment. A
+temporary Vite config may already have been deleted; its retained source
+still contributes imports. If the complete graph exceeds Nimbus's 18 MiB
+launch snapshot bound, launch fails with that exact graph/bound diagnostic
+rather than publishing a map missing one sibling per attempt. This is a
+Nimbus admission bound based on supervisor headroom measurements, not a
+documented Worker Loader limit. Template-named wasm assets use the existing
+AST filesystem-path analysis and remain Loader-compiled, never runtime-compiled.
+`fs.watch` compares inode metadata rather than a namespace listing cursor;
+relisting after unrelated writes no longer looks like a package/config edit.
+
 ## Completion Draft
 
 This is the implementation spec for completing Nimbus OS compatibility. It is
