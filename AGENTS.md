@@ -355,9 +355,15 @@ bun tests/behavioral/_throwaway-target.mjs down           # delete, and confirm 
 ```
 
 `_throwaway-target.mjs session` prints `{base, sessionId, token}` for driving
-one session by hand. Throwaways are named `nimbus-tw-*`, live on
-`workers.dev`, and get their own Durable Object namespace. Delete them when
-you are done.
+one session by hand. A throwaway is a Worker Preview (`wrangler preview`) of
+`nimbus-probe-previews`, a parent Worker with no production deployment:
+`nimbus-tw-x` is Preview `tw-x`, served at
+`tw-x-nimbus-probe-previews.<subdomain>.workers.dev`. Each Preview gets its
+own Durable Object namespace and storage, deleted with it; its bindings are
+apps/probe's `previews` block, checked by `scripts/deploy-isolation.mjs`, and
+its `JWT_SECRET` rides in each deployment. `list` shows every Preview under
+the parent, marking the ones no checkout here holds (a cancelled CI run's).
+Delete them when you are done.
 
 `up --var KEY:VALUE` overrides a config var for that deploy, which is how one
 build gets stood up twice to compare two settings of it. Redeploying the same
@@ -420,7 +426,7 @@ end `aborted` with "Application called abort() to reset Durable Object.".
 Such a row is the probe working, not a session death.
 
 This is also what CI runs: the `behavioral` workflow deploys the commit
-under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes
+under test to its own throwaway (Preview `tw-ci-*`), grades that, and deletes
 it. `nimbus` is production and is never a target here.
 
 **Running alongside other agents.** `run-all.mjs` takes a machine-wide lock
@@ -531,8 +537,9 @@ Two known divergences from production, both structural: staging has no zone
 route (it answers on `workers.dev`) and therefore no
 `NIMBUS_PREVIEW_HOST_SUFFIX`, so **host-based port previews**
 (`<port>--<sid>.<suffix>`) are off there. Path-based `/s/<sid>/port/<n>/` is
-unaffected. Verify host previews on prod's zone or a throwaway with a zone
-route.
+unaffected. Verify host previews on prod's zone: a throwaway is a Worker
+Preview, which takes no zone route and has one hostname, so it cannot serve
+them either.
 
 ### Promote
 
@@ -557,8 +564,8 @@ upload -e production` and `wrangler deploy -e production` both act on the
 Worker named `nimbus`. The first appends to the live script's version list,
 and the second shifts its traffic. Neither is a way to "test without touching
 prod", and visiting a preview URL afterwards does not make it one.
-Isolation is a distinct Worker name: `nimbus-staging`,
-`nimbus-probe-staging`, or a `nimbus-tw-*` throwaway.
+Isolation is a distinct Worker name, `nimbus-staging` or
+`nimbus-probe-staging`, or a throwaway Preview of `nimbus-probe-previews`.
 
 Versioned preview URLs are not a verification path here, whatever the
 `preview_urls` key suggests. Measured 2026-08-05 on `nimbus-staging` with

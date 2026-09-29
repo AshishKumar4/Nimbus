@@ -16,7 +16,28 @@ published independently in the `@nimbus-sh` npm scope.
   a production Worker's deployment, and a Preview of the production Worker
   itself. It warns about any Worker binding the Preview does not redeclare.
   `apps/probe/wrangler.jsonc` carries a `previews` block that passes the
-  check. The throwaway tooling still deploys separate `nimbus-tw-*` Workers.
+  check.
+
+- Throwaway probe targets, local and CI's, are Worker Previews of
+  `nimbus-probe-previews`, a parent Worker with no production deployment.
+  They are no longer separate `nimbus-tw-*` Workers.
+  - `_throwaway-target.mjs up --name x` creates or updates Preview `tw-x` at
+    `tw-x-nimbus-probe-previews.<subdomain>.workers.dev`.
+  - Each Preview has its own Durable Object namespace and storage. Measured:
+    a file written in a session on one Preview is absent under the same
+    session id on another, and present again on the first.
+  - `JWT_SECRET` is uploaded with every deployment (`--secrets-file`), and
+    the dashboard's Previews Base configuration is ignored.
+  - A deploy counts as landed only when the Preview's latest deployment id is
+    the one reported and differs from the one before.
+  - `down` runs `wrangler preview delete` and confirms through the API. The
+    Preview's storage goes with it: a terminal no longer opens. Its
+    hostname kept answering from the edge for over two minutes afterwards.
+  - `list` shows every Preview under the parent, marking the ones no local
+    checkout holds.
+  - The parent is created with Preview URLs on.
+  - Staging stays two Workers: Cron Triggers and routes target production
+    only.
 
 - A rebuild stages a new opencode artifact only from the directory named by
   `NIMBUS_OPENCODE_DIST`, and a named directory that does not exist is an
