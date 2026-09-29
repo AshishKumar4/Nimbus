@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A bash fork costs a fraction of what it did. Every fork instantiated
+  bash anew, grew the child's memory to the parent's (about 17 MB, mostly
+  the asyncify arena) and copied all of it, so a command-substitution loop
+  of 500 iterations ran the facet out of CPU time ("dispatch failed: Worker
+  exceeded CPU time limit") and `tests/unit/bash-pipes-jspi.mjs`' 2000-fork
+  pipeline ran local workerd out of 4 GB. A fork now takes the instance of a
+  process that exited normally when one is idle (up to four are kept per
+  session), and copies only what the child can read: the memory below and
+  above the arena, the unwind it resumes from, and each live setjmp capture
+  up to its high-water mark (about 1 MB). A 300-iteration loop instantiates
+  bash 4 times instead of 301; the 2000-fork pipeline peaks at 1.4 GB.
+
 - A process's filesystem call on a SQLite path costs less: a stat five
   components deep through the process bridge (`bind(...)`, `ProcessView`)
   went from 23.5 to 11 µs. The bridge's walk looks each component up once
