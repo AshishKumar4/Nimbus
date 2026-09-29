@@ -89,6 +89,14 @@ export interface AuthorityFilesystemOptions {
      * with the descriptor.
      */
     retainResident?: boolean;
+    /**
+     * Where the resident copies are kept, when the guest's owner outlives one
+     * instance and clears them itself (a bash process reused for another fork).
+     */
+    resident?: Map<string, {
+        revision: number;
+        bytes: Uint8Array;
+    }>;
 }
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export declare function installAuthorityFilesystem(imports: Partial<FilesystemImports>, options: AuthorityFilesystemOptions): asserts imports is FilesystemImports;

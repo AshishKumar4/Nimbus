@@ -83,11 +83,11 @@ function newSession(args) {
         argv: args.argv, environ: args.environ,
         stdinTty: !!args.stdinTty,
         stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
-        procs: new Map(), pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
+        procs: new Map(), idle: [], pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
         pidNext: 100, pipeNext: 1, rootPid: 0, rootExit: null, steps: 0,
         out: '', err: '',
         missingWasi: new Set(),
-        stats: { instances: 0, memPeak: 0, mainHi: 0, slotHi: 0 },
+        stats: { instances: 0, reused: 0, memPeak: 0, mainHi: 0, slotHi: 0 },
         error: null,
     };
 }
@@ -321,7 +321,7 @@ function installPreopenRehoming(proc, imports) {
     imports.path_link = (fd, lookup, oldPtr, oldLen, to, newPtr, newLen) => link(dirfd(fd), lookup, oldPtr, oldLen, dirfd(to), newPtr, newLen);
     imports.path_remove_directory = (fd, ptr, length) => rmdir(dirfd(fd), ptr, length);
 }
-function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false) {
+function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) {
     const imports = {
         ...makeUnsupported(s),
         fd_prestat_get(fd, out) { const e = proc.fds.get(fd); if (e?.kind !== 'preopen')
@@ -377,7 +377,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false) {
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
     };
-    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES });
+    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident });
     installPreopenRehoming(proc, imports);
     return imports;
 }
@@ -595,9 +595,9 @@ function blockTarget(s, proc, fd) {
 function makeProc(s, pid, ppid, fds) {
     const proc = {
         pid, ppid, fds, preopenMoved: new Map(), cwd: s.cwd, inst: null, __s: s,
-        ctx: { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 },
+        ctx: freshCtx(),
         MAIN_BUF: 0, SLOT0: 0, pendingRead: null, writeResumed: false,
-        slotByEnv: new Map(), freeSlots: [],
+        slotByEnv: new Map(), freeSlots: [], resident: new Map(),
     };
     const DV = () => new DataView(proc.inst.exports.memory.buffer);
     const U8 = () => new Uint8Array(proc.inst.exports.memory.buffer);
@@ -713,7 +713,7 @@ function makeProc(s, pid, ppid, fds) {
             return 0;
         },
     };
-    const wasiBase = makeWasiFs(s, proc, DV, U8, io, () => proc.inst.exports.memory);
+    const wasiBase = makeWasiFs(s, proc, DV, U8, io, () => proc.inst.exports.memory, false, proc.resident);
     const wasi = {
         ...wasiBase,
         args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.argv.length, true); dv.setUint32(b, s.argv.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
@@ -969,6 +969,86 @@ function makeProc(s, pid, ppid, fds) {
     s.stats.instances++;
     s.procs.set(pid, proc);
     return proc;
+}
+/** A process's unwind state before it first runs. */
+function freshCtx() {
+    return { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 };
+}
+/** Exited processes kept for reuse at most (BashSession.idle): what a fork loop keeps live at once, with room. */
+const IDLE_MAX = 4;
+/**
+ * Keep an exited process's instance for the next fork. Only a normal exit
+ * qualifies: its instance returned from `_start` with nothing suspended, and
+ * nothing (a pending read, a filesystem call, a JSPI wait, a signal) still
+ * refers to it. The root's exit ends the session.
+ */
+function retire(s, proc, signal) {
+    if (signal || proc.ppid === 0 || proc.killedBy !== undefined || proc.pendingFs || proc.pendingRead || proc.cancelWaits?.size)
+        return;
+    if (s.idle.length < IDLE_MAX)
+        s.idle.push(proc);
+}
+/**
+ * An idle process made the fresh process `pid` (as makeProc makes one),
+ * keeping its instance, its memory and the imports bound to it; null when
+ * none is idle whose memory is no larger than `bytes`, the size it must
+ * take (a memory cannot shrink).
+ */
+function reincarnate(s, bytes, pid, ppid, fds) {
+    s.idle = s.idle.filter((idle) => idle.inst.exports.memory.buffer.byteLength <= bytes);
+    const proc = s.idle.pop();
+    if (proc === undefined)
+        return null;
+    proc.pid = pid;
+    proc.ppid = ppid;
+    // The authority filesystem holds this very map.
+    proc.fds.clear();
+    for (const [fd, entry] of fds)
+        proc.fds.set(fd, entry);
+    proc.preopenMoved = new Map();
+    proc.cwd = s.cwd;
+    delete proc.killedBy;
+    delete proc.execIgnoredSignals;
+    delete proc.cancelWaits;
+    delete proc.pendingFs;
+    // Its imports hold this very object.
+    const ctx = proc.ctx;
+    for (const key of Object.keys(ctx))
+        delete ctx[key];
+    Object.assign(ctx, freshCtx());
+    proc.MAIN_BUF = 0;
+    proc.SLOT0 = 0;
+    proc.pendingRead = null;
+    proc.writeResumed = false;
+    proc.slotByEnv = new Map();
+    proc.freeSlots = [];
+    proc.resident.clear();
+    s.stats.reused++;
+    s.procs.set(pid, proc);
+    return proc;
+}
+/**
+ * What of the parent's memory a forked child can read, copied into it: the
+ * data, stack and heap below the arena and above it, the unwind the child
+ * rewinds from (MAIN_BUF, to its current end), and each live setjmp
+ * capture (to the high-water mark its jmp_buf keeps at +8, restored before
+ * every longjmp). The rest of the arena is only ever written before it is
+ * read, so it is not copied: a 17 MB image is about 1 MB of this.
+ */
+function copyForkImage(parent, child) {
+    const src = new Uint8Array(parent.inst.exports.memory.buffer);
+    const dst = new Uint8Array(child.inst.exports.memory.buffer);
+    const dv = parent.DV();
+    const range = (from, to) => { if (to > from)
+        dst.set(src.subarray(from, to), from); };
+    const within = (at, low, high) => Math.min(Math.max(at, low), high);
+    range(0, parent.MAIN_BUF);
+    range(parent.MAIN_BUF, within(dv.getUint32(parent.MAIN_BUF, true), parent.MAIN_BUF + 8, parent.MAIN_BUF + MAIN_SIZE));
+    for (const [env, idx] of parent.slotByEnv) {
+        const slot = parent.slotAddr(idx);
+        range(slot, within(dv.getUint32(env + 8, true), slot + 8, slot + SLOT_SIZE));
+    }
+    range(parent.SLOT0 + NSLOT * SLOT_SIZE, src.length);
 }
 function setupArena(proc) {
     const base = proc.inst.exports.memory.buffer.byteLength;
@@ -1402,13 +1482,15 @@ async function doFork(s, parent) {
         if (e.kind === 'pipe')
             bumpPipe(s, e, 1);
     }
-    const child = makeProc(s, childPid, parent.pid, childFds);
+    const pmem = parent.inst.exports.memory;
+    // An exited process's instance, when one is idle, rather than a new one.
+    const child = reincarnate(s, pmem.buffer.byteLength, childPid, parent.pid, childFds) ?? makeProc(s, childPid, parent.pid, childFds);
     child.cwd = parent.cwd;
     child.preopenMoved = new Map(parent.preopenMoved);
-    const pmem = parent.inst.exports.memory, cmem = child.inst.exports.memory;
+    const cmem = child.inst.exports.memory;
     if (cmem.buffer.byteLength < pmem.buffer.byteLength)
         cmem.grow((pmem.buffer.byteLength - cmem.buffer.byteLength) / PAGE);
-    new Uint8Array(cmem.buffer).set(new Uint8Array(pmem.buffer));
+    copyForkImage(parent, child);
     for (const [k, v] of Object.entries(parent.inst.exports))
         if (v instanceof WebAssembly.Global)
             child.inst.exports[k].value = v.value;
@@ -1553,6 +1635,7 @@ function finishProc(s, proc, code, signal = 0) {
     // already have happened above if this process read its own pipe.
     if (held.size === 0)
         publishExit(s, proc.pid, proc.ppid, st);
+    retire(s, proc, signal);
 }
 /** Make `pid`'s wait status reapable, handing it to its parent's pending wait. */
 function publishExit(s, pid, ppid, st) {

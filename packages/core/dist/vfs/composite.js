@@ -75,6 +75,8 @@ export function isAsyncMountRefusal(error) {
 const ROOT_POINT = '/';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
+/** An absolute path's first component, when it is spelled plainly (not `.`, `..` or empty). */
+const FIRST_COMPONENT = /^\/([^/.][^/]*|\.[^/.][^/]*|\.\.[^/]+)/;
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export function normalizePath(path) {
     const out = [];
@@ -445,6 +447,12 @@ export class CompositeVFS {
      * holds through a link or file higher up).
      */
     composes(path) {
+        // A path whose first component is no mount point's first component is
+        // the root backend's alone: no mount, and no directory above one, is on
+        // it or above it. Only a spelling that `..` could move is normalized.
+        const first = FIRST_COMPONENT.exec(path)?.[1];
+        if (first !== undefined && !path.includes('/..') && this.table.synthesized.get(ROOT_POINT)?.has(first) !== true)
+            return false;
         const at = normalizePath(path);
         if (this.route(at).mount.point !== ROOT_POINT)
             return true;
