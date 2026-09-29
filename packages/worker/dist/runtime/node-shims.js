@@ -5875,6 +5875,54 @@ const __cryptoMod = (() => {
 // execution does not.  Documented in W3 retro for W3.5 follow-up
 // (a parser-based vm fallback, or pre-bundle vm-using scripts at
 // install time).
+// ── Runtime code: the Function constructors ──
+//
+// A Worker generates code from strings only while its modules evaluate: at
+// request time — where every program runs — \`new Function(...)\` and its async
+// and generator siblings throw EvalError "Code generation from strings
+// disallowed for this context". Each constructor here asks the native one
+// first and, refused that way, hands the arguments to the launch's
+// runtime-code service (core/_shared/commonjs-cell.ts, RUNTIME CODE), which
+// answers from this launch's module map or records the text for the next
+// launch of the command and throws EvalError code ERR_NIMBUS_CODE_NEXT_LAUNCH.
+// A facet without the service (opencode's) keeps the native refusal. The
+// replacement is the constructor the program sees everywhere: the global
+// \`Function\`, and each kind's \`prototype.constructor\`, which is how
+// \`(async function () {}).constructor\` reaches it.
+function __nimbusIsCodegenRefusal(e) {
+  return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
+}
+(() => {
+  const kinds = [
+    ["function", Function],
+    ["async", Object.getPrototypeOf(async function () {}).constructor],
+    ["generator", Object.getPrototypeOf(function* () {}).constructor],
+    ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
+  ];
+  const nativeToString = Function.prototype.toString;
+  for (const [kind, Native] of kinds) {
+    if (Native.__nimbusNative) continue;
+    const routed = function (...args) {
+      try {
+        return Reflect.apply(Native, undefined, args);
+      } catch (e) {
+        const service = globalThis.__nimbusRuntimeCode;
+        if (!__nimbusIsCodegenRefusal(e) || !service) throw e;
+        const body = args.length > 0 ? String(args[args.length - 1]) : "";
+        return service.compileFunction(kind, args.slice(0, -1).map(String), body);
+      }
+    };
+    Object.defineProperty(routed, "name", { value: Native.name });
+    Object.defineProperty(routed, "length", { value: Native.length });
+    Object.defineProperty(routed, "prototype", { value: Native.prototype, writable: false });
+    Object.defineProperty(routed, "__nimbusNative", { value: Native });
+    Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
+    Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
+    Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
+    if (kind === "function") globalThis.Function = routed;
+  }
+})();
+
 const __vmMod = (() => {
   const real = (typeof __real_vm !== 'undefined') ? (__real_vm.default ?? __real_vm) : null;
   function honestError(method, originalErr) {
@@ -5914,7 +5962,20 @@ const __vmMod = (() => {
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
     runInThisContext: wrapRuntimeEval('runInThisContext'),
-    compileFunction: wrapRuntimeEval('compileFunction'),
+    // A function of \`params\` and \`code\` is what the Function constructor
+    // builds, so a refusal goes to the same runtime-code service. Context
+    // extensions and a parsing context have no such form.
+    compileFunction: (code, params = [], options = {}) => {
+      try {
+        return wrapRuntimeEval('compileFunction')(code, params, options);
+      } catch (e) {
+        const service = globalThis.__nimbusRuntimeCode;
+        const refused = e && e.code === 'ERR_VM_DYNAMIC_EVAL_DISALLOWED';
+        const plain = !options || (!options.contextExtensions?.length && !options.parsingContext);
+        if (!refused || !service || !plain) throw e;
+        return service.compileFunction("function", Array.from(params, String), String(code));
+      }
+    },
     Script: real?.Script ?? class { constructor() { throw honestError('Script', null); } },
     Module: real?.Module,
     SourceTextModule: real?.SourceTextModule,
@@ -7773,8 +7834,9 @@ const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL}
 // the constructor has to exist with Node's shape. \`_compile\` turns source
 // text into code: through the runtime-code service when the launch carries
 // one (a module written after launch is staged for the next launch there),
-// otherwise with the compiler module evaluation allows, whose refusal at
-// request time names the file honestly.
+// otherwise with Node's own wrapper through the Function constructor, which
+// works while modules evaluate and whose refusal at request time names the
+// file honestly.
 function __NodeModule(id = "", parent) {
   if (!new.target) throw new TypeError("Class constructor Module cannot be invoked without 'new'");
   this.id = String(id);
@@ -7805,9 +7867,9 @@ __NodeModule.prototype._compile = function _compile(content, filename) {
     wrapper = service.compileModule(file, text);
   } else {
     try {
-      wrapper = __mkCompiledFn(text);
+      wrapper = Function("exports", "require", "module", "__filename", "__dirname", text);
     } catch (e) {
-      if (e && /Code generation from strings disallowed/.test(String(e.message))) {
+      if (__nimbusIsCodegenRefusal(e)) {
         const err = new Error("Nimbus: Module._compile(" + file + "): a Worker compiles code only while a launch's modules load, and this text arrived after launch.");
         err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
         throw err;

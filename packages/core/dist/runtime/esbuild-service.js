@@ -798,8 +798,14 @@ function convertBundledModuleDeclarations(snippets, moduleFactory) {
     return { imports: imports.join('\n'), exports: exports.join('\n') };
 }
 function importMetaEdits(source, absoluteUrl, moduleFactory) {
+    // A module factory's import.meta is the module's metadata object, bound by
+    // the facet's rewrite of every MetaProperty (dynamic-import-rewrite.ts), so
+    // any property — Vite's chunks read `import.meta.dirname`, `.env`, `.hot` —
+    // is left for that pass, exactly as esbuild's output leaves it.
+    if (moduleFactory)
+        return [];
     const edits = [];
-    const urlExpression = moduleFactory ? 'import.meta.url' : JSON.stringify(absoluteUrl);
+    const urlExpression = JSON.stringify(absoluteUrl);
     try {
         const tokens = tokenizer(source, {
             ecmaVersion: 'latest',
@@ -832,7 +838,7 @@ function importMetaEdits(source, absoluteUrl, moduleFactory) {
                 edits.push({
                     start: start.start,
                     end: property.end,
-                    text: moduleFactory ? 'import.meta.resolve' : `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
+                    text: `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
                 });
             }
             else {
