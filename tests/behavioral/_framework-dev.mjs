@@ -19,10 +19,13 @@ export async function launchFrameworkDev({ terminal, sid, cwd, command, port, ac
     let next = false;
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline && !proc.exit) {
+      let status = 0;
       const r = await fetch(BASE + '/s/' + sid + '/port/' + port + '/', {
         headers: requestHeaders(), signal: AbortSignal.timeout(Math.max(1, Math.min(30_000, deadline - Date.now()))),
-      }).then(async (res) => ({ status: res.status, body: await res.text() }))
-        .catch((error) => ({ status: 0, body: String(error.message) }));
+      }).then(async (res) => {
+        status = res.status;
+        return { status, body: await res.text() };
+      }).catch((error) => ({ status, body: `${status ? 'response body' : 'response headers'}: ${error.message}` }));
       last = `HTTP ${r.status}: ${r.body.slice(0, 240)}`;
       if (accepts(r)) { response = r; break; }
       output = proc.output;
