@@ -124,7 +124,7 @@ export const SUPERVISOR_OPS = [
     'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
     'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
     'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay',
+    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
 ];
 /**
  * An asynchronous read that meets bytes still being imported (N17) waits for
@@ -188,6 +188,7 @@ export const SUPERVISOR_OP_ROUTES = {
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
     cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
     hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
+    hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
 };
 /** Every native op reads its filesystem the same way: the envelope's identity. */
 const fsFor = (e, tools) => tools.bridge(e.pid, e.cred);

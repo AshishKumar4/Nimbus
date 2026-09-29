@@ -245,6 +245,8 @@ export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleI
  * DO. The HmrBridge holds the client→WS map; we delegate to it.
  */
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
+/** Poll the HMR queue in the same DO that owns its browser connections. */
+export declare function _rpcHmrNextEvent(self: RpcHost, timeoutMs?: number): Promise<any[]>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,

@@ -352,6 +352,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
+    _rpcHmrNextEvent(timeoutMs: number): Promise<any[]>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{
         inodes: number;
         chunks: number;

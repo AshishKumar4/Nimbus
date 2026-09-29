@@ -597,6 +597,12 @@ export async function _rpcHmrRelay(self, clientId, msg) {
         return;
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
+/** Poll the HMR queue in the same DO that owns its browser connections. */
+export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
+    if (!self.cirrusReal)
+        return [];
+    return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
+}
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,

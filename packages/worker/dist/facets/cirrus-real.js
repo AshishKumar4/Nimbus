@@ -61,7 +61,7 @@ import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/supervisor-props.js';
 import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
-import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
+import { HmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 /**
@@ -719,16 +719,11 @@ export class CirrusReal {
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({ props: supervisorProps })
             : undefined;
-        // Phase 2: separate HMR binding so we don't need to modify
-        // supervisor-rpc.ts (off-limits). The CirrusHmrRPC class lives in
-        // src/real-vite-hmr.ts and is re-exported from src/index.ts so
-        // ctx.exports can build a Service Binding for it.
+        // A separate binding routes both HMR message delivery and queue polling
+        // through the owning session's supervisor operations.
         const hmrBinding = ctxExports?.CirrusHmrRPC
             ? ctxExports.CirrusHmrRPC({ props: { doId: ctx.id.toString(), route: hostRoute() ?? undefined } })
             : undefined;
-        // Register this instance's HmrBridge in the module-level registry
-        // so the CirrusHmrRPC service can route facet RPCs back to us.
-        registerHmrBridge(ctx.id.toString(), this);
         // [D'.1] Spawn cirrus-real as a DO Facet, not a Worker.
         //
         // Step A: LOADER.get(stableId, configCb) → DynamicWorker stub. The
@@ -896,10 +891,6 @@ export class CirrusReal {
             catch { }
         }
         this._vfsUnsub = null;
-        // Note: we deliberately do NOT unregister from the HMR bridge
-        // map here — if the user runs `vite stop` then `vite` again, the
-        // bridge must still be lookup-able by doId during the brief
-        // restart window. Unregister happens on DO teardown, not here.
     }
     /**
      * Browser WS upgrade request arrived at /preview/__nimbus_hmr.
