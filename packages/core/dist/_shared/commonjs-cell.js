@@ -465,6 +465,35 @@ function __nimbusWithCodeCells(bundle) {
 const __nimbusRuntimeKeys = new Set(__NIMBUS_RUNTIME_CODE);
 const __nimbusRuntimeLedger = new Map();
 let __nimbusRuntimeLedgerBytes = 0;
+let __nimbusRuntimeCodeReporter = null;
+let __nimbusCodeNotifyQueued = false;
+const __nimbusCodeAcknowledged = new Set();
+let __nimbusCodeSending = Promise.resolve();
+// A server may catch a compile miss (SSR error page) and never exit. Persist
+// new code independently of exit, in bounded batches, and acknowledge only
+// after the session has committed it. Retain the ledger for the exit backstop.
+function __nimbusFlushRuntimeCode(supervisor) {
+  if (!supervisor || typeof supervisor.reportRuntimeCode !== 'function') return Promise.resolve();
+  const send = __nimbusCodeSending.then(async () => {
+    const entries = [...__nimbusRuntimeLedger].filter(([key]) => !__nimbusCodeAcknowledged.has(key));
+    for (let offset = 0; offset < entries.length; offset += 32) {
+      const batch = entries.slice(offset, offset + 32);
+      await supervisor.reportRuntimeCode(batch.map(([, entry]) => entry));
+      for (const [key] of batch) __nimbusCodeAcknowledged.add(key);
+    }
+  });
+  __nimbusCodeSending = send.catch(() => undefined);
+  return send;
+}
+function __nimbusNotifyRuntimeCode() {
+  if (!__nimbusRuntimeCodeReporter || __nimbusCodeNotifyQueued) return;
+  __nimbusCodeNotifyQueued = true;
+  queueMicrotask(() => {
+    __nimbusCodeNotifyQueued = false;
+    // A failed report stays unacknowledged: startup/HTTP/exit flush retries it.
+    __nimbusRuntimeCodeReporter().catch(() => undefined);
+  });
+}
 const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};
 function __nimbusRuntimeCodeCompile(entry, describe) {
   const __source = entry.kind === "module"
@@ -480,6 +509,7 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
   ) {
     __nimbusRuntimeLedger.set(__key, entry);
     __nimbusRuntimeLedgerBytes += __charge;
+    __nimbusNotifyRuntimeCode();
   }
   const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with. It is staged: the next launch of this command compiles it.");
   __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
