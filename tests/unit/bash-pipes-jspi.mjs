@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
-const loop = (n, width) => `i=0; while [ $i -lt ${n} ]; do echo "$(printf %0${width}d $i)"; i=$((i+1)); done`;
+const loop = (n) => `i=0; while [ $i -lt ${n} ]; do echo "$(printf %0200d $i)"; i=$((i+1)); done`;
 const cases = [
   ['yes | head -2; echo "${PIPESTATUS[*]}"', 'y\ny\n141 0\n'],
   ['while :; do echo y; done | head -3; echo "${PIPESTATUS[*]}"', 'y\ny\ny\n141 0\n'],
@@ -26,16 +26,8 @@ const cases = [
   ['seq 200000 | cat | wc -l; echo "${PIPESTATUS[*]}"', '200000\n0 0 0\n'],
   ['seq 100000 | cat | while read x; do :; done; echo "${PIPESTATUS[*]}"', '0 0 0\n'],
   ['seq 20000 | uniq -c | wc -l', '20000\n'],
-  // A bash process forking on every iteration, its output well past a pipe
-  // (200,100 bytes through a 64 KiB one). One hundred forks, not two
-  // thousand: that is what a production session completes in one dispatch.
-  // Measured 2026-09-28 on a throwaway: 100 forks take ~10 s; 200 end in
-  // "Worker exceeded CPU time limit". Every fork instantiates bash and copies
-  // its ~17 MB memory, and on local workerd, which has no isolate memory
-  // limit, 2000 of those outran the collector past the suite's 4 GiB cap.
-  // Not a leak: a WeakRef count of bash instances after a forced GC stays at
-  // 5-6 across 600 forks (only the live processes), RSS bounded.
-  [`${loop(100, 2000)} | wc -c`, '200100\n'],
+  // A bash process forking on every iteration, its output well past a pipe.
+  [`${loop(2000)} | wc -c`, '402000\n'],
   // More than any pipe or spill could hold.
   ['yes | head -c 80000000 | wc -c', '80000000\n'],
 ];
