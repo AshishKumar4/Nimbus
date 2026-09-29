@@ -117,7 +117,7 @@ export function loaderLedgerStats(ctx) {
     };
 }
 /**
- * Name the per-DO accounting on a "Too many concurrent dynamic workers"
+ * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"
  * failure; hand every other error back untouched. The platform's message
  * says only that the limit was hit — which workers were in flight, and what
  * fan-outs had claimed, is what the operator needs to know to shrink anything.
