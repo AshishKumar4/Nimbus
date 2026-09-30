@@ -311,6 +311,15 @@ try {
     const both = await terminal.run(`cd ${W} && echo hi | node stdin-both.js`);
     assert.match(both.stdout, /^BOTH \["hi\\n",""\]$/m, 'a synchronous read takes stdin; process.stdin then ends');
 
+    // A pipe streams: the program never waits for its end. One that ignores
+    // an endless pipe exits at once, and releasing the pipe ends its writer.
+    // (This shell's tail -f does not follow; yes never ends.)
+    const endless = await terminal.run(`yes | node -e 'console.log("IGNORED 1")'`, 30_000);
+    assert.equal(endless.status, 0, endless.stdout);
+    assert.match(endless.stdout, /^IGNORED 1$/m, endless.stdout);
+    const lines = await terminal.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 30_000);
+    assert.match(lines.stdout, /^LINES "y\\ny\\ny\\n"$/m, lines.stdout);
+
     const urlRun = await terminal.run(`cd ${W} && node url.js`);
     const hostUrl = spawnSync('node', ['-e', FILES['url.js']], { encoding: 'utf8' });
     assert.equal(hostUrl.status, 0, hostUrl.stderr);

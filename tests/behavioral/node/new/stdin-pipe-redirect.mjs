@@ -8,7 +8,8 @@
 //   `for await (const chunk of process.stdin)` (Buffer chunks, so `s += c`
 //   reads text), and to `node -e`. The shell's pipe used to be dropped, so
 //   every read saw empty stdin and readFileSync(0) threw ENOENT for a file
-//   named "0".
+//   named "0". It streams: a program that ignores a pipe that never ends
+//   (`yes`, `tail -f`) exits at once instead of waiting for its end.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell } from '../../_driver.mjs';
 
@@ -43,6 +44,20 @@ try {
   }
   const evalOut = (await t.run(`echo hi | node -e 'console.log("EVAL " + JSON.stringify(require("fs").readFileSync(0, "utf8")))'`, 90_000)).output;
   a.check('node -e reads a pipe', line(evalOut, 'EVAL') === 'EVAL "hi\\n"', evalOut.slice(-400));
+  // A pipe streams: the program never waits for its end. One that ignores a
+  // pipe that never ends exits at once, and its writer then ends too.
+  for (const [label, producer] of [['yes', 'yes'], ['tail -f', `tail -f ${DIR}/in.txt`]]) {
+    let out;
+    try {
+      out = (await t.run(`${producer} | node -e 'console.log("IGNORED 1")'`, 60_000)).output;
+    } catch (e) {
+      out = `TIMEOUT ${String(e.message).slice(-300)}`;
+      t.send('\x03');
+    }
+    a.check(`${label} into a program that ignores stdin exits`, line(out, 'IGNORED') === 'IGNORED 1', out.slice(-400));
+  }
+  const lines = (await t.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 90_000)).output;
+  a.check('yes | head -3 streams three lines to for-await', line(lines, 'LINES') === 'LINES "y\\ny\\ny\\n"', lines.slice(-400));
 } finally {
   await t.close().catch(() => {});
   await deleteSession(sid, 'node-new-stdin-pipe-redirect');

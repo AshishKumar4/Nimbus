@@ -17,6 +17,8 @@ interface InputState {
   closed: boolean;
   bytes: number;
   waiters: InputWaiter[];
+  /** Writers waiting for the reader to take queued input (whenWritable). */
+  drained: Array<() => void>;
   /** Set once the process has read its input: from then on it receives its signals. */
   reading: boolean;
   columns: number;
@@ -42,7 +44,7 @@ export class ProcessInputStore {
   }
 
   private createState(): InputState {
-    return { packets: [], closed: false, bytes: 0, waiters: [], reading: false, columns: 80, rows: 24 };
+    return { packets: [], closed: false, bytes: 0, waiters: [], drained: [], reading: false, columns: 80, rows: 24 };
   }
 
   open(pid: number): void {
@@ -113,10 +115,22 @@ export class ProcessInputStore {
     return { ok: true };
   }
 
+  /**
+   * Resolves once `pid`'s reader has taken queued input, so a writer refused
+   * for a full queue can try again: true then, false if the channel is ended
+   * or gone and will take no more.
+   */
+  whenWritable(pid: number): Promise<boolean> {
+    const state = this.pids.get(pid);
+    if (!state || state.closed) return Promise.resolve(false);
+    return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+  }
+
   end(pid: number): void {
     const state = this.pids.get(pid);
     if (!state || state.closed) return;
     state.closed = true;
+    for (const wake of state.drained.splice(0)) wake();
     for (const waiter of state.waiters.splice(0)) {
       clearTimeout(waiter.timer);
       waiter.resolve({ data: '', ended: true });
@@ -137,6 +151,7 @@ export class ProcessInputStore {
     const next = state.packets.shift();
     if (next !== undefined) {
       state.bytes -= next.data.length;
+      for (const wake of state.drained.splice(0)) wake();
       return next;
     }
     if (state.closed) return { data: '', ended: true };
