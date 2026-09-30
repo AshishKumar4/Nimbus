@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npx serve` starts. An ES module with top-level await (serve 14's
+  `build/main.js`, nuxi's bin) is emitted by esbuild as ESM and now lowered
+  to a CommonJS body from Acorn's parse of its declarations. The previous
+  line-regex converter left esbuild's multi-line `import {…} from` clauses
+  inside the async function ("Cannot use import statement outside a
+  module"); it, its classifiers and the comment scanner's literal-blanking
+  mode are deleted.
+
 - Native HTTP client I/O now remains live until the request's response body
   completes, errors or is cancelled, rather than ending at response headers.
   Referenced `listen(0)` allocations also keep the process alive until binding
