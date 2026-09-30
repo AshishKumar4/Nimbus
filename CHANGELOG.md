@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Removing an import's destination abandons the import, so an interrupted
+  import can be started again there. An import whose sender stopped after a
+  page kept its `vfs_jobs` row after its destination was removed, and
+  `importCursor(dst)` still answered the old cursor, so every later import
+  into that path was taken for a replay and refused with `EINVAL: replay
+  metadata differs`. Now `unlink`, `rmdir`, `removeRecursive`, a rename away
+  or over it, or a restore that removes it (of dst or any directory above it)
+  ends the import in the transaction that removes dst: the job row goes, and
+  the staging it held (a manifest cut off mid-import, chunks sent ahead of
+  their pages) is queued for collection. A later page of the abandoned
+  import is refused rather than written into whatever is at dst now. An
+  import nobody removed still resumes after a reset.
+
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. A guest stream emitted `'end'` and never `'close'`:
   Node destroys a finished stream (`autoDestroy`, on by default), so
