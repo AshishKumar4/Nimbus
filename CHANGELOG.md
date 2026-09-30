@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- express.static serves files. `require('stream')` is a function
+  constructor, as Node's legacy Stream is, so send's `Stream.call(this)` no
+  longer throws "Class constructor Stream cannot be invoked without 'new'".
+
 - express 4 apps (`express.static`, `npx serve-static` setups) start from
   their second launch. depd, loaded by express 4's body-parser, builds each
   deprecated wrapper with `new Function` as its module loads, which a

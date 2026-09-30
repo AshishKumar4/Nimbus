@@ -93,6 +93,10 @@ const FILES = {
     'const server = new (require("http").Server)();',
     'out.server = server instanceof EventEmitter && server instanceof require("node:events").EventEmitter;',
     'out.stream = require("stream").EventEmitter === EventEmitter;',
+    // send (express.static): Node's legacy Stream is a function constructor.
+    'function Send() { require("stream").call(this); }',
+    'require("util").inherits(Send, require("stream"));',
+    'out.legacyStream = new Send() instanceof EventEmitter && typeof new Send().pipe === "function";',
     'out.max = server.setMaxListeners(20).getMaxListeners();',
     '(async () => {',
     '  const e = new EventEmitter({ captureRejections: true });',
@@ -152,7 +156,7 @@ try {
     const events = await terminal.run(`cd ${W} && node events.js`);
     assert.equal(events.status, 0, events.stdout);
     assert.match(events.stdout,
-      /^EVENTS \{"legacy":\[1,true\],"mixin":true,"server":true,"stream":true,"max":20,"captured":"rejected","once":7,"on":"a"\}$/m,
+      /^EVENTS \{"legacy":\[1,true\],"mixin":true,"server":true,"stream":true,"legacyStream":true,"max":20,"captured":"rejected","once":7,"on":"a"\}$/m,
       events.stdout);
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
