@@ -1204,6 +1204,8 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const args = __NIMBUS_ARGS;
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
+    // Every resident process has a live input channel on its pid.
+    const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
     // Off the start payload, never out of the module text: this body is
     // content-addressed into the facet image store, and a revision that
     // advances on every spawn would give the same program a new image each
@@ -6907,10 +6909,13 @@ export class FacetManager {
     // application was given follows the reservation, not the recipe.
     const spawnEnv = launchEnv === undefined ? opts.env : { ...(opts.env || {}), ...launchEnv };
     // Every long-running process has an input channel on its pid, and its
-    // stdin reads that channel (NIMBUS_CP_CHILD_PID) once the program
-    // consumes stdin. A backgrounded server started from the terminal sees
-    // its stdin stay open, as a job's terminal stdin does, instead of an
-    // immediate EOF; only an attached one is a TTY.
+    // stdin reads that channel once the program consumes stdin. A
+    // backgrounded server started from the terminal sees its stdin stay open,
+    // as a job's terminal stdin does, instead of an immediate EOF; only an
+    // attached one is a TTY. The pid travels in the start payload (startArgs),
+    // not the env: the env is part of the generated worker, which is
+    // content-addressed into the image store, so a pid there gave every
+    // restart of the same server a new image.
     const processEnv = opts.attachedTty
       ? {
           ...(spawnEnv || {}),
@@ -6922,7 +6927,7 @@ export class FacetManager {
           LINES: opts.env?.LINES || '24',
           FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
         }
-      : { ...(spawnEnv || {}), NIMBUS_CP_CHILD_PID: String(entry.pid) };
+      : spawnEnv;
     // Answered by _buildProcessBundle while the raw cells were still in hand.
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
     const [sqliteModules, sources] = await Promise.all([
@@ -7001,7 +7006,7 @@ export class FacetManager {
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
         startArgs: {
-          vfsCursor, dataPlan,
+          pid: entry.pid, vfsCursor, dataPlan,
           ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
           ...(this.debugEnabled ? { diag: true } : {}),
         },

@@ -7079,9 +7079,11 @@ function __makeProcessStdin() {
   r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
   r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  // A child_process child names its channel in its env; a resident process
+  // gets it in its start payload (__nimbusLiveInputPid, facets/manager.ts).
   const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
     ? Number(env.NIMBUS_CP_CHILD_PID)
-    : 0;
+    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
   // The polling infrastructure is unref'd, but a program actively consuming
   // live stdin owns a referenced input handle, as in Node. Otherwise an
   // interactive child exits after its prompt, before a keystroke arrives.

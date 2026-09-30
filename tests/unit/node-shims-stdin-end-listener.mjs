@@ -12,10 +12,13 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
-function makeProcess({ stdin = '', env = {}, supervisor = null } = {}) {
+function makeProcess({ stdin = '', env = {}, supervisor = null, liveInputPid } = {}) {
+  // A resident process learns its channel from its start payload, which the
+  // runner binds as __nimbusLiveInputPid ahead of the shims.
+  const live = liveInputPid === undefined ? '' : `const __nimbusLiveInputPid = ${liveInputPid};`;
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', 'stdin',
-    '"use strict";let stdout = ""; let stderr = "";' + generateShimsCode() + '\n;return { process: __processMod };',
+    '"use strict";let stdout = ""; let stderr = "";' + live + generateShimsCode() + '\n;return { process: __processMod };',
   );
   return factory({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     '/home/user', [], env, '/home/user/main.mjs', '/home/user', stdin).process;
@@ -70,6 +73,25 @@ const turn = (ms = 50) => new Promise((r) => setTimeout(r, ms));
   packets.push({ ended: true });
   await turn(200);
   assert.equal(ended, true, 'the channel ending ends stdin');
+}
+
+// ── a resident's channel comes from its start payload, not its env ──────
+{
+  const asked = [];
+  const proc = makeProcess({
+    liveInputPid: 9,
+    supervisor: {
+      cpReadStdin: async (pid) => { asked.push(pid); await turn(5); return asked.length === 1 ? { data: new TextEncoder().encode('keys') } : { ended: true }; },
+      reportExit: async () => {},
+      stderr: async () => {},
+    },
+  });
+  const chunks = [];
+  proc.stdin.setEncoding('utf8');
+  proc.stdin.on('data', (c) => chunks.push(String(c)));
+  await turn(200);
+  assert.deepEqual(chunks, ['keys'], 'a backgrounded resident reads its own input channel');
+  assert.equal(asked[0], 9, 'the channel is the pid from the start payload');
 }
 
 console.log('node-shims-stdin-end-listener: ok');
