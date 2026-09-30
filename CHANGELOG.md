@@ -5,7 +5,6 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-<<<<<<< HEAD
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. A guest stream emitted `'end'` and never `'close'`:
   Node destroys a finished stream (`autoDestroy`, on by default), so
@@ -36,7 +35,7 @@ published independently in the `@nimbus-sh` npm scope.
   looked for `<root>/undefined`. The legacy `parse`, `format`, `resolve`,
   `resolveObject` and `Url` are now workerd's own `node:url`; the guest keeps
   its `pathToFileURL` and `fileURLToPath`, which resolve against its cwd.
-=======
+
 - Vite preview transforms share one esbuild instance in the session's facet,
   recycling it once its measured wasm memory exceeds 64 MiB, after its last
   in-flight caller finishes. Previously every transform call initialized and
@@ -50,7 +49,6 @@ published independently in the `@nimbus-sh` npm scope.
   (19 esbuild starts), retaining up to 153 MiB of uncollected wasm memories;
   the shared instance plateaued at 52 MiB. Instances are collectable, not a
   permanent leak. Builds and CLI calls keep their separate instances.
->>>>>>> work/fix-regressions-node
 
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
