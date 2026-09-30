@@ -380,11 +380,21 @@ class TransactionPlanBuilder {
             deletes: 1, paths: 1, abandoned: ended.length, gcRefs: ended.reduce((n, job) => n + job.contents.length, 0),
         }));
     }
+    /** End an import that no removal in this plan names (one with no destination yet). */
+    addAbandonedImport(job) {
+        this.abandoned.push(job);
+        this.gcRefCount += job.contents.length;
+    }
+    /** Would ending one more import exceed the bound? */
+    wouldExceedAbandon(job) {
+        return exceededTransactionLimit(this.metricsWith({ abandoned: 1, gcRefs: job.contents.length }));
+    }
     get empty() {
         return this.inodes.length === 0
             && this.deletes.length === 0
             && this.staged.length === 0
-            && this.stagingCreated.length === 0;
+            && this.stagingCreated.length === 0
+            && this.abandoned.length === 0;
     }
     build() {
         return {
@@ -3495,6 +3505,34 @@ export class SqliteVFS {
     newPlan(commitRow = false) {
         return new TransactionPlanBuilder(this._pinGen > 0, commitRow, () => this.openImports());
     }
+    /**
+     * End the imports beneath `paths` that have no destination yet (only
+     * importChunks has run for them), in bounded transactions of their own,
+     * before a removal of those paths. Removing a path ends every import
+     * beneath it, and no single transaction could admit any number of these:
+     * one whose destination exists ends with that destination's own removal.
+     */
+    endStagedImportsBeneath(paths) {
+        if (paths.length === 0)
+            return;
+        const beneath = (dst) => paths.some((path) => path === '' || dst.startsWith(`${path}/`));
+        const staged = this.openImports().filter((job) => beneath(job.dst) && this.inodes.get(job.dst) === undefined);
+        let builder = this.newPlan();
+        const flush = () => {
+            if (builder.empty)
+                return;
+            const plan = builder.build();
+            builder = this.newPlan();
+            this.assertTransactionFits(plan.metrics);
+            this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+        };
+        for (const job of staged) {
+            if (builder.wouldExceedAbandon(job) !== null)
+                flush();
+            builder.addAbandonedImport(job);
+        }
+        flush();
+    }
     /** Every import in progress, with the staging contents it holds. */
     openImports() {
         const out = [];
@@ -4085,6 +4123,8 @@ export class SqliteVFS {
             this._batchWrites++;
             this._batchWriteRows += rows;
         };
+        // Imports beneath either directory with no destination yet end with it.
+        this.endStagedImportsBeneath([...(inode.isDir ? [oldPath] : []), ...(destInode?.isDir ? [newPath] : [])]);
         // ── Phase 1: publish the whole tree at the destination ────────────────
         //
         // Content moves by id, so a file is reachable from both paths for the
@@ -5089,6 +5129,8 @@ export class SqliteVFS {
                 this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
                 return { restored, done: true };
             }
+            const pasts = changed.map((live) => this.historyAt(live.path, job.g));
+            this.endStagedImportsBeneath(changed.filter((live, index) => live.isDir && pasts[index] === undefined).map((live) => live.path));
             const builder = this.newPlan();
             const deletedInodes = [];
             const restoredRow = (past) => {
@@ -5110,8 +5152,8 @@ export class SqliteVFS {
                 this.normalizeSharedEntry(entry, CRED_KERNEL);
                 return entry;
             };
-            for (const live of changed) {
-                const past = this.historyAt(live.path, job.g);
+            for (const [index, live] of changed.entries()) {
+                const past = pasts[index];
                 if (past === undefined) {
                     builder.addDeletedPath(live.path, live);
                     deletedInodes.push(live);
@@ -6038,9 +6080,17 @@ export class SqliteVFS {
         if (target !== '' && parent !== '' && !this.inodes.get(parent)?.isDir)
             throw vfsError('ENOENT', parent);
     }
-    /** A job for a new import into `target`; its chunks stage afresh, never into an ended import's staging. */
+    /**
+     * A job for a new import into `target`. Its chunks stage afresh, never
+     * into an ended import's staging; inside an embedder's transaction the
+     * handle it displaces comes back if that transaction rolls back.
+     */
     beginImport(target) {
-        this.importStagings.delete(target);
+        const displaced = this.importStagings.get(target);
+        if (displaced !== undefined) {
+            this.importStagings.delete(target);
+            this.transactionPublication?.displacedStagings.push([target, displaced]);
+        }
         let id = 0;
         this.transactionSync(() => {
             id = Number([...this.sql.exec(`INSERT INTO vfs_jobs (kind, args, cursor, start_gen, created_at) VALUES ('import', ?, '', 0, ?) RETURNING id`, JSON.stringify({ dst: target }), this.now())][0].id);
@@ -6422,6 +6472,7 @@ export class SqliteVFS {
     commitBatch(payload, cred, onCommit) {
         const normalized = this.authorizeBatch(payload, cred);
         this.assertMutationsAllowed(batchMutationPaths(normalized));
+        this.endStagedImportsBeneath((normalized.deletePaths ?? []).filter((path) => this.inodes.get(path)?.isDir));
         return this._writeBatchWithRetry(normalized, { source: 'strict-batch', limitMode: 'bounded' }, true, onCommit);
     }
     /**
@@ -6984,6 +7035,7 @@ export class SqliteVFS {
             structural: new Map(),
             removedDirectories: new Array(),
             abandonedImports: new Array(),
+            displacedStagings: new Array(),
         };
         const maintenancePending = this.maintenancePending;
         const openBefore = new Map([...this.openNodes].map(opened => [opened, { path: opened.path, inode: opened.inode }]));
@@ -7002,6 +7054,9 @@ export class SqliteVFS {
         catch (error) {
             this.evictAll();
             this.maintenancePending = maintenancePending;
+            // The jobs the rollback brings back hold their staging again.
+            for (const [dst, staging] of publication.displacedStagings.reverse())
+                this.importStagings.set(dst, staging);
             try {
                 this.inodes.clear();
                 this._countersLoaded = false;

@@ -1006,6 +1006,14 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
+    /**
+     * End the imports beneath `paths` that have no destination yet (only
+     * importChunks has run for them), in bounded transactions of their own,
+     * before a removal of those paths. Removing a path ends every import
+     * beneath it, and no single transaction could admit any number of these:
+     * one whose destination exists ends with that destination's own removal.
+     */
+    private endStagedImportsBeneath;
     /** Every import in progress, with the staging contents it holds. */
     private openImports;
     /** Create a state-0 content in its own transaction and hold it live. */
@@ -1408,7 +1416,11 @@ export declare class SqliteVFS {
     private importJob;
     /** An import starts into an absent path or an empty directory under an existing one. */
     private assertImportTarget;
-    /** A job for a new import into `target`; its chunks stage afresh, never into an ended import's staging. */
+    /**
+     * A job for a new import into `target`. Its chunks stage afresh, never
+     * into an ended import's staging; inside an embedder's transaction the
+     * handle it displaces comes back if that transaction rolls back.
+     */
     private beginImport;
     private hasChildren;
     private importedEntry;
