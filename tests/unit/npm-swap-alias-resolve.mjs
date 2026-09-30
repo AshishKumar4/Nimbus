@@ -215,6 +215,33 @@ const REGISTRY = {
   console.log('  a lagging swap target never answers with a version outside the range');
 }
 
+// A package whose binding Nimbus stages installs at the staged version when
+// the range admits it, however new the registry's latest: Vite 8's
+// rolldown ~1.2.9 stays on the staged build the day upstream publishes the
+// next patch. A range or lock that excludes it keeps its own version, with
+// the note that its binding will not load; a cache without the staged
+// version is not taken for it.
+{
+  const staged = globalThis.STAGED_ARTIFACT('rolldown');
+  assert.equal(staged?.kind, 'binding', 'rolldown\'s binding is staged');
+  const [major, minor, patch] = staged.version.split('.').map(Number);
+  const newer = `${major}.${minor}.${patch + 1}`;
+  const ROLLDOWN = { rolldown: packument('rolldown', { [`${major}.${minor}.0`]: {}, [staged.version]: {}, [newer]: {} }) };
+  const within = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: `~${major}.${minor}.0` }), registry(ROLLDOWN).env);
+  assert.equal(within.pkg?.version, staged.version, `~${major}.${minor}.0 installs the staged ${staged.version}, not ${newer}`);
+  const open = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: 'latest' }), registry(ROLLDOWN).env);
+  assert.equal(open.pkg?.version, staged.version, 'an open request installs the staged version');
+  const pinned = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: newer }), registry(ROLLDOWN).env);
+  assert.equal(pinned.pkg?.version, newer, 'an exact pin (a lockfile) is honoured');
+  assert.ok(pinned.events.some((e) => e.type === 'advisory' && e.from === 'rolldown'), 'with the note that it will not load');
+  const cachedNewer = { name: 'rolldown', version: newer, tarballUrl: `https://registry.invalid/rolldown/-/rolldown-${newer}.tgz`, integrity: 'sha512-x', depsJson: '{}', exportsJson: 'null', main: '', moduleField: '', binJson: '{}', fetchedAt: 0 };
+  const fromCache = registry(ROLLDOWN);
+  const skipped = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: `^${major}.${minor}.0`, cachedEntries: [cachedNewer] }), fromCache.env);
+  assert.deepEqual(fromCache.asked, ['rolldown'], 'a cache holding only a newer rolldown is not taken for the staged one');
+  assert.equal(skipped.pkg?.version, staged.version);
+  console.log(`  rolldown installs at its staged ${staged.version} whenever the range admits it`);
+}
+
 // A semver range nothing satisfies is unresolved (npm's ETARGET), for a swap
 // target as for any package: it never falls back to the target's latest.
 {
