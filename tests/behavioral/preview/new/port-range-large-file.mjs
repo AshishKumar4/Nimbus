@@ -47,8 +47,9 @@ http.createServer(async (req, res) => {
   const file = path.join(__dirname, decodeURIComponent(new URL(req.url, 'http://file').pathname));
   let stat;
   try { stat = await fs.promises.stat(file); } catch { res.writeHead(404); res.end(); return; }
-  const etag = '"' + stat.size.toString(16) + '-' + Math.floor(stat.mtimeMs).toString(16) + '"';
-  const modified = new Date(Math.floor(stat.mtimeMs / 1000) * 1000);
+  // stat.mtime, as send (serve-static) and http-server read it.
+  const modified = new Date(Math.floor(stat.mtime.getTime() / 1000) * 1000);
+  const etag = '"' + stat.size.toString(16) + '-' + modified.getTime().toString(16) + '"';
   const headers = { 'Accept-Ranges': 'bytes', ETag: etag, 'Last-Modified': modified.toUTCString(), 'Content-Type': 'application/octet-stream' };
   const since = Date.parse(req.headers['if-modified-since'] ?? '');
   if (req.headers['if-none-match'] === etag || (req.headers['if-none-match'] === undefined && modified.getTime() <= since)) {
@@ -111,25 +112,20 @@ const serverName = process.env.NIMBUS_PROBE_STATIC_SERVER || 'node-core';
 const server = SERVERS[serverName];
 if (!server) { console.error(`FATAL: unknown NIMBUS_PROBE_STATIC_SERVER ${serverName}`); process.exit(2); }
 
-// Word i of the file is a 32-bit mix of i, stored little-endian. The session
-// writes it from this same source.
-function word(i) {
-  let x = (i ^ 0x9e3779b9) >>> 0;
-  x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0;
-  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
-  return (x ^ (x >>> 16)) >>> 0;
-}
-const byteAt = (offset) => (word(Math.floor(offset / 4)) >>> ((offset % 4) * 8)) & 0xff;
+// Word i of the file is i itself, stored little-endian: every 4 bytes name
+// their own offset, so a misplaced range cannot match, and the generator stays
+// cheap enough for a process's CPU limit (a hashed word per 4 bytes of 210 MiB
+// was measured to exceed it).
+const byteAt = (offset) => (Math.floor(offset / 4) >>> ((offset % 4) * 8)) & 0xff;
 
 const genJs = `
 const fs = require('fs');
-${word.toString()}
 (async () => {
   const handle = await fs.promises.open('big.bin', 'w');
   const chunk = new Uint8Array(${MiB});
   const view = new DataView(chunk.buffer);
   for (let offset = 0; offset < ${SIZE}; offset += chunk.length) {
-    for (let i = 0; i < chunk.length; i += 4) view.setUint32(i, word((offset + i) / 4), true);
+    for (let i = 0; i < chunk.length; i += 4) view.setUint32(i, (offset + i) / 4, true);
     await handle.write(chunk, 0, chunk.length, offset);
   }
   await handle.close();
