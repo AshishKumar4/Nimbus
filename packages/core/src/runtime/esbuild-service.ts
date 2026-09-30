@@ -895,29 +895,43 @@ async function buildWithEsbuild(
   options: EsbuildHostBuildOptions,
   plugin: EsbuildRemotePlugin,
 ): Promise<EsbuildBuildOutcome> {
-  const result = await esbuildApi.build({
-    ...options,
-    write: false,
-    plugins: [{
-      name: plugin.name,
-      setup(build) {
-        build.onResolve({ filter: /.*/ }, async (args) => (await plugin.resolve({
-          path: args.path,
-          importer: args.importer,
-          namespace: args.namespace,
-          resolveDir: args.resolveDir,
-          kind: args.kind,
-          with: args.with,
-        })) ?? undefined);
-        build.onLoad({ filter: /.*/ }, async (args) => (await plugin.load({
-          path: args.path,
-          namespace: args.namespace,
-          suffix: args.suffix,
-          with: args.with,
-        })) ?? undefined);
-      },
-    }],
-  });
+  let result;
+  try {
+    result = await esbuildApi.build({
+      ...options,
+      write: false,
+      plugins: [{
+        name: plugin.name,
+        setup(build) {
+          build.onResolve({ filter: /.*/ }, async (args) => (await plugin.resolve({
+            path: args.path,
+            importer: args.importer,
+            namespace: args.namespace,
+            resolveDir: args.resolveDir,
+            kind: args.kind,
+            with: args.with,
+          })) ?? undefined);
+          build.onLoad({ filter: /.*/ }, async (args) => (await plugin.load({
+            path: args.path,
+            namespace: args.namespace,
+            suffix: args.suffix,
+            with: args.with,
+          })) ?? undefined);
+        },
+      }],
+    });
+  } catch (failure) {
+    // esbuild rejects a failed build with its diagnostics on the error, which RPC drops: they return as data.
+    const diagnostics = failure as Partial<Pick<BuildResult, 'errors' | 'warnings'>> & { message?: unknown };
+    if (!Array.isArray(diagnostics.errors)) throw failure;
+    const plain = (messages: BuildResult['errors']) => messages.map(({ text, location }) => ({ text, location })) as BuildResult['errors'];
+    return {
+      outputFiles: [],
+      errors: plain(diagnostics.errors),
+      warnings: plain(diagnostics.warnings ?? []),
+      failure: String(diagnostics.message),
+    };
+  }
   return {
     outputFiles: (result.outputFiles || []).map((file) => ({ path: file.path, contents: file.contents })),
     errors: result.errors.map((message) => ({ text: message.text, location: message.location })),
@@ -1000,6 +1014,8 @@ export interface EsbuildBuildOutcome {
   errors: BuildResult['errors'];
   warnings: BuildResult['warnings'];
   metafile?: esbuild.Metafile;
+  /** esbuild's message for a build that failed: `errors` hold its diagnostics as data, which a thrown failure loses across RPC. */
+  failure?: string;
 }
 
 /**
@@ -1359,6 +1375,10 @@ export class EsbuildService {
     } else {
       await this.ensureInit();
       outcome = await buildWithEsbuild(this._esbuild!, buildOptions, plugin);
+    }
+    // One failure wherever esbuild ran: esbuild's message, with its diagnostics.
+    if (outcome.failure !== undefined) {
+      throw Object.assign(new Error(outcome.failure), { errors: outcome.errors, warnings: outcome.warnings });
     }
 
     return {

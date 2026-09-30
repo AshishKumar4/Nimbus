@@ -7,8 +7,9 @@
 // reset the session with exceededMemory at 200.4 MiB.
 //
 // The host is the facet module production loads (esbuildFacetWorkerCode, from
-// the assets production stages for it), evaluated here. Options and outcome
-// cross a structured clone, as they cross RPC.
+// the assets production stages for it), evaluated here. Options, outcome and a
+// thrown error cross a structured clone, as they cross RPC: an error keeps its
+// message and loses every other property.
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -40,7 +41,13 @@ const facetModule = facetSource
 assert.doesNotMatch(facetModule, /^import /m);
 const { EsbuildFacet } = await import('data:text/javascript;base64,' + Buffer.from(facetModule).toString('base64'));
 const facet = new EsbuildFacet({}, {});
-const buildHost = async (options, remote) => structuredClone(await facet.build(structuredClone(options), remote));
+const buildHost = async (options, remote) => {
+  try {
+    return structuredClone(await facet.build(structuredClone(options), remote));
+  } catch (error) {
+    throw structuredClone(error);
+  }
+};
 
 const harness = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(harness.sql, harness.ctx);
@@ -96,12 +103,19 @@ author.writeFile('home/user/app/src/leak.ts', 'export { default } from "/private
   console.log("  ok  the host reads what the caller's view may read, and nothing else");
 }
 
-// ── A failed build rejects with esbuild's own message ───────────────────────
+// ── A failed build rejects with esbuild's own message and its diagnostics ───
+// Kinu's slate compile reads `errors` to tell a slate's own mistake from a host
+// failure; a thrown BuildFailure crossed RPC as its message alone (2026-09-30).
 {
   author.writeFile('home/user/app/src/broken.ts', "import { nope } from './missing';\nexport default nope;\n");
   const service = new EsbuildService(author, { buildHost });
-  await assert.rejects(service.build(['/home/user/app/src/broken.ts']), /Could not resolve "\.\/missing"/);
-  console.log('  ok  an unresolvable import fails the build with esbuild\'s diagnostic');
+  const failure = await service.build(['/home/user/app/src/broken.ts']).then(() => null, (error) => error);
+  assert.ok(failure instanceof Error, 'the build rejects');
+  assert.match(failure.message, /Could not resolve "\.\/missing"/);
+  assert.ok(Array.isArray(failure.errors), 'the failure keeps esbuild\'s diagnostics across RPC');
+  assert.ok(failure.errors.some(({ text }) => /Could not resolve "\.\/missing"/.test(text)), failure.errors.map(({ text }) => text).join('; '));
+  assert.deepEqual(failure.warnings, []);
+  console.log('  ok  an unresolvable import fails the build with esbuild\'s message and diagnostics');
 }
 
 harness.db.close();

@@ -206,6 +206,8 @@ export interface EsbuildBuildOutcome {
     errors: BuildResult['errors'];
     warnings: BuildResult['warnings'];
     metafile?: esbuild.Metafile;
+    /** esbuild's message for a build that failed: `errors` hold its diagnostics as data, which a thrown failure loses across RPC. */
+    failure?: string;
 }
 /**
  * Runs a build in another isolate. Every module is resolved and loaded

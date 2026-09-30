@@ -793,29 +793,45 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
  * esbuild facet as well as called here.
  */
 async function buildWithEsbuild(esbuildApi, options, plugin) {
-    const result = await esbuildApi.build({
-        ...options,
-        write: false,
-        plugins: [{
-                name: plugin.name,
-                setup(build) {
-                    build.onResolve({ filter: /.*/ }, async (args) => (await plugin.resolve({
-                        path: args.path,
-                        importer: args.importer,
-                        namespace: args.namespace,
-                        resolveDir: args.resolveDir,
-                        kind: args.kind,
-                        with: args.with,
-                    })) ?? undefined);
-                    build.onLoad({ filter: /.*/ }, async (args) => (await plugin.load({
-                        path: args.path,
-                        namespace: args.namespace,
-                        suffix: args.suffix,
-                        with: args.with,
-                    })) ?? undefined);
-                },
-            }],
-    });
+    let result;
+    try {
+        result = await esbuildApi.build({
+            ...options,
+            write: false,
+            plugins: [{
+                    name: plugin.name,
+                    setup(build) {
+                        build.onResolve({ filter: /.*/ }, async (args) => (await plugin.resolve({
+                            path: args.path,
+                            importer: args.importer,
+                            namespace: args.namespace,
+                            resolveDir: args.resolveDir,
+                            kind: args.kind,
+                            with: args.with,
+                        })) ?? undefined);
+                        build.onLoad({ filter: /.*/ }, async (args) => (await plugin.load({
+                            path: args.path,
+                            namespace: args.namespace,
+                            suffix: args.suffix,
+                            with: args.with,
+                        })) ?? undefined);
+                    },
+                }],
+        });
+    }
+    catch (failure) {
+        // esbuild rejects a failed build with its diagnostics on the error, which RPC drops: they return as data.
+        const diagnostics = failure;
+        if (!Array.isArray(diagnostics.errors))
+            throw failure;
+        const plain = (messages) => messages.map(({ text, location }) => ({ text, location }));
+        return {
+            outputFiles: [],
+            errors: plain(diagnostics.errors),
+            warnings: plain(diagnostics.warnings ?? []),
+            failure: String(diagnostics.message),
+        };
+    }
     return {
         outputFiles: (result.outputFiles || []).map((file) => ({ path: file.path, contents: file.contents })),
         errors: result.errors.map((message) => ({ text: message.text, location: message.location })),
@@ -1111,6 +1127,10 @@ export class EsbuildService {
         else {
             await this.ensureInit();
             outcome = await buildWithEsbuild(this._esbuild, buildOptions, plugin);
+        }
+        // One failure wherever esbuild ran: esbuild's message, with its diagnostics.
+        if (outcome.failure !== undefined) {
+            throw Object.assign(new Error(outcome.failure), { errors: outcome.errors, warnings: outcome.warnings });
         }
         return {
             outputFiles: outcome.outputFiles.map((f) => {
