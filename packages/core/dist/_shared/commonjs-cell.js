@@ -334,9 +334,14 @@ export function runtimeCodeKey(entry) {
     const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
     return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
-/** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES. */
+/**
+ * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES:
+ * everything it holds. A module keeps its path beside its text, and a data:
+ * URL's path is the whole module again, so it is charged for both. The guest
+ * ledger charges the same (__nimbusRuntimeCodeCompile).
+ */
 export function runtimeCodeCharge(entry) {
-    return runtimeCodeKeySource(entry).length + RUNTIME_CODE_ENTRY_OVERHEAD;
+    return runtimeCodeKeySource(entry).length + (entry.kind === 'module' ? entry.path.length : 0) + RUNTIME_CODE_ENTRY_OVERHEAD;
 }
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key) {
@@ -473,7 +478,8 @@ let __nimbusRuntimeLedgerBytes = 0;
 let __nimbusRuntimeCodeReporter = null;
 let __nimbusCodeNotifyQueued = false;
 const __nimbusCodeAcknowledged = new Set();
-const __nimbusFilesAcknowledged = new Set();
+const __nimbusModulesAcknowledged = new Set();
+const __nimbusReadsAcknowledged = new Set();
 let __nimbusCodeSending = Promise.resolve();
 // A server may catch a compile miss (SSR error page) and never exit. Persist
 // new code independently of exit, in bounded batches, and acknowledge only
@@ -481,16 +487,24 @@ let __nimbusCodeSending = Promise.resolve();
 function __nimbusFlushRuntimeCode(supervisor) {
   if (!supervisor || typeof supervisor.reportRuntimeCode !== 'function') return Promise.resolve();
   const send = __nimbusCodeSending.then(async () => {
+    // Let outstanding repairs land and retire the misses they proved absent
+    // first: a path the authority does not have was the program's not-found
+    // branch, not something the next launch should stage.
+    if (typeof globalThis.__nimbusVfsResidencySettle === "function") {
+      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
+    }
     const entries = [...__nimbusRuntimeLedger].filter(([key]) => !__nimbusCodeAcknowledged.has(key));
-    const files = [...new Set([...(globalThis.__nimbusModuleMisses || []), ...(globalThis.__nimbusVfsResidencyMisses || [])])]
-      .filter((path) => !__nimbusFilesAcknowledged.has(path));
-    const batches = Math.max(Math.ceil(entries.length / 32), Math.ceil(files.length / 128));
+    const modules = [...(globalThis.__nimbusModuleMisses || [])].filter((path) => !__nimbusModulesAcknowledged.has(path));
+    const reads = [...(globalThis.__nimbusVfsResidencyMisses || [])].filter((path) => !__nimbusReadsAcknowledged.has(path));
+    const batches = Math.max(Math.ceil(entries.length / 32), Math.ceil(modules.length / 128), Math.ceil(reads.length / 128));
     for (let i = 0; i < batches; i++) {
       const batch = entries.slice(i * 32, (i + 1) * 32);
-      const paths = files.slice(i * 128, (i + 1) * 128);
-      await supervisor.reportRuntimeCode(batch.map(([, entry]) => entry), paths);
+      const executed = modules.slice(i * 128, (i + 1) * 128);
+      const read = reads.slice(i * 128, (i + 1) * 128);
+      await supervisor.reportRuntimeCode(batch.map(([, entry]) => entry), executed, read);
       for (const [key] of batch) __nimbusCodeAcknowledged.add(key);
-      for (const path of paths) __nimbusFilesAcknowledged.add(path);
+      for (const path of executed) __nimbusModulesAcknowledged.add(path);
+      for (const path of read) __nimbusReadsAcknowledged.add(path);
     }
   });
   __nimbusCodeSending = send.catch(() => undefined);
@@ -512,7 +526,7 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
     : JSON.stringify([entry.kind, entry.params, entry.body]);
   const __key = __nimbusCreateHash("sha256").update(__source).digest("hex");
   if (__nimbusRuntimeKeys.has(__key)) return __nimbusRegistryRequire("./gen/" + __key + ".js");
-  const __charge = __source.length + ${RUNTIME_CODE_ENTRY_OVERHEAD};
+  const __charge = __source.length + (entry.kind === "module" ? entry.path.length : 0) + ${RUNTIME_CODE_ENTRY_OVERHEAD};
   if (
     !__nimbusRuntimeLedger.has(__key)
     && __nimbusRuntimeLedger.size < ${RUNTIME_CODE_MAX_ENTRIES}

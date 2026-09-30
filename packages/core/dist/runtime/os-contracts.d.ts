@@ -560,6 +560,14 @@ export interface PackageSwapEntry {
     from: string;
     /** Package name we install instead. */
     to: string;
+    /**
+     * The first version of `from` the swap stands in for; unset means every
+     * version. Earlier versions install as published (rollup before 4 is plain
+     * JavaScript, and @rollup/wasm-node publishes only 4.x): a lockfile pin is
+     * swapped only at or above it, and a range only when the target publishes
+     * a version it admits.
+     */
+    since?: string;
     /** One-line reason shown to the user. */
     reason: string;
     /**

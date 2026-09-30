@@ -22,6 +22,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
+import { type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -50,6 +51,11 @@ export interface FacetExecResult {
      * when debugging is switched on is not a repair.
      */
     residencyMisses?: string[];
+    /**
+     * Files the run tried to execute that its module map lacked: the next
+     * launch's module map is built with them as roots (launch-learning-store.ts).
+     */
+    moduleMisses?: string[];
     /**
      * Code the run produced and could not compile (a file written then
      * required, a Function-constructor call), as its ledger reported it:
@@ -690,7 +696,7 @@ export declare function isTypescriptDeclarationFile(path: string): boolean;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, runtimeModules?: ReadonlyMap<string, string>): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, executedModules?: readonly RequiredModuleRoot[]): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -990,24 +996,19 @@ export declare class FacetManager {
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
     /**
-     * What each entry was observed to read and not have, keyed exactly like the
-     * prefetch cache above so a profile can only ever seed the bundle it was
-     * measured against. Kept in the session's storage: the session is evicted
-     * whenever it sits idle between two commands, and an in-memory profile died
-     * with it, so running the command again after a pause missed the same file
-     * again (Vite's node_modules/ms/index.js on every launch).
+     * What each command's runs learned for its next launch: the modules they
+     * tried to execute and the files they read that the launch lacked, and the
+     * runtime code they produced (launch-learning-store.ts). Kept in the
+     * session's storage: the session is evicted whenever it sits idle between
+     * two commands, and a profile that died with it made the next run miss the
+     * same file again (Vite's node_modules/ms/index.js on every launch).
      */
-    private residencyProfiles;
-    /**
-     * Runtime code (commonjs-cell.ts, RUNTIME CODE) each entry's runs reported,
-     * kept in the session's storage so an evicted isolate does not forget it.
-     */
-    private runtimeCode;
+    private learning;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
      * tarballs. Unbound, a miss is learned for this session only
-     * (residencyProfiles).
+     * (learning).
      */
     private readProfile;
     /** Read-profile changes dropped after losing every write race. */
@@ -1030,9 +1031,11 @@ export declare class FacetManager {
             revision: number;
             bytes: number;
         }>;
-        residencyProfiles: Array<{
+        launchProfiles: Array<{
             key: string;
-            paths: string[];
+            executedModules: string[];
+            dataReads: string[];
+            codeKeys: string[];
         }>;
     };
     /** In-flight request-driven durable-app ensures, single-flight per port. */
@@ -1046,14 +1049,6 @@ export declare class FacetManager {
      */
     private ephemeralPids;
     private residentClaims;
-    private static readonly RESIDENCY_PROFILE_MAX_ENTRIES;
-    /**
-     * A program that reads a directory of data files misses once per file, so
-     * the cap has to clear a real working set. Past it the profile stops
-     * growing and the surplus stays loud — a bounded map that admits the first
-     * N is honest; an unbounded one in a Durable Object is a leak.
-     */
-    private static readonly RESIDENCY_PROFILE_MAX_PATHS;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
     /**
      * A signal's default action: the process ends with 128+signo whether its
@@ -1246,25 +1241,23 @@ export declare class FacetManager {
      * is bytes.
      */
     /**
-     * File what a process could not read against the bundle that failed it.
+     * File what a run learned against the bundle it ran: code it produced,
+     * modules it tried to execute and files it read that the launch lacked.
      *
      * A miss the supervisor never hears about is a miss the next run repeats,
-     * so this is the whole of the repair: record the path (in the session's
-     * storage, so the next run learns it however long the user waits), then
-     * drop the cached bundle for that key so the next build is a real one and
-     * stages it. The record is queued ahead of any later read of the profile,
-     * so a relaunch that follows at once builds from it. The program that hit
-     * the miss is already gone — nothing here rescues it, and nothing here
-     * needs to, because the facet failed loudly on the way out.
+     * so this is the whole of the repair: record it (in the session's storage,
+     * so the next run learns it however long the user waits), and when that
+     * taught the profile anything, drop the cached bundle for the key so the
+     * next build is a real one and stages it. A report of nothing new keeps
+     * the cache: a miss that cannot be staged would otherwise force a rebuild
+     * on every launch. The record is queued ahead of any later read of the
+     * profile, so a relaunch that follows at once builds from it. A failed
+     * record rejects: its caller says so where the user reads it.
      */
-    private _recordResidencyMisses;
+    private _recordLaunchLearning;
+    /** Tell a process's log that what its run learned was not kept. */
+    private _learningLost;
     private _dropPrefetchCacheEntry;
-    /**
-     * Record the code a run produced and could not compile (commonjs-cell.ts,
-     * RUNTIME CODE) for the next launch of the same entry, and drop the entry's
-     * cached bundle when that learned anything, so the launch is built with it.
-     */
-    private _recordRuntimeCode;
     /**
      * The runtime code recorded for an entry, as `{ cjs }` module text by key:
      * a constructor call as the function module (or the SyntaxError the
@@ -1294,11 +1287,11 @@ export declare class FacetManager {
     hasResidentProcess(pid: number): boolean;
     /** Acknowledge generated code only after storage has accepted it. The
      * launch key comes from the process table, never from guest arguments. */
-    noteProcessRuntimeCode(pid: number, entries: unknown[], missedFiles?: string[]): Promise<void>;
-    noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[], evidence?: {
+    noteProcessRuntimeCode(pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
+    noteProcessReportedExit(pid: number, exitCode: number, dataReads?: string[], evidence?: {
         served: ReadonlySet<string>;
         profileUnread: readonly string[] | null;
-    }, runtimeCode?: unknown[]): void;
+    }, runtimeCode?: unknown[], executedModules?: string[]): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
      * Called when the attach TUI exits (reported / killed) so the OS-child serve

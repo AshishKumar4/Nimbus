@@ -27,7 +27,6 @@ export interface StagedBindingArtifact {
     readonly memoryPages: number;
     readonly wasm: NapiWasmAsset;
 }
-export declare const NAPI_WASM_BUILD_ID: string;
 export declare const NAPI_WASM_LOADER: NapiWasmAsset;
 export declare const NAPI_WASM_TRAMPOLINE: NapiWasmAsset;
 export declare const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[];

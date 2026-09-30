@@ -395,13 +395,18 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      *
      * `tail` is an optional trailing stderr string — useful when the facet
      * has error state it couldn't stream in-band (rare; main path drains
-     * via __pendingIO first). `runtimeCode` is the code the process produced
-     * and could not compile, for its command's next launch (commonjs-cell.ts,
-     * RUNTIME CODE).
+     * via __pendingIO first). `dataReads` are the files it read and did not
+     * have, `executedModules` the modules it tried to execute that its module
+     * map lacked, and `runtimeCode` the code it produced and could not compile:
+     * all for its command's next launch (launch-learning-store.ts).
      */
-    reportExit(code: number, tail?: string, residencyMisses?: string[], profileUnread?: string[], runtimeCode?: unknown[]): Promise<void>;
-    /** Persist a live process's generated code without terminating the process. */
-    reportRuntimeCode(entries: unknown[], missedFiles?: string[]): Promise<void>;
+    reportExit(code: number, tail?: string, dataReads?: string[], profileUnread?: string[], runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
+    /**
+     * Persist what a live process learned for its next launch without
+     * terminating it: its generated code, the modules it tried to execute and
+     * the files it read that its launch lacked (launch-learning-store.ts).
+     */
+    reportRuntimeCode(entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
     prefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     registerPort(port: number): Promise<void>;
     allocatePort(): Promise<number>;

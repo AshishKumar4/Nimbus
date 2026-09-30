@@ -198,15 +198,25 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // arrives naming the WASM target and is not swapped again, while a user's
     // explicit alias to the native package (`build@npm:esbuild`) still needs
     // its target swapped — and keeps its own install name.
+    //
+    // A swap with `since` stands in only for the versions that have a native
+    // build (rollup 4); earlier ones are plain JavaScript and install as
+    // published. Its target publishes exactly those versions, so the swap
+    // applies when the target has a version the range picks (decided below,
+    // against the target's packument), and otherwise the package installs
+    // unswapped rather than being moved to the target's latest.
     let effName = request.registryName;
     // @ts-ignore — preamble.
     const __swap = SHOULD_SWAP(request.registryName);
-    if (__swap) {
-        messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${__swap.from} → ${__swap.to}`);
-        events.push({ type: 'swap', from: __swap.from, to: __swap.to, ctx: 'transitive' });
+    const announceSwap = (swap) => {
+        messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${swap.from} → ${swap.to}`);
+        events.push({ type: 'swap', from: swap.from, to: swap.to, ctx: 'transitive' });
+    };
+    if (__swap && !__swap.since) {
+        announceSwap(__swap);
         effName = __swap.to;
     }
-    else {
+    else if (!__swap) {
         // @ts-ignore — preamble.
         const __fail = SHOULD_REJECT_FAIL(request.registryName);
         // A listed package resolves and installs — npm parity; the
@@ -286,102 +296,124 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             return nativeReject;
         return out(pkgFromCache, 0, 'cache-hit');
     }
-    // 4 + 5. Packument, via the supervisor's npm-metadata seam.
-    //
-    // The facet does NOT fetch the registry and does NOT write the shared
-    // packument cache. Both live in SupervisorRPC.getPackument, because a
-    // packument dictates the tarball URL and integrity digest for every
-    // tenant that reads it — a facet-supplied cache write would be a
-    // cross-tenant code-execution primitive.
-    let packumentText = null;
-    let packumentSource = 'network';
-    if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
-        messages.push(`[resolve-one] ${effName}: env.SUPERVISOR.getPackument missing`);
-        return out(null, 0, 'network', {
-            type: 'unresolved',
-            reason: 'env.SUPERVISOR.getPackument missing',
-        });
-    }
-    {
-        const packumentStart = Date.now();
-        const result = await __nimbusUseRpcResult(env.SUPERVISOR.getPackument(effName, {
-            retries: Math.max(0, spec.retries ?? 3),
-            timeoutMs: spec.fetchTimeoutMs ?? 15_000,
-            registry: spec.registry,
-        }), (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }));
-        packumentElapsedMs = Date.now() - packumentStart;
-        // Splice the supervisor's per-tier events into our accumulator.
-        // Filter to known tiers/kinds so a future schema change cannot
-        // poison the result.
-        if (Array.isArray(result.events)) {
-            for (const e of result.events) {
-                if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
-                    continue;
-                if (e.tier !== 'L2' && e.tier !== 'L3' && e.tier !== 'L4')
-                    continue;
-                if (e.cacheKind !== 'packument')
-                    continue;
-                if (e.kind === 'hit') {
-                    cacheStatEvents.push({
-                        kind: 'hit',
-                        tier: e.tier,
-                        cacheKind: 'packument',
-                        bytes: typeof e.bytes === 'number' ? e.bytes : 0,
-                    });
-                }
-                else {
-                    cacheStatEvents.push({ kind: 'miss', tier: e.tier, cacheKind: 'packument' });
-                }
-            }
-        }
-        if (result.json === null) {
-            if (result.status !== undefined) {
-                // 4xx — the registry has no such package.
-                messages.push(`[resolve-one] ${effName}: HTTP ${result.status}`);
-                return out(null, 0, 'network', {
+    const loadPackument = async (name) => {
+        let packumentText = null;
+        let packumentSource = 'network';
+        if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
+            messages.push(`[resolve-one] ${name}: env.SUPERVISOR.getPackument missing`);
+            return { failed: out(null, 0, 'network', {
                     type: 'unresolved',
-                    reason: `registry returned HTTP ${result.status} for ${effName}`,
-                });
-            }
-            messages.push(`[resolve-one] ${effName}: fetch exhausted: ${result.failure}`);
-            return out(null, 0, 'network', {
-                type: 'unresolved',
-                reason: `registry fetch failed for ${effName}: ${result.failure}`,
-            });
+                    reason: 'env.SUPERVISOR.getPackument missing',
+                }) };
         }
-        packumentText = result.json;
-        packumentSource = result.source === 'r2-cache' ? 'r2-cache' : 'network';
-    }
-    const bytes = packumentText.length;
-    let data;
-    try {
-        data = JSON.parse(packumentText);
-    }
-    catch (e) {
-        messages.push(`[resolve-one] ${effName}: malformed packument: ${e?.message ?? e}`);
-        return out(null, bytes, packumentSource, {
-            type: 'unresolved',
-            reason: `malformed packument for ${effName}: ${e?.message ?? e}`,
-        });
-    }
-    if (!data || !data.versions) {
-        return out(null, bytes, packumentSource, {
-            type: 'unresolved',
-            reason: `packument for ${effName} carries no versions`,
-        });
-    }
-    // 3. Pick version.
-    let version = null;
-    if (request.range && data.versions[request.range])
-        version = request.range;
-    if (!version && request.range && request.range !== 'latest') {
-        const allVersions = Object.keys(data.versions);
+        {
+            const packumentStart = Date.now();
+            const result = await __nimbusUseRpcResult(env.SUPERVISOR.getPackument(name, {
+                retries: Math.max(0, spec.retries ?? 3),
+                timeoutMs: spec.fetchTimeoutMs ?? 15_000,
+                registry: spec.registry,
+            }), (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }));
+            packumentElapsedMs = Date.now() - packumentStart;
+            // Splice the supervisor's per-tier events into our accumulator.
+            // Filter to known tiers/kinds so a future schema change cannot
+            // poison the result.
+            if (Array.isArray(result.events)) {
+                for (const e of result.events) {
+                    if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
+                        continue;
+                    if (e.tier !== 'L2' && e.tier !== 'L3' && e.tier !== 'L4')
+                        continue;
+                    if (e.cacheKind !== 'packument')
+                        continue;
+                    if (e.kind === 'hit') {
+                        cacheStatEvents.push({
+                            kind: 'hit',
+                            tier: e.tier,
+                            cacheKind: 'packument',
+                            bytes: typeof e.bytes === 'number' ? e.bytes : 0,
+                        });
+                    }
+                    else {
+                        cacheStatEvents.push({ kind: 'miss', tier: e.tier, cacheKind: 'packument' });
+                    }
+                }
+            }
+            if (result.json === null) {
+                if (result.status !== undefined) {
+                    // 4xx — the registry has no such package.
+                    messages.push(`[resolve-one] ${name}: HTTP ${result.status}`);
+                    return { failed: out(null, 0, 'network', {
+                            type: 'unresolved',
+                            reason: `registry returned HTTP ${result.status} for ${name}`,
+                        }) };
+                }
+                messages.push(`[resolve-one] ${name}: fetch exhausted: ${result.failure}`);
+                return { failed: out(null, 0, 'network', {
+                        type: 'unresolved',
+                        reason: `registry fetch failed for ${name}: ${result.failure}`,
+                    }) };
+            }
+            packumentText = result.json;
+            packumentSource = result.source === 'r2-cache' ? 'r2-cache' : 'network';
+        }
+        const loadedBytes = packumentText.length;
+        let loaded;
+        try {
+            loaded = JSON.parse(packumentText);
+        }
+        catch (e) {
+            messages.push(`[resolve-one] ${name}: malformed packument: ${e?.message ?? e}`);
+            return { failed: out(null, loadedBytes, packumentSource, {
+                    type: 'unresolved',
+                    reason: `malformed packument for ${name}: ${e?.message ?? e}`,
+                }) };
+        }
+        if (!loaded || !loaded.versions) {
+            return { failed: out(null, loadedBytes, packumentSource, {
+                    type: 'unresolved',
+                    reason: `packument for ${name} carries no versions`,
+                }) };
+        }
+        return { data: loaded, bytes: loadedBytes, source: packumentSource };
+    };
+    // 3. Pick version: an exact version, the highest the range admits, else
+    //    the range as a dist-tag, else `latest`.
+    const pickVersion = (packument) => {
+        let picked = null;
+        if (request.range && packument.versions[request.range])
+            picked = request.range;
+        if (!picked && request.range && request.range !== 'latest') {
+            // @ts-ignore — preamble.
+            picked = RESOLVE_VERSION(Object.keys(packument.versions), request.range);
+        }
+        if (!picked)
+            picked = packument['dist-tags']?.[request.range] || packument['dist-tags']?.latest || null;
+        return picked;
+    };
+    let packument = null;
+    if (__swap && __swap.since) {
+        const target = await loadPackument(__swap.to);
+        if ('failed' in target)
+            return target.failed;
+        const picked = pickVersion(target.data);
+        const tagged = !request.range || request.range === 'latest' || target.data['dist-tags']?.[request.range] !== undefined;
         // @ts-ignore — preamble.
-        version = RESOLVE_VERSION(allVersions, request.range);
+        const admitted = picked !== null && target.data.versions[picked] !== undefined && (tagged || SATISFIES_RANGE(picked, request.range));
+        // @ts-ignore — preamble.
+        const since = admitted && COMPARE_SEMVER(PARSE_SEMVER(picked), PARSE_SEMVER(__swap.since)) >= 0;
+        if (since) {
+            announceSwap(__swap);
+            effName = __swap.to;
+            packument = target;
+        }
     }
-    if (!version) {
-        version = data['dist-tags']?.[request.range] || data['dist-tags']?.latest || null;
-    }
+    packument ??= await loadPackument(effName);
+    if ('failed' in packument)
+        return packument.failed;
+    const data = packument.data;
+    const bytes = packument.bytes;
+    const packumentSource = packument.source;
+    const version = pickVersion(data);
     if (!version || !data.versions[version]) {
         messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
         return out(null, bytes, packumentSource, {

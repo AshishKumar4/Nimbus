@@ -9,7 +9,6 @@
  * evaluated; PACKAGE_ABI_POLICY.stagedArtifacts routes each owner package and
  * the packages it requires the binding by to its entry.
  */
-export const NAPI_WASM_BUILD_ID = "99efae93dd1dcc2b";
 export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/99efae93dd1dcc2b/napi-wasm-loader.mjs", "sha256": "f24fab814c228497f89b03b1d00ae9b13a97e7473a064c97e444c3d31ec28245", "bytes": 201636 };
 export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/99efae93dd1dcc2b/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
 export const STAGED_BINDING_ARTIFACTS = [

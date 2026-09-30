@@ -21,7 +21,7 @@
  * Every byte is verified against its pinned digest on both cache tiers
  * before it is compiled or evaluated, as for the opencode artifact.
  */
-import { NAPI_WASM_BUILD_ID, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_ARTIFACTS, } from '../napi-wasm-artifacts.generated.js';
+import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_ARTIFACTS, } from '../napi-wasm-artifacts.generated.js';
 import { fetchStagedBytes } from './staged-source.js';
 export { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE };
 /** Module-map names of the members every launch with a staged binding carries. */
@@ -58,12 +58,21 @@ export function stagedBindingsRequiredBy(cells) {
     }
     return STAGED_BINDINGS.filter((b) => required.has(b.name)).map((b) => b.name);
 }
+/**
+ * The colo-cache key of one staged file: its path and its own digest. A
+ * binding rebuilt at the same version keeps its path, and a key shared with
+ * the old bytes (the loader's build id was) found them in a warm colo's cache
+ * and refused them as poisoned.
+ */
+export function stagedBindingCacheKey(asset) {
+    return `https://nimbus-cache.invalid${asset.path}?sha256=${asset.sha256}`;
+}
 /** Fetch one staged file, verified against its pinned digest. */
 export function fetchStagedBindingAsset(env, asset) {
     const { path, sha256 } = asset;
     return fetchStagedBytes(env, {
         path,
-        l2Key: `https://nimbus-cache.invalid${path}?build=${NAPI_WASM_BUILD_ID}`,
+        l2Key: stagedBindingCacheKey(asset),
         sha256,
         poisonedCache: 'reject',
         missingBinding: `Nimbus: staged napi bindings require an env.ASSETS binding (serves ${path})`,

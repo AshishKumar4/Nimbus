@@ -878,6 +878,7 @@ const __fsMod = (() => {
   // overlay of this process's own effects says it is gone until a barrier's
   // delta does.
   function _forgetSyncPath(k) {
+    delete _ownWriteTimes[k];
     _createdHere.delete(k);
     _announcedDirs.delete(k);
     _nsOwnSet(k, "absent");
@@ -890,6 +891,7 @@ const __fsMod = (() => {
    */
   function _parkWrite(k, cell) {
     _noteCreation(k);
+    _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
     delete __vfsBundleRevisions[k];
@@ -1225,6 +1227,11 @@ const __fsMod = (() => {
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
   const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+  // When this process last changed each path's content: the mtime its own
+  // writes carry until the namespace describes them. Reading the clock at
+  // each stat instead gave a file a new mtime on every stat, which a
+  // watcher polling mtimeMs reads as an edit.
+  const _ownWriteTimes = globalThis.__nimbusVfsWriteTimes || (globalThis.__nimbusVfsWriteTimes = Object.create(null));
   // Modes set locally that the authority has not received yet. Delivered once:
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
@@ -1261,7 +1268,9 @@ const __fsMod = (() => {
 
   function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
     const time = _localTimes[k];
-    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs : Date.now();
+    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
+      : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
+      : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
@@ -2383,6 +2392,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
+    _ownWriteTimes[k] = Date.now();
     const buf = _asBytes(cell);
     let next;
     if (size <= buf.byteLength) {
@@ -2446,6 +2456,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
+    _ownWriteTimes[k] = Date.now();
     const next = _spliceCell(_asBytes(cell), pos, bytes);
     if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
@@ -7582,6 +7593,11 @@ const __stringDecoderMod = {
 //      unawaited children dies between the last 'data' poll and the
 //      facet's reportExit.
 const __cpChildren = new Map();   // pid → ChildProcess (for exit-time drain)
+// Pids of this process's children that have exited, so process.kill can
+// answer ESRCH for them as Node does (session pids are never reused). Bounded:
+// the oldest are forgotten first, and a forgotten pid is an unknown one.
+const __cpExitedPids = new Set();
+const __CP_EXITED_PIDS_MAX = 1024;
 
 const __childProcessMod = (() => {
   const HAS_SUPERVISOR = !!(__supervisor && typeof __supervisor.cpSpawn === "function");
@@ -7822,7 +7838,13 @@ const __childProcessMod = (() => {
       // Evict from the live-children map after a microtask so any
       // close listeners that re-read child state see consistent values.
       queueMicrotask(() => {
-        try { if (child.pid) __cpChildren.delete(child.pid); } catch {}
+        try {
+          if (child.pid) {
+            __cpChildren.delete(child.pid);
+            __cpExitedPids.add(child.pid);
+            if (__cpExitedPids.size > __CP_EXITED_PIDS_MAX) __cpExitedPids.delete(__cpExitedPids.values().next().value);
+          }
+        } catch {}
       });
     }
   }
@@ -8394,9 +8416,11 @@ function __makeProcessStdin() {
   r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
   r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  // A child_process child names its channel in its env; a resident process
+  // gets it in its start payload (__nimbusLiveInputPid, facets/manager.ts).
   const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
     ? Number(env.NIMBUS_CP_CHILD_PID)
-    : 0;
+    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
   // The polling infrastructure is unref'd, but a program actively consuming
   // live stdin owns a referenced input handle, as in Node. Otherwise an
   // interactive child exits after its prompt, before a keystroke arrives.
@@ -8728,6 +8752,21 @@ const __processMod = {
     if (n === __processMod.pid || n === 0) {
       if (signal === 0) return true; // existence probe, never deliver SIGTERM
       return __nimbusSignalSelf(signal === undefined ? "SIGTERM" : signal);
+    }
+    // This process's own children are signalled through their handle, as
+    // tree-kill and similar helpers expect of process.kill(childPid).
+    const child = __cpChildren.get(n);
+    if (child !== undefined && !child._exitFired) {
+      if (signal === 0) return true;
+      child.kill(signal === undefined ? "SIGTERM" : signal);
+      return true;
+    }
+    if (child !== undefined || __cpExitedPids.has(n)) {
+      const gone = new Error("kill ESRCH");
+      gone.code = "ESRCH";
+      gone.errno = -3;
+      gone.syscall = "kill";
+      throw gone;
     }
     // Node's process.kill throws on failure; returning false falsely told
     // Vinext/Astro lockfile probes that every stale pid was still alive.
