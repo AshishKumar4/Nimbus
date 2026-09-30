@@ -71,10 +71,10 @@ export function textFromParts(parts) {
         .trim();
 }
 /**
- * The OAuth callback page's word to the chat that started the flow. It goes
- * out two ways, because each reaches a chat the other cannot: `postMessage`
- * to `window.opener` crosses storage partitions (a chat embedded in another
- * site), and a BroadcastChannel of this name reaches a cross-origin isolated
- * shell, whose COOP severs the popup's opener.
+ * The OAuth callback page's word to the chat that started the flow, sent once:
+ * `postMessage` to `window.opener` when the popup still has one (it crosses
+ * storage partitions, for a chat embedded in another site), else on a
+ * BroadcastChannel of this name, which reaches a cross-origin isolated shell
+ * whose COOP severed the popup's opener.
  */
 export const AGENT_OAUTH_RESULT_CHANNEL = 'nimbus-agent-oauth';

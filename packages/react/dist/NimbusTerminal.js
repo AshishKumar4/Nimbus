@@ -17,7 +17,17 @@ import { jsx as _jsx } from "react/jsx-runtime";
  */
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { NimbusTerminalError, } from './types.js';
-const DEFAULT_SANDBOX = 'allow-scripts allow-same-origin allow-downloads allow-forms allow-popups';
+/**
+ * The iframe's default `sandbox`, exported so an embedder that needs more can
+ * extend it rather than restate it.
+ *
+ * `allow-popups-to-escape-sandbox`: a preview opened in its own tab (the
+ * shell's ↗, and its offer for an app that asks for cross-origin isolation)
+ * must not inherit the sandbox, because a sandboxed top-level document cannot
+ * take the COOP that isolation needs; it is refused instead
+ * (https://html.spec.whatwg.org/multipage/browsers.html#the-cross-origin-opener-policy-header).
+ */
+export const NIMBUS_TERMINAL_SANDBOX = 'allow-scripts allow-same-origin allow-downloads allow-forms allow-popups allow-popups-to-escape-sandbox';
 /**
  * Embed a Nimbus terminal in your React app.
  *
@@ -70,7 +80,7 @@ export const NimbusTerminal = forwardRef(function NimbusTerminal(props, ref) {
         // eslint-disable-next-line no-console
         console.warn('[@nimbus-sh/react] NimbusTerminal: `tenant` prop is required and must be non-empty');
     }
-    return (_jsx("iframe", { ref: iframeRef, src: attachUrl, title: title ?? 'Nimbus terminal', sandbox: sandbox ?? DEFAULT_SANDBOX, className: className, style: {
+    return (_jsx("iframe", { ref: iframeRef, src: attachUrl, title: title ?? 'Nimbus terminal', sandbox: sandbox ?? NIMBUS_TERMINAL_SANDBOX, className: className, style: {
             width: '100%',
             height: '100%',
             border: 'none',

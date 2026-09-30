@@ -16,6 +16,17 @@
  */
 import { type NimbusTerminalProps, type NimbusTerminalRef } from './types.js';
 /**
+ * The iframe's default `sandbox`, exported so an embedder that needs more can
+ * extend it rather than restate it.
+ *
+ * `allow-popups-to-escape-sandbox`: a preview opened in its own tab (the
+ * shell's ↗, and its offer for an app that asks for cross-origin isolation)
+ * must not inherit the sandbox, because a sandboxed top-level document cannot
+ * take the COOP that isolation needs; it is refused instead
+ * (https://html.spec.whatwg.org/multipage/browsers.html#the-cross-origin-opener-policy-header).
+ */
+export declare const NIMBUS_TERMINAL_SANDBOX = "allow-scripts allow-same-origin allow-downloads allow-forms allow-popups allow-popups-to-escape-sandbox";
+/**
  * Embed a Nimbus terminal in your React app.
  *
  * @see {@link NimbusTerminalProps} for prop reference.

@@ -40,11 +40,15 @@
  *     ones that do not send CORP. https://developer.chrome.com/blog/coep-credentialless-origin-trial
  *
  * Guest headers are never rewritten: whether a preview asks for isolation, and
- * who may embed it, is the guest's own COEP and CORP.
+ * who may embed it, is the guest's own COEP and CORP, as the port registry
+ * last saw them on a document (`DocumentPolicy`, reported in the shell's
+ * stats).
  *
- * Pure: shared by the router (which serves the shell) and the shell itself
- * (bundled to `public/_assets/preview-isolation/`).
+ * Pure: shared by the router (which serves the shell) and the shell's
+ * preview-isolation controller (frontend/preview-isolation, bundled to
+ * `public/_assets/preview-isolation/`).
  */
+import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
 /** Query parameter on the session shell URL that asks for the isolated shell. */
 export declare const SHELL_ISOLATION_QUERY = "isolated";
 /** The headers the isolated shell is served with. */
@@ -53,24 +57,6 @@ export declare const ISOLATED_SHELL_HEADERS: Readonly<Record<string, string>>;
 export declare function isIsolatedShellUrl(url: URL): boolean;
 /** The shell URL `href` in the other mode: same path, same other query. */
 export declare function shellUrlInMode(href: string, isolated: boolean): string;
-/** An embedder policy value, as the HTML standard obtains it. */
-export type EmbedderPolicy = 'unsafe-none' | 'require-corp' | 'credentialless';
-/**
- * The embedder policy a `Cross-Origin-Embedder-Policy` header value gives a
- * document. The header is a Structured Field item (RFC 8941); a value that
- * does not parse, or whose item is not the token `require-corp` or
- * `credentialless`, is `unsafe-none`.
- * https://html.spec.whatwg.org/multipage/browsers.html#obtain-an-embedder-policy
- */
-export declare function parseEmbedderPolicy(value: string | null): EmbedderPolicy;
-/** A Cross-Origin-Resource-Policy value, or null when absent or invalid. */
-export type ResourcePolicy = 'same-origin' | 'same-site' | 'cross-origin' | null;
-/**
- * The CORP policy a header value states. Fetch compares the whole value
- * byte for byte, so anything else — two values, other casing — is null.
- * https://fetch.spec.whatwg.org/#cross-origin-resource-policy-internal-check
- */
-export declare function parseResourcePolicy(value: string | null): ResourcePolicy;
 /** How the pane's URL relates to the shell's. */
 export type PreviewRelation = 'same-origin' | 'same-site' | 'cross-site';
 /**
@@ -83,11 +69,6 @@ export type PreviewRelation = 'same-origin' | 'same-site' | 'cross-site';
  * then refuses.
  */
 export declare function previewRelation(pane: URL, shell: URL): PreviewRelation;
-/** What a preview document's own response headers say about isolation. */
-export interface PreviewDocumentPolicy {
-    embedderPolicy: EmbedderPolicy;
-    resourcePolicy: ResourcePolicy;
-}
 /** The shell's side of the frame tree. */
 export interface ShellIsolationState {
     /** The shell was loaded in isolated mode (its URL carries the query). */
@@ -110,7 +91,5 @@ export interface ShellIsolationState {
  *     top-level tab of its own is isolated by its own headers.
  */
 export type PreviewPaneOffer = 'none' | 'isolate-shell' | 'default-shell' | 'own-tab';
-export declare function planPreviewPane(document: PreviewDocumentPolicy, relation: PreviewRelation, shell: ShellIsolationState): PreviewPaneOffer;
-/** The bare item of an sf-item when it is a token, else null (not a token, or no valid item at all). */
-export declare function parseStructuredItemToken(value: string): string | null;
+export declare function planPreviewPane(document: Pick<DocumentPolicy, 'embedderPolicy' | 'resourcePolicy'>, relation: PreviewRelation, shell: ShellIsolationState): PreviewPaneOffer;
 //# sourceMappingURL=preview-isolation.d.ts.map
