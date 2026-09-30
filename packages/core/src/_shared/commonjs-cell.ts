@@ -356,9 +356,14 @@ export function runtimeCodeKey(entry: RuntimeCodeEntry): string {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES. */
+/**
+ * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES:
+ * everything it holds. A module keeps its path beside its text, and a data:
+ * URL's path is the whole module again, so it is charged for both. The guest
+ * ledger charges the same (__nimbusRuntimeCodeCompile).
+ */
 export function runtimeCodeCharge(entry: RuntimeCodeEntry): number {
-  return runtimeCodeKeySource(entry).length + RUNTIME_CODE_ENTRY_OVERHEAD;
+  return runtimeCodeKeySource(entry).length + (entry.kind === 'module' ? entry.path.length : 0) + RUNTIME_CODE_ENTRY_OVERHEAD;
 }
 
 /** The module name of the runtime code with key `key`. */
@@ -537,7 +542,7 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
     : JSON.stringify([entry.kind, entry.params, entry.body]);
   const __key = __nimbusCreateHash("sha256").update(__source).digest("hex");
   if (__nimbusRuntimeKeys.has(__key)) return __nimbusRegistryRequire("./gen/" + __key + ".js");
-  const __charge = __source.length + ${RUNTIME_CODE_ENTRY_OVERHEAD};
+  const __charge = __source.length + (entry.kind === "module" ? entry.path.length : 0) + ${RUNTIME_CODE_ENTRY_OVERHEAD};
   if (
     !__nimbusRuntimeLedger.has(__key)
     && __nimbusRuntimeLedger.size < ${RUNTIME_CODE_MAX_ENTRIES}

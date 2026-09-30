@@ -12,6 +12,7 @@ import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
   declaresWrapperBinding,
+  runtimeCodeCharge,
   runtimeCodeKey,
   runtimeFunctionModule,
   runtimeFunctionSyntaxError,
@@ -172,6 +173,16 @@ function run(cell, scope = 'function', requireImpl = () => 'required') {
   assert.notEqual(key('home/user/app/x.mjs'), key('home/user/app/x.json'), 'the extension decides how it is lowered');
   assert.notEqual(key('home/user/app/x.mjs'), key('home/user/other/x.mjs'), 'the directory decides its relative imports');
   console.log('  [9] runtime modules are keyed by text, directory and extension');
+}
+
+// An entry is charged for what it holds: a data: URL module keeps its whole
+// URL as its path beside its text, and pays for both.
+{
+  const text = 'export default ' + JSON.stringify('x'.repeat(4000)) + ';';
+  const inline = { kind: 'module', path: 'data:text/javascript,' + encodeURIComponent(text), text };
+  assert.ok(runtimeCodeCharge(inline) >= JSON.stringify(inline).length,
+    `charge ${runtimeCodeCharge(inline)} covers the ${JSON.stringify(inline).length} stored characters`);
+  console.log('  [10] a data: module is charged for its URL and its text');
 }
 
 console.log('facet-commonjs-cell OK');
