@@ -457,8 +457,12 @@ export declare class SqliteVFS {
     private _pinGen;
     /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
     private readonly manifestWindows;
-    /** The staging content holding each import's chunks, by destination. */
+    /** The staging content holding each import's chunks sent ahead of its pages, by job id. */
     private readonly importStagings;
+    /** Set when a write commits while imports are open: one may no longer be where it began (sweepStaleImports). */
+    private importSweepPending;
+    /** False once a sweep has found no import open, until one begins. */
+    private importJobsExist;
     /** Page digests by (generation, root, cursor, limit): a snapshot's pages never change. */
     private readonly pageDigests;
     /** Snapshot generations by name, loaded on first use. */
@@ -1006,19 +1010,6 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
-    /**
-     * The imports beneath the directories `paths` that have no destination
-     * yet (only importChunks has run for them). A removal plan ends the
-     * imports whose destination it removes; these it cannot name, so the
-     * removal takes them before it commits and ends them after (endImports),
-     * and a removal that is refused ends none.
-     */
-    private stagedImportsBeneath;
-    /** End `jobs`, in bounded transactions: their rows go and their staging is queued for collection. */
-    private endImports;
-    private hasDestination;
-    /** Every import in progress, with the staging contents it holds. */
-    private openImports;
     /** Create a state-0 content in its own transaction and hold it live. */
     private beginStaging;
     /**
@@ -1416,14 +1407,32 @@ export declare class SqliteVFS {
     importChunks(dst: string, chunks: Iterable<VfsExportChunk>): {
         stored: number;
     };
+    /** The import open at `target`: one still where it began. A stale one is nobody's to continue. */
     private importJob;
+    /** What an import beginning at `target` now records of where it stands (ImportJobArgsSchema). */
+    private importPlacement;
+    /**
+     * Whether an import is still where it began: dst's parent path resolves
+     * to the directory it began in, and dst to the inode the import made or
+     * found there (or to nothing, before it has one). A removal of dst or of
+     * any directory above it, a rename of either away, a directory made or
+     * renamed in its place: each leaves a path resolving elsewhere, so the
+     * removal that commits is what ends the import. A job from before this
+     * was recorded needs only its parent to exist.
+     */
+    private importPlaced;
+    /**
+     * End every import no longer where it began (importPlaced): its row goes,
+     * and what it staged (a pending manifest, chunks sent ahead) is queued for
+     * collection, in bounded transactions. Such an import is already invisible
+     * to every page, frame and cursor; this reclaims what it held. Never inside
+     * an embedder's transaction, whose rollback brings the removal back.
+     * Returns the transactions it ran.
+     */
+    private sweepStaleImports;
     /** An import starts into an absent path or an empty directory under an existing one. */
     private assertImportTarget;
-    /**
-     * A job for a new import into `target`. Its chunks stage afresh, never
-     * into an ended import's staging; inside an embedder's transaction the
-     * handle it displaces comes back if that transaction rolls back.
-     */
+    /** A job for a new import into `target`, recording where it stands (importPlaced). */
     private beginImport;
     private hasChildren;
     private importedEntry;
@@ -1570,12 +1579,6 @@ export declare class SqliteVFS {
      * removed row held and no row now holds; store the counters.
      */
     private executeTransactionPlan;
-    /**
-     * Let go of what ended imports held in memory, once the transaction that
-     * ended them has committed (an embedder's transaction: when it commits,
-     * so a rollback that brings a job back finds its staging still pinned).
-     */
-    private releaseImports;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
      * Chunk rows as (id, hash, data) triples; size is length(data), so a row
