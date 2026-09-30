@@ -6,7 +6,8 @@
 // CLI whose serve path was not taken, `--help`, a server that closed) kept
 // running and never reported an exit. It now ends when the handles Node
 // counts are gone (timers, operations in flight, listening servers not
-// unref'd, a held stdin), with the one-shot's accounting, and reports its exit
+// unref'd, a held stdin, open connections: an HTTP exchange being answered, a
+// WebSocket or tls client), with the one-shot's accounting, and reports its exit
 // as process.exit does. One that finishes during its boot reports before the
 // boot answers, so the shell prints its exit instead of "started".
 // `--watch` still holds a process with nothing left.
@@ -22,15 +23,18 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, sleep, until } from './lib/resident-body.mjs';
 
+// The test's own timers, captured before a launch replaces the global ones.
+const rawSetTimeout = globalThis.setTimeout;
+
 /** Launch `program` resident, with `files` (VFS key → text) in the session and its bundle. */
-async function launch(program, { files = {}, ...options } = {}) {
+async function launch(program, { files = {}, supervisorOverrides = {}, ...options } = {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   for (const [path, text] of Object.entries(files)) {
     authority.kfs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
     authority.kfs.writeFile(path, text);
   }
-  const { supervisor, log } = facetSupervisor(authority);
+  const { supervisor, log } = facetSupervisor(authority, supervisorOverrides);
   const { proc } = await launchResident({
     authority, program, env: { SUPERVISOR: supervisor }, cursor: authority.cursor(), bundle: files, ...options,
   });
@@ -118,6 +122,89 @@ await runScenarios(import.meta.filename, {
     assert.equal(log.stdout, 'built\n');
     assert.deepEqual(log.exit, { code: 0, reason: '' });
     assert.deepEqual([...log.ports], []);
+  },
+
+  // An HTTP exchange outlives the listener, as its connection does in Node:
+  // the handler closes the server, streams 'first', then answers the rest of
+  // a streaming upload. Node 22 keeps running until the exchange completes.
+  async openExchangeOutlivesClosedServer() {
+    const { log, proc } = await launch([
+      'const server = require("http").createServer(async (req, res) => {',
+      '  server.close();',
+      '  res.writeHead(200); res.flushHeaders(); res.write("first");',
+      '  let data = ""; for await (const chunk of req) data += Buffer.from(chunk).toString();',
+      '  res.end("last:" + data);',
+      '});',
+      'server.listen(3000);',
+    ].join('\n'));
+    let upload;
+    const body = new ReadableStream({ start(controller) { upload = controller; controller.enqueue(new TextEncoder().encode('a')); } });
+    const response = await proc.fetch(new Request('http://facet/', { method: 'POST', headers: { 'X-Nimbus-Port': '3000' }, body, duplex: 'half' }));
+    const reader = response.body.getReader();
+    assert.equal(new TextDecoder().decode((await reader.read()).value), 'first');
+    await sleep(300);
+    assert.equal(log.exit, null, 'still running while the upload and the response are open');
+    upload.enqueue(new TextEncoder().encode('b'));
+    upload.close();
+    let rest = '';
+    for (;;) { const next = await reader.read(); if (next.done) break; rest += new TextDecoder().decode(next.value); }
+    assert.equal(rest, 'last:ab');
+    await until(() => log.exit !== null, 'the exit after the exchange', 5_000);
+    assert.deepEqual(log.exit, { code: 0, reason: '' });
+  },
+
+  // A request body the handler never reads does not hold the process.
+  async ignoredRequestBodyDoesNotHold() {
+    const { log, proc } = await launch([
+      'const server = require("http").createServer((req, res) => { server.close(); res.end("ok"); });',
+      'server.listen(3000);',
+    ].join('\n'));
+    const response = await proc.fetch(new Request('http://facet/', { method: 'POST', headers: { 'X-Nimbus-Port': '3000' }, body: 'unread' }));
+    assert.equal(await response.text(), 'ok');
+    await until(() => log.exit !== null, 'the exit after the answered request', 5_000);
+    assert.deepEqual(log.exit, { code: 0, reason: '' });
+  },
+
+  // A WebSocket client holds the process until it closes, as in Node: here
+  // the peer closes it, and nothing else holds the program meanwhile.
+  async webSocketClientHoldsUntilClosed() {
+    let opened = 0;
+    const { log } = await launch([
+      'const socket = new WebSocket("wss://relay.invalid/feed");',
+      'socket.onclose = (event) => console.log("closed " + event.code);',
+    ].join('\n'), {
+      supervisorOverrides: {
+        wsOpen: async () => { opened = Date.now(); return { id: 7, protocol: '' }; },
+        wsPoll: async () => {
+          await sleep(40);
+          return Date.now() - opened > 2_500 ? [{ kind: 'close', code: 1000, reason: '' }] : [];
+        },
+        wsSend: async () => {},
+        wsClose: async () => {},
+      },
+    });
+    assert.equal(log.exit, null, 'the open socket holds it past its boot');
+    await until(() => log.exit !== null, 'the exit after the peer closes', 6_000);
+    assert.equal(log.stdout, 'closed 1000\n');
+    assert.deepEqual(log.exit, { code: 0, reason: '' });
+  },
+
+  // So does a tls.connect socket, until it closes: here the peer accepts the
+  // connection and drops it, with no handshake, 2.5 s later.
+  async tlsSocketHoldsUntilClosed() {
+    const net = await import('node:net');
+    const peer = net.createServer((connection) => { rawSetTimeout(() => connection.destroy(), 2_500); });
+    await new Promise((resolve) => peer.listen(0, '127.0.0.1', resolve));
+    const { log } = await launch([
+      `const socket = require("tls").connect({ host: "127.0.0.1", port: ${peer.address().port}, rejectUnauthorized: false });`,
+      'socket.on("error", () => {});',
+      'socket.on("close", () => console.log("closed"));',
+    ].join('\n'));
+    assert.equal(log.exit, null, 'the open socket holds it past its boot');
+    await until(() => log.exit !== null, 'the exit after the peer drops it', 6_000);
+    assert.equal(log.stdout, 'closed\n');
+    assert.deepEqual(log.exit, { code: 0, reason: '' });
+    peer.close();
   },
 
   async watchHoldsAFinishedProgram() {

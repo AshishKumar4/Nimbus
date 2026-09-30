@@ -14,7 +14,13 @@ published independently in the `@nimbus-sh` npm scope.
   One that finishes during its boot reports before the boot answers, so the
   shell prints its exit code instead of "started (long-running)". The
   resident waits on handle releases rather than polling. `--watch` and
-  `--inspect-brk` still hold a process with nothing left, as in Node.
+  `--inspect-brk` still hold a process with nothing left, as in Node. An
+  open connection is a handle too: an HTTP exchange a server is answering
+  holds the process until its response closes, even after `server.close()`
+  (a handler that closed the server and was still streaming its reply to an
+  upload used to see the process exit under it), and so do a WebSocket
+  client and a `tls.connect` socket until they close or are unref'd. A
+  request body the handler never reads does not hold it.
 
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. node-static pipes a file with `{ end: false }` and ends
