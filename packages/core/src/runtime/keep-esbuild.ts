@@ -106,7 +106,7 @@ export function keepEsbuild<T extends { stop(): unknown }>(
  * an error's stack and messages (keep-esbuild-heap.mjs).
  */
 export async function startObservedEsbuild(
-  newEsbuild: (webAssembly: typeof WebAssembly) => StartableEsbuild,
+  newEsbuild: (webAssembly: object) => StartableEsbuild,
   wasmModule: WebAssembly.Module,
 ): Promise<KeptEsbuild<TransformEsbuild>> {
   let memory: unknown = null;
@@ -118,7 +118,7 @@ export async function startObservedEsbuild(
     for (const fail of pending) fail(stopped());
     pending.clear();
   };
-  const observed = Object.create(WebAssembly, {
+  const observed: object = Object.create(WebAssembly, {
     instantiate: {
       value: async (module: WebAssembly.Module, imports: WebAssembly.Imports) => {
         const gojs: WebAssembly.ModuleImports = imports.gojs ?? {};
@@ -167,10 +167,9 @@ export async function startObservedEsbuild(
           }
           // The kept promise holds its error too, and an error's unformatted
           // stack holds the frames that made it: the transform, and its input.
-          const failure = Object.assign(new Error(error.message), {
-            errors: Reflect.get(error, 'errors'),
-            warnings: Reflect.get(error, 'warnings'),
-          });
+          const errors: unknown = Reflect.get(error, 'errors');
+          const warnings: unknown = Reflect.get(error, 'warnings');
+          const failure = Object.assign(new Error(error.message), { errors, warnings });
           if (closed) Reflect.set(failure, 'transient', true);
           error.stack = '';
           Reflect.set(error, 'errors', []);
