@@ -1982,7 +1982,7 @@
     "packages/worker/public/_assets/tailwind-play.js": "176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15",
     "packages/worker/public/favicon.svg": "8b9e6679fd5f8a188498462eaa8dc966a4d18c160b5cedd2fec23128e339052b",
     "packages/worker/public/index.html": "b244caef0e983b1f28058b6d4db526728e9e494bfb2da18502fdf0466bc278c8",
-    "packages/worker/public/s/index.html": "4829141e5de4d24498669a944ba3975ab5204209786b96574ec77b5bdae232ac",
+    "packages/worker/public/s/index.html": "b4b32ce3250842ea943326e977602a869f15d4fabbe06cf17d8c184b5d0d31ed",
     "packages/worker/runtime-contracts/nimbus-threads.c": "f20fe40184b9b9664458b01a10536f4382f2141c468ffb8203cbb2649cc0a8be",
     "packages/worker/runtime-contracts/pyodide-workerd-adapter.json": "50b11f60f9bbf8d3e05a676ef19128e240ab53fc479d1f1a067b7799dd269410",
     "packages/worker/scripts/build-opencode-attach-entry.mjs": "a05a47b7fa9573d62e654dc7e2db76de922a9e5d73d10b02c48c3c4d217181ff",
