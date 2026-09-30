@@ -1,9 +1,9 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
- * growing with every module transformed or bundled and never released. A
- * host whose isolate is memory-constrained passes a `transformHost` and a
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows to fit the working
+ * set of its transforms/builds, and cannot shrink. A host whose isolate is
+ * memory-constrained passes a `transformHost` and a
  * `buildHost` so esbuild runs in another isolate (the session's is the
  * loader-backed esbuild facet); without them, esbuild runs here. build()'s
  * VFS resolver plugin always runs here, over this service's view.
@@ -16,6 +16,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { lowerAsyncModule } from './async-module-lowering.js';
+import { keepEsbuild, startObservedEsbuild } from './keep-esbuild.js';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
@@ -764,8 +765,8 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
     if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
         // CJS emit replaces import.meta with an empty object even when syntax
         // support is enabled. First erase TypeScript/JSX with the module format
-        // preserved, rewrite real MetaProperty nodes, then lower declarations.
-        // Both passes and the sole AST parse stay in the transform facet.
+        // preserved, bind metadata references, then lower declarations. Both
+        // passes and import analysis stay in the transform facet.
         // No ESM emit in between: it wraps a cell that assigns module.exports
         // in __commonJS and exports that as `default`, so the lowered cell's
         // module.exports would stop being the one the source assigned. The
@@ -819,12 +820,17 @@ async function buildWithEsbuild(esbuildApi, options, plugin) {
         metafile: result.metafile,
     };
 }
-/** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
+/**
+ * Source the esbuild facet evaluates next to esbuild: its transform and build
+ * helpers, and the esbuild it keeps for transforms (keep-esbuild.ts).
+ */
 export function generateEsbuildFacetRuntimeSource() {
     return [
         transformWithEsbuild.toString(),
         runTransformRequest.toString(),
         buildWithEsbuild.toString(),
+        keepEsbuild.toString(),
+        startObservedEsbuild.toString(),
     ].join('\n');
 }
 /**
@@ -873,11 +879,47 @@ function withProvidedModuleRewrite(code, options) {
         ? rewriteProvidedCommonJsModules(code)
         : code;
 }
+/**
+ * Source bytes and files one transform host call carries. Bounds CPU work as
+ * well as source retention per invocation: in live pi launch profiles the
+ * 1 MiB/256-file slice beginning at export-html/index.js exceeded the guest
+ * CPU budget even though its first 4 MiB rewrite-only chunk had completed.
+ * Smaller independent calls preserve every input and result, while preventing
+ * many small full transforms sharing one budget. It is also the unit a paced
+ * launch spends its turns in, so no one turn waits on more than a slice.
+ */
+export const TRANSFORM_SLICE_SOURCE_BYTES = 256 * 1024;
+export const TRANSFORM_SLICE_FILES = 32;
+/**
+ * `items` in order, cut into transform slices: each at most
+ * TRANSFORM_SLICE_FILES items and TRANSFORM_SLICE_SOURCE_BYTES of source,
+ * except that an item larger than the byte bound travels alone.
+ */
+export function transformSlices(items, sourceBytes) {
+    const slices = [];
+    let slice = [];
+    let bytes = 0;
+    for (const item of items) {
+        const size = sourceBytes(item);
+        if (slice.length > 0 && (bytes + size > TRANSFORM_SLICE_SOURCE_BYTES || slice.length >= TRANSFORM_SLICE_FILES)) {
+            slices.push(slice);
+            slice = [];
+            bytes = 0;
+        }
+        slice.push(item);
+        bytes += size;
+    }
+    if (slice.length > 0)
+        slices.push(slice);
+    return slices;
+}
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
     vfs;
     transformHost;
     buildHost;
+    /** See EsbuildServiceOptions.transformHostId. */
+    transformHostId;
     initialized = false;
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
@@ -887,6 +929,7 @@ export class EsbuildService {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
+        this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
     /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
     get transformsInIsolate() {

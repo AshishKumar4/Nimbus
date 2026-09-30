@@ -83,6 +83,12 @@ export interface RuntimeRunOpts {
     stdin?: {
         read(): Promise<string | null>;
     };
+    /**
+     * Running the program starts a server (server-launch.ts). Set only for a
+     * runtime that routes servers (RuntimeSpec.routesServers), when no .bin
+     * wrapper has decided residency already.
+     */
+    launchesServer?: boolean;
 }
 /** The VFS surface script resolution needs. */
 export interface ScriptResolutionFs {
@@ -147,6 +153,12 @@ export interface RuntimeSpec {
      * iff they share the runFresh contract.
      */
     supportsBinSpawn?: boolean;
+    /**
+     * The runner routes a program that starts a server to a resident process
+     * (node-runner.ts runFresh), so the handler reports whether it does
+     * (RuntimeRunOpts.launchesServer).
+     */
+    routesServers?: boolean;
 }
 /**
  * Minimal registry shape we depend on. Avoids importing the full vendored
