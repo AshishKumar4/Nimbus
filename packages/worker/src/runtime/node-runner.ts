@@ -43,7 +43,7 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { STDIN_SYNC_READ_BYTES, type ReadAheadReservation } from '@nimbus-sh/core/runtime/stdin-read.js';
+import { STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import type { StdinBytes } from '../facets/manager.js';
 
 /**
@@ -133,28 +133,26 @@ export async function runFresh(
     // invocation gets a fresh isolate; warm slots are reused only
     // for byte-identical re-invocations.
     // A pipe streams to the program as it arrives (facetMgr.exec). When its
-    // code reads stdin synchronously, the pipe is read ahead first, within
-    // what the session's budget grants (facetMgr.stdinReadAhead): a pipe that
-    // ends within it is the program's whole stdin before it starts (still
-    // streamed, from here). A launch granted nothing, because concurrent
-    // launches hold the budget, streams. A `< file` needs no read ahead: fd 0
-    // is the file.
+    // code reads stdin synchronously, the pipe is read ahead first, up to the
+    // bound, each piece charged to the session's budget as it is read
+    // (facetMgr.stdinReadAhead): a pipe that ends within it is the program's
+    // whole stdin before it starts (still streamed, from here). When the
+    // budget, held by concurrent launches' read ahead, cannot cover the next
+    // piece, the launch streams the rest. A `< file` needs no read ahead:
+    // fd 0 is the file.
     const { stdin, stdinReadsSync, stdinFile, ...execOpts } = opts;
     let stdinOpts: { stdinPipe?: StdinBytes; stdinWhole?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean } } = {};
-    let reservation: ReadAheadReservation | null = null;
+    let account: ReadAheadAccount | null = null;
     try {
       if (stdinFile) {
         stdinOpts = { stdinFile: { ...stdinFile, syncRead: stdinReadsSync === true } };
       } else if (stdin) {
         const source = stdinBytesOf(stdin);
-        reservation = stdinReadsSync ? facetMgr.stdinReadAhead.reserve(STDIN_SYNC_READ_BYTES + 1) : null;
-        if (reservation !== null && reservation.bytes > 0) {
-          // Up to the grant less one byte, and that byte shows whether the
-          // pipe ended there.
-          const ahead = await readAhead(source, reservation.bytes - 1, opts.signal);
+        if (stdinReadsSync) {
+          account = facetMgr.stdinReadAhead.open();
+          const ahead = await readAhead(source, STDIN_SYNC_READ_BYTES, account, opts.signal);
           if (ahead === null) return { exitCode: 130, stdout: '', stderr: '', longRunning: false };
-          reservation.release(reservation.bytes - ahead.chunks.reduce((n, c) => n + c.byteLength, 0));
-          stdinOpts = { stdinPipe: replaying(ahead.chunks, source, reservation), stdinWhole: ahead.ended };
+          stdinOpts = { stdinPipe: replaying(ahead.chunks, source, account), stdinWhole: ahead.ended };
         } else {
           stdinOpts = { stdinPipe: source };
         }
@@ -168,7 +166,7 @@ export async function runFresh(
       };
     } finally {
       // However the launch ended: exit, abort, or a launch that failed.
-      reservation?.release();
+      account?.give();
     }
   }
 
@@ -237,19 +235,33 @@ const STDIN_CHUNK_BYTES = 64 * 1024;
 
 /** A shell stream's bytes: exact through readBytes, else its text encoded. */
 function stdinBytesOf(stream: NonNullable<RunFreshOpts['stdin']>): StdinBytes {
+  if (stream.readBytes) return { readBytes: (maxLength) => stream.readBytes!(maxLength) };
+  // A text-only stream: at most `maxLength` bytes a read, as readBytes gives,
+  // so a read ahead holds no more than it charged to the budget.
   const encoder = new TextEncoder();
+  let rest: Uint8Array | null = null;
   return {
-    readBytes: stream.readBytes
-      ? (maxLength) => stream.readBytes!(maxLength)
-      : async () => { const text = await stream.read(); return text === null ? null : encoder.encode(text); },
+    readBytes: async (maxLength) => {
+      if (rest === null) {
+        const text = await stream.read();
+        if (text === null) return null;
+        rest = encoder.encode(text);
+      }
+      const piece = rest.subarray(0, maxLength);
+      rest = piece.byteLength < rest.byteLength ? rest.subarray(piece.byteLength) : null;
+      return piece;
+    },
   };
 }
 
 /**
- * Read `source` until it ends or holds more than `limit` bytes (at most
- * `limit` + 1); null when `signal` aborts first (the shell's Ctrl+C).
+ * Read `source` until it ends, holds more than `limit` bytes (at most
+ * `limit` + 1: the extra byte shows whether it ended exactly at the limit), or
+ * `account` cannot cover the next piece; null when `signal` aborts first (the
+ * shell's Ctrl+C). Each piece is charged to `account` before it is read, for
+ * no more than the read asks, and what the read did not return is given back.
  */
-async function readAhead(source: StdinBytes, limit: number, signal?: AbortSignal)
+async function readAhead(source: StdinBytes, limit: number, account: ReadAheadAccount, signal?: AbortSignal)
   : Promise<{ chunks: Uint8Array[]; ended: boolean } | null> {
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -260,10 +272,16 @@ async function readAhead(source: StdinBytes, limit: number, signal?: AbortSignal
     })
     : null;
   while (total <= limit) {
-    const next = source.readBytes(Math.min(STDIN_CHUNK_BYTES, limit + 1 - total));
+    const granted = account.take(Math.min(STDIN_CHUNK_BYTES, limit + 1 - total));
+    if (granted === 0) return { chunks, ended: false };
+    const next = source.readBytes(granted);
     const chunk = aborted ? await Promise.race([next, aborted]) : await next;
     if (chunk === 'aborted') return null;
-    if (chunk === null) return { chunks, ended: true };
+    if (chunk === null) {
+      account.give(granted);
+      return { chunks, ended: true };
+    }
+    account.give(granted - chunk.byteLength);
     chunks.push(chunk);
     total += chunk.byteLength;
   }
@@ -275,12 +293,12 @@ async function readAhead(source: StdinBytes, limit: number, signal?: AbortSignal
  * released as it is handed on, back to the session's budget too, so the read
  * ahead leaves this isolate as the program takes it.
  */
-function replaying(chunks: Uint8Array[], source: StdinBytes, reservation: ReadAheadReservation): StdinBytes {
+function replaying(chunks: Uint8Array[], source: StdinBytes, account: ReadAheadAccount): StdinBytes {
   return {
     readBytes: (maxLength) => {
       const next = chunks.shift();
       if (next === undefined) return source.readBytes(maxLength);
-      reservation.release(next.byteLength);
+      account.give(next.byteLength);
       return Promise.resolve(next);
     },
   };

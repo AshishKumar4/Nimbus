@@ -26,8 +26,10 @@ published independently in the `@nimbus-sh` npm scope.
   a slow writer; a pipe that ends within that is delivered whole
   (`cat package-lock.json | node -e "JSON.parse(fs.readFileSync(0))"`).
   The 16 MiB is one budget for the session, since the read ahead is held in
-  its Durable Object: concurrent launches share it, and one that cannot
-  reserve it streams its pipe. Past it a synchronous read fails with EAGAIN
+  its Durable Object: it counts the bytes concurrent launches hold, charged
+  as each piece is read, so one waiting on a slow writer does not starve
+  another, and a launch the budget cannot cover streams the rest of its
+  pipe. Past it a synchronous read fails with EAGAIN
   naming the bound and suggesting `< file`, while `process.stdin` still
   reads the pipe. All
   those forms, `fs.read` of fd 0 and `process.stdin` share one position in

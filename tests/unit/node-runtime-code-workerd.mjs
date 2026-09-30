@@ -328,6 +328,13 @@ try {
     const slow = await terminal.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 30_000);
     assert.equal(slow.status, 0, slow.stdout);
     assert.match(slow.stdout, /^SLOW 1$/m, slow.stdout);
+    // The session's read-ahead budget counts bytes held, not bytes a launch
+    // might read: one waiting on a slow writer does not starve another.
+    const slowA = `(sleep 6; echo '{"a":1}') | node -e 'console.log("SLOWA " + JSON.parse(require("fs").readFileSync(0)).a)'`;
+    const slowB = `(sleep 1; echo '{"b":2}') | node -e 'let r; try { r = JSON.parse(require("fs").readFileSync(0)).b; } catch (e) { r = "ERR " + e.code; } console.log("SLOWB " + r)'`;
+    const concurrent = await terminal.run(`{ ${slowA} & } ; sleep 2; ${slowB}; wait`, 90_000);
+    assert.match(concurrent.stdout, /^SLOWB 2$/m, `a concurrent launch's slow read ahead does not starve this one: ${concurrent.stdout.slice(-600)}`);
+    assert.match(concurrent.stdout, /^SLOWA 1$/m, concurrent.stdout.slice(-600));
     // A read ahead for a synchronous read is bounded, in memory as in time.
     const groupRssMiB = () => {
       let kib = 0;
