@@ -149,6 +149,18 @@
     .preview-bar button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; padding: 2px 4px; }
     .preview-bar button:hover { color: #c9d1d9; }
     #preview-frame { flex: 1; border: none; background: white; width: 100%; }
+    .preview-isolation {
+      display: flex; align-items: center; gap: 8px; padding: 4px 8px; flex-shrink: 0;
+      background: #1c2128; border-bottom: 1px solid #30363d; color: #c9d1d9; font-size: 11px;
+    }
+    .preview-isolation[hidden], .panel-preview.markdown-mode .preview-isolation { display: none; }
+    .preview-isolation-text { flex: 1; min-width: 0; }
+    .panel-preview.markdown-mode #btnOpenPreview { display: none; }
+    .preview-isolation button {
+      background: #21262d; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9;
+      cursor: pointer; font-size: 11px; padding: 2px 8px; white-space: nowrap;
+    }
+    .preview-isolation button:hover { border-color: #58a6ff; }
     #markdown-preview {
       display: none; flex: 1; min-height: 0; overflow: auto;
       background: #0d1117; color: #c9d1d9;
@@ -465,8 +477,13 @@
         <div class="preview-tabs" id="previewTabs" aria-label="Preview tabs"></div>
         <input class="url-bar" id="urlBar" value="" readonly>
         <button id="btnReloadPreview" title="Reload">&#8635;</button>
+        <button id="btnOpenPreview" title="Open in new tab">&#8599;</button>
       </div>
-      <iframe id="preview-frame" src="about:blank"></iframe>
+      <div class="preview-isolation" id="previewIsolation" role="status" hidden>
+        <span class="preview-isolation-text" id="previewIsolationText"></span>
+        <button type="button" id="btnPreviewIsolationAction"></button>
+      </div>
+      <iframe id="preview-frame" src="about:blank" allow="cross-origin-isolated"></iframe>
       <div id="markdown-preview" aria-label="Markdown preview">
         <article class="markdown-body" id="markdown-preview-body"></article>
       </div>
@@ -629,23 +646,28 @@
     // highlight.js) is dynamic-imported on first use: the Agent surface
     // mounts the chat, and the markdown preview pane shares its
     // renderMarkdown pipeline. One module, one renderer.
-    let agentChatModulePromise = null;
-    let agentChatRetries = 0;
-    function ensureAgentChat() {
-      if (!agentChatModulePromise) {
-        // A failed load (offline, transient 5xx) must not stick forever.
-        // Browsers cache FAILED module fetches in the page's module map,
-        // so a retry has to bust the URL, not just re-import it.
-        const url = '/_assets/agent-chat/agent-chat.js'
-          + (agentChatRetries > 0 ? '?retry=' + agentChatRetries : '');
-        agentChatModulePromise = import(url);
-        agentChatModulePromise.catch(() => {
-          agentChatRetries++;
-          agentChatModulePromise = null;
-        });
-      }
-      return agentChatModulePromise;
+    function lazyAssetModule(path) {
+      let modulePromise = null;
+      let retries = 0;
+      return () => {
+        if (!modulePromise) {
+          // A failed load (offline, transient 5xx) must not stick forever.
+          // Browsers cache FAILED module fetches in the page's module map,
+          // so a retry has to bust the URL, not just re-import it.
+          modulePromise = import(path + (retries > 0 ? '?retry=' + retries : ''));
+          modulePromise.catch(() => {
+            retries++;
+            modulePromise = null;
+          });
+        }
+        return modulePromise;
+      };
     }
+    const ensureAgentChat = lazyAssetModule('/_assets/agent-chat/agent-chat.js');
+    // The cross-origin isolation rules the router serves the shell by
+    // (src/_shared/preview-isolation.ts, bundled): which shell mode or tab
+    // can give a preview the isolation its own headers ask for.
+    const loadPreviewIsolation = lazyAssetModule('/_assets/preview-isolation/preview-isolation.js');
 
     // ── Layout controls ──
     function setLayout(mode) {
@@ -1985,6 +2007,7 @@
 
       previewPanel.classList.remove('markdown-mode');
       if (markdownPreview) markdownPreview.classList.remove('active');
+      refreshPreviewIsolation(tab.id).catch(reportPreviewIsolationFailure);
       if (previewFrame) {
         previewFrame.style.display = 'block';
         if (tab.type === 'port' && tab.attachPending) {
@@ -2083,8 +2106,10 @@
           label: ':' + entry.port,
           title: 'Port ' + entry.port,
           ...navigation,
+          // A different process on the port may answer with other headers.
+          ...(existing && existing.pid !== entry.pid ? { documentPolicy: null } : {}),
           running: true,
-        }, { focusNew: !existing });
+        }, { focusNew: !existing && (pendingPreviewFocus === null || pendingPreviewFocus === id) });
       }
 
       if (activeWasRemoved || !activePreviewTabId || !previewTabs.has(activePreviewTabId)) {
@@ -2167,6 +2192,13 @@
         previewBackendPort(previewBackendKind, stats),
         appTab.id,
       );
+      // The first stats after a mode switch name every live tab; the tab the
+      // switch was made for is focused if it is still among them.
+      if (stats && pendingPreviewFocus !== null) {
+        const focus = pendingPreviewFocus;
+        pendingPreviewFocus = null;
+        if (previewTabs.has(focus) && activePreviewTabId !== focus) activatePreviewTab(focus);
+      }
     }
 
     function reloadPreview() {
@@ -2175,6 +2207,7 @@
         Editor.refreshMarkdownPreview().catch(() => {});
         return;
       }
+      if (active) refreshPreviewIsolation(active.id, { force: true }).catch(reportPreviewIsolationFailure);
       if (active?.type === 'port' && active.attachPending) {
         refreshPortPreviewAttach(active);
         return;
@@ -2188,6 +2221,132 @@
         catch { previewFrame.src = previewFrame.src; }
       }
     }
+
+    // ── Cross-origin isolated previews ──
+    // A preview asks for isolation with its own document's COEP. The pane is
+    // an iframe, so it is isolated only inside an isolated shell (`?isolated=1`,
+    // COOP + COEP from the router), and the isolated shell blocks every
+    // preview that does not ask. Each iframe tab's document is asked once for
+    // its policy (HEAD: headers only), and the pane offers the shell mode, or
+    // the tab of its own, that shows the preview the way it asked. Moving
+    // between shell modes is a reload, so it is the user's to start.
+    const PREVIEW_FOCUS_KEY = 'nimbus.preview.focus:' + SESSION_ID;
+    let pendingPreviewFocus = null;
+    try {
+      pendingPreviewFocus = sessionStorage.getItem(PREVIEW_FOCUS_KEY);
+      sessionStorage.removeItem(PREVIEW_FOCUS_KEY);
+    } catch {}
+    const previewIsolationEl = document.getElementById('previewIsolation');
+    const previewIsolationText = document.getElementById('previewIsolationText');
+    const previewIsolationAction = document.getElementById('btnPreviewIsolationAction');
+    const PREVIEW_ISOLATION_OFFERS = {
+      'isolate-shell': {
+        text: 'This app asks for cross-origin isolation (SharedArrayBuffer, threads). The preview pane can give it that once the workspace reloads isolated.',
+        action: 'Reload isolated',
+      },
+      'default-shell': {
+        text: 'This workspace is running cross-origin isolated, which blocks previews that do not ask for isolation. Reload it normally to show this one.',
+        action: 'Reload normally',
+      },
+      'own-tab': {
+        text: 'This app asks for cross-origin isolation, which the preview pane cannot give it here. In a tab of its own it is isolated by its own headers.',
+        action: 'Open in new tab',
+      },
+    };
+    let previewIsolationOffer = 'none';
+    // The preview itself still loads as before; only the offer is missing.
+    function reportPreviewIsolationFailure(error) {
+      console.warn('[nimbus] preview isolation check failed:', error);
+    }
+
+    async function refreshPreviewIsolation(tabId, options = {}) {
+      const tab = previewTabs.get(tabId);
+      if (!tab || tab.type === 'markdown') return;
+      if (tab.documentPolicy && !options.force) {
+        await renderPreviewIsolation();
+        return;
+      }
+      const generation = (tab.documentPolicyGeneration || 0) + 1;
+      tab.documentPolicyGeneration = generation;
+      // The path door is same-origin, so its response headers are readable;
+      // the host door serves the same guest response untouched.
+      const documentUrl = tab.type === 'port' ? SESSION_PREFIX + '/port/' + Number(tab.port) + '/' : tab.url;
+      const [isolation, response] = await Promise.all([
+        loadPreviewIsolation(),
+        fetch(documentUrl, { method: 'HEAD', cache: 'no-store' }),
+      ]);
+      const current = previewTabs.get(tabId);
+      if (!current || current.documentPolicyGeneration !== generation) return;
+      current.documentPolicy = {
+        embedderPolicy: isolation.parseEmbedderPolicy(response.headers.get('Cross-Origin-Embedder-Policy')),
+        resourcePolicy: isolation.parseResourcePolicy(response.headers.get('Cross-Origin-Resource-Policy')),
+      };
+      await renderPreviewIsolation();
+    }
+
+    async function renderPreviewIsolation() {
+      const isolation = await loadPreviewIsolation();
+      const active = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
+      const tab = active && active.type !== 'markdown' && active.documentPolicy ? active : null;
+      previewIsolationOffer = tab
+        ? isolation.planPreviewPane(
+          tab.documentPolicy,
+          isolation.previewRelation(new URL(tab.url, location.href), new URL(location.href)),
+          {
+            requested: isolation.isIsolatedShellUrl(new URL(location.href)),
+            isolated: self.crossOriginIsolated === true,
+            topLevel: window.parent === window,
+          },
+        )
+        : 'none';
+      // Which tab the offer was decided for: the decision is asynchronous.
+      previewIsolationEl.dataset.tab = tab ? tab.id : '';
+      previewIsolationEl.dataset.offer = previewIsolationOffer;
+      const offer = PREVIEW_ISOLATION_OFFERS[previewIsolationOffer];
+      previewIsolationEl.hidden = !offer;
+      if (!offer) return;
+      previewIsolationText.textContent = offer.text;
+      previewIsolationAction.textContent = offer.action;
+    }
+
+    // A host-form port preview needs a fresh single-use attach URL (the one
+    // the pane used is spent); the path form rides the session cookie.
+    async function openPreviewInNewTab() {
+      const tab = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
+      if (!tab || tab.type === 'markdown') return;
+      const url = tab.type === 'port' ? await portPreviewUrl(tab.port) : tab.url;
+      window.open(new URL(url, location.href).href, '_blank', 'noopener');
+    }
+
+    previewIsolationAction.onclick = async () => {
+      if (previewIsolationOffer === 'own-tab') {
+        await openPreviewInNewTab();
+        return;
+      }
+      const isolation = await loadPreviewIsolation();
+      try { sessionStorage.setItem(PREVIEW_FOCUS_KEY, activePreviewTabId); } catch {}
+      await releaseTerminal();
+      location.replace(isolation.shellUrlInMode(location.href, previewIsolationOffer === 'isolate-shell'));
+    };
+
+    // The session has one browser terminal, and the page after the reload
+    // must be able to take it. A COOP change moves the page to a new
+    // browsing context group, and the old page's socket did not close with
+    // it (measured on a throwaway: the reloaded shell's /ws answered 409 for
+    // 30 s and more). Close it here and wait for the closing handshake, so
+    // the session has dropped the socket before the new page dials.
+    function releaseTerminal() {
+      const sock = ws;
+      // Inert from here on: every handler, the reconnect included, is gated
+      // on `sock === ws`.
+      ws = null;
+      if (!sock || sock.readyState === WebSocket.CLOSED) return Promise.resolve();
+      return new Promise((resolve) => {
+        sock.addEventListener('close', resolve, { once: true });
+        sock.close(1000, 'shell mode switch');
+      });
+    }
+    document.getElementById('btnOpenPreview').onclick = () => { openPreviewInNewTab(); };
 
     applyPreviewTarget('none', null).catch(() => {});
 

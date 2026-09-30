@@ -42,6 +42,7 @@ import {
   parsePreviewHost,
   readPreviewHostSuffix,
 } from '../_shared/preview-host.js';
+import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import {
   parseSessionRoute,
   forwardToSession,
@@ -562,10 +563,19 @@ export function createNimbusHandler(
         }
         if (env.ASSETS) {
           const shellUrl = new URL('/s/index.html', url.origin);
-          return env.ASSETS.fetch(new Request(shellUrl.toString(), {
+          const shell: Response = await env.ASSETS.fetch(new Request(shellUrl.toString(), {
             method: 'GET',
             headers: request.headers,
           }));
+          // The isolated shell is the same page with COOP + COEP, so a
+          // preview that asks for cross-origin isolation can have it in the
+          // pane (see _shared/preview-isolation.ts). Only on request: the
+          // default shell keeps no embedder policy, so every other preview,
+          // and every third-party frame inside one, loads as it always has.
+          if (!isIsolatedShellUrl(url)) return shell;
+          const headers = new Headers(shell.headers);
+          for (const [name, value] of Object.entries(ISOLATED_SHELL_HEADERS)) headers.set(name, value);
+          return new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers });
         }
         return new Response(
           '<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>',
