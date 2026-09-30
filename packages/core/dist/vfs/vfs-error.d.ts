@@ -41,9 +41,9 @@ export declare function syscallError(code: VfsErrorCode, syscall: string, path?:
 export declare function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsError;
 /**
  * An error from a layer that throws `{ code }` errors (the SQLite engine, a
- * process bridge) as Node's error for the call that met it: `syscall` on
- * `path` (a bridge error's own syscall and path when it names them), and
- * `dest` for a call that names two paths. The layer's error is the cause.
+ * process bridge, Node's own fs) as Node's error for the call that met it:
+ * `syscall` on `path`, and `dest` for a call that names two paths, each the
+ * error's own where it names one. The layer's error is the cause.
  * A VfsError naming a call or a path is returned as it is; one naming
  * neither (a storage quota's) keeps its words and gains this call's.
  * Anything without a known code is returned as it is.

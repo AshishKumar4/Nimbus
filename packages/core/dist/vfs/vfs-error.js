@@ -48,9 +48,9 @@ export function isVfsError(error, code) {
 }
 /**
  * An error from a layer that throws `{ code }` errors (the SQLite engine, a
- * process bridge) as Node's error for the call that met it: `syscall` on
- * `path` (a bridge error's own syscall and path when it names them), and
- * `dest` for a call that names two paths. The layer's error is the cause.
+ * process bridge, Node's own fs) as Node's error for the call that met it:
+ * `syscall` on `path`, and `dest` for a call that names two paths, each the
+ * error's own where it names one. The layer's error is the cause.
  * A VfsError naming a call or a path is returned as it is; one naming
  * neither (a storage quota's) keeps its words and gains this call's.
  * Anything without a known code is returned as it is.
@@ -64,7 +64,10 @@ export function toVfsError(error, syscall, path, dest) {
     const code = error?.code;
     if (typeof code === 'string' && code in VFS_ERRNO) {
         const own = error;
-        return syscallError(code, typeof own.syscall === 'string' ? own.syscall : syscall, typeof own.path === 'string' ? own.path : path, { dest, cause: error });
+        const call = typeof own.syscall === 'string' ? own.syscall : syscall;
+        // The caller's second path belongs to its own call, not to another the layer names.
+        const second = typeof own.dest === 'string' ? own.dest : call === syscall ? dest : undefined;
+        return syscallError(code, call, typeof own.path === 'string' ? own.path : path, { dest: second, cause: error });
     }
     return error;
 }

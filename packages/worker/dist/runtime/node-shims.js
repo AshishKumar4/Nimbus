@@ -1239,16 +1239,18 @@ const __fsMod = (() => {
   }
 
   // libuv's words for each code: Node's message is "ENOENT: no such file or
-  // directory, open 'x'".
+  // directory, open 'x'", and "rename 'a' -> 'b'" for a call naming two paths.
   const _errnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
-  function _fsErr(code, syscall, p) {
+  function _fsErr(code, syscall, p, dest) {
     const described = Object.prototype.hasOwnProperty.call(_errnoDescription, code) ? _errnoDescription[code] + ", " : "";
-    const err = new Error(code + ": " + described + syscall + " '" + p + "'");
+    const second = dest === undefined ? "" : " -> '" + dest + "'";
+    const err = new Error(code + ": " + described + syscall + " '" + p + "'" + second);
     err.code = code;
     const errno = Number(__constantsMod[code]);
     err.errno = Number.isInteger(errno) ? -errno : -1;
     err.syscall = syscall;
     err.path = String(p);
+    if (dest !== undefined) err.dest = String(dest);
     return err;
   }
 
@@ -1272,18 +1274,19 @@ const __fsMod = (() => {
    * specific reason is known. The authority's own words stay in the message
    * so classifying the failure does not cost the reason for it.
    */
-  function _mapSupervisorError(error, syscall, p) {
+  function _mapSupervisorError(error, syscall, p, dest) {
     const message = error && typeof error.message === "string" ? error.message : String(error);
     const declared = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
     const known = declared !== undefined && Number.isInteger(Number(__constantsMod[declared]));
-    const mapped = _fsErr(known ? declared : "EIO", syscall, p);
+    const mapped = _fsErr(known ? declared : "EIO", syscall, p, dest);
     if (!known && message) mapped.message += " — " + message;
     return mapped;
   }
 
-  async function _fsRpc(promise, syscall, p, use) {
+  /** \`dest\`: the second path of a call that names two (rename), as Node reports it. */
+  async function _fsRpc(promise, syscall, p, use, dest) {
     try { return await __nimbusUseRpcResult(promise, use); }
-    catch (error) { throw _mapSupervisorError(error, syscall, p); }
+    catch (error) { throw _mapSupervisorError(error, syscall, p, dest); }
   }
 
   // Every supervisor READ round trip the facet issues. The runner reports it
@@ -2327,7 +2330,7 @@ const __fsMod = (() => {
    */
   // \`method\` names the supervisor RPC when it differs from the syscall the
   // caller reports (lchown rides \`chown\`, rm rides \`fsRemove\`).
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method) {
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor[method || syscall] !== "function") { settle(); return null; }
@@ -2342,7 +2345,7 @@ const __fsMod = (() => {
       // what an unstamped cell already costs.
       await _ownMutation(
         absPath,
-        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result),
+        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result, dest),
       );
       _markVfsStale();
     };
@@ -3568,6 +3571,8 @@ const __fsMod = (() => {
       // also needs the destination's ancestors to exist and every pending
       // mutation beneath the source to have landed under the old name.
       () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
+      undefined,
+      newP,
     );
     _fenceVfsMutation(newAbs, queued);
     return queued;
@@ -3579,7 +3584,7 @@ const __fsMod = (() => {
   // U+FFFD, which is how a copied .png or .woff2 arrived corrupted.
   function copyFileSync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
-      throw _fsErr("EEXIST", "copyfile", dest);
+      throw _fsErr("EEXIST", "copyfile", src, dest);
     }
     writeFileSync(dest, readFileSync(src));
   }
@@ -4614,7 +4619,7 @@ const __fsMod = (() => {
     },
     copyFile: async (src, dest, mode) => {
       if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
-        throw _fsErr("EEXIST", "copyfile", dest);
+        throw _fsErr("EEXIST", "copyfile", src, dest);
       }
       await _writeFileAsync(dest, await _readFileAsync(src));
     },

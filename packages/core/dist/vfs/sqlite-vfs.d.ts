@@ -283,8 +283,8 @@ export declare class SqliteVfsTransactionTooLargeError extends Error {
     readonly code: "E2BIG";
     constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
 }
-/** The export format's version: rows naming chunks by sha256. */
-export declare const VFS_EXPORT_SCHEMA = 2;
+/** The export format's version: rows naming chunks by sha256, pages naming their snapshot. */
+export declare const VFS_EXPORT_SCHEMA = 3;
 /** One entry of an exported tree, relative to the export's root ('' is the root). */
 export interface VfsExportRow {
     path: string;
@@ -308,6 +308,12 @@ export interface VfsExportRow {
 }
 export interface VfsExportPage {
     schema: number;
+    /**
+     * The snapshot the page reads, as `<database incarnation>:<generation>`.
+     * Every page of one import comes from one: a page of another export is
+     * refused while an import is open at its destination.
+     */
+    source: string;
     root: string;
     /** Exclusive source inode high-water; also covers every pinned snapshot. */
     nextIno: number;
@@ -1000,6 +1006,8 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
+    /** Every import in progress, with the staging contents it holds. */
+    private openImports;
     /** Create a state-0 content in its own transaction and hold it live. */
     private beginStaging;
     /**
@@ -1341,15 +1349,16 @@ export declare class SqliteVFS {
     importCursor(dst: string): string | null;
     /**
      * Write one exported page under `dst`. The first page of an import needs
-     * `dst` absent or an empty directory, and records a vfs_jobs row; later
-     * pages continue it, and rows at or before importCursor(dst) are skipped,
-     * so a page replayed after a reset is harmless. Removing dst, or a
-     * directory above it, abandons the import in the same transaction: its job
-     * and staging go, a new import into dst starts clean, and a later page of
-     * the old one is refused. Every chunk given is re-hashed before anything
-     * is written; if the page names a chunk neither given nor stored, nothing
-     * is written and `want` lists what to send. Files too large for one
-     * transaction stage across several.
+     * `dst` absent or an empty directory, and records a vfs_jobs row naming
+     * its export (`page.source`); later pages of that export continue it, and
+     * rows at or before importCursor(dst) are skipped, so a page replayed
+     * after a reset is harmless. A page of another export is refused while the
+     * import is open. Removing dst, or a directory above it, abandons the
+     * import in the same transaction: its job and staging go, a new import
+     * into dst starts clean, and a later page of the old one is refused. Every
+     * chunk given is re-hashed before anything is written; if the page names a
+     * chunk neither given nor stored, nothing is written and `want` lists what
+     * to send. Files too large for one transaction stage across several.
      */
     importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>, options?: {
         lazy?: boolean;
@@ -1399,6 +1408,7 @@ export declare class SqliteVFS {
     private importJob;
     /** An import starts into an absent path or an empty directory under an existing one. */
     private assertImportTarget;
+    /** A job for a new import into `target`; its chunks stage afresh, never into an ended import's staging. */
     private beginImport;
     private hasChildren;
     private importedEntry;
@@ -1546,15 +1556,11 @@ export declare class SqliteVFS {
      */
     private executeTransactionPlan;
     /**
-     * End every import whose destination `deleted` removes, at dst or above
-     * it, inside the transaction removing it: the job row goes, and the
-     * staging contents the import held (a manifest cut off mid-import, chunks
-     * sent ahead of their pages) are queued in `queue`. A new import into dst
-     * then starts clean, and a page of the old one still in flight is refused
-     * (importPageNow). The root is never removed, so an import into it is
-     * never abandoned here.
+     * Let go of what ended imports held in memory, once the transaction that
+     * ended them has committed (an embedder's transaction: when it commits,
+     * so a rollback that brings a job back finds its staging still pinned).
      */
-    private abandonRemovedImports;
+    private releaseImports;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
      * Chunk rows as (id, hash, data) triples; size is length(data), so a row
