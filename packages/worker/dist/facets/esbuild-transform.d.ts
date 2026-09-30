@@ -9,8 +9,10 @@ export declare const ESBUILD_FACET_WORKER_ID: string;
  * (runtime/host-wasm.ts), shared with the facet rather than compiled again.
  * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
  * factory at startup, the one moment code may be generated from a string;
- * each call of the factory is a separate esbuild. `cliRunner` is the staged
- * runner of the `esbuild` command (fetchEsbuildCliRunner).
+ * each call of the factory is a separate esbuild, and takes the `WebAssembly`
+ * namespace its adapter instantiates through (`newEsbuild(webAssembly)`,
+ * the global one unless given). `cliRunner` is the staged runner of the
+ * `esbuild` command (fetchEsbuildCliRunner).
  */
 export declare function esbuildFacetWorkerCode(wasmModule: WebAssembly.Module, jsFnBody: string, cliRunner: string): WorkerCode;
 /**

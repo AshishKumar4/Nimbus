@@ -1,9 +1,9 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
- * growing with every module transformed or bundled and never released. A
- * host whose isolate is memory-constrained passes a `transformHost` and a
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows to fit the working
+ * set of its transforms/builds, and cannot shrink. A host whose isolate is
+ * memory-constrained passes a `transformHost` and a
  * `buildHost` so esbuild runs in another isolate (the session's is the
  * loader-backed esbuild facet); without them, esbuild runs here. build()'s
  * VFS resolver plugin always runs here, over this service's view.
@@ -143,6 +143,22 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
+/**
+ * Share an esbuild between calls; retire it past its wasm memory high-water
+ * mark and stop it only after its last in-flight caller finishes. Initialization
+ * failures are forgotten. Stopping a wasm instance does not eagerly free its
+ * memory: fresh instances per call leave memory awaiting GC and multiply the
+ * live working set under parallel preview requests. Go reuses freed heap, so
+ * reuse instead plateaus at the largest working set (Pi's 23 slices reached
+ * 52 MiB shared, versus 153 MiB of uncollected per-call instances, in V8).
+ * Self-contained for serialization into the transform facet.
+ */
+export declare function keepEsbuild<T extends {
+    stop(): unknown;
+}>(start: () => Promise<{
+    esbuild: T;
+    memoryBytes(): number;
+}>, highWaterBytes: number): <R>(use: (esbuild: T) => Promise<R>) => Promise<R>;
 /** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
 export declare function generateEsbuildFacetRuntimeSource(): string;
 /** One transform a {@link EsbuildTransformHost} runs. */
@@ -161,9 +177,10 @@ export type EsbuildTransformOutcome = TransformResult | {
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
- * esbuild-wasm's linear memory starts at ~28 MiB, grows with every module it
- * transforms and is never released, so an isolate that is memory-constrained
- * (a session supervisor) hands its transforms to one of these.
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows to the working set of
+ * the largest module it transforms and is never released, so an isolate that
+ * is memory-constrained (a session supervisor) hands its transforms to one of
+ * these.
  */
 export type EsbuildTransformHost = (requests: EsbuildTransformRequest[]) => Promise<EsbuildTransformOutcome[]>;
 /** esbuild's arguments to a resolve callback, as data another isolate can carry. */

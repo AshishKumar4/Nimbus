@@ -13,6 +13,14 @@ import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-
 import { esbuildWasmModule } from '../runtime/host-wasm.js';
 import { TransformStore } from './transform-store.js';
 /**
+ * The esbuild wasm's linear memory: measured over a pi launch's 23 slices, one
+ * instance stays at 52 MiB (from 28), and a single 858 KiB module takes a
+ * fresh one to 92 MiB (see `keepEsbuild`). Past this a transform esbuild takes
+ * no new call; 64 MiB is above what a launch's slices plateau at and below
+ * what a module large enough to matter reaches, so it retires on those alone.
+ */
+const TRANSFORM_ESBUILD_HIGH_WATER_BYTES = 64 * 1024 * 1024;
+/**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, and the `esbuild` command's runner, which its
  * build id keys. `wasmModule` and `newEsbuild` are bound by the lines before
@@ -20,34 +28,53 @@ import { TransformStore } from './transform-store.js';
  * dynamic-import rewrite transforms run after esbuild,
  * `globalThis.__nimbusRewriteDynamicImports`.
  *
- * Every call gets its own esbuild — its own Go instance, stopped when the call
- * ends — so what one call grew goes with it. esbuild's linear memory only
- * grows: shared across a launch's transforms, it climbed with each one, and
- * the facet's isolate was reset over its memory limit mid-launch (Vite's
- * dev-server closure). A transform call is one slice of a launch
- * (TRANSFORM_BATCH_SOURCE_BYTES), so a fresh instance costs one
- * instantiation of the precompiled module per slice.
+ * Transforms share one esbuild until its wasm memory passes
+ * TRANSFORM_ESBUILD_HIGH_WATER_BYTES (`keepEsbuild`): a fresh one per call left
+ * every stopped instance's 28-44 MiB waiting on a garbage collection, and
+ * parallel browser module requests exhausted the facet's memory and reset it.
+ * Reuse also avoids repeated startups between a launch's slices. A build or
+ * an `esbuild` command gets its own Go instance, dropped when it ends.
+ *
+ * esbuild instantiates its Go runtime itself and does not expose its memory;
+ * `startTransformEsbuild` hands its adapter a `WebAssembly` whose
+ * `instantiate` notes the instance's exported `mem`, which is how the high
+ * water is read. Nothing global is replaced.
  */
 const ESBUILD_FACET_BODY = [
     ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildFacetRuntimeSource(),
+    'async function startTransformEsbuild() {',
+    '  let memory = null;',
+    '  const observed = Object.create(WebAssembly, {',
+    '    instantiate: {',
+    '      value: async (module, imports) => {',
+    '        const instance = await WebAssembly.instantiate(module, imports);',
+    '        memory = instance.exports.mem;',
+    '        return instance;',
+    '      },',
+    '    },',
+    '  });',
+    '  const esbuild = newEsbuild(observed);',
+    '  await esbuild.initialize({ wasmModule, worker: false });',
+    '  if (!(memory instanceof WebAssembly.Memory)) throw new Error("esbuild did not export its linear memory");',
+    '  return { esbuild, memoryBytes: () => memory.buffer.byteLength };',
+    '}',
+    `const withTransformEsbuild = keepEsbuild(startTransformEsbuild, ${TRANSFORM_ESBUILD_HIGH_WATER_BYTES});`,
     'export class EsbuildFacet extends DurableObject {',
     '  async transformMany(requests) {',
-    '    const own = requests.some(({ options }) => !options?.rewriteOnly) ? newEsbuild() : null;',
-    '    if (own) await own.initialize({ wasmModule, worker: false });',
-    '    try {',
+    '    const transformAll = async (esbuild) => {',
     '      const outcomes = [];',
     '      for (const { code, options } of requests) {',
     '        try {',
-    '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports));',
+    '          outcomes.push(await runTransformRequest(esbuild, code, options, globalThis.__nimbusRewriteDynamicImports));',
     '        } catch (e) {',
     '          outcomes.push({ error: String((e && e.message) || e) });',
     '        }',
     '      }',
     '      return outcomes;',
-    '    } finally {',
-    '      if (own) await own.stop();',
-    '    }',
+    '    };',
+    '    // A call of rewrites alone needs no esbuild, and starts none.',
+    '    return requests.some(({ options }) => !options?.rewriteOnly) ? withTransformEsbuild(transformAll) : transformAll(null);',
     '  }',
     '  async build(options, plugin) {',
     '    const own = newEsbuild();',
@@ -71,14 +98,17 @@ export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:$
  * (runtime/host-wasm.ts), shared with the facet rather than compiled again.
  * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
  * factory at startup, the one moment code may be generated from a string;
- * each call of the factory is a separate esbuild. `cliRunner` is the staged
- * runner of the `esbuild` command (fetchEsbuildCliRunner).
+ * each call of the factory is a separate esbuild, and takes the `WebAssembly`
+ * namespace its adapter instantiates through (`newEsbuild(webAssembly)`,
+ * the global one unless given). `cliRunner` is the staged runner of the
+ * `esbuild` command (fetchEsbuildCliRunner).
  */
 export function esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner) {
     const source = [
         'import { DurableObject } from "cloudflare:workers";',
         'import wasmModule from "esbuild.wasm";',
-        `const newEsbuild = new Function(${JSON.stringify(jsFnBody)});`,
+        `const esbuildFactory = new Function("WebAssembly", ${JSON.stringify(jsFnBody)});`,
+        'const newEsbuild = (webAssembly = WebAssembly) => esbuildFactory(webAssembly);',
         cliRunner,
         ESBUILD_FACET_BODY,
     ].join('\n');
