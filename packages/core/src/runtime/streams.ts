@@ -21,6 +21,16 @@ const __streamMod = (() => {
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
 
+  // Node's errorOrDestroy (lib/internal/streams/destroy.js): a destroyed
+  // stream reports no further errors, such as its pending writes' failures.
+  // An 'error' with no listener throws (node:events), so emitting one after
+  // destroy crashes a program Node leaves running.
+  function _errorUnlessDestroyed(stream, err) {
+    const r = stream._readableState, w = stream._writableState;
+    if ((r && r.destroyed) || (w && w.destroyed)) return;
+    stream.emit('error', err);
+  }
+
   // ── Readable ────────────────────────────────────────────────────────
   //
   // Node's read machinery is a PULL: the consumer's demand is what causes
@@ -312,7 +322,7 @@ const __streamMod = (() => {
       if (state.ended) {
         const err = new Error('write after end');
         if (callback) callback(err);
-        this.emit('error', err);
+        _errorUnlessDestroyed(this, err);
         return false;
       }
       if (typeof chunk === 'string') chunk = _enc.encode(chunk);
@@ -326,7 +336,7 @@ const __streamMod = (() => {
       state.bufferedLength += (chunk?.length || 0);
       this._write(chunk, encoding, (err) => {
         state.bufferedLength -= (chunk?.length || 0);
-        if (err) { if (callback) callback(err); this.emit('error', err); return; }
+        if (err) { if (callback) callback(err); _errorUnlessDestroyed(this, err); return; }
         if (callback) callback();
         if (state.needDrain && state.bufferedLength < state.highWaterMark) {
           state.needDrain = false;
@@ -349,7 +359,7 @@ const __streamMod = (() => {
       state.ended = true;
       this._final((err) => {
         state.finished = true;
-        if (err) this.emit('error', err);
+        if (err) _errorUnlessDestroyed(this, err);
         this.emit('finish');
         if (callback) callback(err);
       });

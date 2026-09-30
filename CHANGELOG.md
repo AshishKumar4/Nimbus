@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npx http-server` serves. Node guests use workerd's native `node:events`
+  instead of a hand-rolled `class EE`, so `EventEmitter.call(this)` with
+  `util.inherits` (union, and many older packages) works, native HTTP
+  servers are instances of the `EventEmitter` userland requires, and the
+  static `once`/`on`/`captureRejections`/`setMaxListeners` helpers are
+  Node's. Shim streams no longer emit `'error'` after being destroyed
+  (Node's errorOrDestroy); with a real emitter that error would throw.
+
 - Node HTTP guests see full request header values again. workerd's native
   server keeps only the text before the first unquoted comma of Host,
   Content-Type, User-Agent, Referer, Authorization, Proxy-Authorization,
