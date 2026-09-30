@@ -1,9 +1,9 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
- * growing with every module transformed or bundled and never released. A
- * host whose isolate is memory-constrained passes a `transformHost` and a
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows to fit the working
+ * set of its transforms/builds, and cannot shrink. A host whose isolate is
+ * memory-constrained passes a `transformHost` and a
  * `buildHost` so esbuild runs in another isolate (the session's is the
  * loader-backed esbuild facet); without them, esbuild runs here. build()'s
  * VFS resolver plugin always runs here, over this service's view.
@@ -1191,6 +1191,50 @@ async function buildWithEsbuild(esbuildApi, options, plugin) {
         metafile: result.metafile,
     };
 }
+/**
+ * Share an esbuild between calls; retire it past its wasm memory high-water
+ * mark and stop it only after its last in-flight caller finishes. Initialization
+ * failures are forgotten. Stopping a wasm instance does not eagerly free its
+ * memory: fresh instances per call leave memory awaiting GC and multiply the
+ * live working set under parallel preview requests. Go reuses freed heap, so
+ * reuse instead plateaus at the largest working set (Pi's 23 slices reached
+ * 52 MiB shared, versus 153 MiB of uncollected per-call instances, in V8).
+ * Self-contained for serialization into the transform facet.
+ */
+export function keepEsbuild(start, highWaterBytes) {
+    let current = null;
+    return async (use) => {
+        if (current === null) {
+            const fresh = { started: start(), users: 0, retired: false };
+            current = fresh;
+            fresh.started.catch(() => { if (current === fresh)
+                current = null; });
+        }
+        const kept = current;
+        kept.users++;
+        let running;
+        try {
+            running = await kept.started;
+        }
+        catch (error) {
+            kept.users--;
+            throw error;
+        }
+        try {
+            return await use(running.esbuild);
+        }
+        finally {
+            kept.users--;
+            if (!kept.retired && running.memoryBytes() > highWaterBytes) {
+                kept.retired = true;
+                if (current === kept)
+                    current = null;
+            }
+            if (kept.retired && kept.users === 0)
+                await running.esbuild.stop();
+        }
+    };
+}
 /** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
 export function generateEsbuildFacetRuntimeSource() {
     return [
@@ -1204,6 +1248,7 @@ export function generateEsbuildFacetRuntimeSource() {
         transformWithEsbuild.toString(),
         runTransformRequest.toString(),
         buildWithEsbuild.toString(),
+        keepEsbuild.toString(),
     ].join('\n');
 }
 /**
