@@ -363,6 +363,29 @@ try {
       const run = await terminal.run(`echo hi | node -e 'console.log("FORM " + JSON.stringify(${read}))'`, 30_000);
       assert.match(run.stdout, form === 'readSync' ? /^FORM "hi\|\\n"$/m : /^FORM "hi\\n"$/m, `${form}: ${run.stdout}`);
     }
+    // A 2 MiB lockfile read synchronously, through `< file` (fd 0 is the
+    // file, no read ahead) and through a pipe (read ahead, within the bound).
+    await terminal.run(`cd ${W} && node -e 'const o = {}; for (let i = 0; i < 20000; i++) o["pkg" + i] = { version: "1.0." + i, resolved: "https://registry.npmjs.org/pkg" + i + "/-/pkg-1.0." + i + ".tgz", integrity: "sha512-abcdefghij" }; require("fs").writeFileSync("lock.json", JSON.stringify(o)); console.log("LOCKBYTES " + require("fs").statSync("lock.json").size)'`);
+    const lockParse = `node -e 'console.log("LOCK " + Object.keys(JSON.parse(require("fs").readFileSync(0))).length)'`;
+    for (const [how, line] of [['< file', `${lockParse} < lock.json`], ['cat |', `cat lock.json | ${lockParse}`]]) {
+      const run = await terminal.run(`cd ${W} && ${line}`, 60_000);
+      assert.equal(run.status, 0, `${how}: ${run.stdout}`);
+      assert.match(run.stdout, /^LOCK 20000$/m, `${how} a 2 MiB lockfile: ${run.stdout}`);
+    }
+    // `< file` streams from the file and reads it at a position; with a
+    // redirect's offset shared with a shell read first.
+    const fileStream = await terminal.run(`cd ${W} && node -e 'let n = 0; process.stdin.on("data", (d) => { n += d.length; }).on("end", () => console.log("FILESTREAM " + n))' < lock.json`, 60_000);
+    assert.equal(/^FILESTREAM (\d+)$/m.exec(fileStream.stdout)?.[1], /^LOCKBYTES (\d+)$/m.exec((await terminal.run(`cd ${W} && node -e 'console.log("LOCKBYTES " + require("fs").statSync("lock.json").size)'`)).stdout)?.[1], fileStream.stdout);
+    const filePos = await terminal.run(`cd ${W} && printf 'abcdef' > six.txt && node -e 'const b = Buffer.alloc(2); const fs = require("fs"); fs.readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("FILEPOS " + b + "|" + s))' < six.txt`, 30_000);
+    assert.match(filePos.stdout, /^FILEPOS ab\|cdef$/m, filePos.stdout);
+    // Past the read ahead, a synchronous read of a pipe fails naming the
+    // bound and the redirect that avoids it.
+    const overBound = await terminal.run(`yes | node -e 'require("fs").readFileSync(0)'`, 90_000);
+    assert.notEqual(overBound.status, 0, overBound.stdout);
+    assert.match(overBound.stdout, /first \d+ MiB[\s\S]*< file/, `the refusal names the bound and suggests < file: ${overBound.stdout.slice(-600)}`);
+    // A partial synchronous read leaves the rest of fd 0 to process.stdin.
+    const mixed = await terminal.run(`echo hi | node -e 'const b = Buffer.alloc(2); const n = require("fs").readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("MIX " + JSON.stringify([b.subarray(0, n).toString(), s])))'`, 30_000);
+    assert.match(mixed.stdout, /^MIX \["hi","\\n"\]$/m, `readSync then 'data': ${mixed.stdout}`);
     await terminal.run(`cd ${W} && node -e 'require("fs").writeFileSync("bin.dat", Buffer.from([255, 254, 0, 128]))'`);
     const binSync = await terminal.run(`cd ${W} && node -e 'console.log("BIN " + JSON.stringify([...require("fs").readFileSync(0)]))' < bin.dat`);
     assert.match(binSync.stdout, /^BIN \[255,254,0,128\]$/m, `readFileSync(0) of a binary redirect: ${binSync.stdout}`);

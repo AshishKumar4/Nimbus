@@ -10,8 +10,9 @@
 //   every read saw empty stdin and readFileSync(0) threw ENOENT for a file
 //   named "0". It streams: a program that ignores a pipe that never ends
 //   (`yes`, `tail -f`) exits at once instead of waiting for its end, while
-//   a program whose code reads stdin synchronously gets all of it first,
-//   however slow its writer.
+//   a program whose code reads stdin synchronously gets all of a pipe first
+//   (within the read ahead), however slow its writer, and all of a
+//   `< file`, which is the file itself.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell, fetchPort, sleep } from '../../_driver.mjs';
 
@@ -90,6 +91,24 @@ try {
   a.check('readFileSync(0) of a binary redirect is byte-exact', line(binSync, 'BIN') === 'BIN [255,254,0,128]', binSync.slice(-400));
   const binData = (await t.run(`cd ${DIR} && node -e 'const c = []; process.stdin.on("data", (d) => c.push(...d)).on("end", () => console.log("BINDATA " + JSON.stringify(c)))' < bin.dat`, 90_000)).output;
   a.check("'data' of a binary redirect is byte-exact", line(binData, 'BINDATA') === 'BINDATA [255,254,0,128]', binData.slice(-400));
+  // A 2 MiB lockfile read synchronously: `< file` is the file itself, and a
+  // pipe fits in the read ahead.
+  await t.run(`cd ${DIR} && node -e 'const o = {}; for (let i = 0; i < 20000; i++) o["pkg" + i] = { version: "1.0." + i, resolved: "https://registry.npmjs.org/pkg" + i + "/-/pkg-1.0." + i + ".tgz", integrity: "sha512-abcdefghij" }; require("fs").writeFileSync("lock.json", JSON.stringify(o))'`, 90_000);
+  const lockParse = `node -e 'console.log("LOCK " + Object.keys(JSON.parse(require("fs").readFileSync(0))).length)'`;
+  for (const [how, cmd] of [['< file', `${lockParse} < lock.json`], ['cat |', `cat lock.json | ${lockParse}`]]) {
+    const out = (await t.run(`cd ${DIR} && ${cmd}`, 90_000)).output;
+    a.check(`a 2 MiB lockfile through ${how} parses`, line(out, 'LOCK') === 'LOCK 20000', out.slice(-400));
+  }
+  // `< file` reads at a position and streams from there.
+  const filePos = (await t.run(`cd ${DIR} && printf 'abcdef' > six.txt && node -e 'const b = Buffer.alloc(2); require("fs").readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("FILEPOS " + b + "|" + s))' < six.txt`, 90_000)).output;
+  a.check('< file: readSync then process.stdin continue at one position', line(filePos, 'FILEPOS') === 'FILEPOS ab|cdef', filePos.slice(-400));
+  // A pipe: a partial synchronous read leaves the rest to process.stdin.
+  const mixed = (await t.run(`echo hi | node -e 'const b = Buffer.alloc(2); const n = require("fs").readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("MIX " + JSON.stringify([b.subarray(0, n).toString(), s])))'`, 90_000)).output;
+  a.check('a pipe: readSync then process.stdin continue at one position', line(mixed, 'MIX') === 'MIX ["hi","\\n"]', mixed.slice(-400));
+  // Past the read ahead, a synchronous read of a pipe names the bound and the redirect.
+  let over;
+  try { over = (await t.run(`yes | node -e 'require("fs").readFileSync(0)'`, 120_000)).output; } catch (e) { over = `TIMEOUT ${String(e.message).slice(-300)}`; t.send('\x03'); }
+  a.check('a pipe past the read ahead fails naming the bound and < file', /first \d+ MiB[\s\S]*< file/.test(over), over.slice(-600));
   const lines = (await t.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 90_000)).output;
   a.check('yes | head -3 streams three lines to for-await', line(lines, 'LINES') === 'LINES "y\\ny\\ny\\n"', lines.slice(-400));
 } finally {

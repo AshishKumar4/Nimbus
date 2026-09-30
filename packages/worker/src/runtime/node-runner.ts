@@ -80,6 +80,8 @@ export interface RunFreshOpts {
   stdin?: { read(): Promise<string | null>; readBytes?(maxLength: number): Promise<Uint8Array | null> };
   /** Its code reads stdin synchronously (RuntimeRunOpts.stdinReadsSync). */
   stdinReadsSync?: boolean;
+  /** A `< file` redirect: fd 0 is this file (RuntimeRunOpts.stdinFile). */
+  stdinFile?: { path: string; offset: number };
   captureOutput?: boolean;
   /** Display label for the long-running spawn. Defaults to the
    *  command + filename. Surfaced in the [started (long-running)]
@@ -130,17 +132,21 @@ export async function runFresh(
     // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
     // invocation gets a fresh isolate; warm slots are reused only
     // for byte-identical re-invocations.
-    // A pipe or redirect streams to the program as it arrives (facetMgr.exec),
-    // unless its code reads stdin synchronously: then the pipe is read ahead,
-    // and delivered whole if it ends within the bound.
-    const { stdin, stdinReadsSync, ...execOpts } = opts;
-    let stdinOpts: { stdinBytes?: Uint8Array; stdinPipe?: StdinBytes } = {};
-    if (stdin) {
+    // A pipe streams to the program as it arrives (facetMgr.exec). When its
+    // code reads stdin synchronously, the pipe is read ahead first, up to the
+    // bound: a pipe that ends within it is the program's whole stdin before it
+    // starts (still streamed, from here). A `< file` needs no read ahead: fd 0
+    // is the file.
+    const { stdin, stdinReadsSync, stdinFile, ...execOpts } = opts;
+    let stdinOpts: { stdinPipe?: StdinBytes; stdinWhole?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean } } = {};
+    if (stdinFile) {
+      stdinOpts = { stdinFile: { ...stdinFile, syncRead: stdinReadsSync === true } };
+    } else if (stdin) {
       const source = stdinBytesOf(stdin);
       if (stdinReadsSync) {
         const ahead = await readAhead(source, STDIN_SYNC_READ_BYTES, opts.signal);
         if (ahead === null) return { exitCode: 130, stdout: '', stderr: '', longRunning: false };
-        stdinOpts = ahead.ended ? { stdinBytes: concatBytes(ahead.chunks) } : { stdinPipe: replaying(ahead.chunks, source) };
+        stdinOpts = { stdinPipe: replaying(ahead.chunks, source), stdinWhole: ahead.ended };
       } else {
         stdinOpts = { stdinPipe: source };
       }
@@ -252,14 +258,11 @@ async function readAhead(source: StdinBytes, limit: number, signal?: AbortSignal
   return { chunks, ended: false };
 }
 
-/** `source` with `chunks` read from it already put back in front. */
+/**
+ * `source` with `chunks` read from it already put back in front, each
+ * released as it is handed on, so the read ahead leaves this isolate as the
+ * program takes it.
+ */
 function replaying(chunks: Uint8Array[], source: StdinBytes): StdinBytes {
   return { readBytes: (maxLength) => chunks.length > 0 ? Promise.resolve(chunks.shift()!) : source.readBytes(maxLength) };
-}
-
-function concatBytes(chunks: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-  let at = 0;
-  for (const c of chunks) { out.set(c, at); at += c.byteLength; }
-  return out;
 }

@@ -13,16 +13,20 @@ published independently in the `@nimbus-sh` npm scope.
   `readFileSync(0)` threw ENOENT on a file named "0". The pipe streams
   through the process's input channel as it arrives, never held for its end:
   a program that ignores `yes` or `tail -f` exits at once. Bytes arrive
-  exactly as written (binary input is not decoded as text). A one-shot
-  program whose code (the entry or its own modules it loads directly) reads
-  stdin synchronously — `readFileSync(0)`, `readFileSync('/dev/stdin')` (or
-  `/dev/fd/0`, `/proc/self/fd/0`), `readFileSync(process.stdin.fd)`,
-  `readSync` of fd 0 — has up to 1 MiB of it read before it starts, as
-  Node's blocking read would wait for a slow writer; a pipe that ends
-  within that is delivered whole. Past it, or for a server, the program
-  starts with the pipe streaming, and a synchronous read gets what fd 0
-  held at the start, then EAGAIN while the writer still owes more. All
-  those forms, and `fs.read` of fd 0, read one shared position in stdin.
+  exactly as written (binary input is not decoded as text). A `< file`
+  redirect's fd 0 is the file itself: synchronous reads read it at a
+  position and `process.stdin` streams it, with no read ahead and no stdin
+  bound. A one-shot program whose code (the entry or its own modules it
+  loads directly) reads stdin synchronously — `readFileSync(0)`,
+  `readFileSync('/dev/stdin')` (or `/dev/fd/0`, `/proc/self/fd/0`),
+  `readFileSync(process.stdin.fd)`, `readSync` of fd 0 — has up to 16 MiB
+  of a pipe read before it starts, as Node's blocking read would wait for
+  a slow writer; a pipe that ends within that is delivered whole
+  (`cat package-lock.json | node -e "JSON.parse(fs.readFileSync(0))"`).
+  Past it a synchronous read fails with EAGAIN naming the bound and
+  suggesting `< file`, while `process.stdin` still reads the pipe. All
+  those forms, `fs.read` of fd 0 and `process.stdin` share one position in
+  stdin, so a program can read a header synchronously and stream the rest.
   `process.stdin.listeners('data')` lists a `once` listener as the
   program's function, as in Node.
 

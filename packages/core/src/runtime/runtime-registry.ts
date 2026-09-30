@@ -94,10 +94,17 @@ export interface RuntimeRunOpts {
   /**
    * The program's code reads stdin synchronously (stdin-read.ts), which
    * cannot wait for bytes arriving after it runs: a one-shot runner reads up
-   * to STDIN_SYNC_READ_BYTES of the pipe before starting it. Never set for a
-   * program that starts a server.
+   * to STDIN_SYNC_READ_BYTES of a pipe before starting it, or has the program
+   * read its `< file` whole first. Never set for a program that starts a
+   * server.
    */
   stdinReadsSync?: boolean;
+  /**
+   * The regular file a `< file` redirect opened, and the offset its stream is
+   * at: the program's fd 0 is that file (read at a position, streamed as it
+   * is read), in place of `stdin`.
+   */
+  stdinFile?: { path: string; offset: number };
   /**
    * Running the program starts a server (server-launch.ts). Set only for a
    * runtime that routes servers (RuntimeSpec.routesServers), when no .bin
@@ -321,9 +328,13 @@ export function buildRuntimeHandler(
     // (RuntimeRunOpts.stdinReadsSync). A server is resident and never waits
     // for its stdin, so its code is not asked.
     const programStdin = async (code: string, path: string | null, dir: string, launchesServer: boolean)
-      : Promise<Pick<RuntimeRunOpts, 'stdin' | 'stdinReadsSync'>> => {
+      : Promise<Pick<RuntimeRunOpts, 'stdin' | 'stdinReadsSync' | 'stdinFile'>> => {
       if (pipedStdin === undefined) return {};
-      if (launchesServer || binSpawn?.forceLongRunning === true) return { stdin: pipedStdin };
+      // A `< file` is the file itself; nothing is read from its stream here.
+      const source = pipedStdin.file
+        ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+        : { stdin: pipedStdin };
+      if (launchesServer || binSpawn?.forceLongRunning === true) return source;
       const key = normalizeVfsPath(dir);
       const readsSync = await programReadsStdinSync({
         source: code,
@@ -331,7 +342,7 @@ export function buildRuntimeHandler(
         dir: key,
         packageRoot: (await nearestPackageDir(fs, key)) ?? key,
       }, programHost);
-      return readsSync ? { stdin: pipedStdin, stdinReadsSync: true } : { stdin: pipedStdin };
+      return readsSync ? { ...source, stdinReadsSync: true } : source;
     };
 
     // ── Flag-span computation (primitive #1) ──

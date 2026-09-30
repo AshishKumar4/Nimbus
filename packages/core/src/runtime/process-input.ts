@@ -159,9 +159,29 @@ export class ProcessInputStore {
     if (!state) return { data: '', ended: true };
     state.reading = true;
 
-    const next = state.packets.shift();
+    let next = state.packets.shift();
     if (next !== undefined) {
       state.bytes -= next.data.length;
+      // Piped bytes queued back to back leave in one packet, one round trip:
+      // a pipe is written a piece at a time, and a reader wants all it can get.
+      if (next.data instanceof Uint8Array && isPlainData(next)) {
+        const run: Uint8Array[] = [next.data];
+        let size = next.data.byteLength;
+        while (state.packets.length > 0) {
+          const peek = state.packets[0];
+          if (!(peek.data instanceof Uint8Array) || !isPlainData(peek)) break;
+          state.packets.shift();
+          state.bytes -= peek.data.byteLength;
+          run.push(peek.data);
+          size += peek.data.byteLength;
+        }
+        if (run.length > 1) {
+          const data = new Uint8Array(size);
+          let at = 0;
+          for (const piece of run) { data.set(piece, at); at += piece.byteLength; }
+          next = { data, ended: false };
+        }
+      }
       for (const wake of state.drained.splice(0)) wake();
       return next;
     }
@@ -179,4 +199,14 @@ export class ProcessInputStore {
       state.waiters.push(waiter);
     });
   }
+}
+
+/** A packet that carries only data: no end, signal or resize. */
+function isPlainData(packet: ProcessInputPacket): boolean {
+  for (const key of Object.keys(packet)) {
+    if (key === 'data') continue;
+    if (key === 'ended' && packet.ended === false) continue;
+    return false;
+  }
+  return true;
 }

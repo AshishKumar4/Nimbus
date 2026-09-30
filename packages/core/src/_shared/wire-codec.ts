@@ -4,7 +4,7 @@ type WireScalar = string | number | boolean | null | undefined;
 export type WireEncoded = WireScalar | WireEncoded[] | { [key: string]: WireEncoded };
 export type WireDecoded = WireScalar | Uint8Array | WireDecoded[] | { [key: string]: WireDecoded };
 
-export function bytesToBase64(bytes: Uint8Array): string {
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
