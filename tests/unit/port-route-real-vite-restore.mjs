@@ -200,6 +200,23 @@ function pathRequest(path, init = {}) {
   console.log('  [5] parallel wake requests coalesce onto one real-vite boot');
 }
 
+// 6. The preview door reports the isolation headers of the document it
+//    served a navigation, for the shell's offer; `/preview/?port=N` is that
+//    port's document (the port registry's to report), not the door's.
+{
+  const self = makeWokenSession(HIBERNATED_REAL);
+  self.appDocuments = { vite: null, worker: null };
+  const navigate = { headers: { 'Sec-Fetch-Mode': 'navigate' } };
+  await handleFetch(self, pathRequest('/preview/', navigate));
+  assert.deepEqual(self.appDocuments.vite, { embedderPolicy: 'unsafe-none', openerPolicy: 'unsafe-none', resourcePolicy: null });
+  const recorded = self.appDocuments.vite;
+  await handleFetch(self, pathRequest(`/preview/?port=${VITE_PORT}`, navigate));
+  assert.equal(self.appDocuments.vite, recorded, '/preview/?port=N does not report for the preview door');
+  await handleFetch(self, pathRequest('/preview/main.js', { headers: { 'Sec-Fetch-Mode': 'no-cors' } }));
+  assert.equal(self.appDocuments.vite, recorded, 'a subresource is not the document');
+  console.log('  [6] /preview/ reports its document policy; ?port=N and subresources do not');
+}
+
 await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-real-vite-restore OK: real-vite persists, restores everywhere, and serves HMR in-DO');

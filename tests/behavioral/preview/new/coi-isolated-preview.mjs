@@ -87,6 +87,19 @@ async function appResult(target) {
   return JSON.parse(await handle.jsonValue());
 }
 
+/**
+ * The offer's own readiness: the strip is showing `offer` for `tabId`. Every
+ * click on the offer waits for this first, so it never lands while the pane
+ * shows another tab (a markdown tab hides the strip).
+ */
+function offerReady(page, tabId, offer) {
+  return page.waitForFunction((tabId, offer) => {
+    const notice = document.getElementById('previewIsolation');
+    return notice.dataset.tab === tabId && notice.dataset.offer === offer && !notice.hidden
+      && document.getElementById('btnPreviewIsolationAction').getBoundingClientRect().width > 0;
+  }, { timeout: 30_000 }, tabId, offer);
+}
+
 /** Save a screenshot for review when NIMBUS_PROBE_SCREENSHOTS names a directory. */
 async function screenshot(page, name) {
   const dir = process.env.NIMBUS_PROBE_SCREENSHOTS;
@@ -206,6 +219,7 @@ try {
   await page.evaluate((port) => {
     [...document.querySelectorAll('#previewTabs .preview-tab')].find((tab) => tab.textContent.includes(':' + port))?.click();
   }, PORT);
+  await offerReady(page, 'port:' + PORT, 'isolate-shell');
   const declined = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), 10_000);
     page.once('dialog', async (dialog) => {
@@ -217,7 +231,8 @@ try {
     page.click('#btnPreviewIsolationAction');
   });
   a.check('the switch asks before discarding unsaved changes', typeof declined === 'string' && declined.includes('notes.js'), `dialog=${declined}`);
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  // A switch that went ahead would have taken the terminal socket in the
+  // same task the dialog returned to, before this runs.
   a.check(
     'declining keeps the default shell, its terminal and the edit',
     new URL(page.url()).searchParams.get('isolated') === null
@@ -227,6 +242,7 @@ try {
   );
 
   // ── the isolated shell, within 10 s ──
+  await offerReady(page, 'port:' + PORT, 'isolate-shell');
   page.once('dialog', (dialog) => { void dialog.accept(); });
   const switchStarted = Date.now();
   const [isolatedResponse] = await Promise.all([

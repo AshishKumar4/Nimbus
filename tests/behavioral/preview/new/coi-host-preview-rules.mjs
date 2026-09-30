@@ -32,6 +32,8 @@ const isolation = await import('../../../../packages/worker/src/_shared/preview-
 const { documentPolicyOf } = await import('../../../../packages/core/src/runtime/document-policy.ts');
 const { NIMBUS_TERMINAL_SANDBOX } = await import('../../../../packages/react/src/NimbusTerminal.tsx');
 
+// Every wait is 60 s: each one ends as soon as Chrome answers, and a machine
+// running other browsers (the suite's pool) slowed a 15 s one past its limit.
 const label = 'preview/new/coi-host-preview-rules';
 const a = makeAsserter(label);
 console.log(`${label} — local`);
@@ -152,11 +154,11 @@ async function paneOutcome(shellOrigin, guestPort, { isolated = true, allow = tr
   const page = await browser.newPage();
   const child = previewUrl(guestPort);
   const query = new URLSearchParams({ child, ...(isolated ? { [isolation.SHELL_ISOLATION_QUERY]: '1' } : {}), ...(allow ? {} : { allow: 'none' }) });
-  const response = await page.goto(`${shellOrigin}/s/${sid}/?${query}`, { waitUntil: 'load' });
+  const response = await page.goto(`${shellOrigin}/s/${sid}/?${query}`, { waitUntil: 'load', timeout: 60_000 });
   const shellHeaders = response.headers();
   const shellIsolated = await page.evaluate(() => self.crossOriginIsolated);
   let outcome = null;
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 60_000;
   while (outcome === null && Date.now() < deadline) {
     const reported = await page.evaluate(() => window.__messages.find((m) => m && m.coiApp)?.coiApp ?? null);
     if (reported) outcome = { loaded: true, ...reported };
@@ -263,9 +265,9 @@ try {
     );
     const page = await browser.newPage();
     const query = new URLSearchParams({ child: await tokenUrl(), [isolation.SHELL_ISOLATION_QUERY]: '1' });
-    await page.goto(`${SAME_SITE_SHELL}/s/${sid}/?${query}`, { waitUntil: 'load' });
+    await page.goto(`${SAME_SITE_SHELL}/s/${sid}/?${query}`, { waitUntil: 'load', timeout: 60_000 });
     let outcome = null;
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + 60_000;
     while (outcome === null && Date.now() < deadline) {
       const reported = await page.evaluate(() => window.__messages.find((m) => m && m.coiApp)?.coiApp ?? null);
       if (reported) outcome = { loaded: true, ...reported };
@@ -283,12 +285,12 @@ try {
   // The React embed's default sandbox: ↗ still gives the app an isolated tab.
   {
     const page = await browser.newPage();
-    await page.goto(`http://localhost:${embedServer.port}/embed?child=${encodeURIComponent(previewUrl(3000))}`, { waitUntil: 'load' });
+    await page.goto(`http://localhost:${embedServer.port}/embed?child=${encodeURIComponent(previewUrl(3000))}`, { waitUntil: 'load', timeout: 60_000 });
     const shellFrame = page.frames().find((frame) => frame.url().includes('/shell'));
-    const opened = browser.waitForTarget((target) => target.type() === 'page' && (target.url() === previewUrl(3000) || target.url().startsWith('chrome-error')), { timeout: 15_000 });
+    const opened = browser.waitForTarget((target) => target.type() === 'page' && (target.url() === previewUrl(3000) || target.url().startsWith('chrome-error')), { timeout: 60_000 });
     await shellFrame.click('#open');
     const popup = await (await opened).page();
-    const result = await popup.waitForFunction(() => window.__result, { timeout: 15_000 }).then((handle) => handle.jsonValue(), () => null);
+    const result = await popup.waitForFunction(() => window.__result, { timeout: 60_000 }).then((handle) => handle.jsonValue(), () => null);
     await popup.close();
     await page.close();
     a.check(
@@ -301,8 +303,8 @@ try {
   // Its own tab: top-level, isolated by its own headers.
   {
     const page = await browser.newPage();
-    await page.goto(previewUrl(3000), { waitUntil: 'load' });
-    const result = await (await page.waitForFunction(() => window.__result, { timeout: 15_000 })).jsonValue();
+    await page.goto(previewUrl(3000), { waitUntil: 'load', timeout: 60_000 });
+    const result = await (await page.waitForFunction(() => window.__result, { timeout: 60_000 })).jsonValue();
     await page.close();
     a.check(
       'guest CORP same-origin in its own tab: isolated, SAB + Worker + Atomics',

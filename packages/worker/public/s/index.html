@@ -765,6 +765,7 @@
 
       // Current open file state.
       let openPath = null;        // POSIX absolute path or null
+      let openRequests = 0;       // openFile calls so far; the latest wins
       let originalContent = '';   // last-saved content (for dirty check)
       let editor = null;          // Monaco editor instance
       let markdownUpdateTimer = null;
@@ -1044,6 +1045,10 @@
 
       async function openFile(path, options = {}) {
         if (!path) return;
+        // The last file asked for wins: an open still loading when another
+        // starts gives way, so the boot-time default can never land on top
+        // of a file the user picked while Monaco was loading.
+        const request = ++openRequests;
         // Dirty-prompt before switching files. If the current buffer has
         // unsaved changes, ask the user whether to save or discard.
         // Skip when switching to the SAME file (no-op) or when there
@@ -1079,6 +1084,7 @@
           }
           return;
         }
+        if (request !== openRequests) return;
         const content = result.content || '';
         openPath = path;
         originalContent = content;
@@ -1266,7 +1272,7 @@
       }
 
       function openDefaultWelcome() {
-        if (openPath) return Promise.resolve();
+        if (openRequests > 0) return Promise.resolve();
         return openFile(DEFAULT_WELCOME_PATH, { deferredDefault: true });
       }
 

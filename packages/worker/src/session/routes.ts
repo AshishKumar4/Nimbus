@@ -349,13 +349,29 @@ function appDoorOf(pathname: string): AppDoor | null {
   return null;
 }
 
+/** `/preview/?port=N` addresses a session port through the preview door. */
+function previewQueryPort(url: URL): number | null {
+  const raw = url.searchParams.get('port');
+  if (!raw) return null;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : null;
+}
+
 export async function handleFetch(self: RoutesHost, request: Request): Promise<Response> {
   const response = await routeFetch(self, request);
   // An app door's navigation answer is the document the preview pane shows
   // for its tab; the shell reads its isolation headers from the stats (the
-  // same report ports get from the port registry). A redirect is not one.
-  const door = appDoorOf(new URL(request.url).pathname);
-  if (door !== null && request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {
+  // same report ports get from the port registry). A redirect is not one,
+  // and `/preview/?port=N` is that port's document, which the port registry
+  // records.
+  const url = new URL(request.url);
+  const door = appDoorOf(url.pathname);
+  if (
+    door !== null
+    && !(door === 'vite' && previewQueryPort(url) !== null)
+    && request.headers.get('Sec-Fetch-Mode') === 'navigate'
+    && (response.status < 300 || response.status > 399)
+  ) {
     self.appDocuments[door] = documentPolicyOf(response.headers);
   }
   return response;
@@ -1170,12 +1186,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       //
       // `/preview/?port=N` routes to an explicitly registered process;
       // bare `/preview/` continues through the Vite/Cirrus paths below.
-      const queryPort = (() => {
-        const raw = url.searchParams.get('port');
-        if (!raw) return null;
-        const n = parseInt(raw, 10);
-        return Number.isFinite(n) && n > 0 && n < 65536 ? n : null;
-      })();
+      const queryPort = previewQueryPort(url);
       if (queryPort != null) {
         const previewInner = normalizeForwardedHttpPath(url.pathname.replace(/^\/preview/, '') || '/') + (() => {
           // Strip our `?port=N` so the inner handler doesn't re-see it.
