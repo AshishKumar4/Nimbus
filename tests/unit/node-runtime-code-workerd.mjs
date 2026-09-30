@@ -157,6 +157,14 @@ const FILES = {
     'console.log("STDIN " + afterOn + " " + listed + " " + process.stdin.listenerCount("data"));',
     'process.stdin.pause(); process.exit(0);',
   ].join('\n'),
+  // node:path, compared with the host's real node below (totalist's
+  // `join("", name)` builds the names sirv serves).
+  'path.js': [
+    'const path = require("path");',
+    'console.log("PATH " + JSON.stringify([path.join("", "hello.txt"), path.join(), path.join("a", "", "b/"), path.normalize("a//b/../c/"), path.normalize(""),',
+    '  path.relative("/a/b/c", "/a/d"), path.resolve("/x", "y/", "../z"), path.parse("/a/b.tar.gz"), path.format({ dir: "/a", name: "b", ext: ".c" }),',
+    '  path.extname(".bashrc"), path.basename("/a/b/", ".x"), path.dirname("a"), path.posix === path, path.win32.join("a", "b")]));',
+  ].join('\n'),
   // node:url's legacy API, compared with the host's real node below
   // (http-server reads `url.parse(req.url).pathname`).
   'url.js': [
@@ -276,6 +284,12 @@ try {
     assert.equal(hostUrl.status, 0, hostUrl.stderr);
     assert.equal(/^URL .*$/m.exec(urlRun.stdout)?.[0], /^URL .*$/m.exec(hostUrl.stdout)?.[0], 'url.parse/resolve/format answer as node does');
 
+    const pathRun = await terminal.run(`cd ${W} && node path.js`);
+    const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });
+    assert.equal(hostPath.status, 0, hostPath.stderr);
+    assert.equal(/^PATH .*$/m.exec(pathRun.stdout)?.[0], /^PATH .*$/m.exec(hostPath.stdout)?.[0], 'node:path answers as node does');
+    const cwdRun = await terminal.run(`cd ${W} && node -e "const p = require('path'); console.log('CWD ' + p.resolve('x') + ' ' + p.relative('x', '/') + ' ' + p.resolve())"`);
+    assert.match(cwdRun.stdout, new RegExp(`^CWD ${W}/x \\.\\./\\.\\./\\.\\./\\.\\. ${W}$`, 'm'), 'resolve and relative start from the process cwd');
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {

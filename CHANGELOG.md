@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npx sirv-cli` serves files. `path` is workerd's native `node:path`
+  (Node's own implementation), with `resolve`/`relative` starting from the
+  process's cwd. The hand-rolled `join` kept empty segments, so totalist's
+  `join("", "hello.txt")` was "/hello.txt", sirv mapped every file under
+  "//name" and answered 404; `normalize` also dropped trailing slashes and
+  answered "" for "".
+
 - express.static serves files. `require('stream')` is a function
   constructor, as Node's legacy Stream is, so send's `Stream.call(this)` no
   longer throws "Class constructor Stream cannot be invoked without 'new'".
