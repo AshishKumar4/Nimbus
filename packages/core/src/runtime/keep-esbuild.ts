@@ -121,7 +121,7 @@ export async function startObservedEsbuild(
   const observed = Object.create(WebAssembly, {
     instantiate: {
       value: async (module: WebAssembly.Module, imports: WebAssembly.Imports) => {
-        const gojs: Record<string, unknown> = Object(Reflect.get(imports, 'gojs'));
+        const gojs: WebAssembly.ModuleImports = imports.gojs ?? {};
         const wasmExit = gojs['runtime.wasmExit'];
         let watched = imports;
         if (typeof wasmExit === 'function') {
@@ -129,7 +129,7 @@ export async function startObservedEsbuild(
             exit();
             return Reflect.apply(wasmExit, undefined, [sp]);
           };
-          watched = { ...imports, gojs: { ...gojs, 'runtime.wasmExit': onExit } } as WebAssembly.Imports;
+          watched = { ...imports, gojs: { ...gojs, 'runtime.wasmExit': onExit } };
         }
         const instance = await WebAssembly.instantiate(module, watched);
         memory = instance.exports.mem;

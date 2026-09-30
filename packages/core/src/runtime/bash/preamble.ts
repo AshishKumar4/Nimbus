@@ -822,9 +822,9 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
   return proc;
 }
 
-/** A process's unwind state before it first runs. */
-function freshCtx(): BashProcCtx {
-  return { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 } as BashProcCtx;
+/** A process's unwind state before it first runs; a reason's own fields are set when it unwinds for that reason. */
+function freshCtx(): Omit<BashProcCtx, 'resumeStatus' | 'waitTarget' | 'waitStatusPtr' | 'pipeReq' | 'execPath' | 'execArgv' | 'execEnv'> {
+  return { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 };
 }
 
 /** Exited processes kept for reuse at most (BashSession.idle): what a fork loop keeps live at once, with room. */
@@ -858,9 +858,8 @@ function reincarnate(s: BashSession, bytes: number, pid: number, ppid: number, f
   proc.preopenMoved = new Map(); proc.cwd = s.cwd;
   delete proc.killedBy; delete proc.execIgnoredSignals; delete proc.cancelWaits; delete proc.pendingFs;
   // Its imports hold this very object.
-  const ctx = proc.ctx as unknown as Record<string, unknown>;
-  for (const key of Object.keys(ctx)) delete ctx[key];
-  Object.assign(ctx, freshCtx());
+  for (const key of Object.keys(proc.ctx)) Reflect.deleteProperty(proc.ctx, key);
+  Object.assign(proc.ctx, freshCtx());
   proc.MAIN_BUF = 0; proc.SLOT0 = 0; proc.pendingRead = null; proc.writeResumed = false;
   proc.slotByEnv = new Map(); proc.freeSlots = [];
   proc.resident.clear();
