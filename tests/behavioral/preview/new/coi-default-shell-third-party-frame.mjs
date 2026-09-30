@@ -35,7 +35,12 @@ http.createServer((req, res) => {
 
 const sid = await mintSession();
 const t = new Terminal(sid);
-const browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
+// Chrome runs without its back/forward cache: a shell-mode switch changes
+// browsing context group, the page it leaves can stay frozen in that cache,
+// and puppeteer then routed evaluations to the frozen document (measured: 2
+// of 5 runs hung with it on, 6 of 6 passed with it off). The shell itself
+// gives the terminal back on pagehide either way.
+const browser = await launchBrowser({ timeout: 60_000, webSecurity: true, args: ['--disable-features=BackForwardCache'] });
 
 /** Save a screenshot for review when NIMBUS_PROBE_SCREENSHOTS names a directory. */
 async function screenshot(page, name) {
@@ -44,12 +49,25 @@ async function screenshot(page, name) {
 }
 
 async function showsApp(page) {
-  await page.waitForFunction((port) => {
-    const active = document.querySelector('#previewTabs .preview-tab.active');
-    const frame = document.getElementById('preview-frame');
-    return active?.textContent?.includes(':' + port)
-      && frame?.contentDocument?.getElementById('app')?.textContent === 'PLAIN-APP';
-  }, { timeout: 60_000 }, PORT);
+  try {
+    await page.waitForFunction((port) => {
+      const active = document.querySelector('#previewTabs .preview-tab.active');
+      const frame = document.getElementById('preview-frame');
+      return active?.textContent?.includes(':' + port)
+        && frame?.contentDocument?.getElementById('app')?.textContent === 'PLAIN-APP';
+    }, { timeout: 30_000, polling: 250 }, PORT);
+  } catch (error) {
+    const pane = await page.evaluate(() => {
+      const frame = document.getElementById('preview-frame');
+      return JSON.stringify({
+        url: location.href,
+        active: document.querySelector('#previewTabs .preview-tab.active')?.textContent,
+        src: frame.getAttribute('src'),
+        shown: frame.contentDocument?.body?.innerText?.slice(0, 120) ?? null,
+      });
+    }).catch((reason) => `unreadable: ${reason.message}`);
+    throw new Error(`the pane never showed the app: ${pane}`, { cause: error });
+  }
 }
 
 try {
@@ -106,8 +124,9 @@ try {
     'the app’s cookie is readable inside the pane',
     await page.evaluate(() => document.getElementById('preview-frame').contentDocument.cookie.includes('app_session=kept')),
   );
-  // The offer is decided asynchronously, from a HEAD of the app: wait for the
-  // decision on this tab, then require that it offered nothing.
+  // The offer is decided asynchronously, from the policy the session's stats
+  // report for the app: wait for the decision on this tab, then require that
+  // it offered nothing.
   await page.waitForFunction((port) => document.getElementById('previewIsolation').dataset.tab === 'port:' + port, { timeout: 30_000 }, PORT);
   a.check(
     'no isolation offer for an app that does not ask',

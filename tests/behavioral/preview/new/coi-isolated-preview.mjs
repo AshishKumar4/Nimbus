@@ -71,7 +71,12 @@ http.createServer((req, res) => {
 
 const sid = await mintSession();
 const t = new Terminal(sid);
-const browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
+// Chrome runs without its back/forward cache: a shell-mode switch changes
+// browsing context group, the page it leaves can stay frozen in that cache,
+// and puppeteer then routed evaluations to the frozen document (measured: 2
+// of 5 runs hung with it on, 6 of 6 passed with it off). The shell itself
+// gives the terminal back on pagehide either way.
+const browser = await launchBrowser({ timeout: 60_000, webSecurity: true, args: ['--disable-features=BackForwardCache'] });
 
 /** The app's own report from inside a frame or page, once it has one. */
 async function appResult(target) {
