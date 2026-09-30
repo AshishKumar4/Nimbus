@@ -11066,22 +11066,29 @@ function __esmLoad(resolution) {
     ns = __esmNamespaceOf(["default"], () => value);
   } else {
     const key = resolution.path.replace(/^\/+/, "");
-    const esm = resolution.format === "module"
-      || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
     // Canonical queryless ESM shares evaluation with require() and static
     // imports lowered to require(). Queries/fragments are distinct jobs.
-    const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
+    const variant = resolution.format === "module" && (resolution.url.includes("?") || resolution.url.includes("#"));
     const exports = __loadModule(key, variant ? resolution.url : key);
+    // A lowered ES module's exports carry its namespace under the marker
+    // (core/runtime/esm-interop.ts); a syntax-detected .js file is an ES
+    // module exactly when marked.
+    const marked = exports != null && typeof exports[Symbol.for("nimbus.esm.namespace")] === "object"
+      ? exports[Symbol.for("nimbus.esm.namespace")] : null;
+    const esm = resolution.format === "module" || (resolution.format === "detect" && marked !== null);
     if (resolution.format === "json") {
       ns = __esmNamespaceOf(["default"], () => exports);
     } else if (esm) {
-      // The ESM→CJS transform's exports: the module's own names, live.
-      const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
-      ns = __esmNamespaceOf(names, (name) => exports[name]);
+      // The ESM→CJS transform's namespace: the module's own names, live.
+      const own = marked ?? exports;
+      const names = own && typeof own === "object" ? Object.keys(own).filter((name) => name !== "__esModule") : [];
+      ns = __esmNamespaceOf(names, (name) => own[name]);
     } else {
       // CommonJS: module.exports is the default, its names the named exports.
       const mod = exports;
       const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
+      // cjs-module-lexer detects `Object.defineProperty(exports, "__esModule", …)`.
+      if (mod && Object.prototype.hasOwnProperty.call(mod, "__esModule")) names.add("__esModule");
       names.delete("default");
       names.add("default");
       ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
