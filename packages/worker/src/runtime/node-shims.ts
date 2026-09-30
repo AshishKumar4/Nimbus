@@ -150,16 +150,33 @@ if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendin
 function __nimbusTrackOp(promise) {
   if (!promise || typeof promise.then !== "function") return promise;
   globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; };
+  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   try { __nimbusOrigThen.call(promise, settled, settled); }
   catch { settled(); }
   return promise;
 }
 
+// A connection the program holds open keeps it alive, as its socket does in
+// Node, until it closes or is unref'd: a WebSocket client, a tls.connect
+// socket. The returned setter holds (true) or lets go (false); it is the one
+// counter __nimbusLiveHandles reads for them, separate from startup work so a
+// socket opened at boot does not hold a resident's boot answer.
+function __nimbusHoldSocket() {
+  let held = false;
+  const hold = (want) => {
+    if (want === held) return;
+    held = want;
+    globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + (want ? 1 : -1);
+    if (!want) globalThis.__nimbusHandleReleased?.();
+  };
+  hold(true);
+  return hold;
+}
+
 async function __nimbusUseRpcResult(promise, use) {
   globalThis.__nimbusPendingOps++;
   try { return await __nimbusUseRpcResultUnref(promise, use); }
-  finally { globalThis.__nimbusPendingOps--; }
+  finally { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
 }
 // Facet infrastructure that long-polls the supervisor for as long as the
 // facet lives — the attached-process stdin pump — is the analogue of an
@@ -4729,6 +4746,18 @@ const __fsMod = (() => {
   // cached, exposed via getters to avoid a temporal-dead-zone reference.
   let __ReadStreamClass = null;
   let __WriteStreamClass = null;
+  /**
+   * An fs stream's close options, as Node reads them: autoClose (default
+   * true) is whether it is destroyed once done, emitClose (default true)
+   * whether destroying it emits 'close'.
+   */
+  function __fsStreamLifecycle(opts) {
+    const options = opts && typeof opts === "object" ? opts : {};
+    return {
+      autoDestroy: options.autoClose === undefined ? true : !!options.autoClose,
+      emitClose: options.emitClose !== false,
+    };
+  }
   function __getReadStream() {
     if (__ReadStreamClass) return __ReadStreamClass;
     /**
@@ -4748,6 +4777,7 @@ const __fsMod = (() => {
         super({
           encoding: options.encoding || null,
           highWaterMark: options.highWaterMark || READ_STREAM_CHUNK_BYTES,
+          ...__fsStreamLifecycle(options),
         });
         this.path = path;
         this.bytesRead = 0;
@@ -4779,7 +4809,7 @@ const __fsMod = (() => {
   function __getWriteStream() {
     if (__WriteStreamClass) return __WriteStreamClass;
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
-      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
+      constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
         if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4827,6 +4857,7 @@ const __fsMod = (() => {
       const chunks = [];
       let anyBytes = false;
       const ws = new __streamMod.Writable({
+        ...__fsStreamLifecycle(opts),
         write(chunk, enc, cb) {
           if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
           else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4989,6 +5020,10 @@ const __NimbusRelayedWebSocket = (() => {
       this._sends = Promise.resolve();
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      // Open, or opening, until its close: a handle, as Node's WebSocket is.
+      // Taken only once the socket exists, past every throw in this
+      // constructor: a caught constructor failure holds nothing.
+      this._hold = __nimbusHoldSocket();
       this._ready = this._connect(supervisor, requested);
     }
 
@@ -5048,6 +5083,7 @@ const __NimbusRelayedWebSocket = (() => {
       }
       if (event.kind === "close") {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: event.code, reason: event.reason,
@@ -5059,6 +5095,7 @@ const __NimbusRelayedWebSocket = (() => {
     _fail(error) {
       if (this._done) return;
       this._done = true;
+      this._hold(false);
       this.readyState = CLOSED;
       const message = (error && error.message) || String(error);
       this._emit({ type: "error", message, target: this });
@@ -5136,6 +5173,7 @@ const __NimbusRelayedWebSocket = (() => {
         );
       })().catch(() => {}).then(() => {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: code === undefined ? 1000 : code,
@@ -6112,10 +6150,31 @@ const __tlsMod = (() => {
   if (!real) {
     return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
   }
+  // A socket tls.connect opens holds the program until it closes or is
+  // unref'd, as in Node. Held once the socket exists: arguments tls.connect
+  // refuses (a bad port) throw first, and a caught throw holds nothing.
+  const connect = (...args) => {
+    const socket = real.connect(...args);
+    let closed = false;
+    let hold = null;
+    socket.once('close', () => { closed = true; hold?.(false); });
+    hold = __nimbusHoldSocket();
+    const ref = socket.ref, unref = socket.unref;
+    socket.ref = function () {
+      if (!closed) hold(true);
+      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+    };
+    socket.unref = function () {
+      hold(false);
+      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+    };
+    return socket;
+  };
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
+      if (p === 'connect') return connect;
       if (p === 'createServer') {
         return () => {
           const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
@@ -7067,6 +7126,7 @@ function __makeProcessStdin() {
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+    if (!held) globalThis.__nimbusHandleReleased?.();
   }
   __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
   __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));

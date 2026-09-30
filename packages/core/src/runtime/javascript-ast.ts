@@ -10,6 +10,29 @@ export function parseJavaScriptModule(source: string): AstNode {
   }) as AstNode;
 }
 
+/**
+ * A program as Node would run it: an ES module, or a CommonJS script (whose
+ * top level may `return`); null when it is neither.
+ */
+export function parseJavaScriptProgram(source: string): AstNode | null {
+  const options = {
+    ecmaVersion: 'latest',
+    allowHashBang: true,
+    allowReturnOutsideFunction: true,
+    allowAwaitOutsideFunction: true,
+    allowImportExportEverywhere: true,
+  } as const;
+  try {
+    return parse(source, { ...options, sourceType: 'module' }) as AstNode;
+  } catch {
+    try {
+      return parse(source, { ...options, sourceType: 'script' }) as AstNode;
+    } catch {
+      return null;
+    }
+  }
+}
+
 export function hasTopLevelModuleSyntax(source: string): boolean {
   try {
     const tokens = tokenizer(source, {

@@ -54,28 +54,75 @@ published independently in the `@nimbus-sh` npm scope.
   one's check failed (a rename into a missing directory names the source,
   then the destination), from the runtime bridge and hosted node alike.
 
+- A resident node or bun process ends as Node's does: when it holds no live
+  handle (a timer, an operation in flight, a listening server that is not
+  unref'd, a held stdin), and its exit is reported as `process.exit`'s is.
+  It used to end only on `process.exit`, so a program run resident that
+  simply finished (a CLI whose serve path was not taken, `--help`, a server
+  that closed its last listener) kept running and never reported an exit.
+  One that finishes during its boot reports before the boot answers, so the
+  shell prints its exit code instead of "started (long-running)". The
+  resident waits on handle releases rather than polling. `--watch` and
+  `--inspect-brk` still hold a process with nothing left, as in Node. An
+  open connection is a handle too: an HTTP exchange a server is answering
+  holds the process until its response closes, even after `server.close()`
+  (a handler that closed the server and was still streaming its reply to an
+  upload used to see the process exit under it), and so do a WebSocket
+  client and a `tls.connect` socket until they close or are unref'd. A
+  request body the handler never reads does not hold it. A handle is counted
+  only once it exists: a `setTimeout` given a delay it refuses, or a
+  `WebSocket` given a bad protocol, throws, and when the program catches the
+  throw it holds nothing (either used to leave a count behind, so the process
+  never ended, one-shot runs included).
+
 - node-static sends a file's body; after the `url` fix below it answered 200
-  with an empty body. A guest stream emitted `'end'` and never `'close'`:
-  Node destroys a finished stream (`autoDestroy`, on by default), so
-  `'close'` follows `'end'`, and node-static pipes a file with
-  `{ end: false }` and ends the response on the file stream's `'close'`. A
-  readable stream that has ended, and finished writing if it is a Duplex,
-  now closes unless it was created with `autoDestroy: false`. A writable
-  stream closes after `'finish'` by the same rule, so a copy that waits on
-  the destination's `'close'` (`src.pipe(fs.createWriteStream(f))
-  .on('close', …)`) completes; a Duplex closes once both sides are done.
+  with an empty body. node-static pipes a file with `{ end: false }` and ends
+  the response on the file stream's `'close'`, which a guest stream never
+  emitted. Guest streams now keep Node's lifecycle, in Node 22's order:
+  - A stream that is done is destroyed and emits `'close'` (`autoDestroy`):
+    a readable after `'end'`, a writable after `'finish'`, a Duplex once both
+    sides are done. So a copy that waits on the destination's `'close'`
+    (`src.pipe(fs.createWriteStream(f)).on('close', …)`) completes.
+  - Writes run one at a time, and `end()` waits for every write to call back
+    before `_final` and `'finish'`. An asynchronous Transform's output is
+    delivered and an asynchronous write completes before `'finish'`; `end()`
+    used to run `_final` at once.
+  - A failed write, or `destroy()`, answers every queued write and `end()`
+    callback; a failed write then destroys the stream, as in Node.
+  - `autoDestroy: false` keeps a stream open, `emitClose: false` destroys it
+    without `'close'`, and fs streams read them from `autoClose` and
+    `emitClose`.
 
 - `npx static-server` serves instead of holding the terminal in the
   foreground with its port unreachable, and so do `npx sirv-cli` and
-  `npx live-server`. A port is reachable only from a resident process, chosen
-  before the program runs from its source, and only the entry file was read:
-  these bins parse argv and require the package's own server module
-  (static-server's `../server.js`). A module the entry names by relative path
-  inside its own package that creates a server (`createServer(`) now counts.
-  Only that one hop, and only a server's creation: following further, or
-  taking any `.listen(` as a bind, would also promote CLIs that finish
-  (degit, concurrently, nx, `vitest run`). A query (`--help`, `--version`)
-  or `build` of such a CLI stays one-shot, as it does for a named server bin.
+  `npx live-server`. A port is reachable only from a resident process, which
+  is chosen before the program runs, and a program that finishes there is
+  never reported ended. Whether `node <file>` (or `bun`, `node -e`,
+  `node -`) starts a server was a text match on the entry (`.listen(`,
+  `createServer(`, `serve(`), so these bins, which hand off to their
+  package's server module, were missed, while a comment or a server started
+  only for another subcommand made a script resident. It is now judged by
+  walking the code this invocation runs (core `runtime/server-launch.ts`):
+  branches known false for its argv, code after `process.exit()`, and
+  functions only defined or exported do not run; the package's own modules
+  are followed as they are loaded and used, through aliases
+  (`const make = http.createServer`) and re-exporting modules. An argument
+  decides only where the program branches on it, as in Node: its own
+  `process.argv` tests, and a CLI parser (commander, yargs, sade, cac),
+  whose actions run only when it parses: none for `--help`/`--version`,
+  which it answers (`dev --help` too), and a command's only when argv names
+  it. An ES module entry decides as its CommonJS form does (a parser is
+  known through the transform's `__toESM(require(...))`), and a parser one
+  module configures and exports dispatches where another parses it. A server that does
+  not read `--help` or `build` still binds. `.listen`
+  binds unless it is the program's own `listen` method or its first
+  argument is provably not a port (a callback, `this`, a socket path;
+  constants resolved, so `const p = 3000; app.listen(p)` binds). Measured
+  on 48 bins of 37 packages: the same servers are promoted, except `vercel`
+  (its bundle is past the 2 MiB a walk reads) and `cf-wrangler` (it serves
+  from a child process); degit, concurrently, nx, firebase and `vitest run`
+  are not. `docsify` is resident only for `serve`, and `sirv` and
+  `static-server` answer `--help`/`--version` one-shot.
 
 - node-static (`npx node-static`) serves its files; it answered 404 for every
   one. The guest's `url` module imitated Node's legacy API over WHATWG

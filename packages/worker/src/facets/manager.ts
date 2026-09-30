@@ -365,7 +365,7 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * are the program's exit and a signal. Callers that still pass a finite
  * deadline (the resident boot settle) arm the expiry timer.
  *
- * Three kinds of handle, each owned by the shim that creates them:
+ * Four kinds of handle, each owned by the shim that creates them:
  *
  *   - macrotask TIMERS and intervals (`__nimbusPendingTimers`), from the
  *     timer tracker below.
@@ -374,6 +374,10 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  *     PerformPromiseThen and surfaces nowhere else, so this counter is how
  *     awaited work is seen at all. See the shim's __nimbusTrackOp.
  *   - listening SERVERS (`__portRegistry`), open until the program closes
+ *     them.
+ *   - held CONNECTIONS (`__nimbusOpenSockets`): an HTTP exchange a server is
+ *     answering, a WebSocket client, a tls.connect socket, until it closes
+ *     (or is unref'd). Not startup work: a resident's boot does not wait on
  *     them.
  *
  * The loop subscribes to the exit promise ONCE — a per-pass
@@ -409,7 +413,8 @@ function __nimbusLiveHandles() {
   if (__servers && typeof __servers.values === "function") {
     for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;
   }
-  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles");
+  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles")
+    + __nimbusHandleCount("__nimbusOpenSockets");
 }
 
 async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {
@@ -462,6 +467,39 @@ async function __nimbusAwaitEntryEvaluation(__entryResult) {
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
   if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
   return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);
+}
+
+// Whether the program holds no live handle once a settling chain has had the
+// same four turns the one-shot loop gives it.
+async function __nimbusHoldsNoHandle() {
+  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
+    ? globalThis.__nimbusRawSetTimeout
+    : globalThis.setTimeout;
+  for (let __pass = 0; __pass < 4; __pass++) await new Promise((resolve) => __rawSetTimeout(resolve, 0));
+  return __nimbusLiveHandles() === 0;
+}
+
+// A resident process ends as Node's does: when it holds no live handle. It
+// may serve for hours, so this does not poll: every place a handle is released
+// (a timer firing or cleared, an operation settling, a server closed or
+// unref'd, stdin let go) calls __nimbusHandleReleased, and a release that
+// leaves none is the program's natural end.
+function __nimbusNaturalExit() {
+  return new Promise((resolve) => {
+    let __checking = false;
+    const __released = () => {
+      if (__checking) return;
+      __checking = true;
+      __nimbusHoldsNoHandle().then((__none) => {
+        __checking = false;
+        if (!__none) return;
+        if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
+        resolve();
+      });
+    };
+    globalThis.__nimbusHandleReleased = __released;
+    __released();
+  });
 }
 
 // A resident facet keeps running after the call that boots it returns, so it
@@ -523,14 +561,18 @@ const ENTRYPOINT_TIMER_TRACKER = `
   const one = new Set(), iv = new Set();
   g.setTimeout = function(fn, ms, ...a){
     if (typeof fn !== "function") return st(fn, ms, ...a);
-    let id; g.__nimbusPendingTimers++;
-    id = st(function(){ if (one.delete(id)) g.__nimbusPendingTimers--; return fn.apply(this, arguments); }, ms, ...a);
-    one.add(id); return id;
+    // Counted once the timer exists: a delay the platform refuses throws, and
+    // a caught throw leaves no timer to wait for.
+    const id = st(function(){
+      if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); }
+      return fn.apply(this, arguments);
+    }, ms, ...a);
+    g.__nimbusPendingTimers++; one.add(id); return id;
   };
-  g.clearTimeout = function(id){ if (one.delete(id)) g.__nimbusPendingTimers--; return ct(id); };
+  g.clearTimeout = function(id){ if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ct(id); };
   if (typeof si === "function") {
     g.setInterval = function(fn, ms, ...a){ const id = si(fn, ms, ...a); iv.add(id); g.__nimbusPendingTimers++; return id; };
-    g.clearInterval = function(id){ if (iv.delete(id)) g.__nimbusPendingTimers--; return ci(id); };
+    g.clearInterval = function(id){ if (iv.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ci(id); };
   }
   // process.exit: the program's pending timers and intervals never fire again.
   g.__nimbusStopProgramTimers = function(){
@@ -1333,6 +1375,11 @@ ${RESIDENCY_MISS_REPORT}
     __require.main = mod;
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
+    // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
+    // (it waits for a change, or for a debugger); nothing else does.
+    const __nimbusHeldWithoutHandles = Array.isArray(argv)
+      && argv.some((__arg) => __arg === "--watch" || __arg === "--inspect-brk");
+    let __nimbusEndedAtBoot = false;
     try {
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
@@ -1352,6 +1399,9 @@ ${RESIDENCY_MISS_REPORT}
       } else {
         await __nimbusSettleEntrypointStartup(__entryResult, ${RESIDENT_BOOT_SETTLE_MS});
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
+        // Finished during its boot (\`--help\`, a CLI run that also serves):
+        // the boot answers with its exit, as an explicit exit's does.
+        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle();
       }
     } catch (e) {
       if (e instanceof __ProcessExit) {
@@ -1422,8 +1472,11 @@ ${RESIDENCY_MISS_REPORT}
           if (__result !== __exitMarker) {
             finalCode = Number(__nimbusProcessExitCode ?? 0);
           }
+        } else if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
+          finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
-          finalCode = Number(await __nimbusProcessExitPromise);
+          // process.exit, or the natural end: no live handle left.
+          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
           __nimbusEmitExit(finalCode);
@@ -1447,6 +1500,9 @@ ${RESIDENCY_MISS_REPORT}
       workerCtx.waitUntil(__residentExitLifecycle);
       if (attachedTty) {
         __nimbusAttachedLifecycle = __residentExitLifecycle;
+      } else if (__nimbusEndedAtBoot || __nimbusProcessExitCode !== null) {
+        // Ended during its boot: its exit is reported before the boot answers.
+        await __residentExitLifecycle;
       }
     }
 

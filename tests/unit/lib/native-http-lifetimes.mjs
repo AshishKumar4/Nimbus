@@ -90,3 +90,48 @@ export async function pendingCloseLifetime(http, supervisor, registered, drain) 
     registered.delete(55001);
   }
 }
+
+// An HTTP exchange holds the process until its response closes, whether or
+// not its server still listens: the handler closes the server, streams
+// 'first', then answers the rest of a streaming upload. A request body the
+// handler never reads does not hold it ('ignored'). `held` is whether the
+// process would still be running, sampled while the exchange is open and
+// after it completes.
+export async function exchangeLifetime(http, liveHandles, serve, mode) {
+  const server = http.createServer(async (request, response) => {
+    server.close();
+    if (mode === 'ignored') { response.end('ok'); return; }
+    response.writeHead(200);
+    response.flushHeaders();
+    response.write('first');
+    let data = '';
+    for await (const chunk of request) data += chunk;
+    response.end('last:' + data);
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  if (mode === 'ignored') {
+    const reply = await serve(port, new Request('http://loopback/', { method: 'POST', body: 'unread' }));
+    const body = await reply.text();
+    await settle();
+    return { body, heldAfter: liveHandles() > 0 };
+  }
+  let upload;
+  const stream = new ReadableStream({ start(controller) { upload = controller; controller.enqueue(new TextEncoder().encode('a')); } });
+  const reply = await serve(port, new Request('http://loopback/', { method: 'POST', body: stream, duplex: 'half' }));
+  const reader = reply.body.getReader();
+  const first = new TextDecoder().decode((await reader.read()).value);
+  await settle();
+  const heldWhileOpen = liveHandles() > 0;
+  upload.enqueue(new TextEncoder().encode('b'));
+  upload.close();
+  let rest = '';
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    rest += new TextDecoder().decode(next.value);
+  }
+  await settle();
+  return { first, heldWhileOpen, rest, heldAfter: liveHandles() > 0 };
+}

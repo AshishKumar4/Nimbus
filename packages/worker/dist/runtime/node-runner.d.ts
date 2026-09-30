@@ -48,15 +48,6 @@ import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.
  *   --inspect-brk (node --inspect-brk)
  */
 export declare function isLongRunningInvocation(args: string[]): boolean;
-export declare function looksLikeServer(code: string): boolean;
-/** Whether `arg` is a query (`--help`, `--version`, …), not a request to serve. */
-export declare function isQueryArg(arg: string): boolean;
-/**
- * Whether a serving CLI was asked for something that ends: a query, or
- * `build`, which means "produce an artifact and exit" in every CLI that also
- * serves. A resident process that ends is never reaped, so these stay one-shot.
- */
-export declare function endsWithoutServing(argv: readonly string[]): boolean;
 /** Result of a `runFresh` call. */
 export interface RunFreshResult {
     exitCode: number;
@@ -93,9 +84,9 @@ export interface RunFreshOpts {
     /** Shell abort (Ctrl+C): aborting this kills the run through the
      *  terminator exec registers on the pid. */
     signal?: AbortSignal;
-    /** The entry launches a server from one of its own modules (RuntimeRunOpts.launchesServer). */
+    /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
     launchesServer?: boolean;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
-export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts, entrySource?: string): Promise<RunFreshResult>;
+export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;
 //# sourceMappingURL=node-runner.d.ts.map

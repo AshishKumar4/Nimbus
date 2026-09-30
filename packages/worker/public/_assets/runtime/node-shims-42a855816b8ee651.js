@@ -65,16 +65,33 @@ if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendin
 function __nimbusTrackOp(promise) {
   if (!promise || typeof promise.then !== "function") return promise;
   globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; };
+  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   try { __nimbusOrigThen.call(promise, settled, settled); }
   catch { settled(); }
   return promise;
 }
 
+// A connection the program holds open keeps it alive, as its socket does in
+// Node, until it closes or is unref'd: a WebSocket client, a tls.connect
+// socket. The returned setter holds (true) or lets go (false); it is the one
+// counter __nimbusLiveHandles reads for them, separate from startup work so a
+// socket opened at boot does not hold a resident's boot answer.
+function __nimbusHoldSocket() {
+  let held = false;
+  const hold = (want) => {
+    if (want === held) return;
+    held = want;
+    globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + (want ? 1 : -1);
+    if (!want) globalThis.__nimbusHandleReleased?.();
+  };
+  hold(true);
+  return hold;
+}
+
 async function __nimbusUseRpcResult(promise, use) {
   globalThis.__nimbusPendingOps++;
   try { return await __nimbusUseRpcResultUnref(promise, use); }
-  finally { globalThis.__nimbusPendingOps--; }
+  finally { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
 }
 // Facet infrastructure that long-polls the supervisor for as long as the
 // facet lives — the attached-process stdin pump — is the analogue of an
@@ -4644,6 +4661,18 @@ const __fsMod = (() => {
   // cached, exposed via getters to avoid a temporal-dead-zone reference.
   let __ReadStreamClass = null;
   let __WriteStreamClass = null;
+  /**
+   * An fs stream's close options, as Node reads them: autoClose (default
+   * true) is whether it is destroyed once done, emitClose (default true)
+   * whether destroying it emits 'close'.
+   */
+  function __fsStreamLifecycle(opts) {
+    const options = opts && typeof opts === "object" ? opts : {};
+    return {
+      autoDestroy: options.autoClose === undefined ? true : !!options.autoClose,
+      emitClose: options.emitClose !== false,
+    };
+  }
   function __getReadStream() {
     if (__ReadStreamClass) return __ReadStreamClass;
     /**
@@ -4663,6 +4692,7 @@ const __fsMod = (() => {
         super({
           encoding: options.encoding || null,
           highWaterMark: options.highWaterMark || READ_STREAM_CHUNK_BYTES,
+          ...__fsStreamLifecycle(options),
         });
         this.path = path;
         this.bytesRead = 0;
@@ -4694,7 +4724,7 @@ const __fsMod = (() => {
   function __getWriteStream() {
     if (__WriteStreamClass) return __WriteStreamClass;
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
-      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
+      constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
         if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4742,6 +4772,7 @@ const __fsMod = (() => {
       const chunks = [];
       let anyBytes = false;
       const ws = new __streamMod.Writable({
+        ...__fsStreamLifecycle(opts),
         write(chunk, enc, cb) {
           if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
           else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4904,6 +4935,10 @@ const __NimbusRelayedWebSocket = (() => {
       this._sends = Promise.resolve();
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      // Open, or opening, until its close: a handle, as Node's WebSocket is.
+      // Taken only once the socket exists, past every throw in this
+      // constructor: a caught constructor failure holds nothing.
+      this._hold = __nimbusHoldSocket();
       this._ready = this._connect(supervisor, requested);
     }
 
@@ -4963,6 +4998,7 @@ const __NimbusRelayedWebSocket = (() => {
       }
       if (event.kind === "close") {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: event.code, reason: event.reason,
@@ -4974,6 +5010,7 @@ const __NimbusRelayedWebSocket = (() => {
     _fail(error) {
       if (this._done) return;
       this._done = true;
+      this._hold(false);
       this.readyState = CLOSED;
       const message = (error && error.message) || String(error);
       this._emit({ type: "error", message, target: this });
@@ -5051,6 +5088,7 @@ const __NimbusRelayedWebSocket = (() => {
         );
       })().catch(() => {}).then(() => {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: code === undefined ? 1000 : code,
@@ -5335,6 +5373,50 @@ const __streamMod = (() => {
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
 
+  /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
+  function _destroyedError(method) {
+    return Object.assign(new Error('Cannot call ' + method + ' after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+  }
+
+  /**
+   * Node's errorBuffer: once destroyed, queued writes and end() callbacks
+   * are answered, never left waiting on a stream that will not write them.
+   */
+  function _errorBuffer(state, err) {
+    for (const { chunk, callback } of state.buffer.splice(0)) {
+      state.bufferedLength -= (chunk?.length || 0);
+      state.pending--;
+      if (callback) callback(err ?? _destroyedError('write'));
+    }
+    for (const cb of state.finishCallbacks.splice(0)) cb(err ?? _destroyedError('end'));
+  }
+
+  /** Node's errorOrDestroy for the writable side: autoDestroy closes it. */
+  function _errorOrDestroy(stream, err) {
+    const state = stream._writableState;
+    if (state.destroyed) return;
+    if (state.autoDestroy) stream.destroy(err);
+    else stream.emit('error', err);
+  }
+
+  /**
+   * Destroy either side of a stream, and both of a Duplex, once: 'error' if
+   * given, then 'close' unless the stream was created with emitClose: false.
+   */
+  function _destroyStream(stream, err) {
+    const r = stream._readableState, w = stream._writableState;
+    if ((r && r.destroyed) || (w && w.destroyed)) return stream;
+    if (r) { r.destroyed = true; stream.readable = false; }
+    if (w) {
+      w.destroyed = true;
+      // A write in flight answers the queue when it calls back.
+      if (!w.writing) queueMicrotask(() => _errorBuffer(w));
+    }
+    if (err) stream.emit('error', err);
+    if ((r || w).emitClose) stream.emit('close');
+    return stream;
+  }
+
   // ── Readable ────────────────────────────────────────────────────────
   //
   // Node's read machinery is a PULL: the consumer's demand is what causes
@@ -5364,6 +5446,7 @@ const __streamMod = (() => {
         encoding: opts?.encoding || null,
         objectMode: opts?.objectMode ?? false,
         autoDestroy: opts?.autoDestroy !== false,
+        emitClose: opts?.emitClose !== false,
         destroyed: false,
         readableLength: 0,
       };
@@ -5416,7 +5499,9 @@ const __streamMod = (() => {
     _emitEnd() {
       this.emit('end');
       const ws = this._writableState;
-      if (this._readableState.autoDestroy && (!ws || ws.finished)) queueMicrotask(() => this.destroy());
+      if (this._readableState.autoDestroy && (!ws || (ws.autoDestroy && ws.finished))) {
+        queueMicrotask(() => this.destroy());
+      }
     }
 
     /**
@@ -5524,14 +5609,7 @@ const __streamMod = (() => {
       return this;
     }
 
-    destroy(err) {
-      if (this._readableState.destroyed) return this;
-      this._readableState.destroyed = true;
-      this.readable = false;
-      if (err) this.emit('error', err);
-      this.emit('close');
-      return this;
-    }
+    destroy(err) { return _destroyStream(this, err); }
 
     get readableEnded() { return this._readableState.endEmitted; }
     get readableLength() { return this._readableState.readableLength; }
@@ -5611,20 +5689,159 @@ const __streamMod = (() => {
   };
 
   // ── Writable ────────────────────────────────────────────────────────
+  //
+  // Node's order (lib/internal/streams/writable.js): one _write at a time,
+  // the rest queued; end() waits for every write to call back before
+  // _final, 'finish' follows _final's callback, and autoDestroy then closes
+  // the stream (a Duplex once its readable side has ended too). An
+  // asynchronous _write or _transform is therefore complete, and a
+  // Transform's output delivered, before 'finish' and 'close'.
+  function _writableState(opts, highWaterMark) {
+    return {
+      buffer: [],
+      writing: false,
+      // Writes and _final not yet called back.
+      pending: 0,
+      ending: false,
+      finalCalled: false,
+      finished: false,
+      finishCallbacks: [],
+      highWaterMark,
+      needDrain: false,
+      autoDestroy: opts?.autoDestroy !== false,
+      emitClose: opts?.emitClose !== false,
+      destroyed: false,
+      corked: 0,
+      bufferedLength: 0,
+    };
+  }
+
+  function _write(stream, chunk, encoding, callback) {
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    const state = stream._writableState;
+    if (state.ending || state.destroyed) {
+      // A destroyed stream reports nothing further; the write's callback is
+      // still answered.
+      const err = state.ending
+        ? Object.assign(new Error('write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' })
+        : _destroyedError('write');
+      if (state.destroyed) { if (callback) queueMicrotask(() => callback(err)); return false; }
+      if (callback) callback(err);
+      _errorOrDestroy(stream, err);
+      return false;
+    }
+    if (typeof chunk === 'string') chunk = _enc.encode(chunk);
+    state.bufferedLength += (chunk?.length || 0);
+    state.pending++;
+    const request = { chunk, encoding, callback };
+    if (state.writing || state.corked > 0) state.buffer.push(request);
+    else _doWrite(stream, request);
+    if (state.bufferedLength >= state.highWaterMark) {
+      state.needDrain = true;
+      return false;
+    }
+    return true;
+  }
+
+  function _doWrite(stream, { chunk, encoding, callback }) {
+    const state = stream._writableState;
+    state.writing = true;
+    let called = false;
+    stream._write(chunk, encoding, (err) => {
+      if (called) return;
+      called = true;
+      state.writing = false;
+      state.bufferedLength -= (chunk?.length || 0);
+      state.pending--;
+      if (err) {
+        // Node's onwriteError: this callback, then the queue, then 'error'
+        // unless the stream was destroyed.
+        if (callback) callback(err);
+        _errorBuffer(state, err);
+        _errorOrDestroy(stream, err);
+        return;
+      }
+      // The next queued write starts before this one's callback, then
+      // 'drain', as Node's onwrite/afterWrite order them.
+      if (state.buffer.length > 0 && state.corked === 0 && !state.destroyed) _doWrite(stream, state.buffer.shift());
+      if (state.needDrain && state.bufferedLength === 0 && !state.ending) {
+        state.needDrain = false;
+        stream.emit('drain');
+      }
+      if (callback) callback();
+      if (state.destroyed) _errorBuffer(state);
+      else _finishMaybe(stream);
+    });
+  }
+
+  function _end(stream, chunk, encoding, callback) {
+    if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    const state = stream._writableState;
+    if (chunk !== undefined && chunk !== null) _write(stream, chunk, encoding);
+    if (state.corked > 0) { state.corked = 1; _uncork(stream); }
+    if (callback) {
+      if (state.finished) queueMicrotask(() => callback());
+      else state.finishCallbacks.push(callback);
+    }
+    if (!state.ending) {
+      state.ending = true;
+      // A stream ended with nothing in flight finishes on a later tick.
+      queueMicrotask(() => _finishMaybe(stream));
+    }
+    return stream;
+  }
+
+  function _uncork(stream) {
+    const state = stream._writableState;
+    if (state.corked > 0) state.corked--;
+    if (state.corked === 0 && !state.writing && state.buffer.length > 0) _doWrite(stream, state.buffer.shift());
+  }
+
+  /** _final, then 'finish', once end() was called and every write called back. */
+  function _finishMaybe(stream) {
+    const state = stream._writableState;
+    if (!state.ending || state.finished || state.writing || state.buffer.length > 0 || state.pending > 0 || state.destroyed) return;
+    if (!state.finalCalled && typeof stream._final === 'function') {
+      state.finalCalled = true;
+      state.pending++;
+      let called = false;
+      const onFinal = (err) => {
+        if (called) return;
+        called = true;
+        state.pending--;
+        if (err) {
+          for (const cb of state.finishCallbacks.splice(0)) cb(err);
+          _errorOrDestroy(stream, err);
+          return;
+        }
+        queueMicrotask(() => _finish(stream));
+      };
+      try { stream._final(onFinal); } catch (err) { onFinal(err); }
+      return;
+    }
+    if (!state.finalCalled) {
+      state.finalCalled = true;
+      _finish(stream);
+    }
+  }
+
+  function _finish(stream) {
+    const state = stream._writableState;
+    if (state.finished || state.destroyed) return;
+    state.finished = true;
+    for (const cb of state.finishCallbacks.splice(0)) cb();
+    stream.emit('finish');
+    // autoDestroy, as Readable's _emitEnd: 'close' follows 'finish', for a
+    // Duplex once its readable side has ended too.
+    const rs = stream._readableState;
+    if (state.autoDestroy && (!rs || (rs.autoDestroy && rs.endEmitted))) queueMicrotask(() => stream.destroy());
+  }
+
   class Writable extends __eventsMod {
     constructor(opts) {
       super();
-      this._writableState = {
-        buffer: [],
-        ended: false,
-        finished: false,
-        highWaterMark: opts?.highWaterMark ?? 16384,
-        needDrain: false,
-        autoDestroy: opts?.autoDestroy !== false,
-        destroyed: false,
-        corked: 0,
-        bufferedLength: 0,
-      };
+      this._writableState = _writableState(opts, opts?.highWaterMark ?? 16384);
       this.writable = true;
       if (opts?.write) this._write = opts.write.bind(this);
       if (opts?.final) this._final = opts.final.bind(this);
@@ -5632,89 +5849,14 @@ const __streamMod = (() => {
     }
 
     _write(chunk, encoding, callback) { callback(); }
-    _final(callback) { callback(); }
 
-    write(chunk, encoding, callback) {
-      if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-      const state = this._writableState;
-      if (state.ended) {
-        const err = new Error('write after end');
-        if (callback) callback(err);
-        this.emit('error', err);
-        return false;
-      }
-      if (typeof chunk === 'string') chunk = _enc.encode(chunk);
-
-      if (state.corked > 0) {
-        state.buffer.push({ chunk, callback });
-        state.bufferedLength += (chunk?.length || 0);
-        return state.bufferedLength < state.highWaterMark;
-      }
-
-      state.bufferedLength += (chunk?.length || 0);
-      this._write(chunk, encoding, (err) => {
-        state.bufferedLength -= (chunk?.length || 0);
-        if (err) { if (callback) callback(err); this.emit('error', err); return; }
-        if (callback) callback();
-        if (state.needDrain && state.bufferedLength < state.highWaterMark) {
-          state.needDrain = false;
-          this.emit('drain');
-        }
-      });
-
-      if (state.bufferedLength >= state.highWaterMark) {
-        state.needDrain = true;
-        return false;
-      }
-      return true;
-    }
-
-    end(chunk, encoding, callback) {
-      if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
-      if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-      const state = this._writableState;
-      if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-      state.ended = true;
-      this._final((err) => {
-        state.finished = true;
-        if (err) this.emit('error', err);
-        this.emit('finish');
-        if (callback) callback(err);
-        // Node's autoDestroy, as in Readable's _emitEnd: 'close' follows
-        // 'finish' once a Duplex's readable side has ended too, so
-        // `src.pipe(fs.createWriteStream(f)).on('close', …)` fires.
-        const rs = this._readableState;
-        if (state.autoDestroy && (!rs || rs.endEmitted)) queueMicrotask(() => this.destroy());
-      });
-      return this;
-    }
-
+    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
+    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
     cork() { this._writableState.corked++; }
+    uncork() { _uncork(this); }
+    destroy(err) { return _destroyStream(this, err); }
 
-    uncork() {
-      const state = this._writableState;
-      if (state.corked > 0) state.corked--;
-      if (state.corked === 0 && state.buffer.length > 0) {
-        const buf = [...state.buffer];
-        state.buffer = [];
-        for (const { chunk, callback } of buf) {
-          this._write(chunk, undefined, (err) => {
-            state.bufferedLength -= (chunk?.length || 0);
-            if (callback) callback(err);
-          });
-        }
-      }
-    }
-
-    destroy(err) {
-      if (this._writableState.destroyed) return this;
-      this._writableState.destroyed = true;
-      if (err) this.emit('error', err);
-      this.emit('close');
-      return this;
-    }
-
-    get writableEnded() { return this._writableState.ended; }
+    get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
   }
@@ -5723,28 +5865,19 @@ const __streamMod = (() => {
   class Duplex extends Readable {
     constructor(opts) {
       super(opts);
-      // Mixin Writable state
-      this._writableState = {
-        buffer: [],
-        ended: false,
-        finished: false,
-        highWaterMark: opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384,
-        needDrain: false,
-        autoDestroy: opts?.autoDestroy !== false,
-        destroyed: false,
-        corked: 0,
-        bufferedLength: 0,
-      };
+      this._writableState = _writableState(opts, opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384);
       this.writable = true;
       if (opts?.write) this._write = opts.write.bind(this);
       if (opts?.final) this._final = opts.final.bind(this);
     }
     _write(chunk, encoding, callback) { callback(); }
-    _final(callback) { callback(); }
-    write(chunk, encoding, callback) { return Writable.prototype.write.call(this, chunk, encoding, callback); }
-    end(chunk, encoding, callback) { return Writable.prototype.end.call(this, chunk, encoding, callback); }
-    cork() { Writable.prototype.cork.call(this); }
-    uncork() { Writable.prototype.uncork.call(this); }
+    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
+    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
+    cork() { this._writableState.corked++; }
+    uncork() { _uncork(this); }
+    get writableEnded() { return this._writableState.ending; }
+    get writableFinished() { return this._writableState.finished; }
+    get writableLength() { return this._writableState.bufferedLength; }
   }
 
   // ── Transform ───────────────────────────────────────────────────────
@@ -7477,10 +7610,31 @@ const __tlsMod = (() => {
   if (!real) {
     return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
   }
+  // A socket tls.connect opens holds the program until it closes or is
+  // unref'd, as in Node. Held once the socket exists: arguments tls.connect
+  // refuses (a bad port) throw first, and a caught throw holds nothing.
+  const connect = (...args) => {
+    const socket = real.connect(...args);
+    let closed = false;
+    let hold = null;
+    socket.once('close', () => { closed = true; hold?.(false); });
+    hold = __nimbusHoldSocket();
+    const ref = socket.ref, unref = socket.unref;
+    socket.ref = function () {
+      if (!closed) hold(true);
+      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+    };
+    socket.unref = function () {
+      hold(false);
+      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+    };
+    return socket;
+  };
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
+      if (p === 'connect') return connect;
       if (p === 'createServer') {
         return () => {
           const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
@@ -8432,6 +8586,7 @@ function __makeProcessStdin() {
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+    if (!held) globalThis.__nimbusHandleReleased?.();
   }
   __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
   __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
@@ -8915,7 +9070,7 @@ Object.defineProperty(builtins, "http", {
       const inFlight = new WeakSet();
       const end = clientProto.end, emit = clientProto.emit;
       const release = request => {
-        if (inFlight.delete(request)) globalThis.__nimbusPendingOps--;
+        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
       };
       Object.defineProperty(clientProto, clientPatch, { value: true });
       clientProto.end = function () {
@@ -8954,7 +9109,29 @@ Object.defineProperty(builtins, "http", {
           return Reflect.apply(writeHead, this, arguments);
         };
       }
-      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref;
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit;
+      // An HTTP exchange keeps its process alive until it completes, as its
+      // connection does in Node, whether or not the server is still listening
+      // (a bound port is counted on its own): from 'request' until the response
+      // closes, finished or destroyed (the client went away, the header
+      // deadline passed). The response alone decides, as Node ties the
+      // exchange to it: a request body the handler never reads never ends
+      // here (workerd does not dump one), so it must not hold the process.
+      // One of the held connections __nimbusLiveHandles counts, never startup
+      // work: a response still streaming at boot (SSE, an HMR poll) does not
+      // hold a resident's boot answer.
+      const holdExchange = (response) => {
+        if (typeof response.once !== "function") return;
+        response.once("close", () => {
+          globalThis.__nimbusOpenSockets--;
+          globalThis.__nimbusHandleReleased?.();
+        });
+        globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + 1;
+      };
+      proto.emit = function (event, incoming, response) {
+        if (event === "request" && incoming && response) holdExchange(response);
+        return Reflect.apply(emit, this, arguments);
+      };
       // Keep RPC capabilities inside this closure, not on globals or server
       // properties visible to guest code. The setter refreshes the context
       // when an isolate is reused, without revealing its current value.
@@ -8976,7 +9153,7 @@ Object.defineProperty(builtins, "http", {
           state.pending = false;
           // A cancelled allocation can settle after this server relistens.
           // Only the current owner can retire its pending-listen handle.
-          if (owners.get(this) === state) pendingListeners.delete(this);
+          if (owners.get(this) === state && pendingListeners.delete(this)) globalThis.__nimbusHandleReleased?.();
         };
         const releaseAllocation = () => {
           // An explicit relisten may have taken this same number while the
@@ -9027,6 +9204,7 @@ Object.defineProperty(builtins, "http", {
             state.pending = false;
             owners.delete(this);
             pendingListeners.delete(this);
+            globalThis.__nimbusHandleReleased?.();
             if (callback) this.once("close", callback);
             queueMicrotask(() => this.emit("close"));
             return this;
@@ -9034,12 +9212,17 @@ Object.defineProperty(builtins, "http", {
           if (state.port !== null && state.ctx.ports.get(state.port) === this) {
             state.ctx.ports.delete(state.port);
             state.ctx.pending.push(Promise.resolve(state.ctx.supervisor.unregisterPort(state.port)));
+            globalThis.__nimbusHandleReleased?.();
           }
         }
         return Reflect.apply(close, this, callback ? [callback] : []);
       };
       proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
-      proto.unref = function () { this.__nimbusUnrefed = true; return Reflect.apply(unref, this, []); };
+      proto.unref = function () {
+        this.__nimbusUnrefed = true;
+        globalThis.__nimbusHandleReleased?.();
+        return Reflect.apply(unref, this, []);
+      };
     } else http.Server.prototype[patchKey](context);
     globalThis.__nimbusServeHttp = async (request) => {
       const port = Number(request.headers.get("X-Nimbus-Port") || 0);

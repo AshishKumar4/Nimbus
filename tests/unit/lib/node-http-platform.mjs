@@ -32,6 +32,11 @@ export function createHttpPlatform() {
         this.removeListener('listening', listener);
         this.on('listening', (...values) => withHostTimers(() => Reflect.apply(listener, this, values)));
       }
+      // Bun arms a keep-alive timer on the socket after each response through
+      // the global setTimeout, which is the guest's counted one, so a
+      // finished exchange looked like a pending timer for 6 s. Workerd
+      // dispatches without a connection, so there is no keep-alive to time.
+      this.keepAliveTimeout = 0;
     }
     listen(...args) {
       const [opts, callback] = net._normalizeArgs(args);

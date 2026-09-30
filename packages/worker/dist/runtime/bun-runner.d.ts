@@ -59,7 +59,8 @@ export declare const BUN_SHIM_PREAMBLE: string;
  *   <user code>
  *
  * Routing follows runFresh: argv flags --watch / --inspect /
- * --inspect-brk → long-running fork; otherwise short fresh-isolate.
+ * --inspect-brk, or a program the handler judged to start a server
+ * (opts.launchesServer) → long-running fork; otherwise short fresh-isolate.
  */
 export declare function runBunScript(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;
 //# sourceMappingURL=bun-runner.d.ts.map

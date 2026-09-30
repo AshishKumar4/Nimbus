@@ -182,7 +182,8 @@ export function facetSql(db = new Database(':memory:')) {
 /**
  * Generate the resident body for `program`, evaluate it, and start it the way
  * the fabric does: `new NimbusProcess(ctx, env).startProcess({ vfsCursor })`.
- * `env` is the facet's bindings (SUPERVISOR); `processEnv` the program's own.
+ * `env` is the facet's bindings (SUPERVISOR); `processEnv` the program's own,
+ * and `argv` its command line (node's flags first, as runFresh passes it).
  */
 export async function launchResident({
   program,
@@ -197,6 +198,7 @@ export async function launchResident({
   authority,
   dataPlan,
   startArgs = {},
+  argv,
 }) {
   const vfsState = {
     bundle,
@@ -209,7 +211,7 @@ export async function launchResident({
   const generated = await generateLongRunningNodeCode(
     program,
     vfsState,
-    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv },
+    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv, ...(argv ? { argv } : {}) },
     false,
     nodeFacetSources(generateShimsCode()),
   );

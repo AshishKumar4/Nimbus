@@ -57,53 +57,19 @@ export function isLongRunningInvocation(args) {
     }
     return false;
 }
-/**
- * A shell-launched server — `node server.js` doing http.createServer().listen()
- * (or express `app.listen()`, `Bun.serve()`, net.createServer(), …) — must run
- * in the KEYED long-running facet (spawnNode), not the one-shot exec facet: only
- * the keyed facet exposes a re-resolvable NimbusLoadedEntrypoint route stub, so
- * external `/port/<n>` and in-session loopback `curl` reach the server. The
- * one-shot facet is `LOADER.load` (unkeyed) and its stub cannot be re-entered
- * from a later request's context, so it is never routeable.
- *
- * Argv flags (`--watch`) can't express "this script binds a port", so we detect
- * the bind at the only place it is knowable ahead of running: a listen/serve
- * call in the source. A false positive (source mentions `.listen(` but exits)
- * only means the script runs in the persistent facet instead of the one-shot
- * one — identical observable behaviour to `node --watch <script>`. A miss keeps
- * the pre-existing "unreachable one-shot server" behaviour, never a regression.
- */
-const SERVER_BIND_RE = /\.listen\s*\(|\bcreateServer\s*\(|\bserve\s*\(/;
-export function looksLikeServer(code) {
-    return SERVER_BIND_RE.test(code);
-}
-/** Arguments that ask a CLI a question it answers and exits on. */
-const QUERY_ARGS = new Set(['--help', '-h', 'help', '--version', '-v', 'version']);
-/** Whether `arg` is a query (`--help`, `--version`, …), not a request to serve. */
-export function isQueryArg(arg) {
-    return QUERY_ARGS.has(arg.trim().toLowerCase());
-}
-/**
- * Whether a serving CLI was asked for something that ends: a query, or
- * `build`, which means "produce an artifact and exit" in every CLI that also
- * serves. A resident process that ends is never reaped, so these stay one-shot.
- */
-export function endsWithoutServing(argv) {
-    return argv.some((arg) => isQueryArg(arg) || arg === 'build');
-}
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
-export async function runFresh(facetMgr, code, opts, entrySource = code) {
+export async function runFresh(facetMgr, code, opts) {
     const args = opts.argv || [];
-    // Promote server-shaped scripts to the keyed long-running facet even without
-    // an explicit --watch flag: it is the only path whose route stub is
-    // re-resolvable across requests, so its bound port is actually reachable.
-    // .bin wrapper invocations (skipSpawn) keep the one-shot fast path — those
-    // are CLIs, and their PID accounting assumes a single foreground exec. An
-    // entry that hands off to its own server module (`npx static-server`)
-    // serves too, unless it was asked for something that ends.
+    // A program that starts a server runs in the keyed long-running facet even
+    // without --watch: only its route stub is re-resolvable across requests
+    // (the one-shot facet is LOADER.load, unkeyed), so only there is the port it
+    // binds reachable. The runtime handler judges that from the code this
+    // invocation runs (server-launch.ts), its arguments included. .bin wrapper
+    // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
+    // their PID accounting assumes a single foreground exec.
     const wantsLongRunning = opts.forceLongRunning ||
         isLongRunningInvocation(args) ||
-        (!opts.skipSpawn && (looksLikeServer(entrySource) || (opts.launchesServer === true && !endsWithoutServing(args))));
+        (!opts.skipSpawn && opts.launchesServer === true);
     if (!wantsLongRunning) {
         // Short path: fresh-isolate-per-call via facetMgr.exec.
         // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
