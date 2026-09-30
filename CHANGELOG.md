@@ -24,6 +24,106 @@ published independently in the `@nimbus-sh` npm scope.
   file, rename it over) no longer leaves a resident reader fetching at a
   revision the path does not report, which `readRange` refused with ESTALE.
 
+- A pipe or redirect is a Node program's stdin: `echo hi | node x.js` and
+  `node x.js < in.txt` deliver it to `fs.readFileSync(0)` (and
+  `/dev/stdin`), `process.stdin` `'data'`/`'end'` and
+  `for await (const c of process.stdin)`, with chunks as Buffers. The
+  runtime handler used to drop it, so every read saw an empty stdin and
+  `readFileSync(0)` threw ENOENT on a file named "0". The pipe streams
+  through the process's input channel as it arrives, never held for its end:
+  a program that ignores `yes` or `tail -f` exits at once. Bytes arrive
+  exactly as written (binary input is not decoded as text). A `< file`
+  redirect's fd 0 is the file itself: `process.stdin` streams it, with no
+  bound, and for a program that reads stdin synchronously its first 16 MiB
+  is read in before it starts, so a large redirect (`< dump.sql`) is never
+  held whole; a synchronous read past that fails naming the bound and
+  pointing at `process.stdin`. A one-shot program whose code (the entry or its own modules it
+  loads directly) reads stdin synchronously — `readFileSync(0)`,
+  `readFileSync('/dev/stdin')` (or `/dev/fd/0`, `/proc/self/fd/0`),
+  `readFileSync(process.stdin.fd)`, `readSync` of fd 0 — has up to 16 MiB
+  of a pipe read before it starts, as Node's blocking read would wait for
+  a slow writer; a pipe that ends within that is delivered whole
+  (`cat package-lock.json | node -e "JSON.parse(fs.readFileSync(0))"`).
+  The 16 MiB is one budget for the session, since the read ahead is held in
+  its Durable Object: it counts the bytes concurrent launches hold, charged
+  as each piece is read, so one waiting on a slow writer does not starve
+  another, and a launch the budget cannot cover streams the rest of its
+  pipe. Past it a synchronous read fails with EAGAIN
+  naming the bound and suggesting `< file`, while `process.stdin` still
+  reads the pipe. All
+  those forms, `fs.read` of fd 0 and `process.stdin` share one position in
+  stdin, so a program can read a header synchronously and stream the rest.
+  `process.stdin.listeners('data')` lists a `once` listener as the
+  program's function, as in Node.
+
+- http-server serves text files. `stream.Readable.from` is Node's: object
+  mode by default, and a string or Buffer is emitted whole instead of being
+  iterated, so http-server's `Readable.from(bytes)` no longer writes byte
+  numbers into the response.
+
+- `npx sirv-cli` serves files. `path` is workerd's native `node:path`
+  (Node's own implementation), with `resolve`/`relative` starting from the
+  process's cwd. The hand-rolled `join` kept empty segments, so totalist's
+  `join("", "hello.txt")` was "/hello.txt", sirv mapped every file under
+  "//name" and answered 404; `normalize` also dropped trailing slashes and
+  answered "" for "".
+
+- express.static serves files. `require('stream')` is a function
+  constructor, as Node's legacy Stream is, so send's `Stream.call(this)` no
+  longer throws "Class constructor Stream cannot be invoked without 'new'".
+
+- express 4 apps (`express.static`, `npx serve-static` setups) start from
+  their second launch. depd, loaded by express 4's body-parser, builds each
+  deprecated wrapper with `new Function` as its module loads, which a
+  Worker refuses at request time; the plain `Function` constructor was left
+  native, so every launch crashed the same way and never bound its port.
+  It now answers text an earlier launch staged and stages one refused text
+  per failed launch, the one the failure is attributable to: the refusal an
+  uncaught error is, or, for a non-zero exit, the latest refusal the program
+  reported (read its message or stack; serve 14 prints ajv's refusal and
+  exits 1). A silent capability probe (TypeBox's `Function("null")`) is
+  never staged, even when the launch later fails for another reason.
+  `process.stdin.off`/`removeListener` remove wrapped `data` listeners again
+  (native `node:events` unwraps only `.listener`).
+
+- `npx http-server` serves. Node guests use workerd's native `node:events`
+  instead of a hand-rolled `class EE`, so `EventEmitter.call(this)` with
+  `util.inherits` (union, and many older packages) works, native HTTP
+  servers are instances of the `EventEmitter` userland requires, and the
+  static `once`/`on`/`captureRejections`/`setMaxListeners` helpers are
+  Node's. Shim streams no longer emit `'error'` after being destroyed
+  (Node's errorOrDestroy); with a real emitter that error would throw.
+  `url.parse`/`format`/`resolve` are workerd's native `node:url` legacy API:
+  the hand-rolled parse answered only `{ href }` for a relative URL, so
+  http-server's `url.parse(req.url).pathname` was undefined and every
+  request was a 400.
+
+- Node HTTP guests see full request header values again. workerd's native
+  server keeps only the text before the first unquoted comma of Host,
+  Content-Type, User-Agent, Referer, Authorization, Proxy-Authorization,
+  If-Modified-Since, If-Unmodified-Since, From, Location and Max-Forwards
+  (`If-Modified-Since: Tue`, a Chrome User-Agent ending at "(KHTML", a
+  Digest Authorization cut after its first parameter), so conditional GETs
+  never answered 304. Nimbus restores those fields, in `req.headers` and
+  `req.rawHeaders`, from the request it hands the native server.
+
+- `npx sirv-cli` starts. `require` of a package without `exports` reads
+  `main`, as Node does; the bundlers' `module` field is honoured only under
+  the `module` condition (browser/bundle resolution). tinydate@1's `module`
+  is `export default fn`, so `require('tinydate')` returned its namespace
+  and sirv-cli threw "tinydate is not a function". Legacy subpath
+  directories (`pkg/sub/package.json`) are Node's LOAD_AS_DIRECTORY through
+  `main`; the prefetch walk's synthetic re-export stubs for them are
+  deleted.
+
+- `npx serve` starts. An ES module with top-level await (serve 14's
+  `build/main.js`, nuxi's bin) is emitted by esbuild as ESM and now lowered
+  to a CommonJS body from Acorn's parse of its declarations. The previous
+  line-regex converter left esbuild's multi-line `import {…} from` clauses
+  inside the async function ("Cannot use import statement outside a
+  module"); it, its classifiers and the comment scanner's literal-blanking
+  mode are deleted.
+
 - Removing an import's destination abandons the import, so an interrupted
   import can be started again there. An import whose sender stopped after a
   page kept its `vfs_jobs` row after its destination was removed, and

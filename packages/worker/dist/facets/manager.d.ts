@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -37,6 +38,10 @@ import { type WasmImageRecord } from './wasm-image-digest.js';
  * adapter over it (requireFsOverBridge), made once per bridge.
  */
 type LaunchFs = RuntimeFsBridge;
+/** A pipe or redirect's bytes, exactly as written, until it ends (null). */
+export interface StdinBytes {
+    readBytes(maxLength: number): Promise<Uint8Array | null>;
+}
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -936,6 +941,12 @@ export declare class FacetManager {
     private debugEnabled;
     private processRpcResources;
     /**
+     * The session's pipe read-ahead budget (stdin-read.ts), held here because a
+     * read ahead is held in this Durable Object, whichever launch holds it. One
+     * byte over the bound shows whether a pipe ended exactly there.
+     */
+    readonly stdinReadAhead: ReadAheadBudget;
+    /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
      * live process table.
@@ -1331,7 +1342,36 @@ export declare class FacetManager {
         captureOutput?: boolean;
         /** Shell abort (Ctrl+C): aborting this aborts the in-flight run. */
         signal?: AbortSignal;
+        /**
+         * A pipe or redirect as the program's stdin. It streams through the
+         * process's input channel as it arrives, from before the program
+         * starts; the program is never held for the pipe to end.
+         */
+        stdinPipe?: StdinBytes;
+        /**
+         * The pipe ends within what was read ahead of it: the program takes all
+         * of it before it starts, for its synchronous reads of stdin.
+         */
+        stdinWhole?: boolean;
+        /**
+         * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
+         * program reads stdin synchronously, so it reads the file first.
+         */
+        stdinFile?: {
+            path: string;
+            offset: number;
+            syncRead: boolean;
+        };
     }): Promise<FacetExecResult>;
+    /**
+     * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
+     * a full queue waits for the program to read, and the pipe's end ends the
+     * channel. stop() leaves the rest of the pipe unread, so a program that
+     * finished without reading all of it (`tail -f log | node -e ...`)
+     * releases the pipe and its writer ends, as a closed reader ends it in a
+     * shell.
+     */
+    private _pumpStdinPipe;
     /**
      * W5 Lever 5: push a DiagFailure into the OOM ring for every facet
      * termination with a non-zero exit code. This is the supervisor side

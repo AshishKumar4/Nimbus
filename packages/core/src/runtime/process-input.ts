@@ -6,7 +6,8 @@ interface InputWaiter {
 }
 
 export interface ProcessInputPacket {
-  data: string;
+  /** Typed text (a terminal's keystrokes), or bytes (a pipe or redirect). */
+  data: string | Uint8Array;
   ended: boolean;
   resize?: { columns: number; rows: number };
   signal?: ProcessSignalName;
@@ -17,6 +18,8 @@ interface InputState {
   closed: boolean;
   bytes: number;
   waiters: InputWaiter[];
+  /** Writers waiting for the reader to take queued input (whenWritable). */
+  drained: Array<() => void>;
   /** Set once the process has read its input: from then on it receives its signals. */
   reading: boolean;
   columns: number;
@@ -42,7 +45,7 @@ export class ProcessInputStore {
   }
 
   private createState(): InputState {
-    return { packets: [], closed: false, bytes: 0, waiters: [], reading: false, columns: 80, rows: 24 };
+    return { packets: [], closed: false, bytes: 0, waiters: [], drained: [], reading: false, columns: 80, rows: 24 };
   }
 
   open(pid: number): void {
@@ -69,6 +72,16 @@ export class ProcessInputStore {
     if (state.bytes + text.length > this.maxQueuedBytes) return { ok: false };
 
     return this.enqueue(state, { data: text, ended: false }, text.length);
+  }
+
+  /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+  writeBytes(pid: number, data: Uint8Array): { ok: boolean } {
+    if (!isValidPid(pid)) return { ok: false };
+    const state = this.pids.get(pid);
+    if (!state) return { ok: false };
+    if (state.closed) return { ok: false };
+    if (state.bytes + data.byteLength > this.maxQueuedBytes) return { ok: false };
+    return this.enqueue(state, { data, ended: false }, data.byteLength);
   }
 
   resize(pid: number, columns: number, rows: number): { ok: boolean } {
@@ -113,10 +126,22 @@ export class ProcessInputStore {
     return { ok: true };
   }
 
+  /**
+   * Resolves once `pid`'s reader has taken queued input, so a writer refused
+   * for a full queue can try again: true then, false if the channel is ended
+   * or gone and will take no more.
+   */
+  whenWritable(pid: number): Promise<boolean> {
+    const state = this.pids.get(pid);
+    if (!state || state.closed) return Promise.resolve(false);
+    return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+  }
+
   end(pid: number): void {
     const state = this.pids.get(pid);
     if (!state || state.closed) return;
     state.closed = true;
+    for (const wake of state.drained.splice(0)) wake();
     for (const waiter of state.waiters.splice(0)) {
       clearTimeout(waiter.timer);
       waiter.resolve({ data: '', ended: true });
@@ -134,9 +159,30 @@ export class ProcessInputStore {
     if (!state) return { data: '', ended: true };
     state.reading = true;
 
-    const next = state.packets.shift();
+    let next = state.packets.shift();
     if (next !== undefined) {
       state.bytes -= next.data.length;
+      // Piped bytes queued back to back leave in one packet, one round trip:
+      // a pipe is written a piece at a time, and a reader wants all it can get.
+      if (next.data instanceof Uint8Array && isPlainData(next)) {
+        const run: Uint8Array[] = [next.data];
+        let size = next.data.byteLength;
+        while (state.packets.length > 0) {
+          const peek = state.packets[0];
+          if (!(peek.data instanceof Uint8Array) || !isPlainData(peek)) break;
+          state.packets.shift();
+          state.bytes -= peek.data.byteLength;
+          run.push(peek.data);
+          size += peek.data.byteLength;
+        }
+        if (run.length > 1) {
+          const data = new Uint8Array(size);
+          let at = 0;
+          for (const piece of run) { data.set(piece, at); at += piece.byteLength; }
+          next = { data, ended: false };
+        }
+      }
+      for (const wake of state.drained.splice(0)) wake();
       return next;
     }
     if (state.closed) return { data: '', ended: true };
@@ -153,4 +199,14 @@ export class ProcessInputStore {
       state.waiters.push(waiter);
     });
   }
+}
+
+/** A packet that carries only data: no end, signal or resize. */
+function isPlainData(packet: ProcessInputPacket): boolean {
+  for (const key of Object.keys(packet)) {
+    if (key === 'data') continue;
+    if (key === 'ended' && packet.ended === false) continue;
+    return false;
+  }
+  return true;
 }

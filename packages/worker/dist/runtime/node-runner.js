@@ -40,6 +40,7 @@
  * All under the 250ms warm-pool gate; no warm-pool needed.
  */
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 /**
  * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)
@@ -75,13 +76,46 @@ export async function runFresh(facetMgr, code, opts) {
         // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
         // invocation gets a fresh isolate; warm slots are reused only
         // for byte-identical re-invocations.
-        const r = await facetMgr.exec(code, opts);
-        return {
-            exitCode: r.exitCode,
-            stdout: r.stdout,
-            stderr: r.stderr,
-            longRunning: false,
-        };
+        // A pipe streams to the program as it arrives (facetMgr.exec). When its
+        // code reads stdin synchronously, the pipe is read ahead first, up to the
+        // bound, each piece charged to the session's budget as it is read
+        // (facetMgr.stdinReadAhead): a pipe that ends within it is the program's
+        // whole stdin before it starts (still streamed, from here). When the
+        // budget, held by concurrent launches' read ahead, cannot cover the next
+        // piece, the launch streams the rest. A `< file` needs no read ahead:
+        // fd 0 is the file.
+        const { stdin, stdinReadsSync, stdinFile, ...execOpts } = opts;
+        let stdinOpts = {};
+        let account = null;
+        try {
+            if (stdinFile) {
+                stdinOpts = { stdinFile: { ...stdinFile, syncRead: stdinReadsSync === true } };
+            }
+            else if (stdin) {
+                const source = stdinBytesOf(stdin);
+                if (stdinReadsSync) {
+                    account = facetMgr.stdinReadAhead.open();
+                    const ahead = await readAhead(source, STDIN_SYNC_READ_BYTES, account, opts.signal);
+                    if (ahead === null)
+                        return { exitCode: 130, stdout: '', stderr: '', longRunning: false };
+                    stdinOpts = { stdinPipe: replaying(ahead.chunks, source, account), stdinWhole: ahead.ended };
+                }
+                else {
+                    stdinOpts = { stdinPipe: source };
+                }
+            }
+            const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
+            return {
+                exitCode: r.exitCode,
+                stdout: r.stdout,
+                stderr: r.stderr,
+                longRunning: false,
+            };
+        }
+        finally {
+            // However the launch ended: exit, abort, or a launch that failed.
+            account?.give();
+        }
     }
     // Long path: an argv flag (--watch/--inspect/--inspect-brk) or a server-bind
     // in the source opted in. Fork to a keyed long-lived facet via
@@ -141,5 +175,81 @@ export async function runFresh(facetMgr, code, opts) {
         stderr: '',
         spawnedPid: spawned.pid,
         longRunning: true,
+    };
+}
+/** How many bytes of a pipe one read asks for. */
+const STDIN_CHUNK_BYTES = 64 * 1024;
+/** A shell stream's bytes: exact through readBytes, else its text encoded. */
+function stdinBytesOf(stream) {
+    if (stream.readBytes)
+        return { readBytes: (maxLength) => stream.readBytes(maxLength) };
+    // A text-only stream: at most `maxLength` bytes a read, as readBytes gives,
+    // so a read ahead holds no more than it charged to the budget.
+    const encoder = new TextEncoder();
+    let rest = null;
+    return {
+        readBytes: async (maxLength) => {
+            if (rest === null) {
+                const text = await stream.read();
+                if (text === null)
+                    return null;
+                rest = encoder.encode(text);
+            }
+            const piece = rest.subarray(0, maxLength);
+            rest = piece.byteLength < rest.byteLength ? rest.subarray(piece.byteLength) : null;
+            return piece;
+        },
+    };
+}
+/**
+ * Read `source` until it ends, holds more than `limit` bytes (at most
+ * `limit` + 1: the extra byte shows whether it ended exactly at the limit), or
+ * `account` cannot cover the next piece; null when `signal` aborts first (the
+ * shell's Ctrl+C). Each piece is charged to `account` before it is read, for
+ * no more than the read asks, and what the read did not return is given back.
+ */
+async function readAhead(source, limit, account, signal) {
+    const chunks = [];
+    let total = 0;
+    const aborted = signal
+        ? new Promise((resolve) => {
+            if (signal.aborted)
+                resolve('aborted');
+            else
+                signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+        })
+        : null;
+    while (total <= limit) {
+        const granted = account.take(Math.min(STDIN_CHUNK_BYTES, limit + 1 - total));
+        if (granted === 0)
+            return { chunks, ended: false };
+        const next = source.readBytes(granted);
+        const chunk = aborted ? await Promise.race([next, aborted]) : await next;
+        if (chunk === 'aborted')
+            return null;
+        if (chunk === null) {
+            account.give(granted);
+            return { chunks, ended: true };
+        }
+        account.give(granted - chunk.byteLength);
+        chunks.push(chunk);
+        total += chunk.byteLength;
+    }
+    return { chunks, ended: false };
+}
+/**
+ * `source` with `chunks` read from it already put back in front, each
+ * released as it is handed on, back to the session's budget too, so the read
+ * ahead leaves this isolate as the program takes it.
+ */
+function replaying(chunks, source, account) {
+    return {
+        readBytes: (maxLength) => {
+            const next = chunks.shift();
+            if (next === undefined)
+                return source.readBytes(maxLength);
+            account.give(next.byteLength);
+            return Promise.resolve(next);
+        },
     };
 }

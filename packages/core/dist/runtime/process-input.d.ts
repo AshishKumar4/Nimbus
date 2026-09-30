@@ -1,6 +1,7 @@
 import type { ProcessSignalName } from './process-io-protocol.js';
 export interface ProcessInputPacket {
-    data: string;
+    /** Typed text (a terminal's keystrokes), or bytes (a pipe or redirect). */
+    data: string | Uint8Array;
     ended: boolean;
     resize?: {
         columns: number;
@@ -23,6 +24,10 @@ export declare class ProcessInputStore {
     write(pid: number, data: string): {
         ok: boolean;
     };
+    /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+    writeBytes(pid: number, data: Uint8Array): {
+        ok: boolean;
+    };
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;
     };
@@ -34,6 +39,12 @@ export declare class ProcessInputStore {
         rows: number;
     } | null;
     private enqueue;
+    /**
+     * Resolves once `pid`'s reader has taken queued input, so a writer refused
+     * for a full queue can try again: true then, false if the channel is ended
+     * or gone and will take no more.
+     */
+    whenWritable(pid: number): Promise<boolean>;
     end(pid: number): void;
     close(pid: number): void;
     read(pid: number, waitMs?: number): Promise<ProcessInputPacket>;

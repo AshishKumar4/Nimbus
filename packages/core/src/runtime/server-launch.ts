@@ -44,7 +44,7 @@
  * nothing.
  */
 
-import { parseJavaScriptProgram } from './javascript-ast.js';
+import { forEachChild, forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 
 /** An acorn node, read structurally by the walk (javascript-ast.ts parses it). */
 interface AstNode {
@@ -70,7 +70,6 @@ export const SERVER_LAUNCH_MODULE_BYTES = 2 * 1024 * 1024;
 const HOP_LIMIT = 3;
 /** Extensions of modules that carry no code to walk. */
 const DATA_MODULE_RE = /\.(json|node|wasm|css|txt)$/i;
-const SKIPPED_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
 
 /** How the analysis reads the program's modules: the command's own view. */
 export interface ServerLaunchHost {
@@ -241,24 +240,39 @@ function isRelative(specifier: string): boolean {
   return specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..';
 }
 
-/** Each child node of `node`. */
-function forEachChild(node: AstNode, visit: (child: AstNode) => void): void {
-  for (const key in node) {
-    if (SKIPPED_KEYS.has(key)) continue;
-    const child = node[key];
-    if (Array.isArray(child)) {
-      for (const c of child) if (isNode(c)) visit(c);
-    } else if (isNode(child)) {
-      visit(child);
+/**
+ * The modules a parsed module (`path`, relative ones resolving from `dir`)
+ * loads by a static specifier (require, import, export ... from, import()):
+ * each relative specifier to its VFS key when it is the program's own code
+ * (inside `packageRoot`, not a data file), else to null.
+ */
+export async function resolveOwnModules(
+  ast: { type: string },
+  path: string | null,
+  dir: string,
+  packageRoot: string,
+  host: ServerLaunchHost,
+): Promise<Map<string, string | null>> {
+  const specifiers = new Set<string>();
+  forEachNode(ast as AstNode, (n) => {
+    const required = requiredSpecifier(n);
+    if (required !== null) specifiers.add(required);
+    if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration')
+      && n.source && typeof n.source.value === 'string') {
+      specifiers.add(n.source.value);
     }
+  });
+  const deps = new Map<string, string | null>();
+  for (const specifier of specifiers) {
+    if (!isRelative(specifier) || DATA_MODULE_RE.test(specifier)) continue;
+    const target = await host.resolve(dir, specifier);
+    const own = target !== null && target !== path && (packageRoot === '' || target.startsWith(`${packageRoot}/`))
+      && !DATA_MODULE_RE.test(target);
+    deps.set(specifier, own ? target : null);
   }
+  return deps;
 }
 
-/** Every node below `node`, functions included, in source order. */
-function forEachNode(node: AstNode, visit: (n: AstNode) => void): void {
-  visit(node);
-  forEachChild(node, (child) => forEachNode(child, visit));
-}
 
 /** `exports` or `module.exports`: the object exports are assigned on. */
 function isExportsObject(node: AstNode): boolean {
@@ -288,23 +302,7 @@ class ModuleGraph {
   /** Resolve every relative specifier a module names, once, before it is walked. */
   async resolveDeps(record: ModuleRecord): Promise<void> {
     if (record.ast === null) return;
-    const specifiers = new Set<string>();
-    forEachNode(record.ast, (n) => {
-      const required = requiredSpecifier(n);
-      if (required !== null) specifiers.add(required);
-      if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration')
-        && n.source && typeof n.source.value === 'string') {
-        specifiers.add(n.source.value);
-      }
-    });
-    const root = this.program.packageRoot;
-    for (const specifier of specifiers) {
-      if (!isRelative(specifier) || DATA_MODULE_RE.test(specifier)) continue;
-      const target = await this.host.resolve(record.dir, specifier);
-      const own = target !== null && target !== record.path && (root === '' || target.startsWith(`${root}/`))
-        && !DATA_MODULE_RE.test(target);
-      record.deps.set(specifier, own ? target : null);
-    }
+    record.deps = await resolveOwnModules(record.ast, record.path, record.dir, this.program.packageRoot, this.host);
   }
 
   /** Read the modules the last walk reached; false when there were none left to read. */

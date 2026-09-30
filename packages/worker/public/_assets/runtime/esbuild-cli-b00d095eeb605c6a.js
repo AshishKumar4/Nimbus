@@ -9041,6 +9041,134 @@ const ${binding} = arguments[2];
     return parts.join("");
   }
 
+  function lowerAsyncModule(esm) {
+    const program = Parser.parse(esm, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
+    let prefix = "__nimbus_m";
+    while (esm.includes(prefix)) prefix += "_";
+    let temps = 0;
+    const temp = () => `${prefix}${temps++}`;
+    const key = (name) => `[${JSON.stringify(name)}]`;
+    const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
+    const sourceOf = (node) => JSON.stringify(String(node.value));
+    let marked = false;
+    const esModule = () => {
+      if (marked) return "";
+      marked = true;
+      return "module.exports.__esModule = true; ";
+    };
+    const requires = [];
+    const edits = [];
+    if (esm.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
+    for (const node of program.body) {
+      switch (node.type) {
+        case "ImportDeclaration": {
+          edits.push({ start: node.start, end: node.end, text: "" });
+          if (node.specifiers.length === 0) {
+            requires.push(`require(${sourceOf(node.source)});`);
+            break;
+          }
+          const mod = temp();
+          const bindings = [`const ${mod} = require(${sourceOf(node.source)});`];
+          for (const specifier of node.specifiers) {
+            const local = specifier.local.name;
+            if (specifier.type === "ImportNamespaceSpecifier") bindings.push(`const ${local} = ${mod};`);
+            else if (specifier.type === "ImportDefaultSpecifier") {
+              bindings.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+            } else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
+          }
+          requires.push(bindings.join(" "));
+          break;
+        }
+        case "ExportNamedDeclaration": {
+          if (node.declaration) {
+            edits.push({ start: node.start, end: node.declaration.start, text: "" });
+            const names = declaredNames(node.declaration);
+            edits.push({
+              start: node.end,
+              end: node.end,
+              text: "\n" + esModule() + names.map((name) => `module.exports${key(name)} = ${name};`).join(" ")
+            });
+          } else if (node.source) {
+            const mod = temp();
+            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
+            edits.push({
+              start: node.start,
+              end: node.end,
+              text: `${esModule()}{ const ${mod} = require(${sourceOf(node.source)}); ${assigns.join(" ")} }`
+            });
+          } else {
+            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
+            edits.push({ start: node.start, end: node.end, text: esModule() + assigns.join(" ") });
+          }
+          break;
+        }
+        case "ExportDefaultDeclaration": {
+          const declaration = node.declaration;
+          if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
+            edits.push({ start: node.start, end: declaration.start, text: "" });
+            edits.push({ start: node.end, end: node.end, text: `
+${esModule()}module.exports.default = ${declaration.id.name};` });
+          } else {
+            edits.push({
+              start: node.start,
+              end: node.end,
+              text: `${esModule()}module.exports.default = (${esm.slice(declaration.start, declaration.end)});`
+            });
+          }
+          break;
+        }
+        case "ExportAllDeclaration": {
+          const mod = temp();
+          const text = node.exported ? `module.exports${key(nameOf(node.exported))} = require(${sourceOf(node.source)});` : `{ const ${mod} = require(${sourceOf(node.source)}); for (const k in ${mod}) if (k !== "default" && k !== "__esModule") module.exports[k] = ${mod}[k]; }`;
+          edits.push({ start: node.start, end: node.end, text: esModule() + text });
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    const parts = [];
+    let at2 = 0;
+    for (const { start, end, text } of edits.sort((a, b) => a.start - b.start)) {
+      parts.push(esm.slice(at2, start), text);
+      at2 = end;
+    }
+    parts.push(esm.slice(at2));
+    return `${requires.join("\n")}
+return (async () => {
+${parts.join("")}
+})();
+`;
+  }
+  function declaredNames(declaration) {
+    if (declaration.type !== "VariableDeclaration") return declaration.id ? [declaration.id.name] : [];
+    const names = [];
+    const visit = (pattern) => {
+      if (pattern === null) return;
+      switch (pattern.type) {
+        case "Identifier":
+          names.push(pattern.name);
+          break;
+        case "ObjectPattern":
+          for (const property of pattern.properties) visit(property.type === "RestElement" ? property.argument : property.value);
+          break;
+        case "ArrayPattern":
+          for (const element of pattern.elements) visit(element);
+          break;
+        case "RestElement":
+          visit(pattern.argument);
+          break;
+        case "AssignmentPattern":
+          visit(pattern.left);
+          break;
+        default:
+          break;
+      }
+    };
+    for (const declarator of declaration.declarations ?? []) visit(declarator.id);
+    return names;
+  }
+
   var O_WRONLY = 1;
   var O_RDWR = 2;
   var O_CREAT = 64;
@@ -9420,4 +9548,5 @@ const ${binding} = arguments[2];
     return exitCode;
   };
   globalThis.__nimbusRewriteDynamicImports = rewriteDynamicImports;
+  globalThis.__nimbusLowerAsyncModule = lowerAsyncModule;
 })();

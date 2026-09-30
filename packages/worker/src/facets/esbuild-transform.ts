@@ -43,9 +43,10 @@ const TRANSFORM_ESBUILD_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, and the `esbuild` command's runner, which its
  * build id keys. `wasmModule` and `newEsbuild` are bound by the lines before
- * it, and the runner installs `globalThis.__esbuildCliRun` and the
+ * it, and the runner installs `globalThis.__esbuildCliRun`, the
  * dynamic-import rewrite transforms run after esbuild,
- * `globalThis.__nimbusRewriteDynamicImports`.
+ * `globalThis.__nimbusRewriteDynamicImports`, and the top-level-await
+ * lowering, `globalThis.__nimbusLowerAsyncModule`.
  *
  * Transforms share one esbuild until its wasm memory passes
  * TRANSFORM_ESBUILD_HIGH_WATER_BYTES or it dies (`keepEsbuild`): a fresh one
@@ -67,7 +68,7 @@ const ESBUILD_FACET_BODY = [
   '      const outcomes = [];',
   '      for (const { code, options } of requests) {',
   '        try {',
-  '          outcomes.push(await runTransformRequest(esbuild, code, options, globalThis.__nimbusRewriteDynamicImports));',
+  '          outcomes.push(await runTransformRequest(esbuild, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule));',
   '        } catch (e) {',
   '          const error = String((e && e.message) || e);',
   '          outcomes.push(e && e.transient === true ? { error, transient: true } : { error });',

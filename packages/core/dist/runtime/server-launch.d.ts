@@ -66,4 +66,13 @@ export interface ServerLaunchProgram {
 }
 /** Whether running `program` starts a server. */
 export declare function programLaunchesServer(program: ServerLaunchProgram, host: ServerLaunchHost): Promise<boolean>;
+/**
+ * The modules a parsed module (`path`, relative ones resolving from `dir`)
+ * loads by a static specifier (require, import, export ... from, import()):
+ * each relative specifier to its VFS key when it is the program's own code
+ * (inside `packageRoot`, not a data file), else to null.
+ */
+export declare function resolveOwnModules(ast: {
+    type: string;
+}, path: string | null, dir: string, packageRoot: string, host: ServerLaunchHost): Promise<Map<string, string | null>>;
 //# sourceMappingURL=server-launch.d.ts.map

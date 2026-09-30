@@ -52,7 +52,11 @@
  *                         keeps its own pathToFileURL/fileURLToPath, which
  *                         answer against the guest's cwd.
  */
-/** Native HTTP imports shared by generated node and opencode guests. */
-export declare function getRealNodeHttpImportsCode(): string;
+/**
+ * Native imports shared by generated node and opencode guests: events, url,
+ * path and HTTP. Userland's `require('events')` must be the class native servers
+ * use.
+ */
+export declare function getRealNodeSharedImportsCode(): string;
 export declare function getRealNodeImportsCode(): string;
 //# sourceMappingURL=real-node-imports.d.ts.map

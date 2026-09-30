@@ -1,22 +1,14 @@
 /**
- * One JavaScript source scanner shared by the two comment-stripping
- * call sites — prefetch's import detection and the esbuild transform
- * pipeline's classifiers.
+ * Prefetch's import-detection view of a JavaScript source.
  *
- * `scanJsSource(src, literals)` walks `src` once and returns a
+ * `stripCommentsForImports(src)` walks `src` once and returns a
  * byte-aligned copy in which `//` and `/* … *\/` comments are blanked
  * (each comment becomes a space; newlines inside a block comment are
- * preserved so line numbers still match the input). String, template
- * and regex literals are what `literals` decides:
- *
- *   - `'blank'`: literal content is replaced too — templates keep their
- *     `${…}` interpolation expression as code so a depth-tracked caller
- *     sees `await` etc. inside it. This is the transform pipeline's
- *     classification view: nothing quoted can read as an `import`.
- *   - `'keep'`: literals are copied verbatim. This is prefetch's
- *     import-detection view: IMPORT_RE/REQUIRE_RE must see the
- *     specifier string, and a `//` or `/*` inside a literal must NOT
- *     open a comment that swallows a following real import.
+ * preserved so line numbers still match the input) and regex literals
+ * are blanked. String and template literals are copied verbatim:
+ * IMPORT_RE/REQUIRE_RE must see the specifier string, and a `//` or `/*`
+ * inside a literal must NOT open a comment that swallows a following
+ * real import.
  *
  * The output is assembled from input slices and joined once. It used to
  * be built one character at a time (`stripped += c`), which V8 keeps as
@@ -25,12 +17,8 @@
  * `lib/_tsc.js` that rope measured 174 MB against a 128 MB isolate —
  * the session Durable Object was killed inside `tsc`'s spawn before the
  * facet existed. Spans hold the input, the output and a short array.
- *
- * Serialized by name: `generateEsbuildFacetRuntimeSource` embeds
- * this function's `.toString()` in the esbuild facet, so every
- * constant it reads is declared inside the body.
  */
-export function scanJsSource(src, literals) {
+export function stripCommentsForImports(src) {
     const NEWLINE = 0x0a;
     // Identifier-suffix detection: `/` after one of these is division;
     // after anything else (operators, punctuators, keywords, start-of-file)
@@ -183,28 +171,6 @@ export function scanJsSource(src, literals) {
         }
         const ch = src[i];
         if (ch === '"' || ch === "'" || ch === '`') {
-            if (literals === 'keep') {
-                i++;
-                while (i < N) {
-                    const cc = src[i];
-                    if (cc === '\\') {
-                        i += 2;
-                        continue;
-                    }
-                    if (cc === ch) {
-                        i++;
-                        break;
-                    }
-                    i++;
-                }
-                // The literal ends a value: a following `/` is division.
-                record(ch);
-                continue;
-            }
-            // blank: the delimiters and content become one space; a template's
-            // `${…}` interpolation keeps its expression as code.
-            copy(i);
-            emit(' ');
             i++;
             while (i < N) {
                 const cc = src[i];
@@ -216,81 +182,14 @@ export function scanJsSource(src, literals) {
                     i++;
                     break;
                 }
-                if (ch === '`' && cc === '$' && src[i + 1] === '{') {
-                    emit('${');
-                    i += 2;
-                    let depth = 1;
-                    while (i < N && depth > 0) {
-                        const ic = src[i];
-                        // Nested string inside the interpolation: blank its content
-                        // so a `}` inside it doesn't drop the depth early.
-                        if (ic === '"' || ic === "'" || ic === '`') {
-                            const iq = ic;
-                            emit(' ');
-                            i++;
-                            while (i < N) {
-                                const icc = src[i];
-                                if (icc === '\\') {
-                                    i += 2;
-                                    continue;
-                                }
-                                if (icc === iq) {
-                                    i++;
-                                    break;
-                                }
-                                // A nested template's own ${…} recurses once more —
-                                // deeper nesting falls back to brace counting.
-                                if (iq === '`' && icc === '$' && src[i + 1] === '{') {
-                                    emit('${');
-                                    i += 2;
-                                    let d2 = 1;
-                                    while (i < N && d2 > 0) {
-                                        const i2 = src[i];
-                                        if (i2 === '{')
-                                            d2++;
-                                        else if (i2 === '}')
-                                            d2--;
-                                        if (d2 > 0)
-                                            emit(i2);
-                                        i++;
-                                    }
-                                    emit('}');
-                                    continue;
-                                }
-                                if (icc === '\n')
-                                    emit('\n');
-                                i++;
-                            }
-                            continue;
-                        }
-                        if (ic === '{')
-                            depth++;
-                        else if (ic === '}')
-                            depth--;
-                        if (depth > 0)
-                            emit(ic);
-                        i++;
-                    }
-                    emit('}');
-                    continue;
-                }
-                if (cc === '\n')
-                    emit('\n');
                 i++;
             }
-            spanStart = i;
+            // The literal ends a value: a following `/` is division.
+            record(ch);
             continue;
         }
         step();
     }
     copy(N);
     return parts.join('');
-}
-/**
- * Strip comments for import/require detection. Literals are kept: the
- * specifier the regexes extract lives inside a string, and a comment
- * marker inside a string must not swallow the code that follows it.
- */
-export function stripCommentsForImports(src) {
-    return scanJsSource(src, 'keep');
 }

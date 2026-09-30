@@ -75,6 +75,33 @@ export interface RuntimeRunOpts {
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
     /**
+     * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
+     * `node x.js < in.txt`); absent when stdin is the terminal. A runner
+     * delivers its bytes as they arrive, never holding the program for the
+     * pipe's end (`tail -f log | node x.js` runs x.js at once).
+     */
+    stdin?: {
+        read(): Promise<string | null>;
+        readBytes?(maxLength: number): Promise<Uint8Array | null>;
+    };
+    /**
+     * The program's code reads stdin synchronously (stdin-read.ts), which
+     * cannot wait for bytes arriving after it runs: a one-shot runner reads up
+     * to STDIN_SYNC_READ_BYTES of a pipe before starting it, or has the program
+     * read its `< file` whole first. Never set for a program that starts a
+     * server.
+     */
+    stdinReadsSync?: boolean;
+    /**
+     * The regular file a `< file` redirect opened, and the offset its stream is
+     * at: the program's fd 0 is that file (read at a position, streamed as it
+     * is read), in place of `stdin`.
+     */
+    stdinFile?: {
+        path: string;
+        offset: number;
+    };
+    /**
      * Running the program starts a server (server-launch.ts). Set only for a
      * runtime that routes servers (RuntimeSpec.routesServers), when no .bin
      * wrapper has decided residency already.

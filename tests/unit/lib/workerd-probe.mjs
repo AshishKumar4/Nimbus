@@ -156,7 +156,8 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       await Bun.sleep(500);
     }
     const token = await mintProbeToken(secret, 3_600_000);
-    return { base, token, stop, log: () => log };
+    // pid: the wrangler dev process group, whose members serve the probe.
+    return { base, token, stop, log: () => log, pid: child.pid };
   } catch (error) {
     await stop();
     throw error;

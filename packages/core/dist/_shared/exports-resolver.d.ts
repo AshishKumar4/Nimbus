@@ -68,7 +68,7 @@ export declare function parseResolvablePackageJson(text: string): ResolvablePack
 export declare function resolveExports(exportsField: ExportsField | undefined, subpath?: string, conditions?: string[]): string | null;
 /**
  * Resolve a package's entry-point file relative to its directory.
- * Priority: exports → module → main → null.
+ * Priority: exports → module (only under the `module` condition) → main → null.
  * For non-root subpaths without an `exports` field, returns the subpath
  * itself (caller probes filesystem with extension-list).
  */

@@ -78,27 +78,6 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   assert.deepEqual(held,{[P+'/source/index.cjs']:base[P+'/source/index.cjs'],[P+'/package.json']:base[P+'/package.json'],[P+'/source/child.cjs']:base[P+'/source/child.cjs']});
 }
 
-// A synthesized legacy-directory module is a real cell and spends the last byte/slot.
-{
-  const files = {
-    [APP+'/root.cjs']: 'module.exports=require("legacy/sub");',
-    [APP+'/node_modules/legacy/package.json']: '{"name":"legacy"}',
-    [APP+'/node_modules/legacy/sub/package.json']: '{"module":"../impl.cjs"}',
-    [APP+'/node_modules/legacy/impl.cjs']: 'module.exports=12;',
-  };
-  const world=launchFs(files);
-  const whole=await walk(world,APP+'/root.cjs');
-  assert.equal(whole.kind,undefined);
-  const stub=APP+'/node_modules/legacy/sub.js';
-  assert.match(whole.bundle[stub],/module.exports/);
-  const sourceBytes=Object.entries(whole.bundle).filter(([p])=>p!==stub).reduce((n,[,s])=>n+bytes(s),0);
-  for(const [allowance,count] of [[sourceBytes,100],[10000,Object.keys(whole.bundle).length-1]]) {
-    const result=await walk(world,APP+'/root.cjs',{},allowance,count);
-    assert.equal(result.kind,'dependency-closure-declined');
-    assert.equal(result.path,stub);
-  }
-}
-
 // ESM re-exports and literal cross-package edges use the existing nested resolver.
 {
   const root=P+'/source/index.mjs';

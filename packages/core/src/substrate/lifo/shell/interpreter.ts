@@ -1745,7 +1745,7 @@ export class Interpreter {
       await vfs.access(targetPath, 0o4);
       const bridge = vfs.process;
       const handle = await bridge.open(targetPath, { read: true });
-      const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)));
+      const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)), true);
       fds.opened.set(stream, async () => { await bridge.close(handle.id); });
       return { stream, terminal: false };
     } catch (error) {
@@ -1834,10 +1834,17 @@ export class Interpreter {
    * fewer bytes than asked whenever their internal bound is hit; those short
    * nonempty reads advance the offset and continue, exactly like read(2).
    */
-  private createFileReader(vfs: ProcessView, path: string, readRange = async (offset: number, length: number) => (await vfs.readRange(path, offset, length))): CommandInputStream {
+  private createFileReader(
+    vfs: ProcessView,
+    path: string,
+    readRange = async (offset: number, length: number) => (await vfs.readRange(path, offset, length)),
+    /** A `< file` redirect: name the file and position (CommandInputStream.file), so a program's fd 0 can be the file. */
+    namesFile = false,
+  ): CommandInputStream {
     const decoder = new TextDecoder('utf-8');
     let offset = 0;
     let eof = false;
+    const file = namesFile ? { path, get offset() { return offset; } } : undefined;
     const pull = async (max: number): Promise<Uint8Array | null> => {
       if (eof) return null;
       const chunk = await readRange(offset, max);
@@ -1849,6 +1856,7 @@ export class Interpreter {
       return chunk;
     };
     return {
+      ...(file ? { file } : {}),
       readBytes: async (maxLength: number) => {
         if (maxLength <= 0) return new Uint8Array(0);
         return (await pull(maxLength));

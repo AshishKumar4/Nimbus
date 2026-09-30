@@ -418,66 +418,37 @@ const __nimbusProcessExitPromise = new Promise((resolve) => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  path module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// A VFS key's normalization: "." and "" segments dropped, ".." applied,
+// no trailing slash. Nimbus's own fs and resolver keys, not userland's path.
+function __vfsNormalizePath(p) {
+  const parts = p.split("/");
+  const out = [];
+  for (const s of parts) {
+    if (s === "..") { if (out.length && out[out.length-1] !== "..") out.pop(); else out.push(s); }
+    else if (s !== "." && s !== "") out.push(s);
+  }
+  return (p.startsWith("/") ? "/" : "") + out.join("/");
+}
+// Userland's path is workerd's node:path, Node's own lib/path.js
+// (https://developers.cloudflare.com/workers/runtime-apis/nodejs/path/).
+// A hand-rolled join kept empty segments, so totalist's
+// `join("", "hello.txt")` was "/hello.txt" and sirv mapped every file under
+// "//name" and answered 404. Only resolution is the process's: resolve and
+// relative start from its cwd, not the Worker's.
 const __pathMod = (() => {
-  function normalize(p) {
-    const parts = p.split("/");
-    const out = [];
-    for (const s of parts) {
-      if (s === "..") { if (out.length && out[out.length-1] !== "..") out.pop(); else out.push(s); }
-      else if (s !== "." && s !== "") out.push(s);
-    }
-    return (p.startsWith("/") ? "/" : "") + out.join("/");
-  }
-  function join(...p) { return normalize(p.join("/")); }
-  function resolve(...p) {
-    let r = "";
-    for (let i = p.length - 1; i >= 0; i--) {
-      r = p[i] + (r ? "/" + r : "");
-      if (r.startsWith("/")) break;
-    }
-    if (!r.startsWith("/")) r = (cwd || "/home/user") + "/" + r;
-    return normalize(r);
-  }
-  function dirname(p) { const i = p.lastIndexOf("/"); return i > 0 ? p.substring(0, i) : i === 0 ? "/" : "."; }
-  function basename(p, ext) { const b = p.split("/").pop() || ""; return ext && b.endsWith(ext) ? b.slice(0, -ext.length) : b; }
-  function extname(p) { const b = basename(p); const i = b.lastIndexOf("."); return i > 0 ? b.substring(i) : ""; }
-  function isAbsolute(p) { return p.startsWith("/"); }
-  function relative(from, to) {
-    const f = resolve(from).split("/").filter(Boolean);
-    const t = resolve(to).split("/").filter(Boolean);
-    let c = 0;
-    while (c < f.length && c < t.length && f[c] === t[c]) c++;
-    return [...Array(f.length - c).fill(".."), ...t.slice(c)].join("/") || ".";
-  }
-  function parse(p) {
-    const str = String(p);
-    const root = str.startsWith("/") ? "/" : "";
-    const dir = dirname(str);
-    const base = basename(str);
-    const ext = extname(str);
-    const name = ext ? base.slice(0, base.length - ext.length) : base;
-    return { root, dir: dir === "." && !str.includes("/") ? "" : dir, base, ext, name };
-  }
-  function format(obj) {
-    const o = obj || {};
-    const dir = o.dir || o.root || "";
-    const base = o.base || ((o.name || "") + (o.ext || ""));
-    if (!dir) return base;
-    if (dir === o.root) return dir + base;
-    return dir + "/" + base;
-  }
-  function toNamespacedPath(p) { return p; }
-  function matchesGlob() { return false; }
-  return { join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, parse, format, toNamespacedPath, matchesGlob, sep: "/", delimiter: ":", posix: null, win32: null };
+  const native = typeof __real_path !== "undefined"
+    ? (__real_path.default ?? __real_path) : globalThis.process.getBuiltinModule("path");
+  const posix = native.posix ?? native;
+  const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
+  const mod = {
+    ...posix,
+    resolve,
+    relative: (from, to) => posix.relative(resolve(from), resolve(to)),
+    win32: native.win32,
+  };
+  mod.posix = mod;
+  return mod;
 })();
-__pathMod.posix = __pathMod;
-// X.5-Z5 §3 follow-on: enhanced-resolve (transitive via @tailwindcss/vite
-// → vite → enhanced-resolve) reads path.win32.normalize / .dirname at
-// import time. We have no real win32 paths in workerd's VFS, so the
-// posix implementation is functionally correct for any path content the
-// workers will ever see. Aliasing posix to win32 satisfies the structural
-// contract without spawning a separate code path. See
-__pathMod.win32 = __pathMod;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Native Buffer ───────────────────────────────────────────────────
@@ -650,8 +621,8 @@ const __fsMod = (() => {
         try { s = decodeURIComponent(pathPart); } catch { s = pathPart; }
       }
     }
-    if (s.startsWith("/")) return __pathMod.normalize(s);
-    return __pathMod.resolve(cwd || "/home/user", s);
+    if (s.startsWith("/")) return __vfsNormalizePath(s);
+    return __vfsNormalizePath(__pathMod.resolve(cwd || "/home/user", s));
   }
 
   // ── VFS bundle lookup (fast path — in-memory) ──
@@ -2753,6 +2724,7 @@ const __fsMod = (() => {
   }
 
   async function _readFileAsync(p, opts) {
+    if (p === 0 || __NIMBUS_STDIN_PATHS.has(p)) return readFileSync(p, opts);
     const supervisor = _supervisor();
     if (supervisor && (
       typeof supervisor.fsReadRange === "function" ||
@@ -3222,6 +3194,19 @@ const __fsMod = (() => {
   //   - no encoding + string cell → wrap _enc.encode(...) as Buffer
   //   - no encoding + bytes cell → wrap bytes as Buffer (no copy)
   function readFileSync(p, opts) {
+    // fd 0 and the paths that name it read the launch's stdin from the
+    // position synchronous reads share (__nimbusSyncStdinState): all of it
+    // once its writer has finished. A pipe still open has more to come,
+    // which synchronous I/O cannot block for (as _notResidentError says of
+    // content), so it answers EAGAIN, as Node does for a non-blocking fd 0.
+    if (p === 0 || __NIMBUS_STDIN_PATHS.has(p)) {
+      if (!__nimbusStdinEnded()) throw __nimbusStdinWouldBlock("read");
+      const state = __nimbusSyncStdinState();
+      const bytes = __BufferMod.from(state.bytes.subarray(state.pos));
+      state.pos = state.bytes.byteLength;
+      const encoding = typeof opts === "string" ? opts : opts?.encoding;
+      return encoding ? bytes.toString(encoding) : bytes;
+    }
     const absPath = _resolve(p);
     _ensureAncestorsTraversable(absPath, "open", p);
     const content = _bundleLookup(absPath);
@@ -4190,8 +4175,9 @@ const __fsMod = (() => {
       length = offsetOrOptions.length;
       position = offsetOrOptions.position;
     }
-    // Sync stdin cannot block, so stdin always reads as EOF here — an
-    // attached tty with buffered input is NOT distinguished.
+    // fd 0 reads the launch's stdin (__nimbusReadStdinInto). stdout and
+    // stderr read nothing.
+    if (Number(fd) === 0) return __nimbusReadStdinInto(buffer, offset, length, "read");
     if (_isStdioFd(fd)) return 0;
     return _fdHandle(fd, "read")._readSync(buffer, offset, length, position);
   }
@@ -4303,6 +4289,13 @@ const __fsMod = (() => {
       cb = position; position = undefined;
     }
     if (!(buffer instanceof Uint8Array)) buffer = __BufferMod.alloc(16384);
+    if (Number(fd) === 0) {
+      let n;
+      try { n = __nimbusReadStdinInto(buffer, offset, length, "read"); }
+      catch (e) { queueMicrotask(() => cb(e)); return; }
+      queueMicrotask(() => cb(null, n, buffer));
+      return;
+    }
     if (_isStdioFd(fd)) { queueMicrotask(() => cb(null, 0, buffer)); return; }
     const handle = _fdFor(fd, "read", cb);
     if (!handle) return;
@@ -4728,7 +4721,9 @@ const __fsMod = (() => {
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
         this.bytesRead += chunk.byteLength;
-        this.push(chunk);
+        // A Buffer, as Node's read streams yield (a view, not a copy):
+        // `s += chunk` reads text, where a bare Uint8Array reads "97,98".
+        this.push(__BufferMod.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
         if (chunk.byteLength < want) this.push(null);
       }
       open() {}
@@ -5344,36 +5339,16 @@ const __osMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  events module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __eventsMod = (() => {
-  // X.5-Z5 (Z5 §1 follow-on): every method that reads/writes `this._e`
-  // lazy-initializes it. Userland (notably express's createApplication
-  // — express/lib/express.js:36-42) mixin-copies EventEmitter.prototype
-  // onto a plain function via merge-descriptors; the EE constructor
-  // never runs on that target so `_e` is undefined. The lazy guard
-  // `(this._e ??= {})` matches Node's behaviour (Node initializes
-  // _events on first use too) and makes mixin-copy patterns safe.
-  class EE {
-    constructor() { this._e = {}; this._maxListeners = 10; }
-    on(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).push(fn); return this; }
-    addListener(n, fn) { return this.on(n, fn); }
-    once(n, fn) { const w = (...a) => { this.removeListener(n, w); fn(...a); }; w.__orig = fn; return this.on(n, w); }
-    _remove(n, fn) { const e = (this._e ??= {}); if (e[n]) e[n] = e[n].filter(f => f !== fn && f.__orig !== fn); return this; }
-    off(n, fn) { return this._remove(n, fn); }
-    removeListener(n, fn) { return this._remove(n, fn); }
-    removeAllListeners(n) { if (n) { const e = (this._e ??= {}); delete e[n]; } else this._e = {}; return this; }
-    emit(n, ...a) { const e = (this._e ??= {}); const fns = e[n]; if (!fns || !fns.length) return false; for (const fn of [...fns]) fn(...a); return true; }
-    listeners(n) { const e = (this._e ??= {}); return (e[n] || []).map(f => f.__orig || f); }
-    listenerCount(n) { const e = (this._e ??= {}); return (e[n] || []).length; }
-    eventNames() { const e = (this._e ??= {}); return Object.keys(e).filter(k => e[k].length > 0); }
-    setMaxListeners(n) { this._maxListeners = n; return this; }
-    getMaxListeners() { return this._maxListeners; }
-    prependListener(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).unshift(fn); return this; }
-    rawListeners(n) { const e = (this._e ??= {}); return e[n] || []; }
-  }
-  EE.EventEmitter = EE;
-  EE.defaultMaxListeners = 10;
-  return EE;
-})();
+// workerd's own node:events (nodejs_compat). Its EventEmitter is Node's
+// function constructor, so `EventEmitter.call(this)` + util.inherits,
+// mixin-copies of EventEmitter.prototype (express's createApplication) and
+// the static once/on/captureRejections helpers behave as in Node, and native
+// node:http servers are instances of the same class userland requires.
+// https://developers.cloudflare.com/workers/runtime-apis/nodejs/events/ and
+// workerd v1.20260926.1 src/node/internal/events.ts (`export function
+// EventEmitter`; http servers extend it in internal_http_server.ts).
+const __eventsMod = typeof __real_events !== "undefined"
+  ? (__real_events.default ?? __real_events.EventEmitter) : globalThis.process.getBuiltinModule("events");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  stream module (real, with backpressure) ────────────────────────
@@ -5677,7 +5652,16 @@ const __streamMod = (() => {
   // `pipeline(response.body, createWriteStream(...))`). A web
   // ReadableStream has no `.pipe`, so it must be adapted first.
   Readable.from = function from(iterable, opts) {
-    const r = new Readable({ objectMode: opts?.objectMode ?? false, ...opts });
+    // Node (lib/internal/streams/from.js): object mode unless the caller says
+    // otherwise, so values arrive as yielded; and a string or Buffer is
+    // emitted whole rather than iterated. http-server streams
+    // `Readable.from(bytes)` of each text file into the response, which
+    // refuses a byte-number chunk.
+    const r = new Readable({ ...opts, objectMode: opts?.objectMode ?? true });
+    if (typeof iterable === 'string' || iterable instanceof Uint8Array) {
+      r._read = function () { this.push(iterable); this.push(null); };
+      return r;
+    }
     r._read = () => {};
     (async () => {
       try {
@@ -5992,15 +5976,18 @@ const __streamMod = (() => {
   // A plain namespace object satisfies neither: it is not a constructor,
   // so `class extends` throws "Class extends value is not a constructor".
   // Make the export the Stream constructor itself with the named exports
-  // attached, mirroring Node exactly.
-  class Stream extends __eventsMod {
-    pipe(dest, opts) {
-      const src = this;
-      src.on('data', (chunk) => { dest.write(chunk); });
-      src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
-      return dest;
-    }
-  }
+  // attached, mirroring Node exactly. Like Node's (lib/internal/streams/
+  // legacy.js) it is a function, not a class: send (express.static) does
+  // `Stream.call(this)`, which a class constructor refuses.
+  function Stream(opts) { __eventsMod.call(this, opts); }
+  Object.setPrototypeOf(Stream.prototype, __eventsMod.prototype);
+  Object.setPrototypeOf(Stream, __eventsMod);
+  Stream.prototype.pipe = function pipe(dest, opts) {
+    const src = this;
+    src.on('data', (chunk) => { dest.write(chunk); });
+    src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
+    return dest;
+  };
   // ── stream state introspection (node:stream named helpers) ─────────
   // Modern libraries (e.g. those bundled by create-cloudflare) call these
   // off the stream module. They read the public stream state flags.
@@ -7305,13 +7292,16 @@ const __cryptoMod = (() => {
 // which is how `(async function () {}).constructor` finds it. A facet without
 // the service (opencode's) keeps the native refusal.
 //
-// The plain `Function` constructor is left native, on evidence: code probes it
-// once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
+// The plain `Function` constructor is routed differently, on evidence: code
+// probes it once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
 // `Function("null")`, remembers whether it worked, and then compiles every
-// schema check with `Function`. Routed, the next launch staged the probe's
-// text but not the checks' — the probe said yes, the first check threw, and
-// pi's TUI died where the native refusal had kept it on TypeBox's interpreter.
-// Staging is per text, so a probe can never vouch for the texts after it.
+// schema check with `Function`; staging every text, the next launch staged the
+// probe's text but not the checks' — the probe said yes, the first check threw,
+// and pi's TUI died. So it answers only text an earlier launch staged, keeps
+// the native refusal otherwise, and stages a refused text only when a failed
+// launch is attributable to it (the service's plainFunction, noteFailure and
+// stageFailedLaunch): a probe answers the same in every launch, while depd's
+// wrapper (express 4) and ajv's validators (serve) run from the next launch on.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
@@ -7382,6 +7372,7 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
 })();
 (() => {
   const kinds = [
+    ["function", Function],
     ["async", Object.getPrototypeOf(async function () {}).constructor],
     ["generator", Object.getPrototypeOf(function* () {}).constructor],
     ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
@@ -7437,6 +7428,7 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
         if (!__nimbusIsCodegenRefusal(e) || !service) throw e;
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
+        if (kind === "function") return service.plainFunction(params, body, e);
         try {
           return service.compileFunction(kind, params, body);
         } catch (refusal) {
@@ -7465,6 +7457,7 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
     Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
     Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
+    if (kind === "function") globalThis.Function = routed;
   }
 })();
 
@@ -8615,8 +8608,179 @@ function __nimbusEmitTerminalResize() {
     try { stream.emit("resize"); } catch {}
   }
 }
+// The process's live input channel (a child_process child names it in its
+// env; a resident process gets it in its start payload, __nimbusLiveInputPid
+// in facets/manager.ts), or 0 when its stdin is the launch's own text.
+function __nimbusLiveInputChannel() {
+  return env && env.NIMBUS_CP_CHILD_PID
+    ? Number(env.NIMBUS_CP_CHILD_PID)
+    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
+}
+// fd 0 of a `< file` redirect is the file itself, from the redirect's
+// offset (facets/manager.ts, __nimbusStdinFile): read at a position for a
+// synchronous read, streamed by process.stdin.
+function __nimbusStdinFileSource() {
+  return typeof __nimbusStdinFile !== "undefined" && __nimbusStdinFile !== null ? __nimbusStdinFile : null;
+}
+// What fd 0 holds before the program reads it, taken once by process.stdin's
+// first consumer or a synchronous read of fd 0, whichever comes first (the
+// two share one fd in Node): the launch's own stdin text; for a pipe
+// streaming through the live channel (facets/manager.ts, _pumpStdinPipe),
+// what __nimbusPrepareStdin took before the entry ran (all of it when the
+// pipe ended within the read ahead); for a `< file`, the file from its
+// offset. `ended` says nothing more will follow.
+let __nimbusStdinTaken = false;
+let __nimbusQueuedStdin = null;
+function __nimbusStdinEnded() {
+  // A `< file` preloaded up to the read ahead ends there only when the file
+  // does; one not preloaded is read whole by path when a synchronous read
+  // needs it (__nimbusTakeStdin).
+  if (__nimbusStdinFileSource() !== null) return __nimbusQueuedStdin === null || __nimbusQueuedStdin.ended;
+  if (!__nimbusLiveInputChannel()) return true;
+  return __nimbusQueuedStdin !== null && __nimbusQueuedStdin.ended;
+}
+function __nimbusTakeStdin() {
+  const ended = __nimbusStdinEnded();
+  if (__nimbusStdinTaken) return { bytes: __BufferMod.alloc(0), ended };
+  __nimbusStdinTaken = true;
+  if (__nimbusQueuedStdin !== null) return { bytes: __nimbusQueuedStdin.bytes, ended };
+  const file = __nimbusStdinFileSource();
+  if (file !== null) {
+    // Not read before the entry ran (its code was not seen to read stdin
+    // synchronously): the file as the process's own synchronous read of it.
+    return { bytes: __fsMod.readFileSync(file.path).subarray(file.offset), ended };
+  }
+  if (__nimbusLiveInputChannel()) return { bytes: __BufferMod.alloc(0), ended };
+  return { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : ""), ended };
+}
+// The paths that name fd 0.
+const __NIMBUS_STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
+// Synchronous reads of fd 0 (readSync, readFileSync, fs.read) share one
+// position in what fd 0 held, as they do in Node, and process.stdin goes on
+// from it (__nimbusStdinRemainder).
+let __nimbusSyncStdin = null;
+function __nimbusSyncStdinState() {
+  if (__nimbusSyncStdin === null) __nimbusSyncStdin = { bytes: __nimbusTakeStdin().bytes, pos: 0 };
+  return __nimbusSyncStdin;
+}
+// What process.stdin delivers first: what synchronous reads left of fd 0, or
+// all it held when none read it.
+function __nimbusStdinRemainder() {
+  if (__nimbusSyncStdin === null) return __nimbusTakeStdin().bytes;
+  const rest = __nimbusSyncStdin.bytes.subarray(__nimbusSyncStdin.pos);
+  __nimbusSyncStdin.pos = __nimbusSyncStdin.bytes.byteLength;
+  return rest;
+}
+function __nimbusStdinWouldBlock(syscall) {
+  // The whole message before the Error is built: its stack, which is what an
+  // uncaught error prints, captures the message at construction.
+  const why = __nimbusStdinFileSource() !== null
+    ? " — stdin is a file larger than 16 MiB, and synchronous reads of it are served from its first 16 MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
+    : " — stdin is a pipe that had not ended within what was read ahead of the program (at most the first 16 MiB, one budget shared by the session's concurrent launches), and a synchronous read cannot wait for the rest. Redirect a file instead (`node script.js < file`), or read process.stdin, which takes the pipe as it arrives";
+  const err = new Error("EAGAIN: resource temporarily unavailable, " + syscall + " '0'" + why);
+  err.code = "EAGAIN";
+  err.errno = -11;
+  err.syscall = syscall;
+  return err;
+}
+// A read of fd 0 into `target`: bytes copied, 0 at its end, EAGAIN when a
+// writer still owes more than fd 0 held at the start.
+function __nimbusReadStdinInto(target, offset, length, syscall) {
+  const state = __nimbusSyncStdinState();
+  const view = new Uint8Array(target.buffer, target.byteOffset, target.byteLength);
+  const at = Number.isInteger(offset) ? offset : 0;
+  const room = Math.max(0, view.byteLength - at);
+  const want = Math.min(Number.isInteger(length) ? length : room, room);
+  const n = Math.min(want, state.bytes.byteLength - state.pos);
+  if (n > 0) {
+    view.set(state.bytes.subarray(state.pos, state.pos + n), at);
+    state.pos += n;
+    return n;
+  }
+  if (want === 0 || __nimbusStdinEnded()) return 0;
+  throw __nimbusStdinWouldBlock(syscall);
+}
+// Read from the live channel before the entry runs: until the pipe ends when
+// it ends within the read ahead (__nimbusStdinWhole), else what the channel
+// holds now, without waiting, up to a bound (an endless writer refills the
+// channel as fast as it is read).
+const __NIMBUS_QUEUED_STDIN_MAX_BYTES = 1024 * 1024;
+async function __nimbusTakeQueuedStdin(whole) {
+  const pid = __nimbusLiveInputChannel();
+  if (!pid || !__supervisor || typeof __supervisor.cpReadStdin !== "function") return;
+  const chunks = [];
+  let ended = false;
+  let bytes = 0;
+  let failures = 0;
+  while (whole || bytes < __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
+    let packet;
+    try {
+      packet = await __nimbusUseRpcResult(
+        __supervisor.cpReadStdin(pid, whole ? 1000 : 0, __nimbusVfsAcquireArgs()),
+        (result) => result,
+      );
+      failures = 0;
+    } catch (err) {
+      // A dropped supervisor call (the session object reset, a network blip)
+      // is retried as the live pump retries it, not taken as the end.
+      if (++failures > 10) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
+    }
+    if (!packet) break;
+    const hasData = !!(packet.data && packet.data.byteLength > 0);
+    if (hasData || packet.ended || packet.signal) await __nimbusInboundBarrier(packet.acquired);
+    if (hasData) { chunks.push(__BufferMod.from(packet.data)); bytes += packet.data.byteLength; }
+    if (packet.signal) {
+      const sig = String(packet.signal);
+      if (sig === "SIGINT" || sig === "SIGTERM" || sig === "SIGKILL") {
+        const code = sig === "SIGINT" ? 130 : sig === "SIGKILL" ? 137 : 143;
+        __nimbusReportProcessExit(code, sig);
+        throw new __ProcessExit(code);
+      }
+    }
+    if (packet.ended) { ended = true; break; }
+    if (!whole && !hasData && !packet.signal) break;
+  }
+  __nimbusQueuedStdin = { bytes: __BufferMod.concat(chunks), ended };
+}
+// Before the entry runs: what its synchronous reads of fd 0 need in hand.
+// A pipe: what the channel holds (all of it when it ends within the read
+// ahead). A `< file` the program reads synchronously: the file from its
+// offset up to the read ahead, read in ranges into one buffer; a larger file
+// is never held whole, and process.stdin streams on from there. A file the
+// program only streams is read as process.stdin reads.
+async function __nimbusPrepareStdin() {
+  const file = __nimbusStdinFileSource();
+  if (file !== null) {
+    if (!file.syncRead) return;
+    const size = (await __fsMod.promises.stat(file.path)).size;
+    const want = Math.max(0, Math.min(size - file.offset, 16777216));
+    const bytes = __BufferMod.allocUnsafe(want);
+    let got = 0;
+    if (want > 0) {
+      await new Promise((resolve, reject) => {
+        const source = __fsMod.createReadStream(file.path, { start: file.offset, end: file.offset + want - 1 });
+        source.on("data", (chunk) => {
+          const n = Math.min(chunk.byteLength, want - got);
+          bytes.set(chunk.subarray(0, n), got);
+          got += n;
+        });
+        source.on("end", resolve);
+        source.on("error", reject);
+      });
+    }
+    __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= size, from: file.offset + got };
+    return;
+  }
+  if (__nimbusLiveInputChannel()) {
+    await __nimbusTakeQueuedStdin(typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true);
+  }
+}
 function __makeProcessStdin() {
   const r = new __streamMod.PassThrough();
+  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
+  r.fd = 0;
   let seeded = false;
   let encoding = null;
   r.isTTY = __nimbusAttachedTty;
@@ -8628,11 +8792,7 @@ function __makeProcessStdin() {
   r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
   r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
-  // A child_process child names its channel in its env; a resident process
-  // gets it in its start payload (__nimbusLiveInputPid, facets/manager.ts).
-  const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
-    ? Number(env.NIMBUS_CP_CHILD_PID)
-    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
+  const liveChildPid = __nimbusLiveInputChannel();
   // The polling infrastructure is unref'd, but a program actively consuming
   // live stdin owns a referenced input handle, as in Node. Otherwise an
   // interactive child exits after its prompt, before a keystroke arrives.
@@ -8733,7 +8893,36 @@ function __makeProcessStdin() {
   const seed = () => {
     if (seeded) return;
     seeded = true;
+    // A `< file` streams from the file itself as the program reads: after
+    // what a preload or synchronous reads left, from where that stopped.
+    const file = __nimbusStdinFileSource();
+    if (file !== null) {
+      let from = file.offset;
+      if (__nimbusSyncStdin !== null || __nimbusQueuedStdin !== null || __nimbusStdinTaken) {
+        const first = __nimbusStdinRemainder();
+        if (first.length > 0) r.write(first);
+        if (__nimbusQueuedStdin === null || __nimbusQueuedStdin.ended) {
+          queueMicrotask(() => r.end());
+          return;
+        }
+        from = __nimbusQueuedStdin.from;
+      } else {
+        __nimbusStdinTaken = true;
+      }
+      const source = __fsMod.createReadStream(file.path, { start: from });
+      source.on("error", (err) => r.destroy(err));
+      source.pipe(r);
+      return;
+    }
     if (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
+      // What fd 0 held at the start and synchronous reads left comes first;
+      // the pump reads on from there unless that was all of it.
+      const first = __nimbusStdinRemainder();
+      if (first.length > 0) r.write(first);
+      if (__nimbusStdinEnded()) {
+        queueMicrotask(() => r.end());
+        return;
+      }
       const pump = pumpLiveStdin().catch((e) => {
         if (e instanceof __ProcessExit) {
           if (!__nimbusProcessExitReported) {
@@ -8751,7 +8940,9 @@ function __makeProcessStdin() {
       return;
     }
     queueMicrotask(() => {
-      const data = typeof stdin === "string" ? stdin : "";
+      // A Buffer, as Node's stdin chunks are: `s += chunk` and
+      // chunk.toString() read text, where a bare Uint8Array reads "104,105".
+      const data = __nimbusStdinRemainder();
       if (data.length > 0) r.write(data);
       r.end();
     });
@@ -8769,6 +8960,7 @@ function __makeProcessStdin() {
     return origPause ? origPause() : r;
   };
   const origOn = r.on.bind(r);
+  const calls = Symbol("nimbus.stdin.calls");
   function wrapDataListener(listener) {
     const wrapped = (chunk) => {
       let out = chunk;
@@ -8778,9 +8970,27 @@ function __makeProcessStdin() {
       }
       return listener(out);
     };
-    wrapped.__orig = listener;
+    // node:events answers listeners() with a wrapper's .listener: the
+    // program's function, also through once()'s own wrapper. The function
+    // this one calls is kept apart, so once()'s wrapper can remove itself.
+    wrapped.listener = listener.listener ?? listener;
+    wrapped[calls] = listener;
     return wrapped;
   }
+  // Removal finds the wrapper of the function passed: the program's own, or
+  // once()'s wrapper removing itself after it fires.
+  const origRemove = r.removeListener.bind(r);
+  r.removeListener = function(event, listener) {
+    if (event === "data" && typeof listener === "function") {
+      const raw = r.rawListeners("data");
+      for (let i = raw.length - 1; i >= 0; i--) {
+        const w = raw[i];
+        if (w === listener || w[calls] === listener || w.listener === listener) return origRemove(event, w);
+      }
+    }
+    return origRemove(event, listener);
+  };
+  r.off = r.removeListener;
   // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
   // listener, resume() or read(). An 'end', 'close' or 'error' listener on
   // paused stdin receives nothing. Vite's dev server registers
@@ -9039,6 +9249,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
     __nimbusReportProcessExit(error.code, "");
     return;
   }
+  if (globalThis.__nimbusRuntimeCode) globalThis.__nimbusRuntimeCode.noteFailure(error);
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
@@ -9117,6 +9328,8 @@ builtins.console = __consoleMod;
 
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
+const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent", "referer", "authorization",
+  "proxy-authorization", "if-modified-since", "if-unmodified-since", "from", "location", "max-forwards"]);
 Object.defineProperty(builtins, "http", {
   configurable: true, enumerable: true,
   get() {
@@ -9309,7 +9522,25 @@ Object.defineProperty(builtins, "http", {
       let detach = () => {};
       let timer;
       let nativeResponse;
-      const captureResponse = (_request, response) => { nativeResponse = response; };
+      const captureResponse = (incoming, response) => {
+        nativeResponse = response;
+        // workerd's #toReqRes keeps only the text before the first unquoted
+        // comma of these fields (splitHeaderValue, meant to pick the first of
+        // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
+        // and "(KHTML" of a Chrome User-Agent. The edge has already joined any
+        // duplicates here, so the full value is Node's value.
+        // workerd v1.20260926.1 src/node/internal/internal_http_server.ts
+        // multipleForbiddenHeaders and #toReqRes.
+        const raw = incoming.rawHeaders;
+        for (let i = 0; i + 1 < raw.length; i += 2) {
+          const name = String(raw[i]).toLowerCase();
+          if (!__nativeSplitHeaderFields.has(name)) continue;
+          const full = inbound.headers.get(name);
+          if (full === null || full === raw[i + 1]) continue;
+          raw[i + 1] = full;
+          incoming.headers[name] = full;
+        }
+      };
       const dispatch = async () => {
         // effect-platform binds first and attaches its request handler later.
         // Do not let the native server silently drop that first request.
@@ -10344,7 +10575,7 @@ function __resolveFile(base) {
       // ponyfill/package.json declaring main "../dist/ponyfill") collapses
       // its ".." segments instead of probing a literal "dir/../dist" path
       // that __fileExists never matches.
-      const mainBase = __pathMod.normalize(base.replace(/\/+$/, "") + "/" + mainStripped).replace(/^\/+/, "");
+      const mainBase = __vfsNormalizePath(base.replace(/\/+$/, "") + "/" + mainStripped).replace(/^\/+/, "");
       // Recurse: main itself may be a directory (e.g. main: "lib") or
       // a file without extension. Guard against pkg.main === "." which
       // would re-enter this same base and stack-overflow.
@@ -10468,7 +10699,7 @@ function resolvePackageEntry(pkg, subpath, conditions) {
     return null;
   }
   if (subpath === '.') {
-    if (pkg.module) return pkg.module;
+    if (conditions.includes('module') && pkg.module) return pkg.module;
     if (pkg.main) return pkg.main;
     return null;
   }

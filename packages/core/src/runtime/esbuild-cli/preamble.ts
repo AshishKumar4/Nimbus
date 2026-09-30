@@ -18,16 +18,19 @@
  * IIFE may contain no import, export or top-level await;
  * `globalThis.__esbuildCliRun` is its entry point.
  *
- * The same staged script carries the one other thing the facet runs that
+ * The same staged script carries the two other things the facet runs that
  * esbuild does not: the parse that routes a module's dynamic `import()` to the
  * process's ESM loader (dynamic-import-rewrite.ts), installed as
- * `globalThis.__nimbusRewriteDynamicImports` for the facet's transforms. Its
- * module lexer (module-lexer.ts) is asm.js-style JavaScript and needs no
- * runtime wasm compile; Acorn reads spans, or a cell the lexer can misread.
- * Keep this analysis out of the session's isolate.
+ * `globalThis.__nimbusRewriteDynamicImports`, and the lowering of a module
+ * with top-level await to a CommonJS body (async-module-lowering.ts), as
+ * `globalThis.__nimbusLowerAsyncModule`. The import rewrite's module lexer
+ * (module-lexer.ts) is asm.js-style JavaScript and needs no runtime wasm
+ * compile; Acorn reads spans, a cell the lexer can misread, and the
+ * top-level-await lowering. Keep this analysis out of the session's isolate.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
+import { lowerAsyncModule } from '../async-module-lowering.js';
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsStat } from '../os-contracts.js';
 import type { WasiSupervisorStub } from '../wasi/types.js';
 import type { EsbuildCliArgs, EsbuildCliOutput, GoProgram, GoRuntimeFactory } from './types.js';
@@ -360,3 +363,4 @@ globalThis.__esbuildCliRun = async function __esbuildCliRun(
 };
 
 globalThis.__nimbusRewriteDynamicImports = rewriteDynamicImports;
+globalThis.__nimbusLowerAsyncModule = lowerAsyncModule;

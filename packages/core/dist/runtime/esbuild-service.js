@@ -15,9 +15,9 @@ import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
+import { lowerAsyncModule } from './async-module-lowering.js';
 import { keepEsbuild, startObservedEsbuild } from './keep-esbuild.js';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
-import { scanJsSource } from './comment-strip.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -137,385 +137,6 @@ export function getSharedRuntimeExternals(specifier) {
         }
         return true;
     });
-}
-/**
- * Cheap heuristic: does the source contain a top-level ESM `import`
- * statement? Used by `EsbuildService.transform` to detect sources that
- * cannot be IIFE-wrapped as-is.
- *
- * Bug history (nuxt-esm-in-cjs wave):
- * ─────────────────────────────────
- * The TLA fix (framework-gaps-fix P2) wraps CJS-target sources in an
- * async IIFE:
- *
- *     ;(async () => { <source> })().catch(...);
- *
- * For sources with TLA-only, that works: `await` becomes legal inside
- * the async function body. But for sources with BOTH TLA AND ESM
- * `import` statements (real-world example: nuxi's `bin/nuxi.mjs`), the
- * wrap moves `import` statements into a function body — and ESM
- * `import` syntax is only legal at module top-level. esbuild rejects
- * the wrapped source with `Unexpected "<binding>"` at line 3 of stdin
- * (the wrap's line 1 is `;(async () =>...`, line 2 is the open brace,
- * line 3 is the first user import).
- *
- * When TLA AND ESM imports coexist we must extract the imports first,
- * rewrite them as `const X = require(...)` shims at top-level (above
- * the IIFE), then wrap the rest. See `convertEsmImportsToRequire` for
- * the rewrite contract and `transform()` for the integration site.
- *
- * Heuristic match: any of `import "..."` / `import x from "..."` /
- * `import { ... } from "..."` / `import * as ns from "..."` / `import
- * x, { ... } from "..."` appearing on a line whose first non-whitespace
- * token is the `import` keyword. Dynamic `import(...)` calls are
- * EXCLUDED — those are expressions, legal anywhere including IIFE
- * bodies, and need no rewrite.
- *
- * Operates on comment-and-string-stripped source so commented-out imports
- * and "import" inside string literals do not trigger.
- */
-function hasEsmImports(src) {
-    if (!src || src.indexOf('import') === -1)
-        return false;
-    const stripped = stripCommentsAndStrings(src);
-    // Top-level `import ... from "..."` OR side-effect `import "..."`.
-    // Negative lookbehind for `.` (avoids `something.import` member
-    // access) is unsupported in some JS engines; we match start-of-line
-    // (after whitespace) + the keyword. dynamic import() is matched as
-    // `import(` and excluded by negative lookahead.
-    const re = /^[ \t]*import\b(?!\s*\()/m;
-    return re.test(stripped);
-}
-function hasEsmExports(src) {
-    if (!src || src.indexOf('export') === -1)
-        return false;
-    const stripped = stripCommentsAndStrings(src);
-    return /^[ \t]*export\b/m.test(stripped);
-}
-/**
- * Strip `//` and `/* *\/` comments and string / template literals from
- * source for the import/export classifiers — one scanner shared with
- * prefetch's import detection in `comment-strip.ts`. The result is
- * byte-aligned with the input per line (comment and literal newlines are
- * preserved), so error line numbers still match the original.
- */
-function stripCommentsAndStrings(src) {
-    return scanJsSource(src, 'blank');
-}
-/**
- * Convert ESM `import` statements at the top of `src` to CJS
- * `require()` declarations, returning `{ requires, body }` where
- * `requires` is the require-shim block (a single string of newline-
- * separated declarations) and `body` is the source with the imports
- * removed.
- *
- * Operates on the OUTPUT of an esbuild `format: 'esm'` pre-pass, NOT
- * on raw user source. esbuild normalises imports onto single lines and
- * canonicalises the binding shape, which means a small regex over the
- * normalised output is reliable. Specifically:
- *   - Multi-line imports are collapsed to one line per import
- *   - `import x from 'm';` always has the semicolon
- *   - String quotes are normalised to double-quotes
- *   - Whitespace is canonical
- *
- * Supported import shapes (after esbuild normalisation):
- *   1. `import "m";`                    side-effect
- *   2. `import x from "m";`             default
- *   3. `import * as ns from "m";`       namespace
- *   4. `import { a, b as c } from "m";` named (with optional rename)
- *   5. `import x, { a } from "m";`      default + named
- *   6. `import x, * as ns from "m";`    default + namespace
- *
- * Rewrites:
- *   1. `require("m");`
- *   2. `const x = (() => { const _m = require("m"); return _m && _m.__esModule ? _m.default : _m; })();`
- *   3. `const ns = require("m");`
- *   4. `const { a, b: c } = require("m");`
- *   5. `const _m_<n> = require("m"); const x = _m_<n>.__esModule ? _m_<n>.default : _m_<n>; const { a } = _m_<n>;`
- *   6. `const ns = require("m"); const x = ns.__esModule ? ns.default : ns;`
- *
- * Default-binding compat: ESM `import x from "m"` binds the module's
- * default export, OR the whole module if there is no default. Real
- * Node + esbuild's __esModule interop check handle this with the
- * `__esModule ? .default : whole` pattern reproduced above. Same as
- * what esbuild emits inline when targeting CJS for a no-TLA source
- * (verified empirically against `esbuild-wasm 0.24.2`).
- *
- * Unknown shapes are left in `body` unchanged — esbuild will reject
- * them on the second pass and the caller surfaces a clear error.
- * That's the safe failure mode.
- */
-function convertEsmImportsToRequire(src) {
-    const lines = src.split('\n');
-    // Strip comments + string/template literals so the line scanner only
-    // sees real syntax. Without this, import-shaped lines INSIDE template
-    // literals (real-world: sv@0.15.3's engine.mjs scaffolds SvelteKit
-    // project files via templates containing `import { redirect } from
-    // '@sveltejs/kit';`) get parsed as actual imports — emitted twice into
-    // the requires block → duplicate const declaration → SyntaxError at
-    // facet compile ("Identifier 'redirect' has already been declared").
-    //
-    // stripCommentsAndStrings preserves newlines, so line indices align
-    // between `src` and `strippedLines`. We use the stripped line to
-    // CLASSIFY (is this an import line?) and the original line to
-    // EXTRACT the actual import shape (specifier, bindings).
-    //
-    const strippedLines = stripCommentsAndStrings(src).split('\n');
-    const requires = [];
-    const bodyLines = [];
-    let counter = 0;
-    for (let li = 0; li < lines.length; li++) {
-        const line = lines[li];
-        const cls = strippedLines[li] ?? '';
-        // Classification check: is this line a real top-level import?
-        // The stripped version masks string content, so import-shaped
-        // template-literal lines are now whitespace.
-        if (!/^[ \t]*import\b/.test(cls)) {
-            bodyLines.push(line);
-            continue;
-        }
-        // Side-effect import: `import "m";` / `import 'm';`
-        let m = line.match(/^[ \t]*import\s*["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            requires.push(`require(${JSON.stringify(m[1])});`);
-            continue;
-        }
-        // Identifier class: JS spec allows `$` and `_` in addition to `\w`
-        // (letters/digits/underscore). esbuild's ESM-pass-1 emits `process$1`
-        // when colliding with a global (e.g. `import process from 'node:process'`
-        // becomes `process$1`). Pre-fix `\w+` truncated at `$`, all the regexes
-        // below missed → line fell through to bodyLines → top-level `import`
-        // statement survived into the async-IIFE wrap → SyntaxError
-        // "import statement outside module" at facet compile.
-        // Default + namespace: `import x, * as ns from "m";`
-        m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const def = m[1], ns = m[2], mod = m[3];
-            requires.push(`const ${ns} = require(${JSON.stringify(mod)}); const ${def} = ${ns}.__esModule ? ${ns}.default : ${ns};`);
-            continue;
-        }
-        // Default + named: `import x, { a, b as c } from "m";`
-        m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s*["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const def = m[1], bindings = m[2], mod = m[3];
-            const tmp = `_nimbus_m_${counter++}`;
-            const named = bindings.split(',').map((b) => {
-                const am = b.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
-                if (!am)
-                    return b.trim();
-                return am[2] ? `${am[1]}: ${am[2]}` : am[1];
-            }).join(', ');
-            requires.push(`const ${tmp} = require(${JSON.stringify(mod)}); const ${def} = ${tmp}.__esModule ? ${tmp}.default : ${tmp}; const { ${named} } = ${tmp};`);
-            continue;
-        }
-        // Namespace: `import * as ns from "m";`
-        m = line.match(/^[ \t]*import\s*\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            requires.push(`const ${m[1]} = require(${JSON.stringify(m[2])});`);
-            continue;
-        }
-        // Named only: `import { a, b as c } from "m";`
-        m = line.match(/^[ \t]*import\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const bindings = m[1], mod = m[2];
-            const named = bindings.split(',').map((b) => {
-                const am = b.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
-                if (!am)
-                    return b.trim();
-                return am[2] ? `${am[1]}: ${am[2]}` : am[1];
-            }).join(', ');
-            requires.push(`const { ${named} } = require(${JSON.stringify(mod)});`);
-            continue;
-        }
-        // Default only: `import x from "m";`
-        m = line.match(/^[ \t]*import\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const def = m[1], mod = m[2];
-            requires.push(`const ${def} = (() => { const _m = require(${JSON.stringify(mod)}); return _m && _m.__esModule ? _m.default : _m; })();`);
-            continue;
-        }
-        // Stripped-line claimed this was an import, but none of the shape
-        // regexes matched. Unknown import form (e.g. multi-line import that
-        // esbuild's pass-1 normalization didn't collapse, or a future-syntax
-        // variant). Keep in body — esbuild's pass-2 will reject it with a
-        // clear error if it's actually invalid, or accept it if it's a form
-        // we don't yet recognise.
-        bodyLines.push(line);
-    }
-    // ── Pass 2: scan bodyLines for top-level `export` statements. ──────
-    //
-    // After import-stripping, the body still has every `export` statement
-    // verbatim. The async-IIFE wrap (the caller wraps body in
-    // `;(async () => { ... })();`) makes those exports illegal grammar
-    // ('export' is module-only, not legal in function bodies) →
-    // SyntaxError "Unexpected token 'export'" at facet compile.
-    //
-    // Rewrite each top-level export to a CJS-compatible equivalent (see
-    // Same defences as imports:
-    //   - String-content masking (template-literal exports don't trigger)
-    //   - $-aware identifier regex ([\w$]+, esbuild emits foo$1 ids)
-    //
-    // Multi-line `export { ... }` lists are coalesced before shape match.
-    const bodySrc = bodyLines.join('\n');
-    const bodyLines2 = bodySrc.split('\n');
-    const strippedBody = stripCommentsAndStrings(bodySrc).split('\n');
-    const out = [];
-    let i = 0;
-    let exportCounter = 0;
-    while (i < bodyLines2.length) {
-        const line = bodyLines2[i];
-        const cls = strippedBody[i] ?? '';
-        if (!/^[ \t]*export\b/.test(cls)) {
-            out.push(line);
-            i++;
-            continue;
-        }
-        // Multi-line collector: if the stripped line opens a `{` for an
-        // `export { ... }` list and doesn't close it on the same line,
-        // accumulate subsequent lines until the matching `}` (tracked on
-        // the stripped lines so string `}`s don't trip us).
-        let coalesced = line;
-        let coalescedCls = cls;
-        if (/^[ \t]*export\s*\{/.test(cls) && !/\}/.test(cls)) {
-            let j = i + 1;
-            while (j < bodyLines2.length) {
-                coalesced += ' ' + bodyLines2[j];
-                coalescedCls += ' ' + (strippedBody[j] ?? '');
-                if (/\}/.test(strippedBody[j] ?? '')) {
-                    j++;
-                    break;
-                }
-                j++;
-            }
-            i = j;
-        }
-        else {
-            i++;
-        }
-        // Helper: emit a `__esModule = true` marker exactly once.
-        // (Mirrors esbuild's own emit; consumers using the __esModule check
-        // in convertEsmImportsToRequire's default-import shim then pick
-        // .default correctly.)
-        const ensureEsmMarker = (() => {
-            let emitted = false;
-            return () => {
-                if (emitted)
-                    return '';
-                emitted = true;
-                return 'module.exports.__esModule = true; ';
-            };
-        })();
-        // Shape regexes operate on the COALESCED ORIGINAL line. We use the
-        // stripped version only for classification (already done above).
-        let m;
-        // export default function/class — declaration form
-        // `export default function foo(args){...}` (named declaration)
-        m = coalesced.match(/^([ \t]*)export\s+default\s+(async\s+)?function\s*([\w$]+)\s*([\s\S]*)$/);
-        if (m) {
-            const indent = m[1], asyncKw = m[2] || '', name = m[3], rest = m[4];
-            out.push(`${indent}${asyncKw}function ${name} ${rest}`);
-            out.push(`${ensureEsmMarker()}module.exports.default = ${name};`);
-            continue;
-        }
-        // export default class K {...}
-        m = coalesced.match(/^([ \t]*)export\s+default\s+class\s+([\w$]+)\s*([\s\S]*)$/);
-        if (m) {
-            const indent = m[1], name = m[2], rest = m[3];
-            out.push(`${indent}class ${name} ${rest}`);
-            out.push(`${ensureEsmMarker()}module.exports.default = ${name};`);
-            continue;
-        }
-        // export default <anonymous-function | anonymous-class | expression>
-        // Match any remaining `export default …` shape and emit as assignment.
-        m = coalesced.match(/^([ \t]*)export\s+default\s+([\s\S]*)$/);
-        if (m) {
-            const indent = m[1];
-            let rest = m[2];
-            // Strip trailing semicolon (we add our own).
-            rest = rest.replace(/;\s*$/, '');
-            out.push(`${indent}${ensureEsmMarker()}module.exports.default = (${rest});`);
-            continue;
-        }
-        // export named-declaration: const/let/var
-        m = coalesced.match(/^([ \t]*)export\s+(const|let|var)\s+([\w$]+)\s*=\s*([\s\S]*)$/);
-        if (m) {
-            const indent = m[1], kw = m[2], name = m[3];
-            let rest = m[4];
-            rest = rest.replace(/;\s*$/, '');
-            out.push(`${indent}${kw} ${name} = ${rest};`);
-            out.push(`${ensureEsmMarker()}module.exports.${name} = ${name};`);
-            continue;
-        }
-        // export function NAME(...) {...}
-        m = coalesced.match(/^([ \t]*)export\s+(async\s+)?function\s*\*?\s*([\w$]+)\s*([\s\S]*)$/);
-        if (m) {
-            const indent = m[1], asyncKw = m[2] || '', name = m[3], rest = m[4];
-            // Preserve generator-star if present (function\s*\*).
-            const generatorStar = /^export\s+(?:async\s+)?function\s*\*/.test(coalesced.replace(/^[ \t]+/, '')) ? '*' : '';
-            out.push(`${indent}${asyncKw}function${generatorStar} ${name} ${rest}`);
-            out.push(`${ensureEsmMarker()}module.exports.${name} = ${name};`);
-            continue;
-        }
-        // export class NAME { ... } / export class NAME extends X { ... }
-        m = coalesced.match(/^([ \t]*)export\s+class\s+([\w$]+)\s*([\s\S]*)$/);
-        if (m) {
-            const indent = m[1], name = m[2], rest = m[3];
-            out.push(`${indent}class ${name} ${rest}`);
-            out.push(`${ensureEsmMarker()}module.exports.${name} = ${name};`);
-            continue;
-        }
-        // export { x, y as z } from 'm' / export * from 'm' / export * as ns from 'm'
-        m = coalesced.match(/^([ \t]*)export\s*\*\s+as\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const indent = m[1], ns = m[2], mod = m[3];
-            out.push(`${indent}${ensureEsmMarker()}module.exports.${ns} = require(${JSON.stringify(mod)});`);
-            continue;
-        }
-        m = coalesced.match(/^([ \t]*)export\s*\*\s+from\s+["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const indent = m[1], mod = m[2];
-            const tmp = `_nimbus_re_${exportCounter++}`;
-            out.push(`${indent}${ensureEsmMarker()}{ const ${tmp} = require(${JSON.stringify(mod)}); for (const _k in ${tmp}) { if (_k !== "default" && _k !== "__esModule") module.exports[_k] = ${tmp}[_k]; } }`);
-            continue;
-        }
-        m = coalesced.match(/^([ \t]*)export\s*\{([^}]*)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
-        if (m) {
-            const indent = m[1], bindings = m[2], mod = m[3];
-            const tmp = `_nimbus_re_${exportCounter++}`;
-            const parts = bindings.split(',').map((b) => b.trim()).filter(Boolean);
-            const assigns = [];
-            for (const p of parts) {
-                const am = p.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
-                if (!am)
-                    continue;
-                const src = am[1], dst = am[2] || am[1];
-                assigns.push(`module.exports.${dst} = ${tmp}.${src};`);
-            }
-            out.push(`${indent}${ensureEsmMarker()}{ const ${tmp} = require(${JSON.stringify(mod)}); ${assigns.join(' ')} }`);
-            continue;
-        }
-        // export { x, y as z }  (binding-only list — no `from`)
-        m = coalesced.match(/^([ \t]*)export\s*\{([^}]*)\}\s*;?\s*$/);
-        if (m) {
-            const indent = m[1], bindings = m[2];
-            const parts = bindings.split(',').map((b) => b.trim()).filter(Boolean);
-            const assigns = [];
-            for (const p of parts) {
-                const am = p.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
-                if (!am)
-                    continue;
-                const src = am[1], dst = am[2] || am[1];
-                assigns.push(`module.exports.${dst} = ${src};`);
-            }
-            out.push(`${indent}${ensureEsmMarker()}${assigns.join(' ')}`);
-            continue;
-        }
-        // Unknown export shape — leave in body (esbuild will surface a clear
-        // error at the next pass, or this is a future-syntax variant we
-        // don't yet recognise).
-        out.push(coalesced);
-    }
-    return { requires: requires.join('\n'), body: out.join('\n') };
 }
 function topLevelModuleDeclarationRanges(source) {
     try {
@@ -1039,8 +660,11 @@ export async function loadEsbuild() {
     }
 }
 const __outputDecoder = new TextDecoder();
-async function transformWithEsbuild(esbuildApi, source, options) {
-    let code = source;
+/**
+ * `lower` is async-module-lowering.ts's `lowerAsyncModule`, passed in because
+ * this function is serialized into the esbuild facet.
+ */
+async function transformWithEsbuild(esbuildApi, code, options, lower) {
     const format = options?.format || 'esm';
     const loader = options?.loader || 'ts';
     if (format === 'cjs') {
@@ -1077,31 +701,29 @@ async function transformWithEsbuild(esbuildApi, source, options) {
         // before either fallback pass (Vite bin/vite.js imported by Vinext).
         if (code.startsWith('#!'))
             code = '//' + code.slice(2);
-        if (hasEsmImports(code) || hasEsmExports(code)) {
-            const pass1 = await esbuildApi.transform(code, {
-                loader,
-                format: 'esm',
-                target: options?.target || 'esnext',
-                sourcemap: false,
-                minify: false,
-                jsx: options?.jsx,
-                jsxFactory: options?.jsxFactory,
-                jsxFragment: options?.jsxFragment,
-                tsconfigRaw: options?.tsconfigRaw,
-                define: options?.define,
-                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
-            });
-            const { requires, body } = convertEsmImportsToRequire(pass1.code);
-            return {
-                code: requires + '\nreturn (async () => {\n' + body + '\n})();\n',
-                map: '',
-                warnings: pass1.warnings?.map((warning) => ({
-                    text: warning.text,
-                    location: warning.location,
-                })) || [],
-            };
-        }
-        code = 'return (async () => {\n' + code + '\n})();\n';
+        // esbuild emits no CommonJS for top-level await: emit the module as ESM
+        // and lower its declarations around an async function body.
+        const esm = await esbuildApi.transform(code, {
+            loader,
+            format: 'esm',
+            target: options?.target || 'esnext',
+            sourcemap: false,
+            minify: false,
+            jsx: options?.jsx,
+            jsxFactory: options?.jsxFactory,
+            jsxFragment: options?.jsxFragment,
+            tsconfigRaw: options?.tsconfigRaw,
+            define: options?.define,
+            supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+        });
+        return {
+            code: lower(esm.code),
+            map: '',
+            warnings: esm.warnings?.map((warning) => ({
+                text: warning.text,
+                location: warning.location,
+            })) || [],
+        };
     }
     const result = await esbuildApi.transform(code, {
         loader,
@@ -1129,10 +751,11 @@ async function transformWithEsbuild(esbuildApi, source, options) {
  * One transform request as a transform host runs it: esbuild (unless the
  * code is already CommonJS), then, for a module whose dynamic `import()` is
  * the process's, the rewrite that routes each one to the process's ESM loader.
- * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports`, passed in
- * because this function is serialized into the esbuild facet.
+ * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lower`
+ * async-module-lowering.ts's `lowerAsyncModule`, passed in because this
+ * function is serialized into the esbuild facet.
  */
-async function runTransformRequest(esbuildApi, code, options, rewrite) {
+async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
     const parent = options?.dynamicImportParent;
     if (options?.rewriteOnly) {
         if (parent === undefined)
@@ -1156,9 +779,9 @@ async function runTransformRequest(esbuildApi, code, options, rewrite) {
             supported: { 'dynamic-import': true, 'import-meta': true },
         });
         const routed = rewrite(javascript.code, parent, true);
-        return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false });
+        return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false }, lower);
     }
-    const result = await transformWithEsbuild(esbuildApi, code, options);
+    const result = await transformWithEsbuild(esbuildApi, code, options, lower);
     return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };
 }
 /**
@@ -1203,13 +826,6 @@ async function buildWithEsbuild(esbuildApi, options, plugin) {
  */
 export function generateEsbuildFacetRuntimeSource() {
     return [
-        // scanJsSource is self-contained — its constants live in the body —
-        // so this serialized copy carries the whole scanner.
-        scanJsSource.toString(),
-        stripCommentsAndStrings.toString(),
-        hasEsmImports.toString(),
-        hasEsmExports.toString(),
-        convertEsmImportsToRequire.toString(),
         transformWithEsbuild.toString(),
         runTransformRequest.toString(),
         buildWithEsbuild.toString(),
@@ -1380,64 +996,14 @@ export class EsbuildService {
     /**
      * Transform a single code string (TS→JS, JSX→JS, minify, etc.)
      *
-     * Top-level await note (gap #2 in framework-gaps-fix):
-     * ─────────────────────────────────────────────────────
-     * esbuild rejects top-level await when output format is 'cjs' or
-     * 'iife' — neither has a runtime primitive for it. Real Node
-     * supports TLA only in ESM. Nimbus's facet wrapper executes the
-     * transformed code via `new Function(...)` which is CJS-shaped.
-     *
-     * Several modern CLIs (nuxi, vite-cli, oclif's lazy-load bootstrap,
-     * many ESM-only-by-default tools) use TLA at the entry point. With
-     * format:'cjs' those would crash with "Top-level await is currently
-     * not supported with the 'cjs' output format" — an esbuild
-     * SyntaxError surfaced as a Nimbus diagnostic. The user can't
-     * fix this without rewriting upstream.
-     *
-     * Fix: when caller asks for format 'cjs' AND the source has a
-     * top-level await, wrap the source in an async IIFE and return its
-     * Promise to the facet runner:
-     *
-     *     return (async () => {
-     *       <original-source>
-     *     })();
-     *
-     * Inside the IIFE, await is legal. Returning the Promise is required:
-     * the facet runner awaits promise-returning entry functions so
-     * sequential TLA execution cannot race process teardown or VFS flushes.
-     *
-     * ESM-imports-in-CJS note (nuxt-esm-in-cjs wave):
-     * ─────────────────────────────────────────────────
-     * The IIFE wrap above moves the user source INTO a function body.
-     * Top-level ESM `import` statements are LEGAL only at module top
-     * level — inside a function body they're a SyntaxError. Real-world
-     * trigger: nuxi's `bin/nuxi.mjs` opens with `import { performance }
-     * from "node:perf_hooks"` and ends with `const { runMain } = await
-     * import("./dist/index.mjs"); runMain()` — both ESM imports AND TLA.
-     * Pre-fix the IIFE wrap caused esbuild to fail with
-     * `Unexpected "<binding>"` at line 3 of stdin.
-     *
-     * Fix: when TLA AND ESM imports coexist, run a two-stage transform:
-     *   1. Pass 1: `esbuild.transform(code, { format: 'esm', ... })` —
-     *      esbuild accepts TLA + imports cleanly when emitting ESM.
-     *      Output is JS-canonicalised: multi-line imports collapsed,
-     *      bindings normalised, etc.
-     *   2. Extract top-level imports from the pass-1 output and rewrite
-     *      them as `const X = require(...)` shims (see
-     *      `convertEsmImportsToRequire` for the contract / shape).
-     *   3. Wrap the remaining body in a returned async IIFE.
-     *   4. Return the assembled string as the transform result.
-     *
-     * The require-shim emits the standard `__esModule` interop check
-     * (matches what esbuild itself emits for ESM→CJS conversions), so
-     * default-export binding semantics are preserved.
-     *
-     * If TLA but no ESM imports → existing single-pass IIFE wrap.
-     * If ESM imports but no TLA → existing single-pass esbuild
-     * format:cjs (it auto-converts ESM→CJS gracefully).
-     *
-     * This is bytes-stable for sources outside the TLA+ESM-imports
-     * intersection.
+     * Top-level await: esbuild emits no CommonJS for it, and a node cell is
+     * CommonJS. Modern CLI entries use it (nuxi's `bin/nuxi.mjs`, serve 14's
+     * `build/main.js`), so when esbuild rejects `format: 'cjs'` for that
+     * reason, the module is emitted as ESM and lowered by lowerAsyncModule:
+     * imports become requires above a returned async IIFE holding the rest,
+     * exports become `module.exports` assignments. The runner awaits the
+     * returned promise, so the awaits cannot race process teardown or VFS
+     * flushes. Every other source takes esbuild's own CommonJS output.
      */
     async transform(code, options) {
         if (this.transformHost) {
@@ -1449,7 +1015,7 @@ export class EsbuildService {
         if (!options?.rewriteOnly)
             await this.ensureInit();
         const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
-        return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports);
+        return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports, lowerAsyncModule);
     }
     /**
      * Transform many modules in one round trip to the transform host (or in
@@ -1486,7 +1052,7 @@ export class EsbuildService {
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                outcomes[positions[j]] = await runTransformRequest(this._esbuild, code, options, rewriteDynamicImports);
+                outcomes[positions[j]] = await runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };

@@ -28,6 +28,7 @@ import {
   wrapCommonJsCell,
   type CommonJsCellRow,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -212,6 +213,15 @@ function* launchNames(
     yield* found.listed;
     for (const pattern of found.patterns) yield pattern.dir;
   }
+}
+
+// A piped stdin's largest single write to the process input channel, a
+// quarter of that queue's bound (core/runtime/process-input.ts).
+const STDIN_PIPE_PIECE_BYTES = 64 * 1024;
+
+/** A pipe or redirect's bytes, exactly as written, until it ends (null). */
+export interface StdinBytes {
+  readBytes(maxLength: number): Promise<Uint8Array | null>;
 }
 
 /** Result returned from a facet execution */
@@ -818,6 +828,13 @@ export default {
     const args = await request.json();
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     const __nimbusProcessId = Number(args.pid || 1);
+    // A pipe or redirect streams through this input channel (exec's
+    // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
+    const __nimbusLiveInputPid = Number(args.stdinPid || 0);
+    // It ends within what was read ahead: taken whole before the entry runs.
+    const __nimbusStdinWhole = args.stdinWhole === true;
+    // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
+    const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -918,6 +935,7 @@ ${RESIDENCY_MISS_REPORT}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
+      await __nimbusPrepareStdin();
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
@@ -932,6 +950,7 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
+        globalThis.__nimbusRuntimeCode.noteFailure(e);
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
@@ -969,6 +988,13 @@ ${RESIDENCY_MISS_REPORT}
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
       if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
+    }
+    // A failed launch stages the Function-constructor text its failure is
+    // attributable to (commonjs-cell.ts, stageFailedLaunch).
+    const __stagedCode = exitCode !== 0 ? globalThis.__nimbusRuntimeCode.stageFailedLaunch() : "";
+    if (__stagedCode) {
+      stderr += __stagedCode + "\\n";
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__stagedCode + "\\n"));
     }
 
     await __drainPendingIO();
@@ -1430,6 +1456,7 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
+        globalThis.__nimbusRuntimeCode.noteFailure(e);
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
@@ -1464,6 +1491,13 @@ ${RESIDENCY_MISS_REPORT}
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
+      }
+      // A failed launch stages the Function-constructor text its failure is
+      // attributable to (commonjs-cell.ts, stageFailedLaunch).
+      const __stagedCode = Number(code ?? 0) !== 0 ? globalThis.__nimbusRuntimeCode.stageFailedLaunch() : "";
+      if (__stagedCode) {
+        stderr += __stagedCode + "\\n";
+        try { await __supervisor.stderr(__nimbusOutEnc.encode(__stagedCode + "\\n")); } catch {}
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -4386,6 +4420,12 @@ export class FacetManager {
   private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   /**
+   * The session's pipe read-ahead budget (stdin-read.ts), held here because a
+   * read ahead is held in this Durable Object, whichever launch holds it. One
+   * byte over the bound shows whether a pipe ended exactly there.
+   */
+  readonly stdinReadAhead = new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1);
+  /**
    * The content-addressed boot-image store (fabric's image-store.ts),
    * writing through this session's kernel-credentialed VFS and rooted off the
    * live process table.
@@ -5540,6 +5580,22 @@ export class FacetManager {
       captureOutput?: boolean;
       /** Shell abort (Ctrl+C): aborting this aborts the in-flight run. */
       signal?: AbortSignal;
+      /**
+       * A pipe or redirect as the program's stdin. It streams through the
+       * process's input channel as it arrives, from before the program
+       * starts; the program is never held for the pipe to end.
+       */
+      stdinPipe?: StdinBytes;
+      /**
+       * The pipe ends within what was read ahead of it: the program takes all
+       * of it before it starts, for its synchronous reads of stdin.
+       */
+      stdinWhole?: boolean;
+      /**
+       * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
+       * program reads stdin synchronously, so it reads the file first.
+       */
+      stdinFile?: { path: string; offset: number; syncRead: boolean };
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -5571,6 +5627,13 @@ export class FacetManager {
       }
     }
 
+    // Started with the launch, so a writer that has finished (echo, head) has
+    // delivered all of it, and its end, by the time the program starts: the
+    // guest takes what is queued then, or all of it when the pipe ended
+    // within the read ahead (stdinWhole), for a synchronous read of fd 0
+    // (node-shims.ts, __nimbusPrepareStdin).
+    const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
+
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
     // Paced like a resident launch: a tree too large for one turn costs
@@ -5594,6 +5657,7 @@ export class FacetManager {
       // that names the entry, the staged bytes at the stop, the bound,
       // and the remedy — the same shape the got/next guards print.
       pacer.settle();
+      stdinPump?.stop();
       if (err instanceof ClosureBoundExceededError) {
         const o = err.outcome;
         const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
@@ -5692,7 +5756,40 @@ export class FacetManager {
     } finally {
       opts.signal?.removeEventListener('abort', onShellAbort);
       pacer.settle();
+      stdinPump?.stop();
     }
+  }
+
+  /**
+   * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
+   * a full queue waits for the program to read, and the pipe's end ends the
+   * channel. stop() leaves the rest of the pipe unread, so a program that
+   * finished without reading all of it (`tail -f log | node -e ...`)
+   * releases the pipe and its writer ends, as a closed reader ends it in a
+   * shell.
+   */
+  private _pumpStdinPipe(pid: number, pipe: StdinBytes): { stop(): void } {
+    const opened = !this.processes.hasInput(pid);
+    if (opened) this.processes.openInput(pid);
+    let stopped = false;
+    void (async () => {
+      for (;;) {
+        // A piece at a time: the queue is bounded, and one larger than its
+        // room would never fit.
+        const piece = await pipe.readBytes(STDIN_PIPE_PIECE_BYTES);
+        if (stopped) return;
+        if (piece === null) { this.processes.endInput(pid); return; }
+        while (!this.processes.writeInputBytes(pid, piece).ok) {
+          if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped) return;
+        }
+      }
+    })().catch(() => { if (!stopped) this.processes.endInput(pid); });
+    return {
+      stop: () => {
+        stopped = true;
+        if (opened) this.processes.closeInput(pid);
+      },
+    };
   }
 
   /**
@@ -5738,7 +5835,7 @@ export class FacetManager {
 
   private async _execViaLoader(
     code: string,
-    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; captureOutput?: boolean },
+    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; stdinPipe?: unknown; stdinWhole?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean }; captureOutput?: boolean },
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     dataPlan: string[],
@@ -5766,6 +5863,11 @@ export class FacetManager {
       filename: opts.filename || '<eval>',
       dirname: opts.dirname || '/home/user',
       stdin: opts.stdin || '',
+      // A pipe: the input channel it streams through (_pumpStdinPipe), whole
+      // or not. A `< file`: the file fd 0 is.
+      stdinPid: opts.stdinPipe ? entry.pid : 0,
+      ...(opts.stdinWhole ? { stdinWhole: true } : {}),
+      ...(opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
       captureOutput: !!opts.captureOutput,
       cred: { ...entry.cred, groups: [...entry.cred.groups] },
       vfsCursor: vfsState.cursor,

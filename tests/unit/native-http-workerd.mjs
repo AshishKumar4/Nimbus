@@ -40,6 +40,23 @@ async function exercise(http, serve) {
       res.writeHead(202, fields); res.end('dictionary'); return;
     }
     if (req.url === '/empty') { res.statusCode = 204; res.end('ignored'); return; }
+    if (req.url === '/headers') {
+      const names = ['if-modified-since', 'user-agent', 'authorization', 'referer'];
+      const raw = [];
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (names.includes(req.rawHeaders[i].toLowerCase())) raw.push([req.rawHeaders[i].toLowerCase(), req.rawHeaders[i + 1]]);
+      }
+      res.end(JSON.stringify({ headers: names.map(n => [n, req.headers[n]]), raw: raw.sort() }));
+      return;
+    }
+    if (req.url === '/conditional') {
+      // A static server's conditional GET (the `fresh` rule serve-static and
+      // http-server use): not modified since the client's HTTP date.
+      const lastModified = 'Mon, 28 Sep 2026 10:00:00 GMT';
+      const since = Date.parse(req.headers['if-modified-since']);
+      if (since >= Date.parse(lastModified)) { res.statusCode = 304; res.end(); return; }
+      res.writeHead(200, { 'last-modified': lastModified }); res.end('fresh body'); return;
+    }
     if (req.url === '/echo') {
       const parts = [];
       let buffers = true;
@@ -61,6 +78,16 @@ async function exercise(http, serve) {
     const empty = await request('/empty');
     const dictionaryResponse = await request('/dictionary');
     const dictionary = [dictionaryResponse.status, dictionaryResponse.headers.get('x-dictionary'), await dictionaryResponse.text()];
+    // Values with commas in the fields workerd splits: an HTTP date, Chrome's
+    // User-Agent, a Digest Authorization and a Referer with a comma.
+    const sent = {
+      'if-modified-since': 'Tue, 29 Sep 2026 10:00:00 GMT',
+      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+      authorization: 'Digest username="u", realm="r, with comma", nonce="n", uri="/headers", response="x"',
+      referer: 'http://loopback/a,b?c=d,e',
+    };
+    const headers = await (await request('/headers', { headers: sent })).json();
+    const conditional = await request('/conditional', { headers: { 'if-modified-since': sent['if-modified-since'] } });
     const stream = await request('/stream');
     const reader = stream.body.getReader();
     const first = await reader.read();
@@ -82,6 +109,7 @@ async function exercise(http, serve) {
     await closed.promise;
     return {
       dictionary,
+      headers, conditional: [conditional.status, await conditional.text()],
       echo, pipe: Array.from(pipe), allocated: port > 0 && otherPort > 0 && port !== otherPort,
       head: [head.status, await head.text(), head.headers.get('x-list').split(',').map(s => s.trim())],
       empty: [empty.status, await empty.text()], stream: [new TextDecoder().decode(first.value), rest],
@@ -107,6 +135,9 @@ const expected = JSON.parse(node.stdout);
 assert.equal(expected.duplicateCode, 'EADDRINUSE');
 assert.equal(expected.allocated, true);
 assert.deepEqual(expected.stream, ['first', 'second']);
+assert.equal(expected.headers.headers[0][1], 'Tue, 29 Sep 2026 10:00:00 GMT', 'Node keeps the full HTTP date');
+assert.match(expected.headers.headers[1][1], /\(KHTML, like Gecko\) Chrome/, 'Node keeps the full User-Agent');
+assert.deepEqual(expected.conditional, [304, ''], 'Node answers the conditional GET not modified');
 
 // Node's process lifetime around one exchange (exchangeLifetime's program as a
 // Node process): alive while the exchange is open after server.close(), and

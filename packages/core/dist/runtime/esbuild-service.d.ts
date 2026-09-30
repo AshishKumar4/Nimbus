@@ -280,64 +280,14 @@ export declare class EsbuildService {
     /**
      * Transform a single code string (TS→JS, JSX→JS, minify, etc.)
      *
-     * Top-level await note (gap #2 in framework-gaps-fix):
-     * ─────────────────────────────────────────────────────
-     * esbuild rejects top-level await when output format is 'cjs' or
-     * 'iife' — neither has a runtime primitive for it. Real Node
-     * supports TLA only in ESM. Nimbus's facet wrapper executes the
-     * transformed code via `new Function(...)` which is CJS-shaped.
-     *
-     * Several modern CLIs (nuxi, vite-cli, oclif's lazy-load bootstrap,
-     * many ESM-only-by-default tools) use TLA at the entry point. With
-     * format:'cjs' those would crash with "Top-level await is currently
-     * not supported with the 'cjs' output format" — an esbuild
-     * SyntaxError surfaced as a Nimbus diagnostic. The user can't
-     * fix this without rewriting upstream.
-     *
-     * Fix: when caller asks for format 'cjs' AND the source has a
-     * top-level await, wrap the source in an async IIFE and return its
-     * Promise to the facet runner:
-     *
-     *     return (async () => {
-     *       <original-source>
-     *     })();
-     *
-     * Inside the IIFE, await is legal. Returning the Promise is required:
-     * the facet runner awaits promise-returning entry functions so
-     * sequential TLA execution cannot race process teardown or VFS flushes.
-     *
-     * ESM-imports-in-CJS note (nuxt-esm-in-cjs wave):
-     * ─────────────────────────────────────────────────
-     * The IIFE wrap above moves the user source INTO a function body.
-     * Top-level ESM `import` statements are LEGAL only at module top
-     * level — inside a function body they're a SyntaxError. Real-world
-     * trigger: nuxi's `bin/nuxi.mjs` opens with `import { performance }
-     * from "node:perf_hooks"` and ends with `const { runMain } = await
-     * import("./dist/index.mjs"); runMain()` — both ESM imports AND TLA.
-     * Pre-fix the IIFE wrap caused esbuild to fail with
-     * `Unexpected "<binding>"` at line 3 of stdin.
-     *
-     * Fix: when TLA AND ESM imports coexist, run a two-stage transform:
-     *   1. Pass 1: `esbuild.transform(code, { format: 'esm', ... })` —
-     *      esbuild accepts TLA + imports cleanly when emitting ESM.
-     *      Output is JS-canonicalised: multi-line imports collapsed,
-     *      bindings normalised, etc.
-     *   2. Extract top-level imports from the pass-1 output and rewrite
-     *      them as `const X = require(...)` shims (see
-     *      `convertEsmImportsToRequire` for the contract / shape).
-     *   3. Wrap the remaining body in a returned async IIFE.
-     *   4. Return the assembled string as the transform result.
-     *
-     * The require-shim emits the standard `__esModule` interop check
-     * (matches what esbuild itself emits for ESM→CJS conversions), so
-     * default-export binding semantics are preserved.
-     *
-     * If TLA but no ESM imports → existing single-pass IIFE wrap.
-     * If ESM imports but no TLA → existing single-pass esbuild
-     * format:cjs (it auto-converts ESM→CJS gracefully).
-     *
-     * This is bytes-stable for sources outside the TLA+ESM-imports
-     * intersection.
+     * Top-level await: esbuild emits no CommonJS for it, and a node cell is
+     * CommonJS. Modern CLI entries use it (nuxi's `bin/nuxi.mjs`, serve 14's
+     * `build/main.js`), so when esbuild rejects `format: 'cjs'` for that
+     * reason, the module is emitted as ESM and lowered by lowerAsyncModule:
+     * imports become requires above a returned async IIFE holding the rest,
+     * exports become `module.exports` assignments. The runner awaits the
+     * returned promise, so the awaits cannot race process teardown or VFS
+     * flushes. Every other source takes esbuild's own CommonJS output.
      */
     transform(code: string, options?: EsbuildTransformOptions): Promise<TransformResult>;
     /**

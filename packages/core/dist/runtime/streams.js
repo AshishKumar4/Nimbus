@@ -309,7 +309,16 @@ const __streamMod = (() => {
   // \`pipeline(response.body, createWriteStream(...))\`). A web
   // ReadableStream has no \`.pipe\`, so it must be adapted first.
   Readable.from = function from(iterable, opts) {
-    const r = new Readable({ objectMode: opts?.objectMode ?? false, ...opts });
+    // Node (lib/internal/streams/from.js): object mode unless the caller says
+    // otherwise, so values arrive as yielded; and a string or Buffer is
+    // emitted whole rather than iterated. http-server streams
+    // \`Readable.from(bytes)\` of each text file into the response, which
+    // refuses a byte-number chunk.
+    const r = new Readable({ ...opts, objectMode: opts?.objectMode ?? true });
+    if (typeof iterable === 'string' || iterable instanceof Uint8Array) {
+      r._read = function () { this.push(iterable); this.push(null); };
+      return r;
+    }
     r._read = () => {};
     (async () => {
       try {
@@ -624,15 +633,18 @@ const __streamMod = (() => {
   // A plain namespace object satisfies neither: it is not a constructor,
   // so \`class extends\` throws "Class extends value is not a constructor".
   // Make the export the Stream constructor itself with the named exports
-  // attached, mirroring Node exactly.
-  class Stream extends __eventsMod {
-    pipe(dest, opts) {
-      const src = this;
-      src.on('data', (chunk) => { dest.write(chunk); });
-      src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
-      return dest;
-    }
-  }
+  // attached, mirroring Node exactly. Like Node's (lib/internal/streams/
+  // legacy.js) it is a function, not a class: send (express.static) does
+  // \`Stream.call(this)\`, which a class constructor refuses.
+  function Stream(opts) { __eventsMod.call(this, opts); }
+  Object.setPrototypeOf(Stream.prototype, __eventsMod.prototype);
+  Object.setPrototypeOf(Stream, __eventsMod);
+  Stream.prototype.pipe = function pipe(dest, opts) {
+    const src = this;
+    src.on('data', (chunk) => { dest.write(chunk); });
+    src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
+    return dest;
+  };
   // ── stream state introspection (node:stream named helpers) ─────────
   // Modern libraries (e.g. those bundled by create-cloudflare) call these
   // off the stream module. They read the public stream state flags.
