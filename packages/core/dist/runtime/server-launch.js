@@ -281,6 +281,55 @@ class ModuleGraph {
             record.scope = buildScope(record);
         return record.scope;
     }
+    /**
+     * Whether `value`, in `record`, is a CLI parser or a value of one: down a
+     * builder chain (`sade(...).option(...)`, `new Command()`) to a parser
+     * package, a name bound to one, or a parser another of the program's
+     * modules exports (`require('./cli').parse()`, `import program from
+     * './cli'`).
+     */
+    isParser(record, value, depth = 0) {
+        if (depth > 8)
+            return false;
+        const scope = this.scope(record);
+        let v = unwrap(value);
+        for (;;) {
+            const ref = moduleOf(record, scope, v);
+            if (ref !== null && this.exportIsParser(ref, depth + 1))
+                return true;
+            const specifier = interopSpecifier(v);
+            if (specifier !== null)
+                return CLI_PARSERS.has(specifier);
+            if (v.type === 'MemberExpression')
+                v = unwrap(v.object);
+            else if (v.type === 'CallExpression' || v.type === 'NewExpression')
+                v = unwrap(v.callee);
+            else
+                break;
+        }
+        if (v.type !== 'Identifier')
+            return false;
+        const pkg = scope.packages.get(v.name);
+        if (pkg !== undefined)
+            return CLI_PARSERS.has(pkg);
+        const init = scope.constants.get(v.name);
+        return init !== undefined && !scope.assigned.has(v.name) && this.isParser(record, init, depth + 1);
+    }
+    /** Whether a module of the program exports a parser at `ref` (its default export when no member is named). */
+    exportIsParser(ref, depth) {
+        if (depth > 8)
+            return false;
+        const record = this.module(ref.path);
+        if (record === undefined || record.ast === null)
+            return false;
+        const scope = this.scope(record);
+        const name = ref.members[0] ?? 'default';
+        if ((scope.exports.get(name) ?? []).some((value) => this.isParser(record, value, depth + 1)))
+            return true;
+        if ((scope.reexports.get(name) ?? []).some((r) => this.exportIsParser({ path: r.path, members: r.members }, depth + 1)))
+            return true;
+        return name !== 'default' && scope.starExports.some((path) => this.exportIsParser({ path, members: [name] }, depth + 1));
+    }
     memo(record, key, compute) {
         const known = record.results.get(key);
         if (known !== undefined)
@@ -874,28 +923,8 @@ class Walk {
             this.launches = true;
     }
     /** Whether `value` is a CLI parser, or a value of one (`program.command('x')`, `yargs(argv)`, `new Command()`). */
-    fromCliParser(value, bindings = 0) {
-        // Down a builder chain (`sade(...).option(...)...`) to its root: a parser
-        // package, or a name bound to a value of one.
-        let v = unwrap(value);
-        for (;;) {
-            const specifier = interopSpecifier(v);
-            if (specifier !== null)
-                return CLI_PARSERS.has(specifier);
-            if (v.type === 'MemberExpression')
-                v = unwrap(v.object);
-            else if (v.type === 'CallExpression' || v.type === 'NewExpression')
-                v = unwrap(v.callee);
-            else
-                break;
-        }
-        if (v.type !== 'Identifier')
-            return false;
-        const pkg = this.scope.packages.get(v.name);
-        if (pkg !== undefined)
-            return CLI_PARSERS.has(pkg);
-        const init = this.scope.constants.get(v.name);
-        return init !== undefined && bindings < 8 && this.fromCliParser(init, bindings + 1);
+    fromCliParser(value) {
+        return this.graph.isParser(this.record, value);
     }
     /**
      * A CLI parser's handler registration (`.action(...)`, `.command(...)`):
