@@ -11,7 +11,10 @@ published independently in the `@nimbus-sh` npm scope.
   `'close'` follows `'end'`, and node-static pipes a file with
   `{ end: false }` and ends the response on the file stream's `'close'`. A
   readable stream that has ended, and finished writing if it is a Duplex,
-  now closes unless it was created with `autoDestroy: false`.
+  now closes unless it was created with `autoDestroy: false`. A writable
+  stream closes after `'finish'` by the same rule, so a copy that waits on
+  the destination's `'close'` (`src.pipe(fs.createWriteStream(f))
+  .on('close', …)`) completes; a Duplex closes once both sides are done.
 
 - `npx static-server` serves instead of holding the terminal in the
   foreground with its port unreachable, and so do `npx sirv-cli` and
