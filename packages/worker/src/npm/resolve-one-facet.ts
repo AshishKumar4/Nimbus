@@ -570,7 +570,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   let packument: Loaded = await loadPackument(effName);
   if ('failed' in packument) return packument.failed;
   const stagedVersion = stagedBindingVersion();
-  let version = stagedVersion !== null && packument.data.versions[stagedVersion] !== undefined
+  let version = stagedVersion !== null && readProperty(packument.data.versions, stagedVersion) !== undefined
     ? stagedVersion
     : pickVersion(packument.data);
   if (__swap && __swap.since) {
