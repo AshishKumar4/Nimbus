@@ -83,6 +83,18 @@ assert.deepEqual(own(`/${APP}/mine-dir`), { uid: 1000, gid: 1000, mode: '755' })
 fs.writeFileSync(`/${APP}/mine-already.txt`, 'rewritten');
 assert.deepEqual(own(`/${APP}/mine-already.txt`), { uid: 1000, gid: 1000, mode: '600' });
 
+// Stating files the process did not write records nothing: a program that
+// stats every file it can see (pi stats ~20k) must not grow a map per file.
+{
+  const before = Object.keys(globalThis.__nimbusVfsWriteTimes).length;
+  for (let i = 0; i < 50; i++) {
+    fs.statSync(`/${APP}/root-owned.json`);
+    fs.statSync(`/${APP}/etc-like`);
+    fs.statSync('/tmp/theirs.txt');
+  }
+  assert.equal(Object.keys(globalThis.__nimbusVfsWriteTimes).length, before, 'stats of existing files record no write times');
+}
+
 // Its own write has one mtime until it writes again: a watcher polling
 // mtimeMs sees an unchanged file as unchanged, and a rewrite as an edit.
 {

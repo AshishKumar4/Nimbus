@@ -1350,11 +1350,15 @@ const __fsMod = (() => {
     return time;
   }
 
-  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
+  // \`own\`: the path is this process's own (the namespace's overlay of its
+  // effects), so a first stat fixes its time once. Any other path's times
+  // come from its metadata (_statObject), and recording one per stat grew a
+  // map entry for every file a program ever stats.
+  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid, own = false) {
     const time = _localTimes[k];
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
-      : (_ownWriteTimes[k] = Date.now());
+      : own ? (_ownWriteTimes[k] = Date.now()) : Date.now();
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
@@ -3411,7 +3415,7 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, !noFollow);
     if (meta === "absent" || meta === "ELOOP") return undefined;
     return meta.own
-      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
+      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
       : _statObject(meta, k);
   }
 

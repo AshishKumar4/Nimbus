@@ -531,24 +531,23 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     return picked;
   };
 
-  let packument: Loaded | null = null;
+  // A `since` swap is decided on the package itself: resolve its own
+  // packument and version first, and consult the target only when that
+  // version is one the swap covers. A registry that serves rollup but not
+  // @rollup/wasm-node (a private mirror) still installs rollup 3.
+  let packument: Loaded = await loadPackument(effName);
+  if ('failed' in packument) return packument.failed;
   if (__swap && __swap.since) {
-    const target = await loadPackument(__swap.to);
-    if ('failed' in target) return target.failed;
-    const picked = pickVersion(target.data);
-    const tagged = !request.range || request.range === 'latest' || target.data['dist-tags']?.[request.range] !== undefined;
+    const own = pickVersion(packument.data);
     // @ts-ignore — preamble.
-    const admitted = picked !== null && target.data.versions[picked] !== undefined && (tagged || SATISFIES_RANGE(picked, request.range));
-    // @ts-ignore — preamble.
-    const since = admitted && COMPARE_SEMVER(PARSE_SEMVER(picked), PARSE_SEMVER(__swap.since)) >= 0;
-    if (since) {
+    const covered = own !== null && packument.data.versions[own] !== undefined && COMPARE_SEMVER(PARSE_SEMVER(own), PARSE_SEMVER(__swap.since)) >= 0;
+    if (covered) {
       announceSwap(__swap);
       effName = __swap.to;
-      packument = target;
+      packument = await loadPackument(effName);
+      if ('failed' in packument) return packument.failed;
     }
   }
-  packument ??= await loadPackument(effName);
-  if ('failed' in packument) return packument.failed;
   const data = packument.data;
   const bytes = packument.bytes;
   const packumentSource = packument.source;

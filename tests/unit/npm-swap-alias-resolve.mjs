@@ -185,7 +185,11 @@ const REGISTRY = {
   assert.deepEqual(applySwaps({ rollup: '^3.29.4' }).specs, { rollup: '^3.29.4' },
     'the supervisor leaves a since-gated range for the resolver');
   for (const topLevel of [true, false]) {
-    const three = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: '^3.27.1', topLevel }), registry(ROLLUP).env);
+    // A registry that serves rollup but not @rollup/wasm-node (a private
+    // mirror): rollup 3 never needs the target, so it installs.
+    const mirror = registry({ rollup: ROLLUP.rollup });
+    const three = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: '^3.27.1', topLevel }), mirror.env);
+    assert.deepEqual(mirror.asked, ['rollup'], 'rollup 3 is resolved from rollup alone');
     assert.equal(three.pkg?.version, '3.29.5', 'rollup@^3 resolves to rollup 3');
     assert.match(three.pkg.tarballUrl, /\/rollup-3\.29\.5\.tgz$/, 'from rollup itself');
     assert.ok(!three.events.some((e) => e.type === 'swap'), 'and is not announced as a swap');

@@ -157,4 +157,25 @@ const CONTENT = 'home/user/app/src/App.tsx';
   console.log('  [9] bounded by count as well as bytes; dropped keys leave every profile');
 }
 
+// The stores this one replaced left their profiles in the session's storage.
+// The first load deletes them, and keeps the code entries they share.
+{
+  const rows = new Map();
+  const legacy = new LaunchLearningStore(storageOver(rows));
+  await legacy.record('cmd', { code: [fn('kept')] });
+  rows.set('runtime-code-profiles', ['old-a', 'old-b']);
+  rows.set('runtime-code-profile:old-a', ['k1']);
+  rows.set('runtime-code-profile:old-b', ['k2']);
+  rows.set('residency-profile-index', ['old-c']);
+  rows.set('residency-profile:old-c', ['home/user/x']);
+  const reads = { count: 0 };
+  const fresh = new LaunchLearningStore(storageOver(rows, reads));
+  assert.equal((await fresh.forLaunch('cmd')).code.size, 1, 'this store\'s own code entries stay');
+  assert.deepEqual([...rows.keys()].filter((k) => /^(runtime-code-profile|residency-profile)/.test(k)), [], 'every legacy profile row is gone');
+  const afterFirst = reads.count;
+  await fresh.forLaunch('cmd');
+  assert.ok(reads.count - afterFirst <= 1, 'and the cleanup runs once, not per operation');
+  console.log('  [10] legacy profile rows are deleted once');
+}
+
 console.log('launch-learning-store OK');
