@@ -296,7 +296,7 @@ export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array)
 export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
 /** A live server can catch a codegen miss and continue serving: persist its
  * ledger before it is killed or evicted, without changing its process state. */
-export declare function _rpcReportRuntimeCode(self: RpcHost, pid: number, entries: unknown[], missedFiles?: string[]): Promise<void>;
+export declare function _rpcReportRuntimeCode(self: RpcHost, pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
 /**
  * Called by facets from their `finally` block after I/O has drained.
  * Marks the log store so `logs` / `ps` can show the exit code, and
@@ -305,7 +305,7 @@ export declare function _rpcReportRuntimeCode(self: RpcHost, pid: number, entrie
  *
  * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
  */
-export declare function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string, residencyMisses?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[]): Promise<void>;
+export declare function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
 /**
  * Emit a formatted exit-dump banner + last 30 lines of output to the
  * terminal. Called from both the facet-reported exit path and the

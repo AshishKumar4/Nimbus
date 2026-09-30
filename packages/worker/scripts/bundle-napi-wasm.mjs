@@ -153,7 +153,6 @@ export interface StagedBindingArtifact {
   readonly wasm: NapiWasmAsset;
 }
 
-export const NAPI_WASM_BUILD_ID: string = ${JSON.stringify(buildId)};
 export const NAPI_WASM_LOADER: NapiWasmAsset = ${JSON.stringify(asset(loaderDir, 'napi-wasm-loader.mjs', loaderFacts))};
 export const NAPI_WASM_TRAMPOLINE: NapiWasmAsset = ${JSON.stringify(asset(loaderDir, 'wasi-trampoline.wasm', loaderFacts))};
 export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = ${JSON.stringify(bindings, null, 2)};

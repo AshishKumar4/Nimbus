@@ -353,14 +353,24 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // arrives naming the WASM target and is not swapped again, while a user's
   // explicit alias to the native package (`build@npm:esbuild`) still needs
   // its target swapped — and keeps its own install name.
+  //
+  // A swap with `since` stands in only for the versions that have a native
+  // build (rollup 4); earlier ones are plain JavaScript and install as
+  // published. Its target publishes exactly those versions, so the swap
+  // applies when the target has a version the range picks (decided below,
+  // against the target's packument), and otherwise the package installs
+  // unswapped rather than being moved to the target's latest.
   let effName = request.registryName;
   // @ts-ignore — preamble.
   const __swap = SHOULD_SWAP(request.registryName);
-  if (__swap) {
-    messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${__swap.from} → ${__swap.to}`);
-    events.push({ type: 'swap', from: __swap.from, to: __swap.to, ctx: 'transitive' });
+  const announceSwap = (swap: { from: string; to: string }) => {
+    messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${swap.from} → ${swap.to}`);
+    events.push({ type: 'swap', from: swap.from, to: swap.to, ctx: 'transitive' });
+  };
+  if (__swap && !__swap.since) {
+    announceSwap(__swap);
     effName = __swap.to;
-  } else {
+  } else if (!__swap) {
     // @ts-ignore — preamble.
     const __fail = SHOULD_REJECT_FAIL(request.registryName);
     // A listed package resolves and installs — npm parity; the
@@ -427,19 +437,21 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // packument dictates the tarball URL and integrity digest for every
   // tenant that reads it — a facet-supplied cache write would be a
   // cross-tenant code-execution primitive.
+  type Loaded = { data: any; bytes: number; source: ResolveOneResult['packumentSource'] } | { failed: ResolveOneResult };
+  const loadPackument = async (name: string): Promise<Loaded> => {
   let packumentText: string | null = null;
   let packumentSource: ResolveOneResult['packumentSource'] = 'network';
   if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
-    messages.push(`[resolve-one] ${effName}: env.SUPERVISOR.getPackument missing`);
-    return out(null, 0, 'network', {
+    messages.push(`[resolve-one] ${name}: env.SUPERVISOR.getPackument missing`);
+    return { failed: out(null, 0, 'network', {
       type: 'unresolved',
       reason: 'env.SUPERVISOR.getPackument missing',
-    });
+    }) };
   }
   {
     const packumentStart = Date.now();
     const result = await __nimbusUseRpcResult(
-      env.SUPERVISOR.getPackument(effName, {
+      env.SUPERVISOR.getPackument(name, {
         retries: Math.max(0, spec.retries ?? 3),
         timeoutMs: spec.fetchTimeoutMs ?? 15_000,
         registry: spec.registry,
@@ -470,51 +482,95 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (result.json === null) {
       if (result.status !== undefined) {
         // 4xx — the registry has no such package.
-        messages.push(`[resolve-one] ${effName}: HTTP ${result.status}`);
-        return out(null, 0, 'network', {
+        messages.push(`[resolve-one] ${name}: HTTP ${result.status}`);
+        return { failed: out(null, 0, 'network', {
           type: 'unresolved',
-          reason: `registry returned HTTP ${result.status} for ${effName}`,
-        });
+          reason: `registry returned HTTP ${result.status} for ${name}`,
+        }) };
       }
-      messages.push(`[resolve-one] ${effName}: fetch exhausted: ${result.failure}`);
-      return out(null, 0, 'network', {
+      messages.push(`[resolve-one] ${name}: fetch exhausted: ${result.failure}`);
+      return { failed: out(null, 0, 'network', {
         type: 'unresolved',
-        reason: `registry fetch failed for ${effName}: ${result.failure}`,
-      });
+        reason: `registry fetch failed for ${name}: ${result.failure}`,
+      }) };
     }
     packumentText = result.json;
     packumentSource = result.source === 'r2-cache' ? 'r2-cache' : 'network';
   }
 
-  const bytes = packumentText.length;
-  let data: any;
+  const loadedBytes = packumentText.length;
+  let loaded: any;
   try {
-    data = JSON.parse(packumentText);
+    loaded = JSON.parse(packumentText);
   } catch (e: any) {
-    messages.push(`[resolve-one] ${effName}: malformed packument: ${e?.message ?? e}`);
-    return out(null, bytes, packumentSource, {
+    messages.push(`[resolve-one] ${name}: malformed packument: ${e?.message ?? e}`);
+    return { failed: out(null, loadedBytes, packumentSource, {
       type: 'unresolved',
-      reason: `malformed packument for ${effName}: ${e?.message ?? e}`,
-    });
+      reason: `malformed packument for ${name}: ${e?.message ?? e}`,
+    }) };
   }
-  if (!data || !data.versions) {
-    return out(null, bytes, packumentSource, {
+  if (!loaded || !loaded.versions) {
+    return { failed: out(null, loadedBytes, packumentSource, {
       type: 'unresolved',
-      reason: `packument for ${effName} carries no versions`,
-    });
+      reason: `packument for ${name} carries no versions`,
+    }) };
   }
+  return { data: loaded, bytes: loadedBytes, source: packumentSource };
+  };
 
-  // 3. Pick version.
-  let version: string | null = null;
-  if (request.range && data.versions[request.range]) version = request.range;
-  if (!version && request.range && request.range !== 'latest') {
-    const allVersions = Object.keys(data.versions);
+  // 3. Pick version: an exact version, the highest the range admits, else
+  //    the range as a dist-tag, else `latest` — but never `latest` for a
+  //    semver range nothing satisfies. That is npm's ETARGET, and falling
+  //    back installed a version outside the range asked for (a swap target
+  //    that lacks the range's versions handed back its own latest).
+  const pickVersion = (packument: any): string | null => {
+    let picked: string | null = null;
+    if (request.range && packument.versions[request.range]) picked = request.range;
+    if (!picked && request.range && request.range !== 'latest') {
+      // @ts-ignore — preamble.
+      picked = RESOLVE_VERSION(Object.keys(packument.versions), request.range);
+    }
+    if (!picked) picked = packument['dist-tags']?.[request.range] || null;
+    const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
     // @ts-ignore — preamble.
-    version = RESOLVE_VERSION(allVersions, request.range);
+    if (!picked && (open || !IS_SEMVER_RANGE(request.range))) picked = packument['dist-tags']?.latest || null;
+    return picked;
+  };
+
+  // A `since` swap is decided on the package itself: resolve its own
+  // packument and version first, and consult the target only when that
+  // version is one the swap covers. A registry that serves rollup but not
+  // @rollup/wasm-node (a private mirror) still installs rollup 3. The target
+  // is published in lockstep, so it stands in with exactly that version; a
+  // target that lacks it installs the package unswapped, with the note that
+  // its native build cannot run here, never a target version out of range.
+  let packument: Loaded = await loadPackument(effName);
+  if ('failed' in packument) return packument.failed;
+  let version = pickVersion(packument.data);
+  if (__swap && __swap.since) {
+    const own = version;
+    // @ts-ignore — preamble.
+    const covered = own !== null && packument.data.versions[own] !== undefined && COMPARE_SEMVER(PARSE_SEMVER(own), PARSE_SEMVER(__swap.since)) >= 0;
+    if (covered) {
+      const target = await loadPackument(__swap.to);
+      if ('failed' in target) return target.failed;
+      if (target.data.versions[own] !== undefined) {
+        announceSwap(__swap);
+        effName = __swap.to;
+        packument = target;
+      } else {
+        emitAdvisory({
+          from: request.registryName,
+          reason: `${__swap.to} publishes no ${own}, so ${request.registryName}@${own} installs with its native build, which cannot run in a Worker.`,
+          suggest: `${request.registryName}@<a version ${__swap.to} publishes>`,
+        });
+      }
+    }
   }
-  if (!version) {
-    version = data['dist-tags']?.[request.range] || data['dist-tags']?.latest || null;
-  }
+  const data = packument.data;
+  const bytes = packument.bytes;
+  const packumentSource = packument.source;
+
   if (!version || !data.versions[version]) {
     messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
     return out(null, bytes, packumentSource, {

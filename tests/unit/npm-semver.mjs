@@ -16,11 +16,11 @@
 // preamble by `fn.toString()`.
 
 import assert from 'node:assert/strict';
-import { compareSemver, parseSemver, resolveVersion, satisfiesRange } from '../../packages/worker/src/npm/semver.ts';
+import { compareSemver, isSemverRange, parseSemver, resolveVersion, satisfiesRange } from '../../packages/worker/src/npm/semver.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 
 const embedded = new Function(
-  `${NPM_RESOLVE_PREAMBLE}\nreturn { PARSE_SEMVER, COMPARE_SEMVER, SATISFIES_RANGE, RESOLVE_VERSION };`,
+  `${NPM_RESOLVE_PREAMBLE}\nreturn { PARSE_SEMVER, COMPARE_SEMVER, SATISFIES_RANGE, RESOLVE_VERSION, IS_SEMVER_RANGE };`,
 )();
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
@@ -79,6 +79,7 @@ const embedded = new Function(
   const ranges = ['1', '1.x', '^1.0.0', '~1.0.0', '1.0.0-beta.15', '^1.0.0-beta.15', '^1.0.0-next.24', '>=1.0.0 <2.0.0', '1.0.0 - 1.5.0', '1 || 2', '^2.1.0-rc.0', '*', 'latest', '', '^3'];
   for (const range of ranges) {
     assert.equal(embedded.RESOLVE_VERSION(corpus, range), resolveVersion(corpus, range), `RESOLVE_VERSION parity: ${range}`);
+    assert.equal(embedded.IS_SEMVER_RANGE(range), isSemverRange(range), `IS_SEMVER_RANGE parity: ${range}`);
     for (const v of corpus) {
       assert.equal(embedded.SATISFIES_RANGE(v, range), satisfiesRange(v, range), `SATISFIES_RANGE parity: ${v} ${range}`);
     }

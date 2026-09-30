@@ -166,7 +166,8 @@ const INPUTS = {
   putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
-  reportExit: [code, tail, ['home/user/app/node_modules/on-change/source/index.js'], ['home/user/app/node_modules/pkg/learned.js'], [{ kind: 'async', params: ['a'], body: 'return a' }]],
+  reportExit: [code, tail, ['home/user/app/node_modules/on-change/source/index.js'], ['home/user/app/node_modules/pkg/learned.js'], [{ kind: 'async', params: ['a'], body: 'return a' }], ['home/user/app/node_modules/late/index.js']],
+  reportRuntimeCode: [[{ kind: 'async', params: ['a'], body: 'return a' }], ['home/user/app/node_modules/late/index.js'], ['home/user/app/src/data.json']],
   prefetch: [cwd, entryCode],
   registerPort: [port],
   allocatePort: [],
@@ -191,6 +192,7 @@ const INPUTS = {
   routeHostedHttp: ['wk', { method: 'GET', url: 'https://hosted.test/' }],
   cancelHostProcess: ['wk'],
   hmrRelay: ['client-1', 'hmr-message'],
+  hmrNextEvent: [25_000],
 };
 
 // The props the supervisor binding stamps — the envelope's identity fields

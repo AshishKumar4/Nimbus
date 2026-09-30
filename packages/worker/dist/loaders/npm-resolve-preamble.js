@@ -16,6 +16,7 @@
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
  *   - RESOLVE_VERSION(versions, range) → string | null
+ *   - IS_SEMVER_RANGE(range)    → boolean
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
  * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`
@@ -32,7 +33,7 @@
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */
 import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeBinAdvisory, policyNativePlatformReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
-import { compareSemver, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
+import { compareSemver, isSemverRange, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
 import { parseRegistryRequest } from '../npm/resolve-one-facet.js';
 export const NPM_RESOLVE_PREAMBLE = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
@@ -80,6 +81,7 @@ ${parseSemver.toString()}
 ${compareSemver.toString()}
 ${semverComparators.toString()}
 ${satisfiesRange.toString()}
+${isSemverRange.toString()}
 ${resolveVersion.toString()}
 // ── Spec parsing (embedded from src/npm/resolve-one-facet.ts) ───────────
 // Generated the same way — the facet body references the bare
@@ -89,5 +91,6 @@ function PARSE_SEMVER(v) { return parseSemver(v); }
 function COMPARE_SEMVER(a, b) { return compareSemver(a, b); }
 function SATISFIES_RANGE(version, range) { return satisfiesRange(version, range); }
 function RESOLVE_VERSION(versions, range) { return resolveVersion(versions, range); }
+function IS_SEMVER_RANGE(range) { return isSemverRange(range); }
 // ── end npm-resolve preamble ────────────────────────────────────────────
 `;

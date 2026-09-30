@@ -373,8 +373,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcRecordCacheStats(events: any[]): Promise<void>;
     _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
-    _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[]): Promise<void>;
-    _rpcReportRuntimeCode(pid: number, entries: unknown[], missedFiles?: string[]): Promise<void>;
+    _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
+    _rpcReportRuntimeCode(pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
     _emitExitDump(pid: number, code: number): void;
     _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void;
     _reportExternalExit(pid: number, code: number, reason: string): void;

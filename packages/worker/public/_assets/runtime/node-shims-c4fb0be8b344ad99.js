@@ -895,6 +895,7 @@ const __fsMod = (() => {
   // overlay of this process's own effects says it is gone until a barrier's
   // delta does.
   function _forgetSyncPath(k) {
+    delete _ownWriteTimes[k];
     _createdHere.delete(k);
     _announcedDirs.delete(k);
     _nsOwnSet(k, "absent");
@@ -907,6 +908,7 @@ const __fsMod = (() => {
    */
   function _parkWrite(k, cell) {
     _noteCreation(k);
+    _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
     delete __vfsBundleRevisions[k];
@@ -1249,6 +1251,11 @@ const __fsMod = (() => {
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
   const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+  // When this process last changed each path's content: the mtime its own
+  // writes carry until the namespace describes them. Reading the clock at
+  // each stat instead gave a file a new mtime on every stat, which a
+  // watcher polling mtimeMs reads as an edit.
+  const _ownWriteTimes = globalThis.__nimbusVfsWriteTimes || (globalThis.__nimbusVfsWriteTimes = Object.create(null));
   // Modes set locally that the authority has not received yet. Delivered once:
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
@@ -1283,9 +1290,15 @@ const __fsMod = (() => {
     return time;
   }
 
-  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
+  // `own`: the path is this process's own (the namespace's overlay of its
+  // effects), so a first stat fixes its time once. Any other path's times
+  // come from its metadata (_statObject), and recording one per stat grew a
+  // map entry for every file a program ever stats.
+  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid, own = false) {
     const time = _localTimes[k];
-    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs : Date.now();
+    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
+      : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
+      : own ? (_ownWriteTimes[k] = Date.now()) : Date.now();
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
@@ -2407,6 +2420,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
+    _ownWriteTimes[k] = Date.now();
     const buf = _asBytes(cell);
     let next;
     if (size <= buf.byteLength) {
@@ -2470,6 +2484,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
+    _ownWriteTimes[k] = Date.now();
     const next = _spliceCell(_asBytes(cell), pos, bytes);
     if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
@@ -3342,7 +3357,7 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, !noFollow);
     if (meta === "absent" || meta === "ELOOP") return undefined;
     return meta.own
-      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
+      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
       : _statObject(meta, k);
   }
 
@@ -7305,90 +7320,59 @@ function __nimbusIsCodegenRefusal(e) {
 // decode it without compiling, preserving native eval (including its Workers
 // refusal) for everything else. No general-evaluation capability is exposed,
 // and Function("null") / eval("1 + 1") feature probes remain refused.
+const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(source) {
+  const text = source.trim();
+  const quote = text[0];
+  if ((quote !== '"' && quote !== "'") || text.length < 2) return undefined;
+  let result = '';
+  for (let i = 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === quote) return i === text.length - 1 ? result : undefined;
+    if (c === '\n' || c === '\r') return undefined;
+    if (c !== '\\') { result += c; continue; }
+    if (++i >= text.length) return undefined;
+    const escaped = text[i];
+    switch (escaped) {
+      case 'n': result += '\n'; break;
+      case 'r': result += '\r'; break;
+      case 't': result += '\t'; break;
+      case 'b': result += '\b'; break;
+      case 'f': result += '\f'; break;
+      case 'v': result += '\v'; break;
+      case '\r': if (text[i + 1] === '\n') i++; break;
+      case '\n': case '\u2028': case '\u2029': break;
+      case 'x': case 'u': {
+        const braced = escaped === 'u' && text[i + 1] === '{';
+        const start = i + (braced ? 2 : 1);
+        const end = braced ? text.indexOf('}', start) : start + (escaped === 'x' ? 2 : 4);
+        if (end <= start || end > text.length) return undefined;
+        const digits = text.slice(start, end);
+        if (!/^[0-9a-fA-F]+$/.test(digits)) return undefined;
+        const point = Number.parseInt(digits, 16);
+        if (point > 0x10ffff) return undefined;
+        result += String.fromCodePoint(point);
+        i = braced ? end : end - 1;
+        break;
+      }
+      default: {
+        if (escaped >= '0' && escaped <= '7') {
+          // 0..3 consumes up to three octal digits; 4..7 only two.
+          const end = Math.min(text.length, i + (escaped <= '3' ? 3 : 2));
+          let octal = escaped;
+          while (i + 1 < end && text[i + 1] >= '0' && text[i + 1] <= '7') octal += text[++i];
+          result += String.fromCharCode(Number.parseInt(octal, 8));
+        } else result += escaped;
+      }
+    }
+  }
+  return undefined;
+};
 (() => {
   const nativeEval = globalThis.eval;
   if (nativeEval.__nimbusNative) return;
-  const decode = function decodeJavaScriptStringLiteral(source) {
-    const text = source.trim();
-    const quote = text[0];
-    if ((quote !== '"' && quote !== "'") || text.length < 2)
-        return undefined;
-    let result = '';
-    for (let i = 1; i < text.length; i++) {
-        const c = text[i];
-        if (c === quote)
-            return i === text.length - 1 ? result : undefined;
-        if (c === '\n' || c === '\r')
-            return undefined;
-        if (c !== '\\') {
-            result += c;
-            continue;
-        }
-        if (++i >= text.length)
-            return undefined;
-        const escaped = text[i];
-        switch (escaped) {
-            case 'n':
-                result += '\n';
-                break;
-            case 'r':
-                result += '\r';
-                break;
-            case 't':
-                result += '\t';
-                break;
-            case 'b':
-                result += '\b';
-                break;
-            case 'f':
-                result += '\f';
-                break;
-            case 'v':
-                result += '\v';
-                break;
-            case '\r':
-                if (text[i + 1] === '\n')
-                    i++;
-                break;
-            case '\n':
-            case '\u2028':
-            case '\u2029': break;
-            case 'x':
-            case 'u': {
-                const braced = escaped === 'u' && text[i + 1] === '{';
-                const start = i + (braced ? 2 : 1);
-                const end = braced ? text.indexOf('}', start) : start + (escaped === 'x' ? 2 : 4);
-                if (end <= start || end > text.length)
-                    return undefined;
-                const digits = text.slice(start, end);
-                if (!/^[0-9a-fA-F]+$/.test(digits))
-                    return undefined;
-                const point = Number.parseInt(digits, 16);
-                if (point > 0x10ffff)
-                    return undefined;
-                result += String.fromCodePoint(point);
-                i = braced ? end : end - 1;
-                break;
-            }
-            default: {
-                if (escaped >= '0' && escaped <= '7') {
-                    // 0..3 consumes up to three octal digits; 4..7 only two.
-                    const end = Math.min(text.length, i + (escaped <= '3' ? 3 : 2));
-                    let octal = escaped;
-                    while (i + 1 < end && text[i + 1] >= '0' && text[i + 1] <= '7')
-                        octal += text[++i];
-                    result += String.fromCharCode(Number.parseInt(octal, 8));
-                }
-                else
-                    result += escaped;
-            }
-        }
-    }
-    return undefined;
-};
   const routed = { eval(source) {
     if (typeof source === "string") {
-      const value = decode(source);
+      const value = __nimbusDecodeStringLiteral(source);
       if (value !== undefined) return value;
     }
     return Reflect.apply(nativeEval, undefined, [source]);
@@ -7403,6 +7387,46 @@ function __nimbusIsCodegenRefusal(e) {
     ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
   ];
   const nativeToString = Function.prototype.toString;
+  // Vite's module runner compiles each SSR module with new AsyncFunction and
+  // imports its dependencies only when that module runs, so a refused module
+  // hid everything it imports and every launch learned one more module.
+  // Vite's SSR transform hoists a module's static imports into a generated
+  // prologue, one statement per line, after "use strict" and the export
+  // getters:
+  //   const __vite_ssr_import_N__ = await __vite_ssr_import__("<source>"[, <metadata JSON>]);
+  // Those imports are what the module would have run first, in this order.
+  // This reads that prologue and stops at the first other line.
+  const viteHoistedImports = (body) => {
+    const found = [];
+    for (const raw of body.split("\n")) {
+      const line = raw.trim();
+      if (line === "" || line === '"use strict";' || line.startsWith("__vite_ssr_exportName__(")) continue;
+      let rest = line;
+      if (rest.startsWith("const __vite_ssr_import_")) {
+        const bound = rest.indexOf("__ = ");
+        if (bound < 0) break;
+        rest = rest.slice(bound + 5);
+      }
+      const head = "await __vite_ssr_import__(";
+      if (!rest.startsWith(head) || !rest.endsWith(");")) break;
+      rest = rest.slice(head.length, -2);
+      const quote = rest[0];
+      if (quote !== '"' && quote !== "'") break;
+      let end = 1;
+      while (end < rest.length && rest[end] !== quote) end += rest[end] === "\\" ? 2 : 1;
+      if (end >= rest.length) break;
+      const source = __nimbusDecodeStringLiteral(rest.slice(0, end + 1));
+      if (typeof source !== "string") break;
+      const tail = rest.slice(end + 1).trim();
+      let metadata;
+      if (tail !== "") {
+        if (!tail.startsWith(",")) break;
+        try { metadata = JSON.parse(tail.slice(1)); } catch { break; }
+      }
+      found.push([source, metadata]);
+    }
+    return found;
+  };
   for (const [kind, Native] of kinds) {
     if (Native.__nimbusNative) continue;
     const routed = function (...args) {
@@ -7411,8 +7435,27 @@ function __nimbusIsCodegenRefusal(e) {
       } catch (e) {
         const service = globalThis.__nimbusRuntimeCode;
         if (!__nimbusIsCodegenRefusal(e) || !service) throw e;
+        const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
-        return service.compileFunction(kind, args.slice(0, -1).map(String), body);
+        try {
+          return service.compileFunction(kind, params, body);
+        } catch (refusal) {
+          const importAt = params.indexOf("__vite_ssr_import__");
+          if (kind !== "async" || importAt < 0 || !refusal || refusal.code !== "ERR_NIMBUS_CODE_NEXT_LAUNCH") throw refusal;
+          // The refusal is already recorded for the next launch. Before
+          // failing, run the module's hoisted imports through the runner's
+          // own import function, so their code is recorded in this launch.
+          const imports = viteHoistedImports(body);
+          return async function (...values) {
+            const load = values[importAt];
+            if (typeof load === "function") {
+              for (const [source, metadata] of imports) {
+                try { await load(source, metadata); } catch {}
+              }
+            }
+            throw refusal;
+          };
+        }
       }
     };
     Object.defineProperty(routed, "name", { value: Native.name });
@@ -7762,6 +7805,11 @@ const __stringDecoderMod = {
 //      unawaited children dies between the last 'data' poll and the
 //      facet's reportExit.
 const __cpChildren = new Map();   // pid → ChildProcess (for exit-time drain)
+// Pids of this process's children that have exited, so process.kill can
+// answer ESRCH for them as Node does (session pids are never reused). Bounded:
+// the oldest are forgotten first, and a forgotten pid is an unknown one.
+const __cpExitedPids = new Set();
+const __CP_EXITED_PIDS_MAX = 1024;
 
 const __childProcessMod = (() => {
   const HAS_SUPERVISOR = !!(__supervisor && typeof __supervisor.cpSpawn === "function");
@@ -8002,7 +8050,13 @@ const __childProcessMod = (() => {
       // Evict from the live-children map after a microtask so any
       // close listeners that re-read child state see consistent values.
       queueMicrotask(() => {
-        try { if (child.pid) __cpChildren.delete(child.pid); } catch {}
+        try {
+          if (child.pid) {
+            __cpChildren.delete(child.pid);
+            __cpExitedPids.add(child.pid);
+            if (__cpExitedPids.size > __CP_EXITED_PIDS_MAX) __cpExitedPids.delete(__cpExitedPids.values().next().value);
+          }
+        } catch {}
       });
     }
   }
@@ -8574,9 +8628,11 @@ function __makeProcessStdin() {
   r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
   r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  // A child_process child names its channel in its env; a resident process
+  // gets it in its start payload (__nimbusLiveInputPid, facets/manager.ts).
   const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
     ? Number(env.NIMBUS_CP_CHILD_PID)
-    : 0;
+    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
   // The polling infrastructure is unref'd, but a program actively consuming
   // live stdin owns a referenced input handle, as in Node. Otherwise an
   // interactive child exits after its prompt, before a keystroke arrives.
@@ -8909,6 +8965,21 @@ const __processMod = {
     if (n === __processMod.pid || n === 0) {
       if (signal === 0) return true; // existence probe, never deliver SIGTERM
       return __nimbusSignalSelf(signal === undefined ? "SIGTERM" : signal);
+    }
+    // This process's own children are signalled through their handle, as
+    // tree-kill and similar helpers expect of process.kill(childPid).
+    const child = __cpChildren.get(n);
+    if (child !== undefined && !child._exitFired) {
+      if (signal === 0) return true;
+      child.kill(signal === undefined ? "SIGTERM" : signal);
+      return true;
+    }
+    if (child !== undefined || __cpExitedPids.has(n)) {
+      const gone = new Error("kill ESRCH");
+      gone.code = "ESRCH";
+      gone.errno = -3;
+      gone.syscall = "kill";
+      throw gone;
     }
     // Node's process.kill throws on failure; returning false falsely told
     // Vinext/Astro lockfile probes that every stale pid was still alive.

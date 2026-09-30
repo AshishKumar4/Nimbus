@@ -49,6 +49,13 @@ export declare const STAGED_BINDINGS: readonly StagedBinding[];
 export declare function stagedBinding(name: string): StagedBinding;
 /** Names of the staged bindings a closure requires, in table order. */
 export declare function stagedBindingsRequiredBy(cells: Iterable<readonly [string, unknown]>): string[];
+/**
+ * The colo-cache key of one staged file: its path and its own digest. A
+ * binding rebuilt at the same version keeps its path, and a key shared with
+ * the old bytes (the loader's build id was) found them in a warm colo's cache
+ * and refused them as poisoned.
+ */
+export declare function stagedBindingCacheKey(asset: NapiWasmAsset): string;
 /** Fetch one staged file, verified against its pinned digest. */
 export declare function fetchStagedBindingAsset(env: StagedSourceEnv, asset: NapiWasmAsset): Promise<ArrayBuffer>;
 /**

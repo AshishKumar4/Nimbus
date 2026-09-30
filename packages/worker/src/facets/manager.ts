@@ -56,7 +56,7 @@ import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
-import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, type BridgeRequireFs, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
 import {
@@ -99,8 +99,7 @@ import {
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
-import { RuntimeCodeStore } from './runtime-code-store.js';
-import { ResidencyProfileStore } from './residency-profile-store.js';
+import { LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
@@ -230,6 +229,11 @@ export interface FacetExecResult {
    * when debugging is switched on is not a repair.
    */
   residencyMisses?: string[];
+  /**
+   * Files the run tried to execute that its module map lacked: the next
+   * launch's module map is built with them as roots (launch-learning-store.ts).
+   */
+  moduleMisses?: string[];
   /**
    * Code the run produced and could not compile (a file written then
    * required, a Function-constructor call), as its ledger reported it:
@@ -606,10 +610,14 @@ const ENTRYPOINT_TIMER_TRACKER = `
  */
 const RESIDENCY_MISS_REPORT = `
 const __NIMBUS_RESIDENCY_NAMED_MAX = 20;
-// Everything the next launch of this entry must stage: unanswered reads and
-// modules whose text arrived after boot, too late to compile.
-function __nimbusStagingMisses() {
-  return [...(globalThis.__nimbusVfsResidencyMisses || []), ...(globalThis.__nimbusModuleMisses || [])];
+// What the next launch of this entry must stage, kept apart because they are
+// staged differently: files read synchronously and not answered (data), and
+// modules the program tried to execute that the map lacked (graph roots).
+function __nimbusDataReadMisses() {
+  return [...(globalThis.__nimbusVfsResidencyMisses || [])];
+}
+function __nimbusExecutedModuleMisses() {
+  return [...(globalThis.__nimbusModuleMisses || [])];
 }
 function __nimbusResidencyMissReport() {
   const __missed = globalThis.__nimbusVfsResidencyMisses;
@@ -1007,7 +1015,8 @@ ${RESIDENCY_MISS_REPORT}
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
-      residencyMisses: __nimbusStagingMisses(),
+      residencyMisses: __nimbusDataReadMisses(),
+      moduleMisses: __nimbusExecutedModuleMisses(),
       // Code produced while it ran, for the next launch (commonjs-cell.ts).
       runtimeCode: __nimbusRuntimeCodeLedger(),
       ...(__diag ? { diag: {
@@ -1186,11 +1195,20 @@ let __nimbusAttachedLifecycle = null;
 // dispatch (__nimbusServeHttp), exactly once.
 const __nimbusPlatformSetTimeout = setTimeout;
 
+// A failed report of generated code or misses costs the next launch what this
+// one learned, and nothing else: the program's own writes and responses do not
+// wait on it. The failure is told to the guest's stderr, where the next-launch
+// guidance it would otherwise contradict is printed.
+async function __nimbusReportLearningFailure(supervisor, error) {
+  try {
+    if (supervisor) await supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+  } catch {}
+}
+
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    await __nimbusFlushRuntimeCode(rt.supervisor);
     const __vfsTasks = [];
     if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
       for (const path of Object.keys(rt.vfsWrites)) {
@@ -1218,6 +1236,10 @@ async function __nimbusFlushRuntime() {
       rt.pendingIO.length = 0;
       rt.settledIO = 0;
     }
+    // After the drain, so the program's writes are durable whatever happens
+    // to the report; unacknowledged entries are sent again by the next flush.
+    const [__learning] = await Promise.allSettled([__nimbusFlushRuntimeCode(rt.supervisor)]);
+    if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
     const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
     if (__vfsFailure) throw __vfsFailure.reason;
   });
@@ -1232,6 +1254,8 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const args = __NIMBUS_ARGS;
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
+    // Every resident process has a live input channel on its pid.
+    const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
     // Off the start payload, never out of the module text: this body is
     // content-addressed into the facet image store, and a revision that
     // advances on every spawn would give the same program a new image each
@@ -1241,9 +1265,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     const __supervisor = workerEnv?.SUPERVISOR || null;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
-        // Report failure to the guest's stderr, not only the platform log:
-        // its next-launch guidance would otherwise conceal a failed write.
-        if (__supervisor) await __supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+        await __nimbusReportLearningFailure(__supervisor, error);
         throw error;
       });
       // Code may be produced by a timer after boot has returned, not by an
@@ -1443,7 +1465,7 @@ ${RESIDENCY_MISS_REPORT}
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger());
+      await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -3682,8 +3704,8 @@ export interface PrefetchBundleOptions {
   maxBundleBytes?: number;
   /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
   learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
-  /** Module files the process produced at run time, by path, as graph roots. */
-  runtimeModules?: ReadonlyMap<string, string>;
+  /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
+  executedModules?: readonly RequiredModuleRoot[];
   /** Where the launch's transform results are kept by content. */
   transformStore?: BundleCellResultStore;
 }
@@ -3733,7 +3755,7 @@ async function _buildPrefetchBundle(
     pacer,
     maxBundleBytes = VFS_BUNDLE_MAX_BYTES,
     learnedFor,
-    runtimeModules,
+    executedModules,
     transformStore,
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
@@ -3742,20 +3764,15 @@ async function _buildPrefetchBundle(
   const admitted = await vfs.acquire(null, 0);
   const cursor = { epoch: admitted.epoch, rev: admitted.rev };
 
-  // Learned executable roots belong to the complete required graph. Adding
-  // them later as enrichment let final pruning remove one imported sibling
-  // on every launch, so Nuxt/Vinext never reached a complete executable map.
-  const codeRoots: { path: string; text?: string }[] = [];
-  const dataReads = new Set<string>();
-  for (const path of observedReads ?? []) {
-    if (isCodeCellPath(path) || bundleTypescriptLoader(path) !== null) codeRoots.push({ path });
-    else dataReads.add(path);
-  }
-  // Vite unlinks its temporary config module after loading it. Its staged
-  // factory still imports packages even when no file remains to walk.
-  for (const [path, text] of runtimeModules ?? []) codeRoots.push({ path, text });
+  // Modules earlier runs executed belong to the complete required graph.
+  // Adding them later as enrichment let final pruning remove one imported
+  // sibling on every launch, so Nuxt/Vinext never reached a complete
+  // executable map. A module that arrives with its text (Vite unlinks its
+  // temporary config after loading it) is walked from that text. Files runs
+  // only READ are observed reads below: data, never roots, whatever their
+  // extension (Tailwind scans .js/.ts content files as text).
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer), undefined, codeRoots.length > 0 ? codeRoots : undefined));
+    pacer?.spend.bind(pacer), undefined, executedModules && executedModules.length > 0 ? executedModules : undefined));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -3798,7 +3815,7 @@ async function _buildPrefetchBundle(
   // (read-profile.ts) are evidence of the same kind: a learned module joins
   // the module map with its imports, as this session's own misses do.
   const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
-  const own = await addObservedReads(vfs, dataReads, bundle, observedPaths, budgetState, Math.max(0, room), pacer);
+  const own = await addObservedReads(vfs, observedReads ?? new Set(), bundle, observedPaths, budgetState, Math.max(0, room), pacer);
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
   await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room), pacer);
@@ -4435,24 +4452,19 @@ export class FacetManager {
   private prefetchCacheBytes = 0;
 
   /**
-   * What each entry was observed to read and not have, keyed exactly like the
-   * prefetch cache above so a profile can only ever seed the bundle it was
-   * measured against. Kept in the session's storage: the session is evicted
-   * whenever it sits idle between two commands, and an in-memory profile died
-   * with it, so running the command again after a pause missed the same file
-   * again (Vite's node_modules/ms/index.js on every launch).
+   * What each command's runs learned for its next launch: the modules they
+   * tried to execute and the files they read that the launch lacked, and the
+   * runtime code they produced (launch-learning-store.ts). Kept in the
+   * session's storage: the session is evicted whenever it sits idle between
+   * two commands, and a profile that died with it made the next run miss the
+   * same file again (Vite's node_modules/ms/index.js on every launch).
    */
-  private residencyProfiles: ResidencyProfileStore;
-  /**
-   * Runtime code (commonjs-cell.ts, RUNTIME CODE) each entry's runs reported,
-   * kept in the session's storage so an evicted isolate does not forget it.
-   */
-  private runtimeCode: RuntimeCodeStore;
+  private learning: LaunchLearningStore;
   /**
    * Misses shared across sessions per installed package (read-profile.ts),
    * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
    * tarballs. Unbound, a miss is learned for this session only
-   * (residencyProfiles).
+   * (learning).
    */
   private readProfile: ReadProfile | null = null;
   /** Read-profile changes dropped after losing every write race. */
@@ -4472,14 +4484,14 @@ export class FacetManager {
   prefetchCacheDiag(): {
     revision: number | null;
     entries: Array<{ key: string; revision: number; bytes: number }>;
-    residencyProfiles: Array<{ key: string; paths: string[] }>;
+    launchProfiles: Array<{ key: string; executedModules: string[]; dataReads: string[]; codeKeys: string[] }>;
   } {
     return {
       revision: this.vfs ? this.vfs.revision() : null,
       entries: [...this.prefetchBundleCache].map(([key, entry]) => ({
         key, revision: entry.revision, bytes: entry.bytes,
       })),
-      residencyProfiles: this.residencyProfiles.cached(),
+      launchProfiles: this.learning.cached(),
     };
   }
 
@@ -4494,14 +4506,6 @@ export class FacetManager {
    */
   private ephemeralPids = new Map<number, string>();
   private residentClaims = new Map<number, string>();
-  private static readonly RESIDENCY_PROFILE_MAX_ENTRIES = 16;
-  /**
-   * A program that reads a directory of data files misses once per file, so
-   * the cap has to clear a real working set. Past it the profile stops
-   * growing and the surplus stays loud — a bounded map that admits the first
-   * N is honest; an unbounded one in a Durable Object is a leak.
-   */
-  private static readonly RESIDENCY_PROFILE_MAX_PATHS = 4096;
 
   // NOTE: the opencode artifact sources (entry bundle, chunk pack, TUI worker
   // sources, wasm sidecars) are never materialized on the spawn path — this
@@ -4519,10 +4523,7 @@ export class FacetManager {
     hooks: FacetManagerHooks = {},
   ) {
     this.ctx = ctx;
-    this.runtimeCode = new RuntimeCodeStore(ctx.storage);
-    this.residencyProfiles = new ResidencyProfileStore(
-      ctx.storage, FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES, FacetManager.RESIDENCY_PROFILE_MAX_PATHS,
-    );
+    this.learning = new LaunchLearningStore(ctx.storage);
     this.env = parseFacetManagerEnv(env);
     this.processes = processes;
     this.portRegistry = portRegistry;
@@ -5035,7 +5036,9 @@ export class FacetManager {
    * in _buildProcessBundle, where a learned module brings its imports.
    */
   private async _learnedReads(vfsState: FacetVfsState, _cred: ProcessEntry['cred']): Promise<string[]> {
-    return vfsState.bundleKey ? await this.residencyProfiles.paths(vfsState.bundleKey) : [];
+    if (!vfsState.bundleKey) return [];
+    const learned = await this.learning.forLaunch(vfsState.bundleKey);
+    return [...learned.dataReads, ...learned.executedModules];
   }
 
   /**
@@ -5161,7 +5164,7 @@ export class FacetManager {
     if (evictedStale) setPrefetchCacheBytes(this.prefetchCacheBytes);
 
     // A report still being recorded may drop this entry: let it land first.
-    await this.runtimeCode.settled();
+    await this.learning.settled();
     const cached = this.prefetchBundleCache.get(key);
     if (cached && cached.revision === revision) {
       // Refresh LRU recency.
@@ -5178,17 +5181,15 @@ export class FacetManager {
       offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
       return offered.map((entry) => entry.path);
     };
-    const learnedPaths = new Set(await this.residencyProfiles.paths(key));
-    const runtimeModules = new Map<string, string>();
-    // A file can already be readable data yet absent from the executable
-    // module map. Its miss then lands in runtimeCode, not residencyProfiles.
-    // Treat those known module files as graph roots too; staging only their
-    // own factory made Nuxt/Vinext discover one static dependency per launch.
-    for (const code of (await this.runtimeCode.forLaunch(key)).values()) {
+    const learning = await this.learning.forLaunch(key);
+    // What earlier runs executed roots the required graph; what they read
+    // stays data. A module whose file is readable but was not in the map
+    // arrives as runtime code with its text; its imports are roots too, so a
+    // launch does not discover one static dependency per run (Nuxt/Vinext).
+    const executed: RequiredModuleRoot[] = learning.executedModules.map((path) => ({ path }));
+    for (const code of learning.code.values()) {
       if (code.kind === 'module' && !code.path.startsWith('data:')) {
-        const path = code.path.replace(/^\/+/, '');
-        learnedPaths.add(path);
-        runtimeModules.set(path, code.text);
+        executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
       }
     }
     const vfsState = await buildPrefetchBundle(vfs, {
@@ -5197,10 +5198,10 @@ export class FacetManager {
       entryCode: spec.entryCode,
       esbuild: this.esbuild ?? undefined,
       bundleProfile: profile,
-      observedReads: learnedPaths,
+      observedReads: new Set(learning.dataReads),
       pacer,
       learnedFor,
-      runtimeModules,
+      executedModules: executed,
       transformStore: this._transformStore(),
     });
     if (offered.length > 0) {
@@ -5237,7 +5238,7 @@ export class FacetManager {
         consume: true,
         emits: vfsState.emits,
         lowered: vfsState.lowered,
-        runtimeCode: await this._stagedRuntimeCode(key, pacer),
+        runtimeCode: await this._stagedRuntimeCode(learning, pacer),
       },
     );
     vfsState.cacheHit = false;
@@ -5270,23 +5271,33 @@ export class FacetManager {
    * is bytes.
    */
   /**
-   * File what a process could not read against the bundle that failed it.
+   * File what a run learned against the bundle it ran: code it produced,
+   * modules it tried to execute and files it read that the launch lacked.
    *
    * A miss the supervisor never hears about is a miss the next run repeats,
-   * so this is the whole of the repair: record the path (in the session's
-   * storage, so the next run learns it however long the user waits), then
-   * drop the cached bundle for that key so the next build is a real one and
-   * stages it. The record is queued ahead of any later read of the profile,
-   * so a relaunch that follows at once builds from it. The program that hit
-   * the miss is already gone — nothing here rescues it, and nothing here
-   * needs to, because the facet failed loudly on the way out.
+   * so this is the whole of the repair: record it (in the session's storage,
+   * so the next run learns it however long the user waits), and when that
+   * taught the profile anything, drop the cached bundle for the key so the
+   * next build is a real one and stages it. A report of nothing new keeps
+   * the cache: a miss that cannot be staged would otherwise force a rebuild
+   * on every launch. The record is queued ahead of any later read of the
+   * profile, so a relaunch that follows at once builds from it. A failed
+   * record rejects: its caller says so where the user reads it.
    */
-  private _recordResidencyMisses(key: string | undefined, misses: string[] | undefined): void {
-    if (!key || !misses || misses.length === 0) return;
-    this._dropPrefetchCacheEntry(key);
-    // A failed storage write leaves the profile learned in this isolate; only
-    // its survival past an eviction is lost, and the next run reports again.
-    this.residencyProfiles.record(key, misses).catch(() => undefined);
+  private async _recordLaunchLearning(key: string | undefined, report: LaunchReport): Promise<void> {
+    if (!key) return;
+    const empty = (list: readonly unknown[] | undefined) => !Array.isArray(list) || list.length === 0;
+    if (empty(report.code) && empty(report.executedModules) && empty(report.dataReads)) return;
+    if (await this.learning.record(key, report)) this._dropPrefetchCacheEntry(key);
+  }
+
+  /** Tell a process's log that what its run learned was not kept. */
+  private _learningLost(pid: number, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[facet-manager] launch learning for pid ${pid} not recorded:`, error);
+    try {
+      this.processes.appendOutput(pid, 'stderr', `Nimbus: what this run needed was not recorded for its next launch: ${message}\n`);
+    } catch { /* the pid is gone; the platform log above has it */ }
   }
 
   private _dropPrefetchCacheEntry(key: string): void {
@@ -5298,16 +5309,6 @@ export class FacetManager {
   }
 
   /**
-   * Record the code a run produced and could not compile (commonjs-cell.ts,
-   * RUNTIME CODE) for the next launch of the same entry, and drop the entry's
-   * cached bundle when that learned anything, so the launch is built with it.
-   */
-  private async _recordRuntimeCode(key: string | undefined, reported: unknown[] | undefined): Promise<void> {
-    if (!key || !Array.isArray(reported) || reported.length === 0) return;
-    if (await this.runtimeCode.record(key, reported)) this._dropPrefetchCacheEntry(key);
-  }
-
-  /**
    * The runtime code recorded for an entry, as `{ cjs }` module text by key:
    * a constructor call as the function module (or the SyntaxError the
    * constructor would throw), a file lowered and wrapped as a module cell is.
@@ -5315,9 +5316,9 @@ export class FacetManager {
    * path as a cell: the guest looks a path up first and the key only for a
    * path the map lacks — the same text written under a fresh name.
    */
-  private async _stagedRuntimeCode(key: string, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
+  private async _stagedRuntimeCode(learning: LaunchLearning, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
-    for (const [codeKey, entry] of await this.runtimeCode.forLaunch(key)) {
+    for (const [codeKey, entry] of learning.code) {
       if (entry.kind !== 'module') {
         modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
         continue;
@@ -5433,26 +5434,26 @@ export class FacetManager {
 
   /** Acknowledge generated code only after storage has accepted it. The
    * launch key comes from the process table, never from guest arguments. */
-  async noteProcessRuntimeCode(pid: number, entries: unknown[], missedFiles: string[] = []): Promise<void> {
+  async noteProcessRuntimeCode(pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> {
     const key = this.residentBundleKeys.get(pid);
     if (!key || this.processes.get(pid)?.state !== 'running') throw new Error('Runtime code report has no live launch');
-    await this._recordRuntimeCode(key, entries);
-    if (missedFiles.length > 0) {
-      this._dropPrefetchCacheEntry(key);
-      await this.residencyProfiles.record(key, missedFiles);
-    }
+    await this._recordLaunchLearning(key, { code: entries, executedModules, dataReads });
   }
 
   noteProcessReportedExit(
     pid: number,
     exitCode: number,
-    residencyMisses?: string[],
+    dataReads?: string[],
     evidence?: { served: ReadonlySet<string>; profileUnread: readonly string[] | null },
     runtimeCode?: unknown[],
+    executedModules?: string[],
   ): void {
     // Filed before the exit marks the table: the terminal hook forgets the key.
-    this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
-    this.ctx.waitUntil(this._recordRuntimeCode(this.residentBundleKeys.get(pid), runtimeCode));
+    this.ctx.waitUntil(
+      this._recordLaunchLearning(this.residentBundleKeys.get(pid), { code: runtimeCode, executedModules, dataReads })
+        .catch((error) => this._learningLost(pid, error)),
+    );
+    const residencyMisses = [...(dataReads ?? []), ...(executedModules ?? [])];
     const exiting = this.processes.get(pid);
     const offer = this.residentProfileOffers.get(pid);
     this.residentProfileOffers.delete(pid);
@@ -5642,8 +5643,9 @@ export class FacetManager {
       // a listing of the namespace, and a one-shot takes no listing of its own
       // (§2.8: the principal's image is where that comes from).
       const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, pacer, diagSink);
-      this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
-      await this._recordRuntimeCode(vfsState.bundleKey, result.runtimeCode);
+      await this._recordLaunchLearning(vfsState.bundleKey, {
+        code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
+      }).catch((error) => this._learningLost(entry.pid, error));
       this.processes.exit(entry.pid, result.exitCode);
       if (result.exitCode !== 0) {
         this._w5RecordTermination(
@@ -6724,10 +6726,13 @@ export class FacetManager {
     // application was given follows the reservation, not the recipe.
     const spawnEnv = launchEnv === undefined ? opts.env : { ...(opts.env || {}), ...launchEnv };
     // Every long-running process has an input channel on its pid, and its
-    // stdin reads that channel (NIMBUS_CP_CHILD_PID) once the program
-    // consumes stdin. A backgrounded server started from the terminal sees
-    // its stdin stay open, as a job's terminal stdin does, instead of an
-    // immediate EOF; only an attached one is a TTY.
+    // stdin reads that channel once the program consumes stdin. A
+    // backgrounded server started from the terminal sees its stdin stay open,
+    // as a job's terminal stdin does, instead of an immediate EOF; only an
+    // attached one is a TTY. The pid travels in the start payload (startArgs),
+    // not the env: the env is part of the generated worker, which is
+    // content-addressed into the image store, so a pid there gave every
+    // restart of the same server a new image.
     const processEnv = opts.attachedTty
       ? {
           ...(spawnEnv || {}),
@@ -6739,7 +6744,7 @@ export class FacetManager {
           LINES: opts.env?.LINES || '24',
           FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
         }
-      : { ...(spawnEnv || {}), NIMBUS_CP_CHILD_PID: String(entry.pid) };
+      : spawnEnv;
     // Answered by _buildProcessBundle while the raw cells were still in hand.
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
     const [sqliteModules, sources] = await Promise.all([
@@ -6818,7 +6823,7 @@ export class FacetManager {
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
         startArgs: {
-          vfsCursor, dataPlan,
+          pid: entry.pid, vfsCursor, dataPlan,
           ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
           ...(this.debugEnabled ? { diag: true } : {}),
         },

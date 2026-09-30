@@ -53,7 +53,7 @@ import {
   type NpmLogEmitter,
 } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import {
-  applySwaps, findRejects, lookupSwap, lookupReject,
+  applySwaps, findRejects, lookupSwap, lookupReject, swapCoversVersion,
   isOptionalNativeBinding,
   lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY,
   formatSwapNotice,
@@ -1735,7 +1735,8 @@ export class NpmInstaller {
       // Policy follows the registry identity (`name`), placement the folder the lock
       // names: an aliased entry (`node_modules/build`, name `esbuild`) resolves as
       // the alias `build@npm:esbuild@<locked>`, so the swap target lands in build.
-      if (lookupSwap(name)) {
+      const swap = lookupSwap(name);
+      if (swap && swapCoversVersion(swap, version)) {
         swapPlacements.push({ placement, folderName, spec: folderName === name ? version : `npm:${name}@${version}` });
         continue;
       }

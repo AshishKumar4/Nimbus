@@ -69,6 +69,8 @@ export declare function policyApplyStagedArtifact(pkg: {
     libc?: string[];
 }, entry: PackageStagedArtifactEntry, binPrefix: string): void;
 export declare function lookupSwap(name: string): PackageSwapEntry | undefined;
+/** Whether `swap` stands in for exactly `version` of its package (a lockfile pin). */
+export declare function swapCoversVersion(swap: PackageSwapEntry, version: string): boolean;
 export declare function lookupReject(name: string): PackageRejectEntry | undefined;
 export declare function lookupStagedArtifact(name: string): PackageStagedArtifactEntry | undefined;
 /** Apply the staged-artifact bin/optionalDeps rewrite in supervisor scope. */

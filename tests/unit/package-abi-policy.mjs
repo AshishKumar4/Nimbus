@@ -107,18 +107,21 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
   assert.equal(again.swaps.length, 0);
 }
 
-// Every swap entry takes the alias form; every key the caller declared
-// survives. A sibling spec naming the swap TARGET directly is a distinct
-// key and must not be overwritten by the swap (the old key rename did).
+// Every ungated swap entry takes the alias form; a swap with `since` is left
+// to the resolver, which reads the target's versions (npm-swap-alias-resolve).
+// Every key the caller declared survives. A sibling spec naming the swap
+// TARGET directly is a distinct key and must not be overwritten by the swap
+// (the old key rename did).
 {
   const declared = {};
   for (const swap of PACKAGE_ABI_POLICY.swaps) declared[swap.from] = '^1.0.0';
   for (const swap of PACKAGE_ABI_POLICY.swaps) declared[swap.to] = '^2.0.0';
   const { specs, swaps } = applySwaps(declared);
-  assert.equal(swaps.length, PACKAGE_ABI_POLICY.swaps.length);
+  const ungated = PACKAGE_ABI_POLICY.swaps.filter((swap) => !swap.since);
+  assert.equal(swaps.length, ungated.length);
   assert.deepEqual(Object.keys(specs).sort(), Object.keys(declared).sort(), 'no declared key is lost');
   for (const swap of PACKAGE_ABI_POLICY.swaps) {
-    assert.equal(specs[swap.from], `npm:${swap.to}@^1.0.0`, `${swap.from} aliases its target`);
+    assert.equal(specs[swap.from], swap.since ? '^1.0.0' : `npm:${swap.to}@^1.0.0`, `${swap.from} aliases its target unless gated`);
     assert.equal(specs[swap.to], '^2.0.0', `${swap.to} keeps its own spec`);
   }
 }
