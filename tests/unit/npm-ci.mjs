@@ -180,6 +180,30 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.equal(versionAt(root, 'vite/node_modules/esbuild'), '0.19.12', 'the nested swap stays where the lock put it');
 }
 
+// ── a lock's rollup 3 is installed as locked: only rollup 4 is swapped ────────
+// @rollup/wasm-node publishes 4.x only; swapping a pinned 3.29.4 resolved it
+// to the target's latest 4.x. Vite 4's lock installs exactly as before.
+{
+  const pkgJson = { name: 'fixture', version: '1.0.0', dependencies: { rollup: '^3.27.1' } };
+  const lock = {
+    name: 'fixture',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0', dependencies: { rollup: '^3.27.1' } },
+      'node_modules/rollup': { version: '3.29.4', resolved: tgz('rollup', '3.29.4'), integrity: 'sha512-r3' },
+    },
+  };
+  const specs = [];
+  const { installer, root, log } = makeInstaller(pkgJson, lock, (name, spec) => {
+    specs.push({ name, range: spec.range });
+    throw new Error(`a locked rollup 3 is not resolved again (${name}@${spec.range})`);
+  });
+  const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(result.failed, [], log.join('\n'));
+  assert.deepEqual(specs, [], 'installed from the lock entry, not swapped and re-resolved');
+  assert.equal(versionAt(root, 'rollup'), '3.29.4');
+}
+
 // ── the command: needs a lock, then hands the clean install to the host ──────
 {
   const harness = createSqliteVfsTestHarness();

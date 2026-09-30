@@ -44,6 +44,7 @@ import {
   type PackageSwapEntry,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
+import { compareSemver, parseSemver } from '../npm/semver.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // The policy
@@ -79,8 +80,11 @@ const SWAPS: ReadonlyArray<PackageSwapEntry> = [
     // platform shard (@rollup/rollup-<platform>). @rollup/wasm-node is the
     // same package built on one wasm-bindgen module (no WASI, no threads),
     // with rollup's exports and bin, released version for version.
+    // Only rollup 4 has native shards; 2 and 3 are plain JavaScript and
+    // @rollup/wasm-node publishes 4.x only (Vite 3/4 keep their rollup 3).
     from: 'rollup',
     to: '@rollup/wasm-node',
+    since: '4.0.0',
     reason:
       'Native rollup loads a platform .node shard; @rollup/wasm-node is the same rollup with its parser as one wasm module.',
     compat: 'drop-in',
@@ -450,6 +454,14 @@ export function lookupSwap(name: string): PackageSwapEntry | undefined {
   return policyLookupSwap(PACKAGE_ABI_POLICY, name);
 }
 
+/** Whether `swap` stands in for exactly `version` of its package (a lockfile pin). */
+export function swapCoversVersion(swap: PackageSwapEntry, version: string): boolean {
+  if (!swap.since) return true;
+  const v = parseSemver(version);
+  const since = parseSemver(swap.since);
+  return v !== null && since !== null && compareSemver(v, since) >= 0;
+}
+
 export function lookupReject(name: string): PackageRejectEntry | undefined {
   return policyLookupReject(PACKAGE_ABI_POLICY, name);
 }
@@ -505,7 +517,10 @@ export function applySwaps(
   const swaps: PackageSwapEntry[] = [];
   for (const [name, range] of Object.entries(specs)) {
     const swap = lookupSwap(name);
-    if (swap && !String(range).startsWith('npm:')) {
+    // A swap with `since` is decided by the resolver, which reads the
+    // target's versions (resolve-one-facet.ts); a range alone cannot say
+    // whether it resolves to a version the swap covers.
+    if (swap && !swap.since && !String(range).startsWith('npm:')) {
       out[name] = swapAliasRange(swap, range);
       swaps.push(swap);
     } else {
