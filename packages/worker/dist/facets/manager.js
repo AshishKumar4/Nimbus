@@ -41,9 +41,9 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
-import { rewriteProvidedCommonJsModules, transformSlices, } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { bundleTypescriptLoader, entryScriptRequest, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, prepareBundleCell, settleBundleCell, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
-import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { TransformStore } from './transform-store.js';
 import { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, resolvePackageEntry, parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { RuntimeCodeStore } from './runtime-code-store.js';
@@ -3181,33 +3181,19 @@ function _markBundleEsmAsFailed(bundle, emits, reason) {
 }
 /**
  * Transform every cell of the bundle that needs it (needsBundleCellTransform)
- * to CommonJS, in place. A module esbuild rejects becomes a diagnostic shim
- * that throws the reason when required (esbuildDiagnosticShim).
+ * to CommonJS, in place: transformBundleCells, over the bundle's cells, with
+ * the launch's store and pacer. A module esbuild rejects becomes a diagnostic
+ * shim that throws the reason when required (esbuildDiagnosticShim).
  *
  * A JavaScript cell is rewritten in place. A TypeScript source keeps its
  * bytes — they are what a program reads, tsc compiling its own project — and
  * its emit goes to `emits`, to become the path's module cell.
  *
- * Results are kept by content in the esbuild service's store
- * (EsbuildService.results) when it has one, so a launch after a reset, an
- * eviction or a re-drive reads back what an earlier launch transformed rather
- * than spending the esbuild facet's CPU on it again.
- *
- * The cells go one transform slice at a time (transformSlices): the store is
- * asked for the slice, the session's own steps run on its misses — accounted
- * to the pacer first, since they are computation in this isolate — the host
- * transforms what remains in one call, and the slice is spent before the next.
- * A launch's transforms then take as many turns as they need instead of one
- * turn waiting on all of them: pi's held an alarm turn for 22-43 s and
- * front-door requests for up to 13 s.
- *
  * Every JavaScript cell lowered from ESM is added to `lowered` (its module's
  * block scope, commonjs-cell.ts THE WRAPPER); a TypeScript source's emit
  * always is.
  */
-async function transformEsmInBundle(bundle, emits, lowered, esbuild, pacer) {
-    const started = Date.now();
-    const stats = { cells: 0, stored: 0, transformed: 0, failed: 0, hostBytes: 0, ms: 0 };
+async function transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, store) {
     // Snapshot the cells first — transforms await; never iterate-and-mutate.
     const cells = [];
     for (const path of Object.keys(bundle)) {
@@ -3216,75 +3202,14 @@ async function transformEsmInBundle(bundle, emits, lowered, esbuild, pacer) {
         if (typeof source === 'string' && needsBundleCellTransform(path, source))
             cells.push({ path, source });
     }
-    stats.cells = cells.length;
-    const store = esbuild.results;
-    const spend = pacer ? (bytes) => pacer.spend(bytes) : undefined;
-    const place = (path, result) => {
+    return transformBundleCells(cells, { host: esbuild, store, pacer }, (path, result) => {
         if (bundleTypescriptLoader(path) !== null)
             emits.set(path, result.code);
         else
             bundle[path] = result.code;
         if (result.lowered)
             lowered.add(path);
-    };
-    const settle = async (cell, key, outcome) => {
-        const result = settleBundleCell(cell, outcome);
-        place(cell.path, result);
-        if (result.failed)
-            stats.failed++;
-        else
-            stats.transformed++;
-        // esbuild's verdict on this source is kept with it; a transient failure
-        // threw above, and a host that could not run the transform has no verdict.
-        if (store && key !== undefined)
-            await store.put(key, result, spend);
-    };
-    for (const slice of transformSlices(cells, (cell) => cell.source.length)) {
-        const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source))) : [];
-        const held = store ? store.getMany(keys) : new Map();
-        const pending = [];
-        for (const [i, { path, source }] of slice.entries()) {
-            const key = keys[i];
-            const kept = key === undefined ? undefined : held.get(key);
-            if (kept) {
-                place(path, kept);
-                stats.stored++;
-                // Reading it back is this isolate's work too, if far less.
-                if (pacer)
-                    await pacer.spend(kept.code.length);
-                continue;
-            }
-            if (pacer)
-                await pacer.spend(source.length);
-            const cell = prepareBundleCell(path, source);
-            if ('outcome' in cell)
-                await settle(cell, key, cell.outcome);
-            else
-                pending.push({ cell, key });
-        }
-        if (pending.length === 0)
-            continue;
-        let outcomes;
-        try {
-            outcomes = await esbuild.transformMany(pending.map(({ cell }) => cell.request));
-        }
-        catch (e) {
-            // Publishing a whole-bundle diagnostic would poison the next launch
-            // even when the per-cell store correctly rejected it.
-            throw new Error(`esbuild transform service unavailable: ${errorText(e)}`, { cause: e });
-        }
-        let bytes = 0;
-        for (const [i, { cell, key }] of pending.entries()) {
-            bytes += cell.request.code.length;
-            await settle(cell, key, outcomes[i]);
-        }
-        stats.hostBytes += bytes;
-        // The host's work on this slice belongs to the turn that waited for it.
-        if (pacer)
-            await pacer.spend(bytes);
-    }
-    stats.ms = Date.now() - started;
-    return stats;
+    });
 }
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
@@ -3302,7 +3227,7 @@ async function transformEsmInBundle(bundle, emits, lowered, esbuild, pacer) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes, learnedFor, runtimeModules) {
+export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes, learnedFor, runtimeModules, transformStore) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
     // resetting the DO three times. Take the budget the enrichment passes are
@@ -3312,14 +3237,14 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, maxBundleBytes, learnedFor, runtimeModules);
+        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, maxBundleBytes, learnedFor, runtimeModules, transformStore);
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, runtimeModules) {
+async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, runtimeModules, transformStore) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3473,7 +3398,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         // Transient failures propagate through the launch failure path before
         // serialization/cache/LOADER publication. Per-source verdicts still use
         // the lazy diagnostic cells installed by transformEsmInBundle.
-        transforms = await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer);
+        transforms = await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, transformStore);
     }
     else {
         // No esbuild service was given: the ESM cells stage as diagnostics that
@@ -4051,7 +3976,7 @@ export class FacetManager {
      * to the process's ESM loader, with the entry's own URL as the parent (Node
      * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
      * in the esbuild facet like every cell's, and its result is kept by content
-     * in the esbuild service's store. The module-map walk reads the script as
+     * in the session's transform store. The module-map walk reads the script as
      * written, before this.
      */
     async _entryDynamicImports(code, filename, cwd) {
@@ -4064,22 +3989,21 @@ export class FacetManager {
             ? `${base}/[eval]`
             : filename === '[stdin]' ? `${base}/[stdin]` : filename;
         const parentUrl = 'file:///' + path.replace(/^\/+/, '');
-        const store = this.esbuild.results;
-        const key = store ? await store.key('entry', parentUrl, code) : undefined;
-        const kept = store && key !== undefined ? store.getMany([key]).get(key) : undefined;
-        if (kept)
-            return kept.code;
-        const [outcome] = await this.esbuild.transformMany([entryScriptRequest(code, parentUrl)]);
-        // A failed entry rewrite must not reach a Worker Loader as native host
-        // import(), or become an immutable cached image. Preserve the reported
-        // reason for permanent source errors as well as transient failures.
-        if (outcome === undefined)
-            throw new Error('entry transform service returned no outcome');
-        if ('error' in outcome)
-            throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
-        if (store && key !== undefined)
-            await store.put(key, { code: outcome.code, lowered: false, failed: false });
-        return outcome.code;
+        return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore() });
+    }
+    /**
+     * The store this session's launches keep their transform results in: the
+     * session's database, admitted through its storage ledger, bound to the
+     * esbuild service's transform host. None when the host has no identity (a
+     * result could not be told apart from another host's) or there is no
+     * filesystem to admit against.
+     */
+    _transformStore() {
+        const hostId = this.esbuild?.transformHostId;
+        const sql = this.ctx.storage.sql;
+        if (!hostId || !sql || !this.vfs)
+            return undefined;
+        return new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
     }
     /**
      * The pacer every launch is built under: the session's alarm-driven turn
@@ -4511,7 +4435,7 @@ export class FacetManager {
                 runtimeModules.set(path, code.text);
             }
         }
-        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, learnedPaths, pacer, undefined, learnedFor, runtimeModules);
+        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, learnedPaths, pacer, undefined, learnedFor, runtimeModules, this._transformStore());
         if (offered.length > 0) {
             const staged = [];
             const unresolved = [];
@@ -4645,7 +4569,7 @@ export class FacetManager {
             const emits = new Map();
             const lowered = new Set();
             if (this.esbuild)
-                await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer);
+                await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer, this._transformStore());
             else
                 _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
             let code = emits.get(path) ?? file[path];

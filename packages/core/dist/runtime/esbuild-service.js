@@ -1296,8 +1296,8 @@ export class EsbuildService {
     vfs;
     transformHost;
     buildHost;
-    /** See EsbuildServiceOptions.results. */
-    results;
+    /** See EsbuildServiceOptions.transformHostId. */
+    transformHostId;
     initialized = false;
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
@@ -1307,7 +1307,7 @@ export class EsbuildService {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
-        this.results = options.results ?? null;
+        this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
     /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
     get transformsInIsolate() {

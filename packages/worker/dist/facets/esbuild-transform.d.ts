@@ -36,11 +36,10 @@ export declare function esbuildBuildHost(ctx: DurableObjectState, env: unknown):
 export declare function runEsbuildCli(ctx: DurableObjectState, env: unknown, pid: number, args: EsbuildCliArgs, output: EsbuildCliOutput): Promise<number>;
 /**
  * The esbuild a Durable Object's supervisor shares: its transforms and its
- * builds run in its esbuild facet, and build() reads `vfs` from here. Its
- * launch transform results are kept in the object's own SQLite, bound to the
+ * builds run in its esbuild facet, and build() reads `vfs` from here. The
  * facet's code (ESBUILD_FACET_WORKER_ID: the esbuild version, the facet body
- * and the staged CLI runner), so a re-driven or repeated launch reads them
- * back instead of transforming again.
+ * and the staged CLI runner) is the host's identity, which the launch's
+ * transform store keys its results by.
  */
 export declare function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService;
 //# sourceMappingURL=esbuild-transform.d.ts.map
