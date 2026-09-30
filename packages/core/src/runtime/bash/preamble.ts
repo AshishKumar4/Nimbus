@@ -1358,10 +1358,13 @@ function publishExit(s: BashSession, pid: number, ppid: number, st: number): voi
 }
 
 
+// A task wakes the scheduler once, when it settles. The scheduler must not
+// race the pending set on every wake: a task parked for a whole command (a
+// child waiting on input) would collect a reaction per wake until it settles.
 function queueSessionTask(s: BashSession, task: Promise<void>): void {
   const pending = task.catch(error => { s.error = error instanceof Error ? error.message : String(error); });
   s.pending.add(pending);
-  void pending.then(() => s.pending.delete(pending));
+  void pending.then(() => { s.pending.delete(pending); wakeScheduler(s); });
 }
 
 async function pump(s: BashSession): Promise<BashSlice> {
@@ -1372,7 +1375,7 @@ async function pump(s: BashSession): Promise<BashSlice> {
         // A deferred child starts only once every pending fork and exec has
         // settled, so the stages it reads from exist and have run what they can.
         if (s.pending.size) {
-          await Promise.race([...s.pending, new Promise<void>((resolve) => { s.wake = resolve; })]);
+          await new Promise<void>((resolve) => { s.wake = resolve; });
           s.wake = null;
           continue;
         }
