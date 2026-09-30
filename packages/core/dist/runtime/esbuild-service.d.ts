@@ -142,17 +142,6 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
-/**
- * The Acorn-based lowerings of an ES module to a CommonJS cell, passed into
- * the functions below because they are serialized into the esbuild facet:
- * async-module-lowering.ts's `lowerAsyncModule` for top-level await, and
- * esm-interop.ts's `nodeInterop`, which gives esbuild's CommonJS output Node's
- * ES module / CommonJS interop.
- */
-export interface EsmLowering {
-    asyncModule(esm: string): string;
-    nodeInterop(cjs: string): string;
-}
 /** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
 export declare function generateEsbuildFacetRuntimeSource(): string;
 /** One transform a {@link EsbuildTransformHost} runs. */

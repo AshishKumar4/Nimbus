@@ -6183,62 +6183,6 @@ const ${binding} = arguments[2];
     return parts.join("");
   }
 
-  var ESM_NAMESPACE_KEY = "nimbus.esm.namespace";
-  var MARK = `Symbol.for(${JSON.stringify(ESM_NAMESPACE_KEY)})`;
-  function isEsmNamespaceSource(value) {
-    return `(${value} != null && typeof ${value}[${MARK}] === "object")`;
-  }
-  function markEsmNamespaceSource(target, exportsDefault) {
-    return `Object.defineProperty(${target}, ${MARK}, { value: ${target} });` + (exportsDefault ? ` Object.defineProperty(${target}, "__esModule", { value: true, configurable: true });` : "");
-  }
-  var cjsNamesSource = (m) => `Object.keys(${m}).concat(Object.prototype.hasOwnProperty.call(${m}, "__esModule") && !Object.prototype.propertyIsEnumerable.call(${m}, "__esModule") ? ["__esModule"] : [])`;
-  function namespaceHelperSource(name) {
-    return `const ${name} = (m) => { if (${isEsmNamespaceSource("m")}) return m[${MARK}]; const ns = { default: m }; if (m && typeof m === "object" || typeof m === "function") for (const k of ${cjsNamesSource("m")}) if (k !== "default") Object.defineProperty(ns, k, { get: () => m[k], enumerable: true }); return ns; };`;
-  }
-  var TO_ESM = `(mod, isNodeMode, target) => { if (${isEsmNamespaceSource("mod")}) return mod[${MARK}]; target = mod != null ? Object.create(Object.getPrototypeOf(mod)) : {}; Object.defineProperty(target, "default", { value: mod, enumerable: true }); if (mod && typeof mod === "object" || typeof mod === "function") for (const key of ${cjsNamesSource("mod")}) if (!Object.prototype.hasOwnProperty.call(target, key)) Object.defineProperty(target, key, { get: () => mod[key], enumerable: true }); return target; }`;
-  var TO_COMMON_JS = `(mod, target) => { const names = Object.getOwnPropertyNames(mod); const view = (object) => { for (const key of names) Object.defineProperty(object, key, { get: () => mod[key], enumerable: true }); return object; }; const ns = view({}); Object.defineProperty(ns, ${MARK}, { value: ns }); if (!names.includes("default")) return ns; target = view(Object.defineProperty({}, ${MARK}, { value: ns })); Object.defineProperty(target, "__esModule", { value: true, enumerable: true }); return target; }`;
-  var HELPER = /^(__toESM|__toCommonJS)\d*$/;
-  var REPLACEMENTS = { __toESM: TO_ESM, __toCommonJS: TO_COMMON_JS };
-  function nodeInterop(cjs) {
-    if (!cjs.includes("__toESM") && !cjs.includes("__toCommonJS")) return cjs;
-    const edits = [];
-    try {
-      const parser = Reflect.construct(Parser, [
-        { ecmaVersion: "latest", sourceType: "script", allowHashBang: true, allowReturnOutsideFunction: true },
-        cjs
-      ]);
-      Reflect.apply(Reflect.get(parser, "nextToken"), parser, []);
-      const parseStatement = Reflect.get(parser, "parseStatement");
-      while (Reflect.get(parser, "type") !== types$1.eof && edits.length < 2) {
-        const statement = Reflect.apply(parseStatement, parser, [null, true,   Object.create(null)]);
-        if (statement.type === "ExpressionStatement" && Reflect.get(statement, "directive") !== void 0) continue;
-        if (statement.type !== "VariableDeclaration") break;
-        const declarators = Reflect.get(statement, "declarations");
-        let helpers = false;
-        for (const declarator of declarators) {
-          const id = Reflect.get(declarator, "id");
-          const name = id.type === "Identifier" ? String(Reflect.get(id, "name")) : "";
-          if (!name.startsWith("__")) continue;
-          helpers = true;
-          const init = Reflect.get(declarator, "init");
-          const helper = HELPER.exec(name);
-          if (init && helper) edits.push({ start: init.start, end: init.end, text: REPLACEMENTS[helper[1]] });
-        }
-        if (!helpers) break;
-      }
-    } catch {
-      return cjs;
-    }
-    if (edits.length === 0) return cjs;
-    let out = "";
-    let at2 = 0;
-    for (const edit of edits.sort((a, b) => a.start - b.start)) {
-      out += cjs.slice(at2, edit.start) + edit.text;
-      at2 = edit.end;
-    }
-    return out + cjs.slice(at2);
-  }
-
   function lowerAsyncModule(esm) {
     const program = Parser.parse(esm, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
     let prefix = "__nimbus_m";
@@ -6247,9 +6191,13 @@ const ${binding} = arguments[2];
     const temp = () => `${prefix}${temps++}`;
     const key = (name) => `[${JSON.stringify(name)}]`;
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
-    const namespace = `${prefix}ns`;
-    const imported = (node) => `${namespace}(require(${JSON.stringify(String(node.value))}))`;
-    let exportsDefault = false;
+    const sourceOf = (node) => JSON.stringify(String(node.value));
+    let marked = false;
+    const esModule = () => {
+      if (marked) return "";
+      marked = true;
+      return "module.exports.__esModule = true; ";
+    };
     const requires = [];
     const edits = [];
     if (esm.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
@@ -6258,16 +6206,17 @@ const ${binding} = arguments[2];
         case "ImportDeclaration": {
           edits.push({ start: node.start, end: node.end, text: "" });
           if (node.specifiers.length === 0) {
-            requires.push(`require(${JSON.stringify(String(node.source.value))});`);
+            requires.push(`require(${sourceOf(node.source)});`);
             break;
           }
           const mod = temp();
-          const bindings = [`const ${mod} = ${imported(node.source)};`];
+          const bindings = [`const ${mod} = require(${sourceOf(node.source)});`];
           for (const specifier of node.specifiers) {
             const local = specifier.local.name;
             if (specifier.type === "ImportNamespaceSpecifier") bindings.push(`const ${local} = ${mod};`);
-            else if (specifier.type === "ImportDefaultSpecifier") bindings.push(`const ${local} = ${mod}.default;`);
-            else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
+            else if (specifier.type === "ImportDefaultSpecifier") {
+              bindings.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+            } else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
           }
           requires.push(bindings.join(" "));
           break;
@@ -6279,42 +6228,41 @@ const ${binding} = arguments[2];
             edits.push({
               start: node.end,
               end: node.end,
-              text: "\n" + names.map((name) => `module.exports${key(name)} = ${name};`).join(" ")
+              text: "\n" + esModule() + names.map((name) => `module.exports${key(name)} = ${name};`).join(" ")
+            });
+          } else if (node.source) {
+            const mod = temp();
+            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
+            edits.push({
+              start: node.start,
+              end: node.end,
+              text: `${esModule()}{ const ${mod} = require(${sourceOf(node.source)}); ${assigns.join(" ")} }`
             });
           } else {
-            exportsDefault ||= node.specifiers.some((s) => nameOf(s.exported) === "default");
-            if (node.source) {
-              const mod = temp();
-              const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
-              edits.push({ start: node.start, end: node.end, text: `{ const ${mod} = ${imported(node.source)}; ${assigns.join(" ")} }` });
-            } else {
-              const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
-              edits.push({ start: node.start, end: node.end, text: assigns.join(" ") });
-            }
+            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
+            edits.push({ start: node.start, end: node.end, text: esModule() + assigns.join(" ") });
           }
           break;
         }
         case "ExportDefaultDeclaration": {
-          exportsDefault = true;
           const declaration = node.declaration;
           if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
             edits.push({ start: node.start, end: declaration.start, text: "" });
             edits.push({ start: node.end, end: node.end, text: `
-module.exports.default = ${declaration.id.name};` });
+${esModule()}module.exports.default = ${declaration.id.name};` });
           } else {
             edits.push({
               start: node.start,
               end: node.end,
-              text: `module.exports.default = (${esm.slice(declaration.start, declaration.end)});`
+              text: `${esModule()}module.exports.default = (${esm.slice(declaration.start, declaration.end)});`
             });
           }
           break;
         }
         case "ExportAllDeclaration": {
           const mod = temp();
-          if (node.exported) exportsDefault ||= nameOf(node.exported) === "default";
-          const text = node.exported ? `module.exports${key(nameOf(node.exported))} = ${imported(node.source)};` : `{ const ${mod} = ${imported(node.source)}; for (const k in ${mod}) if (k !== "default") module.exports[k] = ${mod}[k]; }`;
-          edits.push({ start: node.start, end: node.end, text });
+          const text = node.exported ? `module.exports${key(nameOf(node.exported))} = require(${sourceOf(node.source)});` : `{ const ${mod} = require(${sourceOf(node.source)}); for (const k in ${mod}) if (k !== "default" && k !== "__esModule") module.exports[k] = ${mod}[k]; }`;
+          edits.push({ start: node.start, end: node.end, text: esModule() + text });
           break;
         }
         default:
@@ -6328,8 +6276,7 @@ module.exports.default = ${declaration.id.name};` });
       at2 = end;
     }
     parts.push(esm.slice(at2));
-    const prologue = [markEsmNamespaceSource("module.exports", exportsDefault), namespaceHelperSource(namespace)];
-    return `${[...prologue, ...requires].join("\n")}
+    return `${requires.join("\n")}
 return (async () => {
 ${parts.join("")}
 })();
@@ -6743,5 +6690,5 @@ ${parts.join("")}
     return exitCode;
   };
   globalThis.__nimbusRewriteDynamicImports = rewriteDynamicImports;
-  globalThis.__nimbusEsmLowering = { asyncModule: lowerAsyncModule, nodeInterop };
+  globalThis.__nimbusLowerAsyncModule = lowerAsyncModule;
 })();
