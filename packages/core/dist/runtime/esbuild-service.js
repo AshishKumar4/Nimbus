@@ -1257,11 +1257,47 @@ function withProvidedModuleRewrite(code, options) {
         ? rewriteProvidedCommonJsModules(code)
         : code;
 }
+/**
+ * Source bytes and files one transform host call carries. Bounds CPU work as
+ * well as source retention per invocation: in live pi launch profiles the
+ * 1 MiB/256-file slice beginning at export-html/index.js exceeded the guest
+ * CPU budget even though its first 4 MiB rewrite-only chunk had completed.
+ * Smaller independent calls preserve every input and result, while preventing
+ * many small full transforms sharing one budget. It is also the unit a paced
+ * launch spends its turns in, so no one turn waits on more than a slice.
+ */
+export const TRANSFORM_SLICE_SOURCE_BYTES = 256 * 1024;
+export const TRANSFORM_SLICE_FILES = 32;
+/**
+ * `items` in order, cut into transform slices: each at most
+ * TRANSFORM_SLICE_FILES items and TRANSFORM_SLICE_SOURCE_BYTES of source,
+ * except that an item larger than the byte bound travels alone.
+ */
+export function transformSlices(items, sourceBytes) {
+    const slices = [];
+    let slice = [];
+    let bytes = 0;
+    for (const item of items) {
+        const size = sourceBytes(item);
+        if (slice.length > 0 && (bytes + size > TRANSFORM_SLICE_SOURCE_BYTES || slice.length >= TRANSFORM_SLICE_FILES)) {
+            slices.push(slice);
+            slice = [];
+            bytes = 0;
+        }
+        slice.push(item);
+        bytes += size;
+    }
+    if (slice.length > 0)
+        slices.push(slice);
+    return slices;
+}
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
     vfs;
     transformHost;
     buildHost;
+    /** See EsbuildServiceOptions.results. */
+    results;
     initialized = false;
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
@@ -1271,6 +1307,7 @@ export class EsbuildService {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
+        this.results = options.results ?? null;
     }
     /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
     get transformsInIsolate() {

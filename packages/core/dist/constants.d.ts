@@ -34,7 +34,8 @@ export declare const VFS_BUNDLE_MAX_FILES = 4000;
 export declare const VFS_BUNDLE_MAX_BYTES: number;
 export declare const BUNDLE_MAX_ENCODED_BYTES: number;
 export declare const PREFETCH_CACHE_MAX_BYTES: number;
-export declare const ESM_TRANSFORM_CACHE_MAX_BYTES: number;
+export declare const TRANSFORM_STORE_MAX_BYTES: number;
+export declare const TRANSFORM_STORE_MAX_ENTRY_BYTES: number;
 export declare const CWD_SNAPSHOT_MAX_FILE_BYTES: number;
 /**
  * Largest regular file a WASI guest holds resident: a read-only open at or

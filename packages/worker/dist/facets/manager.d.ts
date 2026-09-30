@@ -238,6 +238,8 @@ interface FacetVfsState {
     reachableCount: number;
     /** Diagnostics: was the bundle truncated by the encoded-size cap? */
     truncated: boolean;
+    /** Diagnostics: how the build's transforms were answered. */
+    transforms?: BundleTransformStats;
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -636,44 +638,21 @@ export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<st
     added: number;
     bytes: number;
 }>;
-/**
- * The bundle entries that may need the ESM→CJS transform before they can run
- * as module cells. Every cell a process can require is CommonJS by the time
- * it is wrapped (commonjs-cell.ts): the guest's registry could compile an ES
- * module, but cannot resolve its package imports, give it its own file URL,
- * or import names from the CommonJS it depends on.
- *
- * Extensionless entries are in the set because that is the shape of nearly
- * every npm `bin` script. `.json` is data and `.cjs` is CommonJS by
- * definition; neither needs the transform. Content decides from here:
- * `looksLikeEsm` sniffs module syntax, and parses an extensionless file,
- * which may be data rather than a script.
- */
-export declare function isBundleModuleCandidate(path: string): boolean;
-/**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
- *
- * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
- * JavaScript: compiling a type annotation is a SyntaxError whether or
- * not the file has a single import in it. So these transform on their
- * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
- * the right question for a file that is already valid JS either way, and the
- * wrong one for a file that is never valid JS.
- *
- * A declaration file (`.d.ts`, `.d.mts`, `.d.cts`) is not a source: it has
- * no runtime form, nothing `require()`s one, and esbuild's output for it is
- * empty by definition. It is DATA — read by the program that ships it, which
- * is exactly typescript: `tsc` reads its own `lib/lib.*.d.ts` with
- * `readFileSync`, and every declaration it type-checks against comes from
- * those bytes. Transforming them handed the compiler an 811-byte license
- * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
- * gone. So a declaration file is left exactly as it was staged.
- */
-export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
-/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
-export declare function isTypescriptDeclarationFile(path: string): boolean;
+/** How a build's transforms were answered, for the launch's diagnostics. */
+interface BundleTransformStats {
+    /** Cells the pipeline covered (needsBundleCellTransform). */
+    cells: number;
+    /** Answered from the esbuild service's store, with no transform at all. */
+    stored: number;
+    /** Transformed by this build: lowered, or rewritten for dynamic import(). */
+    transformed: number;
+    /** esbuild's verdict was a rejection; the cell is a diagnostic shim. */
+    failed: number;
+    /** Source sent to the transform host. */
+    hostBytes: number;
+    /** Wall time of the pass, turns it yielded included. */
+    ms: number;
+}
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -1111,8 +1090,9 @@ export declare class FacetManager {
      * The entry script as the facet compiles it: each dynamic `import()` routed
      * to the process's ESM loader, with the entry's own URL as the parent (Node
      * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
-     * in the esbuild facet like every cell's, and is cached by content. The
-     * module-map walk reads the script as written, before this.
+     * in the esbuild facet like every cell's, and its result is kept by content
+     * in the esbuild service's store. The module-map walk reads the script as
+     * written, before this.
      */
     private _entryDynamicImports;
     /**
