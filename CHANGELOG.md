@@ -36,10 +36,6 @@ published independently in the `@nimbus-sh` npm scope.
   `resolveObject` and `Url` are now workerd's own `node:url`; the guest keeps
   its `pathToFileURL` and `fileURLToPath`, which resolve against its cwd.
 
-- Vite preview transforms share one esbuild instance in the session's facet,
-  recycling it once its measured wasm memory exceeds 64 MiB, after its last
-  in-flight caller finishes. Previously every transform call initialized and
-  stopped its own Go/wasm instance. `stop()` cancels the scheduler; memory is
 - Vite preview transforms share one esbuild instance in the session's facet.
   It is recycled once its measured wasm memory exceeds 64 MiB, or once it
   dies (its Go program exits or its wasm traps), after its last in-flight
