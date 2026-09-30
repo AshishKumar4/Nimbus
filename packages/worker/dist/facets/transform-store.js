@@ -239,10 +239,13 @@ export class TransformStore {
             return null;
         const row = { key, lowered: result.lowered ? 1 : 0, bytes: bytes.byteLength, charge };
         if (inline) {
-            return this.refusable(() => {
+            const refused = this.refusable(() => {
                 this.ledger.admit(charge);
                 this.commit(row, bytes, null, 0);
             });
+            if (refused === null && spend)
+                await spend(bytes.byteLength);
+            return refused;
         }
         const writeId = crypto.randomUUID();
         const reservation = `transform:${writeId}`;
