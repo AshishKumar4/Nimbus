@@ -24,10 +24,7 @@ let sideEffects = 0;
 const module = { exports: {}, require: null };
 const moduleRequire = (specifier) => {
   if (specifier === 'node:module') return { createRequire: () => (id) => id === 'local' ? 'local' : null };
-  // An ES module lowered to CommonJS: its exports carry its namespace under
-  // the marker (core/runtime/esm-interop.ts), so its own default is the
-  // default import.
-  if (specifier === './dep.js') { const ns = { default: 'default', value: 'dep' }; return Object.defineProperty(ns, Symbol.for('nimbus.esm.namespace'), { value: ns }); }
+  if (specifier === './dep.js') return { __esModule: true, default: 'default', value: 'dep' };
   if (specifier === './side.js') { sideEffects++; return {}; }
   throw new Error(`unexpected module: ${specifier}`);
 };

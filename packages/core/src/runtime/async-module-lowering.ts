@@ -10,16 +10,10 @@
  * lines when it is long (serve 14's `import {\n resolve as resolvePath, ... }
  * from "node:path"`), so no line or text pattern can stand in for it.
  *
- * Imports and exports follow Node's interop (esm-interop.ts): a module
- * imported from CommonJS has module.exports as its default, one imported
- * from a lowered ES module its own default, and this module's exports carry
- * the ES module marker, plus `__esModule` when it exports a default.
- *
  * Runs in the esbuild facet (installed by esbuild-cli/preamble.ts) and, for
  * in-process transforms, in esbuild-service.ts.
  */
 import { Parser, type ModuleDeclaration, type Pattern, type Statement } from 'acorn';
-import { markEsmNamespaceSource, namespaceHelperSource } from './esm-interop.js';
 
 interface Edit { start: number; end: number; text: string }
 
@@ -33,11 +27,13 @@ export function lowerAsyncModule(esm: string): string {
   // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
   const nameOf = (node: { type: string; name?: string; value?: unknown }) =>
     node.type === 'Identifier' ? String(node.name) : String(node.value);
-  // The namespace an import sees: a lowered ES module's exports as they
-  // are, or CommonJS with module.exports as its default and its names live.
-  const namespace = `${prefix}ns`;
-  const imported = (node: { value?: unknown }) => `${namespace}(require(${JSON.stringify(String(node.value))}))`;
-  let exportsDefault = false;
+  const sourceOf = (node: { value?: unknown }) => JSON.stringify(String(node.value));
+  let marked = false;
+  const esModule = () => {
+    if (marked) return '';
+    marked = true;
+    return 'module.exports.__esModule = true; ';
+  };
 
   const requires: string[] = [];
   const edits: Edit[] = [];
@@ -50,16 +46,17 @@ export function lowerAsyncModule(esm: string): string {
       case 'ImportDeclaration': {
         edits.push({ start: node.start, end: node.end, text: '' });
         if (node.specifiers.length === 0) {
-          requires.push(`require(${JSON.stringify(String(node.source.value))});`);
+          requires.push(`require(${sourceOf(node.source)});`);
           break;
         }
         const mod = temp();
-        const bindings = [`const ${mod} = ${imported(node.source)};`];
+        const bindings = [`const ${mod} = require(${sourceOf(node.source)});`];
         for (const specifier of node.specifiers) {
           const local = specifier.local.name;
           if (specifier.type === 'ImportNamespaceSpecifier') bindings.push(`const ${local} = ${mod};`);
-          else if (specifier.type === 'ImportDefaultSpecifier') bindings.push(`const ${local} = ${mod}.default;`);
-          else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
+          else if (specifier.type === 'ImportDefaultSpecifier') {
+            bindings.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+          } else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
         }
         requires.push(bindings.join(' '));
         break;
@@ -70,42 +67,40 @@ export function lowerAsyncModule(esm: string): string {
           const names = declaredNames(node.declaration);
           edits.push({
             start: node.end, end: node.end,
-            text: '\n' + names.map((name) => `module.exports${key(name)} = ${name};`).join(' '),
+            text: '\n' + esModule() + names.map((name) => `module.exports${key(name)} = ${name};`).join(' '),
+          });
+        } else if (node.source) {
+          const mod = temp();
+          const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
+          edits.push({
+            start: node.start, end: node.end,
+            text: `${esModule()}{ const ${mod} = require(${sourceOf(node.source)}); ${assigns.join(' ')} }`,
           });
         } else {
-          exportsDefault ||= node.specifiers.some((s) => nameOf(s.exported) === 'default');
-          if (node.source) {
-            const mod = temp();
-            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
-            edits.push({ start: node.start, end: node.end, text: `{ const ${mod} = ${imported(node.source)}; ${assigns.join(' ')} }` });
-          } else {
-            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
-            edits.push({ start: node.start, end: node.end, text: assigns.join(' ') });
-          }
+          const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
+          edits.push({ start: node.start, end: node.end, text: esModule() + assigns.join(' ') });
         }
         break;
       }
       case 'ExportDefaultDeclaration': {
-        exportsDefault = true;
         const declaration = node.declaration;
         if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
           edits.push({ start: node.start, end: declaration.start, text: '' });
-          edits.push({ start: node.end, end: node.end, text: `\nmodule.exports.default = ${declaration.id.name};` });
+          edits.push({ start: node.end, end: node.end, text: `\n${esModule()}module.exports.default = ${declaration.id.name};` });
         } else {
           edits.push({
             start: node.start, end: node.end,
-            text: `module.exports.default = (${esm.slice(declaration.start, declaration.end)});`,
+            text: `${esModule()}module.exports.default = (${esm.slice(declaration.start, declaration.end)});`,
           });
         }
         break;
       }
       case 'ExportAllDeclaration': {
         const mod = temp();
-        if (node.exported) exportsDefault ||= nameOf(node.exported) === 'default';
         const text = node.exported
-          ? `module.exports${key(nameOf(node.exported))} = ${imported(node.source)};`
-          : `{ const ${mod} = ${imported(node.source)}; for (const k in ${mod}) if (k !== "default") module.exports[k] = ${mod}[k]; }`;
-        edits.push({ start: node.start, end: node.end, text });
+          ? `module.exports${key(nameOf(node.exported))} = require(${sourceOf(node.source)});`
+          : `{ const ${mod} = require(${sourceOf(node.source)}); for (const k in ${mod}) if (k !== "default" && k !== "__esModule") module.exports[k] = ${mod}[k]; }`;
+        edits.push({ start: node.start, end: node.end, text: esModule() + text });
         break;
       }
       default:
@@ -120,10 +115,7 @@ export function lowerAsyncModule(esm: string): string {
     at = end;
   }
   parts.push(esm.slice(at));
-  // Marked before any require runs, so a module in an import cycle already
-  // sees this one as an ES module.
-  const prologue = [markEsmNamespaceSource('module.exports', exportsDefault), namespaceHelperSource(namespace)];
-  return `${[...prologue, ...requires].join('\n')}\nreturn (async () => {\n${parts.join('')}\n})();\n`;
+  return `${requires.join('\n')}\nreturn (async () => {\n${parts.join('')}\n})();\n`;
 }
 
 /** The bindings an exported declaration introduces. */

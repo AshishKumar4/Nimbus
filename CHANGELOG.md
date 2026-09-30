@@ -5,18 +5,6 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- ES module / CommonJS interop in Node guests is Node's. Every ES module
-  is lowered to a CommonJS cell, and esbuild's lowering used Babel's rule:
-  `import d from` a CommonJS module carrying `__esModule` bound
-  `exports.default`. Node binds `module.exports` (and exposes `__esModule`
-  as a named export); only an ES module's own default is its default
-  import. Lowered ES modules now carry a marker holding their namespace,
-  esbuild's `__toESM`/`__toCommonJS` helpers are replaced with Node's rule
-  (the top-level-await and large-bundle lowerings and the process's
-  `import()` read the same marker), and require(esm) returns the namespace
-  with an enumerable `__esModule` only when it has a default export. A
-  differential test runs one corpus under real node and as a Nimbus guest.
-
 - express 4 apps (`express.static`, `npx serve-static` setups) start from
   their second launch. depd, loaded by express 4's body-parser, builds each
   deprecated wrapper with `new Function` as its module loads, which a

@@ -21,16 +21,14 @@
  * The same staged script carries the two other things the facet runs that
  * esbuild does not: the parse that routes a module's dynamic `import()` to the
  * process's ESM loader (dynamic-import-rewrite.ts), installed as
- * `globalThis.__nimbusRewriteDynamicImports`, and the lowering of an ES
- * module to a CommonJS body — top-level await (async-module-lowering.ts) and
- * Node's interop helpers (esm-interop.ts) — as `globalThis.__nimbusEsmLowering`.
- * They are acorn parses, which is why they run here and not in the session's
- * isolate.
+ * `globalThis.__nimbusRewriteDynamicImports`, and the lowering of a module
+ * with top-level await to a CommonJS body (async-module-lowering.ts), as
+ * `globalThis.__nimbusLowerAsyncModule`. Both are acorn parses of a whole
+ * module, which is why they run here and not in the session's isolate.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
 import { lowerAsyncModule } from '../async-module-lowering.js';
-import { nodeInterop } from '../esm-interop.js';
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsStat } from '../os-contracts.js';
 import type { WasiSupervisorStub } from '../wasi/types.js';
 import type { EsbuildCliArgs, EsbuildCliOutput, GoProgram, GoRuntimeFactory } from './types.js';
@@ -363,4 +361,4 @@ globalThis.__esbuildCliRun = async function __esbuildCliRun(
 };
 
 globalThis.__nimbusRewriteDynamicImports = rewriteDynamicImports;
-globalThis.__nimbusEsmLowering = { asyncModule: lowerAsyncModule, nodeInterop };
+globalThis.__nimbusLowerAsyncModule = lowerAsyncModule;
