@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -13,7 +14,32 @@ import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test
 function makeVfs(db) {
   const harness = createSqliteVfsTestHarness(db);
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  return { harness, vfs: rawVfs.as(CRED_KERNEL) };
+  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
+}
+
+// A reader dates what it holds by the delta's revision for each path and
+// fetches with that as its expectedRevision, which readRange compares with
+// revision(path): every path the delta names must report the revision it is
+// named at, and a namespace answer's stat must say the same.
+function assertDeltaAgrees(rawVfs, vfs, cursor, label) {
+  const answer = vfs.acquire(rawVfs.epoch, cursor, { namespace: true });
+  assert.equal(answer.poison, false, `${label}: poisoned`);
+  for (const entry of answer.paths) {
+    assert.equal(entry.rev, vfs.revision(entry.path), `${label}: the delta names ${entry.path} at a revision it does not report`);
+    if (entry.stat) assert.equal(entry.stat.revision, entry.rev, `${label}: ${entry.path} stat.revision`);
+  }
+  return new Map(answer.paths.map((entry) => [entry.path, entry.rev]));
+}
+
+// The delta from SQLite, for a cursor older than the reopened engine's log,
+// reads the generations the rows and tombstones hold: a file's is its
+// revision too.
+function assertSqlDeltaAgrees(harness, cursor, files, label) {
+  const reopened = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  const fromSql = new Map(reopened.invalidatedSince(reopened.epoch, cursor).paths.map((entry) => [entry.path, entry.rev]));
+  for (const path of files) {
+    assert.equal(fromSql.get(path), reopened.revision(path), `${label}: the delta from SQLite names ${path} at a revision it does not report`);
+  }
 }
 
 function pattern(length, seed = 0) {
@@ -183,24 +209,77 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
 // ── per-path revisions: rename bumps both subtrees including children ──
 {
-  const { vfs } = makeVfs();
+  const { harness, rawVfs, vfs } = makeVfs();
   vfs.mkdir('proj/src', { recursive: true });
   vfs.writeFile('proj/src/index.js', 'x');
   vfs.mkdir('dest', { recursive: true });
 
   const oldRev = vfs.revision('proj');
   const destRev = vfs.revision('dest');
-  const movedRev = vfs.revision('dest/src/index.js');
-  const sourceRev = vfs.revision('proj/src/index.js');
+  const cursor = vfs.revision();
   vfs.rename('proj/src', 'dest/src');
   assert.ok(vfs.revision('proj') > oldRev, 'rename bumps the source subtree');
   assert.ok(vfs.revision('dest') > destRev, 'rename bumps the destination subtree');
-  // A moved child reports the transaction that wrote it at its new path, at
-  // or below the rename's revision; its old path, its tombstone: the rename's.
-  assert.ok(vfs.revision('dest/src/index.js') > movedRev, 'moved children report past what stood at their new path');
-  assert.ok(vfs.revision('dest/src/index.js') <= vfs.revision('dest'));
-  assert.ok(vfs.revision('proj/src/index.js') > sourceRev, 'moved children report past their old path');
-  assert.equal(vfs.revision('proj/src/index.js'), vfs.revision(), 'the old path reports its removal');
+  // A moved child is published at its new path at the revision it reports;
+  // at its old one it is behind the removed directory, which is published.
+  const delta = assertDeltaAgrees(rawVfs, vfs, cursor, 'directory rename');
+  assert.equal(vfs.revision('dest/src/index.js'), delta.get('dest/src/index.js'));
+  assert.ok(delta.has('proj/src'));
+  assertSqlDeltaAgrees(harness, cursor, ['dest/src/index.js'], 'directory rename');
+}
+
+// ── per-path revisions: an atomic write (write a temp file, rename it over) ──
+// Rename commits the destination and retires the source in two transactions
+// and publishes once, at the second: the destination's row holds the first.
+// A reader that dates the file by the delta must be able to fetch it at that.
+{
+  const { harness, rawVfs, vfs } = makeVfs();
+  const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+  vfs.mkdir('home/user', { recursive: true });
+  vfs.writeFile('home/user/app.js', 'v1');
+  const cursor = vfs.revision();
+  vfs.writeFile('home/user/.app.js.tmp', 'v2');
+  vfs.rename('home/user/.app.js.tmp', 'home/user/app.js');
+  const delta = assertDeltaAgrees(rawVfs, vfs, cursor, 'rename over');
+  assert.deepEqual([...delta.keys()].sort(), ['home/user', 'home/user/.app.js.tmp', 'home/user/app.js']);
+  assert.ok(delta.get('home/user/app.js') < vfs.revision(), 'the destination row is the first transaction\'s');
+  const bytes = bridge.readRange('/home/user/app.js', 0, 16, { expectedEpoch: rawVfs.epoch, expectedRevision: delta.get('home/user/app.js') });
+  assert.equal(new TextDecoder().decode(bytes), 'v2');
+  assertSqlDeltaAgrees(harness, cursor, ['home/user/app.js'], 'rename over');
+}
+
+// ── per-path revisions: an embedder transaction of several operations ──
+// Each operation commits its own generation inside the one transaction, and
+// the transaction publishes once, at the last: a path written by an earlier
+// operation holds that earlier one, and is published at it.
+{
+  const { harness, rawVfs, vfs } = makeVfs();
+  vfs.mkdir('tx', { recursive: true });
+  vfs.writeFile('tx/a', 'a0');
+  vfs.writeFile('tx/b', 'b0');
+  vfs.writeFile('tx/g', 'g0');
+  const cursor = vfs.revision();
+  rawVfs.withTransaction(() => {
+    vfs.writeFile('tx/a', 'a1');
+    vfs.mkdir('tx/d');
+    vfs.writeFile('tx/d/c', 'c1');
+    vfs.mkdir('tx/empty');
+    vfs.unlink('tx/b');
+    vfs.writeFile('tx/g', 'g1');
+    vfs.writeFile('tx/e', 'e1');
+    vfs.rename('tx/e', 'tx/f');
+    vfs.writeFile('tx/g', 'g2');
+  });
+  const delta = assertDeltaAgrees(rawVfs, vfs, cursor, 'withTransaction');
+  for (const path of ['tx', 'tx/a', 'tx/b', 'tx/d', 'tx/d/c', 'tx/empty', 'tx/e', 'tx/f', 'tx/g']) {
+    assert.ok(delta.has(path), `withTransaction: ${path} was not published`);
+    assert.ok(delta.get(path) > cursor, `withTransaction: ${path} published at or below the cursor`);
+  }
+  assert.ok(vfs.revision('tx/a') < vfs.revision('tx/g'), 'an earlier operation\'s row is below a later one\'s');
+  assert.equal(vfs.revision('tx/g'), vfs.revision(), 'the last write is the publication\'s');
+  assert.equal(vfs.revision('tx'), vfs.revision(), 'the directory is the publication\'s');
+  assert.equal(vfs.readFileString('tx/f'), 'e1');
+  assertSqlDeltaAgrees(harness, cursor, ['tx/a', 'tx/d/c', 'tx/f', 'tx/g'], 'withTransaction');
 }
 
 // ── per-path revisions: writeBatch advances every touched path, one tick ──

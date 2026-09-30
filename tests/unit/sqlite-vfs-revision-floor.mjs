@@ -138,6 +138,25 @@ function ancestors(path) {
   assert.equal(vfs.revision('gone/d0/f0'), vfs.revision());
 }
 
+// ── A prune inside an embedder transaction keeps what it has not published ──
+// The tombstones the transaction wrote are above the clock until it
+// publishes; pruning them would raise the floor past it and leave their
+// paths reporting below their removal once the clock catches up.
+{
+  const { rawVfs, vfs } = openVfs({ pathRevisionBytes: BUDGET, tombstoneRows: 4 });
+  vfs.mkdir('tx');
+  for (let i = 0; i < 40; i++) vfs.writeFile(`tx/f${i}`, `v${i}`);
+  const clock = vfs.revision();
+  rawVfs.withTransaction(() => {
+    for (let i = 0; i < 40; i++) vfs.unlink(`tx/f${i}`);
+    rawVfs.runContentMaintenance(64);
+    assert.ok(rawVfs.getStats().pathRevisions.floor <= clock, 'a prune raised the floor past the published clock');
+  });
+  for (let i = 0; i < 40; i++) {
+    assert.ok(vfs.revision(`tx/f${i}`) > clock, `tx/f${i} reports at or below the clock before its removal`);
+  }
+}
+
 // ── The default budget is 1 MiB; a negative one is refused ────────────────
 {
   const { rawVfs } = openVfs({});

@@ -16,7 +16,13 @@ published independently in the `@nimbus-sh` npm scope.
   its tombstone's. Writing 100,000 files grows the heap by 0.1 MiB.
   `revision(path)` keeps its contract: never below the last change at or
   under the path, never above the clock, a directory never below anything
-  under it. A pruned tombstone raises the floor, as a dropped stamp does.
+  under it. A pruned tombstone raises the floor, as a dropped stamp does,
+  and only a published one is pruned. An operation of several transactions
+  (a rename, an embedder's `withTransaction`) publishes each path at the
+  generation SQLite holds for it, which is what `revision(path)`, `list()`,
+  `stat` and the delta from SQLite name too: an atomic write (write a temp
+  file, rename it over) no longer leaves a resident reader fetching at a
+  revision the path does not report, which `readRange` refused with ESTALE.
 
 - Removing an import's destination abandons the import, so an interrupted
   import can be started again there. An import whose sender stopped after a

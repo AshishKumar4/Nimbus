@@ -1,7 +1,8 @@
 /-
   Nimbus.Vfs.RevisionFloor — `SqliteVFS` per-path revisions under a byte budget
-  (`packages/core/src/vfs/sqlite-vfs.ts`: `bumpRevision`, `dropOldestPathRevisions`,
-  `dropPathRevisionsThrough`, `pruneTombstones`, `pathRevision`, `revision`).
+  (`packages/core/src/vfs/path-revisions.ts`: `PathRevisions.stamp`,
+  `dropThrough` and `report`; `packages/core/src/vfs/sqlite-vfs.ts`:
+  `bumpRevision`, `pruneTombstones`, `pathRevision`, `revision`).
 
   Only directories hold stamps. A bump stamps every directory strictly above a
   mutated path, and a mutated path only if it holds a stamp already: the
@@ -11,6 +12,13 @@
   path reports its stamp; else, for a live file, `min(row.gen, clock)` (P5,
   6cf3bddd); else `max(floor, min(own, clock))`.
 
+  A bump is one operation, of one transaction or several: it publishes at
+  revision `rev`, past the clock, and each path it names holds the generation
+  of the transaction that last wrote it, `gen p`, in `(clock, rev]`. So a
+  rename (the destination in the first transaction, the source's tombstone in
+  the second) and an embedder's `withTransaction` of several operations are
+  single bumps, and so is a revision that jumps.
+
   A path is its list of components; `[]` is the root, whose revision is the
   global clock. `walk` is the code's walk from the directory of a mutated path
   up, including its early exit at a directory this bump already stamped.
@@ -19,22 +27,22 @@
   and every theorem here holds for any cutoff not above the clock. `forget` is
   what the prune then loses: any generation at or below the floor.
 
-  `last p` is ghost state: the newest bump whose mutated path lies under `p`
-  (or is `p`). A bump writes the rows of the files it names at its revision,
-  every other path it names stops being a file, and every path it names gets
-  its own generation at the revision. A bump never names a path below a file.
+  `last p` is ghost state: the newest mutation at or under `p`, which for a
+  directory above a mutated path is the bump's revision. A bump writes the
+  rows of the files it names, every other path it names stops being a file,
+  and every path it names gets its own generation. A bump never names a path
+  below a file, and names no file above another path it names.
 
   The theorems: a path never reports below `last p` nor above the clock; a
   directory reports at or above everything under it; so every report of a path
   made before a mutation of it is below every report made after
-  (`revision_increases_across_mutation`). In the code a single report may
-  fall (a file holding a directory's old stamp, rewritten by an operation of
-  several transactions, then dropped to its row's generation), so no theorem
-  claims it never does.
-
-  One bump is one operation at revision `clock + 1`. The code's multi-transaction
-  operations (a row's generation below the operation's revision) and jumping
-  revisions are not modeled.
+  (`revision_increases_across_mutation`). And what the invalidation log names
+  a path at, `logRev` (the code's `bumpRevision`), is what the path reports
+  after the bump and the drops it triggers (`log_eq_revision`,
+  `parent_log_eq_revision`): a reader that dates what it holds by the log
+  fetches at the path's revision. In the code a single report may fall (a
+  file holding a directory's old stamp, dropped to its row's generation), so
+  no theorem claims it never does.
 -/
 
 namespace Nimbus.Vfs.RevisionFloor
@@ -99,18 +107,20 @@ def walkAll (rev : Nat) (st : Tbl) : List Path → Tbl
   | [] => st
   | p :: ps => walkAll rev (stampOne rev st p) ps
 
-/-- One mutation of `paths`: the clock advances once and every directory above
-    a path is stamped; the rows of `fs` are written at the new revision, every
-    other named path stops being a file, and every named path's own generation
-    is the new revision. -/
-@[noinline] def bump (s : St) (paths fs : List Path) : St :=
-  let rev := s.clock + 1
+/-- `q` is a directory strictly above a path of `paths`. -/
+def above (paths : List Path) (q : Path) : Bool := paths.any fun p => decide (Under q p.dropLast)
+
+/-- One operation publishing `paths` at `rev`: the clock moves to `rev` and
+    every directory above a path is stamped at it; each path's row (the files
+    `fs`) or own generation is `gen p`, every other named path stops being a
+    file. -/
+@[noinline] def bump (s : St) (paths fs : List Path) (gen : Path → Nat) (rev : Nat) : St :=
   { clock := rev
     stamps := (walkAll rev ⟨s.stamps⟩ paths).get
     floor := s.floor
-    last := fun q => if paths.any (fun p => decide (Under q p)) then rev else s.last q
-    files := fun q => if q ∈ fs then some rev else if q ∈ paths then none else s.files q
-    own := fun q => if q ∈ paths then rev else s.own q }
+    last := fun q => if above paths q then rev else if q ∈ paths then gen q else s.last q
+    files := fun q => if q ∈ fs then some (gen q) else if q ∈ paths then none else s.files q
+    own := fun q => if q ∈ paths then gen q else s.own q }
 
 /-- Drop every stamp at or below `cutoff`; the floor rises to it. Not inlined:
     the fixture generator must evaluate `cutoff` once, not inside every lookup. -/
@@ -126,9 +136,19 @@ def walkAll (rev : Nat) (st : Tbl) : List Path → Tbl
 @[noinline] def forget (s : St) (gone : Path → Bool) : St :=
   { s with own := fun q => if gone q = true ∧ s.own q ≤ s.floor then 0 else s.own q }
 
+/-- What a bump may be: past the clock, each path at a generation in
+    `(clock, rev]`, its files among its paths, no path named below a file, and
+    no file named above another path. -/
+structure BumpOk (s : St) (paths fs : List Path) (gen : Path → Nat) (rev : Nat) : Prop where
+  past : s.clock < rev
+  gens : ∀ p ∈ paths, s.clock < gen p ∧ gen p ≤ rev
+  sub : ∀ f ∈ fs, f ∈ paths
+  nest : ∀ p ∈ paths, ∀ a, Under a p → a ≠ p → s.files a = none
+  leaf : ∀ f ∈ fs, ∀ p ∈ paths, Under f p → f = p
+
 inductive Step : St → St → Prop
-  | bump (s : St) (paths fs : List Path) : (∀ f ∈ fs, f ∈ paths) →
-      (∀ p ∈ paths, ∀ a, Under a p → a ≠ p → s.files a = none) → Step s (bump s paths fs)
+  | bump (s : St) (paths fs : List Path) (gen : Path → Nat) (rev : Nat) :
+      BumpOk s paths fs gen rev → Step s (bump s paths fs gen rev)
   | drop (s : St) (cutoff : Nat) : cutoff ≤ s.clock → Step s (drop s cutoff)
   | forget (s : St) (gone : Path → Bool) : Step s (forget s gone)
 
@@ -361,37 +381,63 @@ theorem walkAll_eq (rev : Nat) :
 
 /-! ## The invariant holds in every reachable state -/
 
-theorem bump_inv {s : St} (hi : Inv s) (paths fs : List Path) (hfs : ∀ f ∈ fs, f ∈ paths)
-    (hnest : ∀ p ∈ paths, ∀ a, Under a p → a ≠ p → s.files a = none) : Inv (bump s paths fs) := by
-  have hc : Closed (s.clock + 1) s.stamps := by
-    intro q hq; have := hi.belowClock q _ hq; omega
-  have hst : (bump s paths fs).stamps = bumped (s.clock + 1) s.stamps paths :=
-    walkAll_eq _ paths ⟨s.stamps⟩ hc
-  -- A directory strictly above a named path is stamped at the new revision.
-  have above : ∀ p ∈ paths, ∀ a, Under a p → a ≠ p → (bump s paths fs).stamps a = some (s.clock + 1) := by
-    intro p hp a ha hne
-    rw [hst]; simp only [bumped]
-    rcases under_cases ha with e | h
+/-- `above` is "strictly above a named path". -/
+theorem above_iff {paths : List Path} {q : Path} :
+    above paths q = true ↔ ∃ p ∈ paths, Under q p ∧ q ≠ p := by
+  unfold above
+  constructor
+  · intro h
+    obtain ⟨p, hp, hu⟩ := List.any_eq_true.mp h
+    have hu := of_decide_eq_true hu
+    exact ⟨p, hp, under_dropLast hu, fun e => by subst e; exact not_under_dropLast _ hu⟩
+  · rintro ⟨p, hp, hu, hne⟩
+    rcases under_cases hu with e | h
     · exact absurd e hne
-    · rw [if_pos (Or.inl (List.any_eq_true.mpr ⟨p, hp, decide_eq_true h⟩))]
-  -- Every stamp the bump leaves is the new revision or one it found.
-  have kept : ∀ q v, (bump s paths fs).stamps q = some v → v = s.clock + 1 ∨ s.stamps q = some v := by
+    · exact List.any_eq_true.mpr ⟨p, hp, decide_eq_true h⟩
+
+theorem bump_stamps {s : St} (hi : Inv s) {paths fs : List Path} {gen : Path → Nat} {rev : Nat}
+    (ok : BumpOk s paths fs gen rev) :
+    (bump s paths fs gen rev).stamps = bumped rev s.stamps paths :=
+  walkAll_eq _ paths ⟨s.stamps⟩ (by intro q hq; have := hi.belowClock q _ hq; have := ok.past; omega)
+
+/-- A directory strictly above a named path is stamped at the revision. -/
+theorem bump_stamps_above {s : St} (hi : Inv s) {paths fs : List Path} {gen : Path → Nat} {rev : Nat}
+    (ok : BumpOk s paths fs gen rev) {q : Path} (h : above paths q = true) :
+    (bump s paths fs gen rev).stamps q = some rev := by
+  rw [bump_stamps hi ok]; simp only [bumped]; exact if_pos (Or.inl h)
+
+theorem bump_inv {s : St} (hi : Inv s) {paths fs : List Path} {gen : Path → Nat} {rev : Nat}
+    (ok : BumpOk s paths fs gen rev) : Inv (bump s paths fs gen rev) := by
+  have hst := bump_stamps hi ok
+  have stampedAbove : ∀ q, above paths q = true → (bump s paths fs gen rev).stamps q = some rev :=
+    fun _ h => bump_stamps_above hi ok h
+  -- A named path that held a stamp moves to the revision.
+  have stampedNamed : ∀ q v, q ∈ paths → s.stamps q = some v → (bump s paths fs gen rev).stamps q = some rev := by
+    intro q v hm hv
+    rw [hst]; simp only [bumped]; rw [if_pos (Or.inr ⟨hm, by simp [hv]⟩)]
+  -- Every stamp the bump leaves is the revision or one it found.
+  have kept : ∀ q v, (bump s paths fs gen rev).stamps q = some v → v = rev ∨ s.stamps q = some v := by
     intro q v hq
     rw [hst] at hq; simp only [bumped] at hq
     split at hq
     · injection hq with hq; exact Or.inl hq.symm
     · exact Or.inr hq
-  -- A stamp the bump found survives, at the new revision or its own.
-  have grown : ∀ q w, s.stamps q = some w → ∃ w', (bump s paths fs).stamps q = some w' ∧ w ≤ w' := by
+  -- A stamp the bump found survives, at the revision or its own.
+  have grown : ∀ q w, s.stamps q = some w → ∃ w', (bump s paths fs gen rev).stamps q = some w' ∧ w ≤ w' := by
     intro q w hq
     rw [hst]; simp only [bumped]
     split
-    · refine ⟨_, rfl, ?_⟩; have := hi.belowClock q w hq; omega
+    · refine ⟨_, rfl, ?_⟩; have := hi.belowClock q w hq; have := ok.past; omega
     · exact ⟨w, hq, Nat.le_refl _⟩
-  -- The bump's `last`: a path is changed iff it is named or above a named path.
-  have hlast : ∀ q, (bump s paths fs).last q = if paths.any (fun p => decide (Under q p)) then s.clock + 1 else s.last q :=
-    fun _ => rfl
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  have lastLe : ∀ q, (bump s paths fs gen rev).last q ≤ rev := by
+    intro q
+    show (if above paths q then rev else if q ∈ paths then gen q else s.last q) ≤ rev
+    split
+    · exact Nat.le_refl _
+    · split
+      · rename_i hm; exact (ok.gens q hm).2
+      · have := hi.lastClock q; have := ok.past; omega
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, lastLe, ?_, ?_, ?_, ?_, ?_⟩
   · -- closed
     intro q a v hq ha
     rw [hst] at hq ⊢
@@ -405,71 +451,58 @@ theorem bump_inv {s : St} (hi : Inv s) (paths fs : List Path) (hfs : ∀ f ∈ f
         exact ⟨_, rfl, Nat.le_refl _⟩
       · rcases under_cases ha with e | h'
         · subst e
-          have : (bumped (s.clock + 1) s.stamps paths a) = some (s.clock + 1) := by
+          have : (bumped rev s.stamps paths a) = some rev := by
             simp only [bumped]; rw [if_pos (Or.inr ⟨hmem, by assumption⟩)]
           simp only [bumped] at this; rw [this]; exact ⟨_, rfl, Nat.le_refl _⟩
         · rw [if_pos (Or.inl (List.any_eq_true.mpr ⟨q, hmem, decide_eq_true h'⟩))]
           exact ⟨_, rfl, Nat.le_refl _⟩
     · obtain ⟨w, hw, hvw⟩ := hi.closed q a v hq ha
       split
-      · refine ⟨_, rfl, ?_⟩; have := hi.belowClock a w hw; omega
+      · refine ⟨_, rfl, ?_⟩; have := hi.belowClock a w hw; have := ok.past; omega
       · exact ⟨w, hw, hvw⟩
   · -- aboveFloor
     intro q v hq
     show s.floor < v
     rcases kept q v hq with e | h
-    · have := hi.floorLe; omega
+    · have := hi.floorLe; have := ok.past; omega
     · exact hi.aboveFloor q v h
   · -- belowClock
     intro q v hq
-    show v ≤ s.clock + 1
+    show v ≤ rev
     rcases kept q v hq with e | h
     · omega
-    · have := hi.belowClock q v h; omega
-  · show s.floor ≤ s.clock + 1; have := hi.floorLe; omega
+    · have := hi.belowClock q v h; have := ok.past; omega
+  · show s.floor ≤ rev; have := hi.floorLe; have := ok.past; omega
   · -- lastStamped
     intro q v hq
-    rw [hlast]
     rcases kept q v hq with e | h
-    · subst e; split
-      · exact Nat.le_refl _
-      · have := hi.lastClock q; omega
-    · split
-      · rename_i hu
-        -- Named or above a named path, and it held `v` before: the bump moved it.
-        obtain ⟨p, hp, hup⟩ := List.any_eq_true.mp hu
-        have hup := of_decide_eq_true hup
-        have hmoved : (bump s paths fs).stamps q = some (s.clock + 1) := by
-          rcases under_cases hup with e | h'
-          · subst e
-            rw [hst]; simp only [bumped]; rw [if_pos (Or.inr ⟨hp, by simp [h]⟩)]
-          · exact above p hp q hup (fun e => not_under_dropLast p (e ▸ h'))
-        rw [hmoved] at hq; injection hq with hq; omega
-      · exact hi.lastStamped q v h
+    · rw [e]; exact lastLe q
+    · by_cases ha : above paths q = true
+      · rw [stampedAbove q ha] at hq; injection hq with hq; rw [← hq]; exact lastLe q
+      · by_cases hm : q ∈ paths
+        · rw [stampedNamed q v hm h] at hq; injection hq with hq; rw [← hq]; exact lastLe q
+        · show (if above paths q then rev else if q ∈ paths then gen q else s.last q) ≤ v
+          rw [if_neg ha, if_neg hm]; exact hi.lastStamped q v h
   · -- lastOwn
     intro q hq hn hf
-    rw [hlast]
-    show (if paths.any (fun p => decide (Under q p)) then s.clock + 1 else s.last q)
-      ≤ max s.floor (if q ∈ paths then s.clock + 1 else s.own q)
-    split
-    · rename_i hu
-      obtain ⟨p, hp, hup⟩ := List.any_eq_true.mp hu
-      have hup := of_decide_eq_true hup
-      rcases under_cases hup with e | h'
-      · subst e; rw [if_pos hp]; omega
-      · have := above p hp q hup (fun e => not_under_dropLast p (e ▸ h')); rw [hn] at this; cases this
-    · rename_i hu
-      have hnm : q ∉ paths := fun hm =>
-        hu (List.any_eq_true.mpr ⟨q, hm, decide_eq_true (under_refl hq)⟩)
-      rw [if_neg hnm]
-      have hs : s.stamps q = none := by
-        cases h : s.stamps q with
-        | none => rfl
-        | some w => obtain ⟨w', hw', _⟩ := grown q w h; rw [hn] at hw'; cases hw'
-      have hf' : s.files q = none := by
-        simp only [bump] at hf
-        rw [if_neg (fun h => hnm (hfs q h)), if_neg hnm] at hf; exact hf
-      exact hi.lastOwn q hq hs hf'
+    show (if above paths q then rev else if q ∈ paths then gen q else s.last q)
+      ≤ max s.floor (if q ∈ paths then gen q else s.own q)
+    by_cases ha : above paths q = true
+    · rw [stampedAbove q ha] at hn; cases hn
+    · rw [if_neg ha]
+      by_cases hm : q ∈ paths
+      · rw [if_pos hm, if_pos hm]; exact Nat.le_max_right _ _
+      · rw [if_neg hm, if_neg hm]
+        have hs : s.stamps q = none := by
+          cases h : s.stamps q with
+          | none => rfl
+          | some w => obtain ⟨w', hw', _⟩ := grown q w h; rw [hn] at hw'; cases hw'
+        have hf' : s.files q = none := by
+          have : (bump s paths fs gen rev).files q = s.files q := by
+            show (if q ∈ fs then some (gen q) else if q ∈ paths then none else s.files q) = s.files q
+            rw [if_neg (fun h => hm (ok.sub q h)), if_neg hm]
+          rw [← this]; exact hf
+        exact hi.lastOwn q hq hs hf'
   · -- rootUnstamped
     rw [hst]; simp only [bumped]
     have h1 : ¬ paths.any (fun p => decide (Under [] p.dropLast)) = true := by
@@ -477,53 +510,49 @@ theorem bump_inv {s : St} (hi : Inv s) (paths fs : List Path) (hfs : ∀ f ∈ f
       exact (of_decide_eq_true hu).1 rfl
     have h2 : ¬ (s.stamps []).isSome = true := by rw [hi.rootUnstamped]; simp
     rw [if_neg (fun h => h.elim h1 (fun h' => h2 h'.2))]; exact hi.rootUnstamped
-  · -- lastClock
-    intro q
-    show (if paths.any (fun p => decide (Under q p)) then s.clock + 1 else s.last q) ≤ s.clock + 1
-    split
-    · exact Nat.le_refl _
-    · have := hi.lastClock q; omega
   · -- fileClock
     intro q g hq
-    show g ≤ s.clock + 1
+    show g ≤ rev
     simp only [bump] at hq
     split at hq
-    · injection hq with hq; omega
+    · rename_i hf; injection hq with hq; rw [← hq]; exact (ok.gens q (ok.sub q hf)).2
     · split at hq
       · cases hq
-      · have := hi.fileClock q g hq; omega
+      · have := hi.fileClock q g hq; have := ok.past; omega
   · -- ownClock
     intro q
-    show (if q ∈ paths then s.clock + 1 else s.own q) ≤ s.clock + 1
+    show (if q ∈ paths then gen q else s.own q) ≤ rev
     split
-    · exact Nat.le_refl _
-    · have := hi.ownClock q; omega
+    · rename_i hm; exact (ok.gens q hm).2
+    · have := hi.ownClock q; have := ok.past; omega
   · -- fileLast
     intro q g hq
-    rw [hlast]
+    show (if above paths q then rev else if q ∈ paths then gen q else s.last q) ≤ g
     simp only [bump] at hq
     split at hq
-    · injection hq with hq; subst hq
-      split
-      · exact Nat.le_refl _
-      · have := hi.lastClock q; omega
-    · rename_i hnf
-      split at hq
+    · rename_i hf
+      injection hq with hq
+      have hna : ¬ above paths q = true := by
+        intro h
+        obtain ⟨p, hp, hu, hne⟩ := above_iff.mp h
+        exact hne (ok.leaf q hf p hp hu)
+      rw [if_neg hna, if_pos (ok.sub q hf)]; exact Nat.le_of_eq hq
+    · split at hq
       · cases hq
       · rename_i hnp
-        split
-        · rename_i h
-          obtain ⟨p, hp, hu⟩ := List.any_eq_true.mp h
-          have hne : q ≠ p := fun e => hnp (e ▸ hp)
-          rw [hnest p hp q (of_decide_eq_true hu) hne] at hq; cases hq
-        · exact hi.fileLast q g hq
+        have hna : ¬ above paths q = true := by
+          intro h
+          obtain ⟨p, hp, hu, hne⟩ := above_iff.mp h
+          rw [ok.nest p hp q hu hne] at hq; cases hq
+        rw [if_neg hna, if_neg hnp]; exact hi.fileLast q g hq
   · -- fileUnder
     intro q g hq a ha hne
     simp only [bump] at hq
     split at hq
     · rename_i hf
-      injection hq with hq; subst hq
-      exact Or.inl ⟨_, above q (hfs q hf) a ha hne, Nat.le_refl _⟩
+      injection hq with hq
+      refine Or.inl ⟨_, stampedAbove a (above_iff.mpr ⟨q, ok.sub q hf, ha, hne⟩), ?_⟩
+      rw [← hq]; exact (ok.gens q (ok.sub q hf)).2
     · split at hq
       · cases hq
       · rcases hi.fileUnder q g hq a ha hne with ⟨w, hw, hgw⟩ | h
@@ -532,15 +561,15 @@ theorem bump_inv {s : St} (hi : Inv s) (paths fs : List Path) (hfs : ∀ f ∈ f
         · exact Or.inr h
   · -- ownUnder
     intro q hq a ha hne
-    show (∃ w, (bump s paths fs).stamps a = some w ∧ (if q ∈ paths then s.clock + 1 else s.own q) ≤ w)
-      ∨ (if q ∈ paths then s.clock + 1 else s.own q) ≤ s.floor
+    show (∃ w, (bump s paths fs gen rev).stamps a = some w ∧ (if q ∈ paths then gen q else s.own q) ≤ w)
+      ∨ (if q ∈ paths then gen q else s.own q) ≤ s.floor
     split
     · rename_i hm
-      exact Or.inl ⟨_, above q hm a ha hne, Nat.le_refl _⟩
+      exact Or.inl ⟨_, stampedAbove a (above_iff.mpr ⟨q, hm, ha, hne⟩), (ok.gens q hm).2⟩
     · rename_i hnm
       have hf : s.files q = none := by
         simp only [bump] at hq
-        rw [if_neg (fun h => hnm (hfs q h)), if_neg hnm] at hq; exact hq
+        rw [if_neg (fun h => hnm (ok.sub q h)), if_neg hnm] at hq; exact hq
       rcases hi.ownUnder q hf a ha hne with ⟨w, hw, hgw⟩ | h
       · obtain ⟨w', hw', hww⟩ := grown a w hw
         exact Or.inl ⟨w', hw', Nat.le_trans hgw hww⟩
@@ -639,7 +668,7 @@ theorem forget_inv {s : St} (hi : Inv s) (gone : Path → Bool) : Inv (forget s 
 
 theorem step_inv {s s' : St} (hi : Inv s) (h : Step s s') : Inv s' := by
   cases h with
-  | bump paths fs h1 h2 => exact bump_inv hi paths fs h1 h2
+  | bump paths fs gen rev ok => exact bump_inv hi ok
   | drop c hc => exact drop_inv hi hc
   | forget gone => exact forget_inv hi gone
 
@@ -721,11 +750,16 @@ theorem last_step {s s' : St} (h : Reachable s) (hs : Step s s') (q : Path) :
     s.last q ≤ s'.last q ∧ s.clock ≤ s'.clock := by
   have hi := reachable_inv h
   cases hs with
-  | bump paths fs _ _ =>
+  | bump paths fs gen rev ok =>
     have := hi.lastClock q
-    refine ⟨?_, show s.clock ≤ s.clock + 1 by omega⟩
-    show s.last q ≤ (if paths.any (fun p => decide (Under q p)) then s.clock + 1 else s.last q)
-    split <;> omega
+    have := ok.past
+    refine ⟨?_, Nat.le_of_lt ok.past⟩
+    show s.last q ≤ (if above paths q then rev else if q ∈ paths then gen q else s.last q)
+    split
+    · omega
+    · split
+      · rename_i hm; have := (ok.gens q hm).1; omega
+      · exact Nat.le_refl _
   | drop c _ => exact ⟨Nat.le_refl _, Nat.le_refl _⟩
   | forget _ => exact ⟨Nat.le_refl _, Nat.le_refl _⟩
 
@@ -747,27 +781,145 @@ theorem steps_facts {s t : St} (h : Reachable s) (hs : Steps s t) :
     is below every report of `p` made after it: what a reader that keeps a row
     only while its revision is at or above every report for the path relies on. -/
 theorem revision_increases_across_mutation {s s1 s' : St} (h : Reachable s) (h1 : Steps s s1)
-    {paths fs : List Path} (hfs : ∀ f ∈ fs, f ∈ paths)
-    (hnest : ∀ p ∈ paths, ∀ a, Under a p → a ≠ p → s1.files a = none)
-    {p : Path} (hp : paths.any (fun x => decide (Under p x)) = true) (h2 : Steps (bump s1 paths fs) s') :
+    {paths fs : List Path} {gen : Path → Nat} {rev : Nat} (ok : BumpOk s1 paths fs gen rev)
+    {p : Path} (hp : paths.any (fun x => decide (Under p x)) = true)
+    (h2 : Steps (bump s1 paths fs gen rev) s') :
     revision s p < revision s' p := by
   obtain ⟨hr1, _, hc1⟩ := steps_facts h h1
-  have hb : Reachable (bump s1 paths fs) := .step hr1 (.bump s1 paths fs hfs hnest)
+  have hb : Reachable (bump s1 paths fs gen rev) := .step hr1 (.bump s1 paths fs gen rev ok)
   obtain ⟨hr', hl', _⟩ := steps_facts hb h2
-  have hpn : p ≠ [] := by
-    intro e; subst e; obtain ⟨x, _, hu⟩ := List.any_eq_true.mp hp; exact (of_decide_eq_true hu).1 rfl
+  obtain ⟨x, hx, hu⟩ := List.any_eq_true.mp hp
+  have hu := of_decide_eq_true hu
   have e1 := revision_le_clock h p
-  have e2 : (bump s1 paths fs).last p = s1.clock + 1 := by simp only [bump, hp, if_true]
+  have e2 : s1.clock < (bump s1 paths fs gen rev).last p := by
+    show s1.clock < (if above paths p then rev else if p ∈ paths then gen p else s1.last p)
+    split
+    · exact ok.past
+    · rename_i hna
+      rcases under_cases hu with e | h'
+      · subst e; rw [if_pos hx]; exact (ok.gens _ hx).1
+      · exact absurd (above_iff.mpr ⟨x, hx, under_dropLast h', fun e => by subst e; exact not_under_dropLast _ h'⟩) hna
   have e3 := hl' p
-  have e4 := revision_ge_last hr' p hpn
+  have e4 := revision_ge_last hr' p hu.1
   omega
 
 /-- The floor only rises. -/
 theorem floor_monotone {s s' : St} (hs : Step s s') : s.floor ≤ s'.floor := by
   cases hs with
-  | bump _ _ _ _ => exact Nat.le_refl _
+  | bump _ _ _ _ _ => exact Nat.le_refl _
   | drop c _ => show s.floor ≤ max s.floor c; omega
   | forget _ => exact Nat.le_refl _
+
+/-! ## The log names what a path reports
+
+`bumpRevision` logs each path a bump named at `logRev`, read after the drops the
+bump's budget triggers, and each named path's directory at the revision. A
+reader that dates what it holds by the log and fetches with that as its
+expected revision compares it with `revision`: the two are equal. -/
+
+/-- What `bumpRevision` logs for a path the bump named: its stamp, else its
+    row's generation for a file, else the later of the floor and its own
+    generation. -/
+def logRev (t : St) (fs : List Path) (gen : Path → Nat) (p : Path) : Nat :=
+  match t.stamps p with
+  | some v => v
+  | none => if p ∈ fs then gen p else max t.floor (gen p)
+
+/-- Drops only: what the stamp budget does right after a bump. -/
+inductive Drops (s : St) : St → Prop
+  | refl : Drops s s
+  | drop (t : St) (c : Nat) : Drops s t → c ≤ t.clock → Drops s (drop t c)
+
+theorem drops_reachable {s t : St} (hr : Reachable s) (h : Drops s t) : Reachable t := by
+  induction h with
+  | refl => exact hr
+  | drop t c _ hc ih => exact .step ih (.drop t c hc)
+
+theorem drops_trans {a b c : St} (h1 : Drops a b) (h2 : Drops b c) : Drops a c := by
+  induction h2 with
+  | refl => exact h1
+  | drop t k _ hk ih => exact .drop t k ih hk
+
+theorem drops_facts {s t : St} (h : Drops s t) :
+    t.files = s.files ∧ t.own = s.own ∧ t.clock = s.clock
+      ∧ (∀ q v, t.stamps q = some v → s.stamps q = some v)
+      ∧ (∀ q v, s.stamps q = some v → t.stamps q = some v ∨ v ≤ t.floor) := by
+  induction h with
+  | refl => exact ⟨rfl, rfl, rfl, fun _ _ h => h, fun _ _ h => Or.inl h⟩
+  | drop t c _ _ ih =>
+    obtain ⟨hf, ho, hcl, hsub, hkeep⟩ := ih
+    refine ⟨hf, ho, hcl, ?_, ?_⟩
+    · intro q v hq
+      simp only [drop] at hq
+      split at hq
+      · rename_i v' hv'
+        split at hq
+        · cases hq
+        · injection hq with hq; rw [← hq]; exact hsub q v' hv'
+      · cases hq
+    · intro q v hq
+      show (match t.stamps q with | some v => if v ≤ c then none else some v | none => none) = some v
+        ∨ v ≤ max t.floor c
+      rcases hkeep q v hq with h | h
+      · rw [h]; simp only
+        split
+        · right; omega
+        · left; rfl
+      · right; omega
+
+/-- A path the bump named reports what the log names it at. -/
+theorem log_eq_revision {s t : St} {paths fs : List Path} {gen : Path → Nat} {rev : Nat}
+    (ok : BumpOk s paths fs gen rev) (ht : Drops (bump s paths fs gen rev) t)
+    {p : Path} (hp : p ∈ paths) (hne : p ≠ []) : logRev t fs gen p = revision t p := by
+  obtain ⟨hf, ho, hcl, _, _⟩ := drops_facts ht
+  have hle : gen p ≤ t.clock := by rw [hcl]; exact (ok.gens p hp).2
+  have hfp : t.files p = if p ∈ fs then some (gen p) else none := by
+    rw [hf]
+    show (if p ∈ fs then some (gen p) else if p ∈ paths then none else s.files p) = _
+    by_cases hfs : p ∈ fs <;> simp [hfs, hp]
+  have hop : t.own p = gen p := by
+    rw [ho]
+    show (if p ∈ paths then gen p else s.own p) = gen p
+    rw [if_pos hp]
+  unfold logRev revision
+  rw [if_neg hne]
+  cases hs : t.stamps p with
+  | some v => rfl
+  | none =>
+    simp only
+    rw [hfp, hop]
+    by_cases hfs : p ∈ fs
+    · rw [if_pos hfs, if_pos hfs]; simp only; omega
+    · rw [if_neg hfs, if_neg hfs]; simp only; omega
+
+/-- The directory of a path the bump named reports the revision, which is what
+    the log names it at. -/
+theorem parent_log_eq_revision {s t : St} (hr : Reachable s) {paths fs : List Path} {gen : Path → Nat}
+    {rev : Nat} (ok : BumpOk s paths fs gen rev) (ht : Drops (bump s paths fs gen rev) t)
+    {a : Path} (ha : above paths a = true) : revision t a = rev := by
+  have hb := bump_stamps_above (reachable_inv hr) ok ha
+  have hit := reachable_inv (drops_reachable (.step hr (.bump s paths fs gen rev ok)) ht)
+  obtain ⟨hf, _, hcl, hsub, hkeep⟩ := drops_facts ht
+  obtain ⟨p, hp, hu, hne⟩ := above_iff.mp ha
+  have hfa : t.files a = none := by
+    rw [hf]
+    show (if a ∈ fs then some (gen a) else if a ∈ paths then none else s.files a) = none
+    rw [if_neg (fun h => hne (ok.leaf a h p hp hu))]
+    split
+    · rfl
+    · exact ok.nest p hp a hu hne
+  have hclock : t.clock = rev := hcl
+  unfold revision
+  rw [if_neg hu.1]
+  cases hs : t.stamps a with
+  | some v =>
+    have := hsub a v hs
+    rw [hb] at this; injection this with this; exact this.symm
+  | none =>
+    simp only [hfa]
+    rcases hkeep a rev hb with h | h
+    · rw [hs] at h; cases h
+    · have := hit.floorLe; omega
 
 /-! ## The known bug: an unheld path reporting 0
 
@@ -781,14 +933,15 @@ def revisionZero (s : St) (p : Path) : Nat :=
 
 theorem a_zero_floor_reports_below_the_last_write :
     ∃ s, Reachable s ∧ revisionZero s ["a"] < s.last ["a"] := by
-  let s1 := bump init [["a", "x"]] [["a", "x"]]
+  let s1 := bump init [["a", "x"]] [["a", "x"]] (fun _ => 1) 1
   let s2 := drop s1 1
   have hc : Closed 1 init.stamps := by intro q hq; simp [init] at hq
   have hst : s1.stamps = bumped 1 init.stamps [["a", "x"]] :=
     walkAll_eq 1 [["a", "x"]] ⟨init.stamps⟩ hc
-  have hnest : ∀ p ∈ [["a", "x"]], ∀ a, Under a p → a ≠ p → init.files a = none := by
-    intros; rfl
-  refine ⟨s2, .step (.step .init (.bump init [["a", "x"]] [["a", "x"]] (by simp) hnest)) (.drop s1 1 (by decide)), ?_⟩
+  have ok : BumpOk init [["a", "x"]] [["a", "x"]] (fun _ => 1) 1 :=
+    ⟨by simp [init], by intro p _; simp [init], by simp, by intros; rfl,
+     by intro f hf p hp _; simp at hf hp; rw [hf, hp]⟩
+  refine ⟨s2, .step (.step .init (.bump init [["a", "x"]] [["a", "x"]] (fun _ => 1) 1 ok)) (.drop s1 1 (by decide)), ?_⟩
   have h1 : s1.stamps ["a"] = some 1 := by rw [hst]; decide
   show (if ["a"] = ([] : Path) then s2.clock else (s2.stamps ["a"]).getD 0) < s2.last ["a"]
   simp only [s2, drop, h1]
