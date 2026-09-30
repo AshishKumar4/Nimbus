@@ -497,9 +497,10 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
   __err.key = __id.key;
   throw __err;
 }
-// The plain Function constructor's refusal, as the program sees it: the
-// native EvalError, carrying the arguments for stageUnhandled.
-const __nimbusUnstagedCode = Symbol.for("nimbus.runtime-code.unstaged");
+// Plain Function constructor text refused in this launch, by key; staged only
+// if the launch fails (stageFailedLaunch).
+const __nimbusRefusedPlainCode = new Map();
+let __nimbusRefusedPlainBytes = 0;
 // The wrapper function of a file that is not one of the launch's cells.
 function __nimbusRuntimeModule(path, text) {
   return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
@@ -513,29 +514,38 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
   },
   // The plain Function constructor answers only what an earlier launch staged
-  // and otherwise keeps the native refusal, marked with its arguments. Code
-  // probes it (TypeBox's CanEvaluate tries Function("null") and then compiles
-  // every check with it), so a refusal the program handles is never staged:
-  // the probe's answer is the same in every launch.
+  // and otherwise throws the native refusal. Code probes it (TypeBox's
+  // CanEvaluate tries Function("null") and then compiles every check with
+  // it), so a refused text is staged only when the launch fails: a probe
+  // with a working fallback answers the same in every successful launch.
   plainFunction(params, body, refusal) {
     const __entry = { kind: "function", params: Array.from(params, String), body: String(body) };
-    const __staged = __nimbusRuntimeCodeStaged(__nimbusRuntimeCodeKey(__entry).key);
+    const __id = __nimbusRuntimeCodeKey(__entry);
+    const __staged = __nimbusRuntimeCodeStaged(__id.key);
     if (__staged !== undefined) return __staged;
-    Object.defineProperty(refusal, __nimbusUnstagedCode, { value: __entry });
+    // Held within the ledger's own bounds, which decide what is staged.
+    if (
+      !__nimbusRefusedPlainCode.has(__id.key)
+      && __nimbusRefusedPlainCode.size < ${RUNTIME_CODE_MAX_ENTRIES}
+      && __nimbusRefusedPlainBytes + __id.source.length <= ${RUNTIME_CODE_MAX_BYTES}
+    ) {
+      __nimbusRefusedPlainCode.set(__id.key, { id: __id, entry: __entry });
+      __nimbusRefusedPlainBytes += __id.source.length;
+    }
     throw refusal;
   },
-  // A refusal that ended the program (depd, loaded by express 4's
-  // body-parser, builds each deprecated wrapper with \`new Function\` as its
-  // module loads): stage its text for the next launch. Returns the line (no
-  // newline) the crash report adds, or "".
-  stageUnhandled(error) {
-    for (let __e = error, __depth = 0; __e !== null && typeof __e === "object" && __depth < 8; __e = __e.cause, __depth++) {
-      const __entry = __e[__nimbusUnstagedCode];
-      if (__entry === undefined) continue;
-      __nimbusRuntimeCodeRecord(__nimbusRuntimeCodeKey(__entry), __entry);
-      return "Nimbus [ERR_NIMBUS_CODE_NEXT_LAUNCH]: the code this program handed the Function constructor was produced after the launch started; it is staged, and the next launch of this command compiles it.";
-    }
-    return "";
+  // A launch that failed — an uncaught error (depd, loaded by express 4's
+  // body-parser, builds its deprecated wrappers with \`new Function\` as the
+  // module loads) or a non-zero exit (serve 14 catches ajv's refusal and
+  // exits 1) — stages the plain Function text it was refused. Returns the
+  // line (no newline) the failure report adds, or "".
+  stageFailedLaunch() {
+    if (__nimbusRefusedPlainCode.size === 0) return "";
+    for (const { id, entry } of __nimbusRefusedPlainCode.values()) __nimbusRuntimeCodeRecord(id, entry);
+    const __count = __nimbusRefusedPlainCode.size;
+    __nimbusRefusedPlainCode.clear();
+    __nimbusRefusedPlainBytes = 0;
+    return "Nimbus [ERR_NIMBUS_CODE_NEXT_LAUNCH]: " + __count + " text(s) handed to the Function constructor were produced after this launch started; they are staged, and the next launch of this command compiles them.";
   },
 });
 // What this launch could not compile, for the next launch of its command.

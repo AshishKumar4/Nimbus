@@ -47,8 +47,9 @@
  *                         __BufferMod.isBuffer recognizes.
  */
 /**
- * Native imports shared by generated node and opencode guests: events and
- * HTTP. Userland's `require('events')` must be the class native servers use.
+ * Native imports shared by generated node and opencode guests: events, url
+ * and HTTP. Userland's `require('events')` must be the class native servers
+ * use.
  */
 export declare function getRealNodeSharedImportsCode(): string;
 export declare function getRealNodeImportsCode(): string;

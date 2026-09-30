@@ -7064,11 +7064,18 @@ const __utilMod = {
   // _Orig.prototype (so all native URL methods are reachable via the chain).
   globalThis.URL = _Shim;
 })();
+// The legacy API (parse, format, resolve, Url, urlToHttpOptions,
+// domainToASCII/Unicode) is workerd's node:url, Node's own implementation
+// (https://developers.cloudflare.com/workers/runtime-apis/nodejs/url/).
+// A hand-rolled parse answered only { href } for a relative URL, so
+// http-server's `url.parse(req.url).pathname` was undefined and every
+// request was a 400. URL and the file-path helpers stay the facet's: they
+// resolve against the process's cwd in the VFS.
+const __realUrlMod = typeof __real_url !== "undefined"
+  ? (__real_url.default ?? __real_url) : globalThis.process.getBuiltinModule("url");
 const __urlMod = {
+  ...__realUrlMod,
   URL: globalThis.URL, URLSearchParams: globalThis.URLSearchParams,
-  parse: (s) => { try { const u = new URL(s); return { protocol: u.protocol, hostname: u.hostname, port: u.port, pathname: u.pathname, search: u.search, hash: u.hash, href: u.href, host: u.host }; } catch { return { href: s }; } },
-  format: (o) => { if (typeof o === "string") return o; if (o instanceof URL) return o.href; return (o.protocol || "http:") + "//" + (o.hostname || "") + (o.port ? ":" + o.port : "") + (o.pathname || "/") + (o.search || ""); },
-  resolve: (from, to) => new URL(to, from).href,
   // Node's semantics: a relative path resolves against the process's cwd, a
   // trailing slash survives, and the characters the URL parser would read as
   // syntax or leave raw are percent-encoded ('%' first; the pathname setter
@@ -7171,10 +7178,11 @@ const __cryptoMod = (() => {
 // schema check with `Function`; staging every text, the next launch staged the
 // probe's text but not the checks' — the probe said yes, the first check threw,
 // and pi's TUI died. So it answers only text an earlier launch staged, keeps
-// the native refusal otherwise, and stages a text only when its refusal ended
-// the program (the service's plainFunction and stageUnhandled): a probe the
-// program catches answers the same in every launch, while depd's wrapper,
-// built as express 4 loads, runs from the next launch on.
+// the native refusal otherwise, and stages the refused text only when the
+// launch fails (the service's plainFunction and stageFailedLaunch): a probe
+// with a working fallback answers the same in every successful launch, while
+// depd's wrapper (express 4) and ajv's validators (serve) run from the next
+// launch on.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
@@ -8632,8 +8640,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
-  const staged = globalThis.__nimbusRuntimeCode ? globalThis.__nimbusRuntimeCode.stageUnhandled(error) : "";
-  const line = label + __nimbusRuntimeErrorTrace(error) + "\n" + (staged && staged + "\n");
+  const line = label + __nimbusRuntimeErrorTrace(error) + "\n";
   stderr += line;
   if (__supervisor && typeof __supervisor.stderr === "function") {
     try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}
