@@ -35,7 +35,7 @@ console.log(`[pre] flushCount=${F0}`);
 // facet process; its stdout writes invoke processLogs.append →
 // scheduleHibFlush → in-isolate setTimeout fires in ~250 ms →
 // processLogs.flush(). The alarm-driven path is exercised in
-// session-lifecycle/alarms/new/log-janitor-still-fires.mjs (idle wake).
+// session-lifecycle/alarms/new/idle-wake-keeps-process-logs.mjs (idle wake).
 const { output } = await t.run(
   `node -e "console.log('flush-marker'); process.exit(3)"`,
   20_000,

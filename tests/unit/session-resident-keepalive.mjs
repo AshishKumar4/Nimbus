@@ -123,7 +123,7 @@ function expire(storage, reason) {
 
   expire(storage, 'resident-keepalive');
   const before = Date.now();
-  await dispatchAlarm(host, ctx, () => true);
+  await dispatchAlarm(host, ctx);
 
   const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(map && 'resident-keepalive' in map, 'a live resident keeps the cycle armed');
@@ -150,7 +150,7 @@ function expire(storage, reason) {
   assert.equal(host.processes.residentRunning, 0, 'the exited resident no longer counts');
 
   expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx, () => true);
+  await dispatchAlarm(host, ctx);
 
   const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(!map || !('resident-keepalive' in map), `reason cleared: ${JSON.stringify(map)}`);
@@ -236,12 +236,12 @@ function expire(storage, reason) {
   // Within the grace, no socket: the client may be mid-reload.
   host._w1LastClientActivityAt = Date.now() - RESIDENT_KEEPALIVE_DETACHED_MS / 2;
   expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx, () => true);
+  await dispatchAlarm(host, ctx);
   assert.ok('resident-keepalive' in storage.map.get(TIMER_REASONS_KEY), 'inside the grace the cycle re-arms');
   // Past the grace, no socket: abandoned. The resident still runs.
   host._w1LastClientActivityAt = Date.now() - RESIDENT_KEEPALIVE_DETACHED_MS - 1;
   expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx, () => true);
+  await dispatchAlarm(host, ctx);
   assert.equal(host.processes.residentRunning, 1, 'the resident is still running');
   assert.ok(!('resident-keepalive' in (storage.map.get(TIMER_REASONS_KEY) ?? {})), 'past the grace the cycle stops');
   assert.equal(host._w1KeepaliveArmed, false, 'and the flag clears so a client can re-arm it');
@@ -250,11 +250,11 @@ function expire(storage, reason) {
   ensureResidentKeepalive(host, ctx);
   await host._timerChain;
   expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx, () => true);
+  await dispatchAlarm(host, ctx);
   assert.ok('resident-keepalive' in storage.map.get(TIMER_REASONS_KEY), 'an attached socket keeps the cycle');
   sockets = [];
   expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx, () => true);
+  await dispatchAlarm(host, ctx);
   assert.equal(host._w1KeepaliveArmed, false, 'socket gone, grace long past: stopped again');
   // The client comes back over HTTP: that alone re-arms, no spawn needed.
   noteClientActivity(host, ctx);

@@ -19,7 +19,7 @@ import type { ServiceStub } from '@nimbus-sh/fabric/vendor/types.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
-import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -73,6 +73,7 @@ class RuntimeOwner {
   _w9PersistWired = false;
   _w9SchemaInit = false;
   _w1KeepaliveArmed = false;
+  _w1JanitorAt: number | null = null;
   _w1LastClientActivityAt = 0;
   _viteShimPid: number | null = null;
   _viteShimPort: number | null = null;
@@ -90,10 +91,6 @@ class RuntimeOwner {
   private readyPromise: Promise<void> | null = null;
   private supervisor: SessionSupervisorOps | null = null;
   private flushScheduled = false;
-  /** The retention deadline the `log-janitor` task is scheduled for, or null. */
-  private janitorAt: number | null = null;
-  /** A pid whose process this runtime's table no longer holds: its logs are an orphan's. */
-  private readonly isLogOrphan = (pid: number): boolean => !this.processes.get(pid);
   private recoveryNotice = false;
   private legacyNotice: string | null = null;
   private readonly scheduling = new Set<Promise<void>>();
@@ -130,7 +127,7 @@ class RuntimeOwner {
       armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
     });
     options.workspace.shell.bindTerminal(this.terminal);
-    installLogPersistence(this, options.ctx, () => this.scheduleLogs());
+    installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));
     wireProcessLogSocketBroadcast(this.processes, options.ctx);
   }
 
@@ -250,25 +247,12 @@ class RuntimeOwner {
         throw error;
       }));
     }
-    this.scheduleJanitor();
   }
 
-  /**
-   * Schedule `log-janitor` for the next retention deadline, when that is
-   * earlier than the one already scheduled. A deadline appears only on log
-   * activity (an exit, a reader leaving), so this runs there and after each
-   * sweep. Nothing retained that can expire means nothing is scheduled: a
-   * running process — the workspace's own shell always is one — holds no
-   * deadline, and an idle object must have no task pending to hibernate.
-   */
-  private scheduleJanitor(): void {
-    const at = this.processes.nextLogExpiry(undefined, this.isLogOrphan);
-    if (at === null || (this.janitorAt !== null && this.janitorAt <= at)) return;
-    this.janitorAt = at;
-    this.options.lifecycle.waitUntil(this.schedule('log-janitor', at).catch((error: unknown) => {
-      if (this.janitorAt === at) this.janitorAt = null;
-      throw error;
-    }));
+  private scheduleJanitor(at: number): Promise<boolean> {
+    const pending = this.schedule('log-janitor', at);
+    this.options.lifecycle.waitUntil(pending);
+    return pending.then(() => true, () => false);
   }
 
   async onScheduled(task: HostedRuntimeTask): Promise<void> {
@@ -282,12 +266,8 @@ class RuntimeOwner {
       this.flushScheduled = false;
       this.processes.flushLogs();
     } else {
-      this.janitorAt = null;
-      // Covers the pids only SQL holds as well: an object woken for this
-      // task holds nothing of its predecessor's in memory.
-      this.processes.dropLogsOlderThan(undefined, this.isLogOrphan);
-      this.processes.flushLogs();
-      this.scheduleJanitor();
+      const next = logJanitorFired(this);
+      if (next !== null && !(await this.scheduleJanitor(next))) this._w1JanitorAt = null;
     }
   }
 

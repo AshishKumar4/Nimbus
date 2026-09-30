@@ -257,26 +257,15 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.equal(processes.dropLogsOlderThan(-1), 1);
 }
 
-// ── Retention deadlines: persisted-only pids, read once, not per append ──
-// Every append asks for the next deadline. The pids only SQL holds (every
-// earlier instance's) are listed once, and their earliest deadline is
-// worked out when that set changes, not on each append.
+// ── Retention: deadlines over memory and what only SQL holds ─────────────
+// A pid's logs go 10 min after its exit, or 30 min after its last output
+// once this table no longer holds its process (an orphan). That covers the
+// pids an earlier instance persisted, which this one never held in memory.
 {
   const RETAIN = 10 * 60 * 1000;
+  const T = 10 * RETAIN;
   const processes = new SessionProcessSupervisor();
   processes.setPidBase(3_000_000);
-  const T = 10 * RETAIN;
-  let rowReads = 0;
-  const earlier = Array.from({ length: 5_000 }, (_, i) => Object.defineProperty(
-    { pid: 1_000_001 + i, lastActivity: T + i },
-    'exitAt',
-    { enumerable: true, get() { rowReads++; return T + i; } },
-  ));
-  // A prior instance's process that died without an exit: an orphan, due three retentions after its last output.
-  earlier.push({ pid: 2_000_001, exitAt: null, lastActivity: T - 2 * RETAIN });
-  let listings = 0;
-  let asked = 0;
-  const orphan = (pid) => { asked++; return !processes.get(pid); };
   const dropped = [];
   processes.setLogPersist({
     load() { return null; },
@@ -284,57 +273,90 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
     persistExit() {},
     dropPid(pid) { dropped.push(pid); },
     pruneBeforeSeq() {},
-    retained() { listings++; return earlier; },
-  }, () => {});
-
-  const live = processes.spawn('node srv.js', [], '/').pid;
-  processes.appendOutput(live, 'stdout', 'up\n');
-  assert.equal(processes.nextLogExpiry(undefined, orphan), T + RETAIN, 'the earliest persisted deadline');
-  const perAppend = asked;
-  const listedReads = rowReads;
-  for (let i = 0; i < 100; i++) {
-    processes.appendOutput(live, 'stdout', 'tick\n');
-    assert.equal(processes.nextLogExpiry(undefined, orphan), T + RETAIN);
-  }
-  assert.equal(listings, 1, 'listed once per instance');
-  assert.equal(rowReads - listedReads, 0, `appends walked the ${earlier.length} persisted pids (${rowReads - listedReads} row reads)`);
-  // Per append: the live pid, and the oldest exitless persisted pid, which is an orphan.
-  assert.equal(asked - perAppend, 200, `orphan checks for 100 appends: ${asked - perAppend}`);
-
-  // The sweep drops every persisted pid past its deadline, the exitless orphan included, and the next deadline moves on.
-  const realNow = Date.now;
-  Date.now = () => T + RETAIN + 2_498;
-  try {
-    assert.equal(processes.dropLogsOlderThan(undefined, orphan), 2_500);
-  } finally { Date.now = realNow; }
-  assert.equal(processes.nextLogExpiry(undefined, orphan), T + 2_499 + RETAIN, 'recomputed after the set changed');
-  processes.flushLogs();
-  assert.equal(dropped.length, 2_500);
-  assert.ok(dropped.includes(2_000_001), 'the orphan went with them');
-  assert.equal(processes.nextLogExpiry(undefined, orphan), T + 2_499 + RETAIN);
-}
-
-// ── Persisted orphan deadlines follow the predicate asked with ──────────────
-// What is kept between appends must not remember one caller's orphan answer
-// for another: a deadline reported under one predicate and swept under
-// another would re-arm the janitor at a moment that drops nothing.
-{
-  const RETAIN = 10 * 60 * 1000;
-  const processes = new SessionProcessSupervisor();
-  processes.setLogPersist({
-    load() { return null; }, persistChunks() {}, persistExit() {}, dropPid() {}, pruneBeforeSeq() {},
     retained() {
       return [
-        { pid: 7, exitAt: null, lastActivity: 1_000 },
-        { pid: 8, exitAt: null, lastActivity: 2_000 },
+        { pid: 1_000_001, exitAt: T, lastActivity: T },
+        { pid: 1_000_002, exitAt: T + 5, lastActivity: T + 5 },
+        // An earlier instance's process that died without an exit.
+        { pid: 2_000_001, exitAt: null, lastActivity: T - 2 * RETAIN + 1 },
       ];
     },
   }, () => {});
-  assert.equal(processes.nextLogExpiry(undefined), null, 'no predicate: exitless pids are not orphans');
-  assert.equal(processes.nextLogExpiry(undefined, () => true), 1_000 + 3 * RETAIN, 'every one an orphan: the oldest');
-  assert.equal(processes.nextLogExpiry(undefined, (pid) => pid === 8), 2_000 + 3 * RETAIN, 'only the newer one');
-  assert.equal(processes.nextLogExpiry(undefined, () => false), null, 'none');
-  assert.equal(processes.nextLogExpiry(60_000, () => true), 1_000 + 180_000, 'and the age asked with');
+
+  // This instance's running process logs: no deadline while it runs.
+  const live = processes.spawn('node srv.js', [], '/').pid;
+  processes.appendOutput(live, 'stdout', 'up\n');
+  assert.equal(processes.nextLogExpiry(), T + RETAIN, 'the earliest persisted exit, plus retention');
+
+  const realNow = Date.now;
+  Date.now = () => T + RETAIN + 1;
+  try {
+    assert.equal(processes.dropLogsOlderThan(), 2, 'the first exit and the orphan are due; the second exit is not');
+  } finally { Date.now = realNow; }
+  processes.flushLogs();
+  assert.deepEqual(dropped.sort(), [1_000_001, 2_000_001]);
+  assert.equal(processes.nextLogExpiry(), T + 5 + RETAIN, 'the next deadline');
+  assert.ok(processes.hasLogs(live), 'the running process keeps its logs');
+}
+
+// ── Retention: the hook fires only where a deadline may appear ──────────────
+// Logs that begin, an exit, a reader leaving, a reap. Not further output, so
+// a host re-reads the deadline there and never per chunk.
+{
+  const RETAIN = 10 * 60 * 1000;
+  const processes = new SessionProcessSupervisor();
+  const fired = [];
+  let activity = 0;
+  processes.setLogPersist({
+    load() { return null; }, persistChunks() {}, persistExit() {}, dropPid() {}, pruneBeforeSeq() {},
+    retained() { return []; },
+  }, () => { activity++; }, () => { fired.push(processes.nextLogExpiry()); });
+
+  const server = processes.spawn('node srv.js', [], '/').pid;
+  processes.appendOutput(server, 'stdout', 'one\n');
+  assert.deepEqual(fired, [null], 'logs that begin: a running process has no deadline');
+  for (let i = 0; i < 10; i++) processes.appendOutput(server, 'stdout', 'more\n');
+  assert.equal(fired.length, 1, 'further output moves no deadline earlier');
+  assert.equal(activity, 11, 'but is activity (a flush)');
+
+  const unsubscribe = processes.subscribeLogs(server, () => {});
+  processes.exit(server, 0);
+  processes.markExit(server, 0);
+  const exitAt = processes.getExit(server).at;
+  assert.deepEqual(fired, [null, null], 'an exit with a reader attached holds no deadline');
+  unsubscribe();
+  assert.deepEqual(fired, [null, null, exitAt + RETAIN], 'the reader leaving brings the exit\'s deadline');
+  assert.equal(activity, 12, 'a reader leaving is not activity');
+}
+
+// ── Retention: a process killed around its log is an orphan once reaped ─────
+// Its table entry is ended, its log holds no exit. It is not an orphan while
+// the table holds it; the reap that drops the entry gives its logs the orphan
+// deadline, and fires the hook so a host arms for it.
+{
+  const RETAIN = 10 * 60 * 1000;
+  const processes = new SessionProcessSupervisor();
+  let fired = 0;
+  processes.setLogPersist({
+    load() { return null; }, persistChunks() {}, persistExit() {}, dropPid() {}, pruneBeforeSeq() {},
+    retained() { return []; },
+  }, () => {}, () => { fired++; });
+  const killed = processes.spawn('vite', [], '/').pid;
+  processes.appendOutput(killed, 'stdout', 'listening\n');
+  processes.kill(killed);
+  const lastOutput = processes.readLogs(killed).chunks.at(-1).ts;
+  assert.equal(processes.getExit(killed), null, 'killed around its log: no exit recorded');
+  assert.equal(processes.nextLogExpiry(), null, 'held by the table: not an orphan yet');
+  const before = fired;
+  const realNow = Date.now;
+  Date.now = () => realNow() + 1;
+  try {
+    assert.equal(processes.reap(0), 1);
+  } finally { Date.now = realNow; }
+  assert.equal(fired, before + 1, 'the reap fired the hook');
+  assert.equal(processes.nextLogExpiry(), lastOutput + 3 * RETAIN, 'the orphan deadline');
+  assert.equal(processes.reap(0), 0);
+  assert.equal(fired, before + 1, 'a reap that removes nothing does not');
 }
 
 console.log('session-process-supervisor: ok');

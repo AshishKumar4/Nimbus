@@ -88,18 +88,17 @@ function exitedProcess(host, text = 'done\n') {
   const storage = makeStorage();
   const host = makeHost();
   const ctx = { storage };
-  const orphan = (p) => !host.processes.get(p);
   // The session's shell: running, and logging, for as long as the session lives.
   const shell = host.processes.spawn('sh', ['sh'], '/').pid;
   host.processes.appendOutput(shell, 'stdout', '$ ');
-  ensureLogJanitor(host, ctx, orphan);
+  ensureLogJanitor(host, ctx);
   await host._timerChain;
   assert.equal(storage.alarm, null, 'a running process holds no deadline, so nothing is armed');
   assert.equal(host._w1JanitorAt, null);
 
   // A process exits: its logs are due RETAIN_AFTER_EXIT_MS later, and not before.
   const { pid, exitAt } = exitedProcess(host);
-  ensureLogJanitor(host, ctx, orphan);
+  ensureLogJanitor(host, ctx);
   await host._timerChain;
   assert.equal(storage.map.get(TIMER_REASONS_KEY)['log-janitor'], exitAt + RETAIN_AFTER_EXIT_MS,
     'armed at the exit\'s retention deadline, not on a cadence');
@@ -107,7 +106,7 @@ function exitedProcess(host, text = 'done\n') {
 
   // The alarm, early (as a stale deadline from an older build would be): nothing is due, nothing drops.
   storage.map.get(TIMER_REASONS_KEY)['log-janitor'] = Date.now() - 1;
-  await dispatchAlarm(host, ctx, orphan);
+  await dispatchAlarm(host, ctx);
   assert.ok(host.processes.hasLogs(pid), 'kept until its deadline');
   assert.equal(storage.map.get(TIMER_REASONS_KEY)['log-janitor'], exitAt + RETAIN_AFTER_EXIT_MS, 're-armed at the deadline itself');
 
@@ -116,7 +115,7 @@ function exitedProcess(host, text = 'done\n') {
   Date.now = () => exitAt + RETAIN_AFTER_EXIT_MS;
   try {
     storage.map.get(TIMER_REASONS_KEY)['log-janitor'] = Date.now();
-    await dispatchAlarm(host, ctx, orphan);
+    await dispatchAlarm(host, ctx);
   } finally { Date.now = realNow; }
   assert.equal(host.processes.hasLogs(pid), false, 'dropped at the deadline');
   assert.ok(host.processes.stats.running > 0, 'the shell still runs');
@@ -153,7 +152,7 @@ function exitedProcess(host, text = 'done\n') {
   const realNow = Date.now;
   Date.now = () => exitAt + RETAIN_AFTER_EXIT_MS;
   try {
-    await dispatchAlarm(woken.host, woken.ctx, (p) => !woken.host.processes.get(p));
+    await dispatchAlarm(woken.host, woken.ctx);
   } finally { Date.now = realNow; }
   assert.equal(rows(), 0, `the persisted logs of pid ${pid} are dropped by the instance that never held them`);
   assert.ok(!storage.map.has(TIMER_REASONS_KEY), 'and nothing re-arms');
@@ -239,8 +238,12 @@ function makeDestroyHost(storage) {
 // ── [5] rpcDestroy deletes the alarm + writes the tombstone ────────────────
 {
   const storage = makeStorage();
-  storage.setAlarm(Date.now() + 60_000);
   const host = makeDestroyHost(storage);
+  // A session that ran a process: its janitor is armed when destroy comes.
+  exitedProcess(host);
+  ensureLogJanitor(host, { storage });
+  await host._timerChain;
+  assert.ok(host._w1JanitorAt !== null && storage.alarm !== null, 'armed before the destroy');
   assumeGeneration(host.ctx, 3);
   const result = await rpcDestroy(host, { reason: 'test' });
   assert.equal(result.ok, true);
@@ -257,11 +260,14 @@ function makeDestroyHost(storage) {
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(host._w1SessionDestroyed, false, 're-init clears the destroyed flag');
   assert.ok(!storage.map.has(SESSION_DESTROYED_KEY), 're-init deletes the tombstone key');
-  host._w1JanitorAt = null;
-  exitedProcess(host);
+  // The recreated session's first exit arms the janitor at its own deadline:
+  // the destroyed instance's deadline went with the alarm it named.
+  const { exitAt } = exitedProcess(host);
   ensureLogJanitor(host, { storage });
   await host._timerChain;
-  assert.ok(storage.alarm !== null, 'the recreated session arms the janitor again');
+  assert.equal(storage.map.get(TIMER_REASONS_KEY)?.['log-janitor'], exitAt + RETAIN_AFTER_EXIT_MS,
+    `the recreated session arms the janitor again: ${JSON.stringify(storage.map.get(TIMER_REASONS_KEY))}`);
+  assert.equal(storage.alarm, exitAt + RETAIN_AFTER_EXIT_MS);
   // And a no-op on a live session (no spurious deletes).
   const deletes = [];
   clearDestroyedTombstone(host, { storage: { delete: async (k) => { deletes.push(k); } } });

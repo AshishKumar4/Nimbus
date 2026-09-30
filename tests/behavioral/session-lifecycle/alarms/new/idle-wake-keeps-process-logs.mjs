@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// session-lifecycle/alarms/log-janitor-still-fires — a session that ran
+// session-lifecycle/alarms/idle-wake-keeps-process-logs — a session that ran
 // processes still idles, wakes, and keeps its process-log path working.
 //
 // The janitor is armed for a retention deadline only (an exit + 10 min,
@@ -15,8 +15,8 @@ import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driv
 import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
-const a = makeAsserter('session-lifecycle/alarms/log-janitor-still-fires');
-console.log(`session-lifecycle/alarms/log-janitor-still-fires — ${BASE}`);
+const a = makeAsserter('session-lifecycle/alarms/idle-wake-keeps-process-logs');
+console.log(`session-lifecycle/alarms/idle-wake-keeps-process-logs — ${BASE}`);
 
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
