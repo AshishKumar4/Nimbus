@@ -436,6 +436,8 @@ const EXPORT_PAGE_PIECES = 4_096;
 const EXPORT_FRAME_BYTES = 8 * 1024 * 1024;
 /** An imported file with more chunks than this stages across transactions. */
 const IMPORT_INLINE_PIECES = 64;
+/** Stale imports one sweep transaction ends: a job row and up to two queued contents each. */
+const STALE_IMPORTS_PER_TX = 64;
 const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
 /**
  * Transactions one slice of a long job runs before yielding: about 50k rows
@@ -637,23 +639,8 @@ interface TransactionPlan {
   deletes: readonly PlannedDelete[];
   staged: readonly StagedPiece[];
   stagingCreated: readonly StagingContent[];
-  /** Imports whose destination `deletes` removes: their jobs end in this transaction. */
-  abandoned: readonly OpenImport[];
   affectedPaths: ReadonlySet<string>;
   metrics: TransactionPlanMetrics;
-}
-
-/**
- * An import in progress, as a removal plans it: its job row, its
- * destination, and the staging contents it holds (a manifest cut off
- * mid-import, chunks sent ahead of their pages; `staging` is the latter's
- * in-memory handle).
- */
-interface OpenImport {
-  id: number;
-  dst: string;
-  contents: readonly number[];
-  staging: StagingContent | undefined;
 }
 
 interface TransactionExecution {
@@ -705,19 +692,9 @@ class TransactionPlanBuilder {
   private edits = 0;
   private fileRows = 0;
   private gcRefCount = 0;
-  private readonly abandoned: OpenImport[] = [];
-  private imports: readonly OpenImport[] | null = null;
 
-  /**
-   * `history`: a snapshot is pinned, so replaced rows keep before-images.
-   * `openImports` answers the imports in progress, read once, on the first
-   * removal this plan makes.
-   */
-  constructor(
-    private readonly history: boolean,
-    private readonly commitRow = false,
-    private readonly openImports: () => readonly OpenImport[] = () => [],
-  ) {}
+  /** `history`: a snapshot is pinned, so replaced rows keep before-images. */
+  constructor(private readonly history: boolean, private readonly commitRow = false) {}
 
   addInode(entry: StoredInodeEntry): void {
     this.inodes.push(entry);
@@ -808,22 +785,10 @@ class TransactionPlanBuilder {
     this.affectedPaths.add(path);
   }
 
-  /** Remove `path`; an import into it or beneath it ends with it. */
   addDeletedPath(path: string, prior: INode | undefined, dereference = true): void {
     this.deletes.push({ path, prior, dereference });
     this.affectedPaths.add(path);
     if (dereference && prior !== undefined && !prior.isDir) this.gcRefCount++;
-    for (const job of this.importsRemovedBy(path)) {
-      this.abandoned.push(job);
-      this.gcRefCount += job.contents.length;
-    }
-  }
-
-  /** The imports removing `path` would end that this plan has not ended already. */
-  private importsRemovedBy(path: string): OpenImport[] {
-    this.imports ??= this.openImports();
-    return this.imports.filter((job) => !this.abandoned.includes(job)
-      && (path === '' || job.dst === path || job.dst.startsWith(`${path}/`)));
   }
 
   wouldExceedPieces(additionalBlobBytes: number, additionalPieces: number): TransactionLimit | null {
@@ -862,31 +827,16 @@ class TransactionPlanBuilder {
     return exceededTransactionLimit(this.metricsWith({ inodeRows: 1, paths: 1 }));
   }
 
-  /** Would removing `path` too, and ending the imports that ends, exceed the bound? */
-  wouldExceedDeletion(path: string): TransactionLimit | null {
-    const ended = this.importsRemovedBy(path);
-    return exceededTransactionLimit(this.metricsWith({
-      deletes: 1, paths: 1, abandoned: ended.length, gcRefs: ended.reduce((n, job) => n + job.contents.length, 0),
-    }));
-  }
-
-  /** End an import that no removal in this plan names (one with no destination yet). */
-  addAbandonedImport(job: OpenImport): void {
-    this.abandoned.push(job);
-    this.gcRefCount += job.contents.length;
-  }
-
-  /** Would ending one more import exceed the bound? */
-  wouldExceedAbandon(job: OpenImport): TransactionLimit | null {
-    return exceededTransactionLimit(this.metricsWith({ abandoned: 1, gcRefs: job.contents.length }));
+  /** Would one more removal exceed the bound? */
+  wouldExceedDeletion(): TransactionLimit | null {
+    return exceededTransactionLimit(this.metricsWith({ deletes: 1, paths: 1 }));
   }
 
   get empty(): boolean {
     return this.inodes.length === 0
       && this.deletes.length === 0
       && this.staged.length === 0
-      && this.stagingCreated.length === 0
-      && this.abandoned.length === 0;
+      && this.stagingCreated.length === 0;
   }
 
   build(): TransactionPlan {
@@ -895,7 +845,6 @@ class TransactionPlanBuilder {
       deletes: this.deletes,
       staged: this.staged,
       stagingCreated: this.stagingCreated,
-      abandoned: this.abandoned,
       affectedPaths: this.affectedPaths,
       metrics: this.metricsWith({}, false),
     };
@@ -914,17 +863,14 @@ class TransactionPlanBuilder {
     const manifestRows = this.manifestRows + (addition.manifestRows ?? 0);
     const contentRows = this.contentRows + (addition.contentRows ?? 0);
     // Every replaced or removed file may queue one reference; directories name none.
-    const gcRows = this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0) + (addition.gcRefs ?? 0);
+    const gcRows = this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
     const historyRows = this.history ? inodeRows + deletes : 0;
-    const abandoned = this.abandoned.length + (addition.abandoned ?? 0);
     return {
       blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
-      // A delete writes its tombstone too; an ended import deletes its job row.
-      logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows + abandoned
-        + (reserveCommit ? 1 : 0),
+      // A delete writes its tombstone too.
+      logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows + (reserveCommit ? 1 : 0),
       sqlExecs: 2 + (reserveCommit ? 1 : 0)
         + groupedSqlExecs(historyRows, KEYS_PER_SQL_EXEC)
-        + groupedSqlExecs(abandoned, KEYS_PER_SQL_EXEC)
         + groupedSqlExecs(deletes, KEYS_PER_SQL_EXEC)
         + groupedSqlExecs(deletes, TOMBSTONE_ROWS_PER_SQL_EXEC)
         + groupedSqlExecs(pieces, KEYS_PER_SQL_EXEC)
@@ -951,9 +897,6 @@ interface PlanAddition {
   inodeRows?: number;
   deletes?: number;
   paths?: number;
-  /** Import jobs a removal ends, and the staging references they queue. */
-  abandoned?: number;
-  gcRefs?: number;
 }
 
 function groupedSqlExecs(rows: number, rowsPerExec: number): number {
@@ -1024,6 +967,13 @@ const ImportJobArgsSchema = z.object({
   dst: z.string(),
   /** The export every page must come from (VfsExportPage.source); absent until the first page. */
   source: z.string().optional(),
+  /**
+   * Where the import stands: the inode of dst's parent directory when it
+   * began, and of dst once dst exists (absent: dst must be absent). An
+   * import whose path no longer resolves to these is stale (importPlaced).
+   */
+  parentIno: z.number().int().optional(),
+  dstIno: z.number().int().optional(),
   sourceRoot: z.string().optional(),
   sourceNextIno: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER).optional(),
   preserveInos: z.boolean().optional(),
@@ -1352,10 +1302,6 @@ export class SqliteVFS {
     events: { type: VfsEventType; path: string; oldPath?: string }[];
     structural: Map<string, StructuralChange>;
     removedDirectories: INode[];
-    /** Imports ended inside it: their staging stays pinned until it commits. */
-    abandonedImports: OpenImport[];
-    /** Staging handles a new import displaced inside it, restored if it rolls back. */
-    displacedStagings: [string, StagingContent][];
   } | null = null;
 
   // ── Invalidation log (facet cache coherence) ──────────────────────────
@@ -1466,8 +1412,12 @@ export class SqliteVFS {
   private _pinGen = 0;
   /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
   private readonly manifestWindows = new Map<number, ManifestRow[]>();
-  /** The staging content holding each import's chunks, by destination. */
-  private readonly importStagings = new Map<string, StagingContent>();
+  /** The staging content holding each import's chunks sent ahead of its pages, by job id. */
+  private readonly importStagings = new Map<number, StagingContent>();
+  /** Set when a write commits while imports are open: one may no longer be where it began (sweepStaleImports). */
+  private importSweepPending = true;
+  /** False once a sweep has found no import open, until one begins. */
+  private importJobsExist = true;
   /** Page digests by (generation, root, cursor, limit): a snapshot's pages never change. */
   private readonly pageDigests = new Map<string, { digest: string; next: string | null }>();
   /** Snapshot generations by name, loaded on first use. */
@@ -4501,56 +4451,7 @@ export class SqliteVFS {
   }
 
   private newPlan(commitRow = false): TransactionPlanBuilder {
-    // An import with no destination yet ends apart from any removal (endImports).
-    return new TransactionPlanBuilder(this._pinGen > 0, commitRow, () => this.openImports().filter((job) => this.hasDestination(job)));
-  }
-
-  /**
-   * The imports beneath the directories `paths` that have no destination
-   * yet (only importChunks has run for them). A removal plan ends the
-   * imports whose destination it removes; these it cannot name, so the
-   * removal takes them before it commits and ends them after (endImports),
-   * and a removal that is refused ends none.
-   */
-  private stagedImportsBeneath(paths: readonly string[]): OpenImport[] {
-    if (paths.length === 0) return [];
-    const beneath = (dst: string): boolean => paths.some((path) => path === '' || dst.startsWith(`${path}/`));
-    return this.openImports().filter((job) => beneath(job.dst) && !this.hasDestination(job));
-  }
-
-  /** End `jobs`, in bounded transactions: their rows go and their staging is queued for collection. */
-  private endImports(jobs: readonly OpenImport[]): void {
-    let builder = this.newPlan();
-    const flush = (): void => {
-      if (builder.empty) return;
-      const plan = builder.build();
-      builder = this.newPlan();
-      this.assertTransactionFits(plan.metrics);
-      this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
-    };
-    for (const job of jobs) {
-      if (builder.wouldExceedAbandon(job) !== null) flush();
-      builder.addAbandonedImport(job);
-    }
-    flush();
-  }
-
-  private hasDestination(job: OpenImport): boolean {
-    return job.dst !== '' && this.inodes.get(job.dst) !== undefined;
-  }
-
-  /** Every import in progress, with the staging contents it holds. */
-  private openImports(): OpenImport[] {
-    const out: OpenImport[] = [];
-    for (const row of this.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'import'")) {
-      const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
-      const staging = this.importStagings.get(job.dst);
-      const contents = new Set<number>();
-      if (job.pending !== undefined) contents.add(job.pending.content);
-      if (staging !== undefined && staging.id !== 0) contents.add(staging.id);
-      out.push({ id: Number(row.id), dst: job.dst, contents: [...contents], staging });
-    }
-    return out;
+    return new TransactionPlanBuilder(this._pinGen > 0, commitRow);
   }
 
   /** Create a state-0 content in its own transaction and hold it live. */
@@ -5039,7 +4940,7 @@ export class SqliteVFS {
     for (const inode of this.subtreeDescending(resolved.path, resolved.inode, false)) {
       // Close the group before the entry that would overflow it. The estimate
       // only picks the boundary — the commit asserts the bound it writes.
-      if (budget.wouldExceedDeletion(inode.path) !== null) flush();
+      if (budget.wouldExceedDeletion() !== null) flush();
       budget.addDeletedPath(inode.path, inode);
       group.push(inode.path);
     }
@@ -5154,9 +5055,6 @@ export class SqliteVFS {
       this._batchWrites++;
       this._batchWriteRows += rows;
     };
-
-    // Imports beneath either directory with no destination yet end with the move.
-    const staged = this.stagedImportsBeneath([...(inode.isDir ? [oldPath] : []), ...(destInode?.isDir ? [newPath] : [])]);
 
     // ── Phase 1: publish the whole tree at the destination ────────────────
     //
@@ -5277,7 +5175,7 @@ export class SqliteVFS {
     };
     try {
       for (const entry of retiring) {
-        if (builder.wouldExceedDeletion(entry.path) !== null) retire();
+        if (builder.wouldExceedDeletion() !== null) retire();
         builder.addDeletedPath(entry.path, entry, false);
         retired.push(entry);
       }
@@ -5292,7 +5190,6 @@ export class SqliteVFS {
     // anything under one must let it go.
     this.bumpRevision([...touchedPaths], removedDirectories(retiring));
     this.emitMutation('rename', newPath, oldPath);
-    this.endImports(staged);
     this.runContentMaintenanceSafely(1);
   }
 
@@ -5319,7 +5216,7 @@ export class SqliteVFS {
     };
     try {
       for (const stored of deepestFirst) {
-        if (builder.wouldExceedDeletion(stored.path) !== null) flush();
+        if (builder.wouldExceedDeletion() !== null) flush();
         // The source still holds these references, so none is queued.
         builder.addDeletedPath(stored.path, undefined, false);
       }
@@ -6149,10 +6046,10 @@ export class SqliteVFS {
         : [];
       if (changed.length === 0 && revived.length === 0) {
         this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
+        // An import the restore moved away from ends now, before a later restore could bring its path back.
+        this.sweepStaleImports();
         return { restored, done: true };
       }
-      const pasts = changed.map((live) => this.historyAt(live.path, job.g));
-      const staged = this.stagedImportsBeneath(changed.filter((live, index) => live.isDir && pasts[index] === undefined).map((live) => live.path));
       const builder = this.newPlan();
       const deletedInodes: INode[] = [];
       const restoredRow = (past: INode): StoredInodeEntry => {
@@ -6174,8 +6071,8 @@ export class SqliteVFS {
         this.normalizeSharedEntry(entry, CRED_KERNEL);
         return entry;
       };
-      for (const [index, live] of changed.entries()) {
-        const past = pasts[index];
+      for (const live of changed) {
+        const past = this.historyAt(live.path, job.g);
         if (past === undefined) {
           builder.addDeletedPath(live.path, live);
           deletedInodes.push(live);
@@ -6184,7 +6081,6 @@ export class SqliteVFS {
       for (const past of revived) builder.addInode(restoredRow(past));
       if (revived.length > 0) revivedAfter = revived[revived.length - 1]!.path;
       this._writeBatchOnce({ plan: builder.build(), deletedInodes }, { source: 'content-publish', limitMode: 'bounded' });
-      this.endImports(staged);
       restored += changed.length + revived.length;
     }
   }
@@ -6651,9 +6547,7 @@ export class SqliteVFS {
     // a finished import (whose replay writes nothing) or whatever replaced an
     // abandoned one, which is not that import's to write into.
     if (job === undefined && page.after !== null && rows.length > 0) throw vfsError('EINVAL', `${target}: no import is open here to continue`);
-    // A first page checks its target, of a job only importChunks began too:
-    // what stood above dst then may since have been removed.
-    if ((job === undefined || (job.source === undefined && job.cursor === '')) && page.after === null) this.assertImportTarget(target);
+    if (job === undefined && page.after === null) this.assertImportTarget(target);
     const identity = this.importIdentity(target, page, job, rows);
     const given = new Map<string, Uint8Array>();
     for (const chunk of chunks) {
@@ -6755,9 +6649,14 @@ export class SqliteVFS {
     this.revokeSharedDirectories(target);
     if (lazy) this.insertPendingChunks(missing);
     const jobId = job?.id ?? this.beginImport(target);
+    const placement = job ?? this.importPlacement(target);
     const state: z.infer<typeof ImportJobArgsSchema> = {
-      dst: target, source: page.source, ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }),
+      dst: target, source: page.source, parentIno: placement.parentIno, dstIno: placement.dstIno,
+      ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }),
     };
+    // The entry that creates dst, if this page does: its inode is recorded
+    // with the commit that makes it (importPlaced).
+    let dstEntry: StoredInodeEntry | undefined;
     if (job?.sourceNextIno === undefined) this.transactionSync(() => {
       if (identity.preserveInos) {
         this.ensureImportIdentityIndexes();
@@ -6767,7 +6666,10 @@ export class SqliteVFS {
     });
     let progress = storedCursor;
     let imported = 0;
-    const save = (): void => { this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId); };
+    const save = (): void => {
+      if (state.dstIno === undefined && dstEntry?.ino !== undefined) state.dstIno = dstEntry.ino;
+      this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId);
+    };
     const commit = (plan: TransactionPlan): void => {
       this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
       if (plan.inodes.length) this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, save);
@@ -6775,8 +6677,9 @@ export class SqliteVFS {
     };
     if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
       const root = this.newPlan(true);
-      root.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0,
-        defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, contentKey: null, pieceOffset: 0, pieces: [] }, { type: 'none' }));
+      dstEntry = this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0,
+        defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, contentKey: null, pieceOffset: 0, pieces: [] }, { type: 'none' });
+      root.addInode(dstEntry);
       commit(root.build());
     }
     for (const row of rows) {
@@ -6818,14 +6721,18 @@ export class SqliteVFS {
         flush();
         if (!complete) continue;
         const publish = this.newPlan(true);
-        publish.addInode(this.importedEntry(path, row, { type: 'staged', content: staging, digest }, identity.preserveInos ? row.ino : undefined));
+        const entry = this.importedEntry(path, row, { type: 'staged', content: staging, digest }, identity.preserveInos ? row.ino : undefined);
+        if (row.path === '') dstEntry = entry;
+        publish.addInode(entry);
         state.pending = undefined; progress = exportCursor(row.path);
         commit(publish.build());
       } else {
         const plan = this.newPlan(true);
         const content: InodeContent = row.kind === 'directory' || row.size === 0 ? { type: 'none' }
           : { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest: digest ?? null };
-        plan.addInode(this.importedEntry(path, row, content, identity.preserveInos ? row.ino : undefined));
+        const entry = this.importedEntry(path, row, content, identity.preserveInos ? row.ino : undefined);
+        if (row.path === '') dstEntry = entry;
+        plan.addInode(entry);
         progress = exportCursor(row.path);
         commit(plan.build());
       }
@@ -6838,8 +6745,8 @@ export class SqliteVFS {
         this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId);
         this.dropUnusedImportIdentityIndexes();
       });
-      const held = this.importStagings.get(target);
-      this.importStagings.delete(target);
+      const held = this.importStagings.get(jobId);
+      this.importStagings.delete(jobId);
       if (held !== undefined && held.id !== 0) this.abandonStaging(held);
     }
     this.runContentMaintenanceSafely(1);
@@ -7031,14 +6938,15 @@ export class SqliteVFS {
       if (hex(chunkHash(chunk.data)) !== chunk.hash) throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
       given.set(chunk.hash, chunk.data);
     }
-    if (this.importJob(target) === undefined) {
+    let jobId = this.importJob(target)?.id;
+    if (jobId === undefined) {
       this.assertImportTarget(target);
-      this.beginImport(target);
+      jobId = this.beginImport(target);
     }
-    let staging = this.importStagings.get(target);
+    let staging = this.importStagings.get(jobId);
     if (staging === undefined) {
       staging = { id: 0, size: 0, count: 0, hashed: false, digest: new ManifestDigest() };
-      this.importStagings.set(target, staging);
+      this.importStagings.set(jobId, staging);
     }
     let builder = this.newPlan();
     const flush = (): void => {
@@ -7059,12 +6967,91 @@ export class SqliteVFS {
     return { stored };
   }
 
+  /** The import open at `target`: one still where it began. A stale one is nobody's to continue. */
   private importJob(target: string): (z.infer<typeof ImportJobArgsSchema> & { id: number; cursor: string }) | undefined {
-    for (const row of this.sql.exec("SELECT id, args, cursor FROM vfs_jobs WHERE kind = 'import'")) {
+    for (const row of [...this.sql.exec("SELECT id, args, cursor FROM vfs_jobs WHERE kind = 'import'")]) {
       const args = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
-      if (args.dst === target) return { ...args, id: Number(row.id), cursor: String(row.cursor) };
+      if (args.dst === target && this.importPlaced(args)) return { ...args, id: Number(row.id), cursor: String(row.cursor) };
     }
     return undefined;
+  }
+
+  /** What an import beginning at `target` now records of where it stands (ImportJobArgsSchema). */
+  private importPlacement(target: string): { parentIno?: number; dstIno?: number } {
+    if (target === '') return {};
+    const parent = this.parentPath(target);
+    const parentIno = parent === '' ? ROOT_INODE : this.inodes.get(parent)?.ino;
+    const dstIno = this.inodes.get(target)?.ino;
+    return { ...(parentIno === undefined ? {} : { parentIno }), ...(dstIno === undefined ? {} : { dstIno }) };
+  }
+
+  /**
+   * Whether an import is still where it began: dst's parent path resolves
+   * to the directory it began in, and dst to the inode the import made or
+   * found there (or to nothing, before it has one). A removal of dst or of
+   * any directory above it, a rename of either away, a directory made or
+   * renamed in its place: each leaves a path resolving elsewhere, so the
+   * removal that commits is what ends the import. A job from before this
+   * was recorded needs only its parent to exist.
+   */
+  private importPlaced(job: z.infer<typeof ImportJobArgsSchema>): boolean {
+    if (job.dst === '') return true;
+    const parent = this.parentPath(job.dst);
+    const above = parent === '' ? undefined : this.inodes.get(parent);
+    if (parent !== '' && (above === undefined || !above.isDir)) return false;
+    if (job.parentIno === undefined) return true;
+    if ((above?.ino ?? ROOT_INODE) !== job.parentIno) return false;
+    const here = this.inodes.get(job.dst);
+    return job.dstIno === undefined ? here === undefined : here?.ino === job.dstIno;
+  }
+
+  /**
+   * End every import no longer where it began (importPlaced): its row goes,
+   * and what it staged (a pending manifest, chunks sent ahead) is queued for
+   * collection, in bounded transactions. Such an import is already invisible
+   * to every page, frame and cursor; this reclaims what it held. Never inside
+   * an embedder's transaction, whose rollback brings the removal back.
+   * Returns the transactions it ran.
+   */
+  private sweepStaleImports(): number {
+    if (!this.importSweepPending || this.transactionPublication !== null) return 0;
+    const stale: { id: number; contents: number[] }[] = [];
+    const open = [...this.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'import'")];
+    for (const row of open) {
+      const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
+      if (this.importPlaced(job)) continue;
+      const id = Number(row.id);
+      const contents = new Set<number>();
+      if (job.pending !== undefined) contents.add(job.pending.content);
+      const held = this.importStagings.get(id);
+      if (held !== undefined && held.id !== 0) contents.add(held.id);
+      stale.push({ id, contents: [...contents] });
+    }
+    let transactions = 0;
+    for (let i = 0; i < stale.length; i += STALE_IMPORTS_PER_TX) {
+      const batch = stale.slice(i, i + STALE_IMPORTS_PER_TX);
+      const queued = batch.flatMap((job) => job.contents.flatMap((id) => [GC_CONTENT, id]));
+      this.executeMeasuredTransaction(
+        this.metricsOnlyPlan({
+          blobBytes: 0, logicalRows: batch.length + queued.length / 2,
+          sqlExecs: 1 + groupedSqlExecs(queued.length / 2, GC_ROWS_PER_SQL_EXEC), affectedPaths: 0,
+        }),
+        { source: 'content-gc', limitMode: 'bounded' },
+        () => {
+          this.sql.exec(`DELETE FROM vfs_jobs WHERE id IN (${batch.map(() => '?').join(',')})`, ...batch.map((job) => job.id));
+          this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
+        },
+      );
+      transactions++;
+      for (const job of batch) {
+        this.importStagings.delete(job.id);
+        for (const id of job.contents) this.activeStagingContentIds.delete(id);
+      }
+      if (queued.length > 0) this.maintenancePending = true;
+    }
+    this.importSweepPending = false;
+    this.importJobsExist = open.length > stale.length;
+    return transactions;
   }
 
   /** An import starts into an absent path or an empty directory under an existing one. */
@@ -7078,22 +7065,14 @@ export class SqliteVFS {
     if (target !== '' && parent !== '' && !this.inodes.get(parent)?.isDir) throw vfsError('ENOENT', parent);
   }
 
-  /**
-   * A job for a new import into `target`. Its chunks stage afresh, never
-   * into an ended import's staging; inside an embedder's transaction the
-   * handle it displaces comes back if that transaction rolls back.
-   */
+  /** A job for a new import into `target`, recording where it stands (importPlaced). */
   private beginImport(target: string): number {
-    const displaced = this.importStagings.get(target);
-    if (displaced !== undefined) {
-      this.importStagings.delete(target);
-      this.transactionPublication?.displacedStagings.push([target, displaced]);
-    }
+    this.importJobsExist = true;
     let id = 0;
     this.transactionSync(() => {
       id = Number([...this.sql.exec(
         `INSERT INTO vfs_jobs (kind, args, cursor, start_gen, created_at) VALUES ('import', ?, '', 0, ?) RETURNING id`,
-        JSON.stringify({ dst: target }),
+        JSON.stringify({ dst: target, ...this.importPlacement(target) }),
         this.now(),
       )][0]!.id);
     });
@@ -7503,15 +7482,12 @@ export class SqliteVFS {
   ): { inodes: number; chunks: number } {
     const normalized = this.authorizeBatch(payload, cred);
     this.assertMutationsAllowed(batchMutationPaths(normalized));
-    const staged = this.stagedImportsBeneath((normalized.deletePaths ?? []).filter((path) => this.inodes.get(path)?.isDir));
-    const result = this._writeBatchWithRetry(
+    return this._writeBatchWithRetry(
       normalized,
       { source: 'strict-batch', limitMode: 'bounded' },
       true,
       onCommit,
     );
-    this.endImports(staged);
-    return result;
   }
 
   /**
@@ -8089,8 +8065,6 @@ export class SqliteVFS {
       events: new Array<{ type: VfsEventType; path: string; oldPath?: string }>(),
       structural: new Map<string, StructuralChange>(),
       removedDirectories: new Array<INode>(),
-      abandonedImports: new Array<OpenImport>(),
-      displacedStagings: new Array<[string, StagingContent]>(),
     };
     const maintenancePending = this.maintenancePending;
     const openBefore = new Map([...this.openNodes].map(opened => [opened, { path: opened.path, inode: opened.inode }]));
@@ -8108,8 +8082,6 @@ export class SqliteVFS {
     } catch (error) {
       this.evictAll();
       this.maintenancePending = maintenancePending;
-      // The jobs the rollback brings back hold their staging again.
-      for (const [dst, staging] of publication.displacedStagings.reverse()) this.importStagings.set(dst, staging);
       try {
         this.inodes.clear();
         this._countersLoaded = false;
@@ -8139,7 +8111,6 @@ export class SqliteVFS {
     } finally {
       this.transactionPublication = null;
     }
-    this.releaseImports(publication.abandonedImports);
     if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
     this.deliverEvents(publication.removedDirectories, () => {
       for (const event of publication.events) {
@@ -8297,13 +8268,6 @@ export class SqliteVFS {
           if (entry.prior.chunkId !== null) queue.add(GC_CHUNK, entry.prior.chunkId);
           if (entry.prior.contentId !== null) queue.add(GC_CONTENT, entry.prior.contentId);
         }
-        // An import whose destination this removes ends with it; what it had
-        // staged is collected once nothing names it.
-        for (let i = 0; i < plan.abandoned.length; i += KEYS_PER_SQL_EXEC) {
-          const batch = plan.abandoned.slice(i, i + KEYS_PER_SQL_EXEC);
-          this.sql.exec(`DELETE FROM vfs_jobs WHERE id IN (${batch.map(() => '?').join(',')})`, ...batch.map((job) => job.id));
-        }
-        for (const job of plan.abandoned) for (const id of job.contents) queue.add(GC_CONTENT, id);
 
         if (plan.stagingCreated.length > 0) {
           const rows: unknown[] = [];
@@ -8604,20 +8568,9 @@ export class SqliteVFS {
     for (const staging of created) this.activeStagingContentIds.add(staging.id);
     for (const staging of published) this.activeStagingContentIds.delete(staging.id);
     for (const chunkId of rewritten) this.cacheEvict(chunkId);
-    if (this.transactionPublication !== null) this.transactionPublication.abandonedImports.push(...plan.abandoned);
-    else this.releaseImports(plan.abandoned);
-  }
-
-  /**
-   * Let go of what ended imports held in memory, once the transaction that
-   * ended them has committed (an embedder's transaction: when it commits,
-   * so a rollback that brings a job back finds its staging still pinned).
-   */
-  private releaseImports(abandoned: readonly OpenImport[]): void {
-    for (const job of abandoned) {
-      if (job.staging !== undefined && this.importStagings.get(job.dst) === job.staging) this.importStagings.delete(job.dst);
-      for (const id of job.contents) this.activeStagingContentIds.delete(id);
-    }
+    // A removal, or a write where an import has no destination yet, may
+    // leave an import's path leading elsewhere: the next sweep ends it.
+    if (this.importJobsExist && (plan.deletes.length > 0 || plan.inodes.length > 0)) this.importSweepPending = true;
   }
 
   /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
@@ -8689,9 +8642,8 @@ export class SqliteVFS {
    */
   private admitTransaction(plan: TransactionPlan, execution: TransactionExecution): { id: string; take: number } | null {
     if (execution.source === 'content-gc') return null;
-    // A removal, or the end of an import, only frees: the quota never blocks it.
     const grows = plan.inodes.length > 0 || plan.staged.length > 0 || plan.stagingCreated.length > 0
-      || plan.metrics.blobBytes > 0 || (plan.deletes.length === 0 && plan.abandoned.length === 0);
+      || plan.metrics.blobBytes > 0 || plan.deletes.length === 0;
     if (!grows) return null;
     const need = plan.metrics.blobBytes + plan.metrics.logicalRows * LEDGER_ROW_BYTES;
     const id = this.activeReservation;
@@ -8797,7 +8749,8 @@ export class SqliteVFS {
    * what keeps a page a range read of the queue's primary key.
    */
   runContentMaintenance(maxTransactions = 4): { transactions: number } {
-    let transactions = 0;
+    // Ending stale imports first: what they held is collected in this pass.
+    let transactions = this.sweepStaleImports();
     const maximum = clampNonNegativeInt(maxTransactions);
     while (transactions < maximum && this.legacyTables.length > 0) {
       this.legacyJanitorPage();
@@ -9128,7 +9081,7 @@ export class SqliteVFS {
 
   private runContentMaintenanceSafely(maxTransactions: number, force = false): void {
     if (this.transactionPublication) return;
-    if (!force && !this.maintenancePending) return;
+    if (!force && !this.maintenancePending && !this.importSweepPending) return;
     const startedAt = performance.now();
     try {
       this.runContentMaintenance(maxTransactions);
@@ -9146,7 +9099,6 @@ export class SqliteVFS {
       deletes: [],
       staged: [],
       stagingCreated: [],
-      abandoned: [],
       affectedPaths: new Set(),
       metrics,
     };

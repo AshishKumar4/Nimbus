@@ -3,13 +3,16 @@
  * sqlite-vfs-import-abandon — removing an import's destination abandons the
  * import (Kinu, ASK-mounts item 9). An import whose sender stopped after a
  * page keeps a job; removing dst (removeRecursive, rmdir, unlink, or a
- * rename away or over it, of dst or an ancestor) ends that job in the
- * transaction that removes dst and queues the staging the import held, so a
- * new import into dst starts clean and nothing staged is kept. A page of
- * the abandoned import still in flight lands nowhere, not even in the import
- * that replaced it. An import nobody removed still resumes after a reset, an
- * embedder transaction that rolls the removal back keeps its staging, and
- * ending many imports at once stays within a transaction's bounds.
+ * rename away or over it, of dst or an ancestor) ends that job: the job
+ * records the inodes dst's parent and dst resolved to, and a removal that
+ * commits leaves its path resolving elsewhere, so the removal is the
+ * invalidation. From then no page, frame or cursor sees the job, a new
+ * import into dst starts clean, and a sweep reclaims the job's row and
+ * staging so nothing staged is kept. A page of the abandoned import still in
+ * flight lands nowhere, not even in the import that replaced it, and not
+ * after a crash before the sweep. An import nobody removed still resumes
+ * after a reset, and an embedder transaction that rolls the removal back
+ * keeps it whole.
  */
 
 import assert from 'node:assert/strict';
@@ -106,22 +109,30 @@ function target(dir = 'home') {
   assertClean(dst, 'removeRecursive');
 }
 
-// ── The job goes in the transaction that removes dst ───────────────────────
+// ── The removal is the invalidation; the sweep only reclaims ──────────────
 {
   const src = source();
   const dst = target();
-  importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', pages: 1 });
-  dst.harness.setFaultInjector((statement) => (/DELETE FROM vfs_jobs/.test(statement.sql) ? new Error('reset while abandoning') : null));
-  assert.throws(() => dst.vfs.removeRecursive('home/proj'), /reset while abandoning/);
+  const first = importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', pages: 1 });
+  // A removal that does not commit leaves the import as it was.
+  dst.harness.setFaultInjector((statement) => (/^DELETE FROM vfs_inodes/.test(statement.sql) ? new Error('reset while removing') : null));
+  assert.throws(() => dst.vfs.removeRecursive('home/proj'), /reset while removing/);
   dst.harness.clearFault();
   const reopened = open(createSqliteVfsTestHarness(dst.harness.db));
-  assert.equal(reopened.vfs.exists('home/proj'), true, 'the removal did not commit without the abandonment');
-  assert.equal(names(reopened, 'home/proj').length, 9);
-  assert.equal(imports(reopened).length, 1, 'nor the abandonment without the removal');
+  assert.equal(names(reopened, 'home/proj').length, 9, 'the removal did not commit');
+  assert.equal(reopened.raw.importCursor('home/proj'), first.next, 'nor did the import end');
+  // One that commits ends it, whether or not the sweep after it runs.
+  reopened.harness.setFaultInjector((statement) => (/^DELETE FROM vfs_jobs/.test(statement.sql) ? new Error('reset before the sweep') : null));
   reopened.vfs.removeRecursive('home/proj');
-  assert.deepEqual(imports(reopened), []);
-  assert.equal(importPages(src, reopened, { at: 'second', root: 'proj', dst: 'home/proj' }).imported, 41);
-  assertClean(reopened, 'atomic');
+  assert.equal(imports(reopened).length, 1, 'the sweep failed: the row is still there');
+  assert.equal(reopened.raw.importCursor('home/proj'), null, 'but nobody sees it');
+  const late = nextPage(src, reopened, { at: 'first', root: 'proj', after: first.next });
+  assert.throws(() => reopened.raw.importPage('home/proj', late.page, late.chunks), /EINVAL/);
+  reopened.harness.clearFault();
+  const again = open(createSqliteVfsTestHarness(dst.harness.db));
+  assert.deepEqual(imports(again), [], 'the next open sweeps it');
+  assert.equal(importPages(src, again, { at: 'second', root: 'proj', dst: 'home/proj' }).imported, 41);
+  assertClean(again, 'the removal is the invalidation');
 }
 
 // ── A rename away ends it; the dead import's next page lands nowhere ───────
@@ -295,7 +306,7 @@ function target(dir = 'home') {
     found = true;
     assert.throws(() => reopened.raw.withTransaction(() => {
       reopened.vfs.removeRecursive('home/big');
-      assert.deepEqual(imports(reopened), [], 'inside it, the removal ended the import');
+      assert.equal(reopened.raw.importCursor('home/big'), null, 'inside it, the removal ended the import');
       throw new Error('the embedder gives up');
     }), /rolled back/);
     assert.equal(imports(reopened).length, 1, 'the rollback brought the job back');
@@ -425,19 +436,98 @@ function target(dir = 'home') {
   assert.throws(() => dst.vfs.writeBatch({ inodes: rows, chunks: [], deletePaths: ['home'] }), (error) => error.code === 'E2BIG');
   assert.equal(dst.vfs.exists('home'), true, 'a refused batch removes nothing');
   assert.equal(imports(dst).length, 1, 'and ends no import');
-  // A reset after the removal commits, before the import beneath it ends: its
-  // first page finds no directory to land in, and lands once there is one.
-  dst.harness.setFaultInjector((statement) => (/DELETE FROM vfs_jobs/.test(statement.sql) ? new Error('reset after the removal') : null));
-  assert.throws(() => dst.vfs.removeRecursive('home'), /reset after the removal/);
-  dst.harness.clearFault();
-  const reopened = open(createSqliteVfsTestHarness(dst.harness.db));
-  assert.equal(reopened.vfs.exists('home'), false);
-  assert.equal(imports(reopened).length, 1, 'the import outlived its directory');
-  assert.throws(() => importPages(src, reopened, { at: 'first', root: 'proj', dst: 'home/x', pages: 1 }), /ENOENT/);
-  assert.equal(reopened.vfs.exists('home/x'), false, 'nothing landed without a parent');
-  reopened.vfs.mkdir('home');
-  assert.equal(importPages(src, reopened, { at: 'first', root: 'proj', dst: 'home/x' }).imported, 41);
-  assertClean(reopened, 'an import that outlived its directory');
+}
+
+// ── A crash between the removal and the sweep (PossibleOpossum's repro) ────
+// A 4 MB file imported into home/big.bin stops mid-manifest: there is no
+// inode at dst yet. rmdir('home') commits and the process dies before the
+// sweep. The sender's resend neither completes the old import nor lands
+// under the missing parent, in that life or the next; once home is made
+// again, the same page is a new import of its own.
+{
+  const src = open();
+  src.vfs.writeFile('big.bin', random(4_000_000, 5));
+  src.raw.snapshot('s');
+  const resend = (side) => importPages(src, side, { at: 's', root: 'big.bin', dst: 'home/big.bin' });
+  let found = false;
+  for (let k = 1; !found; k++) {
+    assert.ok(k < 60, 'some reset leaves the file mid-manifest');
+    const dst = target();
+    dst.harness.failAfterTransaction({ transaction: dst.harness.transactionCount + k, error: new Error(`reset at ${k}`) });
+    try { resend(dst); } catch (error) { assert.match(String(error), new RegExp(`reset at ${k}`)); }
+    dst.harness.clearFault();
+    const reopened = open(createSqliteVfsTestHarness(dst.harness.db));
+    if (imports(reopened)[0]?.args.pending === undefined) continue;
+    found = true;
+    assert.equal(reopened.vfs.exists('home/big.bin'), false, 'nothing at dst yet');
+    reopened.harness.setFaultInjector((statement) => (/^DELETE FROM vfs_jobs/.test(statement.sql) ? new Error('crash before the sweep') : null));
+    reopened.vfs.rmdir('home');
+    assert.equal(reopened.vfs.exists('home'), false);
+    assert.throws(() => resend(reopened), (error) => error.code === 'ENOENT', 'the resend, in the same life');
+    reopened.harness.clearFault();
+    const after = open(createSqliteVfsTestHarness(dst.harness.db));
+    assert.deepEqual(imports(after), [], 'the next open ends it');
+    assert.throws(() => resend(after), (error) => error.code === 'ENOENT', 'the resend, after the crash');
+    assert.equal(after.harness.sql.exec("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path LIKE 'home%'")[0].n, 0, 'no inode landed under the missing parent');
+    after.vfs.mkdir('home');
+    resend(after);
+    assert.equal(after.vfs.contentKey('home/big.bin'), src.raw.at('s').contentKey('big.bin'));
+    assertClean(after, 'a crash between the removal and the sweep');
+  }
+}
+
+// ── Where the import began is a path and an inode, not either alone ────────
+// Each of these leaves the import's paths resolving, just not to what it
+// began in; the check compares the inode each path resolves to now.
+{
+  // An ancestor renamed away: its inode survives, at another path. One
+  // import has written its destination, the other has only sent chunks.
+  const src = source();
+  const dst = target('home/a');
+  const first = importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/a/proj', pages: 1 });
+  const ahead = nextPage(src, dst, { at: 'second', root: 'proj' });
+  dst.raw.importChunks('home/a/next', ahead.chunks);
+  dst.vfs.rename('home/a', 'home/b');
+  assert.deepEqual(imports(dst), [], 'renaming an ancestor away ends both imports');
+  const late = nextPage(src, dst, { at: 'first', root: 'proj', after: first.next });
+  assert.throws(() => dst.raw.importPage('home/a/proj', late.page, late.chunks), /EINVAL/);
+  assert.throws(() => dst.raw.importPage('home/a/next', ahead.page, []), (error) => error.code === 'ENOENT');
+  assert.equal(dst.vfs.exists('home/a'), false, 'nothing landed where the ancestor was');
+  assert.deepEqual(names(dst, 'home/b'), ['proj'], 'nor in the directory that moved');
+  assert.equal(names(dst, 'home/b/proj').length, 9);
+  assertClean(dst, 'an ancestor renamed away');
+}
+{
+  // rmdir then mkdir of the parent, in one transaction: the path is back, with a new inode.
+  const src = source();
+  const dst = target('home/d');
+  const { chunks } = nextPage(src, dst, { at: 'first', root: 'proj' });
+  dst.raw.importChunks('home/d/proj', chunks);
+  dst.raw.withTransaction(() => {
+    dst.vfs.rmdir('home/d');
+    dst.vfs.mkdir('home/d');
+  });
+  assert.deepEqual(imports(dst), [], 'a directory made again is not the one the import began in');
+  assertClean(dst, 'rmdir then mkdir');
+  assert.equal(importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/d/proj' }).imported, 41, 'a new import lands there');
+}
+{
+  // Another directory renamed into dst, in one transaction with dst's removal.
+  const src = source();
+  const dst = target();
+  const first = importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', pages: 1 });
+  dst.raw.withTransaction(() => {
+    dst.vfs.rename('home/proj', 'home/kept');
+    dst.vfs.mkdir('home/other');
+    dst.vfs.writeFile('home/other/a.txt', 'other\n');
+    dst.vfs.rename('home/other', 'home/proj');
+  });
+  assert.deepEqual(imports(dst), [], 'a directory renamed in is not the import\'s');
+  const late = nextPage(src, dst, { at: 'first', root: 'proj', after: first.next });
+  assert.throws(() => dst.raw.importPage('home/proj', late.page, late.chunks), /EINVAL/);
+  assert.deepEqual(names(dst, 'home/proj'), ['a.txt'], 'the tree renamed in is as it was');
+  assert.equal(names(dst, 'home/kept').length, 9);
+  assertClean(dst, 'a directory renamed in');
 }
 
 console.log('sqlite-vfs-import-abandon: all assertions passed');

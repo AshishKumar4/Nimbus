@@ -10,22 +10,25 @@ published independently in the `@nimbus-sh` npm scope.
   page kept its `vfs_jobs` row after its destination was removed, and
   `importCursor(dst)` still answered the old cursor, so every later import
   into that path was taken for a replay and refused with `EINVAL: replay
-  metadata differs`. Now `unlink`, `rmdir`, `removeRecursive`, a rename away
-  or over it, or a restore that removes it (of dst or any directory above it)
-  ends the import in the transaction that removes dst: the job row goes, and
-  the staging it held (a manifest cut off mid-import, chunks sent ahead of
-  their pages) is queued for collection, once the transaction commits (an
-  embedder's `withTransaction` that rolls back keeps it). Imports beneath a
-  removed directory that have only sent chunks, with no destination yet,
-  end once the removal commits, in bounded transactions of their own; a
-  refused removal ends none. Ending an import only frees storage, so a full
-  store never refuses it. Every export page
-  now names its snapshot (`VfsExportPage.source`, export schema 3), and an
-  import takes pages only from the export its first page came from, so a
-  late page of the abandoned import is refused, whether dst is empty or a
-  new import of another export is open there. An import nobody removed
-  still resumes after a reset. An embedder that carries pages through its
-  own schema must carry `source` too.
+  metadata differs`. An import now records where it stands: the inode dst's
+  parent directory resolved to when it began, and dst's own once dst
+  exists. At every page, chunk frame and cursor, those paths must still
+  resolve to those inodes, so the removal that commits is what ends the
+  import: `unlink`, `rmdir`, `removeRecursive`, a restore, a rename away or
+  over dst, of dst or any directory above it, a directory made again or
+  renamed into its place. No page, frame or cursor sees an ended import, and
+  a new import into dst starts clean. A sweep after the removal commits
+  (never inside an embedder's `withTransaction`, whose rollback keeps the
+  import whole) deletes its row and queues the staging it held (a manifest
+  cut off mid-import, chunks sent ahead of their pages) for collection, in
+  bounded transactions that only free storage, so a full store never
+  refuses them; a crash before the sweep leaves the import ended, and the
+  next open sweeps it. Every export page also names its snapshot
+  (`VfsExportPage.source`, export schema 3), and an import takes pages only
+  from the export its first page came from, so a late page of an abandoned
+  import is refused even when a new import of another export is open at
+  dst. An import nobody removed still resumes after a reset. An embedder
+  that carries pages through its own schema must carry `source` too.
 
 - A filesystem error's message is Node's: `ENOENT: no such file or
   directory, open 'x'`, with libuv's description, the syscall, the path
