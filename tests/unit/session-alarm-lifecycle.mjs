@@ -3,9 +3,11 @@
 //   - concurrent scheduleAlarm calls must not lose a reason (the log-activity
 //     hook fires scheduleHibFlush + ensureLogJanitor back-to-back; two
 //     interleaved get→put cycles used to drop 'w9-flush');
-//   - the janitor stops re-arming when the session is idle and re-arms on the
-//     next log activity;
-//   - a scheduleAlarm storage failure must not leave _w1JanitorArmed=true
+//   - the janitor is armed only for a retention deadline (an exit + 10 min),
+//     never on a cadence: a running process — the session's own shell always
+//     is one — holds no deadline, so an idle session has nothing re-arming;
+//   - a janitor woken in a fresh instance drops the logs only SQL holds;
+//   - a scheduleAlarm storage failure must not leave _w1JanitorAt recorded
 //     (nothing would ever re-arm);
 //   - a destroyed session never re-arms;
 //   - rpcDestroy deletes the pending alarm and writes the tombstone.
@@ -47,10 +49,13 @@ function makeHost() {
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,
-    _w1JanitorArmed: false,
+    _w1JanitorAt: null,
     _w1SessionDestroyed: false,
   };
 }
+
+/** ProcessLogStore's default retention past exit. */
+const RETAIN_AFTER_EXIT_MS = 10 * 60 * 1000;
 
 // ── [1] F2: concurrent RMWs keep BOTH reasons ──────────────────────────────
 {
@@ -68,63 +73,116 @@ function makeHost() {
   console.log('  [1] concurrent scheduleAlarm calls keep both reasons (no lost update)');
 }
 
-// ── [2] janitor stops when idle, re-arms on activity ───────────────────────
+/** A process that ran and exited, leaving `text` in its log; returns its pid and exit time. */
+function exitedProcess(host, text = 'done\n') {
+  const pid = host.processes.spawn('node -e', [], '/').pid;
+  host.processes.appendOutput(pid, 'stdout', text);
+  host.processes.exit(pid, 0);
+  host.processes.markExit(pid, 0);
+  return { pid, exitAt: host.processes.getExit(pid).at };
+}
+
+// ── [2] the janitor is armed only for a retention deadline ─────────────────
 {
   const storage = makeStorage();
   const host = makeHost();
   const ctx = { storage };
-  ensureLogJanitor(host, ctx);
+  const orphan = (p) => !host.processes.get(p);
+  // The session's shell: running, and logging, for as long as the session lives.
+  const shell = host.processes.spawn('sh', ['sh'], '/').pid;
+  host.processes.appendOutput(shell, 'stdout', '$ ');
+  ensureLogJanitor(host, ctx, orphan);
   await host._timerChain;
-  assert.ok(host._w1JanitorArmed && storage.alarm !== null, 'janitor armed on activity');
+  assert.equal(storage.alarm, null, 'a running process holds no deadline, so nothing is armed');
+  assert.equal(host._w1JanitorAt, null);
 
-  // Idle session: fire the pending janitor deadline — the sweep must NOT
-  // re-arm. (The dispatcher only fires reasons whose deadline has passed, so
-  // pull the scheduled deadline into the past first, as the alarm would.)
-  {
-    const m = storage.map.get(TIMER_REASONS_KEY);
-    m['log-janitor'] = Date.now() - 1;
-  }
-  await dispatchAlarm(host, ctx, () => true);
+  // A process exits: its logs are due RETAIN_AFTER_EXIT_MS later, and not before.
+  const { pid, exitAt } = exitedProcess(host);
+  ensureLogJanitor(host, ctx, orphan);
+  await host._timerChain;
+  assert.equal(storage.map.get(TIMER_REASONS_KEY)['log-janitor'], exitAt + RETAIN_AFTER_EXIT_MS,
+    'armed at the exit\'s retention deadline, not on a cadence');
+  assert.equal(host._w1JanitorAt, exitAt + RETAIN_AFTER_EXIT_MS);
+
+  // The alarm, early (as a stale deadline from an older build would be): nothing is due, nothing drops.
+  storage.map.get(TIMER_REASONS_KEY)['log-janitor'] = Date.now() - 1;
+  await dispatchAlarm(host, ctx, orphan);
+  assert.ok(host.processes.hasLogs(pid), 'kept until its deadline');
+  assert.equal(storage.map.get(TIMER_REASONS_KEY)['log-janitor'], exitAt + RETAIN_AFTER_EXIT_MS, 're-armed at the deadline itself');
+
+  // At the deadline: dropped, and with the shell still running nothing re-arms.
+  const realNow = Date.now;
+  Date.now = () => exitAt + RETAIN_AFTER_EXIT_MS;
+  try {
+    storage.map.get(TIMER_REASONS_KEY)['log-janitor'] = Date.now();
+    await dispatchAlarm(host, ctx, orphan);
+  } finally { Date.now = realNow; }
+  assert.equal(host.processes.hasLogs(pid), false, 'dropped at the deadline');
+  assert.ok(host.processes.stats.running > 0, 'the shell still runs');
   const map = storage.map.get(TIMER_REASONS_KEY);
-  assert.ok(!map || !('log-janitor' in map), 'idle sweep does not re-arm the janitor');
-  assert.equal(host._w1JanitorArmed, false, 'armed flag cleared so the next activity re-arms');
-
-  // Activity: a spawned process + logs → the sweep re-arms.
-  const pid = host.processes.spawn('server', [], '/').pid;
-  host.processes.appendOutput(pid, 'stdout', 'alive\n');
-  ensureLogJanitor(host, ctx);
-  await host._timerChain;
-  {
-    const m = storage.map.get(TIMER_REASONS_KEY);
-    m['log-janitor'] = Date.now() - 1;
-  }
-  await dispatchAlarm(host, ctx, (p) => !host.processes.get(p));
-  const map2 = storage.map.get(TIMER_REASONS_KEY);
-  assert.ok(map2 && 'log-janitor' in map2, 'busy session keeps the sweep cycle alive');
-  console.log('  [2] janitor stops when idle and re-arms on the next log activity');
+  assert.ok(!map || !('log-janitor' in map), `nothing retained can expire, so nothing re-arms: ${JSON.stringify(map)}`);
+  assert.equal(host._w1JanitorAt, null, 'cleared so the next exit arms again');
+  console.log('  [2] janitor armed only at retention deadlines; a running shell never re-arms it');
 }
 
-// ── [3] F3: schedule failure resets the armed flag ─────────────────────────
+// ── [2b] a janitor woken in a fresh instance sweeps what only SQL holds ─────
+{
+  const { Database } = await import('bun:sqlite');
+  const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+  const { wireProcessLogPersist } = await import('../../packages/worker/src/session/hibernation.ts');
+  const db = new Database(':memory:');
+  const storage = makeStorage();
+  const boot = () => {
+    const harness = createSqliteVfsTestHarness(db);
+    const host = makeHost();
+    const ctx = { storage: { ...storage, get: storage.get, put: storage.put, delete: storage.delete, setAlarm: (t) => storage.setAlarm(t), sql: harness.sql, transactionSync: harness.ctx.storage.transactionSync } };
+    wireProcessLogPersist(host, ctx);
+    return { host, ctx };
+  };
+  const rows = () => db.query('SELECT COUNT(*) AS n FROM w9_proc_logs').get().n + db.query('SELECT COUNT(*) AS n FROM w9_proc_exits').get().n;
+
+  const before = boot();
+  const { pid, exitAt } = exitedProcess(before.host, 'kept\n');
+  before.host.processes.flushLogs();
+  await before.host._timerChain;
+  assert.ok(rows() > 0, 'persisted');
+  assert.equal(storage.map.get(TIMER_REASONS_KEY)['log-janitor'], exitAt + RETAIN_AFTER_EXIT_MS);
+
+  // Hibernated; woken by the alarm at the deadline, holding nothing in memory.
+  const woken = boot();
+  const realNow = Date.now;
+  Date.now = () => exitAt + RETAIN_AFTER_EXIT_MS;
+  try {
+    await dispatchAlarm(woken.host, woken.ctx, (p) => !woken.host.processes.get(p));
+  } finally { Date.now = realNow; }
+  assert.equal(rows(), 0, `the persisted logs of pid ${pid} are dropped by the instance that never held them`);
+  assert.ok(!storage.map.has(TIMER_REASONS_KEY), 'and nothing re-arms');
+  console.log('  [2b] a janitor woken in a fresh instance drops the persisted logs, then stops');
+}
+
+// ── [3] F3: schedule failure resets the armed deadline ─────────────────────
 {
   const storage = makeStorage();
   storage.put = async () => { throw new Error('storage down'); };
   const host = makeHost();
+  exitedProcess(host);
   ensureLogJanitor(host, { storage });
   await host._timerChain;
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(host._w1JanitorArmed, false, 'failed schedule must not leave the flag set');
-  console.log('  [3] a scheduleAlarm storage failure resets _w1JanitorArmed');
+  assert.equal(host._w1JanitorAt, null, 'failed schedule must not leave the deadline recorded');
+  console.log('  [3] a scheduleAlarm storage failure resets _w1JanitorAt');
 }
 
 // ── [4] F7: destroyed sessions never re-arm ────────────────────────────────
 {
   const storage = makeStorage();
   const host = makeHost();
+  exitedProcess(host);
   host._w1SessionDestroyed = true;
   ensureLogJanitor(host, { storage });
   await host._timerChain;
   assert.equal(storage.alarm, null, 'destroyed session schedules nothing');
-  assert.equal(host._w1JanitorArmed, false);
+  assert.equal(host._w1JanitorAt, null);
   console.log('  [4] a destroyed session never re-arms the janitor');
 }
 
@@ -178,7 +236,8 @@ function makeDestroyHost(storage) {
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(host._w1SessionDestroyed, false, 're-init clears the destroyed flag');
   assert.ok(!storage.map.has(SESSION_DESTROYED_KEY), 're-init deletes the tombstone key');
-  host._w1JanitorArmed = false;
+  host._w1JanitorAt = null;
+  exitedProcess(host);
   ensureLogJanitor(host, { storage });
   await host._timerChain;
   assert.ok(storage.alarm !== null, 'the recreated session arms the janitor again');
@@ -258,4 +317,4 @@ function makeDestroyHost(storage) {
   console.log('  [6] process-log broadcast survives a log-store reset/rewire');
 }
 
-console.log('session-alarm-lifecycle OK: alarm RMWs serialized, janitor idle-stop/re-arm, destroy tombstone, broadcast rewire');
+console.log('session-alarm-lifecycle OK: alarm RMWs serialized, janitor at retention deadlines only, cold-instance sweep, destroy tombstone, broadcast rewire');

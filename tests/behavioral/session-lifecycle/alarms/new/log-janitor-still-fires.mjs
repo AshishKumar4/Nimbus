@@ -1,24 +1,15 @@
 #!/usr/bin/env bun
-// session-lifecycle/alarms/log-janitor-still-fires — janitor body still executes after
-// the setTimeout→setAlarm migration.
+// session-lifecycle/alarms/log-janitor-still-fires — a session that ran
+// processes still idles, wakes, and keeps its process-log path working.
 //
-// We can't directly observe `dropOlderThan` (it's an internal method
-// on processLogs); but processLogs.hibStats() is surfaced under
-// /api/_diag/memory.hib. After an exit-record ages out + the janitor
-// runs, the pending state should not grow indefinitely.
-//
-// Simpler observable: we run a few short commands (each exits → log
-// rows), wait long enough for the 60s alarm to fire, then re-check
-// that the DO is still functional and processLogs.hibStats reports
-// non-zero flushCount (W9 path) AND that hib.isolateGen incremented
-// (proves alarm-driven wake actually ran).
-//
-// Why we don't try to assert "exact rows deleted by janitor": the
-// retainAfterExitMs default (process-logs.ts) is 10 minutes — the
-// janitor wouldn't delete any of our test pids in a 70s window
-// anyway. What we CAN assert: alarm fires (isolateGen++), alarm
-// dispatcher runs without throwing (DO still healthy, /api/_diag
-// still serves), AND the W9 flush still works (flushCount > 0).
+// The janitor is armed for a retention deadline only (an exit + 10 min,
+// retainAfterExitMs in process-logs.ts), never on a cadence, so nothing
+// holds or wakes the DO during this probe's 70s idle; the unit tests
+// session-alarm-lifecycle and hosted-runtime-idle-hibernation cover the
+// janitor's deadlines and its sweep. What this probe asserts after the
+// idle: the DO hibernated and woke (isolateGen advanced) or flushed
+// (flushCount advanced), /api/_diag still serves, the shell works, and
+// a new exit is still flushed (flushCount > 0).
 
 import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driver.mjs';
 import { diagMemory } from '../../../heap-correctness/_diag.mjs';
@@ -54,8 +45,7 @@ const F0 = m0?.hib?.flushCount ?? 0;
 console.log(`[pre-idle] isolateGen=${G0} flushCount=${F0}`);
 
 await t.close();
-// Wait for the 60s log-janitor alarm to fire (+ a margin for the
-// 10s hib grace).
+// Idle well past the 10s hibernation grace.
 await sleep(70_000);
 
 t = new Terminal(sid);
@@ -72,14 +62,11 @@ console.log(`[post-idle] isolateGen=${G1} flushCount=${F1}`);
 a.check('post-wake DO serves /api/_diag/memory', typeof G1 === 'number',
   `m1.hib=${JSON.stringify(m1?.hib).slice(0, 200)}`);
 
-// 2. Alarm-driven activity during idle. Two valid evidence shapes:
-//    (a) isolateGen incremented → DO hibernated + woke for alarm.
-//    (b) flushCount increased during idle → alarm fired within the
-//        10s hibernation grace, dispatcher drained dirty logs.
-//    Either proves the alarm path runs; both are acceptable. The
-//    smoking-gun PRE-vs-POST signal (hibernation cycle) is in the
-//    dedicated probe session-lifecycle/alarms/new/hibernation-eligible-after-idle.mjs.
-a.check('alarm-driven activity during idle (G or F advanced)',
+// 2. The idle went somewhere. Two valid evidence shapes:
+//    (a) isolateGen incremented → the DO hibernated and the reconnect woke it.
+//    (b) flushCount increased during idle → the w9-flush alarm drained
+//        dirty logs within the 10s hibernation grace.
+a.check('hibernated or flushed during idle (G or F advanced)',
   (typeof G1 === 'number' && typeof G0 === 'number' && G1 > G0)
   || (typeof F1 === 'number' && typeof F0 === 'number' && F1 > F0),
   `G0=${G0} G1=${G1} F0=${F0} F1=${F1}`);

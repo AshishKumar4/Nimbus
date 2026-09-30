@@ -64,7 +64,7 @@ function makeHost() {
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,
-    _w1JanitorArmed: false,
+    _w1JanitorAt: null,
     _w1KeepaliveArmed: false,
     _w1LastClientActivityAt: Date.now(),
     _w1SessionDestroyed: false,

@@ -41,7 +41,7 @@
  * wireProcessLogPersist again.
  */
 
-import type { LogChunk, PersistAdapter, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
+import type { LogChunk, PersistAdapter, PersistedLogPid, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
@@ -62,8 +62,8 @@ export interface HibHost extends TimerHost {
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
-  /** W1: log-janitor alarm believed armed for this instance (cheap guard). */
-  _w1JanitorArmed: boolean;
+  /** W1: the log-janitor deadline believed armed by this instance, or null (cheap guard). */
+  _w1JanitorAt: number | null;
   /** W1: resident keep-alive alarm believed armed for this instance. */
   _w1KeepaliveArmed: boolean;
   /**
@@ -112,7 +112,7 @@ export function wireHibernationOnConstruct(ctx: any): WsHibernationConfigResult 
 export function wireProcessLogPersist(host: HibHost, ctx: any): void {
   installLogPersistence(host, ctx, () => {
     scheduleHibFlush(host, ctx);
-    ensureLogJanitor(host, ctx);
+    ensureLogJanitor(host, ctx, (pid) => !host.processes.get(pid));
   });
 }
 
@@ -211,6 +211,24 @@ export function installLogPersistence(
         console.warn('[nimbus/W9] pruneBeforeSeq failed:', e?.message);
       }
     },
+    retained() {
+      // Read-only: asking about a session that never persisted a log must
+      // not create its tables (a durable DDL commit, on a destroyed session too).
+      const tables = [...ctx.storage.sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('w9_proc_logs', 'w9_proc_exits')",
+      )];
+      if (tables.length < 2) return [];
+      const pids = new Map<number, PersistedLogPid>();
+      for (const { pid, last } of ctx.storage.sql.exec<{ pid: number; last: number }>(
+        'SELECT pid, MAX(ts) AS last FROM w9_proc_logs GROUP BY pid',
+      )) {
+        pids.set(pid, { pid, exitAt: null, lastActivity: last });
+      }
+      for (const { pid, at } of ctx.storage.sql.exec<{ pid: number; at: number }>('SELECT pid, at FROM w9_proc_exits')) {
+        pids.set(pid, { pid, exitAt: at, lastActivity: Math.max(at, pids.get(pid)?.lastActivity ?? at) });
+      }
+      return [...pids.values()];
+    },
   };
   // The supervisor fires the activity hook after every appendOutput /
   // markExit. Exit-on-process-end is a strong "flush soon" signal — if
@@ -229,17 +247,6 @@ export function installLogPersistence(
 }
 
 /**
- * W1: arm the log-janitor alarm cycle for this instance. Called from the
- * log-activity hook so only sessions that actually produce process logs
- * carry the sweep alarm. Idempotent per instance via `_w1JanitorArmed`;
- * dispatchAlarm clears the flag when it stops re-arming (idle session)
- * so the next burst of log activity re-arms the cycle.
- *
- * Why alarm-based instead of setTimeout: a recurring setTimeout prevents
- * the DO from hibernating (billed duration continuously). Alarms persist
- * across hibernation; the DO sleeps between fires.
- */
-/**
  * W1: lift the destroyed-session tombstone when a destroyed session id is
  * LEGITIMATELY re-initialized (documented SDK flow: stable job ids reuse a
  * session id after destroy — the id maps deterministically to the same DO).
@@ -256,19 +263,33 @@ export function clearDestroyedTombstone(host: HibHost, ctx: any): void {
   });
 }
 
-export function ensureLogJanitor(host: HibHost, ctx: any): void {
-  if (host._w1JanitorArmed) return;
+/**
+ * W1: arm the log-janitor alarm for the next retention deadline
+ * (`processes.nextLogExpiry`): the moment a retained pid's logs are due to
+ * go. Called from the log-activity hook, because a deadline only appears
+ * there — a process's exit, or a reader of its logs leaving. Nothing retained
+ * that can expire means nothing is armed: a running process, the session's
+ * own shell included, holds no deadline until it exits.
+ *
+ * Why an alarm and not setTimeout: a pending setTimeout keeps the DO from
+ * hibernating, and the deadline is ten minutes out. The alarm survives
+ * hibernation and wakes the object only when there is something to drop.
+ */
+export function ensureLogJanitor(host: HibHost, ctx: any, isOrphan?: (pid: number) => boolean): void {
   // A destroyed session must stay inert: a straggler facet RPC that wakes
   // the dead DO and appends output would otherwise re-arm the alarm cycle
   // on a session that no longer exists (the zombie-alarm hazard).
   if (host._w1SessionDestroyed) return;
-  // Optimistic flag (dedupes same-tick appends), CONFIRMED by the schedule
-  // outcome: timers.schedule swallows storage errors, and a failure with the
-  // flag left set would mean no alarm AND nothing ever re-arming until the
-  // instance recycles.
-  host._w1JanitorArmed = true;
-  void timers(host, ctx).schedule('log-janitor', Date.now() + 60_000).then((ok) => {
-    if (!ok) host._w1JanitorArmed = false;
+  const at = host.processes.nextLogExpiry(undefined, isOrphan);
+  // Armed no later than this already: the janitor re-reads the deadline when it runs.
+  if (at === null || (host._w1JanitorAt !== null && host._w1JanitorAt <= at)) return;
+  // Optimistic (dedupes same-tick appends), CONFIRMED by the schedule
+  // outcome: timers.schedule swallows storage errors, and a failure left
+  // recorded would mean no alarm AND nothing re-arming until an earlier
+  // deadline came along.
+  host._w1JanitorAt = at;
+  void timers(host, ctx).schedule('log-janitor', at).then((ok) => {
+    if (!ok && host._w1JanitorAt === at) host._w1JanitorAt = null;
   });
 }
 
@@ -432,8 +453,8 @@ export function scheduleHibFlush(host: HibHost, ctx: any): void {
  * dispatcher with this session's handlers registered:
  *   - `'w9-flush'` → processes.flushLogs()
  *   - `'resident-launch'` → pumpResidentLaunches()
- *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
- *     for next 60s cycle while the session still has anything to sweep.
+ *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck) over
+ *     memory and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
  *
@@ -458,24 +479,29 @@ export function dispatchAlarm(
       // the chunk it just released.
       await pumpResidentLaunches?.();
     },
-    'log-janitor': (now) => {
+    'log-janitor': () => {
+      host._w1JanitorAt = null;
+      if (host._w1SessionDestroyed) return;
+      // Covers the pids only SQL holds as well: this may be the first
+      // event of an instance woken for it, with nothing in memory.
       host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);
-      // Re-arm only while the session still has running processes or
-      // buffered logs to sweep. An idle, abandoned, or destroyed
-      // session must NOT keep an eternal 60s alarm loop alive: the
-      // janitor used to self-renew unconditionally (and the DO
-      // constructor re-armed it on every alarm-triggered boot), so
-      // every session ever created kept booting its DO every ~60s
-      // forever. The accumulated fleet of deleted probe sessions
-      // produced continuous DO-storage churn (measured ~24 zombie
-      // boots/s on 2026-07-13) that intermittently reset LIVE
-      // session DOs mid-run ("Internal error in Durable Object
-      // storage caused object to be reset"). The next log append
-      // re-arms the cycle via ensureLogJanitor.
-      if (host.processes.stats.running > 0 || host.processes.logStats.totalPids > 0) {
-        return { rearmAt: now + 60_000 };
-      }
-      host._w1JanitorArmed = false;
+      // The drops leave SQL now; nothing else may flush this instance.
+      host.processes.flushLogs();
+      // Re-arm only for the next deadline, never on a cadence. An idle,
+      // abandoned, or destroyed session must NOT keep an eternal alarm
+      // loop alive: the janitor used to self-renew every 60s (first
+      // unconditionally, then while any process ran — and the session's
+      // own shell always runs), so every session that ever ran a process
+      // kept booting its DO every ~60s. The accumulated fleet of deleted
+      // probe sessions produced continuous DO-storage churn (measured
+      // ~24 zombie boots/s on 2026-07-13) that intermittently reset LIVE
+      // session DOs mid-run ("Internal error in Durable Object storage
+      // caused object to be reset"). The next exit re-arms the cycle via
+      // ensureLogJanitor.
+      const next = host.processes.nextLogExpiry(undefined, janitorOrphanCheck);
+      if (next === null) return;
+      host._w1JanitorAt = next;
+      return { rearmAt: next };
     },
     'resident-keepalive': (now) => {
       const rearmAt = residentKeepaliveFired(host, ctx, now);

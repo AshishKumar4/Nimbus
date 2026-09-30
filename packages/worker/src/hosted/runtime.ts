@@ -90,7 +90,10 @@ class RuntimeOwner {
   private readyPromise: Promise<void> | null = null;
   private supervisor: SessionSupervisorOps | null = null;
   private flushScheduled = false;
-  private janitorScheduled = false;
+  /** The retention deadline the `log-janitor` task is scheduled for, or null. */
+  private janitorAt: number | null = null;
+  /** A pid whose process this runtime's table no longer holds: its logs are an orphan's. */
+  private readonly isLogOrphan = (pid: number): boolean => !this.processes.get(pid);
   private recoveryNotice = false;
   private legacyNotice: string | null = null;
   private readonly scheduling = new Set<Promise<void>>();
@@ -247,13 +250,25 @@ class RuntimeOwner {
         throw error;
       }));
     }
-    if (!this.janitorScheduled) {
-      this.janitorScheduled = true;
-      this.options.lifecycle.waitUntil(this.schedule('log-janitor', Date.now() + 60_000).catch((error: unknown) => {
-        this.janitorScheduled = false;
-        throw error;
-      }));
-    }
+    this.scheduleJanitor();
+  }
+
+  /**
+   * Schedule `log-janitor` for the next retention deadline, when that is
+   * earlier than the one already scheduled. A deadline appears only on log
+   * activity (an exit, a reader leaving), so this runs there and after each
+   * sweep. Nothing retained that can expire means nothing is scheduled: a
+   * running process — the workspace's own shell always is one — holds no
+   * deadline, and an idle object must have no task pending to hibernate.
+   */
+  private scheduleJanitor(): void {
+    const at = this.processes.nextLogExpiry(undefined, this.isLogOrphan);
+    if (at === null || (this.janitorAt !== null && this.janitorAt <= at)) return;
+    this.janitorAt = at;
+    this.options.lifecycle.waitUntil(this.schedule('log-janitor', at).catch((error: unknown) => {
+      if (this.janitorAt === at) this.janitorAt = null;
+      throw error;
+    }));
   }
 
   async onScheduled(task: HostedRuntimeTask): Promise<void> {
@@ -267,9 +282,12 @@ class RuntimeOwner {
       this.flushScheduled = false;
       this.processes.flushLogs();
     } else {
-      this.janitorScheduled = false;
-      this.processes.dropLogsOlderThan(undefined, (pid) => !this.processes.get(pid));
-      if (this.processes.stats.running > 0 || this.processes.logStats.totalPids > 0) this.scheduleLogs();
+      this.janitorAt = null;
+      // Covers the pids only SQL holds as well: an object woken for this
+      // task holds nothing of its predecessor's in memory.
+      this.processes.dropLogsOlderThan(undefined, this.isLogOrphan);
+      this.processes.flushLogs();
+      this.scheduleJanitor();
     }
   }
 

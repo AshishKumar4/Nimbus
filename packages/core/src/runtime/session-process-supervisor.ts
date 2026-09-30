@@ -364,7 +364,13 @@ export class SessionProcessSupervisor {
   }
 
   subscribeLogs(pid: number, cb: (chunk: LogChunk) => void): () => void {
-    return this.logs.subscribe(pid, cb);
+    const unsubscribe = this.logs.subscribe(pid, cb);
+    // A reader holds a pid's logs past their retention (see
+    // ProcessLogStore.nextExpiry), so its leaving is log activity too.
+    return () => {
+      unsubscribe();
+      this.logActivity?.();
+    };
   }
 
   subscribeExit(pid: number, cb: (exit: ProcessExitInfo) => void): () => void {
@@ -404,6 +410,11 @@ export class SessionProcessSupervisor {
 
   dropLogsOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number {
     return this.logs.dropOlderThan(ageMs, isOrphan);
+  }
+
+  /** See ProcessLogStore.nextExpiry — when dropLogsOlderThan next has work, or null. */
+  nextLogExpiry(ageMs?: number, isOrphan?: (pid: number) => boolean): number | null {
+    return this.logs.nextExpiry(ageMs, isOrphan);
   }
 
   logHibStats(): ReturnType<ProcessLogStore['hibStats']> {

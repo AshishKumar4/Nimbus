@@ -229,6 +229,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
     persistExit(pid, info) { calls.push(['exit', pid, info.code]); },
     dropPid(pid) { calls.push(['drop', pid]); },
     pruneBeforeSeq(pid, seq) { calls.push(['prune', pid, seq]); },
+    retained() { return []; },
   }, () => { activity++; });
 
   processes.appendOutput(entry.pid, 'stdout', 'one\n');
