@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7135560e2d7dac7eafc81b28c3398759a4db6969ba94004f429d6ffdcb83ce55",
+  "fingerprint": "ba3a79b7ee4ba83923fb86c968e76157d33ef7c09c96e319e10d68ffaed670da",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1794,7 +1794,7 @@
     "packages/worker/dist/runtime/node-repl.js": "4dc526338e3a0bee1f0a66eda75417d5f60da4bae8b783d14d279d096c71c562",
     "packages/worker/dist/runtime/node-runner.d.ts": "cd0b3f14237ef0b7668d2feb6dbff736a08e878aa93ccfea1e585379aa6397af",
     "packages/worker/dist/runtime/node-runner.d.ts.map": "aaefffdfb8d3366948c5be4d8ab7f0bf250250a402cb408931aa84c98047f263",
-    "packages/worker/dist/runtime/node-runner.js": "8e99919940f10df0a58fe610c1b53f930b955328073d1ad0b879ff6f1c02aeee",
+    "packages/worker/dist/runtime/node-runner.js": "faad5bf950453ea695018796ff0f5bb0f9c88463e85ae981e7f7ff3712cd8267",
     "packages/worker/dist/runtime/node-shims-artifact.d.ts": "7d4437ae80e2f49370435f6355bf26494d3a684402a4eaba0b307892aaeff806",
     "packages/worker/dist/runtime/node-shims-artifact.d.ts.map": "f7db4255899f23f55d6d16d8b55ecfff9315865a8f8b9ef0dd5b93d14f236ff5",
     "packages/worker/dist/runtime/node-shims-artifact.js": "77f623dbed4748d174108884a170eae6e97b6240a2c6c52299dd9a7c22ee6dbb",
@@ -2173,7 +2173,7 @@
     "packages/worker/src/runtime/javascript-string-literal.ts": "de924885ca8c6f1143c138135b6c85921329daf95b980457ba05a6da6e08e980",
     "packages/worker/src/runtime/native-http.ts": "4ea1bb29c507ec6c70de7b634d93ae3f3c7d0e4eaf6ac060de666769ee76ff75",
     "packages/worker/src/runtime/node-repl.ts": "e8d755a0f23ef4ca54a54c4e8dcde6a1874ba634abdf642a547b9b5836876a50",
-    "packages/worker/src/runtime/node-runner.ts": "024f932107bde67700d1b57edb8bbe139e9f1e702a52bd5891ecbbd0df96eed2",
+    "packages/worker/src/runtime/node-runner.ts": "2d5f8e1d91a67a88e349f2b0e20fffe4dab80a4a1e720eeddae65da2c8aade03",
     "packages/worker/src/runtime/node-shims-artifact.ts": "8d0290d304f10c15910c05e6785ccaaea8bb04db9f83beead6b5aebcc97a8b2f",
     "packages/worker/src/runtime/node-shims.ts": "0d91db89e8429b94bed9f41f7815db8d25f6924637032489dd562e35232cc2e9",
     "packages/worker/src/runtime/opencode-artifact.ts": "ad7bd8d45ea1eccdb32b9ee04f668a900382ed655b527d34c8a9bb2b8ff4fb70",

@@ -202,6 +202,62 @@ function stdinBytesOf(stream) {
     };
 }
 /**
+ * The bytes a read ahead holds, in buffers it owns: pieces smaller than a
+ * sixteenth of a read are copied into one shared buffer, so a writer's tiny
+ * writes hold a buffer per read rather than an array each, and a view into a
+ * larger buffer is copied, so it holds only the bytes it was charged for.
+ */
+class ReadAheadBuffers {
+    chunks = [];
+    pending = null;
+    used = 0;
+    add(piece) {
+        if (piece.byteLength === 0)
+            return;
+        if (piece.byteLength >= STDIN_CHUNK_BYTES / 16) {
+            this.flush();
+            this.chunks.push(piece.byteLength === piece.buffer.byteLength ? piece : piece.slice());
+            return;
+        }
+        if (this.pending !== null && this.used + piece.byteLength > this.pending.byteLength)
+            this.flush();
+        this.pending ??= new Uint8Array(STDIN_CHUNK_BYTES);
+        this.pending.set(piece, this.used);
+        this.used += piece.byteLength;
+    }
+    /** The held bytes, the shared buffer's included; call once, when reading stops. */
+    finish() {
+        this.flush();
+        return this.chunks;
+    }
+    flush() {
+        if (this.pending === null || this.used === 0)
+            return;
+        const full = this.used === this.pending.byteLength;
+        this.chunks.push(full ? this.pending : this.pending.slice(0, this.used));
+        if (full)
+            this.pending = null;
+        this.used = 0;
+    }
+}
+/**
+ * `read`, or 'aborted' once `signal` aborts first. The abort listener lives
+ * only as long as this one read, so a read ahead of many tiny reads leaves
+ * nothing behind on a signal that outlives it (the shell's, for the whole
+ * command).
+ */
+function untilAborted(read, signal) {
+    if (signal === undefined)
+        return read;
+    if (signal.aborted)
+        return Promise.resolve('aborted');
+    return new Promise((resolve, reject) => {
+        const onAbort = () => resolve('aborted');
+        signal.addEventListener('abort', onAbort, { once: true });
+        read.then((value) => { signal.removeEventListener('abort', onAbort); resolve(value); }, (error) => { signal.removeEventListener('abort', onAbort); reject(error); });
+    });
+}
+/**
  * Read `source` until it ends, holds more than `limit` bytes (at most
  * `limit` + 1: the extra byte shows whether it ended exactly at the limit), or
  * `account` cannot cover the next piece; null when `signal` aborts first (the
@@ -209,33 +265,24 @@ function stdinBytesOf(stream) {
  * no more than the read asks, and what the read did not return is given back.
  */
 async function readAhead(source, limit, account, signal) {
-    const chunks = [];
+    const held = new ReadAheadBuffers();
     let total = 0;
-    const aborted = signal
-        ? new Promise((resolve) => {
-            if (signal.aborted)
-                resolve('aborted');
-            else
-                signal.addEventListener('abort', () => resolve('aborted'), { once: true });
-        })
-        : null;
     while (total <= limit) {
         const granted = account.take(Math.min(STDIN_CHUNK_BYTES, limit + 1 - total));
         if (granted === 0)
-            return { chunks, ended: false };
-        const next = source.readBytes(granted);
-        const chunk = aborted ? await Promise.race([next, aborted]) : await next;
+            return { chunks: held.finish(), ended: false };
+        const chunk = await untilAborted(source.readBytes(granted), signal);
         if (chunk === 'aborted')
             return null;
         if (chunk === null) {
             account.give(granted);
-            return { chunks, ended: true };
+            return { chunks: held.finish(), ended: true };
         }
         account.give(granted - chunk.byteLength);
-        chunks.push(chunk);
+        held.add(chunk);
         total += chunk.byteLength;
     }
-    return { chunks, ended: false };
+    return { chunks: held.finish(), ended: false };
 }
 /**
  * `source` with `chunks` read from it already put back in front, each
