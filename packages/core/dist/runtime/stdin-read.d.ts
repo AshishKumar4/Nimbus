@@ -32,16 +32,39 @@ import { type ServerLaunchHost } from './server-launch.js';
  * what a synchronous reader of a `< file` redirect holds of the file (fd 0 is
  * the file; process.stdin streams the rest of it).
  *
- * The read ahead is held in the session Durable Object until the program
- * takes it. Measured on a throwaway (2026-09-30; GraphQL
- * durableObjectsPeriodicGroups, max memoryUsageBytes of the session object
- * per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`, 16 MiB run
- * six times over three sessions): peaks of 59.5-82.0 MB of the 128 MB
- * isolate, no exceededMemoryErrors, and no higher than the same session's
- * ordinary `echo x | node` launch (71.8-82.0 MB). 16 MiB is the largest size
- * measured, and holds a large package-lock.json.
+ * A pipe's read ahead is held in the session Durable Object until the
+ * program takes it, so this is one budget for the whole session
+ * (ReadAheadBudget), shared by its concurrent launches: a launch that cannot
+ * reserve it streams its pipe instead. Measured on a throwaway (2026-09-30;
+ * GraphQL durableObjectsPeriodicGroups, max memoryUsageBytes of the session
+ * object per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`):
+ * one 16 MiB read ahead at a time peaked at 59.5-82.0 MB of the 128 MB
+ * isolate, no higher than the same session's ordinary `echo x | node` launch
+ * (71.8-82.0 MB); three at once peaked at 115.2 MB, too close to the limit,
+ * whose reset ends every process in the session.
  */
 export declare const STDIN_SYNC_READ_BYTES: number;
+/** A share of a ReadAheadBudget: `bytes` granted, released in parts or whole. */
+export interface ReadAheadReservation {
+    /** The bytes granted: at most what was asked, 0 when the budget had none free. */
+    readonly bytes: number;
+    /** Return `n` bytes of the grant (all that remain when omitted); idempotent past zero. */
+    release(n?: number): void;
+}
+/**
+ * The session's pipe read-ahead budget. A launch reserves its read ahead from
+ * it before reading, gives back what it did not use as soon as the pipe
+ * ended, gives back each piece as the program takes it, and releases the rest
+ * however the launch ends (exit, abort, a failed launch).
+ */
+export declare class ReadAheadBudget {
+    readonly capacity: number;
+    private heldBytes;
+    constructor(capacity: number);
+    /** Bytes reserved now, across all launches. */
+    get held(): number;
+    reserve(max: number): ReadAheadReservation;
+}
 export interface StdinReadProgram {
     /** The entry's code, as it will run (after any TypeScript/ESM transform). */
     source: string;

@@ -77,34 +77,47 @@ export async function runFresh(facetMgr, code, opts) {
         // invocation gets a fresh isolate; warm slots are reused only
         // for byte-identical re-invocations.
         // A pipe streams to the program as it arrives (facetMgr.exec). When its
-        // code reads stdin synchronously, the pipe is read ahead first, up to the
-        // bound: a pipe that ends within it is the program's whole stdin before it
-        // starts (still streamed, from here). A `< file` needs no read ahead: fd 0
+        // code reads stdin synchronously, the pipe is read ahead first, within
+        // what the session's budget grants (facetMgr.stdinReadAhead): a pipe that
+        // ends within it is the program's whole stdin before it starts (still
+        // streamed, from here). A launch granted nothing, because concurrent
+        // launches hold the budget, streams. A `< file` needs no read ahead: fd 0
         // is the file.
         const { stdin, stdinReadsSync, stdinFile, ...execOpts } = opts;
         let stdinOpts = {};
-        if (stdinFile) {
-            stdinOpts = { stdinFile: { ...stdinFile, syncRead: stdinReadsSync === true } };
-        }
-        else if (stdin) {
-            const source = stdinBytesOf(stdin);
-            if (stdinReadsSync) {
-                const ahead = await readAhead(source, STDIN_SYNC_READ_BYTES, opts.signal);
-                if (ahead === null)
-                    return { exitCode: 130, stdout: '', stderr: '', longRunning: false };
-                stdinOpts = { stdinPipe: replaying(ahead.chunks, source), stdinWhole: ahead.ended };
+        let reservation = null;
+        try {
+            if (stdinFile) {
+                stdinOpts = { stdinFile: { ...stdinFile, syncRead: stdinReadsSync === true } };
             }
-            else {
-                stdinOpts = { stdinPipe: source };
+            else if (stdin) {
+                const source = stdinBytesOf(stdin);
+                reservation = stdinReadsSync ? facetMgr.stdinReadAhead.reserve(STDIN_SYNC_READ_BYTES + 1) : null;
+                if (reservation !== null && reservation.bytes > 0) {
+                    // Up to the grant less one byte, and that byte shows whether the
+                    // pipe ended there.
+                    const ahead = await readAhead(source, reservation.bytes - 1, opts.signal);
+                    if (ahead === null)
+                        return { exitCode: 130, stdout: '', stderr: '', longRunning: false };
+                    reservation.release(reservation.bytes - ahead.chunks.reduce((n, c) => n + c.byteLength, 0));
+                    stdinOpts = { stdinPipe: replaying(ahead.chunks, source, reservation), stdinWhole: ahead.ended };
+                }
+                else {
+                    stdinOpts = { stdinPipe: source };
+                }
             }
+            const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
+            return {
+                exitCode: r.exitCode,
+                stdout: r.stdout,
+                stderr: r.stderr,
+                longRunning: false,
+            };
         }
-        const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
-        return {
-            exitCode: r.exitCode,
-            stdout: r.stdout,
-            stderr: r.stderr,
-            longRunning: false,
-        };
+        finally {
+            // However the launch ended: exit, abort, or a launch that failed.
+            reservation?.release();
+        }
     }
     // Long path: an argv flag (--watch/--inspect/--inspect-brk) or a server-bind
     // in the source opted in. Fork to a keyed long-lived facet via
@@ -178,8 +191,8 @@ function stdinBytesOf(stream) {
     };
 }
 /**
- * Read `source` until it ends or holds more than `limit` bytes; null when
- * `signal` aborts first (the shell's Ctrl+C).
+ * Read `source` until it ends or holds more than `limit` bytes (at most
+ * `limit` + 1); null when `signal` aborts first (the shell's Ctrl+C).
  */
 async function readAhead(source, limit, signal) {
     const chunks = [];
@@ -193,7 +206,7 @@ async function readAhead(source, limit, signal) {
         })
         : null;
     while (total <= limit) {
-        const next = source.readBytes(STDIN_CHUNK_BYTES);
+        const next = source.readBytes(Math.min(STDIN_CHUNK_BYTES, limit + 1 - total));
         const chunk = aborted ? await Promise.race([next, aborted]) : await next;
         if (chunk === 'aborted')
             return null;
@@ -206,9 +219,17 @@ async function readAhead(source, limit, signal) {
 }
 /**
  * `source` with `chunks` read from it already put back in front, each
- * released as it is handed on, so the read ahead leaves this isolate as the
- * program takes it.
+ * released as it is handed on, back to the session's budget too, so the read
+ * ahead leaves this isolate as the program takes it.
  */
-function replaying(chunks, source) {
-    return { readBytes: (maxLength) => chunks.length > 0 ? Promise.resolve(chunks.shift()) : source.readBytes(maxLength) };
+function replaying(chunks, source, reservation) {
+    return {
+        readBytes: (maxLength) => {
+            const next = chunks.shift();
+            if (next === undefined)
+                return source.readBytes(maxLength);
+            reservation.release(next.byteLength);
+            return Promise.resolve(next);
+        },
+    };
 }

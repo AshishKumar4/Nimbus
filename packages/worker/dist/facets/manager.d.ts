@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -939,6 +940,12 @@ export declare class FacetManager {
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
+    /**
+     * The session's pipe read-ahead budget (stdin-read.ts), held here because a
+     * read ahead is held in this Durable Object, whichever launch holds it. One
+     * byte over the bound shows whether a pipe ended exactly there.
+     */
+    readonly stdinReadAhead: ReadAheadBudget;
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the

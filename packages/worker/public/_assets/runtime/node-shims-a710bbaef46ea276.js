@@ -8676,7 +8676,7 @@ function __nimbusStdinWouldBlock(syscall) {
   // uncaught error prints, captures the message at construction.
   const why = __nimbusStdinFileSource() !== null
     ? " — stdin is a file larger than 16 MiB, and synchronous reads of it are served from its first 16 MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
-    : " — stdin is a pipe that had not ended within the first 16 MiB when the program started, and a synchronous read cannot wait for the rest. Redirect a file instead (`node script.js < file`), or read process.stdin, which takes the pipe as it arrives";
+    : " — stdin is a pipe that had not ended within what was read ahead of the program (at most the first 16 MiB, one budget shared by the session's concurrent launches), and a synchronous read cannot wait for the rest. Redirect a file instead (`node script.js < file`), or read process.stdin, which takes the pipe as it arrives";
   const err = new Error("EAGAIN: resource temporarily unavailable, " + syscall + " '0'" + why);
   err.code = "EAGAIN";
   err.errno = -11;

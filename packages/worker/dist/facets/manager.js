@@ -16,6 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, runtimeCodeModuleName, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
@@ -3730,6 +3731,12 @@ export class FacetManager {
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     debugEnabled = false;
     processRpcResources = new Map();
+    /**
+     * The session's pipe read-ahead budget (stdin-read.ts), held here because a
+     * read ahead is held in this Durable Object, whichever launch holds it. One
+     * byte over the bound shows whether a pipe ended exactly there.
+     */
+    stdinReadAhead = new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1);
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the

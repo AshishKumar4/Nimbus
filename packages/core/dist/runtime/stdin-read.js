@@ -38,16 +38,48 @@ const STDIN_DEVICES = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']);
  * what a synchronous reader of a `< file` redirect holds of the file (fd 0 is
  * the file; process.stdin streams the rest of it).
  *
- * The read ahead is held in the session Durable Object until the program
- * takes it. Measured on a throwaway (2026-09-30; GraphQL
- * durableObjectsPeriodicGroups, max memoryUsageBytes of the session object
- * per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`, 16 MiB run
- * six times over three sessions): peaks of 59.5-82.0 MB of the 128 MB
- * isolate, no exceededMemoryErrors, and no higher than the same session's
- * ordinary `echo x | node` launch (71.8-82.0 MB). 16 MiB is the largest size
- * measured, and holds a large package-lock.json.
+ * A pipe's read ahead is held in the session Durable Object until the
+ * program takes it, so this is one budget for the whole session
+ * (ReadAheadBudget), shared by its concurrent launches: a launch that cannot
+ * reserve it streams its pipe instead. Measured on a throwaway (2026-09-30;
+ * GraphQL durableObjectsPeriodicGroups, max memoryUsageBytes of the session
+ * object per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`):
+ * one 16 MiB read ahead at a time peaked at 59.5-82.0 MB of the 128 MB
+ * isolate, no higher than the same session's ordinary `echo x | node` launch
+ * (71.8-82.0 MB); three at once peaked at 115.2 MB, too close to the limit,
+ * whose reset ends every process in the session.
  */
 export const STDIN_SYNC_READ_BYTES = 16 * 1024 * 1024;
+/**
+ * The session's pipe read-ahead budget. A launch reserves its read ahead from
+ * it before reading, gives back what it did not use as soon as the pipe
+ * ended, gives back each piece as the program takes it, and releases the rest
+ * however the launch ends (exit, abort, a failed launch).
+ */
+export class ReadAheadBudget {
+    capacity;
+    heldBytes = 0;
+    constructor(capacity) {
+        this.capacity = capacity;
+    }
+    /** Bytes reserved now, across all launches. */
+    get held() {
+        return this.heldBytes;
+    }
+    reserve(max) {
+        const bytes = Math.max(0, Math.min(max, this.capacity - this.heldBytes));
+        this.heldBytes += bytes;
+        let remaining = bytes;
+        return {
+            bytes,
+            release: (n = remaining) => {
+                const back = Math.max(0, Math.min(n, remaining));
+                remaining -= back;
+                this.heldBytes -= back;
+            },
+        };
+    }
+}
 /** Whether `program`, or one of its own modules it loads, reads stdin synchronously. */
 export async function programReadsStdinSync(program, host) {
     if (program.source.length > SERVER_LAUNCH_MODULE_BYTES)
