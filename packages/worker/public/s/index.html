@@ -174,9 +174,10 @@
        one button with a one-word label, named in full by its aria-label and
        title. A word, not a glyph: the bar's own ↻ sits right above it. */
     @container (max-width: 200px) {
-      .preview-isolation { padding: 2px 8px; }
+      .preview-isolation { padding: 2px 4px; }
       .preview-isolation-text, .preview-isolation-label { display: none; }
       .preview-isolation-short { display: inline; }
+      .preview-isolation button { font-size: 10px; padding: 1px 3px; }
     }
     #markdown-preview {
       display: none; flex: 1; min-height: 0; overflow: auto;
