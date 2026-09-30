@@ -57,7 +57,7 @@ const cjsEsbuild = new EsbuildService(undefined, {
 
 const vfs = launchFs(files).fs;
 const state = await buildPrefetchBundle(
-  vfs, `${TS}/bin/tsc`, 'home/user', files[`${TS}/bin/tsc`], cjsEsbuild,
+  vfs, { scriptPath: `${TS}/bin/tsc`, cwd: 'home/user', entryCode: files[`${TS}/bin/tsc`], esbuild: cjsEsbuild },
 );
 
 const transformed = new Set(
@@ -123,7 +123,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   });
   assert.equal(hosted.transformsInIsolate, false);
   const state = await buildPrefetchBundle(
-    launchFs(largeFiles).fs, `/${entry}`, 'home/user', largeFiles[entry], hosted,
+    launchFs(largeFiles).fs, { scriptPath: `/${entry}`, cwd: 'home/user', entryCode: largeFiles[entry], esbuild: hosted },
   );
   const sent = calls.flat();
   assert.equal(sent.length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
@@ -162,7 +162,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     },
   });
   const state = await buildPrefetchBundle(
-    launchFs(prepassFiles).fs, `/${root}/cli.js`, 'home/user', prepassFiles[`${root}/cli.js`], host,
+    launchFs(prepassFiles).fs, { scriptPath: `/${root}/cli.js`, cwd: 'home/user', entryCode: prepassFiles[`${root}/cli.js`], esbuild: host },
   );
   for (const cell of [`${root}/cli.js`, `${root}/dep.js`]) {
     assert.equal(state.bundle[cell], '/* hosted-cjs */\n', `${cell} is transformed despite its unreadable sibling`);

@@ -23,8 +23,7 @@ const files = {
 };
 
 const build = (learnedFor) => buildPrefetchBundle(
-  launchFs(files).fs, `/${APP}/index.js`, `/${APP}`, files[`${APP}/index.js`], undefined, undefined,
-  undefined, undefined, undefined, learnedFor,
+  launchFs(files).fs, { scriptPath: `/${APP}/index.js`, cwd: `/${APP}`, entryCode: files[`${APP}/index.js`], learnedFor },
 );
 
 // Nothing learned: the run-time module is not in the map.

@@ -74,8 +74,7 @@ async function build(files, store, { calls = [], host = recordingHost(calls), pa
   const esbuild = new EsbuildService(undefined, { transformHost: host });
   const entry = `${APP}/cli.mjs`;
   const state = await buildPrefetchBundle(
-    launchFs(files).fs, `/${entry}`, 'home/user', files[entry], esbuild,
-    undefined, undefined, paced, undefined, undefined, undefined, store ?? undefined,
+    launchFs(files).fs, { scriptPath: `/${entry}`, cwd: 'home/user', entryCode: files[entry], esbuild, pacer: paced, transformStore: store ?? undefined },
   );
   return {
     calls,
@@ -125,8 +124,7 @@ try {
     const launch = async (source, calls) => {
       const files = { 'home/user/package.json': '{}', [`${APP}/tok.mjs`]: source };
       const esbuild = new EsbuildService(undefined, { transformHost: recordingHost(calls) });
-      const state = await buildPrefetchBundle(launchFs(files).fs, `/${APP}/tok.mjs`, 'home/user', source, esbuild,
-        undefined, undefined, pacer(), undefined, undefined, undefined, store);
+      const state = await buildPrefetchBundle(launchFs(files).fs, { scriptPath: `/${APP}/tok.mjs`, cwd: 'home/user', entryCode: source, esbuild, pacer: pacer(), transformStore: store });
       return state.bundle[`${APP}/tok.mjs`];
     };
     const firstCalls = [];
@@ -245,8 +243,7 @@ try {
       },
     });
     const { store } = storeOver(new Database(':memory:'));
-    await buildPrefetchBundle(launchFs(files).fs, `/${APP}/cli.mjs`, 'home/user', files[`${APP}/cli.mjs`], esbuild,
-      undefined, undefined, pacer(events, 256 * 1024), undefined, undefined, undefined, store);
+    await buildPrefetchBundle(launchFs(files).fs, { scriptPath: `/${APP}/cli.mjs`, cwd: 'home/user', entryCode: files[`${APP}/cli.mjs`], esbuild, pacer: pacer(events, 256 * 1024), transformStore: store });
     const calls = events.filter((e) => e.startsWith('host:'));
     assert.ok(calls.length > 1, `the launch's transforms span several host calls: ${calls}`);
     for (const call of calls) assert.ok(Number(call.slice(5)) <= TRANSFORM_SLICE_SOURCE_BYTES, `a host call carries at most a slice: ${call}`);
@@ -353,7 +350,9 @@ try {
     const calls = [];
     const host = new EsbuildService(undefined, { transformHost: recordingHost(calls) });
     const code = 'import("./x.mjs");\n';
-    const first = await transformEntryScript(code, 'file:///home/user/[eval]', { host, store });
+    const spent = [];
+    const first = await transformEntryScript(code, 'file:///home/user/[eval]', { host, store, pacer: { spend: async (n) => { spent.push(n); } } });
+    assert.deepEqual(spent, [new TextEncoder().encode(first).byteLength], 'its write is accounted to the launch pacer, like a cell\'s');
     assert.equal(await transformEntryScript(code, 'file:///home/user/[eval]', { host, store }), first);
     assert.equal(calls.length, 1, 'the second run is read back');
     const broken = new EsbuildService(undefined, { transformHost: recordingHost([], { reject: () => true }) });

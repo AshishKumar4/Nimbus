@@ -102,7 +102,7 @@ const files = {
 };
 
 const entry = `${NM}/framework-cli/bin/cli.mjs`;
-const state = await buildPrefetchBundle(launchFs(files).fs, `/${entry}`, APP, files[entry]);
+const state = await buildPrefetchBundle(launchFs(files).fs, { scriptPath: `/${entry}`, cwd: APP, entryCode: files[entry] });
 const staged = (path) => path in state.bundle;
 
 // Sanity: the entry and its own package arrived through the static closure.

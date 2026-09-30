@@ -8,7 +8,9 @@
  * TRANSFORM_PIPELINE_ID: the sha256 of the bundled closure of
  * src/runtime/bundle-cell-transform.ts and EsbuildService — every step that
  * decides a cell's output in the session, tree-shaken to what those reach,
- * acorn included. The id is generated here, in core's own build, so it ships
+ * acorn included. The closure is hashed minified, so what moves the id is
+ * code: an edit to a comment or a layout keeps every stored result. The id
+ * is generated here, in core's own build, so it ships
  * in core's dist with the code it describes: an embedder that upgrades only
  * core gets the new pipeline's id with the new pipeline, and never a result
  * the old one stored.
@@ -49,12 +51,13 @@ export async function bundleTransformPipeline({ plugins = [] } = {}) {
     absWorkingDir: coreRoot,
     external: ['esbuild-wasm', 'esbuild-wasm/*'],
     plugins,
+    minify: true,
     write: false,
     logLevel: 'warning',
     legalComments: 'none',
   });
   const text = result.outputFiles?.[0]?.text ?? '';
-  const exported = text.match(/^export \{([^}]*)\};?\s*$/m)?.[1] ?? '';
+  const exported = text.match(/export\s*\{([^}]*)\}\s*;?\s*$/)?.[1] ?? '';
   if (!/\btransformBundleCells\b/.test(exported) || !/\bEsbuildService\b/.test(exported)) {
     throw new Error('[pin-transform-pipeline] the pipeline bundle lost transformBundleCells or EsbuildService');
   }

@@ -49,11 +49,7 @@ const identityEsbuild = new EsbuildService(undefined, {
   transformHost: async (requests) => requests.map(({ code }) => ({ code, map: '', warnings: [] })),
 });
 const snapshot = await buildPrefetchBundle(
-  vfs,
-  `/${entryPath}`,
-  '/home/user',
-  files[entryPath],
-  identityEsbuild,
+  vfs, { scriptPath: `/${entryPath}`, cwd: '/home/user', entryCode: files[entryPath], esbuild: identityEsbuild },
 );
 
 assert.equal(
@@ -102,8 +98,7 @@ assert.equal(
   };
   const subVfs = launchFs(files).fs;
   const snap = await buildPrefetchBundle(
-    subVfs, '/home/user/app/entry.js', '/home/user/app', files['home/user/app/entry.js'],
-    identityEsbuild,
+    subVfs, { scriptPath: '/home/user/app/entry.js', cwd: '/home/user/app', entryCode: files['home/user/app/entry.js'], esbuild: identityEsbuild },
   );
   const has = (p) => Object.hasOwn(snap.bundle, p);
 
@@ -280,11 +275,7 @@ assert.equal(
     [`${cwd}/data.bin`]: 'D'.repeat(CWD_SNAPSHOT_MAX_FILE_BYTES + 1),
   };
   const snapshot = await buildPrefetchBundle(
-    launchFs(files).fs,
-    undefined,
-    cwd,
-    '',
-    identityEsbuild,
+    launchFs(files).fs, { cwd, entryCode: '', esbuild: identityEsbuild },
   );
 
   assert.equal(
@@ -324,12 +315,12 @@ assert.equal(
   const { fs: vfs, reads, stats } = launchFs(files);
   const snapshot = await buildPrefetchBundle(
     vfs,
-    undefined,
-    cwd,
-    files[`${cwd}/index.js`], // entryCode carries the absolute-path literal
-    identityEsbuild,
-    undefined,
-    observed, // the smalls are required cells: they fill the budget and can't be evicted
+    {
+      cwd,
+      entryCode: files[`${cwd}/index.js`], // entryCode carries the absolute-path literal
+      esbuild: identityEsbuild,
+      observedReads: observed, // the smalls are required cells: they fill the budget and can't be evicted
+    },
   );
 
   assert.equal(
@@ -374,8 +365,7 @@ assert.equal(
   let failure;
   try {
     await buildPrefetchBundle(
-      vfs, `/${entryPath}`, cwd, files[entryPath],
-      identityEsbuild, undefined, undefined, undefined, bound,
+      vfs, { scriptPath: `/${entryPath}`, cwd, entryCode: files[entryPath], esbuild: identityEsbuild, maxBundleBytes: bound },
     );
   } catch (e) {
     failure = e;
@@ -401,8 +391,7 @@ assert.equal(
   // A closure that fits the bound is unchanged: the same ~30 MiB under a bound
   // past it (the default, VFS_BUNDLE_MAX_BYTES, is below it).
   const ok = await buildPrefetchBundle(
-    launchFs(files).fs, `/${entryPath}`, cwd, files[entryPath],
-    identityEsbuild, undefined, undefined, undefined, 4 * 10 * MIB,
+    launchFs(files).fs, { scriptPath: `/${entryPath}`, cwd, entryCode: files[entryPath], esbuild: identityEsbuild, maxBundleBytes: 4 * 10 * MIB },
   );
   assert.equal(
     ok.bundle[`${cwd}/c.js`], files[`${cwd}/c.js`],

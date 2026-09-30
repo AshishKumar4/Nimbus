@@ -108,6 +108,10 @@ for (const c of cases) {
     assert.notEqual(await transformPipelineId({ plugins: [change] }), committed, `${change.name} moves the pipeline id`);
     console.log(`  ✓ transform pipeline: ${change.name} moves the id`);
   }
+  // A comment is not code: editing one keeps every stored result.
+  const comment = edit('bundle-cell-transform.ts', '// CommonJS already: only its dynamic import() calls change.', '// CommonJS as it is: only its dynamic import() calls change.');
+  assert.equal(await transformPipelineId({ plugins: [comment] }), committed, 'a comment-only edit keeps the pipeline id');
+  console.log('  ✓ transform pipeline: a comment-only edit keeps the id');
 }
 
 console.log(`facet-body-generated-parity OK: ${cases.length} generated facet bodies and the transform pipeline id match their sources`);

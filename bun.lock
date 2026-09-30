@@ -107,6 +107,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
+        "esbuild": "^0.27.0",
         "typescript": "^5.7.0",
       },
     },

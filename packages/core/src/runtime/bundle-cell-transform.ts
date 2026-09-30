@@ -365,12 +365,13 @@ export async function transformBundleCells(
  * The entry script as the facet compiles it (entryScriptRequest), read from
  * the store when it holds it. A host that rejects or cannot run the rewrite
  * throws: a failed entry rewrite must not reach a Worker Loader as native host
- * import(), or become an immutable cached image.
+ * import(), or become an immutable cached image. Its result is written paced,
+ * like a cell's.
  */
 export async function transformEntryScript(
   code: string,
   parentUrl: string,
-  { host, store }: { host: BundleCellHost; store?: BundleCellResultStore | null },
+  { host, store, pacer }: { host: BundleCellHost; store?: BundleCellResultStore | null; pacer?: BundleCellPacer },
 ): Promise<string> {
   const key = store ? await store.key('entry', parentUrl, code) : undefined;
   const kept = store && key !== undefined ? store.getMany([key]).get(key) : undefined;
@@ -378,7 +379,8 @@ export async function transformEntryScript(
   const [outcome] = await host.transformMany([entryScriptRequest(code, parentUrl)]);
   if (outcome === undefined) throw new Error('entry transform service returned no outcome');
   if ('error' in outcome) throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
-  // One entry script: a single small write, which needs no pacing.
-  if (store && key !== undefined) await store.put(key, { code: outcome.code, lowered: false });
+  if (store && key !== undefined) {
+    await store.put(key, { code: outcome.code, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+  }
   return outcome.code;
 }

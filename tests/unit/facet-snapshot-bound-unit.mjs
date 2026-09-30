@@ -29,7 +29,7 @@ const project = (bigBytes) => ({
 // Under the bound in raw bytes, over it encoded.
 {
   const files = project(VFS_BUNDLE_MAX_BYTES - 1024 * 1024);
-  const state = await buildPrefetchBundle(launchFs(files).fs, `${PROJ}/app.js`, PROJ, files[`${PROJ}/app.js`]);
+  const state = await buildPrefetchBundle(launchFs(files).fs, { scriptPath: `${PROJ}/app.js`, cwd: PROJ, entryCode: files[`${PROJ}/app.js`] });
   assert.equal(state.truncated, false, 'a snapshot under the bound in raw bytes sheds nothing');
   assert.equal(state.bundle[`${PROJ}/config.json`], files[`${PROJ}/config.json`], 'the config the program reads is staged');
 }
@@ -38,7 +38,7 @@ const project = (bigBytes) => ({
 {
   const files = project(VFS_BUNDLE_MAX_BYTES + 1024 * 1024);
   await assert.rejects(
-    buildPrefetchBundle(launchFs(files).fs, `${PROJ}/app.js`, PROJ, files[`${PROJ}/app.js`]),
+    buildPrefetchBundle(launchFs(files).fs, { scriptPath: `${PROJ}/app.js`, cwd: PROJ, entryCode: files[`${PROJ}/app.js`] }),
     (error) => error instanceof ClosureBoundExceededError,
     'a closure past the bound fails the launch by name',
   );
