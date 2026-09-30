@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A resident node or bun process ends as Node's does: when it holds no live
+  handle (a timer, an operation in flight, a listening server that is not
+  unref'd, a held stdin), and its exit is reported as `process.exit`'s is.
+  It used to end only on `process.exit`, so a program run resident that
+  simply finished (a CLI whose serve path was not taken, `--help`, a server
+  that closed its last listener) kept running and never reported an exit.
+  One that finishes during its boot reports before the boot answers, so the
+  shell prints its exit code instead of "started (long-running)". The
+  resident waits on handle releases rather than polling. `--watch` and
+  `--inspect-brk` still hold a process with nothing left, as in Node.
+
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. node-static pipes a file with `{ end: false }` and ends
   the response on the file stream's `'close'`, which a guest stream never

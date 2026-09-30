@@ -39,7 +39,7 @@ Object.defineProperty(builtins, "http", {
       const inFlight = new WeakSet();
       const end = clientProto.end, emit = clientProto.emit;
       const release = request => {
-        if (inFlight.delete(request)) globalThis.__nimbusPendingOps--;
+        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
       };
       Object.defineProperty(clientProto, clientPatch, { value: true });
       clientProto.end = function () {
@@ -100,7 +100,7 @@ Object.defineProperty(builtins, "http", {
           state.pending = false;
           // A cancelled allocation can settle after this server relistens.
           // Only the current owner can retire its pending-listen handle.
-          if (owners.get(this) === state) pendingListeners.delete(this);
+          if (owners.get(this) === state && pendingListeners.delete(this)) globalThis.__nimbusHandleReleased?.();
         };
         const releaseAllocation = () => {
           // An explicit relisten may have taken this same number while the
@@ -151,6 +151,7 @@ Object.defineProperty(builtins, "http", {
             state.pending = false;
             owners.delete(this);
             pendingListeners.delete(this);
+            globalThis.__nimbusHandleReleased?.();
             if (callback) this.once("close", callback);
             queueMicrotask(() => this.emit("close"));
             return this;
@@ -158,12 +159,17 @@ Object.defineProperty(builtins, "http", {
           if (state.port !== null && state.ctx.ports.get(state.port) === this) {
             state.ctx.ports.delete(state.port);
             state.ctx.pending.push(Promise.resolve(state.ctx.supervisor.unregisterPort(state.port)));
+            globalThis.__nimbusHandleReleased?.();
           }
         }
         return Reflect.apply(close, this, callback ? [callback] : []);
       };
       proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
-      proto.unref = function () { this.__nimbusUnrefed = true; return Reflect.apply(unref, this, []); };
+      proto.unref = function () {
+        this.__nimbusUnrefed = true;
+        globalThis.__nimbusHandleReleased?.();
+        return Reflect.apply(unref, this, []);
+      };
     } else http.Server.prototype[patchKey](context);
     globalThis.__nimbusServeHttp = async (request) => {
       const port = Number(request.headers.get("X-Nimbus-Port") || 0);
