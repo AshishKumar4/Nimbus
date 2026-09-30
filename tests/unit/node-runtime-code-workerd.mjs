@@ -383,6 +383,25 @@ try {
     const overBound = await terminal.run(`yes | node -e 'require("fs").readFileSync(0)'`, 90_000);
     assert.notEqual(overBound.status, 0, overBound.stdout);
     assert.match(overBound.stdout, /first \d+ MiB[\s\S]*< file/, `the refusal names the bound and suggests < file: ${overBound.stdout.slice(-600)}`);
+    // A large `< file` into a program flagged as reading stdin synchronously
+    // is preloaded only up to the read ahead: one that never reads stdin
+    // holds no more, and one that streams it still gets every byte.
+    const peakGrowthMiB = async (work) => {
+      const before = groupRssMiB();
+      let peak = before;
+      const poll = setInterval(() => { peak = Math.max(peak, groupRssMiB()); }, 100);
+      try { return { result: await work(), growth: peak - before }; } finally { clearInterval(poll); }
+    };
+    await terminal.run(`cd ${W} && yes | head -c ${48 * 1048576} > big.txt`, 120_000);
+    const bigUnread = await peakGrowthMiB(() => terminal.run(`cd ${W} && node fp.js < big.txt`, 60_000));
+    assert.match(bigUnread.result.stdout, /^RAN$/m, bigUnread.result.stdout);
+    console.log(`node fp.js < 48 MiB file: probe peak memory grew ${bigUnread.growth.toFixed(1)} MiB`);
+    assert.ok(bigUnread.growth < 40, `a 48 MiB < file is not held whole: the probe grew ${bigUnread.growth.toFixed(0)} MiB`);
+    const bigStream = await terminal.run(`cd ${W} && node -e 'if (process.argv[2]) require("fs").readFileSync(0); let n = 0; process.stdin.on("data", (d) => { n += d.length; }).on("end", () => console.log("BIGSTREAM " + n))' < big.txt`, 120_000);
+    assert.match(bigStream.stdout, new RegExp(`^BIGSTREAM ${48 * 1048576}$`, 'm'), `a flagged program streams all of a 48 MiB < file: ${bigStream.stdout}`);
+    const bigSync = await terminal.run(`cd ${W} && node -e 'require("fs").readFileSync(0)' < big.txt`, 60_000);
+    assert.notEqual(bigSync.status, 0, bigSync.stdout);
+    assert.match(bigSync.stdout, /larger than \d+ MiB[\s\S]*process\.stdin/, `a whole-file sync read of a 48 MiB < file names the bound: ${bigSync.stdout.slice(-500)}`);
     // A partial synchronous read leaves the rest of fd 0 to process.stdin.
     const mixed = await terminal.run(`echo hi | node -e 'const b = Buffer.alloc(2); const n = require("fs").readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("MIX " + JSON.stringify([b.subarray(0, n).toString(), s])))'`, 30_000);
     assert.match(mixed.stdout, /^MIX \["hi","\\n"\]$/m, `readSync then 'data': ${mixed.stdout}`);

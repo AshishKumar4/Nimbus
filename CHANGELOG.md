@@ -14,9 +14,11 @@ published independently in the `@nimbus-sh` npm scope.
   through the process's input channel as it arrives, never held for its end:
   a program that ignores `yes` or `tail -f` exits at once. Bytes arrive
   exactly as written (binary input is not decoded as text). A `< file`
-  redirect's fd 0 is the file itself: synchronous reads read it at a
-  position and `process.stdin` streams it, with no read ahead and no stdin
-  bound. A one-shot program whose code (the entry or its own modules it
+  redirect's fd 0 is the file itself: `process.stdin` streams it, with no
+  bound, and for a program that reads stdin synchronously its first 16 MiB
+  is read in before it starts, so a large redirect (`< dump.sql`) is never
+  held whole; a synchronous read past that fails naming the bound and
+  pointing at `process.stdin`. A one-shot program whose code (the entry or its own modules it
   loads directly) reads stdin synchronously — `readFileSync(0)`,
   `readFileSync('/dev/stdin')` (or `/dev/fd/0`, `/proc/self/fd/0`),
   `readFileSync(process.stdin.fd)`, `readSync` of fd 0 — has up to 16 MiB
