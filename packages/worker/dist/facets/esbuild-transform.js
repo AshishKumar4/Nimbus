@@ -12,11 +12,13 @@ import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
 import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-wasm-bytes.js';
 import { esbuildWasmModule } from '../runtime/host-wasm.js';
 /**
- * The esbuild wasm's linear memory: measured over a pi launch's 23 slices, one
- * instance stays at 52 MiB (from 28), and a single 858 KiB module takes a
- * fresh one to 92 MiB (see `keepEsbuild`). Past this a transform esbuild takes
- * no new call; 64 MiB is above what a launch's slices plateau at and below
- * what a module large enough to matter reaches, so it retires on those alone.
+ * The esbuild wasm's linear memory past which a transform esbuild takes no new
+ * call. Measured on one kept instance (from 28 MiB): a Vite preview of the
+ * seeded app holds it at 36 MiB, and so do 400 more components; four 80-350
+ * KiB TypeScript modules take it to 44 MiB. A pi launch's 23 slices plateau at
+ * 52 MiB. A single 858 KiB module takes a fresh one to 92 MiB. 64 MiB is above
+ * both plateaus and below what a module large enough to matter reaches, so the
+ * instance retires on such modules alone.
  */
 const TRANSFORM_ESBUILD_HIGH_WATER_BYTES = 64 * 1024 * 1024;
 /**
@@ -28,37 +30,19 @@ const TRANSFORM_ESBUILD_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * `globalThis.__nimbusRewriteDynamicImports`.
  *
  * Transforms share one esbuild until its wasm memory passes
- * TRANSFORM_ESBUILD_HIGH_WATER_BYTES (`keepEsbuild`): a fresh one per call left
- * every stopped instance's 28-44 MiB waiting on a garbage collection, and
- * parallel browser module requests exhausted the facet's memory and reset it.
- * Reuse also avoids repeated startups between a launch's slices. A build or
- * an `esbuild` command gets its own Go instance, dropped when it ends.
- *
- * esbuild instantiates its Go runtime itself and does not expose its memory;
- * `startTransformEsbuild` hands its adapter a `WebAssembly` whose
- * `instantiate` notes the instance's exported `mem`, which is how the high
- * water is read. Nothing global is replaced.
+ * TRANSFORM_ESBUILD_HIGH_WATER_BYTES or it dies (`keepEsbuild`): a fresh one
+ * per call left every stopped instance's 28-44 MiB waiting on a garbage
+ * collection, and parallel browser module requests exhausted the facet's
+ * memory and reset it. Reuse also avoids repeated startups between a launch's
+ * slices. A transform that failed because its esbuild died
+ * (`startObservedEsbuild`) is answered as transient, no verdict on the source,
+ * and the next call gets a fresh esbuild. A build or an `esbuild` command gets
+ * its own Go instance, dropped when it ends.
  */
 const ESBUILD_FACET_BODY = [
     ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildFacetRuntimeSource(),
-    'async function startTransformEsbuild() {',
-    '  let memory = null;',
-    '  const observed = Object.create(WebAssembly, {',
-    '    instantiate: {',
-    '      value: async (module, imports) => {',
-    '        const instance = await WebAssembly.instantiate(module, imports);',
-    '        memory = instance.exports.mem;',
-    '        return instance;',
-    '      },',
-    '    },',
-    '  });',
-    '  const esbuild = newEsbuild(observed);',
-    '  await esbuild.initialize({ wasmModule, worker: false });',
-    '  if (!(memory instanceof WebAssembly.Memory)) throw new Error("esbuild did not export its linear memory");',
-    '  return { esbuild, memoryBytes: () => memory.buffer.byteLength };',
-    '}',
-    `const withTransformEsbuild = keepEsbuild(startTransformEsbuild, ${TRANSFORM_ESBUILD_HIGH_WATER_BYTES});`,
+    `const withTransformEsbuild = keepEsbuild(() => startObservedEsbuild(newEsbuild, wasmModule), ${TRANSFORM_ESBUILD_HIGH_WATER_BYTES});`,
     'export class EsbuildFacet extends DurableObject {',
     '  async transformMany(requests) {',
     '    const transformAll = async (esbuild) => {',
@@ -67,7 +51,8 @@ const ESBUILD_FACET_BODY = [
     '        try {',
     '          outcomes.push(await runTransformRequest(esbuild, code, options, globalThis.__nimbusRewriteDynamicImports));',
     '        } catch (e) {',
-    '          outcomes.push({ error: String((e && e.message) || e) });',
+    '          const error = String((e && e.message) || e);',
+    '          outcomes.push(e && e.transient === true ? { error, transient: true } : { error });',
     '        }',
     '      }',
     '      return outcomes;',

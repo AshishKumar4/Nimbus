@@ -40,15 +40,31 @@ published independently in the `@nimbus-sh` npm scope.
   recycling it once its measured wasm memory exceeds 64 MiB, after its last
   in-flight caller finishes. Previously every transform call initialized and
   stopped its own Go/wasm instance. `stop()` cancels the scheduler; memory is
+- Vite preview transforms share one esbuild instance in the session's facet.
+  It is recycled once its measured wasm memory exceeds 64 MiB, or once it
+  dies (its Go program exits or its wasm traps), after its last in-flight
+  caller finishes. Previously every transform call initialized and stopped
+  its own Go/wasm instance. `stop()` cancels the scheduler; memory is
   reclaimed by GC, not by stop. Parallel browser module requests exhausted
   the facet's memory and served error-overlay modules instead of Card and
   SystemStats, producing "does not provide an export named default". A
   throwaway preview now mounts the seeded React app: the failing crawl and
   browser probe peaked at 228 MiB; their fixed sessions peaked at 93 and
-  97 MiB. A local V8 replay of Pi 0.87.1's 273-module launch made 23 slices
-  (19 esbuild starts), retaining up to 153 MiB of uncollected wasm memories;
-  the shared instance plateaued at 52 MiB. Instances are collectable, not a
-  permanent leak. Builds and CLI calls keep their separate instances.
+  97 MiB. The kept instance holds at 36 MiB over the seeded app and 400 more
+  components, and 44 MiB after four 80–350 KiB TypeScript modules. A local
+  V8 replay of Pi 0.87.1's 273-module launch made 23 slices (19 esbuild
+  starts), retaining up to 153 MiB of uncollected wasm memories; kept, the
+  instance plateaued at 52 MiB. A single 858 KiB module takes a fresh one to
+  92 MiB. Instances are collectable, not a permanent leak. esbuild's adapter
+  keeps every call's result or error reachable while its instance lives, so a
+  kept instance hands out copies and fresh errors and empties what it keeps:
+  120 transforms of a 190 KiB module left 19.2 of their 23.1 MiB of output
+  on V8's heap before, and none after; 120 that failed on it left their 22.3
+  MiB of input (through each error's stack), and now none. A transform whose
+  instance died is answered as
+  transient, so its launch fails as unavailable instead of caching a
+  diagnostic shim of sound source. Builds and CLI calls keep their separate
+  instances.
 
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
@@ -179,15 +195,24 @@ published independently in the `@nimbus-sh` npm scope.
   removed: its ESM imports share the patched native Server prototype. This
   does not add WebSocket upgrade support to workerd's HTTP dispatcher.
 
-- Large Node CLI launches collect dynamic imports directly from Acorn's
-  parser productions, without a second AST walk or a hand-maintained
-  regex-versus-division heuristic. Completed top-level trees are discarded.
-  On pi's 4,345,609-byte chunk the complete rewrite takes 278–297 ms locally
-  (283 ms median over five runs), versus 571–822 ms for the old AST walk.
-  Transform calls are capped at 256 KiB / 32 files so small modules cannot
-  monopolize one guest
-  invocation. If a resident launch fails before its guest is created, its
-  already-returned pid now exits with the cause rather than remaining
+- Large Node CLI cells find dynamic imports and import.meta with
+  es-module-lexer's CSP build, without a whole-cell AST or a runtime wasm
+  compile. It is vendored as a factory, so the scratch buffer a large cell
+  grows (8 MiB for pi's 3.8M-character chunk) is dropped after that cell.
+  Acorn reads only spans: a call's arguments, the braces around an
+  `import(...)` whose `{` opens the next line, directives, and escaped
+  names. A cell the lexer can misread (a `/` in code whose regex reading
+  could hide import syntax, an HTML-like comment in code, `new import(`, a
+  lexer error) goes to Acorn's streaming parser. Over 636 real files and
+  pi's 274 launch requests, both modes (1,820 rewrites), the output is
+  byte-identical to the previous parser's and no cell needed the parser:
+  1.2 s against 6.9 s. Of 137 grammar edge cases, 136 match and
+  `o?.return / import()` now matches Node. The 3.8 MiB Pi 0.99.1 cell takes
+  118–195 ms warm in a local V8 replay. The release candidate
+  repeatedly killed that rewrite-only cell at the facet CPU limit; the same
+  Pi version rendered its TUI on 957a56a6. Transform slices retain their
+  256 KiB / 32-file bounds. If a resident launch fails before its guest exists,
+  its already-returned pid now exits with the cause rather than remaining
   "running" behind an empty terminal. This exposed the actual cause of the
   intermittent pi TUI timeout: an esbuild-facet CPU-limit failure during
   module-map construction, not a stuck stdin or TUI renderer.

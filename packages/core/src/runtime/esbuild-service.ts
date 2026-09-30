@@ -17,6 +17,7 @@ import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
+import { keepEsbuild, startObservedEsbuild } from './keep-esbuild.js';
 import {
   literalStringValue,
   nodeList,
@@ -1231,8 +1232,8 @@ async function runTransformRequest(
   if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
     // CJS emit replaces import.meta with an empty object even when syntax
     // support is enabled. First erase TypeScript/JSX with the module format
-    // preserved, rewrite real MetaProperty nodes, then lower declarations.
-    // Both passes and the sole AST parse stay in the transform facet.
+    // preserved, bind metadata references, then lower declarations. Both
+    // passes and import analysis stay in the transform facet.
     // No ESM emit in between: it wraps a cell that assigns module.exports
     // in __commonJS and exports that as `default`, so the lowered cell's
     // module.exports would stop being the one the source assigned. The
@@ -1293,50 +1294,9 @@ async function buildWithEsbuild(
 }
 
 /**
- * Share an esbuild between calls; retire it past its wasm memory high-water
- * mark and stop it only after its last in-flight caller finishes. Initialization
- * failures are forgotten. Stopping a wasm instance does not eagerly free its
- * memory: fresh instances per call leave memory awaiting GC and multiply the
- * live working set under parallel preview requests. Go reuses freed heap, so
- * reuse instead plateaus at the largest working set (Pi's 23 slices reached
- * 52 MiB shared, versus 153 MiB of uncollected per-call instances, in V8).
- * Self-contained for serialization into the transform facet.
+ * Source the esbuild facet evaluates next to esbuild: its transform and build
+ * helpers, and the esbuild it keeps for transforms (keep-esbuild.ts).
  */
-export function keepEsbuild<T extends { stop(): unknown }>(
-  start: () => Promise<{ esbuild: T; memoryBytes(): number }>,
-  highWaterBytes: number,
-): <R>(use: (esbuild: T) => Promise<R>) => Promise<R> {
-  interface Kept { started: Promise<{ esbuild: T; memoryBytes(): number }>; users: number; retired: boolean }
-  let current: Kept | null = null;
-  return async <R>(use: (esbuild: T) => Promise<R>): Promise<R> => {
-    if (current === null) {
-      const fresh: Kept = { started: start(), users: 0, retired: false };
-      current = fresh;
-      fresh.started.catch(() => { if (current === fresh) current = null; });
-    }
-    const kept = current;
-    kept.users++;
-    let running: { esbuild: T; memoryBytes(): number };
-    try {
-      running = await kept.started;
-    } catch (error) {
-      kept.users--;
-      throw error;
-    }
-    try {
-      return await use(running.esbuild);
-    } finally {
-      kept.users--;
-      if (!kept.retired && running.memoryBytes() > highWaterBytes) {
-        kept.retired = true;
-        if (current === kept) current = null;
-      }
-      if (kept.retired && kept.users === 0) await running.esbuild.stop();
-    }
-  };
-}
-
-/** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
 export function generateEsbuildFacetRuntimeSource(): string {
   return [
     // scanJsSource is self-contained — its constants live in the body —
@@ -1350,6 +1310,7 @@ export function generateEsbuildFacetRuntimeSource(): string {
     runTransformRequest.toString(),
     buildWithEsbuild.toString(),
     keepEsbuild.toString(),
+    startObservedEsbuild.toString(),
   ].join('\n');
 }
 

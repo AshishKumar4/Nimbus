@@ -106,6 +106,44 @@ assert.equal(rewriteDynamicImports('import(', parent), 'import(');
 // Code with no import() is returned as is, unparsed.
 assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
 
+// A bin's hashbang line stays first and is no code: its import.meta binds to
+// the module's metadata and its import() goes to the process, as in Node.
+// This is esbuild's CommonJS for such a bin, a pre-lowered (rewrite-only) cell.
+{
+  const source = [
+    '#!/usr/bin/env node --title="import(\'./hashbang.js\')"',
+    '"use strict";',
+    'var import_node_url = require("node:url");',
+    'const here = (0, import_node_url.fileURLToPath)(new URL(".", import.meta.url));',
+    'exports.loaded = import("./cli-main.js").then((main) => [here, main.value]);',
+  ].join('\n');
+  const service = new EsbuildService();
+  const result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent, moduleMetadata: true });
+  assert.match(result.code, /^#!\/usr\/bin\/env node/, 'the hashbang stays the first line');
+  const calls = [];
+  globalThis.__nimbusDynamicImport = async (from, specifier) => { calls.push([from, specifier]); return { value: 7 }; };
+  try {
+    const module = { exports: {}, __nimbusImportMeta: { url: parent } };
+    const require = (id) => (id === 'node:url' ? { fileURLToPath: (url) => new URL(url).pathname } : {});
+    // A loader skips the hashbang line; so does this.
+    new Function('exports', 'require', 'module', result.code.replace(/^#!/, '//'))(module.exports, require, module);
+    assert.deepEqual(await module.exports.loaded, ['/home/user/app/lib/', 7]);
+    assert.deepEqual(calls, [[parent, './cli-main.js']], "the hashbang line's text was not taken for an import");
+  } finally {
+    delete globalThis.__nimbusDynamicImport;
+  }
+}
+
+// Invalid import arity/spread must remain a syntax error, not become a valid
+// function call merely because the scanner found an import keyword.
+{
+  const service = new EsbuildService();
+  for (const source of ['return import();', 'return import("x", {}, "extra");', 'return import(...["x"]);']) {
+    const result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent });
+    assert.throws(() => new Function(result.code), SyntaxError);
+  }
+}
+
 // Pure JavaScript rewriting needs no wasm engine, even on a host where one
 // was never configured. Exercise metadata through both public entry points.
 {

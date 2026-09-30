@@ -4,9 +4,11 @@
 // harness swaps its two `cloudflare:workers` / `esbuild.wasm` imports for
 // bindings of its own and counts what its esbuilds do: `esbuilds` records how
 // many initialized, how many were stopped, how many were live at once at the
-// most, and lets a case fail an initialization. `durableObject` is a Durable
-// Object as esbuild-transform.ts sees it (`env.LOADER`, `ctx.facets`), so a
-// case drives the same `esbuildTransformHost` a session does.
+// most, and the wasm memory each took, and lets a case fail an initialization,
+// cap the memory the facet's esbuilds hold, or end the latest esbuild's Go
+// program (`exitGo`). `durableObject` is a Durable Object as
+// esbuild-transform.ts sees it (`env.LOADER`, `ctx.facets`), so a case drives
+// the same `esbuildTransformHost` a session does.
 
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -16,13 +18,33 @@ import { ESBUILD_CLI_ASSET_PATH } from '../../../packages/worker/src/esbuild-cli
 
 /**
  * What the facet's esbuilds have done since the last reset. `beforeInitialize`
- * runs ahead of each initialization and may throw to fail it.
+ * runs ahead of each initialization and may throw to fail it. `memories` is
+ * every wasm memory the esbuilds took, stopped ones too: stopping frees
+ * nothing until a garbage collection, and none is counted on within a case.
+ * An esbuild whose instantiation would take them past `memoryLimitBytes`
+ * fails as a Worker over its memory limit does. `exits` are the Go
+ * `runtime.wasmExit` imports the esbuilds were instantiated with.
  */
-export const esbuilds = { initializations: 0, stops: 0, live: 0, peakLive: 0, memoryBytes: [], beforeInitialize: null, activeMemories: new Set(), memoryLimitBytes: Infinity };
+export const esbuilds = {};
 
 export function resetEsbuilds() {
-  Object.assign(esbuilds, { initializations: 0, stops: 0, live: 0, peakLive: 0, memoryBytes: [], beforeInitialize: null, activeMemories: new Set(), memoryLimitBytes: Infinity });
+  Object.assign(esbuilds, { initializations: 0, stops: 0, live: 0, peakLive: 0, memoryBytes: [], beforeInitialize: null, memories: [], memoryLimitBytes: Infinity, exits: [] });
 }
+resetEsbuilds();
+
+/** Ends the Go program of the latest esbuild, as a fatal Go error would. */
+export function exitGo() {
+  esbuilds.exits.at(-1)(0);
+}
+
+// Go's `runtime.wasmExit`, as the instance gets it (after anything the facet
+// wraps around it), is recorded at instantiation.
+const instantiate = WebAssembly.instantiate;
+WebAssembly.instantiate = function (module, imports) {
+  const exit = imports?.gojs?.['runtime.wasmExit'];
+  if (typeof exit === 'function') esbuilds.exits.push(exit);
+  return Reflect.apply(instantiate, WebAssembly, [module, imports]);
+};
 
 const resolveFromCore = createRequire(new URL('../../../packages/core/package.json', import.meta.url));
 const wasmBytes = await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm'));
@@ -40,9 +62,9 @@ const countedJsFnBody = [
   '    const instance = await facetWebAssembly.instantiate(module, imports);',
   '    memory = instance.exports.mem;',
   '    const counts = globalThis.__esbuilds;',
-  '    const allocated = [...counts.activeMemories].reduce((bytes, mem) => bytes + mem.buffer.byteLength, memory.buffer.byteLength);',
+  '    const allocated = counts.memories.reduce((bytes, mem) => bytes + mem.buffer.byteLength, memory.buffer.byteLength);',
   '    if (allocated > counts.memoryLimitBytes) throw new Error("Worker exceeded memory limit.");',
-  '    counts.activeMemories.add(memory);',
+  '    counts.memories.push(memory);',
   '    return instance;',
   '  } },',
   '});',
@@ -61,7 +83,6 @@ const countedJsFnBody = [
   'api.stop = () => {',
   '  globalThis.__esbuilds.stops++;',
   '  globalThis.__esbuilds.live--;',
-  '  globalThis.__esbuilds.activeMemories.delete(memory);',
   '  return stop();',
   '};',
   'return api;',
@@ -140,4 +161,5 @@ export function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
 export function releaseFacetHarness() {
   delete globalThis.__esbuilds;
   delete globalThis.__facetImports;
+  WebAssembly.instantiate = instantiate;
 }
