@@ -471,66 +471,37 @@ const __nimbusProcessExitPromise = new Promise((resolve) => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  path module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// A VFS key's normalization: "." and "" segments dropped, ".." applied,
+// no trailing slash. Nimbus's own fs and resolver keys, not userland's path.
+function __vfsNormalizePath(p) {
+  const parts = p.split("/");
+  const out = [];
+  for (const s of parts) {
+    if (s === "..") { if (out.length && out[out.length-1] !== "..") out.pop(); else out.push(s); }
+    else if (s !== "." && s !== "") out.push(s);
+  }
+  return (p.startsWith("/") ? "/" : "") + out.join("/");
+}
+// Userland's path is workerd's node:path, Node's own lib/path.js
+// (https://developers.cloudflare.com/workers/runtime-apis/nodejs/path/).
+// A hand-rolled join kept empty segments, so totalist's
+// \`join("", "hello.txt")\` was "/hello.txt" and sirv mapped every file under
+// "//name" and answered 404. Only resolution is the process's: resolve and
+// relative start from its cwd, not the Worker's.
 const __pathMod = (() => {
-  function normalize(p) {
-    const parts = p.split("/");
-    const out = [];
-    for (const s of parts) {
-      if (s === "..") { if (out.length && out[out.length-1] !== "..") out.pop(); else out.push(s); }
-      else if (s !== "." && s !== "") out.push(s);
-    }
-    return (p.startsWith("/") ? "/" : "") + out.join("/");
-  }
-  function join(...p) { return normalize(p.join("/")); }
-  function resolve(...p) {
-    let r = "";
-    for (let i = p.length - 1; i >= 0; i--) {
-      r = p[i] + (r ? "/" + r : "");
-      if (r.startsWith("/")) break;
-    }
-    if (!r.startsWith("/")) r = (cwd || "/home/user") + "/" + r;
-    return normalize(r);
-  }
-  function dirname(p) { const i = p.lastIndexOf("/"); return i > 0 ? p.substring(0, i) : i === 0 ? "/" : "."; }
-  function basename(p, ext) { const b = p.split("/").pop() || ""; return ext && b.endsWith(ext) ? b.slice(0, -ext.length) : b; }
-  function extname(p) { const b = basename(p); const i = b.lastIndexOf("."); return i > 0 ? b.substring(i) : ""; }
-  function isAbsolute(p) { return p.startsWith("/"); }
-  function relative(from, to) {
-    const f = resolve(from).split("/").filter(Boolean);
-    const t = resolve(to).split("/").filter(Boolean);
-    let c = 0;
-    while (c < f.length && c < t.length && f[c] === t[c]) c++;
-    return [...Array(f.length - c).fill(".."), ...t.slice(c)].join("/") || ".";
-  }
-  function parse(p) {
-    const str = String(p);
-    const root = str.startsWith("/") ? "/" : "";
-    const dir = dirname(str);
-    const base = basename(str);
-    const ext = extname(str);
-    const name = ext ? base.slice(0, base.length - ext.length) : base;
-    return { root, dir: dir === "." && !str.includes("/") ? "" : dir, base, ext, name };
-  }
-  function format(obj) {
-    const o = obj || {};
-    const dir = o.dir || o.root || "";
-    const base = o.base || ((o.name || "") + (o.ext || ""));
-    if (!dir) return base;
-    if (dir === o.root) return dir + base;
-    return dir + "/" + base;
-  }
-  function toNamespacedPath(p) { return p; }
-  function matchesGlob() { return false; }
-  return { join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, parse, format, toNamespacedPath, matchesGlob, sep: "/", delimiter: ":", posix: null, win32: null };
+  const native = typeof __real_path !== "undefined"
+    ? (__real_path.default ?? __real_path) : globalThis.process.getBuiltinModule("path");
+  const posix = native.posix ?? native;
+  const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
+  const mod = {
+    ...posix,
+    resolve,
+    relative: (from, to) => posix.relative(resolve(from), resolve(to)),
+    win32: native.win32,
+  };
+  mod.posix = mod;
+  return mod;
 })();
-__pathMod.posix = __pathMod;
-// X.5-Z5 §3 follow-on: enhanced-resolve (transitive via @tailwindcss/vite
-// → vite → enhanced-resolve) reads path.win32.normalize / .dirname at
-// import time. We have no real win32 paths in workerd's VFS, so the
-// posix implementation is functionally correct for any path content the
-// workers will ever see. Aliasing posix to win32 satisfies the structural
-// contract without spawning a separate code path. See
-__pathMod.win32 = __pathMod;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Native Buffer ───────────────────────────────────────────────────
@@ -703,8 +674,8 @@ const __fsMod = (() => {
         try { s = decodeURIComponent(pathPart); } catch { s = pathPart; }
       }
     }
-    if (s.startsWith("/")) return __pathMod.normalize(s);
-    return __pathMod.resolve(cwd || "/home/user", s);
+    if (s.startsWith("/")) return __vfsNormalizePath(s);
+    return __vfsNormalizePath(__pathMod.resolve(cwd || "/home/user", s));
   }
 
   // ── VFS bundle lookup (fast path — in-memory) ──
@@ -5824,11 +5795,10 @@ const __cryptoMod = (() => {
 // schema check with \`Function\`; staging every text, the next launch staged the
 // probe's text but not the checks' — the probe said yes, the first check threw,
 // and pi's TUI died. So it answers only text an earlier launch staged, keeps
-// the native refusal otherwise, and stages the refused text only when the
-// launch fails (the service's plainFunction and stageFailedLaunch): a probe
-// with a working fallback answers the same in every successful launch, while
-// depd's wrapper (express 4) and ajv's validators (serve) run from the next
-// launch on.
+// the native refusal otherwise, and stages a refused text only when a failed
+// launch is attributable to it (the service's plainFunction, noteFailure and
+// stageFailedLaunch): a probe answers the same in every launch, while depd's
+// wrapper (express 4) and ajv's validators (serve) run from the next launch on.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
@@ -7230,9 +7200,24 @@ function __makeProcessStdin() {
       }
       return listener(out);
     };
-    wrapped.__orig = listener;
+    // node:events' own tag for a wrapper: listeners() answers the listener.
+    wrapped.listener = listener;
     return wrapped;
   }
+  // Removal finds the wrapper of the listener the program passes, including
+  // one once() wrapped first (whose own .listener is the program's).
+  const origRemove = r.removeListener.bind(r);
+  r.removeListener = function(event, listener) {
+    if (event === "data" && typeof listener === "function") {
+      const raw = r.rawListeners("data");
+      for (let i = raw.length - 1; i >= 0; i--) {
+        const w = raw[i];
+        if (w === listener || w.listener === listener || (w.listener && w.listener.listener === listener)) return origRemove(event, w);
+      }
+    }
+    return origRemove(event, listener);
+  };
+  r.off = r.removeListener;
   // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
   // listener, resume() or read(). An 'end', 'close' or 'error' listener on
   // paused stdin receives nothing. Vite's dev server registers
@@ -7491,6 +7476,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
     __nimbusReportProcessExit(error.code, "");
     return;
   }
+  if (globalThis.__nimbusRuntimeCode) globalThis.__nimbusRuntimeCode.noteFailure(error);
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
@@ -8554,7 +8540,7 @@ function __resolveFile(base) {
       // ponyfill/package.json declaring main "../dist/ponyfill") collapses
       // its ".." segments instead of probing a literal "dir/../dist" path
       // that __fileExists never matches.
-      const mainBase = __pathMod.normalize(base.replace(/\\/+$/, "") + "/" + mainStripped).replace(/^\\/+/, "");
+      const mainBase = __vfsNormalizePath(base.replace(/\\/+$/, "") + "/" + mainStripped).replace(/^\\/+/, "");
       // Recurse: main itself may be a directory (e.g. main: "lib") or
       // a file without extension. Guard against pkg.main === "." which
       // would re-enter this same base and stack-overflow.

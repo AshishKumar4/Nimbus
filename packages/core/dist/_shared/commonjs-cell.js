@@ -543,10 +543,12 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
   __err.key = __id.key;
   throw __err;
 }
-// Plain Function constructor text refused in this launch, by key; staged only
-// if the launch fails (stageFailedLaunch).
-const __nimbusRefusedPlainCode = new Map();
-let __nimbusRefusedPlainBytes = 0;
+// Plain Function constructor refusals of this launch: each refusal error to
+// its text, and the latest. Staged only for the failure they caused
+// (stageFailedLaunch).
+const __nimbusPlainRefusals = new WeakMap();
+let __nimbusLastPlainRefusal = null;
+let __nimbusLaunchFailure;
 // The wrapper function of a file that is not one of the launch's cells.
 function __nimbusRuntimeModule(path, text) {
   return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
@@ -561,37 +563,54 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
   },
   // The plain Function constructor answers only what an earlier launch staged
   // and otherwise throws the native refusal. Code probes it (TypeBox's
-  // CanEvaluate tries Function("null") and then compiles every check with
-  // it), so a refused text is staged only when the launch fails: a probe
-  // with a working fallback answers the same in every successful launch.
+  // CanEvaluate tries Function("null"), falls back silently, and otherwise
+  // compiles every check with it), so a refusal is staged only when the
+  // launch's failure is attributable to it (stageFailedLaunch): a probe
+  // answers the same in every launch, failed or not.
   plainFunction(params, body, refusal) {
     const __entry = { kind: "function", params: Array.from(params, String), body: String(body) };
     const __id = __nimbusRuntimeCodeKey(__entry);
     const __staged = __nimbusRuntimeCodeStaged(__id.key);
     if (__staged !== undefined) return __staged;
-    // Held within the ledger's own bounds, which decide what is staged.
-    if (
-      !__nimbusRefusedPlainCode.has(__id.key)
-      && __nimbusRefusedPlainCode.size < ${RUNTIME_CODE_MAX_ENTRIES}
-      && __nimbusRefusedPlainBytes + __id.source.length <= ${RUNTIME_CODE_MAX_BYTES}
-    ) {
-      __nimbusRefusedPlainCode.set(__id.key, { id: __id, entry: __entry });
-      __nimbusRefusedPlainBytes += __id.source.length;
+    const __record = { id: __id, entry: __entry, reported: false };
+    __nimbusPlainRefusals.set(refusal, __record);
+    __nimbusLastPlainRefusal = __record;
+    // A program that reports the refusal reads its message or stack; one
+    // that probes and falls back never does.
+    for (const __name of ["message", "stack"]) {
+      const __d = Object.getOwnPropertyDescriptor(refusal, __name);
+      if (!__d || !__d.configurable) continue;
+      const __read = "value" in __d ? () => __d.value : () => __d.get.call(refusal);
+      Object.defineProperty(refusal, __name, {
+        get() { __record.reported = true; return __read(); },
+        set(value) { Object.defineProperty(refusal, __name, { value, writable: true, configurable: true }); },
+        configurable: true,
+        enumerable: __d.enumerable,
+      });
     }
     throw refusal;
   },
-  // A launch that failed — an uncaught error (depd, loaded by express 4's
-  // body-parser, builds its deprecated wrappers with \`new Function\` as the
-  // module loads) or a non-zero exit (serve 14 catches ajv's refusal and
-  // exits 1) — stages the plain Function text it was refused. Returns the
-  // line (no newline) the failure report adds, or "".
+  // The error an uncaught failure of this launch threw (the first one).
+  noteFailure(error) {
+    if (__nimbusLaunchFailure === undefined) __nimbusLaunchFailure = error;
+  },
+  // A failed launch stages the one refusal its failure is attributable to:
+  // the refusal an uncaught error is (or was caused by) — depd, under
+  // express 4, builds its deprecated wrappers with \`new Function\` as the
+  // module loads — or else, for a non-zero exit, the launch's latest refusal
+  // if the program reported it (serve 14 prints ajv's refusal and exits 1).
+  // Returns the line (no newline) the failure report adds, or "".
   stageFailedLaunch() {
-    if (__nimbusRefusedPlainCode.size === 0) return "";
-    for (const { id, entry } of __nimbusRefusedPlainCode.values()) __nimbusRuntimeCodeRecord(id, entry);
-    const __count = __nimbusRefusedPlainCode.size;
-    __nimbusRefusedPlainCode.clear();
-    __nimbusRefusedPlainBytes = 0;
-    return "Nimbus [ERR_NIMBUS_CODE_NEXT_LAUNCH]: " + __count + " text(s) handed to the Function constructor were produced after this launch started; they are staged, and the next launch of this command compiles them.";
+    let __record = null;
+    for (let __e = __nimbusLaunchFailure, __depth = 0; __e !== null && typeof __e === "object" && __depth < 8; __e = __e.cause, __depth++) {
+      __record = __nimbusPlainRefusals.get(__e) ?? null;
+      if (__record !== null) break;
+    }
+    if (__record === null && __nimbusLastPlainRefusal !== null && __nimbusLastPlainRefusal.reported) __record = __nimbusLastPlainRefusal;
+    __nimbusLastPlainRefusal = null;
+    if (__record === null) return "";
+    __nimbusRuntimeCodeRecord(__record.id, __record.entry);
+    return "Nimbus [ERR_NIMBUS_CODE_NEXT_LAUNCH]: the code this program handed the Function constructor was produced after this launch started; it is staged, and the next launch of this command compiles it.";
   },
 });
 // What this launch could not compile, for the next launch of its command.

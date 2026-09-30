@@ -649,6 +649,7 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
+        globalThis.__nimbusRuntimeCode.noteFailure(e);
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
@@ -1107,6 +1108,7 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
+        globalThis.__nimbusRuntimeCode.noteFailure(e);
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
