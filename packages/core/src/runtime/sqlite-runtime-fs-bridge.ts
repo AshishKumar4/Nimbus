@@ -1055,8 +1055,8 @@ type Located =
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
-function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, call: string | FsCall, path?: RuntimeFsPath): F {
-  if (typeof fn !== 'function') throw callError('ENOTSUP', typeof call === 'string' ? { syscall: call, path: path! } : call);
+function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, ...args: [call: string, path: RuntimeFsPath] | [call: FsCall]): F {
+  if (typeof fn !== 'function') throw callError('ENOTSUP', args.length === 2 ? { syscall: args[0], path: args[1] } : args[0]);
   return fn;
 }
 

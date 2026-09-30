@@ -9,15 +9,13 @@
 import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 
-interface Entry {
-  type: VfsFileType;
+type Entry = {
   data: Uint8Array;
   target: string;
   mode: number;
   mtimeMs: number;
   revision: number;
-  children: Map<string, Entry> | null;
-}
+} & ({ type: 'directory'; children: Map<string, Entry> } | { type: Exclude<VfsFileType, 'directory'>; children: null });
 
 const encoder = new TextEncoder();
 const EMPTY = new Uint8Array(0);
@@ -53,10 +51,10 @@ export class MemoryVFS implements VFS {
   }
 
   private entry(type: VfsFileType, mode: number): Entry {
-    return {
-      type, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
-      children: type === 'directory' ? new Map() : null,
+    const fields = {
+      data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
     };
+    return type === 'directory' ? { type, ...fields, children: new Map<string, Entry>() } : { type, ...fields, children: null };
   }
 
   private touch(entry: Entry): void {
@@ -82,7 +80,7 @@ export class MemoryVFS implements VFS {
     return at;
   }
 
-  private parentOf(path: string, call: Call): { dir: Entry; name: string } {
+  private parentOf(path: string, call: Call): { dir: Extract<Entry, { type: 'directory' }>; name: string } {
     const parts = segments(path);
     const name = parts.pop();
     if (name === undefined) throw syscallError('EBUSY', call.syscall, call.path, { dest: call.dest, detail: 'the root cannot be replaced' });
@@ -203,7 +201,7 @@ export class MemoryVFS implements VFS {
     const entry = dir.children!.get(name);
     if (entry === undefined) throw fail('ENOENT', call);
     if (entry.type !== 'directory') throw fail('ENOTDIR', call);
-    if (entry.children!.size > 0) throw fail('ENOTEMPTY', call);
+    if (entry.children.size > 0) throw fail('ENOTEMPTY', call);
     dir.children!.delete(name);
     this.touch(dir);
   }
@@ -211,7 +209,7 @@ export class MemoryVFS implements VFS {
   removeRecursive(path: string): void {
     const call = { syscall: 'rm', path };
     const { dir, name } = this.parentOf(path, call);
-    if (!dir.children!.delete(name)) throw fail('ENOENT', call);
+    if (!dir.children.delete(name)) throw fail('ENOENT', call);
     this.touch(dir);
   }
 
@@ -237,7 +235,7 @@ export class MemoryVFS implements VFS {
     if (replaced !== undefined) {
       if (entry.type === 'directory' && replaced.type !== 'directory') throw fail('ENOTDIR', call);
       if (entry.type !== 'directory' && replaced.type === 'directory') throw fail('EISDIR', call);
-      if (replaced.type === 'directory' && replaced.children!.size > 0) throw fail('ENOTEMPTY', call);
+      if (replaced.type === 'directory' && replaced.children.size > 0) throw fail('ENOTEMPTY', call);
     }
     source.dir.children!.delete(source.name);
     target.dir.children!.set(target.name, entry);

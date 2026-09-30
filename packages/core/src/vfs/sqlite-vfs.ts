@@ -2574,7 +2574,7 @@ export class SqliteVFS {
     let prefix = sameParent ? current.slice(0, parentEnd) : '';
     let found: INode | undefined;
     for (let index = 0; index < parts.length; index++) {
-      prefix = prefix ? `${prefix}/${parts[index]}` : parts[index]!;
+      prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
       const inode = tree.get(this.keyOfName(prefix, root));
       found = inode;
       const leaf = index === parts.length - 1;
@@ -2795,9 +2795,9 @@ export class SqliteVFS {
       dropped < this._invalidations.length
       && this._invalidationBytes > SqliteVFS.INVALIDATION_LOG_MAX_BYTES
     ) {
-      this._invalidationBytes -= SqliteVFS.entryBytes(this._invalidations[dropped]!.path);
+      this._invalidationBytes -= SqliteVFS.entryBytes(this._invalidations[dropped].path);
       // An operation logs its paths at their own generations, not in order.
-      this._invalidationFloor = Math.max(this._invalidationFloor, this._invalidations[dropped]!.rev);
+      this._invalidationFloor = Math.max(this._invalidationFloor, this._invalidations[dropped].rev);
       dropped++;
     }
     if (dropped > 0) this._invalidations = this._invalidations.slice(dropped);
@@ -6955,7 +6955,7 @@ export class SqliteVFS {
     if (job?.ahead !== undefined) {
       const row = [...this.sql.exec(
         'SELECT COUNT(*) AS count, COALESCE(MAX(off + len), 0) AS size FROM vfs_content_chunks WHERE content_id = ?', job.ahead,
-      )][0]!;
+      )][0];
       Object.assign(staging, { id: job.ahead, size: Number(row.size), count: Number(row.count) });
     }
     let builder = this.newPlan(true);
@@ -7021,7 +7021,7 @@ export class SqliteVFS {
     if (job.dst === '') return true;
     if (!this.reachable(job.dst)) return false;
     const parent = this.parentPath(job.dst);
-    if ((parent === '' ? ROOT_INODE : this.inodes.get(parent)!.ino) !== job.parentIno) return false;
+    if ((parent === '' ? ROOT_INODE : this.inodes.get(parent)?.ino) !== job.parentIno) return false;
     const here = this.inodes.get(job.dst);
     return job.dstIno === undefined ? here === undefined : here?.ino === job.dstIno;
   }
