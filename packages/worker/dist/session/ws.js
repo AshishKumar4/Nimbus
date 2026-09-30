@@ -408,7 +408,15 @@ function answerClose(ws, code, reason) {
     if (ws.readyState === WebSocket.CLOSED)
         return;
     const answer = code === undefined || code === 1005 || code === 1006 ? 1000 : code;
-    ws.close(answer, reason ?? '');
+    // The close handler must go on to drop the socket's terminal stamp whatever
+    // happens here: a refused answer leaves the peer to its own timeout, but a
+    // skipped stamp would refuse the next terminal for the whole liveness window.
+    try {
+        ws.close(answer, reason ?? '');
+    }
+    catch (error) {
+        console.warn('[nimbus] could not answer a WebSocket close:', error);
+    }
 }
 export async function wsClose(self, ws, code, reason, _wasClean) {
     // Every kind below: whatever it tears down, the peer is waiting on this.
