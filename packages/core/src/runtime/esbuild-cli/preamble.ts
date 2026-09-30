@@ -21,9 +21,9 @@
  * The same staged script carries the one other thing the facet runs that
  * esbuild does not: the parse that routes a module's dynamic `import()` to the
  * process's ESM loader (dynamic-import-rewrite.ts), installed as
- * `globalThis.__nimbusRewriteDynamicImports` for the facet's transforms. It is
- * acorn's parse of a whole module, which is why it runs here and not in the
- * session's isolate.
+ * `globalThis.__nimbusRewriteDynamicImports` for the facet's transforms. Its
+ * CSP/asm.js module lexer needs no runtime wasm compile; narrow grammar probes
+ * still use Acorn. Keep this analysis out of the session's isolate.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';

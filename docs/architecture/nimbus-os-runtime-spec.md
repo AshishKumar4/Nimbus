@@ -107,9 +107,10 @@ Nimbus already has a real base:
   (`require-resolver.ts`, `__resolveFrom`), ESM→CJS lowering and
   `import.meta` metadata, because the registry resolves specifiers as URLs
   only, keeps every module under `file:///bundle/`, and takes no named
-  exports for a CommonJS module. Dynamic imports are collected directly from
-  Acorn's parser productions, preserving regexp/template/comment boundaries
-  without a second AST walk or separate token-context heuristics. Code the
+  exports for a CommonJS module. Dynamic-import and metadata spans use the
+  synchronous CSP/asm.js es-module-lexer build, without runtime wasm
+  compilation or a whole-cell AST. Acorn remains for import argument grammar,
+  escaped capture names, directives and method/ASI lexical ambiguities. Code the
   program produces at runtime (a
   file written then required or imported, or text handed to the
   `AsyncFunction`/generator constructors, `vm.compileFunction` or

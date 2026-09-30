@@ -148,15 +148,16 @@ published independently in the `@nimbus-sh` npm scope.
   removed: its ESM imports share the patched native Server prototype. This
   does not add WebSocket upgrade support to workerd's HTTP dispatcher.
 
-- Large Node CLI launches collect dynamic imports directly from Acorn's
-  parser productions, without a second AST walk or a hand-maintained
-  regex-versus-division heuristic. Completed top-level trees are discarded.
-  On pi's 4,345,609-byte chunk the complete rewrite takes 278–297 ms locally
-  (283 ms median over five runs), versus 571–822 ms for the old AST walk.
-  Transform calls are capped at 256 KiB / 32 files so small modules cannot
-  monopolize one guest
-  invocation. If a resident launch fails before its guest is created, its
-  already-returned pid now exits with the cause rather than remaining
+- Large Node CLI cells use es-module-lexer's synchronous CSP/asm.js build
+  to find dynamic imports and import.meta without constructing a whole-cell
+  AST or compiling wasm at runtime. Acorn checks small import argument lists,
+  directives and escaped capture identifiers; method/ASI lexer ambiguities
+  retain Acorn's grammar. The 3.8 MiB Pi 0.99.1 cell takes 118–195 ms warm
+  in a local V8 replay, with no whole-program parse. The release candidate
+  repeatedly killed that rewrite-only cell at the facet CPU limit; the same
+  Pi version rendered its TUI on 957a56a6. Transform slices retain their
+  256 KiB / 32-file bounds. If a resident launch fails before its guest exists,
+  its already-returned pid now exits with the cause rather than remaining
   "running" behind an empty terminal. This exposed the actual cause of the
   intermittent pi TUI timeout: an esbuild-facet CPU-limit failure during
   module-map construction, not a stuck stdin or TUI renderer.

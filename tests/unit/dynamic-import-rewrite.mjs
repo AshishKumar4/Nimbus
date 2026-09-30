@@ -101,10 +101,15 @@ return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
     [parent, [parent, 'argument'], parent, 'user binding', true]);
 }
 
-// A script the parse refuses is returned as written, for the compile to report.
-assert.equal(rewriteDynamicImports('import(', parent), 'import(');
-// Code with no import() is returned as is, unparsed.
-assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
+// Invalid import arity/spread must remain a syntax error, not become a valid
+// function call merely because the scanner found an import keyword.
+{
+  const service = new EsbuildService();
+  for (const source of ['return import();', 'return import("x", {}, "extra");', 'return import(...["x"]);']) {
+    const result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent });
+    assert.throws(() => new Function(result.code), SyntaxError);
+  }
+}
 
 // Pure JavaScript rewriting needs no wasm engine, even on a host where one
 // was never configured. Exercise metadata through both public entry points.
