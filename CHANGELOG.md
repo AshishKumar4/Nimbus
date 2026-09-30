@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- node-static (`npx node-static`) serves its files; it answered 404 for every
+  one. The guest's `url` module imitated Node's legacy API over WHATWG
+  `new URL()`, which throws for the path-only URL a server receives as
+  `req.url`, so `url.parse("/hello.txt")` had no `pathname` and node-static
+  looked for `<root>/undefined`. The legacy `parse`, `format`, `resolve`,
+  `resolveObject` and `Url` are now workerd's own `node:url`; the guest keeps
+  its `pathToFileURL` and `fileURLToPath`, which resolve against its cwd.
+
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
   `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker
