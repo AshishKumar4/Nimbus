@@ -6267,6 +6267,11 @@ const __stringDecoderMod = {
 //      unawaited children dies between the last 'data' poll and the
 //      facet's reportExit.
 const __cpChildren = new Map();   // pid → ChildProcess (for exit-time drain)
+// Pids of this process's children that have exited, so process.kill can
+// answer ESRCH for them as Node does (session pids are never reused). Bounded:
+// the oldest are forgotten first, and a forgotten pid is an unknown one.
+const __cpExitedPids = new Set();
+const __CP_EXITED_PIDS_MAX = 1024;
 
 const __childProcessMod = (() => {
   const HAS_SUPERVISOR = !!(__supervisor && typeof __supervisor.cpSpawn === "function");
@@ -6507,7 +6512,13 @@ const __childProcessMod = (() => {
       // Evict from the live-children map after a microtask so any
       // close listeners that re-read child state see consistent values.
       queueMicrotask(() => {
-        try { if (child.pid) __cpChildren.delete(child.pid); } catch {}
+        try {
+          if (child.pid) {
+            __cpChildren.delete(child.pid);
+            __cpExitedPids.add(child.pid);
+            if (__cpExitedPids.size > __CP_EXITED_PIDS_MAX) __cpExitedPids.delete(__cpExitedPids.values().next().value);
+          }
+        } catch {}
       });
     }
   }
@@ -7415,6 +7426,21 @@ const __processMod = {
     if (n === __processMod.pid || n === 0) {
       if (signal === 0) return true; // existence probe, never deliver SIGTERM
       return __nimbusSignalSelf(signal === undefined ? "SIGTERM" : signal);
+    }
+    // This process's own children are signalled through their handle, as
+    // tree-kill and similar helpers expect of process.kill(childPid).
+    const child = __cpChildren.get(n);
+    if (child !== undefined && !child._exitFired) {
+      if (signal === 0) return true;
+      child.kill(signal === undefined ? "SIGTERM" : signal);
+      return true;
+    }
+    if (child !== undefined || __cpExitedPids.has(n)) {
+      const gone = new Error("kill ESRCH");
+      gone.code = "ESRCH";
+      gone.errno = -3;
+      gone.syscall = "kill";
+      throw gone;
     }
     // Node's process.kill throws on failure; returning false falsely told
     // Vinext/Astro lockfile probes that every stale pid was still alive.
