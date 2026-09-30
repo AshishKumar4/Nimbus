@@ -44,7 +44,8 @@ try {
     const row = source.exportPage({ at: 'head', root: path, limit: 1 }).rows[0];
     return { ...row, path: path === 'tree' ? '' : path.slice('tree/'.length) };
   });
-  const page = { schema: initial.schema, root: 'tree', nextIno: source.exportPage({ at: 'head', root: 'tree', limit: 1 }).nextIno, after: null, rows, next: null };
+  const head = source.exportPage({ at: 'head', root: 'tree', limit: 1 });
+  const page = { schema: head.schema, source: head.source, root: 'tree', nextIno: head.nextIno, after: null, rows, next: null };
   const wanted = target.wantChunks(page);
   const transferred = source.exportChunks(wanted);
   assert.equal(transferred.rest.length, 0);

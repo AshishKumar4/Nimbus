@@ -135,6 +135,15 @@ function failureSync(run) {
   assert.equal(reported.cause, quota);
   const named = new VfsError('ENOENT', 'no such file or directory, open', 'x');
   assert.equal(toVfsError(named, 'stat', '/y'), named, 'an error that names its path is kept as it is');
+  // Node 22's own rename error keeps its destination; the caller's is a fallback for its own call only.
+  const node = Object.assign(new Error("ENOENT: no such file or directory, rename '/home/nope' -> '/home/new'"),
+    { code: 'ENOENT', errno: -2, syscall: 'rename', path: '/home/nope', dest: '/home/new' });
+  const kept = toVfsError(node, 'rename', '/home/nope');
+  assert.deepEqual([kept.message, kept.syscall, kept.path, kept.dest], [node.message, 'rename', '/home/nope', '/home/new']);
+  const bridged = toVfsError(Object.assign(new Error('ENOENT: rename'), { code: 'ENOENT', syscall: 'rename', path: '/a' }), 'rename', '/a', '/b');
+  assert.equal(bridged.message, "ENOENT: no such file or directory, rename '/a' -> '/b'");
+  const inner = toVfsError(Object.assign(new Error('ENOENT: lstat'), { code: 'ENOENT', syscall: 'lstat', path: '/a' }), 'rename', '/a', '/b');
+  assert.deepEqual([inner.message, inner.dest], ["ENOENT: no such file or directory, lstat '/a'", undefined]);
 }
 
 // ── The SDK's Flue adapter: a missing file is node's ENOENT too ────────────

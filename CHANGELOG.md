@@ -14,9 +14,14 @@ published independently in the `@nimbus-sh` npm scope.
   or over it, or a restore that removes it (of dst or any directory above it)
   ends the import in the transaction that removes dst: the job row goes, and
   the staging it held (a manifest cut off mid-import, chunks sent ahead of
-  their pages) is queued for collection. A later page of the abandoned
-  import is refused rather than written into whatever is at dst now. An
-  import nobody removed still resumes after a reset.
+  their pages) is queued for collection, once the transaction commits (an
+  embedder's `withTransaction` that rolls back keeps it). Every export page
+  now names its snapshot (`VfsExportPage.source`, export schema 3), and an
+  import takes pages only from the export its first page came from, so a
+  late page of the abandoned import is refused, whether dst is empty or a
+  new import of another export is open there. An import nobody removed
+  still resumes after a reset. An embedder that carries pages through its
+  own schema must carry `source` too.
 
 - A filesystem error's message is Node's: `ENOENT: no such file or
   directory, open 'x'`, with libuv's description, the syscall, the path
@@ -28,7 +33,10 @@ published independently in the `@nimbus-sh` npm scope.
   (`err.syscall`, and `err.dest` for a rename, copy or symlink), including
   the namespace's own refusals, which report the call that met them. The
   new `syscallError(code, syscall, path, { dest, detail })` makes one.
-  `toVfsError(error, syscall, path, dest?)` takes the call it converts for.
+  `toVfsError(error, syscall, path, dest?)` takes the call it converts for,
+  and keeps an error's own syscall, path and `dest` where it names them.
+  Hosted node's `fs.promises.rename` and `copyFile` errors carry `dest` as
+  Node's do.
 
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. A guest stream emitted `'end'` and never `'close'`:

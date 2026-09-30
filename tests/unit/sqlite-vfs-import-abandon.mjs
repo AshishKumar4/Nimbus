@@ -6,12 +6,15 @@
  * rename away or over it, of dst or an ancestor) ends that job in the
  * transaction that removes dst and queues the staging the import held, so a
  * new import into dst starts clean and nothing staged is kept. A page of
- * the abandoned import still in flight lands nowhere. An import nobody
- * removed still resumes after a reset.
+ * the abandoned import still in flight lands nowhere, not even in the import
+ * that replaced it. An import nobody removed still resumes after a reset, an
+ * embedder transaction that rolls the removal back keeps its staging, and
+ * ending many imports at once stays within a transaction's bounds.
  */
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -241,6 +244,111 @@ function target(dir = 'home') {
   dst.raw.dropSnapshot('before');
   dst.raw.dropSnapshot('mid');
   assertClean(dst, 'restore');
+}
+
+// ── A late page of the ended import never joins the one that replaced it ──
+{
+  const src = source();
+  const dst = target();
+  const v1 = importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', pages: 1 });
+  dst.vfs.removeRecursive('home/proj');
+  // Both exports are taken after both snapshots exist: root and allocator headers agree.
+  const v2 = importPages(src, dst, { at: 'second', root: 'proj', dst: 'home/proj', pages: 1 });
+  assert.equal(v2.next, v1.next, 'the new import stands where the old one stopped');
+  const late = nextPage(src, dst, { at: 'first', root: 'proj', after: v1.next });
+  assert.throws(() => dst.raw.importPage('home/proj', late.page, late.chunks), /EINVAL: home\/proj: an import of another export is open here/);
+  assert.equal(dst.vfs.exists('home/proj/f15.txt'), false, 'the late page wrote nothing');
+  assert.equal(importPages(src, dst, { at: 'second', root: 'proj', dst: 'home/proj', after: v2.next }).imported, 31);
+  assert.equal(text(dst, 'home/proj/f15.txt'), 'v2 15\n');
+  // A first page of another export is not a replay of the open import's.
+  dst.vfs.removeRecursive('home/proj');
+  importPages(src, dst, { at: 'second', root: 'proj', dst: 'home/proj', pages: 1 });
+  const other = nextPage(src, dst, { at: 'first', root: 'proj' });
+  assert.throws(() => dst.raw.importPage('home/proj', other.page, other.chunks), /another export is open here/);
+  // Chunks sent ahead begin a job no page has written: the first page names its export.
+  const ahead = nextPage(src, dst, { at: 'second', root: 'proj' });
+  dst.raw.importChunks('home/ahead', ahead.chunks);
+  assert.equal(dst.raw.importPage('home/ahead', ahead.page, []).imported, 10);
+  assert.throws(() => dst.raw.importPage('home/ahead', nextPage(src, dst, { at: 'first', root: 'proj', after: ahead.page.next }).page, []),
+    /another export is open here/);
+  dst.vfs.removeRecursive('home/proj');
+  dst.vfs.removeRecursive('home/ahead');
+  assertClean(dst, 'another export');
+}
+
+// ── An embedder transaction that rolls back keeps the import's staging ─────
+{
+  const src = open();
+  src.vfs.mkdir('big');
+  src.vfs.writeFile('big/a.bin', random(4_000_000, 3));
+  src.vfs.writeFile('big/b.txt', 'b\n');
+  src.raw.snapshot('s');
+  let found = false;
+  for (let k = 1; !found; k++) {
+    assert.ok(k < 60, 'some reset leaves a manifest mid-import');
+    const dst = target();
+    dst.harness.failAfterTransaction({ transaction: dst.harness.transactionCount + k, error: new Error(`reset at ${k}`) });
+    try { importPages(src, dst, { at: 's', root: 'big', dst: 'home/big' }); } catch (error) { assert.match(String(error), new RegExp(`reset at ${k}`)); }
+    dst.harness.clearFault();
+    const reopened = open(createSqliteVfsTestHarness(dst.harness.db));
+    if (imports(reopened)[0]?.args.pending === undefined) continue;
+    found = true;
+    assert.throws(() => reopened.raw.withTransaction(() => {
+      reopened.vfs.removeRecursive('home/big');
+      assert.deepEqual(imports(reopened), [], 'inside it, the removal ended the import');
+      throw new Error('the embedder gives up');
+    }), /rolled back/);
+    assert.equal(imports(reopened).length, 1, 'the rollback brought the job back');
+    collect(reopened);
+    importPages(src, reopened, { at: 's', root: 'big', dst: 'home/big' });
+    assert.equal(reopened.vfs.contentKey('home/big/a.bin'), src.raw.at('s').contentKey('big/a.bin'), 'the import resumed on its staging');
+    assertClean(reopened, `resumed after a rollback at reset ${k}`);
+    // Committed, the same removal releases what the import staged.
+    reopened.vfs.removeRecursive('home/big');
+    const again = open(createSqliteVfsTestHarness(dst.harness.db));
+    let staged = false;
+    for (let j = 1; !staged; j++) {
+      assert.ok(j < 60);
+      again.harness.failAfterTransaction({ transaction: again.harness.transactionCount + j, error: new Error(`reset at ${j}`) });
+      try { importPages(src, again, { at: 's', root: 'big', dst: 'home/big' }); } catch (error) { assert.match(String(error), new RegExp(`reset at ${j}`)); }
+      again.harness.clearFault();
+      staged = imports(again)[0]?.args.pending !== undefined;
+      if (!staged) { importPages(src, again, { at: 's', root: 'big', dst: 'home/big' }); again.vfs.removeRecursive('home/big'); }
+    }
+    again.raw.withTransaction(() => { again.vfs.removeRecursive('home/big'); });
+    assert.deepEqual(imports(again), []);
+    assertClean(again, 'a committed embedder transaction');
+  }
+}
+
+// ── Ending many imports stays inside one transaction's bounds ──────────────
+{
+  const src = source();
+  const dst = target('home/anc');
+  for (let i = 0; i < 75; i++) importPages(src, dst, { at: 'first', root: 'proj', dst: `home/anc/p${i}`, limit: 1, pages: 1 });
+  assert.equal(imports(dst).length, 75);
+  const firstTransaction = dst.harness.transactionCount;
+  const firstStatement = dst.harness.statements.length;
+  const planned = new Map();
+  dst.raw.getStats(); // loads the counters, so reading them below issues no SQL
+  dst.harness.setFaultInjector(({ transaction }) => {
+    if (transaction !== null && transaction > firstTransaction && !planned.has(transaction)) {
+      planned.set(transaction, dst.raw.getStats().sql.transactions.sqlExecs.current);
+    }
+    return null;
+  });
+  dst.vfs.removeRecursive('home/anc');
+  dst.harness.clearFault();
+  assert.deepEqual(imports(dst), [], 'every import under the ancestor ended');
+  const executed = new Map();
+  for (const statement of dst.harness.statements.slice(firstStatement)) {
+    if (statement.transaction !== null) executed.set(statement.transaction, (executed.get(statement.transaction) ?? 0) + 1);
+  }
+  for (const [transaction, count] of executed) {
+    assert.ok(count <= MAX_TX_SQL_EXECS, `transaction ${transaction} ran ${count} statements, over the ${MAX_TX_SQL_EXECS} bound`);
+    assert.ok(count <= planned.get(transaction), `transaction ${transaction} ran ${count} statements, planned ${planned.get(transaction)}`);
+  }
+  assertClean(dst, 'many imports');
 }
 
 console.log('sqlite-vfs-import-abandon: all assertions passed');
