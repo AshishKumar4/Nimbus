@@ -393,7 +393,8 @@ class TransactionPlanBuilder {
             blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
             // A delete writes its tombstone too.
             logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows + (reserveCommit ? 1 : 0),
-            sqlExecs: 2 + (reserveCommit ? 1 : 0)
+            // A removal also reads the open imports it may abandon.
+            sqlExecs: 2 + (reserveCommit ? 1 : 0) + (deletes > 0 ? 1 : 0)
                 + groupedSqlExecs(historyRows, KEYS_PER_SQL_EXEC)
                 + groupedSqlExecs(deletes, KEYS_PER_SQL_EXEC)
                 + groupedSqlExecs(deletes, TOMBSTONE_ROWS_PER_SQL_EXEC)
@@ -5461,10 +5462,13 @@ export class SqliteVFS {
      * Write one exported page under `dst`. The first page of an import needs
      * `dst` absent or an empty directory, and records a vfs_jobs row; later
      * pages continue it, and rows at or before importCursor(dst) are skipped,
-     * so a page replayed after a reset is harmless. Every chunk given is
-     * re-hashed before anything is written; if the page names a chunk neither
-     * given nor stored, nothing is written and `want` lists what to send.
-     * Files too large for one transaction stage across several.
+     * so a page replayed after a reset is harmless. Removing dst, or a
+     * directory above it, abandons the import in the same transaction: its job
+     * and staging go, a new import into dst starts clean, and a later page of
+     * the old one is refused. Every chunk given is re-hashed before anything
+     * is written; if the page names a chunk neither given nor stored, nothing
+     * is written and `want` lists what to send. Files too large for one
+     * transaction stage across several.
      */
     importPage(dst, page, chunks = [], options = {}) {
         // N18: the page's rows and the bytes it brings are admitted and reserved
@@ -5524,6 +5528,11 @@ export class SqliteVFS {
         if (compare(from, cursor) > 0)
             throw vfsError('EINVAL', 'import page skips uncommitted progress');
         const rows = page.rows.filter((row) => cursor === null || SqliteVFS.comparePaths(row.path, cursor[0]) > 0 || (row.path === cursor[0] && cursor[1] >= 0));
+        // A continued page writes only into an open import. Without one, dst holds
+        // a finished import (whose replay writes nothing) or whatever replaced an
+        // abandoned one, which is not that import's to write into.
+        if (job === undefined && page.after !== null && rows.length > 0)
+            throw vfsError('EINVAL', `${target}: no import is open here to continue`);
         if (job === undefined && page.after === null)
             this.assertImportTarget(target);
         const identity = this.importIdentity(target, page, job, rows);
@@ -7069,6 +7078,7 @@ export class SqliteVFS {
         const rewritten = [];
         const created = [];
         const published = [];
+        let abandoned = [];
         try {
             this.executeMeasuredTransaction(plan, execution, () => {
                 // One statement for the generation and every id this transaction
@@ -7119,6 +7129,8 @@ export class SqliteVFS {
                     if (entry.prior.contentId !== null)
                         queue.add(GC_CONTENT, entry.prior.contentId);
                 }
+                if (deletes.length > 0)
+                    abandoned = this.abandonRemovedImports(deletedPaths, queue);
                 if (plan.stagingCreated.length > 0) {
                     const rows = [];
                     for (const staging of plan.stagingCreated) {
@@ -7395,6 +7407,42 @@ export class SqliteVFS {
             this.activeStagingContentIds.delete(staging.id);
         for (const chunkId of rewritten)
             this.cacheEvict(chunkId);
+        for (const job of abandoned) {
+            this.importStagings.delete(job.dst);
+            for (const id of job.contents)
+                this.activeStagingContentIds.delete(id);
+        }
+    }
+    /**
+     * End every import whose destination `deleted` removes, at dst or above
+     * it, inside the transaction removing it: the job row goes, and the
+     * staging contents the import held (a manifest cut off mid-import, chunks
+     * sent ahead of their pages) are queued in `queue`. A new import into dst
+     * then starts clean, and a page of the old one still in flight is refused
+     * (importPageNow). The root is never removed, so an import into it is
+     * never abandoned here.
+     */
+    abandonRemovedImports(deleted, queue) {
+        const abandoned = [];
+        for (const row of [...this.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'import'")]) {
+            const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
+            let removed = false;
+            for (let at = job.dst; at !== '' && !removed; at = this.parentPath(at))
+                removed = deleted.has(at);
+            if (!removed)
+                continue;
+            this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', Number(row.id));
+            const contents = [];
+            if (job.pending !== undefined)
+                contents.push(job.pending.content);
+            const held = this.importStagings.get(job.dst);
+            if (held !== undefined && held.id !== 0)
+                contents.push(held.id);
+            for (const id of contents)
+                queue.add(GC_CONTENT, id);
+            abandoned.push({ dst: job.dst, contents });
+        }
+        return abandoned;
     }
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**

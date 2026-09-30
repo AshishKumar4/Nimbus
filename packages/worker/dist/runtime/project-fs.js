@@ -8,7 +8,7 @@
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
-import { VfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 /** The principal's `view` in the engine's call shape. */
 export function projectFs(view) {
@@ -16,7 +16,7 @@ export function projectFs(view) {
     const statOf = async (key, follow) => {
         const st = await view.stat(at(key), { follow });
         if (st === null)
-            throw new VfsError('ENOENT', 'no such file or directory', at(key));
+            throw syscallError('ENOENT', follow ? 'stat' : 'lstat', at(key));
         return {
             dev: st.dev, ino: st.ino, nlink: st.nlink, type: st.type, size: st.size,
             atime: st.atimeMs, ctime: st.ctimeMs, mtime: st.mtimeMs, mode: st.mode, uid: st.uid, gid: st.gid,

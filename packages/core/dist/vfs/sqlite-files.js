@@ -10,7 +10,7 @@
  * code.
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from './sqlite-vfs.js';
-import { toVfsError, VfsError } from './vfs-error.js';
+import { syscallError, toVfsError, VfsError } from './vfs-error.js';
 function absolute(key) {
     return key.startsWith('/') ? key : `/${key}`;
 }
@@ -73,12 +73,13 @@ export class SqliteFiles {
     as(cred) {
         return new SqliteFiles(this.engine, this.engine.as(cred));
     }
-    run(path, op) {
+    /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
+    run(syscall, path, op, dest) {
         try {
             return op();
         }
         catch (error) {
-            throw toVfsError(error, path);
+            throw toVfsError(error, syscall, path, dest);
         }
     }
     stat(path, options) {
@@ -90,74 +91,74 @@ export class SqliteFiles {
             return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);
         }
         catch (error) {
-            const converted = toVfsError(error, path);
+            const converted = toVfsError(error, options?.follow === false ? 'lstat' : 'stat', path);
             if (converted instanceof VfsError && converted.code === 'ENOENT')
                 return null;
             throw converted;
         }
     }
     readFile(path) {
-        return this.run(path, () => this.view.readFile(path));
+        return this.run('open', path, () => this.view.readFile(path));
     }
     readRange(path, offset, length) {
-        return this.run(path, () => this.view.readRange(path, offset, length));
+        return this.run('open', path, () => this.view.readRange(path, offset, length));
     }
     writeFile(path, data, options) {
-        this.run(path, () => this.view.writeFile(path, data, options));
+        this.run('open', path, () => this.view.writeFile(path, data, options));
     }
     writeRange(path, offset, bytes) {
-        this.run(path, () => this.view.writeRange(path, offset, bytes));
+        this.run('open', path, () => this.view.writeRange(path, offset, bytes));
     }
     truncate(path, size) {
-        this.run(path, () => this.view.truncate(path, size));
+        this.run('open', path, () => this.view.truncate(path, size));
     }
     readdir(path) {
-        return this.run(path, () => this.view.readdir(path).map((entry) => ({ name: entry.name, type: entry.type })));
+        return this.run('scandir', path, () => this.view.readdir(path).map((entry) => ({ name: entry.name, type: entry.type })));
     }
     mkdir(path, options) {
-        this.run(path, () => {
+        this.run('mkdir', path, () => {
             // mkdir(2): an existing name is EEXIST (the engine's own mkdir is idempotent).
             if (!options?.recursive && this.view.exists(path))
-                throw new VfsError('EEXIST', 'file exists', path);
+                throw syscallError('EEXIST', 'mkdir', path);
             this.view.mkdir(path, options);
         });
     }
     unlink(path) {
-        this.run(path, () => this.view.unlink(path));
+        this.run('unlink', path, () => this.view.unlink(path));
     }
     rmdir(path) {
-        this.run(path, () => this.view.rmdir(path));
+        this.run('rmdir', path, () => this.view.rmdir(path));
     }
     rename(from, to) {
-        this.run(from, () => this.view.rename(from, to));
+        this.run('rename', from, () => this.view.rename(from, to), to);
     }
     removeRecursive(path) {
-        this.run(path, () => { this.view.removeRecursive(path); });
+        this.run('rm', path, () => { this.view.removeRecursive(path); });
     }
     symlink(target, path) {
-        this.run(path, () => this.view.symlink(target, path));
+        this.run('symlink', target, () => this.view.symlink(target, path), path);
     }
     readlink(path) {
-        return this.run(path, () => this.view.readlink(path));
+        return this.run('readlink', path, () => this.view.readlink(path));
     }
     chmod(path, mode) {
-        this.run(path, () => this.view.chmod(path, mode));
+        this.run('chmod', path, () => this.view.chmod(path, mode));
     }
     chown(path, uid, gid) {
-        this.run(path, () => this.view.chown(path, uid, gid));
+        this.run('chown', path, () => this.view.chown(path, uid, gid));
     }
     utimes(path, atimeMs, mtimeMs) {
-        this.run(path, () => this.view.utimes(path, atimeMs, mtimeMs));
+        this.run('utime', path, () => this.view.utimes(path, atimeMs, mtimeMs));
     }
     /** Copy inside the database: rows, not bytes. */
     copy(from, to, options) {
-        return this.run(from, () => {
+        return this.run(options?.recursive ? 'cp' : 'copyfile', from, () => {
             if (!options?.recursive) {
                 this.view.copyFile(from, to);
                 return 1;
             }
             return this.view.copyTree(from, to, { preserve: options.preserve });
-        });
+        }, to);
     }
     /**
      * Compare-and-write against the row's revision, in one synchronous step:
@@ -165,7 +166,7 @@ export class SqliteFiles {
      * this isolate's turn on the same database.
      */
     writeFileIfRevision(path, data, expected) {
-        return this.run(path, () => {
+        return this.run('open', path, () => {
             // Absent is revision 0; revisions compare as strings, so '0' and 0 agree.
             const current = this.stat(path)?.revision ?? 0;
             if (String(current) !== String(expected))

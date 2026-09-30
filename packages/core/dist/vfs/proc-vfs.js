@@ -1,4 +1,4 @@
-import { VfsError } from './vfs-error.js';
+import { syscallError } from './vfs-error.js';
 const enc = new TextEncoder();
 const DIR = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40555, uid: 0, gid: 0 };
 function key(path) {
@@ -32,9 +32,8 @@ export class ProcVFS {
     generate(path) {
         const k = key(path);
         const generator = this.files.get(k);
-        if (generator === undefined) {
-            throw new VfsError(this.isDir(k) ? 'EISDIR' : 'ENOENT', this.isDir(k) ? 'is a directory' : 'no such file or directory', path);
-        }
+        if (generator === undefined)
+            throw syscallError(this.isDir(k) ? 'EISDIR' : 'ENOENT', 'open', path);
         return enc.encode(generator(this.cred));
     }
     stat(path) {
@@ -53,9 +52,8 @@ export class ProcVFS {
     }
     readdir(path) {
         const k = key(path);
-        if (!this.isDir(k)) {
-            throw new VfsError(this.files.has(k) ? 'ENOTDIR' : 'ENOENT', this.files.has(k) ? 'not a directory' : 'no such file or directory', path);
-        }
+        if (!this.isDir(k))
+            throw syscallError(this.files.has(k) ? 'ENOTDIR' : 'ENOENT', 'scandir', path);
         const prefix = k === '' ? '' : `${k}/`;
         const out = new Map();
         for (const name of this.files.keys()) {
@@ -69,13 +67,13 @@ export class ProcVFS {
         }
         return [...out.values()];
     }
-    readOnly(path) {
-        throw new VfsError('EROFS', '/proc is read-only', path);
+    readOnly(syscall, path) {
+        throw syscallError('EROFS', syscall, path, { detail: '/proc is read-only' });
     }
-    writeFile(path) { this.readOnly(path); }
-    mkdir(path) { this.readOnly(path); }
-    unlink(path) { this.readOnly(path); }
-    rmdir(path) { this.readOnly(path); }
+    writeFile(path) { this.readOnly('open', path); }
+    mkdir(path) { this.readOnly('mkdir', path); }
+    unlink(path) { this.readOnly('unlink', path); }
+    rmdir(path) { this.readOnly('rmdir', path); }
     describe() {
         return { source: 'proc', type: 'proc', options: ['ro'] };
     }

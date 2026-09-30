@@ -14,7 +14,7 @@
  * that (ENOTSUP) and decides.
  */
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
-import { VfsError } from './vfs-error.js';
+import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;

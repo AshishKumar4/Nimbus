@@ -228,6 +228,7 @@ interface FsError extends Error {
     syscall: string;
     path: string;
 }
+/** Node's error for `syscall` failing on `path`: `ENOENT: no such file or directory, open 'x'`. */
 export declare function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError;
 export {};
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

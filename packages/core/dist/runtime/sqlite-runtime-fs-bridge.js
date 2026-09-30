@@ -2,6 +2,7 @@ import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { errnoDescription } from '../vfs/vfs-error.js';
 export function createSqliteDescriptorScope() {
     return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
 }
@@ -1111,9 +1112,11 @@ function mountParents(mount, path) {
     if (parent !== '')
         mount.mkdir(parent, { recursive: true });
 }
+/** Node's error for `syscall` failing on `path`: `ENOENT: no such file or directory, open 'x'`. */
 export function fsError(code, syscall, path) {
     const name = typeof path === 'string' ? path : path.path;
-    return Object.assign(new Error(`${code}: ${syscall} '${name}'`), { code, syscall, path: name });
+    const description = errnoDescription(code);
+    return Object.assign(new Error(`${code}: ${description === undefined ? '' : `${description}, `}${syscall} '${name}'`), { code, syscall, path: name });
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;

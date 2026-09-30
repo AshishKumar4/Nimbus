@@ -1343,10 +1343,13 @@ export declare class SqliteVFS {
      * Write one exported page under `dst`. The first page of an import needs
      * `dst` absent or an empty directory, and records a vfs_jobs row; later
      * pages continue it, and rows at or before importCursor(dst) are skipped,
-     * so a page replayed after a reset is harmless. Every chunk given is
-     * re-hashed before anything is written; if the page names a chunk neither
-     * given nor stored, nothing is written and `want` lists what to send.
-     * Files too large for one transaction stage across several.
+     * so a page replayed after a reset is harmless. Removing dst, or a
+     * directory above it, abandons the import in the same transaction: its job
+     * and staging go, a new import into dst starts clean, and a later page of
+     * the old one is refused. Every chunk given is re-hashed before anything
+     * is written; if the page names a chunk neither given nor stored, nothing
+     * is written and `want` lists what to send. Files too large for one
+     * transaction stage across several.
      */
     importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>, options?: {
         lazy?: boolean;
@@ -1542,6 +1545,16 @@ export declare class SqliteVFS {
      * removed row held and no row now holds; store the counters.
      */
     private executeTransactionPlan;
+    /**
+     * End every import whose destination `deleted` removes, at dst or above
+     * it, inside the transaction removing it: the job row goes, and the
+     * staging contents the import held (a manifest cut off mid-import, chunks
+     * sent ahead of their pages) are queued in `queue`. A new import into dst
+     * then starts clean, and a page of the old one still in flight is refused
+     * (importPageNow). The root is never removed, so an import into it is
+     * never abandoned here.
+     */
+    private abandonRemovedImports;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
      * Chunk rows as (id, hash, data) triples; size is length(data), so a row

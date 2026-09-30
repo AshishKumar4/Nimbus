@@ -15,6 +15,7 @@
 import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
 export declare class DevVFS implements VFS {
     readonly sync: SyncVFS;
+    /** The device at `path`; ENOENT for `syscall` when there is none. */
     private node;
     stat(path: string): VfsStat | null;
     readFile(path: string): Uint8Array;

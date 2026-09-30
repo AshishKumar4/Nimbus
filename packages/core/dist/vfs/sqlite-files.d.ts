@@ -21,6 +21,7 @@ export declare class SqliteFiles implements VFS {
     /** The engine's credentialed view this speaks for (for the engine's own callers). */
     get credentialed(): CredentialedVfs;
     as(cred: VfsCred): SqliteFiles;
+    /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     private run;
     stat(path: string, options?: {
         follow?: boolean;
