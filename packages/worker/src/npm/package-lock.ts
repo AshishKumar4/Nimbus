@@ -5,6 +5,17 @@
  */
 import { isSemverRange, satisfiesRange } from './semver.js';
 import { parseRegistryRequest } from './resolve-one-facet.js';
+import { z } from 'zod/v4';
+
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
+}
+
+export const JsonObjectSchema = z.custom<Record<string, unknown>>(isJsonObject);
+type PackageJson = Record<string, unknown> | string | number | boolean;
+export const PackageJsonSchema = z.custom<PackageJson>((value): value is PackageJson =>
+  isJsonObject(value) || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean',
+);
 
 export interface PackageLockEntry {
   name?: unknown;
@@ -49,7 +60,9 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependenc
  * version its range accepts, and the lock's root must declare the same
  * dependency set, so a dependency removed from package.json is caught too.
  */
-export function packageLockMismatches(pkgJson: Record<string, unknown>, lock: PackageLock): string[] {
+export function packageLockMismatches(value: unknown, lock: PackageLock): string[] {
+  const parsed = PackageJsonSchema.parse(value);
+  const pkgJson = isJsonObject(parsed) ? parsed : {};
   const out: string[] = [];
   const root = lock.packages[''] ?? {};
   for (const field of DEPENDENCY_FIELDS) {

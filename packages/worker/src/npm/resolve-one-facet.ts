@@ -58,6 +58,12 @@
 import type { ResolvedPackage } from './resolver.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ParsedSemver, resolveVersion, isSemverRange, parseSemver } from './semver.js';
+
+declare const RESOLVE_VERSION: typeof resolveVersion;
+declare const IS_SEMVER_RANGE: typeof isSemverRange;
+declare const PARSE_SEMVER: typeof parseSemver;
+declare const COMPARE_SEMVER: (a: ParsedSemver | null, b: ParsedSemver | null) => number;
 
 declare const __nimbusUseRpcResult: <T, R>(
   promise: Promise<T>,
@@ -391,7 +397,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (entries.length === 0) return null;
     const candidates = entries.filter((e) => e.name === request.installName);
     if (candidates.length === 0) return null;
-    // @ts-ignore — preamble.
     const picked = RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
     if (!picked) return null;
     return candidates.find((e) => e.version === picked) || null;
@@ -437,7 +442,20 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // packument dictates the tarball URL and integrity digest for every
   // tenant that reads it — a facet-supplied cache write would be a
   // cross-tenant code-execution primitive.
-  type Loaded = { data: any; bytes: number; source: ResolveOneResult['packumentSource'] } | { failed: ResolveOneResult };
+  type Packument = { versions: NonNullable<unknown>; 'dist-tags'?: unknown };
+  const hasVersions = (value: unknown): value is Packument =>
+    value !== null && typeof value === 'object' && 'versions' in value && !!value.versions;
+  // JavaScript property access boxes primitive values.
+  const readProperty = (value: unknown, key: string): unknown => {
+    if (value === null || value === undefined) return undefined;
+    const target: unknown = Object(value);
+    if ((target !== null && typeof target === 'object') || typeof target === 'function') {
+      const field: unknown = Reflect.get(target, key);
+      return field;
+    }
+    return undefined;
+  };
+  type Loaded = { data: Packument; bytes: number; source: ResolveOneResult['packumentSource'] } | { failed: ResolveOneResult };
   const loadPackument = async (name: string): Promise<Loaded> => {
   let packumentText: string | null = null;
   let packumentSource: ResolveOneResult['packumentSource'] = 'network';
@@ -499,17 +517,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   }
 
   const loadedBytes = packumentText.length;
-  let loaded: any;
+  let loaded: unknown;
   try {
     loaded = JSON.parse(packumentText);
-  } catch (e: any) {
-    messages.push(`[resolve-one] ${name}: malformed packument: ${e?.message ?? e}`);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : e;
+    messages.push(`[resolve-one] ${name}: malformed packument: ${detail}`);
     return { failed: out(null, loadedBytes, packumentSource, {
       type: 'unresolved',
-      reason: `malformed packument for ${name}: ${e?.message ?? e}`,
+      reason: `malformed packument for ${name}: ${detail}`,
     }) };
   }
-  if (!loaded || !loaded.versions) {
+  if (!loaded || !hasVersions(loaded)) {
     return { failed: out(null, loadedBytes, packumentSource, {
       type: 'unresolved',
       reason: `packument for ${name} carries no versions`,
@@ -523,17 +542,15 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   //    semver range nothing satisfies. That is npm's ETARGET, and falling
   //    back installed a version outside the range asked for (a swap target
   //    that lacks the range's versions handed back its own latest).
-  const pickVersion = (packument: any): string | null => {
-    let picked: string | null = null;
-    if (request.range && packument.versions[request.range]) picked = request.range;
+  const pickVersion = (packument: Packument): unknown => {
+    let picked: unknown = null;
+    if (request.range && readProperty(packument.versions, request.range)) picked = request.range;
     if (!picked && request.range && request.range !== 'latest') {
-      // @ts-ignore — preamble.
       picked = RESOLVE_VERSION(Object.keys(packument.versions), request.range);
     }
-    if (!picked) picked = packument['dist-tags']?.[request.range] || null;
+    if (!picked) picked = readProperty(packument['dist-tags'], request.range) || null;
     const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
-    // @ts-ignore — preamble.
-    if (!picked && (open || !IS_SEMVER_RANGE(request.range))) picked = packument['dist-tags']?.latest || null;
+    if (!picked && (open || !IS_SEMVER_RANGE(request.range))) picked = readProperty(packument['dist-tags'], 'latest') || null;
     return picked;
   };
 
@@ -549,12 +566,11 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   let version = pickVersion(packument.data);
   if (__swap && __swap.since) {
     const own = version;
-    // @ts-ignore — preamble.
-    const covered = own !== null && packument.data.versions[own] !== undefined && COMPARE_SEMVER(PARSE_SEMVER(own), PARSE_SEMVER(__swap.since)) >= 0;
+    const covered = own !== null && readProperty(packument.data.versions, String(own)) !== undefined && COMPARE_SEMVER(PARSE_SEMVER(String(own)), PARSE_SEMVER(__swap.since)) >= 0;
     if (covered) {
       const target = await loadPackument(__swap.to);
       if ('failed' in target) return target.failed;
-      if (target.data.versions[own] !== undefined) {
+      if (readProperty(target.data.versions, String(own)) !== undefined) {
         announceSwap(__swap);
         effName = __swap.to;
         packument = target;
@@ -571,7 +587,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const bytes = packument.bytes;
   const packumentSource = packument.source;
 
-  if (!version || !data.versions[version]) {
+  if (!version || !readProperty(data.versions, String(version))) {
     messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
     return out(null, bytes, packumentSource, {
       type: 'unresolved',
@@ -580,7 +596,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   }
 
   // 4. Materialise ResolvedPackage.
-  const vData = data.versions[version];
+  const vData = readProperty(data.versions, String(version));
   const versionToResolved = (v: any): ResolvedPackage => {
     const packageName = request.installName || v.name;
     const binField = v.bin || {};
@@ -655,15 +671,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   });
   // Top-5 sibling versions.
   const sorted = Object.keys(data.versions)
-    // @ts-ignore — preamble.
     .map((v) => ({ v, p: PARSE_SEMVER(v) }))
     .filter((x) => x.p !== null)
-    // @ts-ignore — preamble.
     .sort((a, b) => COMPARE_SEMVER(b.p, a.p));
   for (let i = 0; i < Math.min(5, sorted.length); i++) {
     const otherVer = sorted[i].v;
     if (otherVer === pkg.version) continue;
-    const otherData = data.versions[otherVer];
+    const otherData = readProperty(data.versions, otherVer);
     if (!otherData) continue;
     try {
       const otherPkg = versionToResolved(otherData);

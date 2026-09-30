@@ -45,7 +45,7 @@ import {
   type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
-import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
+import { JsonObjectSchema, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import {
@@ -1682,7 +1682,7 @@ export class NpmInstaller {
     const lock = parsePackageLock(await fs.readFileString(`${projDir}/${lockName}`), lockName);
     const pkgJsonPath = `${projDir}/package.json`;
     if (!await fs.exists(pkgJsonPath)) throw new Error('`npm ci` needs a package.json');
-    const pkgJson = JSON.parse(await fs.readFileString(pkgJsonPath)) as Record<string, unknown>;
+    const pkgJson: unknown = JSON.parse(await fs.readFileString(pkgJsonPath));
     const mismatches = packageLockMismatches(pkgJson, lock);
     if (mismatches.length > 0) {
       throw new Error(
@@ -1952,8 +1952,9 @@ export class NpmInstaller {
 
     // A package.json the install cannot read or write fails it; a corrupt one is left as it is.
     const text = await fs.readFileString(pkgJsonPath);
-    let pkgJson: any;
-    try { pkgJson = JSON.parse(text); } catch { return; }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { return; }
+    const pkgJson = JsonObjectSchema.parse(parsed);
     if (!pkgJson.dependencies) pkgJson.dependencies = {};
 
     for (const spec of explicitPackages) {
@@ -1964,7 +1965,8 @@ export class NpmInstaller {
       const { name } = parseExplicitPackageSpec(spec);
       const pkg = resolved.get(name);
       if (pkg) {
-        pkgJson.dependencies[name] = '^' + pkg.version;
+        const dependencies = JsonObjectSchema.parse(pkgJson.dependencies);
+        dependencies[name] = '^' + pkg.version;
       }
     }
 
