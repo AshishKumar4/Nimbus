@@ -41,7 +41,7 @@
  */
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
-import { decodeJavaScriptStringLiteral } from './javascript-string-literal.js';
+import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
@@ -5849,13 +5849,13 @@ function __nimbusIsCodegenRefusal(e) {
 // decode it without compiling, preserving native eval (including its Workers
 // refusal) for everything else. No general-evaluation capability is exposed,
 // and Function("null") / eval("1 + 1") feature probes remain refused.
+const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
 (() => {
   const nativeEval = globalThis.eval;
   if (nativeEval.__nimbusNative) return;
-  const decode = ${decodeJavaScriptStringLiteral.toString()};
   const routed = { eval(source) {
     if (typeof source === "string") {
-      const value = decode(source);
+      const value = __nimbusDecodeStringLiteral(source);
       if (value !== undefined) return value;
     }
     return Reflect.apply(nativeEval, undefined, [source]);
@@ -5870,7 +5870,6 @@ function __nimbusIsCodegenRefusal(e) {
     ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
   ];
   const nativeToString = Function.prototype.toString;
-  const decodeLiteral = ${decodeJavaScriptStringLiteral.toString()};
   // Vite's module runner compiles each SSR module with new AsyncFunction and
   // imports its dependencies only when that module runs, so a refused module
   // hid everything it imports and every launch learned one more module.
@@ -5899,7 +5898,7 @@ function __nimbusIsCodegenRefusal(e) {
       let end = 1;
       while (end < rest.length && rest[end] !== quote) end += rest[end] === "\\\\" ? 2 : 1;
       if (end >= rest.length) break;
-      const source = decodeLiteral(rest.slice(0, end + 1));
+      const source = __nimbusDecodeStringLiteral(rest.slice(0, end + 1));
       if (typeof source !== "string") break;
       const tail = rest.slice(end + 1).trim();
       let metadata;

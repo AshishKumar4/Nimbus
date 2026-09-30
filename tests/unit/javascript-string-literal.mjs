@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { decodeJavaScriptStringLiteral as decode } from '../../packages/worker/src/runtime/javascript-string-literal.ts';
+import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from '../../packages/worker/src/runtime/javascript-string-literal.ts';
+
+// The exact text generateShimsCode embeds in every guest.
+const decode = new Function(`return (${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE});`)();
 
 // es-module-lexer decodes names using non-strict indirect eval. Only the data
 // subset is implemented: a single StringLiteral, with all its escape forms.
