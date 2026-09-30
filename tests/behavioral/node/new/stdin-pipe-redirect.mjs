@@ -13,7 +13,7 @@
 //   a program whose code reads stdin synchronously gets all of it first,
 //   however slow its writer.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell } from '../../_driver.mjs';
+import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell, fetchPort, sleep } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -62,6 +62,34 @@ try {
   // however slow its writer (stdin-read.ts).
   const slow = (await t.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 90_000)).output;
   a.check('a slow writer into a synchronous readFileSync(0)', line(slow, 'SLOW') === 'SLOW 1', slow.slice(-400));
+  // A synchronous read that never runs, and a server: neither is held for an
+  // endless pipe (the read ahead is bounded; a session isolate has 128 MB).
+  await writeFileViaShell((cmd) => t.run(cmd, 60_000), `${DIR}/fp.js`, 'if (process.argv[2]) require("fs").readFileSync(0); console.log("RAN");');
+  const unrun = (await t.run(`cd ${DIR} && yes | node fp.js`, 90_000)).output;
+  a.check('an unrun sync read does not hold `yes | node fp.js`', /^RAN\r?$/m.test(unrun), unrun.slice(-400));
+  await writeFileViaShell((cmd) => t.run(cmd, 60_000), `${DIR}/srv.js`, 'if (process.argv[2]) require("fs").readFileSync(0); require("http").createServer((q, s) => s.end("SRV")).listen(8931);');
+  await t.run(`cd ${DIR} && yes | node srv.js`, 90_000);
+  let served = { status: 0, body: '' };
+  for (let i = 0; i < 30 && served.body !== 'SRV'; i++) {
+    served = await fetchPort(sid, 8931, '').catch((e) => ({ status: 0, body: String(e) }));
+    if (served.body !== 'SRV') await sleep(1000);
+  }
+  a.check('a server with a sync read listens though its pipe never ends', served.body === 'SRV', JSON.stringify(served).slice(0, 300));
+  // Every form of reading fd 0, and binary bytes exactly as written.
+  for (const [form, read, want] of [
+    ['readSync', '(() => { const b = Buffer.alloc(2); const p = []; for (;;) { const n = require("fs").readSync(0, b, 0, 2); if (!n) break; p.push(b.subarray(0, n).toString()); } return p.join("|"); })()', 'FORM "hi|\\n"'],
+    ['process.stdin.fd', 'require("fs").readFileSync(process.stdin.fd, "utf8")', 'FORM "hi\\n"'],
+    ['/proc/self/fd/0', 'require("fs").readFileSync("/proc/self/fd/0", "utf8")', 'FORM "hi\\n"'],
+    ['/dev/fd/0', 'require("fs").readFileSync("/dev/fd/0", "utf8")', 'FORM "hi\\n"'],
+  ]) {
+    const out = (await t.run(`echo hi | node -e 'console.log("FORM " + JSON.stringify(${read}))'`, 90_000)).output;
+    a.check(`${form} reads a pipe`, line(out, 'FORM') === want, out.slice(-400));
+  }
+  await t.run(`cd ${DIR} && node -e 'require("fs").writeFileSync("bin.dat", Buffer.from([255, 254, 0, 128]))'`, 60_000);
+  const binSync = (await t.run(`cd ${DIR} && node -e 'console.log("BIN " + JSON.stringify([...require("fs").readFileSync(0)]))' < bin.dat`, 90_000)).output;
+  a.check('readFileSync(0) of a binary redirect is byte-exact', line(binSync, 'BIN') === 'BIN [255,254,0,128]', binSync.slice(-400));
+  const binData = (await t.run(`cd ${DIR} && node -e 'const c = []; process.stdin.on("data", (d) => c.push(...d)).on("end", () => console.log("BINDATA " + JSON.stringify(c)))' < bin.dat`, 90_000)).output;
+  a.check("'data' of a binary redirect is byte-exact", line(binData, 'BINDATA') === 'BINDATA [255,254,0,128]', binData.slice(-400));
   const lines = (await t.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 90_000)).output;
   a.check('yes | head -3 streams three lines to for-await', line(lines, 'LINES') === 'LINES "y\\ny\\ny\\n"', lines.slice(-400));
 } finally {

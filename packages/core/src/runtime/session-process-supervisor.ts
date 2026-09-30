@@ -232,6 +232,11 @@ export class SessionProcessSupervisor {
     return this.input.write(pid, data);
   }
 
+  /** Queue input bytes exactly as given (a pipe or redirect). */
+  writeInputBytes(pid: number, data: Uint8Array): { ok: boolean } {
+    return this.input.writeBytes(pid, data);
+  }
+
   /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
   whenInputWritable(pid: number): Promise<boolean> {
     return this.input.whenWritable(pid);

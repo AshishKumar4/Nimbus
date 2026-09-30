@@ -6,7 +6,8 @@ interface InputWaiter {
 }
 
 export interface ProcessInputPacket {
-  data: string;
+  /** Typed text (a terminal's keystrokes), or bytes (a pipe or redirect). */
+  data: string | Uint8Array;
   ended: boolean;
   resize?: { columns: number; rows: number };
   signal?: ProcessSignalName;
@@ -71,6 +72,16 @@ export class ProcessInputStore {
     if (state.bytes + text.length > this.maxQueuedBytes) return { ok: false };
 
     return this.enqueue(state, { data: text, ended: false }, text.length);
+  }
+
+  /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+  writeBytes(pid: number, data: Uint8Array): { ok: boolean } {
+    if (!isValidPid(pid)) return { ok: false };
+    const state = this.pids.get(pid);
+    if (!state) return { ok: false };
+    if (state.closed) return { ok: false };
+    if (state.bytes + data.byteLength > this.maxQueuedBytes) return { ok: false };
+    return this.enqueue(state, { data, ended: false }, data.byteLength);
   }
 
   resize(pid: number, columns: number, rows: number): { ok: boolean } {

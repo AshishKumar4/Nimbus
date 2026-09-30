@@ -38,6 +38,7 @@ const syncReads = [
   'require("fs").readFileSync(process.stdin.fd, "utf8")',
   'require("fs").readFileSync("/dev/stdin", "utf8")',
   'require("fs").readFileSync(`/proc/self/fd/0`)',
+  'require("fs").readFileSync("/dev/fd/0")',
   'const b = Buffer.alloc(64); require("fs").readSync(0, b, 0, 64)',
   'require("fs").readSync(process.stdin.fd, Buffer.alloc(8))',
   // esbuild's CommonJS for `import { readFileSync } from "fs"`.

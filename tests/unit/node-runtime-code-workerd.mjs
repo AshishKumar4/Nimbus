@@ -31,6 +31,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
@@ -184,6 +185,11 @@ const FILES = {
     'const done = (label, r) => new Promise((resolve) => r.on("data", (c) => seen.push(label + ":" + typeof c + ":" + c.length)).on("end", resolve));',
     'done("buffer", Readable.from(Buffer.from("h\u00e9llo"))).then(() => done("string", Readable.from("abc"))).then(() => done("array", Readable.from(["a", "bc"]))).then(() => console.log("FROM " + JSON.stringify(seen)));',
   ].join('\n'),
+  // A synchronous stdin read that does not run, before a program that
+  // ignores stdin, and before a server: none may hold the launch for a pipe
+  // that never ends.
+  'fp.js': 'if (process.argv[2]) require("fs").readFileSync(0); console.log("RAN");',
+  'srv.js': 'if (process.argv[2]) require("fs").readFileSync(0); require("http").createServer((q, s) => s.end("SRV")).listen(8931, () => console.log("SRV LISTENING"));',
   // node:url's legacy API, compared with the host's real node below
   // (http-server reads `url.parse(req.url).pathname`).
   'url.js': [
@@ -322,6 +328,47 @@ try {
     const slow = await terminal.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 30_000);
     assert.equal(slow.status, 0, slow.stdout);
     assert.match(slow.stdout, /^SLOW 1$/m, slow.stdout);
+    // A read ahead for a synchronous read is bounded, in memory as in time.
+    const groupRssMiB = () => {
+      let kib = 0;
+      for (const entry of readdirSync('/proc')) {
+        if (!/^\d+$/.test(entry)) continue;
+        try {
+          const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+          if (Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]) !== probe.pid) continue;
+          kib += Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${entry}/status`, 'utf8'))?.[1] ?? 0);
+        } catch { /* exited */ }
+      }
+      return kib / 1024;
+    };
+    const rssBefore = groupRssMiB();
+    const unrun = await terminal.run(`cd ${W} && yes | node fp.js`, 30_000);
+    const rssGrowth = groupRssMiB() - rssBefore;
+    assert.equal(unrun.status, 0, unrun.stdout);
+    assert.match(unrun.stdout, /^RAN$/m, 'a sync read that never runs does not hold the launch for an endless pipe');
+    assert.ok(rssGrowth < 100, `the read ahead is bounded: the probe grew ${rssGrowth.toFixed(0)} MiB`);
+    console.log(`yes | node fp.js: probe memory grew ${rssGrowth.toFixed(1)} MiB`);
+    const server = await terminal.run(`cd ${W} && yes | node srv.js`, 30_000);
+    assert.equal(server.status, 0, server.stdout);
+    const served = await terminal.run('curl -s -m 5 http://localhost:8931/', 30_000);
+    assert.equal(served.stdout.trim(), 'SRV', 'a server with a sync read listens though its pipe never ends');
+
+    // Every form a program reads fd 0 by, the bytes exactly as written.
+    for (const [form, read] of [
+      ['readSync', '(() => { const b = Buffer.alloc(2); const p = []; for (;;) { const n = require("fs").readSync(0, b, 0, 2); if (!n) break; p.push(b.subarray(0, n).toString()); } return p.join("|"); })()'],
+      ['fd', 'require("fs").readFileSync(process.stdin.fd, "utf8")'],
+      ['/proc/self/fd/0', 'require("fs").readFileSync("/proc/self/fd/0", "utf8")'],
+      ['/dev/fd/0', 'require("fs").readFileSync("/dev/fd/0", "utf8")'],
+    ]) {
+      const run = await terminal.run(`echo hi | node -e 'console.log("FORM " + JSON.stringify(${read}))'`, 30_000);
+      assert.match(run.stdout, form === 'readSync' ? /^FORM "hi\|\\n"$/m : /^FORM "hi\\n"$/m, `${form}: ${run.stdout}`);
+    }
+    await terminal.run(`cd ${W} && node -e 'require("fs").writeFileSync("bin.dat", Buffer.from([255, 254, 0, 128]))'`);
+    const binSync = await terminal.run(`cd ${W} && node -e 'console.log("BIN " + JSON.stringify([...require("fs").readFileSync(0)]))' < bin.dat`);
+    assert.match(binSync.stdout, /^BIN \[255,254,0,128\]$/m, `readFileSync(0) of a binary redirect: ${binSync.stdout}`);
+    const binData = await terminal.run(`cd ${W} && node -e 'const c = []; process.stdin.on("data", (d) => c.push(...d)).on("end", () => console.log("BINDATA " + JSON.stringify(c)))' < bin.dat`);
+    assert.match(binData.stdout, /^BINDATA \[255,254,0,128\]$/m, `'data' of a binary redirect: ${binData.stdout}`);
+
     const lines = await terminal.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 30_000);
     assert.match(lines.stdout, /^LINES "y\\ny\\ny\\n"$/m, lines.stdout);
 

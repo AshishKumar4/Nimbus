@@ -1415,10 +1415,11 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
     }
     let packet: { data: Uint8Array; ended: boolean; resize?: { columns: number; rows: number }; signal?: string };
     if (self.processes.hasInput(childPid)) {
-      // The interactive input store holds text packets; the child's stdin
-      // pump takes bytes, so this text producer encodes at its edge.
+      // The input store holds typed text and piped bytes; the child's stdin
+      // pump takes bytes, so text is encoded at this edge and bytes pass as
+      // they are.
       const input = await self.processes.readInput(childPid, waitMs);
-      packet = { ...input, data: enc.encode(input.data) };
+      packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
     } else {
       const fpm = self._ensureFacetProcessManager();
       packet = await fpm.cpReadStdin(childPid, waitMs);

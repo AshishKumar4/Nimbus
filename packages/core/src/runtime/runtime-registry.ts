@@ -86,14 +86,18 @@ export interface RuntimeRunOpts {
   signal?: AbortSignal;
   /**
    * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
-   * `node x.js < in.txt`); absent when stdin is the terminal. A stream is
-   * delivered as it arrives, never held for the pipe to end before the
-   * program starts (`tail -f log | node x.js` runs x.js at once). A string is
-   * all of it, read before the program starts, because the program's code
-   * reads stdin synchronously (stdin-read.ts): that read cannot wait for input
-   * arriving after it runs.
+   * `node x.js < in.txt`); absent when stdin is the terminal. A runner
+   * delivers its bytes as they arrive, never holding the program for the
+   * pipe's end (`tail -f log | node x.js` runs x.js at once).
    */
-  stdin?: string | { read(): Promise<string | null> };
+  stdin?: { read(): Promise<string | null>; readBytes?(maxLength: number): Promise<Uint8Array | null> };
+  /**
+   * The program's code reads stdin synchronously (stdin-read.ts), which
+   * cannot wait for bytes arriving after it runs: a one-shot runner reads up
+   * to STDIN_SYNC_READ_BYTES of the pipe before starting it. Never set for a
+   * program that starts a server.
+   */
+  stdinReadsSync?: boolean;
   /**
    * Running the program starts a server (server-launch.ts). Set only for a
    * runtime that routes servers (RuntimeSpec.routesServers), when no .bin
@@ -313,10 +317,13 @@ export function buildRuntimeHandler(
         argv: [name, ...programArgs],
       }, programHost);
     };
-    // The program's piped stdin: streamed, or read whole before it starts when
-    // its code reads stdin synchronously (RuntimeRunOpts.stdin).
-    const programStdin = async (code: string, path: string | null, dir: string): Promise<{ stdin?: RuntimeRunOpts['stdin'] }> => {
+    // The program's piped stdin, and whether its code reads it synchronously
+    // (RuntimeRunOpts.stdinReadsSync). A server is resident and never waits
+    // for its stdin, so its code is not asked.
+    const programStdin = async (code: string, path: string | null, dir: string, launchesServer: boolean)
+      : Promise<Pick<RuntimeRunOpts, 'stdin' | 'stdinReadsSync'>> => {
       if (pipedStdin === undefined) return {};
+      if (launchesServer || binSpawn?.forceLongRunning === true) return { stdin: pipedStdin };
       const key = normalizeVfsPath(dir);
       const readsSync = await programReadsStdinSync({
         source: code,
@@ -324,7 +331,7 @@ export function buildRuntimeHandler(
         dir: key,
         packageRoot: (await nearestPackageDir(fs, key)) ?? key,
       }, programHost);
-      return { stdin: readsSync ? await pipedStdin.readAll() : pipedStdin };
+      return readsSync ? { stdin: pipedStdin, stdinReadsSync: true } : { stdin: pipedStdin };
     };
 
     // ── Flag-span computation (primitive #1) ──
@@ -370,7 +377,7 @@ export function buildRuntimeHandler(
         return 1;
       }
       const launchesServer = await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2));
-      const stdin = await programStdin(code, null, ctx.cwd || '/home/user');
+      const stdin = await programStdin(code, null, ctx.cwd || '/home/user', launchesServer);
       const result = await spec.run(code, {
         cred: ctx.cred,
         signal: ctx.signal,
@@ -574,7 +581,7 @@ export function buildRuntimeHandler(
       : '/';
     // Judged on the code as it will run, after any TypeScript/ESM transform.
     const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
-    const stdin = await programStdin(code, resolvedPath, dirname);
+    const stdin = await programStdin(code, resolvedPath, dirname, launchesServer);
 
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(code, {

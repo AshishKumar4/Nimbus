@@ -43,6 +43,8 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
+import type { StdinBytes } from '../facets/manager.js';
 
 /**
  * Argv long-running detection. Signals we honour:
@@ -74,8 +76,10 @@ export interface RunFreshOpts {
   cwd?: string;
   filename?: string;
   dirname?: string;
-  /** A pipe or redirect: streamed, or all of it (runtime-registry's RuntimeRunOpts.stdin). */
-  stdin?: string | { read(): Promise<string | null> };
+  /** A pipe or redirect (runtime-registry's RuntimeRunOpts.stdin). */
+  stdin?: { read(): Promise<string | null>; readBytes?(maxLength: number): Promise<Uint8Array | null> };
+  /** Its code reads stdin synchronously (RuntimeRunOpts.stdinReadsSync). */
+  stdinReadsSync?: boolean;
   captureOutput?: boolean;
   /** Display label for the long-running spawn. Defaults to the
    *  command + filename. Surfaced in the [started (long-running)]
@@ -126,12 +130,22 @@ export async function runFresh(
     // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
     // invocation gets a fresh isolate; warm slots are reused only
     // for byte-identical re-invocations.
-    // A pipe or redirect streams to the program as it arrives
-    // (facetMgr.exec); read whole already, it is the launch's stdin text.
-    const { stdin, ...execOpts } = opts;
-    const r: FacetExecResult = await facetMgr.exec(code, typeof stdin === 'string'
-      ? { ...execOpts, stdin }
-      : { ...execOpts, ...(stdin ? { stdinPipe: stdin } : {}) });
+    // A pipe or redirect streams to the program as it arrives (facetMgr.exec),
+    // unless its code reads stdin synchronously: then the pipe is read ahead,
+    // and delivered whole if it ends within the bound.
+    const { stdin, stdinReadsSync, ...execOpts } = opts;
+    let stdinOpts: { stdinBytes?: Uint8Array; stdinPipe?: StdinBytes } = {};
+    if (stdin) {
+      const source = stdinBytesOf(stdin);
+      if (stdinReadsSync) {
+        const ahead = await readAhead(source, STDIN_SYNC_READ_BYTES, opts.signal);
+        if (ahead === null) return { exitCode: 130, stdout: '', stderr: '', longRunning: false };
+        stdinOpts = ahead.ended ? { stdinBytes: concatBytes(ahead.chunks) } : { stdinPipe: replaying(ahead.chunks, source) };
+      } else {
+        stdinOpts = { stdinPipe: source };
+      }
+    }
+    const r: FacetExecResult = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
     return {
       exitCode: r.exitCode,
       stdout: r.stdout,
@@ -198,4 +212,54 @@ export async function runFresh(
     spawnedPid: spawned.pid,
     longRunning: true,
   };
+}
+
+/** How many bytes of a pipe one read asks for. */
+const STDIN_CHUNK_BYTES = 64 * 1024;
+
+/** A shell stream's bytes: exact through readBytes, else its text encoded. */
+function stdinBytesOf(stream: NonNullable<RunFreshOpts['stdin']>): StdinBytes {
+  const encoder = new TextEncoder();
+  return {
+    readBytes: stream.readBytes
+      ? (maxLength) => stream.readBytes!(maxLength)
+      : async () => { const text = await stream.read(); return text === null ? null : encoder.encode(text); },
+  };
+}
+
+/**
+ * Read `source` until it ends or holds more than `limit` bytes; null when
+ * `signal` aborts first (the shell's Ctrl+C).
+ */
+async function readAhead(source: StdinBytes, limit: number, signal?: AbortSignal)
+  : Promise<{ chunks: Uint8Array[]; ended: boolean } | null> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const aborted = signal
+    ? new Promise<'aborted'>((resolve) => {
+      if (signal.aborted) resolve('aborted');
+      else signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+    })
+    : null;
+  while (total <= limit) {
+    const next = source.readBytes(STDIN_CHUNK_BYTES);
+    const chunk = aborted ? await Promise.race([next, aborted]) : await next;
+    if (chunk === 'aborted') return null;
+    if (chunk === null) return { chunks, ended: true };
+    chunks.push(chunk);
+    total += chunk.byteLength;
+  }
+  return { chunks, ended: false };
+}
+
+/** `source` with `chunks` read from it already put back in front. */
+function replaying(chunks: Uint8Array[], source: StdinBytes): StdinBytes {
+  return { readBytes: (maxLength) => chunks.length > 0 ? Promise.resolve(chunks.shift()!) : source.readBytes(maxLength) };
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.byteLength; }
+  return out;
 }
