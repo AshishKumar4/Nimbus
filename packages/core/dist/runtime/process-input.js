@@ -9,7 +9,7 @@ export class ProcessInputStore {
         this.maxQueuedBytes = options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
     }
     createState() {
-        return { packets: [], closed: false, bytes: 0, waiters: [], reading: false, columns: 80, rows: 24 };
+        return { packets: [], closed: false, bytes: 0, waiters: [], drained: [], reading: false, columns: 80, rows: 24 };
     }
     open(pid) {
         if (!isValidPid(pid) || this.pids.has(pid))
@@ -78,11 +78,24 @@ export class ProcessInputStore {
         state.bytes += bytes;
         return { ok: true };
     }
+    /**
+     * Resolves once `pid`'s reader has taken queued input, so a writer refused
+     * for a full queue can try again: true then, false if the channel is ended
+     * or gone and will take no more.
+     */
+    whenWritable(pid) {
+        const state = this.pids.get(pid);
+        if (!state || state.closed)
+            return Promise.resolve(false);
+        return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+    }
     end(pid) {
         const state = this.pids.get(pid);
         if (!state || state.closed)
             return;
         state.closed = true;
+        for (const wake of state.drained.splice(0))
+            wake();
         for (const waiter of state.waiters.splice(0)) {
             clearTimeout(waiter.timer);
             waiter.resolve({ data: '', ended: true });
@@ -102,6 +115,8 @@ export class ProcessInputStore {
         const next = state.packets.shift();
         if (next !== undefined) {
             state.bytes -= next.data.length;
+            for (const wake of state.drained.splice(0))
+                wake();
             return next;
         }
         if (state.closed)

@@ -1331,7 +1331,24 @@ export declare class FacetManager {
         captureOutput?: boolean;
         /** Shell abort (Ctrl+C): aborting this aborts the in-flight run. */
         signal?: AbortSignal;
+        /**
+         * A pipe or redirect as the program's stdin. It streams through the
+         * process's input channel as it arrives, from before the program
+         * starts; the program is never held for the pipe to end.
+         */
+        stdinPipe?: {
+            read(): Promise<string | null>;
+        };
     }): Promise<FacetExecResult>;
+    /**
+     * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
+     * a full queue waits for the program to read, and the pipe's end ends the
+     * channel. stop() leaves the rest of the pipe unread, so a program that
+     * finished without reading all of it (`tail -f log | node -e ...`)
+     * releases the pipe and its writer ends, as a closed reader ends it in a
+     * shell.
+     */
+    private _pumpStdinPipe;
     /**
      * W5 Lever 5: push a DiagFailure into the OOM ring for every facet
      * termination with a non-zero exit code. This is the supervisor side

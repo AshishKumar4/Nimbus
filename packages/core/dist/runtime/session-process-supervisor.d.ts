@@ -123,6 +123,8 @@ export declare class SessionProcessSupervisor {
     writeInput(pid: number, data: string): {
         ok: boolean;
     };
+    /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
+    whenInputWritable(pid: number): Promise<boolean>;
     /** Signal stdin EOF. Queued packets still drain; further writes fail. */
     endInput(pid: number): void;
     /** End and drop the input channel entirely. */

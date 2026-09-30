@@ -65,7 +65,7 @@ export interface RunFreshOpts {
     dirname?: string;
     /** A pipe or redirect (runtime-registry's RuntimeRunOpts.stdin). */
     stdin?: {
-        readAll(): Promise<string>;
+        read(): Promise<string | null>;
     };
     captureOutput?: boolean;
     /** Display label for the long-running spawn. Defaults to the

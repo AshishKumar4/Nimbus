@@ -104,6 +104,9 @@ function* launchNames(cwd, program, argv, modules, refs) {
 }
 /** A bundled ESM file this large is rewritten to CJS without esbuild when its shape allows. */
 const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
+// A piped stdin's largest single write to the process input channel, a
+// quarter of that queue's bound (core/runtime/process-input.ts).
+const STDIN_PIPE_PIECE_CHARS = 64 * 1024;
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -538,6 +541,9 @@ export default {
     const args = await request.json();
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     const __nimbusProcessId = Number(args.pid || 1);
+    // A pipe or redirect streams through this input channel (exec's
+    // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
+    const __nimbusLiveInputPid = Number(args.stdinPid || 0);
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -638,6 +644,7 @@ ${RESIDENCY_MISS_REPORT}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
+      if (__nimbusLiveInputPid) await __nimbusTakeQueuedStdin();
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
@@ -5041,6 +5048,11 @@ export class FacetManager {
                 catch { }
             }
         }
+        // Started with the launch, so a writer that has finished (echo, a file
+        // redirect, head) has delivered all of it, and its end, by the time the
+        // program starts: the guest takes what is queued then (node-shims.ts,
+        // __nimbusTakeQueuedStdin) for a synchronous read of fd 0.
+        const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
         // Paced like a resident launch: a tree too large for one turn costs
@@ -5061,6 +5073,7 @@ export class FacetManager {
             // that names the entry, the staged bytes at the stop, the bound,
             // and the remedy — the same shape the got/next guards print.
             pacer.settle();
+            stdinPump?.stop();
             if (err instanceof ClosureBoundExceededError) {
                 const o = err.outcome;
                 const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
@@ -5154,7 +5167,49 @@ export class FacetManager {
         finally {
             opts.signal?.removeEventListener('abort', onShellAbort);
             pacer.settle();
+            stdinPump?.stop();
         }
+    }
+    /**
+     * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
+     * a full queue waits for the program to read, and the pipe's end ends the
+     * channel. stop() leaves the rest of the pipe unread, so a program that
+     * finished without reading all of it (`tail -f log | node -e ...`)
+     * releases the pipe and its writer ends, as a closed reader ends it in a
+     * shell.
+     */
+    _pumpStdinPipe(pid, pipe) {
+        const opened = !this.processes.hasInput(pid);
+        if (opened)
+            this.processes.openInput(pid);
+        let stopped = false;
+        void (async () => {
+            for (;;) {
+                const chunk = await pipe.read();
+                if (stopped)
+                    return;
+                if (chunk === null) {
+                    this.processes.endInput(pid);
+                    return;
+                }
+                // The queue is bounded; a piece larger than its room would never fit.
+                for (let at = 0; at < chunk.length; at += STDIN_PIPE_PIECE_CHARS) {
+                    const piece = chunk.slice(at, at + STDIN_PIPE_PIECE_CHARS);
+                    while (!this.processes.writeInput(pid, piece).ok) {
+                        if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped)
+                            return;
+                    }
+                }
+            }
+        })().catch(() => { if (!stopped)
+            this.processes.endInput(pid); });
+        return {
+            stop: () => {
+                stopped = true;
+                if (opened)
+                    this.processes.closeInput(pid);
+            },
+        };
     }
     /**
      * W5 Lever 5: push a DiagFailure into the OOM ring for every facet
@@ -5212,6 +5267,8 @@ export class FacetManager {
             filename: opts.filename || '<eval>',
             dirname: opts.dirname || '/home/user',
             stdin: opts.stdin || '',
+            // The input channel a pipe or redirect streams through (_pumpStdinPipe).
+            stdinPid: opts.stdinPipe ? entry.pid : 0,
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
             vfsCursor: vfsState.cursor,

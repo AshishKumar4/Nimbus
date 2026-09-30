@@ -34,6 +34,12 @@ export declare class ProcessInputStore {
         rows: number;
     } | null;
     private enqueue;
+    /**
+     * Resolves once `pid`'s reader has taken queued input, so a writer refused
+     * for a full queue can try again: true then, false if the channel is ended
+     * or gone and will take no more.
+     */
+    whenWritable(pid: number): Promise<boolean>;
     end(pid: number): void;
     close(pid: number): void;
     read(pid: number, waitMs?: number): Promise<ProcessInputPacket>;
