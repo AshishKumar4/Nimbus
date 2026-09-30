@@ -86,6 +86,16 @@ const FILES = {
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
   'bad.js': 'const x = ;\n',
+  // es-module-lexer copies each source into wasm memory with a UTF-16 write
+  // into a Buffer view at an offset. Nothing outside the view may change.
+  'lexer-buffer.js': [
+    'const memory = new WebAssembly.Memory({ initial: 1 });',
+    'const at = 8, bytes = new Uint8Array(memory.buffer);',
+    'bytes.fill(255, 0, 40);',
+    'const written = Buffer.from(memory.buffer, at, 24).write("import \\u00e9", "utf16le");',
+    'const units = new Uint16Array(memory.buffer, at, 8);',
+    'console.log("LEXER " + written + " " + String.fromCharCode(...units) + " " + bytes[at - 1] + " " + bytes[at + 16]);',
+  ].join('\n'),
   // Vite's module runner: each SSR module is one AsyncFunction whose hoisted
   // imports load its dependencies, which are AsyncFunctions in turn.
   'runner.js': [
@@ -142,6 +152,8 @@ try {
     assert.match(runnerFirst.stdout, /RUNNER!ERR_NIMBUS_CODE_NEXT_LAUNCH imported=a,b,d,c\n/, runnerFirst.stdout);
     const runnerSecond = await terminal.run(`cd ${W} && node runner.js`);
     assert.match(runnerSecond.stdout, /RUNNER value=111 imported=a,b,d,c\n/, runnerSecond.stdout);
+    const lexer = await terminal.run(`cd ${W} && node lexer-buffer.js`);
+    assert.match(lexer.stdout, /LEXER 16 import é 255 255\n/, lexer.stdout);
     const dataFirst = await terminal.run('cd ' + W + ' && node data.js');
     assert.match(dataFirst.stdout, /DATA!ERR_NIMBUS_CODE_NEXT_LAUNCH/, dataFirst.stdout);
     const dataSecond = await terminal.run('cd ' + W + ' && node data.js');
