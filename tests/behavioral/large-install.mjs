@@ -47,79 +47,91 @@ const a = makeAsserter('large-install');
  * No retries, no setTimeout. Real github.com clone, real npm install.
  */
 async function attempt(idx) {
-  const sid = await mintSession();
-  const t = new Terminal(sid);
-  await t.connect();
-  await sleep(1500);
-
-  // Step 1: clone Markflow.
-  t.reset();
-  t.cmd(`git clone ${REPO}`);
+  const startedAt = Date.now();
+  let sid = null;
+  let t = null;
+  let phase = 'mint';
+  let outcome = 'ERROR';
+  let detail = '';
+  let elapsedMs = 0;
+  let installOutput = '';
+  let spotChecks = null;
   try {
+    sid = await mintSession();
+    t = new Terminal(sid);
+    phase = 'connect';
+    await t.connect();
+    await sleep(1500);
+
+    // Step 1: clone Markflow.
+    phase = 'clone';
+    t.reset();
+    t.cmd(`git clone ${REPO}`);
     await t.waitFor(
       (b) => /clone complete/i.test(b),
       90_000,
       'git clone complete',
     );
-  } catch (e) {
-    await t.close();
-    return { idx, sid, outcome: 'CLONE_FAIL', detail: String(e?.message ?? e).slice(0, 200) };
-  }
 
-  // Step 2: cd Markflow && npm i.  This is the line the user ran.
-  await t.run('cd /home/user/Markflow', 5_000);
-  t.reset();
-  t.cmd('npm i');
-  let outcome = 'TIMEOUT';
-  let installOutput = '';
-  try {
+    // Step 2: cd Markflow && npm i. This is the line the user ran.
+    phase = 'cd';
+    await t.run('cd /home/user/Markflow', 5_000);
+    phase = 'install';
+    t.reset();
+    t.cmd('npm i');
     await t.waitFor(
       (b) => /added \d+ packages|npm install failed|\[batch-fanout\] aborted/i.test(b),
       300_000,
       'install end',
     );
     installOutput = stripAnsi(t.buf);
-    if (/\[batch-fanout\] aborted/i.test(installOutput)) {
+    const batchAbort = installOutput.match(/\[batch-fanout\] aborted[^\r\n]*/i);
+    const installFailure = installOutput.match(/npm install failed[^\r\n]*/i);
+    if (batchAbort) {
       outcome = 'BATCH_FANOUT_ABORT';
+      detail = batchAbort[0];
     } else if (/added \d+ packages/i.test(installOutput)) {
       outcome = 'SUCCESS';
-    } else if (/npm install failed/i.test(installOutput)) {
+    } else if (installFailure) {
       outcome = 'FAIL';
+      detail = installFailure[0];
     }
-  } catch (e) {
-    installOutput = stripAnsi(t.buf);
-    outcome = 'TIMEOUT';
-  }
 
-  // Spot-check (only on SUCCESS, only in SINGLE mode — N concurrent
-  // probes don't all need to do the spot-check, and overload state
-  // can poison the terminal).
-  let spotChecks = null;
-  if (outcome === 'SUCCESS' && SINGLE) {
-    spotChecks = {};
-    for (const pkg of SPOT_CHECK) {
-      try {
-        const r = await t.run(
-          `cat /home/user/Markflow/node_modules/${pkg}/package.json | head -3`,
-          30_000,
-        );
-        spotChecks[pkg] = new RegExp(`"name"\\s*:\\s*"${pkg}"`).test(r.output);
-      } catch (e) {
-        spotChecks[pkg] = false;
+    // Spot-check only in SINGLE mode: the concurrent probes do not all
+    // need to do it, and overload state can poison the terminal.
+    if (outcome === 'SUCCESS' && SINGLE) {
+      spotChecks = {};
+      for (const pkg of SPOT_CHECK) {
+        try {
+          const r = await t.run(
+            `cat /home/user/Markflow/node_modules/${pkg}/package.json | head -3`,
+            30_000,
+          );
+          spotChecks[pkg] = new RegExp(`"name"\\s*:\\s*"${pkg}"`).test(r.output);
+        } catch (e) {
+          spotChecks[pkg] = false;
+        }
       }
     }
+  } catch (e) {
+    // A closed terminal is not an install timeout. Keep the driver's
+    // actual reason (including close code and tail) for every phase, even
+    // a failed mint or WebSocket handshake, without abandoning the peers.
+    outcome = phase === 'clone' ? 'CLONE_FAIL' : 'ERROR';
+    detail = String(e?.message ?? e);
+    if (t) installOutput = stripAnsi(t.buf);
+  } finally {
+    elapsedMs = Date.now() - startedAt;
+    if (t) await t.close();
   }
 
-  // Extract markers
   const dispatchMatch = installOutput.match(/Dispatching (\d+) packages across (\d+) shards/);
   const resolvedMatch = installOutput.match(/Resolved (\d+) packages/);
   const addedMatch = installOutput.match(/added (\d+) packages \((\d+) files\)/);
   const overloadCount = (installOutput.match(/Durable Object is overloaded/g) || []).length;
 
-  await t.close();
-
   return {
-    idx, sid, outcome,
+    idx, sid, outcome, phase, detail, elapsedMs,
     dispatched: dispatchMatch ? { specs: parseInt(dispatchMatch[1], 10), shards: parseInt(dispatchMatch[2], 10) } : null,
     resolved: resolvedMatch ? parseInt(resolvedMatch[1], 10) : 0,
     added: addedMatch ? { count: parseInt(addedMatch[1], 10), files: parseInt(addedMatch[2], 10) } : null,
@@ -133,12 +145,17 @@ const promises = Array.from({ length: CONCURRENT }, (_, i) => attempt(i));
 const results = await Promise.all(promises);
 const elapsedTotal = Date.now() - t0;
 
+function failureDescription(r) {
+  return `[${r.idx}] ${r.outcome} phase=${r.phase} elapsed=${(r.elapsedMs / 1000).toFixed(1)}s sid=${r.sid ?? 'unminted'} reason=${JSON.stringify(r.detail)}`;
+}
+
 console.log(`\nResults (total elapsed ${(elapsedTotal / 1000).toFixed(1)}s):`);
 for (const r of results) {
-  const summary = r.outcome === 'SUCCESS'
-    ? `added=${r.added?.count}/${r.resolved} files=${r.added?.files} shards=${r.dispatched?.shards}`
-    : `overloads=${r.overloads}`;
-  console.log(`  [${r.idx}] ${r.outcome} ${summary}`);
+  if (r.outcome === 'SUCCESS') {
+    console.log(`  [${r.idx}] SUCCESS elapsed=${(r.elapsedMs / 1000).toFixed(1)}s added=${r.added?.count}/${r.resolved} files=${r.added?.files} shards=${r.dispatched?.shards}`);
+  } else {
+    console.log(`  ${failureDescription(r)} overloads=${r.overloads}`);
+  }
 }
 
 const successes = results.filter((r) => r.outcome === 'SUCCESS');
@@ -150,7 +167,7 @@ console.log(`\nsuccess=${successes.length}/${results.length} (${(successRate * 1
 if (SINGLE) {
   // SINGLE-mode assertions: one session, full assertions.
   const r = results[0];
-  a.check('single session: outcome SUCCESS', r.outcome === 'SUCCESS', `outcome=${r.outcome}`);
+  a.check('single session: outcome SUCCESS', r.outcome === 'SUCCESS', failureDescription(r));
   a.check('single session: resolver finds 600+ packages', r.resolved >= 600, `resolved=${r.resolved}`);
   a.check('single session: added count == resolved count', r.added?.count === r.resolved && r.resolved > 0, `added=${r.added?.count} resolved=${r.resolved}`);
   a.check('single session: zero overload errors', r.overloads === 0, `overloads=${r.overloads}`);
@@ -165,7 +182,7 @@ if (SINGLE) {
   a.check(
     `concurrent N=${CONCURRENT}: success rate ≥ ${((CONCURRENT - maxFailures) / CONCURRENT * 100).toFixed(0)}%`,
     successes.length >= CONCURRENT - maxFailures,
-    `${successes.length}/${CONCURRENT} succeeded; failures: ${failures.map((r) => `[${r.idx}] ${r.outcome}`).join(', ')}`,
+    `${successes.length}/${CONCURRENT} succeeded; failures: ${failures.map(failureDescription).join('; ')}`,
   );
   // No batch-fanout aborts at all.
   const batchAborts = results.filter((r) => r.outcome === 'BATCH_FANOUT_ABORT');
