@@ -27,11 +27,13 @@ import { join } from 'node:path';
 import {
   buildFacetVfsBundleSource,
   buildPrefetchBundle,
-  bundleTypescriptLoader,
   generateEntrypointCode,
+} from '../../packages/worker/src/facets/manager.ts';
+import {
+  bundleTypescriptLoader,
   isBundleModuleCandidate,
   isTypescriptDeclarationFile,
-} from '../../packages/worker/src/facets/manager.ts';
+} from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
@@ -109,7 +111,7 @@ const cjsEsbuild = new EsbuildService(undefined, {
 
 const vfs = launchFs(files).fs;
 const state = await buildPrefetchBundle(
-  vfs, `${TS}/bin/tsc`, `/${PROJ}`, files[`${TS}/bin/tsc`], cjsEsbuild,
+  vfs, { scriptPath: `${TS}/bin/tsc`, cwd: `/${PROJ}`, entryCode: files[`${TS}/bin/tsc`], esbuild: cjsEsbuild },
 );
 const { bundle } = state;
 

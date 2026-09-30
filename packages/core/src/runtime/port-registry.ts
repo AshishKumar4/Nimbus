@@ -29,6 +29,7 @@
  */
 
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
 
 export interface PortEntry {
@@ -47,6 +48,12 @@ export interface PortEntry {
    * one per `register`, which is what makes an unexposed port stay unexposed.
    */
   capability: string;
+  /**
+   * The isolation headers of the last document this registration served (a
+   * navigation's non-redirect response), null until it serves one. The shell
+   * reads it from `stats` to decide what the preview pane can offer.
+   */
+  document: DocumentPolicy | null;
 }
 
 /**
@@ -84,19 +91,33 @@ const DECODABLE_CONTENT_CODINGS = new Map<string, 'gzip' | 'deflate'>([
  * under a compressing edge, truncates the body; a body read by this isolate
  * closes cleanly. A body the facet streamed (`new Response(readable)`) was
  * never affected, and rides the same pipe at no cost.
+ *
+ * The pipe keeps the target's `Content-Length`. The runtime sends a body built
+ * from any stream chunked, dropping the header, except a `FixedLengthStream`,
+ * whose length becomes the `Content-Length`:
+ * https://developers.cloudflare.com/workers/runtime-apis/streams/transformstream/#fixedlengthstream
+ * A range reader sizes its buffer from it and a download reports progress by
+ * it, so a declared length is relayed through one. It errors the body if the
+ * target sends a different number of bytes, as HTTP framing would. A HEAD
+ * answer's length describes the GET it stands for, not the body it has none
+ * of, so it is not held to it.
  */
-function relayRpcBody(response: Response): Response {
+function relayRpcBody(response: Response, method: string): Response {
   if (response.body === null) return response;
-  return new Response(response.body.pipeThrough(new TransformStream()), {
+  const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
+  // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
+  const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
+  const pipe = Number.isSafeInteger(length) ? new FixedLengthStream(length) : new TransformStream();
+  return new Response(response.body.pipeThrough(pipe), {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
   });
 }
 
-function decodeContentCoding(response: Response, port: number): Response {
+function decodeContentCoding(response: Response, port: number, method: string): Response {
   const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
-  if (!coding || coding === 'identity' || response.body === null) return relayRpcBody(response);
+  if (!coding || coding === 'identity' || response.body === null) return relayRpcBody(response, method);
 
   const format = DECODABLE_CONTENT_CODINGS.get(coding);
   if (!format) {
@@ -183,6 +204,7 @@ export class PortRegistry {
       facetStub: target,
       registeredAt: Date.now(),
       capability: createPortCapability(),
+      document: null,
     });
     this.notifyPortWaiters(pid);
   }
@@ -436,12 +458,18 @@ export class PortRegistry {
         );
       }
 
+      // A navigation's answer is the document the browser will isolate (or
+      // not) by these headers; a redirect is not a document.
+      if (request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {
+        entry.document = documentPolicyOf(response.headers);
+      }
+
       // Stream the facet's Response back. Status, status-text, and every
       // header pass through; only a content coding the hop cannot carry is
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
       // forwards whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
-      return decodeContentCoding(response, port);
+      return decodeContentCoding(response, port, request.method);
     } catch (error: unknown) {
       // Server-side triage — users see only the 502 body, operators
       // see the full error + stack in Worker logs.
@@ -459,7 +487,7 @@ export class PortRegistry {
   get stats() {
     return {
       activePorts: this.ports.size,
-      ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid })),
+      ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid, document: e.document })),
     };
   }
 

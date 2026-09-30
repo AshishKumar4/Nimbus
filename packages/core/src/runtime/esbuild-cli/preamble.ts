@@ -23,8 +23,10 @@
  * process's ESM loader (dynamic-import-rewrite.ts), installed as
  * `globalThis.__nimbusRewriteDynamicImports`, and the lowering of a module
  * with top-level await to a CommonJS body (async-module-lowering.ts), as
- * `globalThis.__nimbusLowerAsyncModule`. Both are acorn parses of a whole
- * module, which is why they run here and not in the session's isolate.
+ * `globalThis.__nimbusLowerAsyncModule`. The import rewrite's module lexer
+ * (module-lexer.ts) is asm.js-style JavaScript and needs no runtime wasm
+ * compile; Acorn reads spans, a cell the lexer can misread, and the
+ * top-level-await lowering. Keep this analysis out of the session's isolate.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';

@@ -41,7 +41,7 @@ import {
   parseChownOwnership,
 } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
-import { isVfsError, VfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
+import { isVfsError, syscallError, VFS_STRERROR } from '../vfs/vfs-error.js';
 import { globMatch } from '../substrate/lifo/utils/glob.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { exists, isDirectory, isSymlink } from '../vfs/vfs.js';
@@ -3891,7 +3891,7 @@ async function canonicalizePath(
       stat = null;
     }
     if (stat === null) {
-      if (options.mode === 'e' || (options.mode === 'E' && !last)) throw new VfsError('ENOENT', candidate);
+      if (options.mode === 'e' || (options.mode === 'E' && !last)) throw syscallError('ENOENT', 'realpath', candidate);
       missing = true;
       resolved.push(part);
       continue;
@@ -3899,7 +3899,7 @@ async function canonicalizePath(
     if (stat.type === 'symlink' && !options.noSymlinks) {
       if (++hops > 40) {
         // Under -m a component that loops counts as missing (GNU).
-        if (options.mode !== 'm') throw new VfsError('ELOOP', candidate);
+        if (options.mode !== 'm') throw syscallError('ELOOP', 'realpath', candidate);
         missing = true;
         resolved.push(part);
         continue;
@@ -3909,13 +3909,13 @@ async function canonicalizePath(
       pending = [...target.split('/').filter(Boolean), ...pending];
       continue;
     }
-    if (stat.type !== 'directory' && !last && options.mode !== 'm') throw new VfsError('ENOTDIR', candidate);
+    if (stat.type !== 'directory' && !last && options.mode !== 'm') throw syscallError('ENOTDIR', 'realpath', candidate);
     resolved.push(part);
   }
   const out = `/${resolved.join('/')}`;
   if (trailingSlash && options.mode !== 'm') {
     const stat = await vfs.stat(out);
-    if (stat !== null && stat.type !== 'directory') throw new VfsError('ENOTDIR', out);
+    if (stat !== null && stat.type !== 'directory') throw syscallError('ENOTDIR', 'realpath', out);
   }
   return out;
 }

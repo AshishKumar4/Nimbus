@@ -21,14 +21,48 @@ const __streamMod = (() => {
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
 
-  // Node's errorOrDestroy (lib/internal/streams/destroy.js): a destroyed
-  // stream reports no further errors, such as its pending writes' failures.
-  // An 'error' with no listener throws (node:events), so emitting one after
-  // destroy crashes a program Node leaves running.
-  function _errorUnlessDestroyed(stream, err) {
+  /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
+  function _destroyedError(method) {
+    return Object.assign(new Error('Cannot call ' + method + ' after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+  }
+
+  /**
+   * Node's errorBuffer: once destroyed, queued writes and end() callbacks
+   * are answered, never left waiting on a stream that will not write them.
+   */
+  function _errorBuffer(state, err) {
+    for (const { chunk, callback } of state.buffer.splice(0)) {
+      state.bufferedLength -= (chunk?.length || 0);
+      state.pending--;
+      if (callback) callback(err ?? _destroyedError('write'));
+    }
+    for (const cb of state.finishCallbacks.splice(0)) cb(err ?? _destroyedError('end'));
+  }
+
+  /** Node's errorOrDestroy for the writable side: autoDestroy closes it. */
+  function _errorOrDestroy(stream, err) {
+    const state = stream._writableState;
+    if (state.destroyed) return;
+    if (state.autoDestroy) stream.destroy(err);
+    else stream.emit('error', err);
+  }
+
+  /**
+   * Destroy either side of a stream, and both of a Duplex, once: 'error' if
+   * given, then 'close' unless the stream was created with emitClose: false.
+   */
+  function _destroyStream(stream, err) {
     const r = stream._readableState, w = stream._writableState;
-    if ((r && r.destroyed) || (w && w.destroyed)) return;
-    stream.emit('error', err);
+    if ((r && r.destroyed) || (w && w.destroyed)) return stream;
+    if (r) { r.destroyed = true; stream.readable = false; }
+    if (w) {
+      w.destroyed = true;
+      // A write in flight answers the queue when it calls back.
+      if (!w.writing) queueMicrotask(() => _errorBuffer(w));
+    }
+    if (err) stream.emit('error', err);
+    if ((r || w).emitClose) stream.emit('close');
+    return stream;
   }
 
   // ── Readable ────────────────────────────────────────────────────────
@@ -59,6 +93,8 @@ const __streamMod = (() => {
         highWaterMark: opts?.highWaterMark ?? 16384,
         encoding: opts?.encoding || null,
         objectMode: opts?.objectMode ?? false,
+        autoDestroy: opts?.autoDestroy !== false,
+        emitClose: opts?.emitClose !== false,
         destroyed: false,
         readableLength: 0,
       };
@@ -96,10 +132,24 @@ const __streamMod = (() => {
       if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
         state.endEmitted = true;
         this.readable = false;
-        this.emit('end');
+        this._emitEnd();
         return true;
       }
       return false;
+    }
+
+    /**
+     * 'end', then Node's autoDestroy (on unless the stream opts out): a
+     * stream done reading, and done writing if it is a Duplex, is destroyed,
+     * so 'close' follows 'end'. Consumers wait on it: node-static ends the
+     * response on its file stream's 'close'.
+     */
+    _emitEnd() {
+      this.emit('end');
+      const ws = this._writableState;
+      if (this._readableState.autoDestroy && (!ws || (ws.autoDestroy && ws.finished))) {
+        queueMicrotask(() => this.destroy());
+      }
     }
 
     /**
@@ -132,7 +182,7 @@ const __streamMod = (() => {
       if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
         state.endEmitted = true;
         this.readable = false;
-        queueMicrotask(() => this.emit('end'));
+        queueMicrotask(() => this._emitEnd());
       }
       return chunk;
     }
@@ -146,7 +196,7 @@ const __streamMod = (() => {
         else if (state.buffer.length === 0 && !state.endEmitted) {
           state.endEmitted = true;
           this.readable = false;
-          queueMicrotask(() => this.emit('end'));
+          queueMicrotask(() => this._emitEnd());
         }
         return false;
       }
@@ -207,14 +257,7 @@ const __streamMod = (() => {
       return this;
     }
 
-    destroy(err) {
-      if (this._readableState.destroyed) return this;
-      this._readableState.destroyed = true;
-      this.readable = false;
-      if (err) this.emit('error', err);
-      this.emit('close');
-      return this;
-    }
+    destroy(err) { return _destroyStream(this, err); }
 
     get readableEnded() { return this._readableState.endEmitted; }
     get readableLength() { return this._readableState.readableLength; }
@@ -303,19 +346,159 @@ const __streamMod = (() => {
   };
 
   // ── Writable ────────────────────────────────────────────────────────
+  //
+  // Node's order (lib/internal/streams/writable.js): one _write at a time,
+  // the rest queued; end() waits for every write to call back before
+  // _final, 'finish' follows _final's callback, and autoDestroy then closes
+  // the stream (a Duplex once its readable side has ended too). An
+  // asynchronous _write or _transform is therefore complete, and a
+  // Transform's output delivered, before 'finish' and 'close'.
+  function _writableState(opts, highWaterMark) {
+    return {
+      buffer: [],
+      writing: false,
+      // Writes and _final not yet called back.
+      pending: 0,
+      ending: false,
+      finalCalled: false,
+      finished: false,
+      finishCallbacks: [],
+      highWaterMark,
+      needDrain: false,
+      autoDestroy: opts?.autoDestroy !== false,
+      emitClose: opts?.emitClose !== false,
+      destroyed: false,
+      corked: 0,
+      bufferedLength: 0,
+    };
+  }
+
+  function _write(stream, chunk, encoding, callback) {
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    const state = stream._writableState;
+    if (state.ending || state.destroyed) {
+      // A destroyed stream reports nothing further; the write's callback is
+      // still answered.
+      const err = state.ending
+        ? Object.assign(new Error('write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' })
+        : _destroyedError('write');
+      if (state.destroyed) { if (callback) queueMicrotask(() => callback(err)); return false; }
+      if (callback) callback(err);
+      _errorOrDestroy(stream, err);
+      return false;
+    }
+    if (typeof chunk === 'string') chunk = _enc.encode(chunk);
+    state.bufferedLength += (chunk?.length || 0);
+    state.pending++;
+    const request = { chunk, encoding, callback };
+    if (state.writing || state.corked > 0) state.buffer.push(request);
+    else _doWrite(stream, request);
+    if (state.bufferedLength >= state.highWaterMark) {
+      state.needDrain = true;
+      return false;
+    }
+    return true;
+  }
+
+  function _doWrite(stream, { chunk, encoding, callback }) {
+    const state = stream._writableState;
+    state.writing = true;
+    let called = false;
+    stream._write(chunk, encoding, (err) => {
+      if (called) return;
+      called = true;
+      state.writing = false;
+      state.bufferedLength -= (chunk?.length || 0);
+      state.pending--;
+      if (err) {
+        // Node's onwriteError: this callback, then the queue, then 'error'
+        // unless the stream was destroyed.
+        if (callback) callback(err);
+        _errorBuffer(state, err);
+        _errorOrDestroy(stream, err);
+        return;
+      }
+      // The next queued write starts before this one's callback, then
+      // 'drain', as Node's onwrite/afterWrite order them.
+      if (state.buffer.length > 0 && state.corked === 0 && !state.destroyed) _doWrite(stream, state.buffer.shift());
+      if (state.needDrain && state.bufferedLength === 0 && !state.ending) {
+        state.needDrain = false;
+        stream.emit('drain');
+      }
+      if (callback) callback();
+      if (state.destroyed) _errorBuffer(state);
+      else _finishMaybe(stream);
+    });
+  }
+
+  function _end(stream, chunk, encoding, callback) {
+    if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    const state = stream._writableState;
+    if (chunk !== undefined && chunk !== null) _write(stream, chunk, encoding);
+    if (state.corked > 0) { state.corked = 1; _uncork(stream); }
+    if (callback) {
+      if (state.finished) queueMicrotask(() => callback());
+      else state.finishCallbacks.push(callback);
+    }
+    if (!state.ending) {
+      state.ending = true;
+      // A stream ended with nothing in flight finishes on a later tick.
+      queueMicrotask(() => _finishMaybe(stream));
+    }
+    return stream;
+  }
+
+  function _uncork(stream) {
+    const state = stream._writableState;
+    if (state.corked > 0) state.corked--;
+    if (state.corked === 0 && !state.writing && state.buffer.length > 0) _doWrite(stream, state.buffer.shift());
+  }
+
+  /** _final, then 'finish', once end() was called and every write called back. */
+  function _finishMaybe(stream) {
+    const state = stream._writableState;
+    if (!state.ending || state.finished || state.writing || state.buffer.length > 0 || state.pending > 0 || state.destroyed) return;
+    if (!state.finalCalled && typeof stream._final === 'function') {
+      state.finalCalled = true;
+      state.pending++;
+      let called = false;
+      const onFinal = (err) => {
+        if (called) return;
+        called = true;
+        state.pending--;
+        if (err) {
+          for (const cb of state.finishCallbacks.splice(0)) cb(err);
+          _errorOrDestroy(stream, err);
+          return;
+        }
+        queueMicrotask(() => _finish(stream));
+      };
+      try { stream._final(onFinal); } catch (err) { onFinal(err); }
+      return;
+    }
+    if (!state.finalCalled) {
+      state.finalCalled = true;
+      _finish(stream);
+    }
+  }
+
+  function _finish(stream) {
+    const state = stream._writableState;
+    if (state.finished || state.destroyed) return;
+    state.finished = true;
+    for (const cb of state.finishCallbacks.splice(0)) cb();
+    stream.emit('finish');
+    // autoDestroy, as Readable's _emitEnd: 'close' follows 'finish', for a
+    // Duplex once its readable side has ended too.
+    const rs = stream._readableState;
+    if (state.autoDestroy && (!rs || (rs.autoDestroy && rs.endEmitted))) queueMicrotask(() => stream.destroy());
+  }
+
   class Writable extends __eventsMod {
     constructor(opts) {
       super();
-      this._writableState = {
-        buffer: [],
-        ended: false,
-        finished: false,
-        highWaterMark: opts?.highWaterMark ?? 16384,
-        needDrain: false,
-        destroyed: false,
-        corked: 0,
-        bufferedLength: 0,
-      };
+      this._writableState = _writableState(opts, opts?.highWaterMark ?? 16384);
       this.writable = true;
       if (opts?.write) this._write = opts.write.bind(this);
       if (opts?.final) this._final = opts.final.bind(this);
@@ -323,84 +506,14 @@ const __streamMod = (() => {
     }
 
     _write(chunk, encoding, callback) { callback(); }
-    _final(callback) { callback(); }
 
-    write(chunk, encoding, callback) {
-      if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-      const state = this._writableState;
-      if (state.ended) {
-        const err = new Error('write after end');
-        if (callback) callback(err);
-        _errorUnlessDestroyed(this, err);
-        return false;
-      }
-      if (typeof chunk === 'string') chunk = _enc.encode(chunk);
-
-      if (state.corked > 0) {
-        state.buffer.push({ chunk, callback });
-        state.bufferedLength += (chunk?.length || 0);
-        return state.bufferedLength < state.highWaterMark;
-      }
-
-      state.bufferedLength += (chunk?.length || 0);
-      this._write(chunk, encoding, (err) => {
-        state.bufferedLength -= (chunk?.length || 0);
-        if (err) { if (callback) callback(err); _errorUnlessDestroyed(this, err); return; }
-        if (callback) callback();
-        if (state.needDrain && state.bufferedLength < state.highWaterMark) {
-          state.needDrain = false;
-          this.emit('drain');
-        }
-      });
-
-      if (state.bufferedLength >= state.highWaterMark) {
-        state.needDrain = true;
-        return false;
-      }
-      return true;
-    }
-
-    end(chunk, encoding, callback) {
-      if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
-      if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-      const state = this._writableState;
-      if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-      state.ended = true;
-      this._final((err) => {
-        state.finished = true;
-        if (err) _errorUnlessDestroyed(this, err);
-        this.emit('finish');
-        if (callback) callback(err);
-      });
-      return this;
-    }
-
+    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
+    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
     cork() { this._writableState.corked++; }
+    uncork() { _uncork(this); }
+    destroy(err) { return _destroyStream(this, err); }
 
-    uncork() {
-      const state = this._writableState;
-      if (state.corked > 0) state.corked--;
-      if (state.corked === 0 && state.buffer.length > 0) {
-        const buf = [...state.buffer];
-        state.buffer = [];
-        for (const { chunk, callback } of buf) {
-          this._write(chunk, undefined, (err) => {
-            state.bufferedLength -= (chunk?.length || 0);
-            if (callback) callback(err);
-          });
-        }
-      }
-    }
-
-    destroy(err) {
-      if (this._writableState.destroyed) return this;
-      this._writableState.destroyed = true;
-      if (err) this.emit('error', err);
-      this.emit('close');
-      return this;
-    }
-
-    get writableEnded() { return this._writableState.ended; }
+    get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
   }
@@ -409,27 +522,19 @@ const __streamMod = (() => {
   class Duplex extends Readable {
     constructor(opts) {
       super(opts);
-      // Mixin Writable state
-      this._writableState = {
-        buffer: [],
-        ended: false,
-        finished: false,
-        highWaterMark: opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384,
-        needDrain: false,
-        destroyed: false,
-        corked: 0,
-        bufferedLength: 0,
-      };
+      this._writableState = _writableState(opts, opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384);
       this.writable = true;
       if (opts?.write) this._write = opts.write.bind(this);
       if (opts?.final) this._final = opts.final.bind(this);
     }
     _write(chunk, encoding, callback) { callback(); }
-    _final(callback) { callback(); }
-    write(chunk, encoding, callback) { return Writable.prototype.write.call(this, chunk, encoding, callback); }
-    end(chunk, encoding, callback) { return Writable.prototype.end.call(this, chunk, encoding, callback); }
-    cork() { Writable.prototype.cork.call(this); }
-    uncork() { Writable.prototype.uncork.call(this); }
+    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
+    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
+    cork() { this._writableState.corked++; }
+    uncork() { _uncork(this); }
+    get writableEnded() { return this._writableState.ending; }
+    get writableFinished() { return this._writableState.finished; }
+    get writableLength() { return this._writableState.bufferedLength; }
   }
 
   // ── Transform ───────────────────────────────────────────────────────

@@ -59,28 +59,6 @@ export function isLongRunningInvocation(args: string[]): boolean {
   return false;
 }
 
-/**
- * A shell-launched server — `node server.js` doing http.createServer().listen()
- * (or express `app.listen()`, `Bun.serve()`, net.createServer(), …) — must run
- * in the KEYED long-running facet (spawnNode), not the one-shot exec facet: only
- * the keyed facet exposes a re-resolvable NimbusLoadedEntrypoint route stub, so
- * external `/port/<n>` and in-session loopback `curl` reach the server. The
- * one-shot facet is `LOADER.load` (unkeyed) and its stub cannot be re-entered
- * from a later request's context, so it is never routeable.
- *
- * Argv flags (`--watch`) can't express "this script binds a port", so we detect
- * the bind at the only place it is knowable ahead of running: a listen/serve
- * call in the source. A false positive (source mentions `.listen(` but exits)
- * only means the script runs in the persistent facet instead of the one-shot
- * one — identical observable behaviour to `node --watch <script>`. A miss keeps
- * the pre-existing "unreachable one-shot server" behaviour, never a regression.
- */
-const SERVER_BIND_RE = /\.listen\s*\(|\bcreateServer\s*\(|\bserve\s*\(/;
-
-export function looksLikeServer(code: string): boolean {
-  return SERVER_BIND_RE.test(code);
-}
-
 /** Result of a `runFresh` call. */
 export interface RunFreshResult {
   exitCode: number;
@@ -119,6 +97,8 @@ export interface RunFreshOpts {
   /** Shell abort (Ctrl+C): aborting this kills the run through the
    *  terminator exec registers on the pid. */
   signal?: AbortSignal;
+  /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
+  launchesServer?: boolean;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -126,19 +106,20 @@ export async function runFresh(
   facetMgr: FacetManager,
   code: string,
   opts: RunFreshOpts,
-  entrySource = code,
 ): Promise<RunFreshResult> {
   const args = opts.argv || [];
 
-  // Promote server-shaped scripts to the keyed long-running facet even without
-  // an explicit --watch flag: it is the only path whose route stub is
-  // re-resolvable across requests, so its bound port is actually reachable.
-  // .bin wrapper invocations (skipSpawn) keep the one-shot fast path — those
-  // are CLIs, and their PID accounting assumes a single foreground exec.
+  // A program that starts a server runs in the keyed long-running facet even
+  // without --watch: only its route stub is re-resolvable across requests
+  // (the one-shot facet is LOADER.load, unkeyed), so only there is the port it
+  // binds reachable. The runtime handler judges that from the code this
+  // invocation runs (server-launch.ts), its arguments included. .bin wrapper
+  // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
+  // their PID accounting assumes a single foreground exec.
   const wantsLongRunning =
     opts.forceLongRunning ||
     isLongRunningInvocation(args) ||
-    (!opts.skipSpawn && looksLikeServer(entrySource));
+    (!opts.skipSpawn && opts.launchesServer === true);
 
   if (!wantsLongRunning) {
     // Short path: fresh-isolate-per-call via facetMgr.exec.

@@ -42,6 +42,7 @@ import {
   parsePreviewHost,
   readPreviewHostSuffix,
 } from '../_shared/preview-host.js';
+import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import {
   parseSessionRoute,
   forwardToSession,
@@ -363,6 +364,7 @@ export function createNimbusHandler(
           redirectPath: url.pathname,
           singleUseScope: 'session:preview',
           reusableScope: null,
+          embeddedNavigation: true,
         });
       }
 
@@ -487,6 +489,7 @@ export function createNimbusHandler(
           redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
           singleUseScope: 'session:bootstrap',
           reusableScope: 'session:attach',
+          embeddedNavigation: false,
         });
       }
 
@@ -562,10 +565,19 @@ export function createNimbusHandler(
         }
         if (env.ASSETS) {
           const shellUrl = new URL('/s/index.html', url.origin);
-          return env.ASSETS.fetch(new Request(shellUrl.toString(), {
+          const shell: Response = await env.ASSETS.fetch(new Request(shellUrl.toString(), {
             method: 'GET',
             headers: request.headers,
           }));
+          // The isolated shell is the same page with COOP + COEP, so a
+          // preview that asks for cross-origin isolation can have it in the
+          // pane (see _shared/preview-isolation.ts). Only on request: the
+          // default shell keeps no embedder policy, so every other preview,
+          // and every third-party frame inside one, loads as it always has.
+          if (!isIsolatedShellUrl(url)) return shell;
+          const headers = new Headers(shell.headers);
+          for (const [name, value] of Object.entries(ISOLATED_SHELL_HEADERS)) headers.set(name, value);
+          return new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers });
         }
         return new Response(
           '<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>',
@@ -757,6 +769,17 @@ async function handleAttachExchange(
     singleUseScope: string;
     /** Scope a reusable token must carry, or null to reject reusable tokens. */
     reusableScope: string | null;
+    /**
+     * The exchange is a hop of a nested navigation whose embedder may be
+     * cross-origin isolated: the preview pane of an isolated shell loads a
+     * host-form preview through it. Under an embedder policy every response
+     * of a nested navigation, redirects included, passes the CORP check, and
+     * a missing CORP counts as same-origin, so the redirect says
+     * `cross-origin`: it has no body to protect, and the guest's own document
+     * after it still answers for itself.
+     * https://html.spec.whatwg.org/multipage/browsers.html#check-a-navigation-response's-adherence-to-its-embedder-policy
+     */
+    embeddedNavigation: boolean;
   },
 ): Promise<Response> {
   const token = url.searchParams.get(NIMBUS_TOKEN_QUERY)!;
@@ -793,14 +816,13 @@ async function handleAttachExchange(
     const clean = new URL(url);
     clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
     clean.pathname = options.redirectPath;
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: clean.pathname + clean.search,
-        'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
-        'Cache-Control': 'no-store',
-      },
+    const headers = new Headers({
+      Location: clean.pathname + clean.search,
+      'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
+      'Cache-Control': 'no-store',
     });
+    if (options.embeddedNavigation) headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    return new Response(null, { status: 302, headers });
   } catch (e) {
     if (!(e instanceof NimbusAuthError)) {
       console.error('[nimbus] attach exchange error:', e);

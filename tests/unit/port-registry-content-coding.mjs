@@ -13,6 +13,7 @@
  * target that compresses anyway. Bodies are compared by hash, not by eye.
  */
 
+import './lib/workerd-fixed-length-stream.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';

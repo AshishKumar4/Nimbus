@@ -143,4 +143,16 @@ export interface AgentStatusPayload {
     connected: boolean;
     capabilities: string[];
 }
+/**
+ * The OAuth callback page's word to the chat that started the flow, sent once:
+ * `postMessage` to `window.opener` when the popup still has one (it crosses
+ * storage partitions, for a chat embedded in another site), else on a
+ * BroadcastChannel of this name, which reaches a cross-origin isolated shell
+ * whose COOP severed the popup's opener.
+ */
+export declare const AGENT_OAUTH_RESULT_CHANNEL = "nimbus-agent-oauth";
+export interface AgentOAuthResultMessage {
+    type: typeof AGENT_OAUTH_RESULT_CHANNEL;
+    ok: boolean;
+}
 //# sourceMappingURL=agent-contract.d.ts.map

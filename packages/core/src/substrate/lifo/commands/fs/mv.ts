@@ -1,7 +1,7 @@
 import type { Command, CommandContext } from '../types.js';
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { VfsError, isVfsError } from '../../../../vfs/vfs-error.js';
+import { isVfsError, syscallError } from '../../../../vfs/vfs-error.js';
 import { exists, lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
@@ -87,10 +87,10 @@ async function copyAcrossMounts(ctx: CommandContext, source: string, target: str
   if (exists) {
     const destination = await lstatOrThrow(ctx.vfs, target);
     if (stat.ino !== undefined && stat.dev !== undefined && stat.ino === destination.ino && stat.dev === destination.dev) {
-      throw new VfsError('EINVAL', 'source and destination are the same file');
+      throw syscallError('EINVAL', 'rename', source, { dest: target, detail: 'source and destination are the same file' });
     }
     if (stat.type === 'directory' && (destination.type !== 'directory' || (await ctx.vfs.readdir(target)).length > 0)) {
-      throw new VfsError('ENOTEMPTY', target);
+      throw syscallError('ENOTEMPTY', 'rename', source, { dest: target });
     }
   }
   if (stat.type === 'directory') {

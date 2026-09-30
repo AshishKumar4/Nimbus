@@ -197,7 +197,8 @@ export const BUN_SHIM_PREAMBLE = `
  *   <user code>
  *
  * Routing follows runFresh: argv flags --watch / --inspect /
- * --inspect-brk → long-running fork; otherwise short fresh-isolate.
+ * --inspect-brk, or a program the handler judged to start a server
+ * (opts.launchesServer) → long-running fork; otherwise short fresh-isolate.
  */
 export async function runBunScript(
   facetMgr: FacetManager,
@@ -205,5 +206,5 @@ export async function runBunScript(
   opts: RunFreshOpts,
 ): Promise<RunFreshResult> {
   const wrappedCode = BUN_SHIM_PREAMBLE + code;
-  return runFresh(facetMgr, wrappedCode, opts, code);
+  return runFresh(facetMgr, wrappedCode, opts);
 }

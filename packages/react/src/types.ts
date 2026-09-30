@@ -54,8 +54,10 @@ export interface NimbusTerminalProps {
 
   /**
    * `sandbox` attribute on the iframe. Default is the minimum needed
-   * for xterm + WebSocket + same-document downloads:
-   *   `allow-scripts allow-same-origin allow-downloads allow-forms`.
+   * for xterm + WebSocket + same-document downloads, plus popups for
+   * previews opened in their own tab, unsandboxed so an app that asks for
+   * cross-origin isolation gets it there:
+   *   `allow-scripts allow-same-origin allow-downloads allow-forms allow-popups allow-popups-to-escape-sandbox`.
    * Override only if you understand the security implications.
    */
   sandbox?: string;

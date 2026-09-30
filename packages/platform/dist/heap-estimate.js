@@ -160,7 +160,6 @@ export function estimateSupervisorHeap(c, vfs) {
         streamingBuffersBytes: c.inFlightRpcPayloadBytes,
         prefetchBundleBytes: c.prefetchBundleBytes,
         prefetchCacheBytes: c.prefetchCacheBytes,
-        transformCacheBytes: c.transformCacheBytes,
         unattributedReservationBytes: Math.max(0, allocationBudget.current - transientAttributedBytes),
     };
     const estimatedBytes = breakdown.supervisorBaselineBytes +
@@ -170,7 +169,6 @@ export function estimateSupervisorHeap(c, vfs) {
         breakdown.streamingBuffersBytes +
         breakdown.prefetchBundleBytes +
         breakdown.prefetchCacheBytes +
-        breakdown.transformCacheBytes +
         breakdown.unattributedReservationBytes;
     const percentOfCeiling = Math.round((estimatedBytes / SUPERVISOR_HEAP_CEILING_BYTES) * 1000) / 10;
     return {

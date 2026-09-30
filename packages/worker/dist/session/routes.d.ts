@@ -65,6 +65,8 @@ export declare function routeToSessionApp(self: RoutesHost, name: string, reques
  * forbids cross-request I/O on a `server.accept()`'d socket.
  */
 export declare function acceptCirrusHmrWs(self: RoutesHost, request: Request): Response;
+/** The session's two app doors: the Vite preview and the wrangler dev worker. */
+export type AppDoor = 'vite' | 'worker';
 export declare function handleFetch(self: RoutesHost, request: Request): Promise<Response>;
 export {};
 //# sourceMappingURL=routes.d.ts.map

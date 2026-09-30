@@ -1,9 +1,9 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
- * growing with every module transformed or bundled and never released. A
- * host whose isolate is memory-constrained passes a `transformHost` and a
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows to fit the working
+ * set of its transforms/builds, and cannot shrink. A host whose isolate is
+ * memory-constrained passes a `transformHost` and a
  * `buildHost` so esbuild runs in another isolate (the session's is the
  * loader-backed esbuild facet); without them, esbuild runs here. build()'s
  * VFS resolver plugin always runs here, over this service's view.
@@ -142,7 +142,10 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
-/** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
+/**
+ * Source the esbuild facet evaluates next to esbuild: its transform and build
+ * helpers, and the esbuild it keeps for transforms (keep-esbuild.ts).
+ */
 export declare function generateEsbuildFacetRuntimeSource(): string;
 /** One transform a {@link EsbuildTransformHost} runs. */
 export interface EsbuildTransformRequest {
@@ -160,9 +163,10 @@ export type EsbuildTransformOutcome = TransformResult | {
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
- * esbuild-wasm's linear memory starts at ~28 MiB, grows with every module it
- * transforms and is never released, so an isolate that is memory-constrained
- * (a session supervisor) hands its transforms to one of these.
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows to the working set of
+ * the largest module it transforms and is never released, so an isolate that
+ * is memory-constrained (a session supervisor) hands its transforms to one of
+ * these.
  */
 export type EsbuildTransformHost = (requests: EsbuildTransformRequest[]) => Promise<EsbuildTransformOutcome[]>;
 /** esbuild's arguments to a resolve callback, as data another isolate can carry. */
@@ -215,6 +219,13 @@ export interface EsbuildServiceOptions {
     transformHost?: EsbuildTransformHost;
     /** Where build() runs. Absent: this isolate. */
     buildHost?: EsbuildBuildHost;
+    /**
+     * The transform host's code identity, given with the host: equal ids
+     * transform equal requests to equal outcomes. It is what lets a launch keep
+     * its results (bundle-cell-transform.ts): a store bound to one id never
+     * serves another's. Absent: the host's results are not kept.
+     */
+    transformHostId?: string;
 }
 /**
  * What a build reads modules through: a view of the namespace as some
@@ -227,10 +238,29 @@ export interface EsbuildReadFs {
     readFile(path: string): Awaitable<Uint8Array>;
     readFileString(path: string): Awaitable<string>;
 }
+/**
+ * Source bytes and files one transform host call carries. Bounds CPU work as
+ * well as source retention per invocation: in live pi launch profiles the
+ * 1 MiB/256-file slice beginning at export-html/index.js exceeded the guest
+ * CPU budget even though its first 4 MiB rewrite-only chunk had completed.
+ * Smaller independent calls preserve every input and result, while preventing
+ * many small full transforms sharing one budget. It is also the unit a paced
+ * launch spends its turns in, so no one turn waits on more than a slice.
+ */
+export declare const TRANSFORM_SLICE_SOURCE_BYTES: number;
+export declare const TRANSFORM_SLICE_FILES = 32;
+/**
+ * `items` in order, cut into transform slices: each at most
+ * TRANSFORM_SLICE_FILES items and TRANSFORM_SLICE_SOURCE_BYTES of source,
+ * except that an item larger than the byte bound travels alone.
+ */
+export declare function transformSlices<T>(items: readonly T[], sourceBytes: (item: T) => number): T[][];
 export declare class EsbuildService {
     private vfs;
     private readonly transformHost;
     private readonly buildHost;
+    /** See EsbuildServiceOptions.transformHostId. */
+    readonly transformHostId: string | null;
     private initialized;
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */

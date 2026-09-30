@@ -16,7 +16,7 @@
 
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 
-import { isVfsError, VfsError } from './vfs-error.js';
+import { isVfsError, syscallError, type VfsError } from './vfs-error.js';
 
 export type Awaitable<T> = T | Promise<T>;
 
@@ -251,7 +251,7 @@ export async function statOrThrow<S extends VfsStat>(
   options?: { follow?: boolean },
 ): Promise<S> {
   const stat = await vfs.stat(path, options);
-  if (stat === null) throw new VfsError('ENOENT', path);
+  if (stat === null) throw syscallError('ENOENT', options?.follow === false ? 'lstat' : 'stat', path);
   return stat;
 }
 

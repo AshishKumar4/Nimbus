@@ -107,9 +107,15 @@ Nimbus already has a real base:
   (`require-resolver.ts`, `__resolveFrom`), ESM→CJS lowering and
   `import.meta` metadata, because the registry resolves specifiers as URLs
   only, keeps every module under `file:///bundle/`, and takes no named
-  exports for a CommonJS module. Dynamic imports are collected directly from
-  Acorn's parser productions, preserving regexp/template/comment boundaries
-  without a second AST walk or separate token-context heuristics. Code the
+  exports for a CommonJS module. Dynamic-import and metadata spans come from
+  es-module-lexer's CSP/asm.js build (vendored as a factory in
+  `core/runtime/module-lexer.ts`), without runtime wasm compilation or a
+  whole-cell AST. Acorn reads only spans: a call's arguments, the braces
+  around an `import(...)` whose `{` opens the next line, directives and
+  escaped capture names. A cell the lexer can misread (a `/` whose regex
+  reading could hide import syntax, an HTML-like comment in code, `new
+  import(`, a lexer error) goes to Acorn's streaming parser, which drops each
+  completed top-level statement. Code the
   program produces at runtime (a
   file written then required or imported, or text handed to the
   `AsyncFunction`/generator constructors, `vm.compileFunction` or
@@ -1022,9 +1028,13 @@ The port registry is already the right primitive for HTTP preview:
 - A process owns a port.
 - `/port/<n>/...` forwards a real `Request`.
 - The runtime returns a real `Response`.
-- PortRegistry avoids JSON body serialization. Current Node and virtual-socket
-  adapters still buffer internally in places; completion means streaming through
-  the adapter layer too.
+- PortRegistry avoids JSON body serialization and relays a body as a stream,
+  keeping a declared `Content-Length` (through a `FixedLengthStream`; any other
+  stream goes out chunked). Node's native `node:http` path streams end to end:
+  a 210 MiB file served by a Node static server downloads whole and by range
+  while the session isolate's per-minute memory peak stays at 67-96 MiB
+  (measured 2026-09-30, `tests/behavioral/preview/new/port-range-large-file.mjs`). The
+  virtual-socket adapters are not yet probed at that size.
 
 Language web servers should plug into this model:
 
@@ -1041,6 +1051,34 @@ Language web servers should plug into this model:
 
 When a new port appears, the browser preview pane should create or focus the
 corresponding tab. The tab model should de-dupe by kind and port.
+
+Cross-origin isolated previews: a preview asks for isolation with its own
+document's `Cross-Origin-Embedder-Policy` (`require-corp` or
+`credentialless`), and Nimbus never adds or rewrites COOP, COEP or CORP on a
+guest response. The pane is an iframe, and a nested document is isolated only
+when every document above it is, so the shell has two modes: the default
+shell (no COOP/COEP, unchanged) and the isolated shell (`/s/<id>/?isolated=1`,
+COOP `same-origin` + COEP `credentialless`;
+`packages/worker/src/_shared/preview-isolation.ts` holds the rules and their
+spec links). The port registry records each port's last document response
+COEP/COOP/CORP (`packages/core/src/runtime/document-policy.ts`) and reports it
+in `/api/stats`; from that the shell offers "Reload isolated", "Reload
+normally" or "Open in new tab". A mode switch asks before discarding unsaved
+editor changes and hands the terminal over (the session answers every
+socket's close frame). ↗ opens any preview top-level, where its own headers
+isolate it; the React embed's default sandbox includes
+`allow-popups-to-escape-sandbox` so that tab can be isolated. The host door's
+token-exchange 302 carries CORP `cross-origin`, since an isolated shell holds
+every hop of the pane's navigation to CORP. Limits: the pane of an embedded
+shell (the React component) is never isolated, because COOP is ignored in a
+frame; a host-form preview (`<port>--<sid>`) is cross-origin to the shell, so
+the isolated shell can embed it only with CORP `cross-origin`, or `same-site`
+under the shell's own host, and a guest sending CORP `same-origin` (halo-web
+does) is offered its own tab; a browser without `credentialless` (Safari) is
+offered the own tab too. Probed by `tests/behavioral/preview/new/coi-*.mjs`,
+`tests/behavioral/agent/new/oauth-result-delivery.mjs`,
+`tests/behavioral/session-lifecycle/new/ws-close-handshake-answered.mjs` and
+`tests/unit/preview-isolation.mjs`, `tests/unit/port-registry-document-policy.mjs`.
 
 ## Durable Service Contract
 

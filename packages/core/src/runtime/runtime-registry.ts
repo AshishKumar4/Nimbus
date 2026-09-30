@@ -46,6 +46,7 @@ import { bindImportMetaResolve, importMetaDefines } from './import-meta-transfor
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { errorText } from '../_shared/error-text.js';
 import { exists } from '../vfs/vfs.js';
+import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -89,6 +90,26 @@ export interface RuntimeRunOpts {
    * program starts: `tail -f log | node x.js` runs x.js at once.
    */
   stdin?: { read(): Promise<string | null> };
+  /**
+   * Running the program starts a server (server-launch.ts). Set only for a
+   * runtime that routes servers (RuntimeSpec.routesServers), when no .bin
+   * wrapper has decided residency already.
+   */
+  launchesServer?: boolean;
+}
+
+/**
+ * The nearest directory at or above `dir` that holds a package.json, or null.
+ * The first one wins (Node's rule); the filesystem root is not a package.
+ */
+async function nearestPackageDir(
+  fs: { exists(path: string): boolean | Promise<boolean> },
+  dir: string,
+): Promise<string | null> {
+  for (let at = normalizeVfsPath(dir); at !== ''; at = at.slice(0, Math.max(0, at.lastIndexOf('/')))) {
+    if (await fs.exists(`${at}/package.json`)) return at;
+  }
+  return null;
 }
 
 /** Extensions probed when a target names no exact file, in Node's order. */
@@ -186,6 +207,12 @@ export interface RuntimeSpec {
    * iff they share the runFresh contract.
    */
   supportsBinSpawn?: boolean;
+  /**
+   * The runner routes a program that starts a server to a resident process
+   * (node-runner.ts runFresh), so the handler reports whether it does
+   * (RuntimeRunOpts.launchesServer).
+   */
+  routesServers?: boolean;
 }
 
 /**
@@ -257,6 +284,28 @@ export function buildRuntimeHandler(
       forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
     } : {};
     const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
+    // Whether the program starts a server, so the runner can give it a
+    // resident process; a .bin wrapper has already decided that by its own rule.
+    const launches = async (code: string, path: string | null, dir: string, programArgs: string[]): Promise<boolean> => {
+      if (spec.routesServers !== true || binSpawn !== undefined) return false;
+      const key = normalizeVfsPath(dir);
+      return programLaunchesServer({
+        source: code,
+        path,
+        dir: key,
+        packageRoot: (await nearestPackageDir(fs, key)) ?? key,
+        argv: [name, ...programArgs],
+      }, {
+        resolve: (from, specifier) => resolveRuntimeScriptPath(fs, from, specifier),
+        read: async (path) => {
+          try {
+            // Past the bound it is not walked, so it is not read either.
+            if (((await fs.stat(path))?.size ?? 0) > SERVER_LAUNCH_MODULE_BYTES) return null;
+            return await fs.readFileString(path);
+          } catch { return null; }
+        },
+      });
+    };
 
     // ── Flag-span computation (primitive #1) ──
     //
@@ -300,6 +349,7 @@ export function buildRuntimeHandler(
         ctx.stderr.write(`${name}: -e requires an argument\n`);
         return 1;
       }
+      const launchesServer = await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2));
       const result = await spec.run(code, {
         cred: ctx.cred,
         signal: ctx.signal,
@@ -313,6 +363,7 @@ export function buildRuntimeHandler(
         ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
+        ...(launchesServer ? { launchesServer: true } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -337,6 +388,7 @@ export function buildRuntimeHandler(
     // program's own stdin is what is left after the read: nothing.
     if (scriptPath === '-') {
       const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+      const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
       const result = await spec.run(code, {
         cred: ctx.cred,
         signal: ctx.signal,
@@ -349,6 +401,7 @@ export function buildRuntimeHandler(
         ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
+        ...(launchesServer ? { launchesServer: true } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -438,28 +491,17 @@ export function buildRuntimeHandler(
     // The guest's registry could take the ES module itself, but not resolve
     // its package imports or give it the file's own URL (commonjs-cell.ts).
     async function nearestPackageTypeIsModule(absPath: string): Promise<boolean> {
-      // Walk up dirs looking for the nearest package.json. First one
-      // wins (Node spec); we do NOT consult ancestors past it.
-      let dir = absPath.replace(/^\/+/, '');
-      const slash = dir.lastIndexOf('/');
-      dir = slash > 0 ? dir.substring(0, slash) : '';
-      const visited = new Set<string>();
-      while (dir && !visited.has(dir)) {
-        visited.add(dir);
-        const pj = dir + '/package.json';
-        if ((await fs.exists(pj))) {
-          try {
-            const pkg = JSON.parse((await fs.readFileString(pj)));
-            return pkg && pkg.type === 'module';
-          } catch {
-            return false;
-          }
-        }
-        const last = dir.lastIndexOf('/');
-        if (last <= 0) break;
-        dir = dir.substring(0, last);
+      // The nearest package.json decides; ancestors past it are not consulted.
+      const key = absPath.replace(/^\/+/, '');
+      const slash = key.lastIndexOf('/');
+      const dir = await nearestPackageDir(fs, slash > 0 ? key.substring(0, slash) : '');
+      if (dir === null) return false;
+      try {
+        const pkg = JSON.parse((await fs.readFileString(`${dir}/package.json`)));
+        return pkg && pkg.type === 'module';
+      } catch {
+        return false;
       }
-      return false;
     }
 
     const scriptExt = vfsPathExtension(resolvedPath);
@@ -509,6 +551,8 @@ export function buildRuntimeHandler(
     const dirname = filename.includes('/')
       ? filename.substring(0, filename.lastIndexOf('/'))
       : '/';
+    // Judged on the code as it will run, after any TypeScript/ESM transform.
+    const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
 
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(code, {
@@ -525,6 +569,7 @@ export function buildRuntimeHandler(
       ...reservedProcess,
       ...(captureOutput ? { captureOutput: true } : {}),
       ...(bundleProfile ? { bundleProfile } : {}),
+      ...(launchesServer ? { launchesServer: true } : {}),
     });
     if (result.stdout) ctx.stdout.write(result.stdout);
     if (result.stderr) ctx.stderr.write(result.stderr);

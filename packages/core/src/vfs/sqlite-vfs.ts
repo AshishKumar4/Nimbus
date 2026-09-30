@@ -436,6 +436,8 @@ const EXPORT_PAGE_PIECES = 4_096;
 const EXPORT_FRAME_BYTES = 8 * 1024 * 1024;
 /** An imported file with more chunks than this stages across transactions. */
 const IMPORT_INLINE_PIECES = 64;
+/** Stale imports one sweep transaction ends: a job row and up to two queued contents each. */
+const STALE_IMPORTS_PER_TX = 64;
 const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
 /**
  * Transactions one slice of a long job runs before yielding: about 50k rows
@@ -538,6 +540,12 @@ interface StagingContent {
   /** False once rows were copied from another manifest: `digest` then covers only part of it. */
   hashed: boolean;
   readonly digest: ManifestDigest;
+  /**
+   * Held by a durable row (an import's job names it) rather than by this
+   * isolate: GC reads the pin from that row (stagingPins), so nothing in
+   * memory can outlive a transaction that rolled it back.
+   */
+  durable?: boolean;
 }
 
 /** What a published inode row names, and how this transaction produces it. */
@@ -914,8 +922,8 @@ interface ContentRef {
   contentId: number | null;
 }
 
-/** The export format's version: rows naming chunks by sha256. */
-export const VFS_EXPORT_SCHEMA = 2;
+/** The export format's version: rows naming chunks by sha256, pages naming their snapshot. */
+export const VFS_EXPORT_SCHEMA = 3;
 
 /** One entry of an exported tree, relative to the export's root ('' is the root). */
 export interface VfsExportRow {
@@ -941,6 +949,12 @@ export interface VfsExportRow {
 
 export interface VfsExportPage {
   schema: number;
+  /**
+   * The snapshot the page reads, as `<database incarnation>:<generation>`.
+   * Every page of one import comes from one: a page of another export is
+   * refused while an import is open at its destination.
+   */
+  source: string;
   root: string;
   /** Exclusive source inode high-water; also covers every pinned snapshot. */
   nextIno: number;
@@ -957,6 +971,18 @@ export interface VfsExportChunk {
 
 const ImportJobArgsSchema = z.object({
   dst: z.string(),
+  /** The export every page must come from (VfsExportPage.source); absent until the first page. */
+  source: z.string().optional(),
+  /**
+   * Where the import stands: the inode of dst's parent directory when it
+   * began (the root's, for an import into the root), and of dst once dst
+   * exists (absent: dst must be absent). An import whose paths no longer
+   * resolve to these, or that records no parent, is stale (importPlaced).
+   */
+  parentIno: z.number().int().optional(),
+  dstIno: z.number().int().optional(),
+  /** The staging content holding chunks sent ahead of the pages (importChunks). */
+  ahead: z.number().int().positive().optional(),
   sourceRoot: z.string().optional(),
   sourceNextIno: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER).optional(),
   preserveInos: z.boolean().optional(),
@@ -1395,8 +1421,10 @@ export class SqliteVFS {
   private _pinGen = 0;
   /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
   private readonly manifestWindows = new Map<number, ManifestRow[]>();
-  /** The staging content holding each import's chunks, by destination. */
-  private readonly importStagings = new Map<string, StagingContent>();
+  /** Set when a write commits while imports are open: one may no longer be where it began (sweepStaleImports). */
+  private importSweepPending = true;
+  /** False once a sweep has found no import open, until one begins. */
+  private importJobsExist = true;
   /** Page digests by (generation, root, cursor, limit): a snapshot's pages never change. */
   private readonly pageDigests = new Map<string, { digest: string; next: string | null }>();
   /** Snapshot generations by name, loaded on first use. */
@@ -1518,7 +1546,6 @@ export class SqliteVFS {
     for (const row of this.sql.exec("SELECT args FROM vfs_jobs WHERE kind = 'import'")) {
       const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
       if (job.preserveInos) this.transactionSync(() => this.ensureImportIdentityIndexes());
-      if (job.pending !== undefined) this.activeStagingContentIds.add(job.pending.content);
     }
     if ([...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino') LIMIT 1")].length) {
       this.transactionSync(() => this.dropUnusedImportIdentityIndexes());
@@ -5971,6 +5998,15 @@ export class SqliteVFS {
         return { id: Number(row.id), job: pending, startGen: Number(row.start_gen) };
       }
     }
+    // A restore rewinds what an import under it wrote, and can bring back
+    // the very inodes it began at, where its cursor would then run ahead of
+    // the rows: every import whose tree the restore touches ends with it.
+    const rewound: number[] = [];
+    for (const row of this.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'import'")) {
+      const dst = ImportJobArgsSchema.parse(JSON.parse(String(row.args))).dst;
+      const within = (inner: string, outer: string): boolean => outer === '' || inner === outer || inner.startsWith(`${outer}/`);
+      if (within(dst, subtree) || within(subtree, dst)) rewound.push(Number(row.id));
+    }
     let id = 0;
     let startGen = 0;
     this.transactionSync(() => {
@@ -5981,7 +6017,13 @@ export class SqliteVFS {
         startGen,
         this.now(),
       )][0]!.id);
+      // Without a recorded parent a job is never placed (importPlaced); the sweep reclaims it.
+      for (let i = 0; i < rewound.length; i += KEYS_PER_SQL_EXEC) {
+        const batch = rewound.slice(i, i + KEYS_PER_SQL_EXEC);
+        this.sql.exec(`UPDATE vfs_jobs SET args = json_remove(args, '$.parentIno') WHERE id IN (${batch.map(() => '?').join(',')})`, ...batch);
+      }
     });
+    if (rewound.length > 0) this.importSweepPending = true;
     return { id, job: { name, g, subtree }, startGen };
   }
 
@@ -6268,13 +6310,14 @@ export class SqliteVFS {
   exportPage(options: { at: string; root?: string; after?: string | null; limit?: number }): VfsExportPage {
     const g = this.requireSnapshot(options.at);
     const nextIno = Number([...this.sql.exec('SELECT next_ino FROM vfs_state WHERE slot = 1')][0]!.next_ino);
+    const source = `${this._epoch}:${g}`;
     const root = normalizeVfsPath(options.root ?? '');
     const after = options.after ?? null;
     const start = readExportCursor(after);
     const limit = Math.max(1, Math.min(EXPORT_PAGE_ROWS, Math.trunc(options.limit ?? EXPORT_PAGE_ROWS)));
     const range = subtreeRange(root);
     const rows: VfsExportRow[] = [];
-    const envelopeBytes = enc.encode(JSON.stringify({ schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null })).byteLength;
+    const envelopeBytes = enc.encode(JSON.stringify({ schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: null })).byteLength;
     let rowBytes = 0;
     let pieces = 0;
     let next: string | null = null;
@@ -6302,13 +6345,13 @@ export class SqliteVFS {
       const inode = this.inodeAt(lastPath, g);
       if (inode === undefined || inode.isDir) throw vfsError('EINVAL', 'manifest cursor does not name a file');
       take(inode, start[1]);
-      if (partial) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next };
+      if (partial) return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next };
     } else if (root !== '' && start === null) {
       const inode = this.inodeAt(root, g);
       if (inode === undefined) throw vfsError('ENOENT', root);
       take(inode);
-      if (partial) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next };
-      if (!inode.isDir) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null };
+      if (partial) return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next };
+      if (!inode.isDir) return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: null };
     }
     const key = SqliteVFS.comparePaths(lastPath, range.lower) < 0 ? range.lower : lastPath;
     let exhausted = true;
@@ -6316,7 +6359,7 @@ export class SqliteVFS {
       if (!take(inode)) { exhausted = false; break; }
       if (partial) { exhausted = false; break; }
     }
-    return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: exhausted ? null : next };
+    return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: exhausted ? null : next };
   }
 
   private exportRow(inode: INode, path: string, offset: number, maximum: number, byteLimit: number): { row: VfsExportRow; bytes: number; offset: number } | null {
@@ -6435,6 +6478,8 @@ export class SqliteVFS {
       if (job.cursor === '') return null;
       return job.cursor;
     }
+    // Nothing an unreachable dst holds is an import's progress.
+    if (target !== '' && !this.reachable(target)) return null;
     const range = subtreeRange(target);
     const last = range.upper === null
       ? [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes')][0]
@@ -6448,12 +6493,16 @@ export class SqliteVFS {
 
   /**
    * Write one exported page under `dst`. The first page of an import needs
-   * `dst` absent or an empty directory, and records a vfs_jobs row; later
-   * pages continue it, and rows at or before importCursor(dst) are skipped,
-   * so a page replayed after a reset is harmless. Every chunk given is
-   * re-hashed before anything is written; if the page names a chunk neither
-   * given nor stored, nothing is written and `want` lists what to send.
-   * Files too large for one transaction stage across several.
+   * `dst` absent or an empty directory, and records a vfs_jobs row naming
+   * its export (`page.source`); later pages of that export continue it, and
+   * rows at or before importCursor(dst) are skipped, so a page replayed
+   * after a reset is harmless. A page of another export is refused while the
+   * import is open. Removing dst, or a directory above it, abandons the
+   * import in the same transaction: its job and staging go, a new import
+   * into dst starts clean, and a later page of the old one is refused. Every
+   * chunk given is re-hashed before anything is written; if the page names a
+   * chunk neither given nor stored, nothing is written and `want` lists what
+   * to send. Files too large for one transaction stage across several.
    */
   importPage(
     dst: string,
@@ -6494,8 +6543,14 @@ export class SqliteVFS {
         || enc.encode(JSON.stringify(page)).byteLength > EXPORT_FRAME_BYTES) throw vfsError('E2BIG', 'import metadata frame exceeds its budget');
     const target = normalizeVfsPath(dst);
     this.assertMutationsAllowed([target]);
-    if (!Number.isSafeInteger(page.nextIno) || page.nextIno < 2 || typeof page.root !== 'string') throw vfsError('EINVAL', 'invalid import identity header');
+    if (!Number.isSafeInteger(page.nextIno) || page.nextIno < 2 || typeof page.root !== 'string'
+        || typeof page.source !== 'string' || page.source === '') throw vfsError('EINVAL', 'invalid import identity header');
     const job = this.importJob(target);
+    // Every page of an import comes from the export its first page did. A job
+    // no page has written yet (importChunks began it) takes the first page's.
+    if (job !== undefined && job.source !== page.source && (job.source !== undefined || job.cursor !== '')) {
+      throw vfsError('EINVAL', `${target}: an import of another export is open here; remove it to import again`);
+    }
     const storedCursor = job === undefined && page.after === null ? null : this.importCursor(target);
     const cursor = readExportCursor(storedCursor);
     const from = readExportCursor(page.after);
@@ -6509,6 +6564,10 @@ export class SqliteVFS {
     };
     if (compare(from, cursor) > 0) throw vfsError('EINVAL', 'import page skips uncommitted progress');
     const rows = page.rows.filter((row) => cursor === null || SqliteVFS.comparePaths(row.path, cursor[0]) > 0 || (row.path === cursor[0] && cursor[1] >= 0));
+    // A continued page writes only into an open import. Without one, dst holds
+    // a finished import (whose replay writes nothing) or whatever replaced an
+    // abandoned one, which is not that import's to write into.
+    if (job === undefined && page.after !== null && rows.length > 0) throw vfsError('EINVAL', `${target}: no import is open here to continue`);
     if (job === undefined && page.after === null) this.assertImportTarget(target);
     const identity = this.importIdentity(target, page, job, rows);
     const given = new Map<string, Uint8Array>();
@@ -6611,7 +6670,14 @@ export class SqliteVFS {
     this.revokeSharedDirectories(target);
     if (lazy) this.insertPendingChunks(missing);
     const jobId = job?.id ?? this.beginImport(target);
-    const state: z.infer<typeof ImportJobArgsSchema> = { dst: target, ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }) };
+    const placement = job ?? this.importPlacement(target);
+    const state: z.infer<typeof ImportJobArgsSchema> = {
+      dst: target, source: page.source, parentIno: placement.parentIno, dstIno: placement.dstIno,
+      ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }), ...(job?.ahead === undefined ? {} : { ahead: job.ahead }),
+    };
+    // The entry that creates dst, if this page does: its inode is recorded
+    // with the commit that makes it (importPlaced).
+    let dstEntry: StoredInodeEntry | undefined;
     if (job?.sourceNextIno === undefined) this.transactionSync(() => {
       if (identity.preserveInos) {
         this.ensureImportIdentityIndexes();
@@ -6621,7 +6687,10 @@ export class SqliteVFS {
     });
     let progress = storedCursor;
     let imported = 0;
-    const save = (): void => { this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId); };
+    const save = (): void => {
+      if (state.dstIno === undefined && dstEntry?.ino !== undefined) state.dstIno = dstEntry.ino;
+      this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId);
+    };
     const commit = (plan: TransactionPlan): void => {
       this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
       if (plan.inodes.length) this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, save);
@@ -6629,8 +6698,9 @@ export class SqliteVFS {
     };
     if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
       const root = this.newPlan(true);
-      root.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0,
-        defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, contentKey: null, pieceOffset: 0, pieces: [] }, { type: 'none' }));
+      dstEntry = this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0,
+        defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, contentKey: null, pieceOffset: 0, pieces: [] }, { type: 'none' });
+      root.addInode(dstEntry);
       commit(root.build());
     }
     for (const row of rows) {
@@ -6651,7 +6721,7 @@ export class SqliteVFS {
       const blobBytes = pieces.reduce((n, piece) => n + (piece.data?.byteLength ?? 0), 0);
       if (row.manifest && (previous !== undefined || !complete || pieces.length > IMPORT_INLINE_PIECES || blobBytes > MAX_TX_BLOB_BYTES / 2)) {
         const staging: StagingContent = { id: previous?.content ?? 0, size: previous?.offset ?? 0,
-          count: previous?.count ?? 0, hashed: false, digest: new ManifestDigest() };
+          count: previous?.count ?? 0, hashed: false, digest: new ManifestDigest(), durable: true };
         let part = this.newPlan(true);
         const flush = (): void => {
           if (part.empty) return;
@@ -6672,14 +6742,18 @@ export class SqliteVFS {
         flush();
         if (!complete) continue;
         const publish = this.newPlan(true);
-        publish.addInode(this.importedEntry(path, row, { type: 'staged', content: staging, digest }, identity.preserveInos ? row.ino : undefined));
+        const entry = this.importedEntry(path, row, { type: 'staged', content: staging, digest }, identity.preserveInos ? row.ino : undefined);
+        if (row.path === '') dstEntry = entry;
+        publish.addInode(entry);
         state.pending = undefined; progress = exportCursor(row.path);
         commit(publish.build());
       } else {
         const plan = this.newPlan(true);
         const content: InodeContent = row.kind === 'directory' || row.size === 0 ? { type: 'none' }
           : { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest: digest ?? null };
-        plan.addInode(this.importedEntry(path, row, content, identity.preserveInos ? row.ino : undefined));
+        const entry = this.importedEntry(path, row, content, identity.preserveInos ? row.ino : undefined);
+        if (row.path === '') dstEntry = entry;
+        plan.addInode(entry);
         progress = exportCursor(row.path);
         commit(plan.build());
       }
@@ -6690,11 +6764,11 @@ export class SqliteVFS {
     if (done) {
       this.transactionSync(() => {
         this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId);
+        // The chunks sent ahead are named by the rows now, or collected.
+        if (state.ahead !== undefined) this.sql.exec('INSERT OR IGNORE INTO vfs_gc_queue (kind, id) VALUES (?, ?)', GC_CONTENT, state.ahead);
         this.dropUnusedImportIdentityIndexes();
       });
-      const held = this.importStagings.get(target);
-      this.importStagings.delete(target);
-      if (held !== undefined && held.id !== 0) this.abandonStaging(held);
+      if (state.ahead !== undefined) this.maintenancePending = true;
     }
     this.runContentMaintenanceSafely(1);
     return { imported, want: [], done, pending: missing.map(({ hash }) => hash) };
@@ -6874,8 +6948,8 @@ export class SqliteVFS {
    * Store chunks for an import into `dst` ahead of its pages, a bounded
    * transaction at a time, so no page has to carry bytes and a file of any
    * size imports in frames. Each chunk is re-hashed first. They are held by
-   * a staging content the import owns until its last page; after a reset
-   * GC may take them, and importPage then names them in `want` again.
+   * a staging content the import's job names (`ahead`), until its last page
+   * or until the import ends.
    */
   importChunks(dst: string, chunks: Iterable<VfsExportChunk>): { stored: number } {
     const target = normalizeVfsPath(dst);
@@ -6885,22 +6959,31 @@ export class SqliteVFS {
       if (hex(chunkHash(chunk.data)) !== chunk.hash) throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
       given.set(chunk.hash, chunk.data);
     }
-    if (this.importJob(target) === undefined) {
+    const job = this.importJob(target);
+    let jobId = job?.id;
+    if (jobId === undefined) {
       this.assertImportTarget(target);
-      this.beginImport(target);
+      jobId = this.beginImport(target);
     }
-    let staging = this.importStagings.get(target);
-    if (staging === undefined) {
-      staging = { id: 0, size: 0, count: 0, hashed: false, digest: new ManifestDigest() };
-      this.importStagings.set(target, staging);
+    const id = jobId;
+    // The staging the job names, as its rows stand: nothing about it is kept in memory.
+    const staging: StagingContent = { id: 0, size: 0, count: 0, hashed: false, digest: new ManifestDigest(), durable: true };
+    if (job?.ahead !== undefined) {
+      const row = [...this.sql.exec(
+        'SELECT COUNT(*) AS count, COALESCE(MAX(off + len), 0) AS size FROM vfs_content_chunks WHERE content_id = ?', job.ahead,
+      )][0]!;
+      Object.assign(staging, { id: job.ahead, size: Number(row.size), count: Number(row.count) });
     }
-    let builder = this.newPlan();
+    let builder = this.newPlan(true);
     const flush = (): void => {
       if (builder.empty) return;
       const plan = builder.build();
-      builder = this.newPlan();
+      builder = this.newPlan(true);
       this.assertTransactionFits(plan.metrics);
-      this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+      // The job names the staging in the transaction that makes it.
+      this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
+        this.sql.exec("UPDATE vfs_jobs SET args = json_set(args, '$.ahead', ?) WHERE id = ?", staging.id, id);
+      });
     };
     let stored = 0;
     for (const hash of this.absentChunks([...given.keys()])) {
@@ -6913,12 +6996,111 @@ export class SqliteVFS {
     return { stored };
   }
 
+  /** The import open at `target`: one still where it began. A stale one is nobody's to continue. */
   private importJob(target: string): (z.infer<typeof ImportJobArgsSchema> & { id: number; cursor: string }) | undefined {
-    for (const row of this.sql.exec("SELECT id, args, cursor FROM vfs_jobs WHERE kind = 'import'")) {
+    for (const row of [...this.sql.exec("SELECT id, args, cursor FROM vfs_jobs WHERE kind = 'import'")]) {
       const args = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
-      if (args.dst === target) return { ...args, id: Number(row.id), cursor: String(row.cursor) };
+      if (args.dst === target && this.importPlaced(args)) return { ...args, id: Number(row.id), cursor: String(row.cursor) };
     }
     return undefined;
+  }
+
+  /** What an import beginning at `target` now records of where it stands (ImportJobArgsSchema). */
+  private importPlacement(target: string): { parentIno?: number; dstIno?: number } {
+    if (target === '') return { parentIno: ROOT_INODE };
+    const parent = this.parentPath(target);
+    const parentIno = parent === '' ? ROOT_INODE : this.inodes.get(parent)?.ino;
+    const dstIno = this.inodes.get(target)?.ino;
+    return { ...(parentIno === undefined ? {} : { parentIno }), ...(dstIno === undefined ? {} : { dstIno }) };
+  }
+
+  /** Whether every directory above `path` is one, from the root down: a path an import can reach. */
+  private reachable(path: string): boolean {
+    for (let at = this.parentPath(path); at !== ''; at = this.parentPath(at)) {
+      if (!this.inodes.get(at)?.isDir) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Whether an import is still where it began: every directory above dst is
+   * one, dst's parent path resolves to the directory it began in, and dst
+   * to the inode the import made or found there (or to nothing, before it
+   * has one). A removal of dst or of any directory above it (mid-way through
+   * a sliced restore too), a rename of either away, a directory made or
+   * renamed in its place: each leaves a path resolving elsewhere, so the
+   * removal that commits is what ends the import. A job that records no
+   * parent (one from before this was recorded) is never placed.
+   */
+  private importPlaced(job: z.infer<typeof ImportJobArgsSchema>): boolean {
+    if (job.parentIno === undefined) return false;
+    if (job.dst === '') return true;
+    if (!this.reachable(job.dst)) return false;
+    const parent = this.parentPath(job.dst);
+    if ((parent === '' ? ROOT_INODE : this.inodes.get(parent)!.ino) !== job.parentIno) return false;
+    const here = this.inodes.get(job.dst);
+    return job.dstIno === undefined ? here === undefined : here?.ino === job.dstIno;
+  }
+
+  /**
+   * Staging contents GC must step over: those a live operation is still
+   * assembling, and those an import's job names (its pending manifest, its
+   * chunks sent ahead), read from the job rows as they stand.
+   */
+  private stagingPins(): Set<number> {
+    const pins = new Set<number>(this.activeStagingContentIds);
+    for (const row of this.sql.exec("SELECT args FROM vfs_jobs WHERE kind = 'import'")) {
+      const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
+      if (job.pending !== undefined) pins.add(job.pending.content);
+      if (job.ahead !== undefined) pins.add(job.ahead);
+    }
+    return pins;
+  }
+
+  /**
+   * End every import no longer where it began (importPlaced): its row goes,
+   * and what it staged (a pending manifest, chunks sent ahead) is queued for
+   * collection, in bounded transactions. Such an import is already invisible
+   * to every page, frame and cursor; this reclaims what it held, in at most
+   * `maxTransactions` transactions, the rest at the next sweep. Never inside
+   * an embedder's transaction, whose rollback brings the removal back.
+   * Returns the transactions it ran.
+   */
+  private sweepStaleImports(maxTransactions: number): number {
+    if (!this.importSweepPending || this.transactionPublication !== null || maxTransactions <= 0) return 0;
+    const stale: { id: number; contents: number[] }[] = [];
+    const open = [...this.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'import'")];
+    for (const row of open) {
+      const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
+      if (this.importPlaced(job)) continue;
+      const contents = new Set<number>();
+      if (job.pending !== undefined) contents.add(job.pending.content);
+      if (job.ahead !== undefined) contents.add(job.ahead);
+      stale.push({ id: Number(row.id), contents: [...contents] });
+    }
+    let transactions = 0;
+    for (let i = 0; i < stale.length && transactions < maxTransactions; i += STALE_IMPORTS_PER_TX) {
+      const batch = stale.slice(i, i + STALE_IMPORTS_PER_TX);
+      const queued = batch.flatMap((job) => job.contents.flatMap((id) => [GC_CONTENT, id]));
+      this.executeMeasuredTransaction(
+        this.metricsOnlyPlan({
+          blobBytes: 0, logicalRows: batch.length + queued.length / 2,
+          sqlExecs: 1 + groupedSqlExecs(queued.length / 2, GC_ROWS_PER_SQL_EXEC), affectedPaths: 0,
+        }),
+        { source: 'content-gc', limitMode: 'bounded' },
+        () => {
+          this.sql.exec(`DELETE FROM vfs_jobs WHERE id IN (${batch.map(() => '?').join(',')})`, ...batch.map((job) => job.id));
+          this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
+        },
+      );
+      transactions++;
+      if (queued.length > 0) this.maintenancePending = true;
+    }
+    const swept = Math.min(stale.length, transactions * STALE_IMPORTS_PER_TX);
+    // Stale jobs left for the next sweep keep it pending.
+    this.importSweepPending = swept < stale.length;
+    this.importJobsExist = open.length > swept;
+    return transactions;
   }
 
   /** An import starts into an absent path or an empty directory under an existing one. */
@@ -6928,16 +7110,18 @@ export class SqliteVFS {
       if (!existing.isDir) throw vfsError('EEXIST', target);
       if (this.hasChildren(target)) throw vfsError('ENOTEMPTY', target);
     } else if (target === '' && this.hasChildren('')) throw vfsError('ENOTEMPTY', '/');
-    const parent = this.parentPath(target);
-    if (target !== '' && parent !== '' && !this.inodes.get(parent)?.isDir) throw vfsError('ENOENT', parent);
+    // Every directory above it, not only its parent: a sliced restore removes a directory before what it held.
+    if (target !== '' && !this.reachable(target)) throw vfsError('ENOENT', this.parentPath(target));
   }
 
+  /** A job for a new import into `target`, recording where it stands (importPlaced). */
   private beginImport(target: string): number {
+    this.importJobsExist = true;
     let id = 0;
     this.transactionSync(() => {
       id = Number([...this.sql.exec(
         `INSERT INTO vfs_jobs (kind, args, cursor, start_gen, created_at) VALUES ('import', ?, '', 0, ?) RETURNING id`,
-        JSON.stringify({ dst: target }),
+        JSON.stringify({ dst: target, ...this.importPlacement(target) }),
         this.now(),
       )][0]!.id);
     });
@@ -6992,7 +7176,7 @@ export class SqliteVFS {
     const store = this.requireColdStore();
     const pinned = new Set<number>();
     for (const opened of this.openNodes) if (opened.inode.chunkId !== null) pinned.add(opened.inode.chunkId);
-    const pinnedContents = [...this.activeStagingContentIds];
+    const pinnedContents = [...this.stagingPins()];
     for (const opened of this.openNodes) if (opened.inode.contentId !== null) pinnedContents.push(opened.inode.contentId);
     const hot = [...this.hotSnapshotGens.values()];
     const hotHistory = hot.length === 0 ? '' : `
@@ -8430,9 +8614,12 @@ export class SqliteVFS {
       throw error;
     }
     this._gen = gen;
-    for (const staging of created) this.activeStagingContentIds.add(staging.id);
+    for (const staging of created) if (!staging.durable) this.activeStagingContentIds.add(staging.id);
     for (const staging of published) this.activeStagingContentIds.delete(staging.id);
     for (const chunkId of rewritten) this.cacheEvict(chunkId);
+    // A removal, or a write where an import has no destination yet, may
+    // leave an import's path leading elsewhere: the next sweep ends it.
+    if (this.importJobsExist && (plan.deletes.length > 0 || plan.inodes.length > 0)) this.importSweepPending = true;
   }
 
   /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
@@ -8611,14 +8798,15 @@ export class SqliteVFS {
    * what keeps a page a range read of the queue's primary key.
    */
   runContentMaintenance(maxTransactions = 4): { transactions: number } {
-    let transactions = 0;
     const maximum = clampNonNegativeInt(maxTransactions);
+    // Ending stale imports first: what they held is collected in this pass.
+    let transactions = this.sweepStaleImports(maximum);
     while (transactions < maximum && this.legacyTables.length > 0) {
       this.legacyJanitorPage();
       transactions++;
     }
     const pinnedChunks = new Set<number>();
-    const pinnedContents = new Set<number>(this.activeStagingContentIds);
+    const pinnedContents = this.stagingPins();
     for (const opened of this.openNodes) {
       if (opened.inode.chunkId !== null) pinnedChunks.add(opened.inode.chunkId);
       if (opened.inode.contentId !== null) pinnedContents.add(opened.inode.contentId);
@@ -8895,7 +9083,7 @@ export class SqliteVFS {
   _auditContentStore(): { chunks: number; contents: number } {
     let chunks = 0;
     let contents = 0;
-    const pinned = new Set<number>(this.activeStagingContentIds);
+    const pinned = this.stagingPins();
     for (const opened of this.openNodes) if (opened.inode.contentId !== null) pinned.add(opened.inode.contentId);
     for (let cursor = 0; ;) {
       const page = [...this.sql.exec('SELECT id FROM vfs_chunks WHERE id > ? ORDER BY id LIMIT ?', cursor, KEYS_PER_SQL_EXEC)]
@@ -8942,7 +9130,7 @@ export class SqliteVFS {
 
   private runContentMaintenanceSafely(maxTransactions: number, force = false): void {
     if (this.transactionPublication) return;
-    if (!force && !this.maintenancePending) return;
+    if (!force && !this.maintenancePending && !this.importSweepPending) return;
     const startedAt = performance.now();
     try {
       this.runContentMaintenance(maxTransactions);

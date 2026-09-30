@@ -41,6 +41,18 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { errorText } from '../_shared/error-text.js';
+import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
+/**
+ * The nearest directory at or above `dir` that holds a package.json, or null.
+ * The first one wins (Node's rule); the filesystem root is not a package.
+ */
+async function nearestPackageDir(fs, dir) {
+    for (let at = normalizeVfsPath(dir); at !== ''; at = at.slice(0, Math.max(0, at.lastIndexOf('/')))) {
+        if (await fs.exists(`${at}/package.json`))
+            return at;
+    }
+    return null;
+}
 /** Extensions probed when a target names no exact file, in Node's order. */
 const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
 /**
@@ -117,6 +129,33 @@ export function buildRuntimeHandler(spec, ctx0) {
             forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
         } : {};
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
+        // Whether the program starts a server, so the runner can give it a
+        // resident process; a .bin wrapper has already decided that by its own rule.
+        const launches = async (code, path, dir, programArgs) => {
+            if (spec.routesServers !== true || binSpawn !== undefined)
+                return false;
+            const key = normalizeVfsPath(dir);
+            return programLaunchesServer({
+                source: code,
+                path,
+                dir: key,
+                packageRoot: (await nearestPackageDir(fs, key)) ?? key,
+                argv: [name, ...programArgs],
+            }, {
+                resolve: (from, specifier) => resolveRuntimeScriptPath(fs, from, specifier),
+                read: async (path) => {
+                    try {
+                        // Past the bound it is not walked, so it is not read either.
+                        if (((await fs.stat(path))?.size ?? 0) > SERVER_LAUNCH_MODULE_BYTES)
+                            return null;
+                        return await fs.readFileString(path);
+                    }
+                    catch {
+                        return null;
+                    }
+                },
+            });
+        };
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -157,6 +196,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(`${name}: -e requires an argument\n`);
                 return 1;
             }
+            const launchesServer = await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2));
             const result = await spec.run(code, {
                 cred: ctx.cred,
                 signal: ctx.signal,
@@ -170,6 +210,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
+                ...(launchesServer ? { launchesServer: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -192,6 +233,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // program's own stdin is what is left after the read: nothing.
         if (scriptPath === '-') {
             const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+            const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
             const result = await spec.run(code, {
                 cred: ctx.cred,
                 signal: ctx.signal,
@@ -204,6 +246,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
+                ...(launchesServer ? { launchesServer: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -293,30 +336,19 @@ export function buildRuntimeHandler(spec, ctx0) {
         // The guest's registry could take the ES module itself, but not resolve
         // its package imports or give it the file's own URL (commonjs-cell.ts).
         async function nearestPackageTypeIsModule(absPath) {
-            // Walk up dirs looking for the nearest package.json. First one
-            // wins (Node spec); we do NOT consult ancestors past it.
-            let dir = absPath.replace(/^\/+/, '');
-            const slash = dir.lastIndexOf('/');
-            dir = slash > 0 ? dir.substring(0, slash) : '';
-            const visited = new Set();
-            while (dir && !visited.has(dir)) {
-                visited.add(dir);
-                const pj = dir + '/package.json';
-                if ((await fs.exists(pj))) {
-                    try {
-                        const pkg = JSON.parse((await fs.readFileString(pj)));
-                        return pkg && pkg.type === 'module';
-                    }
-                    catch {
-                        return false;
-                    }
-                }
-                const last = dir.lastIndexOf('/');
-                if (last <= 0)
-                    break;
-                dir = dir.substring(0, last);
+            // The nearest package.json decides; ancestors past it are not consulted.
+            const key = absPath.replace(/^\/+/, '');
+            const slash = key.lastIndexOf('/');
+            const dir = await nearestPackageDir(fs, slash > 0 ? key.substring(0, slash) : '');
+            if (dir === null)
+                return false;
+            try {
+                const pkg = JSON.parse((await fs.readFileString(`${dir}/package.json`)));
+                return pkg && pkg.type === 'module';
             }
-            return false;
+            catch {
+                return false;
+            }
         }
         const scriptExt = vfsPathExtension(resolvedPath);
         const needsEsmTransform = scriptExt === '.mjs' ||
@@ -363,6 +395,8 @@ export function buildRuntimeHandler(spec, ctx0) {
         const dirname = filename.includes('/')
             ? filename.substring(0, filename.lastIndexOf('/'))
             : '/';
+        // Judged on the code as it will run, after any TypeScript/ESM transform.
+        const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
         const leadingFlags = args.slice(0, scriptIdx);
         const result = await spec.run(code, {
             cred: ctx.cred,
@@ -377,6 +411,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             ...reservedProcess,
             ...(captureOutput ? { captureOutput: true } : {}),
             ...(bundleProfile ? { bundleProfile } : {}),
+            ...(launchesServer ? { launchesServer: true } : {}),
         });
         if (result.stdout)
             ctx.stdout.write(result.stdout);

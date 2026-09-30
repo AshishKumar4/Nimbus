@@ -17,6 +17,7 @@ licenses remain in effect.
 | `lifo-sh/lifo` `packages/core` source | Shell interpreter, command framework, core userland substrate imported under `packages/worker/src/substrate/lifo`. | MIT. |
 | `@ashishkumar472/cf-git` / `isomorphic-git` fork | Cloudflare-compatible Git implementation. | MIT. |
 | `esbuild` / `esbuild-wasm` | TypeScript/JS transform and bundling in Worker Loader facets. | MIT. |
+| `es-module-lexer` (Guy Bedford) | Finding `import()` and `import.meta` in Node cells; its CSP build is vendored in `packages/core/src/runtime/module-lexer.ts`. | MIT, Copyright (C) 2018-2022 Guy Bedford. |
 | `wabt` / wabt.js | Test and WASM tooling support. | Apache-2.0. |
 | Cloudflare `workerd`, Wrangler, and Workers types | Local development and Worker runtime compatibility. | Apache-2.0 and/or MIT, depending on package. |
 | `pip-requirements-js` | PEP 508 / requirements-file parsing for the Nimbus pip planner. | MPL-2.0. |

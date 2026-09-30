@@ -32,6 +32,8 @@ import {
 import { WASI_INSTANCE_BODY_SRC } from '../../packages/core/src/runtime/wasi-instance.generated.ts';
 import { BASH_RUNNER_BODY_SRC } from '../../packages/core/src/runtime/bash-runner.generated.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
+import { transformPipelineId } from '../../packages/core/scripts/pin-transform-pipeline.mjs';
+import { TRANSFORM_PIPELINE_ID } from '../../packages/core/src/runtime/transform-pipeline.generated.ts';
 
 const cases = [
   {
@@ -75,4 +77,41 @@ for (const c of cases) {
   );
 }
 
-console.log(`facet-body-generated-parity OK: ${cases.length} generated facet bodies match their sources`);
+// The launch transform pipeline's id (core's scripts/pin-transform-pipeline.mjs,
+// run by core's build) keys every stored transform result, so it has to be
+// the hash of the code it ships with: current, and moved by a real change to
+// any step it covers — the pipeline module and what it reaches alike.
+{
+  const committed = TRANSFORM_PIPELINE_ID;
+  assert.equal(await transformPipelineId(), committed,
+    'transform pipeline: core src/runtime/transform-pipeline.generated.ts does not match its sources — rebuild core');
+  console.log('  ✓ transform pipeline: TRANSFORM_PIPELINE_ID matches the bundled pipeline');
+  const edit = (file, from, to) => ({
+    name: `edit-${file}`,
+    setup(build) {
+      build.onLoad({ filter: new RegExp(`/runtime/${file.replace('.', '\\.')}$`) }, async (args) => {
+        const text = readFileSync(args.path, 'utf8');
+        assert.ok(text.includes(from), `premise: ${file} still has ${JSON.stringify(from)}`);
+        return { contents: text.replace(from, to), loader: 'ts' };
+      });
+    },
+  });
+  const changes = [
+    // The session's own step: which bundled ESM takes the bounded rewrite.
+    edit('bundle-cell-transform.ts', '512 * 1024', '256 * 1024'),
+    // A helper it reaches: the name import.meta.resolve is bound to.
+    edit('import-meta-transform.ts', "'__nimbusImportMetaResolveForModule'", "'__nimbusImportMetaResolveForCell'"),
+    // The service the host is called through: which requests it pre-rewrites.
+    edit('esbuild-service.ts', "options.loader === 'jsx')", "options.loader === 'jsx' || options.loader === 'ts')"),
+  ];
+  for (const change of changes) {
+    assert.notEqual(await transformPipelineId({ plugins: [change] }), committed, `${change.name} moves the pipeline id`);
+    console.log(`  ✓ transform pipeline: ${change.name} moves the id`);
+  }
+  // A comment is not code: editing one keeps every stored result.
+  const comment = edit('bundle-cell-transform.ts', '// CommonJS already: only its dynamic import() calls change.', '// CommonJS as it is: only its dynamic import() calls change.');
+  assert.equal(await transformPipelineId({ plugins: [comment] }), committed, 'a comment-only edit keeps the pipeline id');
+  console.log('  ✓ transform pipeline: a comment-only edit keeps the id');
+}
+
+console.log(`facet-body-generated-parity OK: ${cases.length} generated facet bodies and the transform pipeline id match their sources`);

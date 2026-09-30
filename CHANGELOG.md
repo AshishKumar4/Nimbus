@@ -87,6 +87,159 @@ published independently in the `@nimbus-sh` npm scope.
   module"); it, its classifiers and the comment scanner's literal-blanking
   mode are deleted.
 
+- Removing an import's destination abandons the import, so an interrupted
+  import can be started again there. An import whose sender stopped after a
+  page kept its `vfs_jobs` row after its destination was removed, and
+  `importCursor(dst)` still answered the old cursor, so every later import
+  into that path was taken for a replay and refused with `EINVAL: replay
+  metadata differs`. An import now records where it stands: the inode dst's
+  parent directory resolved to when it began, and dst's own once dst
+  exists. At every page, chunk frame and cursor, every directory above dst
+  must still be one and those paths must still resolve to those inodes, so
+  the removal that commits is what ends the import: `unlink`, `rmdir`,
+  `removeRecursive`, a rename away or over dst, of dst or any directory
+  above it (a sliced restore's too, part-way), a directory made again or
+  renamed into its place. A restore whose subtree holds dst, or lies inside
+  it, ends the import as it begins, since it rewinds what the import wrote.
+  A job that records no parent (from an earlier build) is never taken for
+  an import. No page, frame or cursor sees an ended import, and a new import
+  into dst starts clean. A sweep after the removal commits (never inside an
+  embedder's `withTransaction`, whose rollback keeps the import whole)
+  deletes its row and queues the staging it held (a manifest cut off
+  mid-import, chunks sent ahead of their pages) for collection, within the
+  maintenance pass's transaction allowance, in bounded transactions that
+  only free storage, so a full store never refuses them; a crash before the
+  sweep leaves the import ended, and the next open sweeps it. The job rows
+  name that staging, and GC reads its pins from them, so no in-memory state
+  outlives a rolled-back transaction. Every export page also names its snapshot
+  (`VfsExportPage.source`, export schema 3), and an import takes pages only
+  from the export its first page came from, so a late page of an abandoned
+  import is refused even when a new import of another export is open at
+  dst. An import nobody removed still resumes after a reset. An embedder
+  that carries pages through its own schema must carry `source` too.
+
+- A filesystem error's message is Node's: `ENOENT: no such file or
+  directory, open 'x'`, with libuv's description, the syscall, the path
+  after a space, and `-> 'dest'` for a call that names two paths.
+  `VfsError` joined a supplied path with a comma (`..., open, 'x'`), the
+  runtime bridge and hosted node's `fs` left the description out
+  (`ENOENT: open 'x'`), and the shell printed the engine's bare
+  `ENOENT: home/user/w/nope`. Every `VfsError` now names its syscall
+  (`err.syscall`, and `err.dest` for a rename, copy or symlink), including
+  the namespace's own refusals, which report the call that met them. The
+  new `syscallError(code, syscall, path, { dest, detail })` makes one.
+  `toVfsError(error, syscall, path, dest?)` takes the call it converts for,
+  and keeps an error's own syscall, path and `dest` where it names them.
+  Hosted node's `rename`, `symlink`, `copyFile` and `link` errors carry
+  `dest` as Node's do; `symlink`'s `path` is the target and `dest` the link.
+  A call naming two paths reports both as its caller gave them, whichever
+  one's check failed (a rename into a missing directory names the source,
+  then the destination), from the runtime bridge and hosted node alike.
+
+- A resident node or bun process ends as Node's does: when it holds no live
+  handle (a timer, an operation in flight, a listening server that is not
+  unref'd, a held stdin), and its exit is reported as `process.exit`'s is.
+  It used to end only on `process.exit`, so a program run resident that
+  simply finished (a CLI whose serve path was not taken, `--help`, a server
+  that closed its last listener) kept running and never reported an exit.
+  One that finishes during its boot reports before the boot answers, so the
+  shell prints its exit code instead of "started (long-running)". The
+  resident waits on handle releases rather than polling. `--watch` and
+  `--inspect-brk` still hold a process with nothing left, as in Node. An
+  open connection is a handle too: an HTTP exchange a server is answering
+  holds the process until its response closes, even after `server.close()`
+  (a handler that closed the server and was still streaming its reply to an
+  upload used to see the process exit under it), and so do a WebSocket
+  client and a `tls.connect` socket until they close or are unref'd. A
+  request body the handler never reads does not hold it. A handle is counted
+  only once it exists: a `setTimeout` given a delay it refuses, or a
+  `WebSocket` given a bad protocol, throws, and when the program catches the
+  throw it holds nothing (either used to leave a count behind, so the process
+  never ended, one-shot runs included).
+
+- node-static sends a file's body; after the `url` fix below it answered 200
+  with an empty body. node-static pipes a file with `{ end: false }` and ends
+  the response on the file stream's `'close'`, which a guest stream never
+  emitted. Guest streams now keep Node's lifecycle, in Node 22's order:
+  - A stream that is done is destroyed and emits `'close'` (`autoDestroy`):
+    a readable after `'end'`, a writable after `'finish'`, a Duplex once both
+    sides are done. So a copy that waits on the destination's `'close'`
+    (`src.pipe(fs.createWriteStream(f)).on('close', …)`) completes.
+  - Writes run one at a time, and `end()` waits for every write to call back
+    before `_final` and `'finish'`. An asynchronous Transform's output is
+    delivered and an asynchronous write completes before `'finish'`; `end()`
+    used to run `_final` at once.
+  - A failed write, or `destroy()`, answers every queued write and `end()`
+    callback; a failed write then destroys the stream, as in Node.
+  - `autoDestroy: false` keeps a stream open, `emitClose: false` destroys it
+    without `'close'`, and fs streams read them from `autoClose` and
+    `emitClose`.
+
+- `npx static-server` serves instead of holding the terminal in the
+  foreground with its port unreachable, and so do `npx sirv-cli` and
+  `npx live-server`. A port is reachable only from a resident process, which
+  is chosen before the program runs, and a program that finishes there is
+  never reported ended. Whether `node <file>` (or `bun`, `node -e`,
+  `node -`) starts a server was a text match on the entry (`.listen(`,
+  `createServer(`, `serve(`), so these bins, which hand off to their
+  package's server module, were missed, while a comment or a server started
+  only for another subcommand made a script resident. It is now judged by
+  walking the code this invocation runs (core `runtime/server-launch.ts`):
+  branches known false for its argv, code after `process.exit()`, and
+  functions only defined or exported do not run; the package's own modules
+  are followed as they are loaded and used, through aliases
+  (`const make = http.createServer`) and re-exporting modules. An argument
+  decides only where the program branches on it, as in Node: its own
+  `process.argv` tests, and a CLI parser (commander, yargs, sade, cac),
+  whose actions run only when it parses: none for `--help`/`--version`,
+  which it answers (`dev --help` too), and a command's only when argv names
+  it. An ES module entry decides as its CommonJS form does (a parser is
+  known through the transform's `__toESM(require(...))`), and a parser one
+  module configures and exports dispatches where another parses it. A server that does
+  not read `--help` or `build` still binds. `.listen`
+  binds unless it is the program's own `listen` method or its first
+  argument is provably not a port (a callback, `this`, a socket path;
+  constants resolved, so `const p = 3000; app.listen(p)` binds). Measured
+  on 48 bins of 37 packages: the same servers are promoted, except `vercel`
+  (its bundle is past the 2 MiB a walk reads) and `cf-wrangler` (it serves
+  from a child process); degit, concurrently, nx, firebase and `vitest run`
+  are not. `docsify` is resident only for `serve`, and `sirv` and
+  `static-server` answer `--help`/`--version` one-shot.
+
+- node-static (`npx node-static`) serves its files; it answered 404 for every
+  one. The guest's `url` module imitated Node's legacy API over WHATWG
+  `new URL()`, which throws for the path-only URL a server receives as
+  `req.url`, so `url.parse("/hello.txt")` had no `pathname` and node-static
+  looked for `<root>/undefined`. The legacy `parse`, `format`, `resolve`,
+  `resolveObject` and `Url` are now workerd's own `node:url`; the guest keeps
+  its `pathToFileURL` and `fileURLToPath`, which resolve against its cwd.
+
+- Vite preview transforms share one esbuild instance in the session's facet.
+  It is recycled once its measured wasm memory exceeds 64 MiB, or once it
+  dies (its Go program exits or its wasm traps), after its last in-flight
+  caller finishes. Previously every transform call initialized and stopped
+  its own Go/wasm instance. `stop()` cancels the scheduler; memory is
+  reclaimed by GC, not by stop. Parallel browser module requests exhausted
+  the facet's memory and served error-overlay modules instead of Card and
+  SystemStats, producing "does not provide an export named default". A
+  throwaway preview now mounts the seeded React app: the failing crawl and
+  browser probe peaked at 228 MiB; their fixed sessions peaked at 93 and
+  97 MiB. The kept instance holds at 36 MiB over the seeded app and 400 more
+  components, and 44 MiB after four 80–350 KiB TypeScript modules. A local
+  V8 replay of Pi 0.87.1's 273-module launch made 23 slices (19 esbuild
+  starts), retaining up to 153 MiB of uncollected wasm memories; kept, the
+  instance plateaued at 52 MiB. A single 858 KiB module takes a fresh one to
+  92 MiB. Instances are collectable, not a permanent leak. esbuild's adapter
+  keeps every call's result or error reachable while its instance lives, so a
+  kept instance hands out copies and fresh errors and empties what it keeps:
+  120 transforms of a 190 KiB module left 19.2 of their 23.1 MiB of output
+  on V8's heap before, and none after; 120 that failed on it left their 22.3
+  MiB of input (through each error's stack), and now none. A transform whose
+  instance died is answered as
+  transient, so its launch fails as unavailable instead of caching a
+  diagnostic shim of sound source. Builds and CLI calls keep their separate
+  instances.
+
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
   `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker
@@ -216,15 +369,24 @@ published independently in the `@nimbus-sh` npm scope.
   removed: its ESM imports share the patched native Server prototype. This
   does not add WebSocket upgrade support to workerd's HTTP dispatcher.
 
-- Large Node CLI launches collect dynamic imports directly from Acorn's
-  parser productions, without a second AST walk or a hand-maintained
-  regex-versus-division heuristic. Completed top-level trees are discarded.
-  On pi's 4,345,609-byte chunk the complete rewrite takes 278–297 ms locally
-  (283 ms median over five runs), versus 571–822 ms for the old AST walk.
-  Transform calls are capped at 256 KiB / 32 files so small modules cannot
-  monopolize one guest
-  invocation. If a resident launch fails before its guest is created, its
-  already-returned pid now exits with the cause rather than remaining
+- Large Node CLI cells find dynamic imports and import.meta with
+  es-module-lexer's CSP build, without a whole-cell AST or a runtime wasm
+  compile. It is vendored as a factory, so the scratch buffer a large cell
+  grows (8 MiB for pi's 3.8M-character chunk) is dropped after that cell.
+  Acorn reads only spans: a call's arguments, the braces around an
+  `import(...)` whose `{` opens the next line, directives, and escaped
+  names. A cell the lexer can misread (a `/` in code whose regex reading
+  could hide import syntax, an HTML-like comment in code, `new import(`, a
+  lexer error) goes to Acorn's streaming parser. Over 636 real files and
+  pi's 274 launch requests, both modes (1,820 rewrites), the output is
+  byte-identical to the previous parser's and no cell needed the parser:
+  1.2 s against 6.9 s. Of 137 grammar edge cases, 136 match and
+  `o?.return / import()` now matches Node. The 3.8 MiB Pi 0.99.1 cell takes
+  118–195 ms warm in a local V8 replay. The release candidate
+  repeatedly killed that rewrite-only cell at the facet CPU limit; the same
+  Pi version rendered its TUI on 957a56a6. Transform slices retain their
+  256 KiB / 32-file bounds. If a resident launch fails before its guest exists,
+  its already-returned pid now exits with the cause rather than remaining
   "running" behind an empty terminal. This exposed the actual cause of the
   intermittent pi TUI timeout: an esbuild-facet CPU-limit failure during
   module-map construction, not a stuck stdin or TUI renderer.

@@ -143,6 +143,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private resolveDataPath;
     /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
     private mountedLink;
+    /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
@@ -156,6 +157,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      */
     private buffer;
     private ensureParent;
+    /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */
     private assertParentDirectory;
     /**
      * Run one mutation of path `p` and report its revision on either side,
@@ -227,7 +229,13 @@ interface FsError extends Error {
     code: string;
     syscall: string;
     path: string;
+    /** The second path of a call that names two (rename, symlink's link). */
+    dest?: string;
 }
-export declare function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError;
+/**
+ * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
+ * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
+ */
+export declare function fsError(code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath): FsError;
 export {};
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

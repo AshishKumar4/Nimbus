@@ -48,7 +48,6 @@ import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.
  *   --inspect-brk (node --inspect-brk)
  */
 export declare function isLongRunningInvocation(args: string[]): boolean;
-export declare function looksLikeServer(code: string): boolean;
 /** Result of a `runFresh` call. */
 export interface RunFreshResult {
     exitCode: number;
@@ -88,7 +87,9 @@ export interface RunFreshOpts {
     /** Shell abort (Ctrl+C): aborting this kills the run through the
      *  terminator exec registers on the pid. */
     signal?: AbortSignal;
+    /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
+    launchesServer?: boolean;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
-export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts, entrySource?: string): Promise<RunFreshResult>;
+export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;
 //# sourceMappingURL=node-runner.d.ts.map

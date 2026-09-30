@@ -105,6 +105,9 @@ async function mintPreviewUrl(handler, env, attachToken, port = 3000) {
   const exchanged = await handler.fetch(new Request(previewUrl, { redirect: 'manual' }), env, ctx);
   assert.equal(exchanged.status, 302);
   assert.equal(exchanged.headers.get('Location'), '/');
+  // The exchange is a hop of the preview pane's navigation, and an isolated
+  // shell holds every hop to CORP: a missing one blocks the guest behind it.
+  assert.equal(exchanged.headers.get('Cross-Origin-Resource-Policy'), 'cross-origin');
   const setCookie = exchanged.headers.get('Set-Cookie');
   // `__Host-` is what stops untrusted preview code from setting a shadowing
   // `nimbus_token` for the parent domain: the browser rejects the prefix with

@@ -87,6 +87,15 @@ const ENTRY_PREFIX = 'runtime-code:';
 const PROFILES_KEY = 'launch-profiles';
 const PROFILE_PREFIX = 'launch-profile:';
 const CHUNK_CHARS = 512 * 1024;
+/**
+ * The two stores this one replaced kept their profiles under these keys, each
+ * index naming every profile row it kept. Deleted once, on first load; the
+ * code entries (`runtime-code-index`, `runtime-code:*`) are this store's own.
+ */
+const LEGACY_PROFILE_INDEXES: ReadonlyArray<[index: string, prefix: string]> = [
+  ['runtime-code-profiles', 'runtime-code-profile:'],
+  ['residency-profile-index', 'residency-profile:'],
+];
 
 /** Bundle keys with a profile. */
 export const LAUNCH_PROFILE_MAX_ENTRIES = 16;
@@ -149,6 +158,12 @@ export class LaunchLearningStore {
 
   private async load(): Promise<Map<string, [number, number]>> {
     if (this.index !== null) return this.index;
+    for (const [indexKey, prefix] of LEGACY_PROFILE_INDEXES) {
+      const keys = await this.storage.get<string[]>(indexKey);
+      if (keys === undefined) continue;
+      for (const key of keys) await this.storage.delete(prefix + key);
+      await this.storage.delete(indexKey);
+    }
     const rows = (await this.storage.get<IndexRow[]>(INDEX_KEY)) ?? [];
     this.index = new Map(rows.map(([key, charge, chunks]) => [key, [charge, chunks]]));
     this.charged = rows.reduce((sum, [, charge]) => sum + charge, 0);

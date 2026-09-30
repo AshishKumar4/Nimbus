@@ -152,7 +152,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   }))});
   const build=async(requiredShared)=>{
     const view=launchFs({...files,[APP+'/keep.cjs']:requiredShared?'module.exports=require("shared");':files[APP+'/keep.cjs']});
-    return buildPrefetchBundle(view.fs,entry,APP,files[entry],esbuild,undefined,new Set(['opt/evidence.cjs']),undefined,bound);
+    return buildPrefetchBundle(view.fs, { scriptPath: entry, cwd: APP, entryCode: files[entry], esbuild, observedReads: new Set(['opt/evidence.cjs']), maxBundleBytes: bound });
   };
   for(const requiredShared of [false,true]) {
     const warnings=[];

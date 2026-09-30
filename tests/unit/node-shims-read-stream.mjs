@@ -187,4 +187,30 @@ assertBytesEqual(
   SMALL, 'ReadStream class',
 );
 
+// 9. 'close' follows 'end' (Node's autoDestroy), and node-static's idiom
+//    serves the whole body: it pipes with { end: false } and ends the
+//    response on the file stream's 'close'. Without 'close' the response
+//    never ended and the client got a 200 with an empty body.
+{
+  const events = [];
+  const chunks = [];
+  const res = new sandbox.stream.Writable({ write(chunk, encoding, cb) { chunks.push(chunk); cb(); } });
+  const served = new Promise((resolve) => res.on('finish', resolve));
+  fs.createReadStream('/home/user/small.txt', { flags: 'r', mode: 0o666, start: 0, end: SMALL.length - 1 })
+    .on('data', (c) => events.push(`data:${c.length}`))
+    .on('end', () => events.push('end'))
+    .on('close', () => { events.push('close'); res.end(); })
+    .pipe(res, { end: false });
+  await withTimeout(served, 5000, "node-static's pipe, ended on 'close'");
+  assertBytesEqual(concat(chunks), SMALL, "node-static's pipe");
+  assert.deepEqual(events, [`data:${SMALL.length}`, 'end', 'close']);
+
+  const kept = new sandbox.stream.Readable({ autoDestroy: false, read() { this.push(null); } });
+  let closed = false;
+  kept.on('close', () => { closed = true; });
+  await withTimeout(collect(kept), 5000, 'autoDestroy: false');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(closed, false, 'a stream that opts out of autoDestroy stays open after end');
+}
+
 console.log('node-shims-read-stream: OK');

@@ -38,19 +38,16 @@ const bounded = launchFs({
 // scans .js/.ts content files as text. Rooting it walked its imports into the
 // required graph, and a launch over the bound failed every time after.
 {
-  const scanned = await buildPrefetchBundle(bounded, '/' + app + '/entry.cjs', '/' + app, 'module.exports = 1;',
-    undefined, undefined, new Set([learned]), undefined, 1024);
+  const scanned = await buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', observedReads: new Set([learned]), maxBundleBytes: 1024 });
   assert.equal(scanned.bundle[learned], small, 'the read file is staged as the bytes it was read as');
   assert.equal(scanned.bundle[app + '/node_modules/plugin/dep.cjs'], undefined, 'its imports are not required');
 }
 await assert.rejects(
-  buildPrefetchBundle(bounded, '/' + app + '/entry.cjs', '/' + app, 'module.exports = 1;',
-    undefined, undefined, undefined, undefined, 1024, undefined, [{ path: learned }]),
+  buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', maxBundleBytes: 1024, executedModules: [{ path: learned }] }),
   error => error instanceof ClosureBoundExceededError && error.outcome.lastPath === app + '/node_modules/plugin/dep.cjs',
   'a learned executable graph that cannot fit is refused, never published with a missing import',
 );
-const complete = await buildPrefetchBundle(bounded, '/' + app + '/entry.cjs', '/' + app, 'module.exports = 1;',
-  undefined, undefined, undefined, undefined, 4096, undefined, [{ path: learned }]);
+const complete = await buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', maxBundleBytes: 4096, executedModules: [{ path: learned }] });
 const evaluate = filename => {
   const module = { exports: {} };
   const code = complete.bundle[filename];
@@ -63,8 +60,7 @@ const generatedPath = 'home/user/generated/config.timestamp-1.cjs';
 const dependencyPath = 'opt/runtime-plugin/deep/plugin.cjs';
 const generatedText = 'import plugin from "file:///opt/runtime-plugin/deep/plugin.cjs"; export default plugin;';
 const generatedFs = launchFs({ [dependencyPath]: 'module.exports = "loaded-from-generated-config";' }).fs;
-const generated = await buildPrefetchBundle(generatedFs, undefined, '/home/user/generated', '', undefined,
-  undefined, undefined, undefined, 4096, undefined, [{ path: generatedPath, text: generatedText }]);
+const generated = await buildPrefetchBundle(generatedFs, { cwd: '/home/user/generated', entryCode: '', maxBundleBytes: 4096, executedModules: [{ path: generatedPath, text: generatedText }] });
 assert.equal(generated.bundle[dependencyPath], 'module.exports = "loaded-from-generated-config";',
   'a deleted temporary config still brings the imports of its retained executable source');
 console.log('observed-read-closure: ok');

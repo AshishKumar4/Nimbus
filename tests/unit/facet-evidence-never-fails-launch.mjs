@@ -16,8 +16,7 @@ import { launchFs } from './lib/launch-fs.mjs';
 const PROJ = 'home/user/proj';
 const MiB = 1024 * 1024;
 const build = (files, observed, learnedFor) => buildPrefetchBundle(
-  launchFs(files).fs, `${PROJ}/app.js`, PROJ, files[`${PROJ}/app.js`],
-  undefined, undefined, observed, undefined, undefined, learnedFor,
+  launchFs(files).fs, { scriptPath: `${PROJ}/app.js`, cwd: PROJ, entryCode: files[`${PROJ}/app.js`], observedReads: observed, learnedFor },
 );
 
 // A 15 MiB closure; the data file an earlier run missed is 4 MiB, past the

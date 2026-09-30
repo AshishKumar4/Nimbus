@@ -26,6 +26,7 @@ import { type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolve
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -108,7 +109,7 @@ export declare const RESIDENT_BOOT_SETTLE_MS = 1000;
  * are the program's exit and a signal. Callers that still pass a finite
  * deadline (the resident boot settle) arm the expiry timer.
  *
- * Three kinds of handle, each owned by the shim that creates them:
+ * Four kinds of handle, each owned by the shim that creates them:
  *
  *   - macrotask TIMERS and intervals (`__nimbusPendingTimers`), from the
  *     timer tracker below.
@@ -118,13 +119,17 @@ export declare const RESIDENT_BOOT_SETTLE_MS = 1000;
  *     awaited work is seen at all. See the shim's __nimbusTrackOp.
  *   - listening SERVERS (`__portRegistry`), open until the program closes
  *     them.
+ *   - held CONNECTIONS (`__nimbusOpenSockets`): an HTTP exchange a server is
+ *     answering, a WebSocket client, a tls.connect socket, until it closes
+ *     (or is unref'd). Not startup work: a resident's boot does not wait on
+ *     them.
  *
  * The loop subscribes to the exit promise ONCE — a per-pass
  * `exitPromise.then()` allocates a promise every iteration — and yields
  * through the raw setTimeout so its own ticks don't inflate the timer count
  * it watches.
  */
-export declare const ENTRYPOINT_EVENT_LOOP = "\nfunction __nimbusHandleCount(__name) {\n  const __value = globalThis[__name];\n  return typeof __value === \"number\" ? __value : 0;\n}\n\n// Binding a native listen(0) first awaits session-wide allocation. Until it\n// binds, it is a referenced handle just like the eventual server; unref and\n// close still remove its contribution. It is also startup work to settle.\nfunction __nimbusPendingHttpListens() {\n  let count = 0;\n  const listeners = globalThis.__nimbusPendingHttpListeners;\n  if (listeners) for (const server of listeners) if (!server.__nimbusUnrefed) count++;\n  return count;\n}\n\nfunction __nimbusPendingStartupWork() {\n  return __nimbusHandleCount(\"__nimbusPendingTimers\") + __nimbusHandleCount(\"__nimbusPendingOps\") + __nimbusPendingHttpListens();\n}\n\n// The above, plus the handles a program holds open on purpose. A bound port\n// keeps a Node process alive, and it keeps a one-shot facet alive too.\nfunction __nimbusLiveHandles() {\n  const __servers = globalThis.__portRegistry;\n  let __bound = 0;\n  if (__servers && typeof __servers.values === \"function\") {\n    for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;\n  }\n  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount(\"__nimbusInputHandles\");\n}\n\nasync function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {\n  let __exited = false;\n  if (__exitPromise && typeof __exitPromise.then === \"function\") {\n    __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n  }\n  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n    ? globalThis.__nimbusRawSetTimeout\n    : globalThis.setTimeout;\n  const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n    ? globalThis.__nimbusRawClearTimeout\n    : globalThis.clearTimeout;\n  let __expired = false;\n  let __pass = 0;\n  // A user-invoked program runs until it exits or is killed \u2014 there is no\n  // wall-clock deadline, so no expiry timer is armed at all. (Callers that\n  // still pass a finite deadline get the timer for compatibility.)\n  const __deadline = Number.isFinite(__deadlineMs)\n    ? __rawSetTimeout(() => { __expired = true; }, __deadlineMs)\n    : null;\n  while (!__exited && !__expired && (__pass < __minPasses || __countHandles() > 0)) {\n    // The warm-up passes give a settling microtask chain its turns and cost\n    // ~5\u00B5s each; past them the loop is waiting on wall-clock work, where\n    // spinning at 0ms would burn the isolate's CPU indefinitely.\n    await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));\n    __pass++;\n  }\n  if (__deadline !== null) { try { __rawClearTimeout(__deadline); } catch {} }\n  // `pending` is what the caller reports when it gives up: a one-shot program\n  // still holding a handle did NOT finish, and exiting 0 would claim it did.\n  return { passes: __pass, pending: __exited ? 0 : __countHandles() };\n}\n\n// An ESM entry's own evaluation promise (top-level await) is the one promise\n// that IS a handle \u2014 the module has not finished loading until it settles.\n// Answers true when process.exit won the race instead.\nasync function __nimbusAwaitEntryEvaluation(__entryResult) {\n  if (!__entryResult || typeof __entryResult.then !== \"function\") return false;\n  const __exit = {};\n  const __raced = await Promise.race([\n    __entryResult.then(() => null),\n    __nimbusProcessExitPromise.then(() => __exit, () => __exit),\n  ]);\n  return __raced === __exit;\n}\n\n// A one-shot facet's lifetime IS the loop: it runs the program until Node\n// would exit, or until the lifetime budget runs out.\nasync function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {\n  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };\n  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);\n}\n\n// A resident facet keeps running after the call that boots it returns, so it\n// settles startup and nothing more. The handles it holds open deliberately \u2014\n// its listening port \u2014 are the point of it, not a reason to make the shell's\n// prompt wait. Its module's own evaluation is bounded by the same budget: a\n// server entry that ends in a top-level await which never settles\n// (`await new Promise(() => {})`, a dev server awaiting a listen that fails)\n// is a running program in Node, and waiting on it here left the boot call \u2014\n// and every request routed to the facet, which waits for boot \u2014 hung\n// forever. A rejection after the budget fails the process as Node's does.\nasync function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {\n  const __startedAt = Date.now();\n  if (__entryResult && typeof __entryResult.then === \"function\") {\n    const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n      ? globalThis.__nimbusRawSetTimeout\n      : globalThis.setTimeout;\n    const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n      ? globalThis.__nimbusRawClearTimeout\n      : globalThis.clearTimeout;\n    const __exit = {};\n    const __late = {};\n    let __timer = null;\n    const __raced = await Promise.race([\n      __entryResult.then(() => null),\n      __nimbusProcessExitPromise.then(() => __exit, () => __exit),\n      new Promise((resolve) => { __timer = __rawSetTimeout(() => resolve(__late), __deadlineMs); }),\n    ]).finally(() => { try { __rawClearTimeout(__timer); } catch {} });\n    if (__raced === __exit) return { passes: 0, pending: 0 };\n    if (__raced === __late) {\n      __entryResult.then(undefined, (__error) => { queueMicrotask(() => { throw __error; }); });\n      return { passes: 0, pending: __nimbusPendingStartupWork() };\n    }\n  }\n  return await __nimbusRunEventLoop(\n    __nimbusPendingStartupWork, __nimbusProcessExitPromise,\n    Math.max(0, __deadlineMs - (Date.now() - __startedAt)), 4,\n  );\n}\n";
+export declare const ENTRYPOINT_EVENT_LOOP = "\nfunction __nimbusHandleCount(__name) {\n  const __value = globalThis[__name];\n  return typeof __value === \"number\" ? __value : 0;\n}\n\n// Binding a native listen(0) first awaits session-wide allocation. Until it\n// binds, it is a referenced handle just like the eventual server; unref and\n// close still remove its contribution. It is also startup work to settle.\nfunction __nimbusPendingHttpListens() {\n  let count = 0;\n  const listeners = globalThis.__nimbusPendingHttpListeners;\n  if (listeners) for (const server of listeners) if (!server.__nimbusUnrefed) count++;\n  return count;\n}\n\nfunction __nimbusPendingStartupWork() {\n  return __nimbusHandleCount(\"__nimbusPendingTimers\") + __nimbusHandleCount(\"__nimbusPendingOps\") + __nimbusPendingHttpListens();\n}\n\n// The above, plus the handles a program holds open on purpose. A bound port\n// keeps a Node process alive, and it keeps a one-shot facet alive too.\nfunction __nimbusLiveHandles() {\n  const __servers = globalThis.__portRegistry;\n  let __bound = 0;\n  if (__servers && typeof __servers.values === \"function\") {\n    for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;\n  }\n  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount(\"__nimbusInputHandles\")\n    + __nimbusHandleCount(\"__nimbusOpenSockets\");\n}\n\nasync function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {\n  let __exited = false;\n  if (__exitPromise && typeof __exitPromise.then === \"function\") {\n    __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n  }\n  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n    ? globalThis.__nimbusRawSetTimeout\n    : globalThis.setTimeout;\n  const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n    ? globalThis.__nimbusRawClearTimeout\n    : globalThis.clearTimeout;\n  let __expired = false;\n  let __pass = 0;\n  // A user-invoked program runs until it exits or is killed \u2014 there is no\n  // wall-clock deadline, so no expiry timer is armed at all. (Callers that\n  // still pass a finite deadline get the timer for compatibility.)\n  const __deadline = Number.isFinite(__deadlineMs)\n    ? __rawSetTimeout(() => { __expired = true; }, __deadlineMs)\n    : null;\n  while (!__exited && !__expired && (__pass < __minPasses || __countHandles() > 0)) {\n    // The warm-up passes give a settling microtask chain its turns and cost\n    // ~5\u00B5s each; past them the loop is waiting on wall-clock work, where\n    // spinning at 0ms would burn the isolate's CPU indefinitely.\n    await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));\n    __pass++;\n  }\n  if (__deadline !== null) { try { __rawClearTimeout(__deadline); } catch {} }\n  // `pending` is what the caller reports when it gives up: a one-shot program\n  // still holding a handle did NOT finish, and exiting 0 would claim it did.\n  return { passes: __pass, pending: __exited ? 0 : __countHandles() };\n}\n\n// An ESM entry's own evaluation promise (top-level await) is the one promise\n// that IS a handle \u2014 the module has not finished loading until it settles.\n// Answers true when process.exit won the race instead.\nasync function __nimbusAwaitEntryEvaluation(__entryResult) {\n  if (!__entryResult || typeof __entryResult.then !== \"function\") return false;\n  const __exit = {};\n  const __raced = await Promise.race([\n    __entryResult.then(() => null),\n    __nimbusProcessExitPromise.then(() => __exit, () => __exit),\n  ]);\n  return __raced === __exit;\n}\n\n// A one-shot facet's lifetime IS the loop: it runs the program until Node\n// would exit, or until the lifetime budget runs out.\nasync function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {\n  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };\n  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);\n}\n\n// Whether the program holds no live handle once a settling chain has had the\n// same four turns the one-shot loop gives it.\nasync function __nimbusHoldsNoHandle() {\n  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n    ? globalThis.__nimbusRawSetTimeout\n    : globalThis.setTimeout;\n  for (let __pass = 0; __pass < 4; __pass++) await new Promise((resolve) => __rawSetTimeout(resolve, 0));\n  return __nimbusLiveHandles() === 0;\n}\n\n// A resident process ends as Node's does: when it holds no live handle. It\n// may serve for hours, so this does not poll: every place a handle is released\n// (a timer firing or cleared, an operation settling, a server closed or\n// unref'd, stdin let go) calls __nimbusHandleReleased, and a release that\n// leaves none is the program's natural end.\nfunction __nimbusNaturalExit() {\n  return new Promise((resolve) => {\n    let __checking = false;\n    const __released = () => {\n      if (__checking) return;\n      __checking = true;\n      __nimbusHoldsNoHandle().then((__none) => {\n        __checking = false;\n        if (!__none) return;\n        if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;\n        resolve();\n      });\n    };\n    globalThis.__nimbusHandleReleased = __released;\n    __released();\n  });\n}\n\n// A resident facet keeps running after the call that boots it returns, so it\n// settles startup and nothing more. The handles it holds open deliberately \u2014\n// its listening port \u2014 are the point of it, not a reason to make the shell's\n// prompt wait. Its module's own evaluation is bounded by the same budget: a\n// server entry that ends in a top-level await which never settles\n// (`await new Promise(() => {})`, a dev server awaiting a listen that fails)\n// is a running program in Node, and waiting on it here left the boot call \u2014\n// and every request routed to the facet, which waits for boot \u2014 hung\n// forever. A rejection after the budget fails the process as Node's does.\nasync function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {\n  const __startedAt = Date.now();\n  if (__entryResult && typeof __entryResult.then === \"function\") {\n    const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n      ? globalThis.__nimbusRawSetTimeout\n      : globalThis.setTimeout;\n    const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n      ? globalThis.__nimbusRawClearTimeout\n      : globalThis.clearTimeout;\n    const __exit = {};\n    const __late = {};\n    let __timer = null;\n    const __raced = await Promise.race([\n      __entryResult.then(() => null),\n      __nimbusProcessExitPromise.then(() => __exit, () => __exit),\n      new Promise((resolve) => { __timer = __rawSetTimeout(() => resolve(__late), __deadlineMs); }),\n    ]).finally(() => { try { __rawClearTimeout(__timer); } catch {} });\n    if (__raced === __exit) return { passes: 0, pending: 0 };\n    if (__raced === __late) {\n      __entryResult.then(undefined, (__error) => { queueMicrotask(() => { throw __error; }); });\n      return { passes: 0, pending: __nimbusPendingStartupWork() };\n    }\n  }\n  return await __nimbusRunEventLoop(\n    __nimbusPendingStartupWork, __nimbusProcessExitPromise,\n    Math.max(0, __deadlineMs - (Date.now() - __startedAt)), 4,\n  );\n}\n";
 /**
  * Every wasm image a closure's JavaScript inlines, as a base64 string or as a
  * numeric array literal, deduplicated by content. Vite 8 compiles
@@ -244,6 +249,8 @@ interface FacetVfsState {
     reachableCount: number;
     /** Diagnostics: was the bundle truncated by the encoded-size cap? */
     truncated: boolean;
+    /** Diagnostics: how the build's transforms were answered. */
+    transforms?: BundleCellTransformStats;
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -642,44 +649,28 @@ export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<st
     added: number;
     bytes: number;
 }>;
-/**
- * The bundle entries that may need the ESM→CJS transform before they can run
- * as module cells. Every cell a process can require is CommonJS by the time
- * it is wrapped (commonjs-cell.ts): the guest's registry could compile an ES
- * module, but cannot resolve its package imports, give it its own file URL,
- * or import names from the CommonJS it depends on.
- *
- * Extensionless entries are in the set because that is the shape of nearly
- * every npm `bin` script. `.json` is data and `.cjs` is CommonJS by
- * definition; neither needs the transform. Content decides from here:
- * `looksLikeEsm` sniffs module syntax, and parses an extensionless file,
- * which may be data rather than a script.
- */
-export declare function isBundleModuleCandidate(path: string): boolean;
-/**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
- *
- * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
- * JavaScript: compiling a type annotation is a SyntaxError whether or
- * not the file has a single import in it. So these transform on their
- * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
- * the right question for a file that is already valid JS either way, and the
- * wrong one for a file that is never valid JS.
- *
- * A declaration file (`.d.ts`, `.d.mts`, `.d.cts`) is not a source: it has
- * no runtime form, nothing `require()`s one, and esbuild's output for it is
- * empty by definition. It is DATA — read by the program that ships it, which
- * is exactly typescript: `tsc` reads its own `lib/lib.*.d.ts` with
- * `readFileSync`, and every declaration it type-checks against comes from
- * those bytes. Transforming them handed the compiler an 811-byte license
- * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
- * gone. So a declaration file is left exactly as it was staged.
- */
-export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
-/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
-export declare function isTypescriptDeclarationFile(path: string): boolean;
+/** What buildPrefetchBundle builds a module map for, and with what. */
+export interface PrefetchBundleOptions {
+    /** The program's path; absent for `-e` code and stdin. */
+    scriptPath?: string;
+    cwd: string;
+    entryCode: string;
+    /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+    esbuild?: EsbuildService;
+    bundleProfile?: FacetBundleProfile;
+    /** Paths earlier runs of the same entry read synchronously and missed. */
+    observedReads?: ReadonlySet<string>;
+    /** The launch's pacer; a build without one runs in the caller's turn. */
+    pacer?: TurnBudget;
+    /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
+    maxBundleBytes?: number;
+    /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
+    learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+    /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
+    executedModules?: readonly RequiredModuleRoot[];
+    /** Where the launch's transform results are kept by content. */
+    transformStore?: BundleCellResultStore;
+}
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -696,7 +687,7 @@ export declare function isTypescriptDeclarationFile(path: string): boolean;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, executedModules?: readonly RequiredModuleRoot[]): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -1106,10 +1097,19 @@ export declare class FacetManager {
      * The entry script as the facet compiles it: each dynamic `import()` routed
      * to the process's ESM loader, with the entry's own URL as the parent (Node
      * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
-     * in the esbuild facet like every cell's, and is cached by content. The
-     * module-map walk reads the script as written, before this.
+     * in the esbuild facet like every cell's, and its result is kept by content
+     * in the session's transform store. The module-map walk reads the script as
+     * written, before this.
      */
     private _entryDynamicImports;
+    /**
+     * The store this session's launches keep their transform results in: the
+     * session's database, admitted through its storage ledger, bound to the
+     * esbuild service's transform host. None when the host has no identity (a
+     * result could not be told apart from another host's) or there is no
+     * filesystem to admit against.
+     */
+    private _transformStore;
     /**
      * The pacer every launch is built under: the session's alarm-driven turn
      * pump, the deployment's chunk bound, and the one check a suspended launch

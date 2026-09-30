@@ -33,6 +33,7 @@
  */
 import { generateSessionId, isValidSessionId, } from '../_shared/session-id.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
+import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
 import { issueNimbusToken, verifyNimbusToken, verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
@@ -195,6 +196,7 @@ export function createNimbusHandler(options = {}) {
                     redirectPath: url.pathname,
                     singleUseScope: 'session:preview',
                     reusableScope: null,
+                    embeddedNavigation: true,
                 });
             }
             const auth = await resolveNimbusRouteAuth(request, env, explicitMode, {
@@ -303,6 +305,7 @@ export function createNimbusHandler(options = {}) {
                     redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
                     singleUseScope: 'session:bootstrap',
                     reusableScope: 'session:attach',
+                    embeddedNavigation: false,
                 });
             }
             // Resolve tenant segment per auth mode and enforce session attach
@@ -360,10 +363,21 @@ export function createNimbusHandler(options = {}) {
                 }
                 if (env.ASSETS) {
                     const shellUrl = new URL('/s/index.html', url.origin);
-                    return env.ASSETS.fetch(new Request(shellUrl.toString(), {
+                    const shell = await env.ASSETS.fetch(new Request(shellUrl.toString(), {
                         method: 'GET',
                         headers: request.headers,
                     }));
+                    // The isolated shell is the same page with COOP + COEP, so a
+                    // preview that asks for cross-origin isolation can have it in the
+                    // pane (see _shared/preview-isolation.ts). Only on request: the
+                    // default shell keeps no embedder policy, so every other preview,
+                    // and every third-party frame inside one, loads as it always has.
+                    if (!isIsolatedShellUrl(url))
+                        return shell;
+                    const headers = new Headers(shell.headers);
+                    for (const [name, value] of Object.entries(ISOLATED_SHELL_HEADERS))
+                        headers.set(name, value);
+                    return new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers });
                 }
                 return new Response('<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
             }
@@ -536,14 +550,14 @@ async function handleAttachExchange(url, sessionId, env, options) {
         const clean = new URL(url);
         clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
         clean.pathname = options.redirectPath;
-        return new Response(null, {
-            status: 302,
-            headers: {
-                Location: clean.pathname + clean.search,
-                'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
-                'Cache-Control': 'no-store',
-            },
+        const headers = new Headers({
+            Location: clean.pathname + clean.search,
+            'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
+            'Cache-Control': 'no-store',
         });
+        if (options.embeddedNavigation)
+            headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+        return new Response(null, { status: 302, headers });
     }
     catch (e) {
         if (!(e instanceof NimbusAuthError)) {

@@ -60,7 +60,7 @@ try {
       /STILL_RUNNING/.test(out) && /READBACK=payload/.test(out),
       JSON.stringify(out.slice(-600)));
     a.check('the process exits 0 rather than dying on the handled rejection',
-      /EXIT=0/.test(out) && !/ENOENT: truncate/.test(out),
+      /EXIT=0/.test(out) && !/ENOENT: no such file or directory, truncate/.test(out),
       JSON.stringify(out.slice(-600)));
   }
 

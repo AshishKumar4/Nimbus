@@ -41,7 +41,7 @@ Object.defineProperty(builtins, "http", {
       const inFlight = new WeakSet();
       const end = clientProto.end, emit = clientProto.emit;
       const release = request => {
-        if (inFlight.delete(request)) globalThis.__nimbusPendingOps--;
+        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
       };
       Object.defineProperty(clientProto, clientPatch, { value: true });
       clientProto.end = function () {
@@ -80,7 +80,29 @@ Object.defineProperty(builtins, "http", {
           return Reflect.apply(writeHead, this, arguments);
         };
       }
-      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref;
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit;
+      // An HTTP exchange keeps its process alive until it completes, as its
+      // connection does in Node, whether or not the server is still listening
+      // (a bound port is counted on its own): from 'request' until the response
+      // closes, finished or destroyed (the client went away, the header
+      // deadline passed). The response alone decides, as Node ties the
+      // exchange to it: a request body the handler never reads never ends
+      // here (workerd does not dump one), so it must not hold the process.
+      // One of the held connections __nimbusLiveHandles counts, never startup
+      // work: a response still streaming at boot (SSE, an HMR poll) does not
+      // hold a resident's boot answer.
+      const holdExchange = (response) => {
+        if (typeof response.once !== "function") return;
+        response.once("close", () => {
+          globalThis.__nimbusOpenSockets--;
+          globalThis.__nimbusHandleReleased?.();
+        });
+        globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + 1;
+      };
+      proto.emit = function (event, incoming, response) {
+        if (event === "request" && incoming && response) holdExchange(response);
+        return Reflect.apply(emit, this, arguments);
+      };
       // Keep RPC capabilities inside this closure, not on globals or server
       // properties visible to guest code. The setter refreshes the context
       // when an isolate is reused, without revealing its current value.
@@ -102,7 +124,7 @@ Object.defineProperty(builtins, "http", {
           state.pending = false;
           // A cancelled allocation can settle after this server relistens.
           // Only the current owner can retire its pending-listen handle.
-          if (owners.get(this) === state) pendingListeners.delete(this);
+          if (owners.get(this) === state && pendingListeners.delete(this)) globalThis.__nimbusHandleReleased?.();
         };
         const releaseAllocation = () => {
           // An explicit relisten may have taken this same number while the
@@ -153,6 +175,7 @@ Object.defineProperty(builtins, "http", {
             state.pending = false;
             owners.delete(this);
             pendingListeners.delete(this);
+            globalThis.__nimbusHandleReleased?.();
             if (callback) this.once("close", callback);
             queueMicrotask(() => this.emit("close"));
             return this;
@@ -160,12 +183,17 @@ Object.defineProperty(builtins, "http", {
           if (state.port !== null && state.ctx.ports.get(state.port) === this) {
             state.ctx.ports.delete(state.port);
             state.ctx.pending.push(Promise.resolve(state.ctx.supervisor.unregisterPort(state.port)));
+            globalThis.__nimbusHandleReleased?.();
           }
         }
         return Reflect.apply(close, this, callback ? [callback] : []);
       };
       proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
-      proto.unref = function () { this.__nimbusUnrefed = true; return Reflect.apply(unref, this, []); };
+      proto.unref = function () {
+        this.__nimbusUnrefed = true;
+        globalThis.__nimbusHandleReleased?.();
+        return Reflect.apply(unref, this, []);
+      };
     } else http.Server.prototype[patchKey](context);
     globalThis.__nimbusServeHttp = async (request) => {
       const port = Number(request.headers.get("X-Nimbus-Port") || 0);

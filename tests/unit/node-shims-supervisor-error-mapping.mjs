@@ -14,6 +14,11 @@ import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { acrossRpc } from './lib/rpc-error.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { processBridge } from './lib/process-bridge.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace, listAuthority } from './lib/shims-namespace.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 // A supervisor whose calls fail exactly the way a real one does: the error
 // arrives having crossed the RPC hop.
@@ -67,6 +72,82 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
   assert.equal(error.errno, errno, `errno matches ${code}`);
   assert.equal(error.syscall, 'stat', 'the syscall is filled in from the call site');
   assert.equal(error.path, '/home/user/gone.txt', 'the path is filled in from the call site');
+  assert.equal(
+    error.message,
+    `${code}: ${{ ENOENT: 'no such file or directory', EACCES: 'permission denied', ENOTDIR: 'not a directory' }[code]}, stat '/home/user/gone.txt'`,
+    "the message is node's",
+  );
+}
+
+// ── a call naming two paths reports both, as Node 22 does ─────────────────
+// fs.promises.rename of a missing name, against the real bridge, its error
+// crossing the RPC hop: Node's message names both paths, and so does `dest`.
+{
+  const harness = createSqliteVfsTestHarness();
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = rawVfs.as(CRED_KERNEL);
+  root.mkdir('home/user', { recursive: true });
+  root.chown('home/user', 1000, 1000);
+  root.writeFile('home/user/a.txt', 'a');
+  root.writeFile('home/user/b.txt', 'b');
+  const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+  const bridge = processBridge(rawVfs, user);
+  const crossing = (run) => async (...args) => {
+    try { return await run(...args); } catch (error) { throw acrossRpc(error); }
+  };
+  const supervisor = {
+    stat: crossing((p) => bridge.stat(p)),
+    lstat: crossing((p) => bridge.stat(p, { followSymlinks: false })),
+    readdir: crossing((p) => bridge.readdir(p)),
+    rename: crossing((from, to) => bridge.rename(from, to)),
+    symlink: crossing((target, path) => bridge.symlink(target, path)),
+    readFile: crossing(async (p) => { const bytes = await bridge.readFile(p); return bytes ? new TextDecoder().decode(bytes) : null; }),
+    readFileBytes: crossing((p) => bridge.readFile(p)),
+    fsReadRange: crossing((p, offset, length) => bridge.readRange(p, offset, length)),
+    fsAcquire: crossing((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
+  };
+  listAuthority(rawVfs);
+  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+  declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } } });
+  const { fs } = new Function(
+    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod };',
+  )({}, {}, supervisor, user, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+  const error = await rejection(fs.promises.rename('/home/user/nope', '/home/user/new'));
+  assert.deepEqual(
+    [error.message, error.code, error.errno, error.syscall, error.path, error.dest],
+    ["ENOENT: no such file or directory, rename '/home/user/nope' -> '/home/user/new'", 'ENOENT', -2, 'rename', '/home/user/nope', '/home/user/new'],
+  );
+  // symlink names its target, then the link.
+  const taken = await rejection(fs.promises.symlink('relative-target', '/home/user/b.txt'));
+  assert.deepEqual(
+    [taken.message, taken.syscall, taken.path, taken.dest],
+    ["EEXIST: file already exists, symlink 'relative-target' -> '/home/user/b.txt'", 'symlink', 'relative-target', '/home/user/b.txt'],
+  );
+  // Every call naming two paths reports both as the program gave them,
+  // whichever one's check failed (Node 22's messages, verbatim).
+  const sync = (run) => { try { run(); } catch (e) { return e; } throw new Error('expected a failure'); };
+  for (const [label, error, words, path, dest] of [
+    ['renameSync', sync(() => fs.renameSync('/home/user/a.txt', '/home/user/nope/b')),
+      "ENOENT: no such file or directory, rename '/home/user/a.txt' -> '/home/user/nope/b'", '/home/user/a.txt', '/home/user/nope/b'],
+    ['fs.promises.rename', await rejection(fs.promises.rename('/home/user/a.txt', '/home/user/nope/b')),
+      "ENOENT: no such file or directory, rename '/home/user/a.txt' -> '/home/user/nope/b'", '/home/user/a.txt', '/home/user/nope/b'],
+    ['copyFileSync of a missing source', sync(() => fs.copyFileSync('/home/user/nope', '/home/user/c.txt')),
+      "ENOENT: no such file or directory, copyfile '/home/user/nope' -> '/home/user/c.txt'", '/home/user/nope', '/home/user/c.txt'],
+    ['fs.promises.copyFile into a missing directory', await rejection(fs.promises.copyFile('/home/user/a.txt', '/home/user/nope/c.txt')),
+      "ENOENT: no such file or directory, copyfile '/home/user/a.txt' -> '/home/user/nope/c.txt'", '/home/user/a.txt', '/home/user/nope/c.txt'],
+    ['linkSync', sync(() => fs.linkSync('/home/user/a.txt', '/home/user/l')),
+      "ENOSYS: function not implemented, link '/home/user/a.txt' -> '/home/user/l'", '/home/user/a.txt', '/home/user/l'],
+  ]) {
+    assert.deepEqual([error.message, error.path, error.dest], [words, path, dest], label);
+  }
+  // copyFile's refusal to replace names its source, then its destination.
+  let refused;
+  try { fs.copyFileSync('/home/user/a.txt', '/home/user/b.txt', fs.constants.COPYFILE_EXCL); } catch (e) { refused = e; }
+  assert.deepEqual(
+    [refused?.message, refused?.syscall, refused?.path, refused?.dest],
+    ["EEXIST: file already exists, copyfile '/home/user/a.txt' -> '/home/user/b.txt'", 'copyfile', '/home/user/a.txt', '/home/user/b.txt'],
+  );
 }
 
 // ── an UNCODED failure still reaches the program as an fs error ───────────

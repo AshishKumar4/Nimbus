@@ -1,6 +1,11 @@
 import { type AnyNode } from 'acorn';
 export type AstNode = AnyNode & Record<string, unknown>;
 export declare function parseJavaScriptModule(source: string): AstNode;
+/**
+ * A program as Node would run it: an ES module, or a CommonJS script (whose
+ * top level may `return`); null when it is neither.
+ */
+export declare function parseJavaScriptProgram(source: string): AstNode | null;
 export declare function hasTopLevelModuleSyntax(source: string): boolean;
 export declare function nodeList(node: AstNode, key: string): AstNode[];
 export declare function nodeProp(node: AstNode | undefined, key: string): AstNode | undefined;

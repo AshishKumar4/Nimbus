@@ -12,6 +12,7 @@ const cases = [
   ["template expression regexp","return import(\"./x.mjs\").then(async m => `value:${await /import(\"fake\")/.test('import\"fake\"')}:${m.value}`);",false,"value:true:7"],
   ["comments and escaped regex","/* import('fake') */ const literal = /import\\(\"fake\"\\)/; // import('fake')\nreturn import(/* import('fake') */ './x.mjs').then(m => [literal.test('import(\"fake\")'), m.value]);",false,[true,7]],
   ['grouped import argument', 'return import(("./x.mjs")).then(m => m.value);', false, 7],
+  ['method with its brace on the next line', "class Loader {\n  import(id)\n  {\n    return 'method:' + id;\n  }\n  static kind = 'loader';\n}\nreturn import('./x.mjs').then(m => [new Loader().import('a'), m.value]);", false, ['method:a', 7]],
 ];
 const failures = [];
 for (const [label, source, metadata, expected] of cases) {

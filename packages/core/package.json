@@ -50,7 +50,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "build": "node ../../scripts/clean-dist.mjs && node scripts/pin-transform-pipeline.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish && node scripts/check-runtime-packages.mjs",
     "typecheck": "tsc --noEmit"
   },
@@ -66,6 +66,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260928.1",
+    "es-module-lexer": "2.3.1",
+    "esbuild": "^0.27.0",
     "typescript": "^5.7.0"
   },
   "publishConfig": {

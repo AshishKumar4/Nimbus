@@ -24,7 +24,7 @@ import type {
   Awaitable, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure, VfsRevision, VfsStat, VfsUsage,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
-import { VfsError, isVfsError } from './vfs-error.js';
+import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -249,6 +249,40 @@ function isPromise<T>(value: Awaitable<T>): value is Promise<T> {
 /** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
 function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U> {
   return isPromise(value) ? value.then(next) : next(value);
+}
+
+/**
+ * A refusal the namespace makes while it resolves or routes a path, before
+ * it knows which call it refuses. The call that met it reports it
+ * (`reported`), as Node reports a failed syscall. `detail` is the reason
+ * where the namespace knows more than the code says.
+ */
+class Refusal extends VfsError {
+  constructor(code: VfsErrorCode, path: string, readonly detail?: string) {
+    super(code, detail ?? VFS_DESCRIPTION[code], path);
+  }
+}
+
+/** One call of the namespace as Node names it: its syscall, and the paths its caller gave. */
+interface Call {
+  syscall: string;
+  path: string;
+  dest?: string;
+}
+
+/** `run`, a refusal it meets reported as Node's error for `call`: `ENOENT: no such file or directory, open '/x'`. */
+function reported<T>(call: Call, run: () => Awaitable<T>): Awaitable<T> {
+  const report = (error: unknown): never => {
+    if (!(error instanceof Refusal)) throw error;
+    const out = syscallError(error.code, call.syscall, call.path, { detail: error.detail, dest: call.dest, cause: error });
+    throw isAsyncMountRefusal(error) ? Object.assign(out, { asyncMount: true as const }) : out;
+  };
+  try {
+    const out = run();
+    return isPromise(out) ? out.catch(report) : out;
+  } catch (error) {
+    return report(error);
+  }
 }
 
 function principalKey(principal: Principal): string {
@@ -534,15 +568,15 @@ export class CompositeVFS implements VFS {
 
   mount(point: string, source: VfsSource, options: MountOptions = {}): void {
     const at = normalizePath(point);
-    if (at === ROOT_POINT) throw new VfsError('EBUSY', 'the root is mounted at construction', point);
-    if (this.table.mounts.has(at)) throw new VfsError('EBUSY', 'something is already mounted there', point);
+    if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
+    if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
     this.table.mounts.set(at, { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() });
     this.resynthesize();
   }
 
   unmount(point: string): void {
     const at = normalizePath(point);
-    if (at === ROOT_POINT || !this.table.mounts.delete(at)) throw new VfsError('EINVAL', 'nothing is mounted there', point);
+    if (at === ROOT_POINT || !this.table.mounts.delete(at)) throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
     this.resynthesize();
   }
 
@@ -595,16 +629,20 @@ export class CompositeVFS implements VFS {
 
   /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
   realpath(path: string): string {
-    const resolved = this.resolve(path, true, true) as string;
-    if (this.statAt(resolved, false, true) === null) throw new VfsError('ENOENT', path);
-    return resolved;
+    return reported({ syscall: 'realpath', path }, () => {
+      const resolved = this.resolve(path, true, true) as string;
+      if (this.statAt(resolved, false, true) === null) throw new Refusal('ENOENT', path);
+      return resolved;
+    }) as string;
   }
 
   /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
   async realpathAsync(path: string): Promise<string> {
-    const resolved = await this.resolve(path, true, false);
-    if ((await this.statAt(resolved, false, false)) === null) throw new VfsError('ENOENT', path);
-    return resolved;
+    return reported({ syscall: 'realpath', path }, async () => {
+      const resolved = await this.resolve(path, true, false);
+      if ((await this.statAt(resolved, false, false)) === null) throw new Refusal('ENOENT', path);
+      return resolved;
+    });
   }
 
   /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
@@ -707,7 +745,7 @@ export class CompositeVFS implements VFS {
 
   private absent(mount: Mount, path: string): VfsError {
     const reason = mount.options.absentReason?.(this.viewer) ?? 'nothing is mounted there now';
-    return new VfsError('ENXIO', `${mount.point} — ${reason}`, path);
+    return new Refusal('ENXIO', path, `${mount.point} — ${reason}`);
   }
 
   /** ENXIO when `path` is absent for this view. */
@@ -728,7 +766,7 @@ export class CompositeVFS implements VFS {
     if (!sync) return files;
     if (files.sync === undefined) {
       throw Object.assign(
-        new VfsError('EAGAIN', `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`, route.path),
+        new Refusal('EAGAIN', route.path, `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`),
         { asyncMount: true as const },
       );
     }
@@ -761,9 +799,9 @@ export class CompositeVFS implements VFS {
     ops: Ops, name: K, rel: string, path: string, run: (fn: NonNullable<SyncVFS[K]>) => Awaitable<T>,
   ): Awaitable<T> {
     return then(this.softStat(ops, rel, true), (stat) => {
-      if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+      if (stat === null) throw new Refusal('ENOENT', path);
       const fn = (ops as SyncVFS)[name];
-      if (typeof fn !== 'function') throw new VfsError('ENOTSUP', `this filesystem does not support ${String(name)}`, path);
+      if (typeof fn !== 'function') throw new Refusal('ENOTSUP', path, `this filesystem does not support ${String(name)}`);
       return run(fn.bind(ops) as NonNullable<SyncVFS[K]>);
     });
   }
@@ -778,10 +816,10 @@ export class CompositeVFS implements VFS {
     return then(this.resolve(input, true, sync), (path) => {
       this.present(path);
       if (this.isStructural(path)) {
-        throw new VfsError('EISDIR', 'is a directory', path);
+        throw new Refusal('EISDIR', path);
       }
       const route = this.route(path);
-      if (write && route.mount.options.readOnly) throw new VfsError('EROFS', `${route.mount.point} is mounted read-only`, path);
+      if (write && route.mount.options.readOnly) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
       return then(this.reachable(path, sync), () =>
         this.capability(this.ops(route, sync), name, route.rel, path, (fn) => run(fn, route.rel)));
     });
@@ -789,7 +827,7 @@ export class CompositeVFS implements VFS {
 
   private method<K extends keyof SyncVFS>(ops: Ops, name: K, path: string): NonNullable<SyncVFS[K]> {
     const fn = (ops as SyncVFS)[name];
-    if (typeof fn !== 'function') throw new VfsError('ENOTSUP', `this filesystem does not support ${String(name)}`, path);
+    if (typeof fn !== 'function') throw new Refusal('ENOTSUP', path, `this filesystem does not support ${String(name)}`);
     return fn.bind(ops) as NonNullable<SyncVFS[K]>;
   }
 
@@ -835,14 +873,14 @@ export class CompositeVFS implements VFS {
             if (final) continue;
             const mount = this.table.mounts.get(prefix);
             return then(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
-              if (held !== null && !this.permits(held, 1)) throw new VfsError('EACCES', 'permission denied', input);
+              if (held !== null && !this.permits(held, 1)) throw new Refusal('EACCES', input);
               shadowParent = mount === undefined && held === null;
               return step(at + 1);
             });
           }
           if (shadowParent) {
             shadowParent = false;
-            if (!final) throw new VfsError('ENOENT', 'no such file or directory', input);
+            if (!final) throw new Refusal('ENOENT', input);
             continue;
           }
           if (this.absentOn(prefix) !== null) continue;
@@ -860,7 +898,7 @@ export class CompositeVFS implements VFS {
           };
           return then(look(), (stat) => {
             if (stat !== null && stat.type === 'symlink' && canLink) {
-              if (hops >= MAX_LINK_HOPS) throw new VfsError('ELOOP', 'too many levels of symbolic links', input);
+              if (hops >= MAX_LINK_HOPS) throw new Refusal('ELOOP', input);
               return then(ops.readlink!(route.rel), (target) => walk([
                 ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
                 ...target.split('/'),
@@ -870,10 +908,10 @@ export class CompositeVFS implements VFS {
             if (!final) {
               if (stat === null) {
                 if (creating) return step(at + 1);
-                throw new VfsError('ENOENT', 'no such file or directory', input);
+                throw new Refusal('ENOENT', input);
               }
-              if (stat.type !== 'directory') throw new VfsError('ENOTDIR', 'not a directory', input);
-              if (!this.permits(stat, 1)) throw new VfsError('EACCES', 'permission denied', input);
+              if (stat.type !== 'directory') throw new Refusal('ENOTDIR', input);
+              if (!this.permits(stat, 1)) throw new Refusal('EACCES', input);
             }
             return step(at + 1);
           });
@@ -964,7 +1002,7 @@ export class CompositeVFS implements VFS {
   /** ENOENT when `path` is shadowed. */
   private reachable(path: string, sync: boolean): Awaitable<void> {
     return then(this.shadowed(path, sync), (hidden) => {
-      if (hidden) throw new VfsError('ENOENT', 'no such file or directory', path);
+      if (hidden) throw new Refusal('ENOENT', path);
     });
   }
 
@@ -1108,7 +1146,7 @@ export class CompositeVFS implements VFS {
     const notDirectoryFirst = (error: unknown): Awaitable<VfsDirent[]> => {
       if (!isVfsError(error, 'EACCES')) throw error;
       return then(this.softStat(ops, route.rel, true), (stat) => {
-        if (stat !== null && stat.type !== 'directory') throw new VfsError('ENOTDIR', 'not a directory', path);
+        if (stat !== null && stat.type !== 'directory') throw new Refusal('ENOTDIR', path);
         throw error;
       });
     };
@@ -1134,8 +1172,8 @@ export class CompositeVFS implements VFS {
       if (this.isStructural(path)) {
         // open(2) checks read permission before a read answers EISDIR.
         return then(this.statAt(path, true, sync), (stat) => {
-          if (stat !== null && !this.permits(stat, 4)) throw new VfsError('EACCES', 'permission denied', path);
-          throw new VfsError('EISDIR', 'is a directory', path);
+          if (stat !== null && !this.permits(stat, 4)) throw new Refusal('EACCES', path);
+          throw new Refusal('EISDIR', path);
         });
       }
       const route = this.route(path);
@@ -1153,18 +1191,18 @@ export class CompositeVFS implements VFS {
       // mount point is one.
       if (what === 'unlinked' && (path === ROOT_POINT || this.isStructural(path))) {
         // may_delete: write and search on the parent, then EISDIR.
-        if (path === ROOT_POINT) throw new VfsError('EISDIR', 'is a directory', path);
+        if (path === ROOT_POINT) throw new Refusal('EISDIR', path);
         return then(this.statAt(parentOf(path), true, sync), (parent) => {
-          if (parent !== null && !this.permits(parent, 3)) throw new VfsError('EACCES', 'permission denied', path);
-          throw new VfsError('EISDIR', 'is a directory', path);
+          if (parent !== null && !this.permits(parent, 3)) throw new Refusal('EACCES', path);
+          throw new Refusal('EISDIR', path);
         });
       }
       const route = this.route(path);
       // chmod, chown and utimes of a mount point change the mounted root, as
       // on Linux; only a directory above a mount point has no backend to ask.
       const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);
-      if (this.isStructural(path) && !metadataOnly) throw new VfsError('EBUSY', `a mount point cannot be ${what}`, path);
-      if (route.mount.options.readOnly) throw new VfsError('EROFS', `${route.mount.point} is mounted read-only`, path);
+      if (this.isStructural(path) && !metadataOnly) throw new Refusal('EBUSY', path, `a mount point cannot be ${what}`);
+      if (route.mount.options.readOnly) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
       return then(this.reachable(path, sync), () => run(this.ops(route, sync), route.rel, path));
     });
   }
@@ -1175,10 +1213,10 @@ export class CompositeVFS implements VFS {
       if (this.isStructural(path)) {
         // mkdir -p of a live mount point (or a directory above one) has nothing to do.
         if (options?.recursive) return undefined;
-        throw new VfsError('EBUSY', 'a mount point cannot be created', path);
+        throw new Refusal('EBUSY', path, 'a mount point cannot be created');
       }
       const route = this.route(path);
-      if (route.mount.options.readOnly) throw new VfsError('EROFS', `${route.mount.point} is mounted read-only`, path);
+      if (route.mount.options.readOnly) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
       if (!options?.recursive) {
         return then(this.reachable(path, sync), () => (this.ops(route, sync) as SyncVFS).mkdir(route.rel, options));
       }
@@ -1199,7 +1237,7 @@ export class CompositeVFS implements VFS {
         return then(this.softStat(ops, r.rel, true), (stat) => {
           if (stat !== null) {
             if (stat.type !== 'directory') {
-              throw new VfsError(i === parts.length ? 'EEXIST' : 'ENOTDIR', i === parts.length ? 'file exists' : 'not a directory', at);
+              throw new Refusal(i === parts.length ? 'EEXIST' : 'ENOTDIR', at);
             }
             return make(i + 1);
           }
@@ -1216,12 +1254,12 @@ export class CompositeVFS implements VFS {
       this.present(to);
       const source = this.route(from);
       const target = this.route(to);
-      if (this.isStructural(from)) throw new VfsError('EBUSY', 'a mount point cannot be renamed', from);
-      if (this.isStructural(to)) throw new VfsError('EBUSY', 'a mount point cannot be replaced', to);
+      if (this.isStructural(from)) throw new Refusal('EBUSY', from, 'a mount point cannot be renamed');
+      if (this.isStructural(to)) throw new Refusal('EBUSY', to, 'a mount point cannot be replaced');
       if (source.mount !== target.mount) {
-        throw new VfsError('EXDEV', `${source.mount.point} and ${target.mount.point} are different filesystems`, from);
+        throw new Refusal('EXDEV', from, `${source.mount.point} and ${target.mount.point} are different filesystems`);
       }
-      if (source.mount.options.readOnly) throw new VfsError('EROFS', `${source.mount.point} is mounted read-only`, from);
+      if (source.mount.options.readOnly) throw new Refusal('EROFS', from, `${source.mount.point} is mounted read-only`);
       return then(this.reachable(from, sync), () => then(this.reachable(to, sync), () => this.renameIn(source, target, from, sync)));
     }));
   }
@@ -1232,8 +1270,8 @@ export class CompositeVFS implements VFS {
     // to copy. A source that is not there is ENOENT first, as rename(2) says.
     if (typeof ops.rename !== 'function') {
       return then(this.softStat(ops, source.rel, false), (stat) => {
-        if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', from);
-        throw new VfsError('EXDEV', `${source.mount.point} cannot rename in place`, from);
+        if (stat === null) throw new Refusal('ENOENT', from);
+        throw new Refusal('EXDEV', from, `${source.mount.point} cannot rename in place`);
       });
     }
     return ops.rename(source.rel, target.rel);
@@ -1255,25 +1293,25 @@ export class CompositeVFS implements VFS {
       this.present(to);
       const fromMount = this.table.mounts.get(from);
       if (from === ROOT_POINT || (this.isStructural(from) && fromMount === undefined) || (fromMount === undefined && this.hasLiveBelow(from))) {
-        throw new VfsError('ENOTSUP', 'a tree holding another filesystem is copied by cp -r, not by this primitive', from);
+        throw new Refusal('ENOTSUP', from, 'a tree holding another filesystem is copied by cp -r, not by this primitive');
       }
-      if (to === ROOT_POINT || this.isStructural(to)) throw new VfsError('EBUSY', 'a mount point cannot be replaced', to);
+      if (to === ROOT_POINT || this.isStructural(to)) throw new Refusal('EBUSY', to, 'a mount point cannot be replaced');
       const source = this.route(from);
       const target = this.route(to);
-      if (target.mount.options.readOnly) throw new VfsError('EROFS', `${target.mount.point} is mounted read-only`, to);
+      if (target.mount.options.readOnly) throw new Refusal('EROFS', to, `${target.mount.point} is mounted read-only`);
       const sourceOps = this.ops(source, sync) as SyncVFS;
       return then(this.statAt(from, false, sync), (stat) => {
-        if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', from);
+        if (stat === null) throw new Refusal('ENOENT', from);
         const dir = stat.type === 'directory';
-        if (dir && !options?.recursive) throw new VfsError('EISDIR', 'is a directory (a tree needs recursive)', from);
+        if (dir && !options?.recursive) throw new Refusal('EISDIR', from, 'a tree needs recursive');
         return then(this.statAt(parentOf(to), true, sync), (parent) => {
-          if (parent === null) throw new VfsError('ENOENT', 'no such file or directory', to);
-          if (parent.type !== 'directory') throw new VfsError('ENOTDIR', 'not a directory', to);
-          if (dir && (to === from || to.startsWith(`${from}/`))) throw new VfsError('EINVAL', 'a tree cannot be copied into itself', to);
+          if (parent === null) throw new Refusal('ENOENT', to);
+          if (parent.type !== 'directory') throw new Refusal('ENOTDIR', to);
+          if (dir && (to === from || to.startsWith(`${from}/`))) throw new Refusal('EINVAL', to, 'a tree cannot be copied into itself');
           return then(this.statAt(to, false, sync), (existing) => {
             if (existing !== null) {
-              if (dir) throw new VfsError('EEXIST', 'file exists', to);
-              if (existing.type === 'directory') throw new VfsError('EISDIR', 'is a directory', to);
+              if (dir) throw new Refusal('EEXIST', to);
+              if (existing.type === 'directory') throw new Refusal('EISDIR', to);
             }
             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
               return sourceOps.copy(source.rel, target.rel, options);
@@ -1290,7 +1328,7 @@ export class CompositeVFS implements VFS {
     const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
     if (stat.type === 'symlink') {
       if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
-        throw new VfsError('ENOTSUP', 'a link cannot be copied between these filesystems', toRel);
+        throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
       }
       return then(from.readlink(fromRel), (target) => then(to.symlink!(target, toRel), () => 1));
     }
@@ -1313,10 +1351,10 @@ export class CompositeVFS implements VFS {
       const backend = ops as SyncVFS;
       if (typeof backend.rmdir === 'function') return backend.rmdir(rel);
       return then(backend.stat(rel, { follow: false }), (stat) => {
-        if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
-        if (stat.type !== 'directory') throw new VfsError('ENOTDIR', 'not a directory', path);
+        if (stat === null) throw new Refusal('ENOENT', path);
+        if (stat.type !== 'directory') throw new Refusal('ENOTDIR', path);
         return then(backend.readdir(rel), (entries) => {
-          if (entries.length > 0) throw new VfsError('ENOTEMPTY', 'directory not empty', path);
+          if (entries.length > 0) throw new Refusal('ENOTEMPTY', path);
           return backend.unlink(rel);
         });
       });
@@ -1332,7 +1370,7 @@ export class CompositeVFS implements VFS {
    */
   private removeAt(input: string, sync: boolean): Awaitable<VfsRemoval> {
     return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
-      if (this.hasLiveBelow(path)) throw new VfsError('EBUSY', 'something is mounted beneath it', path);
+      if (this.hasLiveBelow(path)) throw new Refusal('EBUSY', path, 'something is mounted beneath it');
       const backend = ops as SyncVFS;
       if (typeof backend.removeRecursive === 'function') {
         const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
@@ -1349,7 +1387,7 @@ export class CompositeVFS implements VFS {
     const order: Array<{ rel: string; dir: boolean }> = [];
     const visit = (r: string): Awaitable<void> => then(ops.stat(r, { follow: false }), (stat) => {
       if (stat === null) {
-        if (r === rel) throw new VfsError('ENOENT', 'no such file or directory', path);
+        if (r === rel) throw new Refusal('ENOENT', path);
         return undefined;
       }
       order.push({ rel: r, dir: stat.type === 'directory' });
@@ -1375,7 +1413,10 @@ export class CompositeVFS implements VFS {
         const fail = (cause: unknown): void => {
           if (isVfsError(cause, 'ENOENT')) { gone.add(entry.rel); return; }
           keepWithAncestors(entry.rel);
-          failures.push({ path: at(entry.rel), error: isVfsError(cause) ? cause : new VfsError('EIO', String(cause), at(entry.rel)) });
+          failures.push({
+            path: at(entry.rel),
+            error: isVfsError(cause) ? cause : syscallError('EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), { detail: String(cause) }),
+          });
         };
         try {
           const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
@@ -1399,31 +1440,31 @@ export class CompositeVFS implements VFS {
   // from the call itself, whatever the backend. \`sync\` is the synchronous face.
 
   async stat(path: string, options?: { follow?: boolean }): Promise<VfsStat | null> {
-    return this.statAt(path, options?.follow !== false, false);
+    return reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, false));
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    return this.onFile(path, true, false, (ops, rel) => (ops as SyncVFS).readFile(rel));
+    return reported({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => (ops as SyncVFS).readFile(rel)));
   }
 
   async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
-    return this.onCapability(path, false, 'readRange', false, (fn, rel) => fn(rel, offset, length));
+    return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'readRange', false, (fn, rel) => fn(rel, offset, length)));
   }
 
   async writeFile(path: string, data: Uint8Array, options?: { mode?: number }): Promise<void> {
-    return this.onMutation(path, true, false, 'written', (ops, rel) => (ops as SyncVFS).writeFile(rel, data, options));
+    return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => (ops as SyncVFS).writeFile(rel, data, options)));
   }
 
   async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void> {
-    return this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes));
+    return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)));
   }
 
   async truncate(path: string, size: number): Promise<void> {
-    return this.onMutation(path, true, false, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size));
+    return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)));
   }
 
   async readdir(path: string): Promise<VfsDirent[]> {
-    return this.readdirAt(path, false);
+    return reported({ syscall: 'scandir', path }, () => this.readdirAt(path, false));
   }
 
   /**
@@ -1433,7 +1474,7 @@ export class CompositeVFS implements VFS {
    * is left out.
    */
   async readdirStat(path: string): Promise<Array<{ name: string; stat: VfsStat }>> {
-    return this.statEntries(await this.resolve(path, true, false));
+    return reported({ syscall: 'scandir', path }, async () => this.statEntries(await this.resolve(path, true, false)));
   }
 
   /**
@@ -1467,55 +1508,57 @@ export class CompositeVFS implements VFS {
   }
 
   async mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void> {
-    return this.mkdirAt(path, options, false);
+    return reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, false));
   }
 
   async unlink(path: string): Promise<void> {
-    return this.onMutation(path, false, false, 'unlinked', (ops, rel) => (ops as SyncVFS).unlink(rel));
+    return reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, false, 'unlinked', (ops, rel) => (ops as SyncVFS).unlink(rel)));
   }
 
   async rmdir(path: string): Promise<void> {
-    return this.rmdirAt(path, false);
+    return reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, false));
   }
 
   async rename(from: string, to: string): Promise<void> {
-    return this.renameAt(from, to, false);
+    return reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, false));
   }
 
   async removeRecursive(path: string): Promise<VfsRemoval> {
-    return this.removeAt(path, false);
+    return reported({ syscall: 'rm', path }, () => this.removeAt(path, false));
   }
 
   async symlink(target: string, path: string): Promise<void> {
-    return this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel));
+    return reported({ syscall: 'symlink', path: target, dest: path }, () =>
+      this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)));
   }
 
   async readlink(path: string): Promise<string> {
-    return this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel));
+    return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
   }
 
   async chmod(path: string, mode: number): Promise<void> {
-    return this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode));
+    return reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)));
   }
 
   async chown(path: string, uid: number, gid: number): Promise<void> {
-    return this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid));
+    return reported({ syscall: 'chown', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)));
   }
 
   async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
-    return this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs));
+    return reported({ syscall: 'utime', path }, () =>
+      this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs)));
   }
 
   async writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult> {
-    return this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected));
+    return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)));
   }
 
   async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
-    return this.copyAt(from, to, options, false);
+    return reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, false));
   }
 
   async readFileAtRevision(path: string, revision: VfsRevision, range?: { offset: number; length: number }): Promise<Uint8Array> {
-    return this.onCapability(path, false, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range));
+    return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)));
   }
 
   describe(): VfsMountDescription {
@@ -1525,26 +1568,40 @@ export class CompositeVFS implements VFS {
 
   private makeSync(): SyncVFS {
     return {
-      stat: (path, options) => this.statAt(path, options?.follow !== false, true) as VfsStat | null,
-      readFile: (path) => this.onFile(path, true, true, (ops, rel) => (ops as SyncVFS).readFile(rel)) as Uint8Array,
-      readRange: (path, offset, length) => this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)) as Uint8Array,
-      writeFile: (path, data, options) => this.onMutation(path, true, true, 'written', (ops, rel) => (ops as SyncVFS).writeFile(rel, data, options)) as void,
-      writeRange: (path, offset, bytes) => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)) as void,
-      truncate: (path, size) => this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)) as void,
-      readdir: (path) => this.readdirAt(path, true) as VfsDirent[],
-      mkdir: (path, options) => this.mkdirAt(path, options, true) as void,
-      unlink: (path) => this.onMutation(path, false, true, 'unlinked', (ops, rel) => (ops as SyncVFS).unlink(rel)) as void,
-      rmdir: (path) => this.rmdirAt(path, true) as void,
-      rename: (from, to) => this.renameAt(from, to, true) as void,
-      removeRecursive: (path) => { this.removeAt(path, true); },
-      symlink: (target, path) => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)) as void,
-      readlink: (path) => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)) as string,
-      chmod: (path, mode) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)) as void,
-      chown: (path, uid, gid) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)) as void,
-      utimes: (path, a, m) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)) as void,
-      copy: (from, to, options) => this.copyAt(from, to, options, true) as number,
-      writeFileIfRevision: (path, data, expected) => this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)) as VfsCasResult,
-      readFileAtRevision: (path, revision, range) => this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)) as Uint8Array,
+      stat: (path, options) => reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () =>
+        this.statAt(path, options?.follow !== false, true)) as VfsStat | null,
+      readFile: (path) => reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => (ops as SyncVFS).readFile(rel))) as Uint8Array,
+      readRange: (path, offset, length) => reported({ syscall: 'open', path }, () =>
+        this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length))) as Uint8Array,
+      writeFile: (path, data, options) => reported({ syscall: 'open', path }, () =>
+        this.onMutation(path, true, true, 'written', (ops, rel) => (ops as SyncVFS).writeFile(rel, data, options))) as void,
+      writeRange: (path, offset, bytes) => reported({ syscall: 'open', path }, () =>
+        this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes))) as void,
+      truncate: (path, size) => reported({ syscall: 'open', path }, () =>
+        this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size))) as void,
+      readdir: (path) => reported({ syscall: 'scandir', path }, () => this.readdirAt(path, true)) as VfsDirent[],
+      mkdir: (path, options) => reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, true)) as void,
+      unlink: (path) => reported({ syscall: 'unlink', path }, () =>
+        this.onMutation(path, false, true, 'unlinked', (ops, rel) => (ops as SyncVFS).unlink(rel))) as void,
+      rmdir: (path) => reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true)) as void,
+      rename: (from, to) => reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true)) as void,
+      removeRecursive: (path) => { reported({ syscall: 'rm', path }, () => this.removeAt(path, true)); },
+      symlink: (target, path) => reported({ syscall: 'symlink', path: target, dest: path }, () =>
+        this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel))) as void,
+      readlink: (path) => reported({ syscall: 'readlink', path }, () =>
+        this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel))) as string,
+      chmod: (path, mode) => reported({ syscall: 'chmod', path }, () =>
+        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode))) as void,
+      chown: (path, uid, gid) => reported({ syscall: 'chown', path }, () =>
+        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid))) as void,
+      utimes: (path, a, m) => reported({ syscall: 'utime', path }, () =>
+        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m))) as void,
+      copy: (from, to, options) => reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () =>
+        this.copyAt(from, to, options, true)) as number,
+      writeFileIfRevision: (path, data, expected) => reported({ syscall: 'open', path }, () =>
+        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected))) as VfsCasResult,
+      readFileAtRevision: (path, revision, range) => reported({ syscall: 'open', path }, () =>
+        this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range))) as Uint8Array,
     };
   }
 }

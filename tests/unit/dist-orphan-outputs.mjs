@@ -25,13 +25,15 @@ for (const pkg of BUILT_PACKAGES) {
 }
 
 // A package built as the real ones are: create, build, delete, rebuild.
+// fabric's build is the shared clean-then-compile; core's also pins its
+// transform pipeline, which needs core's own source.
 const root = mkdtempSync(join(repo, '.dist-orphan-'));
 try {
   mkdirSync(join(root, 'scripts'), { recursive: true });
   cpSync(join(repo, 'scripts', 'clean-dist.mjs'), join(root, 'scripts', 'clean-dist.mjs'));
-  const pkgDir = join(root, 'packages', 'core');
+  const pkgDir = join(root, 'packages', 'fabric');
   mkdirSync(join(pkgDir, 'src'), { recursive: true });
-  const build = JSON.parse(readFileSync(join(repo, 'packages', 'core', 'package.json'), 'utf8')).scripts.build;
+  const build = JSON.parse(readFileSync(join(repo, 'packages', 'fabric', 'package.json'), 'utf8')).scripts.build;
   writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module', scripts: { build } }));
   writeFileSync(join(pkgDir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { module: 'esnext', target: 'es2022', moduleResolution: 'bundler', skipLibCheck: true }, include: ['src'] }));
   writeFileSync(join(pkgDir, 'src', 'kept.ts'), 'export const kept = 1;\n');
@@ -43,15 +45,15 @@ try {
   rmSync(join(pkgDir, 'src', 'gone.ts'));
 
   // Before a rebuild the orphan is refused, by name.
-  assert.deepEqual(orphanedOutputs({ root, packages: ['core'] }), [
-    'packages/core/dist/gone.d.ts', 'packages/core/dist/gone.d.ts.map', 'packages/core/dist/gone.js',
+  assert.deepEqual(orphanedOutputs({ root, packages: ['fabric'] }), [
+    'packages/fabric/dist/gone.d.ts', 'packages/fabric/dist/gone.d.ts.map', 'packages/fabric/dist/gone.js',
   ]);
 
   // The rebuild removes it; kept.ts's outputs stay.
   run();
   assert.equal(existsSync(join(pkgDir, 'dist', 'gone.js')), false);
   assert.ok(existsSync(join(pkgDir, 'dist', 'kept.js')));
-  assert.deepEqual(orphanedOutputs({ root, packages: ['core'] }), []);
+  assert.deepEqual(orphanedOutputs({ root, packages: ['fabric'] }), []);
 
   // A versioned staged asset no generated artifact names is refused too.
   const assets = join(root, 'packages', 'worker', 'public', '_assets');

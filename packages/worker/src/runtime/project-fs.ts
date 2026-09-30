@@ -10,7 +10,7 @@
 import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { VfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'readdir'
@@ -31,7 +31,7 @@ export function projectFs(view: ProcessView): ProjectFs {
   const at = (key: string) => '/' + normalizeVfsPath(key);
   const statOf = async (key: string, follow: boolean): Promise<VfsStat> => {
     const st = await view.stat(at(key), { follow });
-    if (st === null) throw new VfsError('ENOENT', 'no such file or directory', at(key));
+    if (st === null) throw syscallError('ENOENT', follow ? 'stat' : 'lstat', at(key));
     return {
       dev: st.dev, ino: st.ino, nlink: st.nlink, type: st.type, size: st.size,
       atime: st.atimeMs, ctime: st.ctimeMs, mtime: st.mtimeMs, mode: st.mode, uid: st.uid, gid: st.gid,

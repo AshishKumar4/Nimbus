@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-http.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
-import { clientLifetime, pendingListenLifetime, pendingCloseLifetime } from './lib/native-http-lifetimes.mjs';
+import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -139,6 +139,51 @@ assert.equal(expected.headers.headers[0][1], 'Tue, 29 Sep 2026 10:00:00 GMT', 'N
 assert.match(expected.headers.headers[1][1], /\(KHTML, like Gecko\) Chrome/, 'Node keeps the full User-Agent');
 assert.deepEqual(expected.conditional, [304, ''], 'Node answers the conditional GET not modified');
 
+// Node's process lifetime around one exchange (exchangeLifetime's program as a
+// Node process): alive while the exchange is open after server.close(), and
+// exited once it completes; an unread request body does not hold it. The
+// client asks for `Connection: close`: an idle keep-alive connection is a
+// socket of Node's own that a Nimbus server, reached without one, never has.
+async function nodeExchange(mode) {
+  const program = `const http = require("node:http");
+    const server = http.createServer(async (request, response) => {
+      server.close();
+      if (process.argv[1] === "ignored") { response.end("ok"); return; }
+      response.writeHead(200); response.flushHeaders(); response.write("first");
+      let data = ""; for await (const chunk of request) data += chunk;
+      response.end("last:" + data);
+    });
+    server.listen(0, "127.0.0.1", () => console.log(server.address().port));`;
+  const child = Bun.spawn(['node', '-e', program, mode], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  const stdout = child.stdout.getReader();
+  const url = `http://127.0.0.1:${Number(new TextDecoder().decode((await stdout.read()).value).trim())}/`;
+  const exited = () => Promise.race([child.exited.then(() => true), Bun.sleep(3000).then(() => false)]);
+  try {
+    if (mode === 'ignored') {
+      const body = await (await fetch(url, { method: 'POST', body: 'unread', headers: { connection: 'close' } })).text();
+      return { body, heldAfter: !(await exited()) };
+    }
+    let upload;
+    const stream = new ReadableStream({ start(controller) { upload = controller; controller.enqueue(new TextEncoder().encode('a')); } });
+    const reader = (await fetch(url, { method: 'POST', body: stream, duplex: 'half', headers: { connection: 'close' } })).body.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    await Bun.sleep(200);
+    const heldWhileOpen = child.exitCode === null;
+    upload.enqueue(new TextEncoder().encode('b'));
+    upload.close();
+    let rest = '';
+    for (;;) { const next = await reader.read(); if (next.done) break; rest += new TextDecoder().decode(next.value); }
+    return { first, heldWhileOpen, rest, heldAfter: !(await exited()) };
+  } finally {
+    if (child.exitCode === null) { child.kill('SIGTERM'); await child.exited; }
+  }
+}
+const expectedExchange = { exchange: await nodeExchange('exchange'), ignored: await nodeExchange('ignored') };
+assert.deepEqual(expectedExchange, {
+  exchange: { first: 'first', heldWhileOpen: true, rest: 'last:ab', heldAfter: false },
+  ignored: { body: 'ok', heldAfter: false },
+}, 'Node 22 holds the process for an open exchange and releases it after');
+
 const require = createRequire(import.meta.url);
 const fromWrangler = createRequire(require.resolve('wrangler/package.json'));
 const binary = fromWrangler('workerd').default;
@@ -171,6 +216,7 @@ const exercise = ${exercise.toString()};
 const clientLifetime = ${clientLifetime.toString()};
 const pendingListenLifetime = ${pendingListenLifetime.toString()};
 const pendingCloseLifetime = ${pendingCloseLifetime.toString()};
+const exchangeLifetime = ${exchangeLifetime.toString()};
 const drain = async () => { while (__pendingIO.length) await Promise.all(__pendingIO.splice(0)); };
 export default { async fetch(request) {
   if (new URL(request.url).pathname === '/ready') return new Response('ready');
@@ -179,6 +225,12 @@ export default { async fetch(request) {
   if (mode === 'client' || mode === 'error' || mode === 'cancel') return Response.json(await clientLifetime(builtins.https, __nimbusRunEntrypointToExit, mode));
   if (mode === 'pending') return Response.json(await pendingListenLifetime(http, __nimbusRunEntrypointToExit, __supervisor, drain));
   if (mode === 'close') return Response.json(await pendingCloseLifetime(http, __supervisor, registered, drain));
+  if (mode === 'exchange' || mode === 'ignored') {
+    return Response.json(await exchangeLifetime(http, __nimbusLiveHandles, (port, request) => {
+      const headers = new Headers(request.headers); headers.set('X-Nimbus-Port', String(port));
+      return globalThis.__nimbusServeHttp(new Request(request, { headers, duplex: 'half' }));
+    }, mode));
+  }
   const result = await exercise(http, (port, request) => {
     const headers = new Headers(request.headers); headers.set('X-Nimbus-Port', String(port));
     return globalThis.__nimbusServeHttp(new Request(request, { headers }));
@@ -201,7 +253,7 @@ try {
   assert.deepEqual(actual.result, expected, logs);
   assert.deepEqual(actual.registered, [], 'closing native servers releases Nimbus ports');
   const snapshots = {};
-  for (const mode of ['client', 'error', 'cancel', 'pending', 'close']) {
+  for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {
     const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
     assert.equal(reply.status, 200, logs);
     snapshots[mode] = await reply.json();
@@ -212,6 +264,7 @@ try {
     cancel: { ended: false, errored: false, closed: true, streamed: true, body: 'first', cancelled: true, pending: 0 },
     pending: { listening: true, pending: 0 },
     close: { closes: 1, callbacks: 1, listening: true, relistenError: null, port: 55001, oldReleased: true, newRetained: true },
+    ...expectedExchange,
   }, 'the process may exit only after native I/O has completed, and pending close must permit a new listen');
   console.log('native-http-workerd: Node parity for binary, streams, HEAD/204, listen errors and lifecycle');
 } finally {

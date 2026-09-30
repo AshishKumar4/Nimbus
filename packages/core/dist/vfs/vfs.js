@@ -13,7 +13,7 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
-import { isVfsError, VfsError } from './vfs-error.js';
+import { isVfsError, syscallError } from './vfs-error.js';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /**
@@ -67,7 +67,7 @@ export function fileTypeChar(mode, type) {
 export async function statOrThrow(vfs, path, options) {
     const stat = await vfs.stat(path, options);
     if (stat === null)
-        throw new VfsError('ENOENT', path);
+        throw syscallError('ENOENT', options?.follow === false ? 'lstat' : 'stat', path);
     return stat;
 }
 /** The entry at `path` itself, a link not followed (lstat); ENOENT when nothing is there. */

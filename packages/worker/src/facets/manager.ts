@@ -38,7 +38,6 @@ import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
-import { typescriptLoader } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
@@ -58,7 +57,6 @@ import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, type BridgeRequireFs, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
-import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
 import {
@@ -68,7 +66,6 @@ import {
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
-import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -79,13 +76,20 @@ import {
   FENCED_WORK_KEY_PREFIX,
   type FencedWorkRecord,
 } from '@nimbus-sh/fabric/fenced-work.js';
+import { type EsbuildService, rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import {
-  type EsbuildService,
-  rewriteBundledEsmToCjs,
-  rewriteProvidedCommonJsModules,
-  type EsbuildTransformOutcome,
-  type EsbuildTransformRequest,
-} from '@nimbus-sh/core/runtime/esbuild-service.js';
+  bundleTypescriptLoader,
+  esbuildDiagnosticShim,
+  isBundleModuleCandidate,
+  isTypescriptDeclarationFile,
+  looksLikeEsm,
+  needsBundleCellTransform,
+  transformBundleCells,
+  transformEntryScript,
+  type BundleCellResultStore,
+  type BundleCellTransformStats,
+} from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { TransformStore } from './transform-store.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {
   DEFAULT_CJS_CONDITIONS,
@@ -156,7 +160,6 @@ import {
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
-  ESM_TRANSFORM_CACHE_MAX_BYTES,
   FS_LIST_PAGE_LIMIT,
 } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
@@ -170,7 +173,6 @@ import {
   prefetchBundleStart,
   prefetchBundleEnd,
   setPrefetchCacheBytes,
-  setTransformCacheBytes,
 } from '@nimbus-sh/platform/diag-counters.js';
 
 /**
@@ -212,8 +214,6 @@ function* launchNames(
   }
 }
 
-/** A bundled ESM file this large is rewritten to CJS without esbuild when its shape allows. */
-const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 // A piped stdin's largest single write to the process input channel, a
 // quarter of that queue's bound (core/runtime/process-input.ts).
 const STDIN_PIPE_PIECE_CHARS = 64 * 1024;
@@ -373,7 +373,7 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * are the program's exit and a signal. Callers that still pass a finite
  * deadline (the resident boot settle) arm the expiry timer.
  *
- * Three kinds of handle, each owned by the shim that creates them:
+ * Four kinds of handle, each owned by the shim that creates them:
  *
  *   - macrotask TIMERS and intervals (`__nimbusPendingTimers`), from the
  *     timer tracker below.
@@ -382,6 +382,10 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  *     PerformPromiseThen and surfaces nowhere else, so this counter is how
  *     awaited work is seen at all. See the shim's __nimbusTrackOp.
  *   - listening SERVERS (`__portRegistry`), open until the program closes
+ *     them.
+ *   - held CONNECTIONS (`__nimbusOpenSockets`): an HTTP exchange a server is
+ *     answering, a WebSocket client, a tls.connect socket, until it closes
+ *     (or is unref'd). Not startup work: a resident's boot does not wait on
  *     them.
  *
  * The loop subscribes to the exit promise ONCE — a per-pass
@@ -417,7 +421,8 @@ function __nimbusLiveHandles() {
   if (__servers && typeof __servers.values === "function") {
     for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;
   }
-  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles");
+  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles")
+    + __nimbusHandleCount("__nimbusOpenSockets");
 }
 
 async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {
@@ -470,6 +475,39 @@ async function __nimbusAwaitEntryEvaluation(__entryResult) {
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
   if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
   return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);
+}
+
+// Whether the program holds no live handle once a settling chain has had the
+// same four turns the one-shot loop gives it.
+async function __nimbusHoldsNoHandle() {
+  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
+    ? globalThis.__nimbusRawSetTimeout
+    : globalThis.setTimeout;
+  for (let __pass = 0; __pass < 4; __pass++) await new Promise((resolve) => __rawSetTimeout(resolve, 0));
+  return __nimbusLiveHandles() === 0;
+}
+
+// A resident process ends as Node's does: when it holds no live handle. It
+// may serve for hours, so this does not poll: every place a handle is released
+// (a timer firing or cleared, an operation settling, a server closed or
+// unref'd, stdin let go) calls __nimbusHandleReleased, and a release that
+// leaves none is the program's natural end.
+function __nimbusNaturalExit() {
+  return new Promise((resolve) => {
+    let __checking = false;
+    const __released = () => {
+      if (__checking) return;
+      __checking = true;
+      __nimbusHoldsNoHandle().then((__none) => {
+        __checking = false;
+        if (!__none) return;
+        if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
+        resolve();
+      });
+    };
+    globalThis.__nimbusHandleReleased = __released;
+    __released();
+  });
 }
 
 // A resident facet keeps running after the call that boots it returns, so it
@@ -531,14 +569,18 @@ const ENTRYPOINT_TIMER_TRACKER = `
   const one = new Set(), iv = new Set();
   g.setTimeout = function(fn, ms, ...a){
     if (typeof fn !== "function") return st(fn, ms, ...a);
-    let id; g.__nimbusPendingTimers++;
-    id = st(function(){ if (one.delete(id)) g.__nimbusPendingTimers--; return fn.apply(this, arguments); }, ms, ...a);
-    one.add(id); return id;
+    // Counted once the timer exists: a delay the platform refuses throws, and
+    // a caught throw leaves no timer to wait for.
+    const id = st(function(){
+      if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); }
+      return fn.apply(this, arguments);
+    }, ms, ...a);
+    g.__nimbusPendingTimers++; one.add(id); return id;
   };
-  g.clearTimeout = function(id){ if (one.delete(id)) g.__nimbusPendingTimers--; return ct(id); };
+  g.clearTimeout = function(id){ if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ct(id); };
   if (typeof si === "function") {
     g.setInterval = function(fn, ms, ...a){ const id = si(fn, ms, ...a); iv.add(id); g.__nimbusPendingTimers++; return id; };
-    g.clearInterval = function(id){ if (iv.delete(id)) g.__nimbusPendingTimers--; return ci(id); };
+    g.clearInterval = function(id){ if (iv.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ci(id); };
   }
   // process.exit: the program's pending timers and intervals never fire again.
   g.__nimbusStopProgramTimers = function(){
@@ -1371,6 +1413,11 @@ ${RESIDENCY_MISS_REPORT}
     __require.main = mod;
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
+    // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
+    // (it waits for a change, or for a debugger); nothing else does.
+    const __nimbusHeldWithoutHandles = Array.isArray(argv)
+      && argv.some((__arg) => __arg === "--watch" || __arg === "--inspect-brk");
+    let __nimbusEndedAtBoot = false;
     try {
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
@@ -1390,6 +1437,9 @@ ${RESIDENCY_MISS_REPORT}
       } else {
         await __nimbusSettleEntrypointStartup(__entryResult, ${RESIDENT_BOOT_SETTLE_MS});
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
+        // Finished during its boot (\`--help\`, a CLI run that also serves):
+        // the boot answers with its exit, as an explicit exit's does.
+        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle();
       }
     } catch (e) {
       if (e instanceof __ProcessExit) {
@@ -1468,8 +1518,11 @@ ${RESIDENCY_MISS_REPORT}
           if (__result !== __exitMarker) {
             finalCode = Number(__nimbusProcessExitCode ?? 0);
           }
+        } else if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
+          finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
-          finalCode = Number(await __nimbusProcessExitPromise);
+          // process.exit, or the natural end: no live handle left.
+          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
           __nimbusEmitExit(finalCode);
@@ -1493,6 +1546,9 @@ ${RESIDENCY_MISS_REPORT}
       workerCtx.waitUntil(__residentExitLifecycle);
       if (attachedTty) {
         __nimbusAttachedLifecycle = __residentExitLifecycle;
+      } else if (__nimbusEndedAtBoot || __nimbusProcessExitCode !== null) {
+        // Ended during its boot: its exit is reported before the boot answers.
+        await __residentExitLifecycle;
       }
     }
 
@@ -1636,6 +1692,8 @@ interface FacetVfsState {
   reachableCount: number;
   /** Diagnostics: was the bundle truncated by the encoded-size cap? */
   truncated: boolean;
+  /** Diagnostics: how the build's transforms were answered. */
+  transforms?: BundleCellTransformStats;
   /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
   cacheHit?: boolean;
   /**
@@ -3590,76 +3648,6 @@ async function addEntryAbsPathReads(
   return { added };
 }
 
-function looksLikeEsm(path: string, src: string): boolean {
-  if (!hasTopLevelModuleSyntax(src)) return false;
-  if (vfsPathExtension(path) !== '') return true;
-  // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
-  try {
-    parseJavaScriptModule(src);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * W3.5 Fix B — module-level cache for ESM→CJS transform results, keyed
- * by content hash. A cheap FNV-1a 32-bit hash is enough (collisions are
- * astronomically rare for the size of bundles we ship; on collision the
- * cell would still load because the cached result is a valid CJS rebuild
- * of an equally-valid ESM input).
- *
- * Lives at module scope so warm exec invocations hit the cache without
- * paying the wasm cold-start cost again.
- *
- * Bounded by bytes, LRU, and reported to the heap model like the prefetch
- * cache (see ESM_TRANSFORM_CACHE_MAX_BYTES for the reset it caused
- * unbounded). An output larger than the whole bound is used for the build
- * that produced it and not retained: admitting it would evict everything
- * else to hold something that still does not fit.
- */
-const __esmTransformCache = new Map<string, string>();
-let __esmTransformCacheBytes = 0;
-
-function __esmTransformCacheGet(key: string): string | undefined {
-  const code = __esmTransformCache.get(key);
-  if (code === undefined) return undefined;
-  // Refresh recency: a Map iterates in insertion order, so the oldest
-  // entry is the first one.
-  __esmTransformCache.delete(key);
-  __esmTransformCache.set(key, code);
-  return code;
-}
-
-function __esmTransformCacheSet(key: string, code: string): void {
-  const bytes = key.length + code.length;
-  if (bytes > ESM_TRANSFORM_CACHE_MAX_BYTES) return;
-  const previous = __esmTransformCache.get(key);
-  if (previous !== undefined) {
-    __esmTransformCacheBytes -= key.length + previous.length;
-    __esmTransformCache.delete(key);
-  }
-  __esmTransformCache.set(key, code);
-  __esmTransformCacheBytes += bytes;
-  for (const [oldest, entry] of __esmTransformCache) {
-    if (__esmTransformCacheBytes <= ESM_TRANSFORM_CACHE_MAX_BYTES) break;
-    __esmTransformCache.delete(oldest);
-    __esmTransformCacheBytes -= oldest.length + entry.length;
-  }
-  setTransformCacheBytes(__esmTransformCacheBytes);
-}
-function __cacheKey(src: string): string {
-  // FNV-1a 32-bit. Only used for cache keys, NEVER for content
-  // integrity. The ~30-byte string we return is a hex hash + length —
-  // length disambiguates collisions across the rare 32-bit overlap.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < src.length; i++) {
-    h ^= src.charCodeAt(i);
-    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-  }
-  return h.toString(16).padStart(8, '0') + ':' + src.length.toString(16);
-}
-
 /**
  * framework-fixes-F4 (2026-05-12): helper for the "esbuild unavailable
  * or fatally errored" paths. Walks the bundle for ESM-shaped files and
@@ -3688,84 +3676,18 @@ function _markBundleEsmAsFailed(
 }
 
 /**
- * Parseable CommonJS standing in for a module esbuild could not transform: it
- * throws the esbuild reason when required, so the failure surfaces at the
- * `require` with its cause rather than as a bare "Cannot use import statement".
- */
-function esbuildDiagnosticShim(path: string, reason: string): string {
-  const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason.replace(/\n/g, ' ')}`);
-  return '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
-    '(function () { throw new Error(' + escapedReason + '); })();\n';
-}
-
-/**
- * The bundle entries that may need the ESM→CJS transform before they can run
- * as module cells. Every cell a process can require is CommonJS by the time
- * it is wrapped (commonjs-cell.ts): the guest's registry could compile an ES
- * module, but cannot resolve its package imports, give it its own file URL,
- * or import names from the CommonJS it depends on.
- *
- * Extensionless entries are in the set because that is the shape of nearly
- * every npm `bin` script. `.json` is data and `.cjs` is CommonJS by
- * definition; neither needs the transform. Content decides from here:
- * `looksLikeEsm` sniffs module syntax, and parses an extensionless file,
- * which may be data rather than a script.
- */
-export function isBundleModuleCandidate(path: string): boolean {
-  const ext = vfsPathExtension(path);
-  return ext === '.js' || ext === '.mjs' || ext === '' || bundleTypescriptLoader(path) !== null;
-}
-
-/**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
- *
- * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
- * JavaScript: compiling a type annotation is a SyntaxError whether or
- * not the file has a single import in it. So these transform on their
- * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
- * the right question for a file that is already valid JS either way, and the
- * wrong one for a file that is never valid JS.
- *
- * A declaration file (`.d.ts`, `.d.mts`, `.d.cts`) is not a source: it has
- * no runtime form, nothing `require()`s one, and esbuild's output for it is
- * empty by definition. It is DATA — read by the program that ships it, which
- * is exactly typescript: `tsc` reads its own `lib/lib.*.d.ts` with
- * `readFileSync`, and every declaration it type-checks against comes from
- * those bytes. Transforming them handed the compiler an 811-byte license
- * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
- * gone. So a declaration file is left exactly as it was staged.
- */
-export function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null {
-  return isTypescriptDeclarationFile(path) ? null : typescriptLoader(path);
-}
-
-/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
-export function isTypescriptDeclarationFile(path: string): boolean {
-  const base = path.slice(path.lastIndexOf('/') + 1);
-  return /\.d\.[mc]?ts$/.test(base);
-}
-
-/**
- * Transform every ESM-shaped file in the bundle to CJS via esbuild.
- * Mutates `bundle` in place. A module esbuild rejects becomes a diagnostic
- * shim that throws the reason when required (`esbuildDiagnosticShim`).
- *
- * ESM/TypeScript candidates are `isBundleModuleCandidate`. CommonJS cells,
- * including .cjs, also visit the rewrite-only path for dynamic import().
+ * Transform every cell of the bundle that needs it (needsBundleCellTransform)
+ * to CommonJS, in place: transformBundleCells, over the bundle's cells, with
+ * the launch's store and pacer. A module esbuild rejects becomes a diagnostic
+ * shim that throws the reason when required (esbuildDiagnosticShim).
  *
  * A JavaScript cell is rewritten in place. A TypeScript source keeps its
  * bytes — they are what a program reads, tsc compiling its own project — and
  * its emit goes to `emits`, to become the path's module cell.
  *
- * When the service transforms in another isolate every cell goes in one
- * `transformMany`, so a launch costs one round trip and this isolate never
- * grows esbuild's heap. Transforms that run here are paced like any pass.
- *
- * Returns the count of files transformed (for diagnostics). Every JavaScript
- * cell lowered from ESM is added to `lowered` (its module's block scope,
- * commonjs-cell.ts THE WRAPPER); a TypeScript source's emit always is.
+ * Every JavaScript cell lowered from ESM is added to `lowered` (its module's
+ * block scope, commonjs-cell.ts THE WRAPPER); a TypeScript source's emit
+ * always is.
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
@@ -3773,140 +3695,43 @@ async function transformEsmInBundle(
   lowered: Set<string>,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
-): Promise<{ transformed: number; failed: number }> {
-  let transformed = 0;
-  let failed = 0;
-  // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
-  const candidates: string[] = [];
+  store?: BundleCellResultStore,
+): Promise<BundleCellTransformStats> {
+  // Snapshot the cells first — transforms await; never iterate-and-mutate.
+  const cells: Array<{ path: string; source: string }> = [];
   for (const path of Object.keys(bundle)) {
-    if (!isBundleModuleCandidate(path) && !path.endsWith('.cjs')) continue;
-    const src = bundle[path];
-    // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
-    // esbuild.transform expect strings.
-    if (typeof src !== 'string') continue;
-    if (path.endsWith('.cjs')) {
-      if (!mayHaveDynamicImport(src)) continue;
-    } else if (bundleTypescriptLoader(path) === null && !looksLikeEsm(path, src) && !mayHaveDynamicImport(src)) continue;
-    candidates.push(path);
+    const source = bundle[path];
+    // hardening-r5: binary cells are not modules.
+    if (typeof source === 'string' && needsBundleCellTransform(path, source)) cells.push({ path, source });
   }
-  interface EsmCell { path: string; typescript: boolean; key: string; absUrl: string; request: EsbuildTransformRequest }
-  const place = (cell: Pick<EsmCell, 'path' | 'typescript'>, code: string): void => {
-    if (cell.typescript) emits.set(cell.path, code);
-    else bundle[cell.path] = code;
-  };
-  const settle = (cell: EsmCell, outcome: EsbuildTransformOutcome): void => {
-    if ('error' in outcome) {
-      // Infrastructure failure is not source code. Abort before the bundle
-      // or immutable loader image can cache a throw-on-require diagnostic.
-      if (outcome.transient) throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
-      // esbuild's verdict on this source is cached with it; a host that could
-      // not run the transform this time has no verdict to cache.
-      const shim = esbuildDiagnosticShim(cell.path, outcome.error);
-      place(cell, shim);
-      __esmTransformCacheSet(cell.key, shim);
-      failed++;
-      return;
-    }
-    const code = bindImportMetaResolve(outcome.code, cell.absUrl);
-    place(cell, code);
-    __esmTransformCacheSet(cell.key, code);
-    transformed++;
-  };
-  const transformCells = async (cells: EsmCell[]): Promise<void> => {
-    let outcomes: EsbuildTransformOutcome[];
-    try {
-      outcomes = await esbuild.transformMany(cells.map((cell) => cell.request));
-    } catch (e) {
-      // Publishing a whole-bundle diagnostic would poison the next launch
-      // even when the per-cell transform cache correctly rejected it.
-      throw new Error(`esbuild transform service unavailable: ${errorText(e)}`, { cause: e });
-    }
-    cells.forEach((cell, i) => settle(cell, outcomes[i]));
-  };
-  const batch: EsmCell[] = [];
-  for (const path of candidates) {
-    const original = bundle[path];
-    if (typeof original !== 'string') continue;
-    const loader = bundleTypescriptLoader(path);
-    const typescript = loader !== null;
-    // Source is transformed once per path; import.meta reads metadata from
-    // each evaluation's module object, including its query and fragment.
-    // The source URL still keys transforms and supplies the static parent
-    // for rewritten dynamic imports and diagnostics.
-    const absUrl = 'file:///' + path.replace(/^\/+/, '');
-    // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
-    const key = __cacheKey(original + '\0' + absUrl);
-    // Every cell's dynamic import() is the process's: the transform keeps
-    // them, and the facet rewrites each to the process's ESM loader.
-    const moduleMetadata = !path.endsWith('.cjs') && (loader !== null || looksLikeEsm(path, original));
-    const cached = __esmTransformCacheGet(key);
-    if (cached !== undefined) {
-      if (moduleMetadata && !typescript) lowered.add(path);
-      place({ path, typescript }, cached);
-      transformed++;
-      continue;
-    }
-    const cellFor = (code: string, rewriteOnly = false): EsmCell => ({
-      path,
-      typescript,
-      key,
-      absUrl,
-      request: {
-        code,
-        options: rewriteOnly
-          ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
-          : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl, true), dynamicImportParent: absUrl, moduleMetadata },
-      },
-    });
-    let src: string;
-    try {
-      src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
-    } catch (e) {
-      // The pre-pass cannot read this cell: a verdict on it alone, like esbuild's.
-      settle(cellFor(original), { error: errorText(e) });
-      continue;
-    }
-    // CommonJS already: only its dynamic import() calls change.
-    const cell = path.endsWith('.cjs') || (loader === null && !looksLikeEsm(path, src)) ? cellFor(src, true) : cellFor(src);
-    if (cell.request.options?.rewriteOnly !== true && !typescript) lowered.add(path);
-    if (cell.request.options?.rewriteOnly !== true && loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
-      // The bounded rewrite is computation in this isolate, however large.
-      if (pacer) await pacer.spend(src.length);
-      let rewritten: EsbuildTransformOutcome | null;
-      try {
-        rewritten = rewriteBundledEsmToCjs(src, absUrl, true);
-      } catch (e) {
-        rewritten = { error: errorText(e) };
-      }
-      if (rewritten && 'error' in rewritten) {
-        settle(cell, rewritten);
-        continue;
-      }
-      if (rewritten) {
-        // Its declarations are CommonJS now; what import() calls remain go to
-        // the facet like any cell's.
-        if (!mayHaveDynamicImport(rewritten.code) && !rewritten.code.includes('import.meta')) {
-          settle(cell, rewritten);
-          continue;
-        }
-        const rest = cellFor(rewritten.code, true);
-        if (esbuild.transformsInIsolate) {
-          await transformCells([rest]);
-          continue;
-        }
-        batch.push(rest);
-        continue;
-      }
-    }
-    if (esbuild.transformsInIsolate) {
-      if (pacer) await pacer.spend(src.length);
-      await transformCells([cell]);
-      continue;
-    }
-    batch.push(cell);
-  }
-  if (batch.length > 0) await transformCells(batch);
-  return { transformed, failed };
+  return transformBundleCells(cells, { host: esbuild, store, pacer }, (path, result) => {
+    if (bundleTypescriptLoader(path) !== null) emits.set(path, result.code);
+    else bundle[path] = result.code;
+    if (result.lowered) lowered.add(path);
+  });
+}
+
+/** What buildPrefetchBundle builds a module map for, and with what. */
+export interface PrefetchBundleOptions {
+  /** The program's path; absent for `-e` code and stdin. */
+  scriptPath?: string;
+  cwd: string;
+  entryCode: string;
+  /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+  esbuild?: EsbuildService;
+  bundleProfile?: FacetBundleProfile;
+  /** Paths earlier runs of the same entry read synchronously and missed. */
+  observedReads?: ReadonlySet<string>;
+  /** The launch's pacer; a build without one runs in the caller's turn. */
+  pacer?: TurnBudget;
+  /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
+  maxBundleBytes?: number;
+  /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
+  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+  /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
+  executedModules?: readonly RequiredModuleRoot[];
+  /** Where the launch's transform results are kept by content. */
+  transformStore?: BundleCellResultStore;
 }
 
 /**
@@ -3925,19 +3750,7 @@ async function transformEsmInBundle(
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(
-  vfs: LaunchFs,
-  scriptPath: string | undefined,
-  cwd: string,
-  entryCode: string,
-  esbuild?: EsbuildService,
-  bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
-  observedReads?: ReadonlySet<string>,
-  pacer?: TurnBudget,
-  maxBundleBytes?: number,
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
-  executedModules?: readonly RequiredModuleRoot[],
-): Promise<FacetVfsState> {
+export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
   // with nothing watching: the estimator read 9.4 MiB while these bytes were
   // resetting the DO three times. Take the budget the enrichment passes are
@@ -3947,10 +3760,7 @@ export async function buildPrefetchBundle(
   const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
   prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
   try {
-    return await _buildPrefetchBundle(
-      vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer,
-      maxBundleBytes, learnedFor, executedModules,
-    );
+    return await _buildPrefetchBundle(vfs, options);
   } finally {
     prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
     lease.release();
@@ -3959,16 +3769,19 @@ export async function buildPrefetchBundle(
 
 async function _buildPrefetchBundle(
   vfs: LaunchFs,
-  scriptPath: string | undefined,
-  cwd: string,
-  entryCode: string,
-  esbuild?: EsbuildService,
-  bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
-  observedReads?: ReadonlySet<string>,
-  pacer?: TurnBudget,
-  maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
-  executedModules?: readonly RequiredModuleRoot[],
+  {
+    scriptPath,
+    cwd,
+    entryCode,
+    esbuild,
+    bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
+    observedReads,
+    pacer,
+    maxBundleBytes = VFS_BUNDLE_MAX_BYTES,
+    learnedFor,
+    executedModules,
+    transformStore,
+  }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -4120,11 +3933,12 @@ async function _buildPrefetchBundle(
   //     take the ES module itself).
   const emits = new Map<string, string>();
   const lowered = new Set<string>();
+  let transforms: BundleCellTransformStats | undefined;
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer);
+    transforms = await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, transformStore);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
@@ -4291,6 +4105,7 @@ async function _buildPrefetchBundle(
     cursor,
     reachableCount: fileCount,
     truncated,
+    ...(transforms ? { transforms } : {}),
     bundleSideModulesRequired,
     ...(wasmImages.length > 0 ? { wasmImages } : {}),
   };
@@ -4956,10 +4771,11 @@ export class FacetManager {
    * The entry script as the facet compiles it: each dynamic `import()` routed
    * to the process's ESM loader, with the entry's own URL as the parent (Node
    * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
-   * in the esbuild facet like every cell's, and is cached by content. The
-   * module-map walk reads the script as written, before this.
+   * in the esbuild facet like every cell's, and its result is kept by content
+   * in the session's transform store. The module-map walk reads the script as
+   * written, before this.
    */
-  private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string): Promise<string> {
+  private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string, pacer: TurnBudget): Promise<string> {
     if (!mayHaveDynamicImport(code)) return code;
     if (this.esbuild === null) throw new Error('entry dynamic import requires the transform service');
     const base = cwd.replace(/\/+$/, '') || '/';
@@ -4967,19 +4783,21 @@ export class FacetManager {
       ? `${base}/[eval]`
       : filename === '[stdin]' ? `${base}/[stdin]` : filename;
     const parentUrl = 'file:///' + path.replace(/^\/+/, '');
-    const key = __cacheKey(code + '\0' + parentUrl + '\0entry');
-    const cached = __esmTransformCacheGet(key);
-    if (cached !== undefined) return cached;
-    const [outcome] = await this.esbuild.transformMany([
-      { code, options: { rewriteOnly: true, dynamicImportParent: parentUrl } },
-    ]);
-    // A failed entry rewrite must not reach a Worker Loader as native host
-    // import(), or become an immutable cached image. Preserve the reported
-    // reason for permanent source errors as well as transient failures.
-    if (outcome === undefined) throw new Error('entry transform service returned no outcome');
-    if ('error' in outcome) throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
-    __esmTransformCacheSet(key, outcome.code);
-    return outcome.code;
+    return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore(), pacer });
+  }
+
+  /**
+   * The store this session's launches keep their transform results in: the
+   * session's database, admitted through its storage ledger, bound to the
+   * esbuild service's transform host. None when the host has no identity (a
+   * result could not be told apart from another host's) or there is no
+   * filesystem to admit against.
+   */
+  private _transformStore(): TransformStore | undefined {
+    const hostId = this.esbuild?.transformHostId;
+    const sql = (this.ctx.storage as { sql?: SqlStorage }).sql;
+    if (!hostId || !sql || !this.vfs) return undefined;
+    return new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
   }
 
   /**
@@ -5398,10 +5216,18 @@ export class FacetManager {
         executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
       }
     }
-    const vfsState = await buildPrefetchBundle(
-      vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
-      new Set(learning.dataReads), pacer, undefined, learnedFor, executed,
-    );
+    const vfsState = await buildPrefetchBundle(vfs, {
+      scriptPath: spec.scriptPath,
+      cwd: spec.cwd,
+      entryCode: spec.entryCode,
+      esbuild: this.esbuild ?? undefined,
+      bundleProfile: profile,
+      observedReads: new Set(learning.dataReads),
+      pacer,
+      learnedFor,
+      executedModules: executed,
+      transformStore: this._transformStore(),
+    });
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];
       const unresolved: string[] = [];
@@ -5534,7 +5360,7 @@ export class FacetManager {
       const file: Record<string, string | Uint8Array> = { [path]: entry.text };
       const emits = new Map<string, string>();
       const lowered = new Set<string>();
-      if (this.esbuild) await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer);
+      if (this.esbuild) await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer, this._transformStore());
       else _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
       let code = emits.get(path) ?? file[path] as string;
       try {
@@ -5853,7 +5679,7 @@ export class FacetManager {
       // the bundle), and plans nothing beyond them: a data plan is chosen from
       // a listing of the namespace, and a one-shot takes no listing of its own
       // (§2.8: the principal's image is where that comes from).
-      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
+      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, pacer, diagSink);
       await this._recordLaunchLearning(vfsState.bundleKey, {
         code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
       }).catch((error) => this._learningLost(entry.pid, error));
@@ -5989,6 +5815,7 @@ export class FacetManager {
     vfsState: FacetVfsState,
     dataPlan: string[],
     signal: AbortSignal,
+    pacer: TurnBudget,
     diagSink?: ExecDiagSink,
   ): Promise<FacetExecResult> {
     // Answered by _buildProcessBundle while the raw cells were still in
@@ -6042,7 +5869,7 @@ export class FacetManager {
             // The staged napi bindings ride by value too, from the worker's
             // own assets, for the same reason.
             const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
-            const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user');
+            const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
             const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
             const codeModules: Record<string, { cjs: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
@@ -6222,10 +6049,7 @@ export class FacetManager {
     if (this.vfs) this.imageStore.ensureDir();
     const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
     const vfsState: FacetVfsState = processVfs
-      ? await buildPrefetchBundle(
-          processVfs, undefined, opts.cwd, '', this.esbuild || undefined,
-          DEFAULT_FACET_BUNDLE_PROFILE,
-        )
+      ? await buildPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
       : { bundle: {}, reachableCount: 0, truncated: false };
 
     const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
@@ -6958,6 +6782,11 @@ export class FacetManager {
       { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile },
       pacer,
     );
+    if (this.debugEnabled) {
+      this.processes.appendOutput(entry.pid, 'stderr',
+        `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
+        + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
+    }
     const planStart = Date.now();
     const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
     if (this.debugEnabled) {
@@ -6999,7 +6828,7 @@ export class FacetManager {
     // Each image is read by path when the facet loads, never by value here.
     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
     let generatedWorker: GeneratedNodeFacetCode | undefined = await generateLongRunningNodeCode(
-      await this._entryDynamicImports(code, opts.filename, cwd),
+      await this._entryDynamicImports(code, opts.filename, cwd, pacer),
       vfsState,
       { ...opts, env: processEnv, cred: entry.cred, wasmImports },
       usesSqlite,

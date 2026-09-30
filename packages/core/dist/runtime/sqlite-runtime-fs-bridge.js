@@ -2,6 +2,7 @@ import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { errnoDescription } from '../vfs/vfs-error.js';
 export function createSqliteDescriptorScope() {
     return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
 }
@@ -531,15 +532,17 @@ export class SqliteRuntimeFsBridge {
         this.vfs.rmdir(p);
     }
     rename(from, to) {
-        const oldPath = this.sqlitePath(from, false, 'rename');
-        const newPath = this.sqlitePath(to, false, 'rename');
+        // Every refusal names the call's own two paths, whichever lookup met it.
+        const call = { syscall: 'rename', path: from, dest: to };
+        const oldPath = this.sqlitePath(from, false, call);
+        const newPath = this.sqlitePath(to, false, call);
         const oldKey = this.legacyKey(oldPath);
         const newKey = this.legacyKey(newPath);
         if (this.vfs.exists(oldPath)) {
             const staleDestination = this.legacySymlinks.isSymlink(newKey);
             if (staleDestination)
                 this.legacySymlinks.assertMutable(newKey);
-            this.assertParentDirectory(newPath, 'rename');
+            this.assertParentDirectory(newPath, call);
             this.vfs.rename(oldPath, newPath);
             if (staleDestination)
                 this.legacySymlinks.delete(newKey);
@@ -547,13 +550,13 @@ export class SqliteRuntimeFsBridge {
         }
         const linkTarget = this.legacySymlinks.readlink(oldKey);
         if (linkTarget === null)
-            throw fsError('ENOENT', 'rename', from);
+            throw callError('ENOENT', call);
         const staleDestination = this.legacySymlinks.isSymlink(newKey);
         this.legacySymlinks.assertMutable(oldKey, ...(staleDestination ? [newKey] : []));
-        this.assertParentDirectory(newPath, 'rename');
+        this.assertParentDirectory(newPath, call);
         if (this.vfs.exists(newPath)) {
             if (this.vfs.isDirectory(newPath))
-                throw fsError('EISDIR', 'rename', to);
+                throw callError('EISDIR', call);
             this.vfs.unlink(newPath);
         }
         this.vfs.symlink(linkTarget, newPath);
@@ -573,15 +576,16 @@ export class SqliteRuntimeFsBridge {
         return this.legacySymlinks.readlink(this.legacyKey(p));
     }
     symlink(target, path) {
-        const located = this.locateMutation(path, false, 'symlink');
+        // Node names the target, then the link.
+        const call = { syscall: 'symlink', path: target, dest: path };
+        const located = this.locateMutation(path, false, call);
         if (located.mount) {
-            mountOp(located.mount.symlink, 'symlink', path)(target, located.path);
+            mountOp(located.mount.symlink, call)(target, located.path);
             return;
         }
         const p = located.path;
-        if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) {
-            throw fsError('EEXIST', 'symlink', path);
-        }
+        if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p)))
+            throw callError('EEXIST', call);
         this.vfs.symlink(target, p);
     }
     fsync(handleId) {
@@ -647,10 +651,11 @@ export class SqliteRuntimeFsBridge {
         }
     }
     copyFile(from, to) {
+        const call = { syscall: 'copyfile', path: from, dest: to };
         const source = this.locate(from, true);
         if (source === null)
-            throw fsError('ELOOP', 'copyFile', from);
-        const target = this.locateMutation(to, true, 'copyFile');
+            throw callError('ELOOP', call);
+        const target = this.locateMutation(to, true, call);
         if (!source.mount && !target.mount) {
             this.vfs.copyFile(source.path, target.path);
             return;
@@ -662,12 +667,13 @@ export class SqliteRuntimeFsBridge {
             this.vfs.writeFile(target.path, bytes);
     }
     copyTree(from, to, options) {
+        const call = { syscall: 'cp', path: from, dest: to };
         const source = this.locate(from, false);
         if (source === null)
-            throw fsError('ELOOP', 'copyTree', from);
-        const target = this.locateMutation(to, false, 'copyTree');
+            throw callError('ELOOP', call);
+        const target = this.locateMutation(to, false, call);
         if (source.mount || target.mount)
-            throw fsError('EXDEV', 'copyTree', to);
+            throw callError('EXDEV', call);
         return this.vfs.copyTreeAsync(source.path, target.path, options);
     }
     writeBatch(payload) {
@@ -795,22 +801,23 @@ export class SqliteRuntimeFsBridge {
             return null;
         return this.mounted.readlink(path);
     }
-    locateMutation(path, followSymlinks, syscall) {
+    /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
+    locateMutation(path, followSymlinks, call) {
         // A lease on a directory also covers names inside it that resolve
         // elsewhere through a symlink, so the literal path is checked as well.
         this.rawVfs.assertMutationAllowed(normalizeVfsPath(this.pathArgument(path)));
         const located = this.locate(path, followSymlinks);
         if (located === null)
-            throw fsError('ELOOP', syscall, path);
+            throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
         if (!located.mount)
             this.rawVfs.assertMutationAllowed(located.path);
         return located;
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
-    sqlitePath(path, followSymlinks, syscall) {
-        const located = this.locateMutation(path, followSymlinks, syscall);
+    sqlitePath(path, followSymlinks, call) {
+        const located = this.locateMutation(path, followSymlinks, call);
         if (located.mount)
-            throw fsError('EXDEV', syscall, path);
+            throw callError('EXDEV', typeof call === 'string' ? { syscall: call, path } : call);
         return located.path;
     }
     openRoot(path, flags) {
@@ -926,14 +933,15 @@ export class SqliteRuntimeFsBridge {
         if (parent && !this.vfs.exists(parent))
             this.vfs.mkdir(parent, { recursive: true });
     }
-    assertParentDirectory(path, syscall) {
+    /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */
+    assertParentDirectory(path, call) {
         const parent = parentVfsPath(path);
         if (!parent)
             return;
         if (!this.vfs.exists(parent))
-            throw fsError('ENOENT', syscall, path);
+            throw callError('ENOENT', call);
         if (!this.vfs.isDirectory(parent))
-            throw fsError('ENOTDIR', syscall, path);
+            throw callError('ENOTDIR', call);
     }
     /**
      * Run one mutation of path `p` and report its revision on either side,
@@ -1062,9 +1070,9 @@ export function* walkBeneath(root, path, follow, cred) {
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
-function mountOp(fn, syscall, path) {
+function mountOp(fn, call, path) {
     if (typeof fn !== 'function')
-        throw fsError('ENOTSUP', syscall, path);
+        throw callError('ENOTSUP', typeof call === 'string' ? { syscall: call, path: path } : call);
     return fn;
 }
 /** Depth-first removal with base operations, for a backend without its own. */
@@ -1111,9 +1119,20 @@ function mountParents(mount, path) {
     if (parent !== '')
         mount.mkdir(parent, { recursive: true });
 }
-export function fsError(code, syscall, path) {
+/**
+ * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
+ * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
+ */
+export function fsError(code, syscall, path, dest) {
     const name = typeof path === 'string' ? path : path.path;
-    return Object.assign(new Error(`${code}: ${syscall} '${name}'`), { code, syscall, path: name });
+    const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
+    const description = errnoDescription(code);
+    const message = `${code}: ${description === undefined ? '' : `${description}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
+    return Object.assign(new Error(message), { code, syscall, path: name, ...(second === undefined ? {} : { dest: second }) });
+}
+/** Node's error for `call` failing with `code`, built from the call's own arguments. */
+function callError(code, call) {
+    return fsError(code, call.syscall, call.path, call.dest);
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;

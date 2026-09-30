@@ -48,6 +48,7 @@ import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -149,16 +150,33 @@ if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendin
 function __nimbusTrackOp(promise) {
   if (!promise || typeof promise.then !== "function") return promise;
   globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; };
+  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   try { __nimbusOrigThen.call(promise, settled, settled); }
   catch { settled(); }
   return promise;
 }
 
+// A connection the program holds open keeps it alive, as its socket does in
+// Node, until it closes or is unref'd: a WebSocket client, a tls.connect
+// socket. The returned setter holds (true) or lets go (false); it is the one
+// counter __nimbusLiveHandles reads for them, separate from startup work so a
+// socket opened at boot does not hold a resident's boot answer.
+function __nimbusHoldSocket() {
+  let held = false;
+  const hold = (want) => {
+    if (want === held) return;
+    held = want;
+    globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + (want ? 1 : -1);
+    if (!want) globalThis.__nimbusHandleReleased?.();
+  };
+  hold(true);
+  return hold;
+}
+
 async function __nimbusUseRpcResult(promise, use) {
   globalThis.__nimbusPendingOps++;
   try { return await __nimbusUseRpcResultUnref(promise, use); }
-  finally { globalThis.__nimbusPendingOps--; }
+  finally { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
 }
 // Facet infrastructure that long-polls the supervisor for as long as the
 // facet lives — the attached-process stdin pump — is the analogue of an
@@ -764,10 +782,10 @@ const __fsMod = (() => {
    * list: the refusal the namespace gives any caller that cannot wait on an
    * asynchronous mount, and the asynchronous form that answers.
    */
-  function _nsUnlistedErr(mount, syscall, displayPath, asyncForm) {
+  function _nsUnlistedErr(mount, syscall, displayPath, asyncForm, dest) {
     _stats.namespaceRefusals++;
-    const err = _fsErr("EAGAIN", syscall, displayPath);
-    err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "': " + mount
+    const err = _fsErr("EAGAIN", syscall, displayPath, dest);
+    err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "'" + (dest === undefined ? "" : " -> '" + dest + "'") + ": " + mount
       + " is an asynchronous mount; this caller cannot wait for it"
       + (_supervisor() ? "; " + asyncForm + " reads it" : "");
     return err;
@@ -1224,13 +1242,19 @@ const __fsMod = (() => {
     }
   }
 
-  function _fsErr(code, syscall, p) {
-    const err = new Error(code + ": " + syscall + " '" + p + "'");
+  // libuv's words for each code: Node's message is "ENOENT: no such file or
+  // directory, open 'x'", and "rename 'a' -> 'b'" for a call naming two paths.
+  const _errnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
+  function _fsErr(code, syscall, p, dest) {
+    const described = Object.prototype.hasOwnProperty.call(_errnoDescription, code) ? _errnoDescription[code] + ", " : "";
+    const second = dest === undefined ? "" : " -> '" + dest + "'";
+    const err = new Error(code + ": " + described + syscall + " '" + p + "'" + second);
     err.code = code;
     const errno = Number(__constantsMod[code]);
     err.errno = Number.isInteger(errno) ? -errno : -1;
     err.syscall = syscall;
     err.path = String(p);
+    if (dest !== undefined) err.dest = String(dest);
     return err;
   }
 
@@ -1254,18 +1278,19 @@ const __fsMod = (() => {
    * specific reason is known. The authority's own words stay in the message
    * so classifying the failure does not cost the reason for it.
    */
-  function _mapSupervisorError(error, syscall, p) {
+  function _mapSupervisorError(error, syscall, p, dest) {
     const message = error && typeof error.message === "string" ? error.message : String(error);
     const declared = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
     const known = declared !== undefined && Number.isInteger(Number(__constantsMod[declared]));
-    const mapped = _fsErr(known ? declared : "EIO", syscall, p);
+    const mapped = _fsErr(known ? declared : "EIO", syscall, p, dest);
     if (!known && message) mapped.message += " — " + message;
     return mapped;
   }
 
-  async function _fsRpc(promise, syscall, p, use) {
+  /** \`dest\`: the second path of a call that names two (rename), as Node reports it. */
+  async function _fsRpc(promise, syscall, p, use, dest) {
     try { return await __nimbusUseRpcResult(promise, use); }
-    catch (error) { throw _mapSupervisorError(error, syscall, p); }
+    catch (error) { throw _mapSupervisorError(error, syscall, p, dest); }
   }
 
   // Every supervisor READ round trip the facet issues. The runner reports it
@@ -1321,11 +1346,15 @@ const __fsMod = (() => {
     return time;
   }
 
-  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
+  // \`own\`: the path is this process's own (the namespace's overlay of its
+  // effects), so a first stat fixes its time once. Any other path's times
+  // come from its metadata (_statObject), and recording one per stat grew a
+  // map entry for every file a program ever stats.
+  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid, own = false) {
     const time = _localTimes[k];
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
-      : (_ownWriteTimes[k] = Date.now());
+      : own ? (_ownWriteTimes[k] = Date.now()) : Date.now();
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
@@ -2316,7 +2345,7 @@ const __fsMod = (() => {
    */
   // \`method\` names the supervisor RPC when it differs from the syscall the
   // caller reports (lchown rides \`chown\`, rm rides \`fsRemove\`).
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method) {
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor[method || syscall] !== "function") { settle(); return null; }
@@ -2331,7 +2360,7 @@ const __fsMod = (() => {
       // what an unstamped cell already costs.
       await _ownMutation(
         absPath,
-        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result),
+        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result, dest),
       );
       _markVfsStale();
     };
@@ -2887,11 +2916,12 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.symlink === "function") {
       const absPath = _resolve(path);
       await _awaitStructuralOrder(absPath);
-      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", path, () => undefined);
+      // Node names the target, then the link: "symlink 'target' -> 'link'".
+      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", String(target), () => undefined, path);
       _markVfsStale();
       return;
     }
-    throw _fsErr("ENOSYS", "symlink", path);
+    throw _fsErr("ENOSYS", "symlink", String(target), path);
   }
 
   async function _writeFileAsync(p, data, opts) {
@@ -3169,44 +3199,45 @@ const __fsMod = (() => {
     return (((bits >> shift) & 7) & want) === want;
   }
 
-  function _ensureAncestorsTraversable(absPath, syscall, p) {
+  /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
+  function _ensureAncestorsTraversable(absPath, syscall, p, dest) {
     const parts = _strip(absPath).split("/").filter(Boolean);
     for (let index = 1; index < parts.length; index++) {
       const ancestorMeta = _metadata("/" + parts.slice(0, index).join("/"));
-      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p);
+      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p, dest);
     }
   }
 
   /** \`live\`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
-  function _ensureWritable(absPath, syscall, p, live) {
-    _ensureAncestorsTraversable(absPath, syscall, p);
+  function _ensureWritable(absPath, syscall, p, live, dest) {
+    _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const cell = _bundleLookup(absPath);
     const denial = _denialCode(cell);
-    if (denial) throw _fsErr(denial, syscall, p);
+    if (denial) throw _fsErr(denial, syscall, p, dest);
     // Judged on what the authority says of the path (or of a file this
     // process made), never on the bytes held under its name.
     const stat = _statLadder(absPath);
     if (stat !== undefined) {
-      if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p);
+      if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p, dest);
       return;
     }
     // Not known to be absent: on a mount, in a directory the launch did not list.
     const mount = _nsUnlisted(absPath, true, false);
     if (mount !== null) {
       if (live) return;
-      throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall));
+      throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall), dest);
     }
     // Nothing there: a create, judged by the parent the namespace describes.
 
     const parent = __pathMod.dirname(absPath);
     const parentStat = _statLadder(parent);
     if (parentStat !== undefined) {
-      if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p);
-      if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p);
+      if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p, dest);
+      if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p, dest);
       return;
     }
 
-    throw _fsErr("ENOENT", syscall, p);
+    throw _fsErr("ENOENT", syscall, p, dest);
   }
 
   function accessSync(p, mode) {
@@ -3397,7 +3428,7 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, !noFollow);
     if (meta === "absent" || meta === "ELOOP") return undefined;
     return meta.own
-      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
+      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
       : _statObject(meta, k);
   }
 
@@ -3476,17 +3507,17 @@ const __fsMod = (() => {
    * the local view changes, so a refusal leaves the process's view intact. A
    * name whose owner this view does not know is refused as a miss.
    */
-  function _ensureRemovable(absPath, syscall, p) {
-    _ensureAncestorsTraversable(absPath, syscall, p);
+  function _ensureRemovable(absPath, syscall, p, dest) {
+    _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const k = _strip(absPath);
     const parent = _statLadder(__pathMod.dirname(absPath));
     if (parent === undefined) return;
-    if (!_modeAllows(parent, 3)) throw _fsErr("EACCES", syscall, p);
+    if (!_modeAllows(parent, 3)) throw _fsErr("EACCES", syscall, p, dest);
     if ((Number(parent.mode) & 0o1000) === 0 || Number(cred.uid) === 0 || Number(parent.uid) === Number(cred.uid)) return;
     if (_createdHere.has(k)) return;
     const target = _statLadder(absPath, true);
     if (target === undefined) return;
-    if (Number(target.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
+    if (Number(target.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p, dest);
   }
 
   function _unlinkQueued(p) {
@@ -3522,9 +3553,10 @@ const __fsMod = (() => {
     const newAbs = _resolve(newP);
     // The name leaves its directory and lands in another (replacing what is
     // there): both are removals by POSIX's rule.
-    _ensureRemovable(oldAbs, "rename", oldP);
-    if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", newP);
-    else _ensureWritable(newAbs, "rename", newP, live);
+    // Each refusal names the call's two paths, whichever side it judged.
+    _ensureRemovable(oldAbs, "rename", oldP, newP);
+    if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", oldP, newP);
+    else _ensureWritable(newAbs, "rename", oldP, live, newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     // The table still holds the old name until the rename is reported, so the
@@ -3574,6 +3606,8 @@ const __fsMod = (() => {
       // also needs the destination's ancestors to exist and every pending
       // mutation beneath the source to have landed under the old name.
       () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
+      undefined,
+      newP,
     );
     _fenceVfsMutation(newAbs, queued);
     return queued;
@@ -3585,9 +3619,23 @@ const __fsMod = (() => {
   // U+FFFD, which is how a copied .png or .woff2 arrived corrupted.
   function copyFileSync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
-      throw _fsErr("EEXIST", "copyfile", dest);
+      throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    writeFileSync(dest, readFileSync(src));
+    try { writeFileSync(dest, readFileSync(src)); }
+    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
+  /**
+   * A failure of one part of a call Node makes as one syscall (copyFile is
+   * a read then a write here), as that call's: its code, the call's syscall
+   * and both its paths. What the part said beyond Node's own words is kept.
+   */
+  function _asCallError(error, syscall, p, dest) {
+    const code = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
+    if (code === undefined || !Number.isInteger(Number(__constantsMod[code]))) return error;
+    const mapped = _fsErr(code, syscall, p, dest);
+    if (error.message !== _fsErr(code, error.syscall, error.path, error.dest).message) mapped.message += " — " + error.message;
+    return mapped;
   }
 
   // ── rmSync / rm ──
@@ -3732,7 +3780,7 @@ const __fsMod = (() => {
   // ── link / linkSync ──
   // The VFS has no hard links and a copy would lie about sharing an inode,
   // so both forms answer ENOSYS like fs.promises.link always has.
-  function linkSync(existingPath, newPath) { throw _fsErr("ENOSYS", "link", newPath); }
+  function linkSync(existingPath, newPath) { throw _fsErr("ENOSYS", "link", existingPath, newPath); }
 
   // ── realpathSync (X.5-T per X5Z5-plan §4.3 + X526b-retro §3.1) ──
   // Sync realpath stays local and identity-resolves. Async symlink
@@ -4547,7 +4595,7 @@ const __fsMod = (() => {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
     _mkdtempAsync(prefix).then((name) => cb(null, name)).catch((e) => cb(e));
   }
-  function link(existingPath, newPath, cb) { queueMicrotask(() => cb(_fsErr("ENOSYS", "link", newPath))); }
+  function link(existingPath, newPath, cb) { queueMicrotask(() => cb(_fsErr("ENOSYS", "link", existingPath, newPath))); }
   function symlink(target, path, type, cb) {
     if (typeof type === "function") { cb = type; type = undefined; }
     _symlinkAsync(target, path).then(() => cb(null)).catch((e) => cb(e));
@@ -4620,9 +4668,10 @@ const __fsMod = (() => {
     },
     copyFile: async (src, dest, mode) => {
       if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
-        throw _fsErr("EEXIST", "copyfile", dest);
+        throw _fsErr("EEXIST", "copyfile", src, dest);
       }
-      await _writeFileAsync(dest, await _readFileAsync(src));
+      try { await _writeFileAsync(dest, await _readFileAsync(src)); }
+      catch (error) { throw _asCallError(error, "copyfile", src, dest); }
     },
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
@@ -4635,7 +4684,7 @@ const __fsMod = (() => {
     utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
     lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
-    link: async () => { throw _fsErr("ENOSYS", "link", ""); },
+    link: async (existingPath, newPath) => { throw _fsErr("ENOSYS", "link", existingPath, newPath); },
     readlink: async (p) => _readlinkAsync(p),
     mkdtemp: async (prefix) => _mkdtempAsync(prefix),
     open: async (path, flags, mode) => _openAsync(path, flags, mode),
@@ -4698,6 +4747,18 @@ const __fsMod = (() => {
   // cached, exposed via getters to avoid a temporal-dead-zone reference.
   let __ReadStreamClass = null;
   let __WriteStreamClass = null;
+  /**
+   * An fs stream's close options, as Node reads them: autoClose (default
+   * true) is whether it is destroyed once done, emitClose (default true)
+   * whether destroying it emits 'close'.
+   */
+  function __fsStreamLifecycle(opts) {
+    const options = opts && typeof opts === "object" ? opts : {};
+    return {
+      autoDestroy: options.autoClose === undefined ? true : !!options.autoClose,
+      emitClose: options.emitClose !== false,
+    };
+  }
   function __getReadStream() {
     if (__ReadStreamClass) return __ReadStreamClass;
     /**
@@ -4717,6 +4778,7 @@ const __fsMod = (() => {
         super({
           encoding: options.encoding || null,
           highWaterMark: options.highWaterMark || READ_STREAM_CHUNK_BYTES,
+          ...__fsStreamLifecycle(options),
         });
         this.path = path;
         this.bytesRead = 0;
@@ -4748,7 +4810,7 @@ const __fsMod = (() => {
   function __getWriteStream() {
     if (__WriteStreamClass) return __WriteStreamClass;
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
-      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
+      constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
         if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4796,6 +4858,7 @@ const __fsMod = (() => {
       const chunks = [];
       let anyBytes = false;
       const ws = new __streamMod.Writable({
+        ...__fsStreamLifecycle(opts),
         write(chunk, enc, cb) {
           if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
           else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4958,6 +5021,10 @@ const __NimbusRelayedWebSocket = (() => {
       this._sends = Promise.resolve();
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      // Open, or opening, until its close: a handle, as Node's WebSocket is.
+      // Taken only once the socket exists, past every throw in this
+      // constructor: a caught constructor failure holds nothing.
+      this._hold = __nimbusHoldSocket();
       this._ready = this._connect(supervisor, requested);
     }
 
@@ -5017,6 +5084,7 @@ const __NimbusRelayedWebSocket = (() => {
       }
       if (event.kind === "close") {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: event.code, reason: event.reason,
@@ -5028,6 +5096,7 @@ const __NimbusRelayedWebSocket = (() => {
     _fail(error) {
       if (this._done) return;
       this._done = true;
+      this._hold(false);
       this.readyState = CLOSED;
       const message = (error && error.message) || String(error);
       this._emit({ type: "error", message, target: this });
@@ -5105,6 +5174,7 @@ const __NimbusRelayedWebSocket = (() => {
         );
       })().catch(() => {}).then(() => {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: code === undefined ? 1000 : code,
@@ -5710,17 +5780,17 @@ const __utilMod = {
   // _Orig.prototype (so all native URL methods are reachable via the chain).
   globalThis.URL = _Shim;
 })();
-// The legacy API (parse, format, resolve, Url, urlToHttpOptions,
-// domainToASCII/Unicode) is workerd's node:url, Node's own implementation
-// (https://developers.cloudflare.com/workers/runtime-apis/nodejs/url/).
-// A hand-rolled parse answered only { href } for a relative URL, so
-// http-server's \`url.parse(req.url).pathname\` was undefined and every
-// request was a 400. URL and the file-path helpers stay the facet's: they
-// resolve against the process's cwd in the VFS.
-const __realUrlMod = typeof __real_url !== "undefined"
-  ? (__real_url.default ?? __real_url) : globalThis.process.getBuiltinModule("url");
+// The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
+// module are workerd's own node:url (see core/_shared/real-node-imports.ts).
+// It was imitated here over WHATWG \`new URL()\`, which throws for the path-only
+// URL every HTTP server receives as \`req.url\`: \`url.parse("/hello.txt")\` came
+// back as \`{ href }\` with no pathname, so node-static stat'ed
+// "<root>/undefined" and answered 404 for every file.
+const __realUrl = (typeof __real_url !== "undefined")
+  ? (__real_url.default ?? __real_url)
+  : globalThis.process.getBuiltinModule("url");
 const __urlMod = {
-  ...__realUrlMod,
+  ...__realUrl,
   URL: globalThis.URL, URLSearchParams: globalThis.URLSearchParams,
   // Node's semantics: a relative path resolves against the process's cwd, a
   // trailing slash survives, and the characters the URL parser would read as
@@ -6126,10 +6196,31 @@ const __tlsMod = (() => {
   if (!real) {
     return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
   }
+  // A socket tls.connect opens holds the program until it closes or is
+  // unref'd, as in Node. Held once the socket exists: arguments tls.connect
+  // refuses (a bad port) throw first, and a caught throw holds nothing.
+  const connect = (...args) => {
+    const socket = real.connect(...args);
+    let closed = false;
+    let hold = null;
+    socket.once('close', () => { closed = true; hold?.(false); });
+    hold = __nimbusHoldSocket();
+    const ref = socket.ref, unref = socket.unref;
+    socket.ref = function () {
+      if (!closed) hold(true);
+      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+    };
+    socket.unref = function () {
+      hold(false);
+      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+    };
+    return socket;
+  };
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
+      if (p === 'connect') return connect;
       if (p === 'createServer') {
         return () => {
           const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
@@ -7153,6 +7244,7 @@ function __makeProcessStdin() {
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+    if (!held) globalThis.__nimbusHandleReleased?.();
   }
   __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
   __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));

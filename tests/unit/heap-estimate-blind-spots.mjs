@@ -54,8 +54,6 @@ assert.equal(typeof estimate.breakdown.prefetchBundleBytes, 'number',
   'the build has a breakdown component of its own');
 assert.equal(typeof estimate.breakdown.prefetchCacheBytes, 'number',
   'so does the retained cache');
-assert.equal(typeof estimate.breakdown.transformCacheBytes, 'number',
-  'and the transform cache, the other one that persists across execs');
 
 // With nothing unbounded left, a finite worst case can honestly be stated.
 assert.equal(estimate.blindSpotCeilingBytes, 0,
@@ -99,7 +97,7 @@ assert.equal(estimate.blindSpotCeilingBytes, 0,
     const sum =
       b.supervisorBaselineBytes + b.vfsLruBytes + b.vfsInFlightBytes +
       b.preBundleSliceBytes + b.streamingBuffersBytes + b.prefetchBundleBytes +
-      b.prefetchCacheBytes + b.transformCacheBytes + b.unattributedReservationBytes;
+      b.prefetchCacheBytes + b.unattributedReservationBytes;
     assert.equal(live.estimatedBytes, sum, 'estimatedBytes equals the breakdown sum');
     assert.ok(b.unattributedReservationBytes >= 0, 'attribution never goes negative');
   } finally {
@@ -112,7 +110,7 @@ const b = estimate.breakdown;
 const sum =
   b.supervisorBaselineBytes + b.vfsLruBytes + b.vfsInFlightBytes +
   b.preBundleSliceBytes + b.streamingBuffersBytes + b.prefetchBundleBytes +
-  b.prefetchCacheBytes + b.transformCacheBytes + b.unattributedReservationBytes;
+  b.prefetchCacheBytes + b.unattributedReservationBytes;
 assert.equal(estimate.estimatedBytes, sum, 'estimatedBytes still equals the breakdown sum');
 assert.equal(estimate.ceilingBytes, SUPERVISOR_HEAP_CEILING_BYTES);
 assert.equal(b.vfsLruBytes, 35 * 1024, 'VFS LRU input is passed through');

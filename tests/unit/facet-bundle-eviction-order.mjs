@@ -21,10 +21,8 @@
 // nothing else.
 
 import assert from 'node:assert/strict';
-import {
-  buildPrefetchBundle,
-  isTypescriptDeclarationFile,
-} from '../../packages/worker/src/facets/manager.ts';
+import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
+import { isTypescriptDeclarationFile } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 
@@ -60,7 +58,7 @@ const DECL = `${PROJ}/types.d.ts`;
 const SIBLING = `${PROJ}/node_modules/chunky/dist/shared/helper-Bf6oL9fm.js`;
 
 const vfs = launchFs(files).fs;
-const state = await buildPrefetchBundle(vfs, `${PROJ}/app.js`, PROJ, files[`${PROJ}/app.js`]);
+const state = await buildPrefetchBundle(vfs, { scriptPath: `${PROJ}/app.js`, cwd: PROJ, entryCode: files[`${PROJ}/app.js`] });
 const bundle = state.bundle;
 
 assert.ok(state.truncated, 'the arrangement really does breach the bound and evict');

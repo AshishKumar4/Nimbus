@@ -519,7 +519,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   };
 
   // 3. Pick version: an exact version, the highest the range admits, else
-  //    the range as a dist-tag, else `latest`.
+  //    the range as a dist-tag, else `latest` — but never `latest` for a
+  //    semver range nothing satisfies. That is npm's ETARGET, and falling
+  //    back installed a version outside the range asked for (a swap target
+  //    that lacks the range's versions handed back its own latest).
   const pickVersion = (packument: any): string | null => {
     let picked: string | null = null;
     if (request.range && packument.versions[request.range]) picked = request.range;
@@ -527,33 +530,47 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       // @ts-ignore — preamble.
       picked = RESOLVE_VERSION(Object.keys(packument.versions), request.range);
     }
-    if (!picked) picked = packument['dist-tags']?.[request.range] || packument['dist-tags']?.latest || null;
+    if (!picked) picked = packument['dist-tags']?.[request.range] || null;
+    const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
+    // @ts-ignore — preamble.
+    if (!picked && (open || !IS_SEMVER_RANGE(request.range))) picked = packument['dist-tags']?.latest || null;
     return picked;
   };
 
-  let packument: Loaded | null = null;
+  // A `since` swap is decided on the package itself: resolve its own
+  // packument and version first, and consult the target only when that
+  // version is one the swap covers. A registry that serves rollup but not
+  // @rollup/wasm-node (a private mirror) still installs rollup 3. The target
+  // is published in lockstep, so it stands in with exactly that version; a
+  // target that lacks it installs the package unswapped, with the note that
+  // its native build cannot run here, never a target version out of range.
+  let packument: Loaded = await loadPackument(effName);
+  if ('failed' in packument) return packument.failed;
+  let version = pickVersion(packument.data);
   if (__swap && __swap.since) {
-    const target = await loadPackument(__swap.to);
-    if ('failed' in target) return target.failed;
-    const picked = pickVersion(target.data);
-    const tagged = !request.range || request.range === 'latest' || target.data['dist-tags']?.[request.range] !== undefined;
+    const own = version;
     // @ts-ignore — preamble.
-    const admitted = picked !== null && target.data.versions[picked] !== undefined && (tagged || SATISFIES_RANGE(picked, request.range));
-    // @ts-ignore — preamble.
-    const since = admitted && COMPARE_SEMVER(PARSE_SEMVER(picked), PARSE_SEMVER(__swap.since)) >= 0;
-    if (since) {
-      announceSwap(__swap);
-      effName = __swap.to;
-      packument = target;
+    const covered = own !== null && packument.data.versions[own] !== undefined && COMPARE_SEMVER(PARSE_SEMVER(own), PARSE_SEMVER(__swap.since)) >= 0;
+    if (covered) {
+      const target = await loadPackument(__swap.to);
+      if ('failed' in target) return target.failed;
+      if (target.data.versions[own] !== undefined) {
+        announceSwap(__swap);
+        effName = __swap.to;
+        packument = target;
+      } else {
+        emitAdvisory({
+          from: request.registryName,
+          reason: `${__swap.to} publishes no ${own}, so ${request.registryName}@${own} installs with its native build, which cannot run in a Worker.`,
+          suggest: `${request.registryName}@<a version ${__swap.to} publishes>`,
+        });
+      }
     }
   }
-  packument ??= await loadPackument(effName);
-  if ('failed' in packument) return packument.failed;
   const data = packument.data;
   const bytes = packument.bytes;
   const packumentSource = packument.source;
 
-  const version = pickVersion(data);
   if (!version || !data.versions[version]) {
     messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
     return out(null, bytes, packumentSource, {

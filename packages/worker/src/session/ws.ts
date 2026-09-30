@@ -433,13 +433,39 @@ function sendProcessInputAck(ws: WebSocket, pid: number, ok: boolean, action: st
   try { ws.send(JSON.stringify({ type: 'stdin-ack', pid, ok, action })); } catch {}
 }
 
+/**
+ * Answer a peer's Close frame with one of our own, which completes the
+ * closing handshake: "If an endpoint receives a Close frame and did not
+ * previously send a Close frame, the endpoint MUST send a Close frame in
+ * response" (RFC 6455 §5.5.1). A browser that closes first fires `close`
+ * only on that answer. Measured on a throwaway (compatibility date
+ * 2026-09-26, whose runtime is documented to auto-reply): Chrome's close of
+ * the terminal and file-watch sockets went unanswered until its own 60 s
+ * handshake timeout. Codes a peer may not send (1005 "no status", 1006
+ * "abnormal") are answered as a normal close.
+ */
+function answerClose(ws: WebSocket, code: number | undefined, reason: string | undefined): void {
+  if (ws.readyState === WebSocket.CLOSED) return;
+  const answer = code === undefined || code === 1005 || code === 1006 ? 1000 : code;
+  // The close handler must go on to drop the socket's terminal stamp whatever
+  // happens here: a refused answer leaves the peer to its own timeout, but a
+  // skipped stamp would refuse the next terminal for the whole liveness window.
+  try {
+    ws.close(answer, reason ?? '');
+  } catch (error) {
+    console.warn('[nimbus] could not answer a WebSocket close:', error);
+  }
+}
+
 export async function wsClose(
   self: WsHost,
   ws: WebSocket,
-  _code?: number,
-  _reason?: string,
+  code?: number,
+  reason?: string,
   _wasClean?: boolean,
 ): Promise<void> {
+  // Every kind below: whatever it tears down, the peer is waiting on this.
+  answerClose(ws, code, reason);
   // Audit F1: discriminate by socket kind. Previously BOTH parameters
   // were absent and every close — including preview-iframe HMR sockets
   // closed by `vite stop` / navigation — nulled the session's
