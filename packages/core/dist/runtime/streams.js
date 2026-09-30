@@ -519,15 +519,18 @@ const __streamMod = (() => {
   // A plain namespace object satisfies neither: it is not a constructor,
   // so \`class extends\` throws "Class extends value is not a constructor".
   // Make the export the Stream constructor itself with the named exports
-  // attached, mirroring Node exactly.
-  class Stream extends __eventsMod {
-    pipe(dest, opts) {
-      const src = this;
-      src.on('data', (chunk) => { dest.write(chunk); });
-      src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
-      return dest;
-    }
-  }
+  // attached, mirroring Node exactly. Like Node's (lib/internal/streams/
+  // legacy.js) it is a function, not a class: send (express.static) does
+  // \`Stream.call(this)\`, which a class constructor refuses.
+  function Stream(opts) { __eventsMod.call(this, opts); }
+  Object.setPrototypeOf(Stream.prototype, __eventsMod.prototype);
+  Object.setPrototypeOf(Stream, __eventsMod);
+  Stream.prototype.pipe = function pipe(dest, opts) {
+    const src = this;
+    src.on('data', (chunk) => { dest.write(chunk); });
+    src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
+    return dest;
+  };
   // ── stream state introspection (node:stream named helpers) ─────────
   // Modern libraries (e.g. those bundled by create-cloudflare) call these
   // off the stream module. They read the public stream state flags.
