@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A pipe or redirect is a Node program's stdin: `echo hi | node x.js` and
+  `node x.js < in.txt` deliver it to `fs.readFileSync(0)` (and
+  `/dev/stdin`), `process.stdin` `'data'`/`'end'` and
+  `for await (const c of process.stdin)`, with chunks as Buffers. The
+  runtime handler used to drop it, so every read saw an empty stdin and
+  `readFileSync(0)` threw ENOENT on a file named "0". A one-shot program
+  reads the pipe whole before it starts; a live program's synchronous fd 0
+  read answers EAGAIN. `process.stdin.listeners('data')` lists a `once`
+  listener as the program's function, as in Node.
+
 - http-server serves text files. `stream.Readable.from` is Node's: object
   mode by default, and a string or Buffer is emitted whole instead of being
   iterated, so http-server's `Readable.from(bytes)` no longer writes byte

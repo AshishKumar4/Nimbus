@@ -82,6 +82,13 @@ export interface RuntimeRunOpts {
   cred?: VfsCred;
   /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
   signal?: AbortSignal;
+  /**
+   * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
+   * `node x.js < in.txt`); absent when stdin is the terminal. A runner reads
+   * it when it runs the program, so a launch that never delivers it (a
+   * long-running server) does not wait for the pipe's end.
+   */
+  stdin?: { readAll(): Promise<string> };
 }
 
 /** Extensions probed when a target names no exact file, in Node's order. */
@@ -238,6 +245,10 @@ export function buildRuntimeHandler(
     const captureOutput = !!nimbusCtx.__nimbusCaptureOutput
       || ctx.isFdTerminal?.(1) === false
       || ctx.isFdTerminal?.(2) === false;
+    // fd 0 the same way: a pipe or redirect is the program's stdin. It used
+    // to be dropped, so `echo hi | node x.js` read nothing.
+    const redirectedStdin = ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
+      ? { stdin: ctx.stdin } : {};
     // A bin wrapper or child-process broker may already own the process
     // entry; preserve it for eval/stdin programs as well as script files.
     const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
@@ -298,6 +309,7 @@ export function buildRuntimeHandler(
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
+        ...redirectedStdin,
         ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
@@ -509,6 +521,7 @@ export function buildRuntimeHandler(
       dirname,
       command:
         binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+      ...redirectedStdin,
       ...reservedProcess,
       ...(captureOutput ? { captureOutput: true } : {}),
       ...(bundleProfile ? { bundleProfile } : {}),

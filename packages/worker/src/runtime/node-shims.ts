@@ -2780,6 +2780,7 @@ const __fsMod = (() => {
   }
 
   async function _readFileAsync(p, opts) {
+    if (p === 0 || p === "/dev/stdin") return readFileSync(p, opts);
     const supervisor = _supervisor();
     if (supervisor && (
       typeof supervisor.fsReadRange === "function" ||
@@ -3247,6 +3248,15 @@ const __fsMod = (() => {
   //   - no encoding + string cell → wrap _enc.encode(...) as Buffer
   //   - no encoding + bytes cell → wrap bytes as Buffer (no copy)
   function readFileSync(p, opts) {
+    // fd 0 and /dev/stdin read the launch's stdin (__nimbusTakeStdinText).
+    // A live program's stdin arrives while it runs, which no synchronous read
+    // can wait for; Node answers EAGAIN for a non-blocking fd 0 likewise.
+    if (p === 0 || p === "/dev/stdin") {
+      if (__nimbusLiveInputChannel()) throw _fsErr("EAGAIN", "read", p);
+      const bytes = __BufferMod.from(__nimbusTakeStdinText());
+      const encoding = typeof opts === "string" ? opts : opts?.encoding;
+      return encoding ? bytes.toString(encoding) : bytes;
+    }
     const absPath = _resolve(p);
     _ensureAncestorsTraversable(absPath, "open", p);
     const content = _bundleLookup(absPath);
@@ -7052,6 +7062,23 @@ function __nimbusEmitTerminalResize() {
     try { stream.emit("resize"); } catch {}
   }
 }
+// The process's live input channel (a child_process child names it in its
+// env; a resident process gets it in its start payload, __nimbusLiveInputPid
+// in facets/manager.ts), or 0 when its stdin is the launch's own text.
+function __nimbusLiveInputChannel() {
+  return env && env.NIMBUS_CP_CHILD_PID
+    ? Number(env.NIMBUS_CP_CHILD_PID)
+    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
+}
+// The launch's stdin text (a pipe or redirect, runtime-registry), taken once:
+// by process.stdin's first consumer or a synchronous read of fd 0, whichever
+// comes first. The other then reads EOF, as the two share one fd in Node.
+let __nimbusStdinTaken = false;
+function __nimbusTakeStdinText() {
+  if (__nimbusStdinTaken) return "";
+  __nimbusStdinTaken = true;
+  return typeof stdin === "string" ? stdin : "";
+}
 function __makeProcessStdin() {
   const r = new __streamMod.PassThrough();
   let seeded = false;
@@ -7065,11 +7092,7 @@ function __makeProcessStdin() {
   r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
   r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
-  // A child_process child names its channel in its env; a resident process
-  // gets it in its start payload (__nimbusLiveInputPid, facets/manager.ts).
-  const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
-    ? Number(env.NIMBUS_CP_CHILD_PID)
-    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
+  const liveChildPid = __nimbusLiveInputChannel();
   // The polling infrastructure is unref'd, but a program actively consuming
   // live stdin owns a referenced input handle, as in Node. Otherwise an
   // interactive child exits after its prompt, before a keystroke arrives.
@@ -7187,8 +7210,10 @@ function __makeProcessStdin() {
       return;
     }
     queueMicrotask(() => {
-      const data = typeof stdin === "string" ? stdin : "";
-      if (data.length > 0) r.write(data);
+      const data = __nimbusTakeStdinText();
+      // A Buffer, as Node's stdin chunks are: \`s += chunk\` and
+      // chunk.toString() read text, where a bare Uint8Array reads "104,105".
+      if (data.length > 0) r.write(__BufferMod.from(data));
       r.end();
     });
   };
@@ -7205,6 +7230,7 @@ function __makeProcessStdin() {
     return origPause ? origPause() : r;
   };
   const origOn = r.on.bind(r);
+  const calls = Symbol("nimbus.stdin.calls");
   function wrapDataListener(listener) {
     const wrapped = (chunk) => {
       let out = chunk;
@@ -7214,19 +7240,22 @@ function __makeProcessStdin() {
       }
       return listener(out);
     };
-    // node:events' own tag for a wrapper: listeners() answers the listener.
-    wrapped.listener = listener;
+    // node:events answers listeners() with a wrapper's .listener: the
+    // program's function, also through once()'s own wrapper. The function
+    // this one calls is kept apart, so once()'s wrapper can remove itself.
+    wrapped.listener = listener.listener ?? listener;
+    wrapped[calls] = listener;
     return wrapped;
   }
-  // Removal finds the wrapper of the listener the program passes, including
-  // one once() wrapped first (whose own .listener is the program's).
+  // Removal finds the wrapper of the function passed: the program's own, or
+  // once()'s wrapper removing itself after it fires.
   const origRemove = r.removeListener.bind(r);
   r.removeListener = function(event, listener) {
     if (event === "data" && typeof listener === "function") {
       const raw = r.rawListeners("data");
       for (let i = raw.length - 1; i >= 0; i--) {
         const w = raw[i];
-        if (w === listener || w.listener === listener || (w.listener && w.listener.listener === listener)) return origRemove(event, w);
+        if (w === listener || w[calls] === listener || w.listener === listener) return origRemove(event, w);
       }
     }
     return origRemove(event, listener);

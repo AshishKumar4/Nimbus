@@ -154,9 +154,20 @@ const FILES = {
     'const listed = process.stdin.listeners("data")[0] === g;',
     'process.stdin.removeListener("data", g);',
     'const onceFn = () => {}; process.stdin.once("data", onceFn); process.stdin.off("data", onceFn);',
-    'console.log("STDIN " + afterOn + " " + listed + " " + process.stdin.listenerCount("data"));',
+    'const afterOff = process.stdin.listenerCount("data");',
+    // once(): listed as the program's function; it fires once and removes itself.
+    'let calls = 0; const h = () => { calls++; }; process.stdin.once("data", h);',
+    'const onceListed = process.stdin.listeners("data")[0] === h;',
+    'process.stdin.emit("data", Buffer.from("x")); process.stdin.emit("data", Buffer.from("y"));',
+    'console.log("STDIN " + [afterOn, listed, afterOff, onceListed, calls, process.stdin.listenerCount("data")].join(" "));',
     'process.stdin.pause(); process.exit(0);',
   ].join('\n'),
+  // A pipe or redirect is the program's stdin: readFileSync(0), 'data'/'end'
+  // and async iteration each read it whole.
+  'stdin-sync.js': 'process.stdout.write("SYNC " + JSON.stringify(require("fs").readFileSync(0, "utf8")) + "\\n");',
+  'stdin-events.js': 'let s = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (c) => { s += c; }).on("end", () => console.log("EVENTS " + JSON.stringify(s)));',
+  'stdin-await.js': '(async () => { let s = ""; for await (const c of process.stdin) s += c; console.log("AWAIT " + JSON.stringify(s)); })();',
+  'stdin-both.js': 'const first = require("fs").readFileSync("/dev/stdin", "utf8"); let s = ""; process.stdin.on("data", (c) => { s += c; }).on("end", () => console.log("BOTH " + JSON.stringify([first, s])));',
   // node:path, compared with the host's real node below (totalist's
   // `join("", name)` builds the names sirv serves).
   'path.js': [
@@ -285,7 +296,20 @@ try {
     assert.match(clean.stdout, /^PROBEFAIL false true$/m, 'an unrelated failure never stages a silent probe');
 
     const stdin = await terminal.run(`cd ${W} && node stdin.js < /dev/null`);
-    assert.match(stdin.stdout, /^STDIN 1 true 0$/m, 'stdin data listeners are removed by the listener passed, as in node');
+    const hostStdin = spawnSync('node', ['-e', FILES['stdin.js']], { encoding: 'utf8', input: '' });
+    assert.equal(/^STDIN .*$/m.exec(stdin.stdout)?.[0], /^STDIN .*$/m.exec(hostStdin.stdout)?.[0], 'stdin data listeners list and remove as in node');
+
+    await terminal.run(`cd ${W} && printf 'abc\\ndef\\n' > stdin.txt`);
+    for (const [name, label] of [['stdin-sync.js', 'SYNC'], ['stdin-events.js', 'EVENTS'], ['stdin-await.js', 'AWAIT']]) {
+      const piped = await terminal.run(`cd ${W} && echo hi | node ${name}`);
+      assert.match(piped.stdout, new RegExp(`^${label} "hi\\\\n"$`, 'm'), `${name} reads a pipe`);
+      const redirected = await terminal.run(`cd ${W} && node ${name} < stdin.txt`);
+      assert.match(redirected.stdout, new RegExp(`^${label} "abc\\\\ndef\\\\n"$`, 'm'), `${name} reads a redirect`);
+    }
+    const evalPiped = await terminal.run(`echo hi | node -e 'console.log("EVAL " + JSON.stringify(require("fs").readFileSync(0, "utf8")))'`);
+    assert.match(evalPiped.stdout, /^EVAL "hi\\n"$/m, 'node -e reads a pipe');
+    const both = await terminal.run(`cd ${W} && echo hi | node stdin-both.js`);
+    assert.match(both.stdout, /^BOTH \["hi\\n",""\]$/m, 'a synchronous read takes stdin; process.stdin then ends');
 
     const urlRun = await terminal.run(`cd ${W} && node url.js`);
     const hostUrl = spawnSync('node', ['-e', FILES['url.js']], { encoding: 'utf8' });
