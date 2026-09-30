@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- http-server serves text files. `stream.Readable.from` is Node's: object
+  mode by default, and a string or Buffer is emitted whole instead of being
+  iterated, so http-server's `Readable.from(bytes)` no longer writes byte
+  numbers into the response.
+
 - `npx sirv-cli` serves files. `path` is workerd's native `node:path`
   (Node's own implementation), with `resolve`/`relative` starting from the
   process's cwd. The hand-rolled `join` kept empty segments, so totalist's

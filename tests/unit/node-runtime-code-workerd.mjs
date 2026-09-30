@@ -165,6 +165,14 @@ const FILES = {
     '  path.relative("/a/b/c", "/a/d"), path.resolve("/x", "y/", "../z"), path.parse("/a/b.tar.gz"), path.format({ dir: "/a", name: "b", ext: ".c" }),',
     '  path.extname(".bashrc"), path.basename("/a/b/", ".x"), path.dirname("a"), path.posix === path, path.win32.join("a", "b")]));',
   ].join('\n'),
+  // stream.Readable.from emits a string or Buffer whole, as node does
+  // (http-server streams Readable.from(bytes) into each text response).
+  'from.js': [
+    'const { Readable } = require("stream");',
+    'const seen = [];',
+    'const done = (label, r) => new Promise((resolve) => r.on("data", (c) => seen.push(label + ":" + typeof c + ":" + c.length)).on("end", resolve));',
+    'done("buffer", Readable.from(Buffer.from("h\u00e9llo"))).then(() => done("string", Readable.from("abc"))).then(() => done("array", Readable.from(["a", "bc"]))).then(() => console.log("FROM " + JSON.stringify(seen)));',
+  ].join('\n'),
   // node:url's legacy API, compared with the host's real node below
   // (http-server reads `url.parse(req.url).pathname`).
   'url.js': [
@@ -283,6 +291,11 @@ try {
     const hostUrl = spawnSync('node', ['-e', FILES['url.js']], { encoding: 'utf8' });
     assert.equal(hostUrl.status, 0, hostUrl.stderr);
     assert.equal(/^URL .*$/m.exec(urlRun.stdout)?.[0], /^URL .*$/m.exec(hostUrl.stdout)?.[0], 'url.parse/resolve/format answer as node does');
+
+    const fromRun = await terminal.run(`cd ${W} && node from.js`);
+    const hostFrom = spawnSync('node', ['-e', FILES['from.js']], { encoding: 'utf8' });
+    assert.equal(hostFrom.status, 0, hostFrom.stderr);
+    assert.equal(/^FROM .*$/m.exec(fromRun.stdout)?.[0], /^FROM .*$/m.exec(hostFrom.stdout)?.[0], 'Readable.from answers as node does');
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });

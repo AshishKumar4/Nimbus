@@ -52,7 +52,9 @@ const SERVERS = [
   { name: 'http-server', port: 8101, cwd: '/home/user', command: `npx http-server ${SITE} -p 8101` },
   { name: 'serve', port: 8102, cwd: '/home/user', command: `npx serve ${SITE} -l 8102` },
   // sirv-cli reads $PORT before --port, and a Nimbus session exports PORT=3000.
-  { name: 'sirv-cli', port: 8103, cwd: '/home/user', command: `PORT=8103 npx sirv-cli ${SITE} --port 8103` },
+  // sirv answers If-None-Match only (with --etag), never If-Modified-Since
+  // (sirv/build.js), so its conditional GET is 200 under Node as well.
+  { name: 'sirv-cli', port: 8103, cwd: '/home/user', command: `PORT=8103 npx sirv-cli ${SITE} --port 8103`, conditional: false },
   { name: 'express.static', port: 8104, cwd: EXPRESS_APP, command: 'node app.js' },
   { name: 'node-static', port: 8105, cwd: '/home/user', command: `npx node-static -p 8105 ${SITE}` },
 ];
@@ -101,7 +103,7 @@ try {
     // A browser's conditional GET: the server's own Last-Modified sent back
     // as If-Modified-Since (an HTTP date, with a comma) must answer 304.
     const lastModified = result.ok ? result.last.headers.get('last-modified') : null;
-    if (lastModified) {
+    if (lastModified && server.conditional !== false) {
       const conditional = await fetchPort(sid, server.port, 'hello.txt', { headers: { 'if-modified-since': lastModified } });
       a.check(`${server.name} answers a conditional GET 304`, conditional.status === 304,
         `status=${conditional.status} if-modified-since=${lastModified}`);

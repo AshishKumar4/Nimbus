@@ -267,7 +267,16 @@ const __streamMod = (() => {
   // \`pipeline(response.body, createWriteStream(...))\`). A web
   // ReadableStream has no \`.pipe\`, so it must be adapted first.
   Readable.from = function from(iterable, opts) {
-    const r = new Readable({ objectMode: opts?.objectMode ?? false, ...opts });
+    // Node (lib/internal/streams/from.js): object mode unless the caller says
+    // otherwise, so values arrive as yielded; and a string or Buffer is
+    // emitted whole rather than iterated. http-server streams
+    // \`Readable.from(bytes)\` of each text file into the response, which
+    // refuses a byte-number chunk.
+    const r = new Readable({ ...opts, objectMode: opts?.objectMode ?? true });
+    if (typeof iterable === 'string' || iterable instanceof Uint8Array) {
+      r._read = function () { this.push(iterable); this.push(null); };
+      return r;
+    }
     r._read = () => {};
     (async () => {
       try {
