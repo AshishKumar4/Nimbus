@@ -150,7 +150,7 @@ try {
     const notice = document.getElementById('previewIsolation');
     return active?.textContent?.includes(':' + port)
       && notice && !notice.hidden
-      && document.getElementById('btnPreviewIsolationAction')?.textContent === 'Reload isolated';
+      && document.getElementById('btnPreviewIsolationAction')?.getAttribute('aria-label')?.startsWith('Reload isolated:');
   }, { timeout: 60_000 }, PORT);
   a.check('the default shell offers the isolated shell for the app', true);
   const before = await appResult(await paneFrame(page));
@@ -161,7 +161,9 @@ try {
   );
   await screenshot(page, 'final-desktop-offer-reload-isolated');
 
-  // ── a phone-width window keeps the offer and ↗ on screen ──
+  // ── a phone-width window keeps the offer and ↗ on screen, words whole ──
+  // The pane is ~80 px wide there: the offer collapses to one icon button
+  // named by its label and tooltip, and no word is broken to fit.
   await page.setViewport({ width: 390, height: 844 });
   const narrow = await page.evaluate(() => {
     const onScreen = (element) => {
@@ -169,13 +171,24 @@ try {
       return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth + 0.5;
     };
     const action = document.getElementById('btnPreviewIsolationAction');
+    const shown = (element) => getComputedStyle(element).display !== 'none';
+    const text = document.getElementById('previewIsolationText');
     return {
       open: onScreen(document.getElementById('btnOpenPreview')),
       action: onScreen(action) && action.scrollWidth <= action.clientWidth + 1,
+      icon: action.querySelector('.preview-isolation-icon').textContent,
+      words: [text, action.querySelector('.preview-isolation-label')].filter(shown).map((element) => element.textContent),
+      name: action.getAttribute('aria-label'),
+      tooltip: action.title,
     };
   });
   a.check('at 390 px the ↗ button is on screen', narrow.open, JSON.stringify(narrow));
-  a.check('at 390 px the offer’s button is on screen and unclipped', narrow.action, JSON.stringify(narrow));
+  a.check(
+    'at 390 px the offer is one whole icon button (↻), named "Reload isolated" by label and tooltip, with no words to break',
+    narrow.action && narrow.icon === '\u21bb' && narrow.words.length === 0
+      && narrow.name?.startsWith('Reload isolated:') && narrow.tooltip === narrow.name,
+    JSON.stringify(narrow),
+  );
   await screenshot(page, 'final-mobile-offer-reload-isolated');
   await page.setViewport({ width: 1280, height: 800 });
 

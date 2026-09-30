@@ -151,7 +151,7 @@ try {
       && frame.getAttribute('src')?.includes('/port/' + port + '/')
       && frame.contentDocument === null
       && notice && !notice.hidden
-      && document.getElementById('btnPreviewIsolationAction')?.textContent === 'Reload normally';
+      && document.getElementById('btnPreviewIsolationAction')?.getAttribute('aria-label')?.startsWith('Reload normally:');
   }, { timeout: 60_000 }, PORT);
   a.check('the isolated shell blocks the app and offers the default shell', true);
   await screenshot(page, 'final-desktop-isolated-offer-reload-normally');

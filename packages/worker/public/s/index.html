@@ -156,6 +156,12 @@
     .preview-isolation[hidden], .panel-preview.markdown-mode .preview-isolation { display: none; }
     .preview-isolation-text { flex: 1 1 14em; min-width: 0; }
     .panel-preview.markdown-mode #btnOpenPreview { display: none; }
+    .preview-isolation button {
+      background: #21262d; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9;
+      cursor: pointer; font-size: 11px; padding: 2px 8px; white-space: nowrap;
+    }
+    .preview-isolation button:hover { border-color: #58a6ff; }
+    .preview-isolation-icon { display: none; }
     /* A pane too narrow for the bar (a phone-width window) wraps it, so the
        reload and open buttons stay inside the pane instead of past its edge. */
     .panel-preview { container-type: inline-size; }
@@ -163,15 +169,15 @@
       .preview-bar { flex-wrap: wrap; }
       .preview-bar .preview-tabs { min-width: 0; max-width: 100%; }
       .preview-bar .url-bar { min-width: 0; flex-basis: 100%; }
-      .preview-isolation { padding: 4px; }
-      .preview-isolation-text, .preview-isolation button { overflow-wrap: anywhere; }
-      .preview-isolation button { padding: 2px 3px; }
     }
-    .preview-isolation button {
-      background: #21262d; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9;
-      cursor: pointer; font-size: 11px; padding: 2px 8px; max-width: 100%;
+    /* Too narrow for the offer's words and a whole button: the strip becomes
+       one icon button, in the bar's icon style, named by its label and title. */
+    @container (max-width: 200px) {
+      .preview-isolation { padding: 2px 8px; }
+      .preview-isolation-text, .preview-isolation-label { display: none; }
+      .preview-isolation-icon { display: inline; }
+      .preview-isolation button { font-size: 14px; line-height: 1; padding: 2px 6px; }
     }
-    .preview-isolation button:hover { border-color: #58a6ff; }
     #markdown-preview {
       display: none; flex: 1; min-height: 0; overflow: auto;
       background: #0d1117; color: #c9d1d9;
@@ -492,7 +498,7 @@
       </div>
       <div class="preview-isolation" id="previewIsolation" role="status" hidden>
         <span class="preview-isolation-text" id="previewIsolationText"></span>
-        <button type="button" id="btnPreviewIsolationAction"></button>
+        <button type="button" id="btnPreviewIsolationAction"><span class="preview-isolation-label"></span><span class="preview-isolation-icon" aria-hidden="true"></span></button>
       </div>
       <iframe id="preview-frame" src="about:blank" allow="cross-origin-isolated"></iframe>
       <div id="markdown-preview" aria-label="Markdown preview">
@@ -2248,6 +2254,8 @@
       bar: document.getElementById('previewIsolation'),
       text: document.getElementById('previewIsolationText'),
       action: document.getElementById('btnPreviewIsolationAction'),
+      actionLabel: document.querySelector('#btnPreviewIsolationAction .preview-isolation-label'),
+      actionIcon: document.querySelector('#btnPreviewIsolationAction .preview-isolation-icon'),
       sessionId: SESSION_ID,
       openInNewTab: openPreviewInNewTab,
       releaseTerminal,

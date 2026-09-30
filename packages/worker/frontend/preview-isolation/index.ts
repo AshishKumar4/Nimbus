@@ -24,6 +24,9 @@ export interface PreviewIsolationHost {
   bar: HTMLElement;
   text: HTMLElement;
   action: HTMLButtonElement;
+  /** The button's words, and the glyph that replaces them in a narrow pane. */
+  actionLabel: HTMLElement;
+  actionIcon: HTMLElement;
   sessionId: string;
   /** Open the active preview top-level (a host-form preview needs a fresh attach URL). */
   openInNewTab(): Promise<void>;
@@ -40,10 +43,11 @@ export interface PreviewTarget {
   document: DocumentPolicy | null;
 }
 
-const OFFERS: Record<Exclude<PreviewPaneOffer, 'none'>, { text: string; action: string }> = {
-  'isolate-shell': { text: 'This app asks for cross-origin isolation.', action: 'Reload isolated' },
-  'default-shell': { text: 'The isolated workspace blocks this app.', action: 'Reload normally' },
-  'own-tab': { text: 'This app gets isolation in its own tab.', action: 'Open in new tab' },
+/** Each offer's copy, and the glyph its button shows when the pane is too narrow for words (the bar's ↻ and ↗). */
+const OFFERS: Record<Exclude<PreviewPaneOffer, 'none'>, { text: string; action: string; icon: string }> = {
+  'isolate-shell': { text: 'This app asks for cross-origin isolation.', action: 'Reload isolated', icon: '\u21bb' },
+  'default-shell': { text: 'The isolated workspace blocks this app.', action: 'Reload normally', icon: '\u21bb' },
+  'own-tab': { text: 'This app gets isolation in its own tab.', action: 'Open in new tab', icon: '\u2197' },
 };
 
 /**
@@ -93,7 +97,11 @@ export class PreviewIsolation {
     bar.hidden = offer === null;
     if (offer === null) return;
     text.textContent = offer.text;
-    action.textContent = offer.action;
+    this.host.actionLabel.textContent = offer.action;
+    this.host.actionIcon.textContent = offer.icon;
+    // The name the compact icon button is known by, and its tooltip.
+    action.setAttribute('aria-label', `${offer.action}: ${offer.text}`);
+    action.title = `${offer.action}: ${offer.text}`;
   }
 
   private async act(): Promise<void> {
