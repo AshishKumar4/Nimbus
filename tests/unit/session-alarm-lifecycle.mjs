@@ -17,6 +17,7 @@ import {
   ensureLogJanitor,
   dispatchAlarm,
   clearDestroyedTombstone,
+  wireProcessLogPersist,
 } from '../../packages/worker/src/session/hibernation.ts';
 import { timers, TIMER_REASONS_KEY } from '../../packages/fabric/src/timers.ts';
 import { GENERATION_KEY, assumeGeneration } from '../../packages/fabric/src/generation.ts';
@@ -129,7 +130,6 @@ function exitedProcess(host, text = 'done\n') {
 {
   const { Database } = await import('bun:sqlite');
   const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
-  const { wireProcessLogPersist } = await import('../../packages/worker/src/session/hibernation.ts');
   const db = new Database(':memory:');
   const storage = makeStorage();
   const boot = () => {
@@ -184,6 +184,27 @@ function exitedProcess(host, text = 'done\n') {
   assert.equal(storage.alarm, null, 'destroyed session schedules nothing');
   assert.equal(host._w1JanitorAt, null);
   console.log('  [4] a destroyed session never re-arms the janitor');
+}
+
+// ── [4b] a destroyed session's straggling log activity arms nothing ────────
+// Destroy replaces the supervisor but cannot detach the old one's activity
+// hook: a late append, an exit, or a launch unwinding its log reader still
+// reaches it, and must arm neither a flush timer nor an alarm.
+{
+  const storage = makeStorage();
+  const host = makeHost();
+  wireProcessLogPersist(host, { storage });
+  host._w1SessionDestroyed = true;
+  const pid = host.processes.spawn('node', [], '/').pid;
+  const unsubscribe = host.processes.subscribeLogs(pid, () => {});
+  host.processes.appendOutput(pid, 'stdout', 'late\n');
+  host.processes.markExit(pid, 0);
+  unsubscribe();
+  await host._timerChain;
+  assert.equal(host._w9FlushTimer, null, 'no flush timer');
+  assert.equal(storage.alarm, null, 'no alarm');
+  assert.ok(!storage.map.has(TIMER_REASONS_KEY), 'no reason written');
+  console.log('  [4b] a destroyed session\'s straggling log activity arms nothing');
 }
 
 /** A session host rpcDestroy can run against, over `storage`. */

@@ -111,6 +111,11 @@ export function wireHibernationOnConstruct(ctx: any): WsHibernationConfigResult 
  */
 export function wireProcessLogPersist(host: HibHost, ctx: any): void {
   installLogPersistence(host, ctx, () => {
+    // A destroyed session stays inert (the zombie-alarm hazard): destroy
+    // replaces the supervisor but cannot detach this hook from the old one,
+    // whose stragglers (a late append, a launch unwinding its log reader)
+    // would otherwise arm a flush timer and alarm after the wipe.
+    if (host._w1SessionDestroyed) return;
     scheduleHibFlush(host, ctx);
     ensureLogJanitor(host, ctx, (pid) => !host.processes.get(pid));
   });

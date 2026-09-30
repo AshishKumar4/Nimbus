@@ -257,4 +257,60 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.equal(processes.dropLogsOlderThan(-1), 1);
 }
 
+// ── Retention deadlines: persisted-only pids, read once, not per append ──
+// Every append asks for the next deadline. The pids only SQL holds (every
+// earlier instance's) are listed once, and their earliest deadline is
+// worked out when that set changes, not on each append.
+{
+  const RETAIN = 10 * 60 * 1000;
+  const processes = new SessionProcessSupervisor();
+  processes.setPidBase(3_000_000);
+  const T = 10 * RETAIN;
+  let rowReads = 0;
+  const earlier = Array.from({ length: 5_000 }, (_, i) => Object.defineProperty(
+    { pid: 1_000_001 + i, lastActivity: T + i },
+    'exitAt',
+    { enumerable: true, get() { rowReads++; return T + i; } },
+  ));
+  // A prior instance's process that died without an exit: an orphan, due three retentions after its last output.
+  earlier.push({ pid: 2_000_001, exitAt: null, lastActivity: T - 2 * RETAIN });
+  let listings = 0;
+  let asked = 0;
+  const orphan = (pid) => { asked++; return !processes.get(pid); };
+  const dropped = [];
+  processes.setLogPersist({
+    load() { return null; },
+    persistChunks() {},
+    persistExit() {},
+    dropPid(pid) { dropped.push(pid); },
+    pruneBeforeSeq() {},
+    retained() { listings++; return earlier; },
+  }, () => {});
+
+  const live = processes.spawn('node srv.js', [], '/').pid;
+  processes.appendOutput(live, 'stdout', 'up\n');
+  assert.equal(processes.nextLogExpiry(undefined, orphan), T + RETAIN, 'the earliest persisted deadline');
+  const perAppend = asked;
+  const listedReads = rowReads;
+  for (let i = 0; i < 100; i++) {
+    processes.appendOutput(live, 'stdout', 'tick\n');
+    assert.equal(processes.nextLogExpiry(undefined, orphan), T + RETAIN);
+  }
+  assert.equal(listings, 1, 'listed once per instance');
+  assert.equal(rowReads - listedReads, 0, `appends walked the ${earlier.length} persisted pids (${rowReads - listedReads} row reads)`);
+  assert.ok(asked - perAppend <= 100, `appends asked about persisted orphans (${asked - perAppend} orphan checks for 100 appends)`);
+
+  // The sweep drops every persisted pid past its deadline, the exitless orphan included, and the next deadline moves on.
+  const realNow = Date.now;
+  Date.now = () => T + RETAIN + 2_498;
+  try {
+    assert.equal(processes.dropLogsOlderThan(undefined, orphan), 2_500);
+  } finally { Date.now = realNow; }
+  assert.equal(processes.nextLogExpiry(undefined, orphan), T + 2_499 + RETAIN, 'recomputed after the set changed');
+  processes.flushLogs();
+  assert.equal(dropped.length, 2_500);
+  assert.ok(dropped.includes(2_000_001), 'the orphan went with them');
+  assert.equal(processes.nextLogExpiry(undefined, orphan), T + 2_499 + RETAIN);
+}
+
 console.log('session-process-supervisor: ok');
