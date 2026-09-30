@@ -545,25 +545,27 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   rename(from: RuntimeFsPath, to: RuntimeFsPath): void {
-    const oldPath = this.sqlitePath(from, false, 'rename');
-    const newPath = this.sqlitePath(to, false, 'rename');
+    // Every refusal names the call's own two paths, whichever lookup met it.
+    const call: FsCall = { syscall: 'rename', path: from, dest: to };
+    const oldPath = this.sqlitePath(from, false, call);
+    const newPath = this.sqlitePath(to, false, call);
     const oldKey = this.legacyKey(oldPath);
     const newKey = this.legacyKey(newPath);
     if (this.vfs.exists(oldPath)) {
       const staleDestination = this.legacySymlinks.isSymlink(newKey);
       if (staleDestination) this.legacySymlinks.assertMutable(newKey);
-      this.assertParentDirectory(newPath, 'rename');
+      this.assertParentDirectory(newPath, call);
       this.vfs.rename(oldPath, newPath);
       if (staleDestination) this.legacySymlinks.delete(newKey);
       return;
     }
     const linkTarget = this.legacySymlinks.readlink(oldKey);
-    if (linkTarget === null) throw fsError('ENOENT', 'rename', from, to);
+    if (linkTarget === null) throw callError('ENOENT', call);
     const staleDestination = this.legacySymlinks.isSymlink(newKey);
     this.legacySymlinks.assertMutable(oldKey, ...(staleDestination ? [newKey] : []));
-    this.assertParentDirectory(newPath, 'rename');
+    this.assertParentDirectory(newPath, call);
     if (this.vfs.exists(newPath)) {
-      if (this.vfs.isDirectory(newPath)) throw fsError('EISDIR', 'rename', from, to);
+      if (this.vfs.isDirectory(newPath)) throw callError('EISDIR', call);
       this.vfs.unlink(newPath);
     }
     this.vfs.symlink(linkTarget, newPath);
@@ -581,12 +583,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   symlink(target: string, path: RuntimeFsPath): void {
-    const located = this.locateMutation(path, false, 'symlink');
-    if (located.mount) { mountOp(located.mount.symlink, 'symlink', path)(target, located.path); return; }
+    // Node names the target, then the link.
+    const call: FsCall = { syscall: 'symlink', path: target, dest: path };
+    const located = this.locateMutation(path, false, call);
+    if (located.mount) { mountOp(located.mount.symlink, call)(target, located.path); return; }
     const p = located.path;
-    if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) {
-      throw fsError('EEXIST', 'symlink', target, path);
-    }
+    if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) throw callError('EEXIST', call);
     this.vfs.symlink(target, p);
   }
 
@@ -646,9 +648,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void {
+    const call: FsCall = { syscall: 'copyfile', path: from, dest: to };
     const source = this.locate(from, true);
-    if (source === null) throw fsError('ELOOP', 'copyFile', from);
-    const target = this.locateMutation(to, true, 'copyFile');
+    if (source === null) throw callError('ELOOP', call);
+    const target = this.locateMutation(to, true, call);
     if (!source.mount && !target.mount) { this.vfs.copyFile(source.path, target.path); return; }
     const bytes = source.mount ? source.mount.readFile(source.path) : this.vfs.readFile(source.path);
     if (target.mount) target.mount.writeFile(target.path, bytes);
@@ -656,10 +659,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Promise<number> {
+    const call: FsCall = { syscall: 'cp', path: from, dest: to };
     const source = this.locate(from, false);
-    if (source === null) throw fsError('ELOOP', 'copyTree', from);
-    const target = this.locateMutation(to, false, 'copyTree');
-    if (source.mount || target.mount) throw fsError('EXDEV', 'copyTree', to);
+    if (source === null) throw callError('ELOOP', call);
+    const target = this.locateMutation(to, false, call);
+    if (source.mount || target.mount) throw callError('EXDEV', call);
     return this.vfs.copyTreeAsync(source.path, target.path, options);
   }
 
@@ -781,20 +785,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.mounted!.readlink(path);
   }
 
-  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, syscall: string): Located {
+  /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
+  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
     this.rawVfs.assertMutationAllowed(normalizeVfsPath(this.pathArgument(path)));
     const located = this.locate(path, followSymlinks);
-    if (located === null) throw fsError('ELOOP', syscall, path);
+    if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     if (!located.mount) this.rawVfs.assertMutationAllowed(located.path);
     return located;
   }
 
   /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
-  private sqlitePath(path: RuntimeFsPath, followSymlinks: boolean, syscall: string): string {
-    const located = this.locateMutation(path, followSymlinks, syscall);
-    if (located.mount) throw fsError('EXDEV', syscall, path);
+  private sqlitePath(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): string {
+    const located = this.locateMutation(path, followSymlinks, call);
+    if (located.mount) throw callError('EXDEV', typeof call === 'string' ? { syscall: call, path } : call);
     return located.path;
   }
 
@@ -904,11 +909,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (parent && !this.vfs.exists(parent)) this.vfs.mkdir(parent, { recursive: true });
   }
 
-  private assertParentDirectory(path: string, syscall: string): void {
+  /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */
+  private assertParentDirectory(path: string, call: FsCall): void {
     const parent = parentVfsPath(path);
     if (!parent) return;
-    if (!this.vfs.exists(parent)) throw fsError('ENOENT', syscall, path);
-    if (!this.vfs.isDirectory(parent)) throw fsError('ENOTDIR', syscall, path);
+    if (!this.vfs.exists(parent)) throw callError('ENOENT', call);
+    if (!this.vfs.isDirectory(parent)) throw callError('ENOTDIR', call);
   }
 
   /**
@@ -1049,8 +1055,8 @@ type Located =
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
-function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, syscall: string, path: RuntimeFsPath): F {
-  if (typeof fn !== 'function') throw fsError('ENOTSUP', syscall, path);
+function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, call: string | FsCall, path?: RuntimeFsPath): F {
+  if (typeof fn !== 'function') throw callError('ENOTSUP', typeof call === 'string' ? { syscall: call, path: path! } : call);
   return fn;
 }
 
@@ -1090,6 +1096,13 @@ function normalizeOpenFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags']
   };
 }
 
+/** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
+interface FsCall {
+  syscall: string;
+  path: RuntimeFsPath;
+  dest?: RuntimeFsPath;
+}
+
 /** An error carrying the fields Node's `fs` puts on a failed syscall. */
 interface FsError extends Error {
   code: string;
@@ -1115,6 +1128,11 @@ export function fsError(code: string, syscall: string, path: RuntimeFsPath, dest
   const description = errnoDescription(code);
   const message = `${code}: ${description === undefined ? '' : `${description}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
   return Object.assign(new Error(message), { code, syscall, path: name, ...(second === undefined ? {} : { dest: second }) });
+}
+
+/** Node's error for `call` failing with `code`, built from the call's own arguments. */
+function callError(code: string, call: FsCall): FsError {
+  return fsError(code, call.syscall, call.path, call.dest);
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

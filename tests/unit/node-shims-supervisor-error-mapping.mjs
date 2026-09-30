@@ -101,6 +101,9 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
     readdir: crossing((p) => bridge.readdir(p)),
     rename: crossing((from, to) => bridge.rename(from, to)),
     symlink: crossing((target, path) => bridge.symlink(target, path)),
+    readFile: crossing(async (p) => { const bytes = await bridge.readFile(p); return bytes ? new TextDecoder().decode(bytes) : null; }),
+    readFileBytes: crossing((p) => bridge.readFile(p)),
+    fsReadRange: crossing((p, offset, length) => bridge.readRange(p, offset, length)),
     fsAcquire: crossing((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
   };
   listAuthority(rawVfs);
@@ -121,6 +124,23 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
     [taken.message, taken.syscall, taken.path, taken.dest],
     ["EEXIST: file already exists, symlink 'relative-target' -> '/home/user/b.txt'", 'symlink', 'relative-target', '/home/user/b.txt'],
   );
+  // Every call naming two paths reports both as the program gave them,
+  // whichever one's check failed (Node 22's messages, verbatim).
+  const sync = (run) => { try { run(); } catch (e) { return e; } throw new Error('expected a failure'); };
+  for (const [label, error, words, path, dest] of [
+    ['renameSync', sync(() => fs.renameSync('/home/user/a.txt', '/home/user/nope/b')),
+      "ENOENT: no such file or directory, rename '/home/user/a.txt' -> '/home/user/nope/b'", '/home/user/a.txt', '/home/user/nope/b'],
+    ['fs.promises.rename', await rejection(fs.promises.rename('/home/user/a.txt', '/home/user/nope/b')),
+      "ENOENT: no such file or directory, rename '/home/user/a.txt' -> '/home/user/nope/b'", '/home/user/a.txt', '/home/user/nope/b'],
+    ['copyFileSync of a missing source', sync(() => fs.copyFileSync('/home/user/nope', '/home/user/c.txt')),
+      "ENOENT: no such file or directory, copyfile '/home/user/nope' -> '/home/user/c.txt'", '/home/user/nope', '/home/user/c.txt'],
+    ['fs.promises.copyFile into a missing directory', await rejection(fs.promises.copyFile('/home/user/a.txt', '/home/user/nope/c.txt')),
+      "ENOENT: no such file or directory, copyfile '/home/user/a.txt' -> '/home/user/nope/c.txt'", '/home/user/a.txt', '/home/user/nope/c.txt'],
+    ['linkSync', sync(() => fs.linkSync('/home/user/a.txt', '/home/user/l')),
+      "ENOSYS: function not implemented, link '/home/user/a.txt' -> '/home/user/l'", '/home/user/a.txt', '/home/user/l'],
+  ]) {
+    assert.deepEqual([error.message, error.path, error.dest], [words, path, dest], label);
+  }
   // copyFile's refusal to replace names its source, then its destination.
   let refused;
   try { fs.copyFileSync('/home/user/a.txt', '/home/user/b.txt', fs.constants.COPYFILE_EXCL); } catch (e) { refused = e; }

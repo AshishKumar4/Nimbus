@@ -139,6 +139,22 @@ function failureSync(run) {
     [error.message, error.code, error.syscall, error.path, error.dest],
     ["EEXIST: file already exists, symlink 'relative-target' -> '/home/taken'", 'EEXIST', 'symlink', 'relative-target', '/home/taken'],
   );
+  // Every call naming two paths reports both as its caller gave them,
+  // whichever one's lookup failed (Node 22's messages, verbatim).
+  const cases = [
+    [() => view.rename('/home/taken', '/home/nope/b'), 'ENOENT', "no such file or directory, rename '/home/taken' -> '/home/nope/b'"],
+    [() => view.rename('/home/taken', '/home/taken/b'), 'ENOTDIR', "not a directory, rename '/home/taken' -> '/home/taken/b'"],
+    [() => view.copy('/home/nope', '/home/b'), 'ENOENT', "no such file or directory, copyfile '/home/nope' -> '/home/b'"],
+    [() => view.copy('/home/taken', '/home/nope/b'), 'ENOENT', "no such file or directory, copyfile '/home/taken' -> '/home/nope/b'"],
+    [() => view.symlink('t', '/home/nope/b'), 'ENOENT', "no such file or directory, symlink 't' -> '/home/nope/b'"],
+  ];
+  for (const [run, code, words] of cases) {
+    const refused = await failure(run);
+    assert.equal(refused.message, `${code}: ${words}`);
+    assert.equal(refused.code, code);
+  }
+  const moved = await failure(() => view.rename('/home/taken', '/home/nope/b'));
+  assert.deepEqual([moved.syscall, moved.path, moved.dest], ['rename', '/home/taken', '/home/nope/b']);
 }
 
 // ── A conversion: a coded error, and a VfsError that named no call ─────────

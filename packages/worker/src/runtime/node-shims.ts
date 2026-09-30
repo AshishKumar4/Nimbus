@@ -794,10 +794,10 @@ const __fsMod = (() => {
    * list: the refusal the namespace gives any caller that cannot wait on an
    * asynchronous mount, and the asynchronous form that answers.
    */
-  function _nsUnlistedErr(mount, syscall, displayPath, asyncForm) {
+  function _nsUnlistedErr(mount, syscall, displayPath, asyncForm, dest) {
     _stats.namespaceRefusals++;
-    const err = _fsErr("EAGAIN", syscall, displayPath);
-    err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "': " + mount
+    const err = _fsErr("EAGAIN", syscall, displayPath, dest);
+    err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "'" + (dest === undefined ? "" : " -> '" + dest + "'") + ": " + mount
       + " is an asynchronous mount; this caller cannot wait for it"
       + (_supervisor() ? "; " + asyncForm + " reads it" : "");
     return err;
@@ -3195,44 +3195,45 @@ const __fsMod = (() => {
     return (((bits >> shift) & 7) & want) === want;
   }
 
-  function _ensureAncestorsTraversable(absPath, syscall, p) {
+  /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
+  function _ensureAncestorsTraversable(absPath, syscall, p, dest) {
     const parts = _strip(absPath).split("/").filter(Boolean);
     for (let index = 1; index < parts.length; index++) {
       const ancestorMeta = _metadata("/" + parts.slice(0, index).join("/"));
-      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p);
+      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p, dest);
     }
   }
 
   /** \`live\`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
-  function _ensureWritable(absPath, syscall, p, live) {
-    _ensureAncestorsTraversable(absPath, syscall, p);
+  function _ensureWritable(absPath, syscall, p, live, dest) {
+    _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const cell = _bundleLookup(absPath);
     const denial = _denialCode(cell);
-    if (denial) throw _fsErr(denial, syscall, p);
+    if (denial) throw _fsErr(denial, syscall, p, dest);
     // Judged on what the authority says of the path (or of a file this
     // process made), never on the bytes held under its name.
     const stat = _statLadder(absPath);
     if (stat !== undefined) {
-      if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p);
+      if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p, dest);
       return;
     }
     // Not known to be absent: on a mount, in a directory the launch did not list.
     const mount = _nsUnlisted(absPath, true, false);
     if (mount !== null) {
       if (live) return;
-      throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall));
+      throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall), dest);
     }
     // Nothing there: a create, judged by the parent the namespace describes.
 
     const parent = __pathMod.dirname(absPath);
     const parentStat = _statLadder(parent);
     if (parentStat !== undefined) {
-      if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p);
-      if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p);
+      if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p, dest);
+      if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p, dest);
       return;
     }
 
-    throw _fsErr("ENOENT", syscall, p);
+    throw _fsErr("ENOENT", syscall, p, dest);
   }
 
   function accessSync(p, mode) {
@@ -3488,17 +3489,17 @@ const __fsMod = (() => {
    * the local view changes, so a refusal leaves the process's view intact. A
    * name whose owner this view does not know is refused as a miss.
    */
-  function _ensureRemovable(absPath, syscall, p) {
-    _ensureAncestorsTraversable(absPath, syscall, p);
+  function _ensureRemovable(absPath, syscall, p, dest) {
+    _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const k = _strip(absPath);
     const parent = _statLadder(__pathMod.dirname(absPath));
     if (parent === undefined) return;
-    if (!_modeAllows(parent, 3)) throw _fsErr("EACCES", syscall, p);
+    if (!_modeAllows(parent, 3)) throw _fsErr("EACCES", syscall, p, dest);
     if ((Number(parent.mode) & 0o1000) === 0 || Number(cred.uid) === 0 || Number(parent.uid) === Number(cred.uid)) return;
     if (_createdHere.has(k)) return;
     const target = _statLadder(absPath, true);
     if (target === undefined) return;
-    if (Number(target.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
+    if (Number(target.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p, dest);
   }
 
   function _unlinkQueued(p) {
@@ -3534,9 +3535,10 @@ const __fsMod = (() => {
     const newAbs = _resolve(newP);
     // The name leaves its directory and lands in another (replacing what is
     // there): both are removals by POSIX's rule.
-    _ensureRemovable(oldAbs, "rename", oldP);
-    if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", newP);
-    else _ensureWritable(newAbs, "rename", newP, live);
+    // Each refusal names the call's two paths, whichever side it judged.
+    _ensureRemovable(oldAbs, "rename", oldP, newP);
+    if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", oldP, newP);
+    else _ensureWritable(newAbs, "rename", oldP, live, newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     // The table still holds the old name until the rename is reported, so the
@@ -3601,7 +3603,21 @@ const __fsMod = (() => {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    writeFileSync(dest, readFileSync(src));
+    try { writeFileSync(dest, readFileSync(src)); }
+    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
+  /**
+   * A failure of one part of a call Node makes as one syscall (copyFile is
+   * a read then a write here), as that call's: its code, the call's syscall
+   * and both its paths. What the part said beyond Node's own words is kept.
+   */
+  function _asCallError(error, syscall, p, dest) {
+    const code = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
+    if (code === undefined || !Number.isInteger(Number(__constantsMod[code]))) return error;
+    const mapped = _fsErr(code, syscall, p, dest);
+    if (error.message !== _fsErr(code, error.syscall, error.path, error.dest).message) mapped.message += " — " + error.message;
+    return mapped;
   }
 
   // ── rmSync / rm ──
@@ -3746,7 +3762,7 @@ const __fsMod = (() => {
   // ── link / linkSync ──
   // The VFS has no hard links and a copy would lie about sharing an inode,
   // so both forms answer ENOSYS like fs.promises.link always has.
-  function linkSync(existingPath, newPath) { throw _fsErr("ENOSYS", "link", newPath); }
+  function linkSync(existingPath, newPath) { throw _fsErr("ENOSYS", "link", existingPath, newPath); }
 
   // ── realpathSync (X.5-T per X5Z5-plan §4.3 + X526b-retro §3.1) ──
   // Sync realpath stays local and identity-resolves. Async symlink
@@ -4561,7 +4577,7 @@ const __fsMod = (() => {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
     _mkdtempAsync(prefix).then((name) => cb(null, name)).catch((e) => cb(e));
   }
-  function link(existingPath, newPath, cb) { queueMicrotask(() => cb(_fsErr("ENOSYS", "link", newPath))); }
+  function link(existingPath, newPath, cb) { queueMicrotask(() => cb(_fsErr("ENOSYS", "link", existingPath, newPath))); }
   function symlink(target, path, type, cb) {
     if (typeof type === "function") { cb = type; type = undefined; }
     _symlinkAsync(target, path).then(() => cb(null)).catch((e) => cb(e));
@@ -4636,7 +4652,8 @@ const __fsMod = (() => {
       if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
         throw _fsErr("EEXIST", "copyfile", src, dest);
       }
-      await _writeFileAsync(dest, await _readFileAsync(src));
+      try { await _writeFileAsync(dest, await _readFileAsync(src)); }
+      catch (error) { throw _asCallError(error, "copyfile", src, dest); }
     },
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
@@ -4649,7 +4666,7 @@ const __fsMod = (() => {
     utimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime); },
     lutimes: async (p, atime, mtime) => { await _utimesAsync(p, atime, mtime, { followSymlinks: false }); },
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
-    link: async () => { throw _fsErr("ENOSYS", "link", ""); },
+    link: async (existingPath, newPath) => { throw _fsErr("ENOSYS", "link", existingPath, newPath); },
     readlink: async (p) => _readlinkAsync(p),
     mkdtemp: async (prefix) => _mkdtempAsync(prefix),
     open: async (path, flags, mode) => _openAsync(path, flags, mode),

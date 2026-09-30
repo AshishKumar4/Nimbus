@@ -48,8 +48,11 @@ published independently in the `@nimbus-sh` npm scope.
   new `syscallError(code, syscall, path, { dest, detail })` makes one.
   `toVfsError(error, syscall, path, dest?)` takes the call it converts for,
   and keeps an error's own syscall, path and `dest` where it names them.
-  Hosted node's `fs.promises.rename`, `symlink` and `copyFile` errors carry
+  Hosted node's `rename`, `symlink`, `copyFile` and `link` errors carry
   `dest` as Node's do; `symlink`'s `path` is the target and `dest` the link.
+  A call naming two paths reports both as its caller gave them, whichever
+  one's check failed (a rename into a missing directory names the source,
+  then the destination), from the runtime bridge and hosted node alike.
 
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. A guest stream emitted `'end'` and never `'close'`:
