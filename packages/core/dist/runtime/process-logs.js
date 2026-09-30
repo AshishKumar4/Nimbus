@@ -564,7 +564,6 @@ export class ProcessLogStore {
                 flushedHighSeq: -1,
             };
             this.pids.set(pid, s);
-            this.retention.held(pid);
             // W9: lazy hydrate the freshly-created state from persistent
             // storage. If we have an adapter and rows exist for this pid
             // (e.g., DO was hibernated and now woke), pull them into the
@@ -676,6 +675,7 @@ export class ProcessLogStore {
             this._droppedPids++;
             if (this._persist)
                 this._dropQueue.add(bestPid);
+            this.retention.forget(bestPid);
             return;
         }
         // Tier 2: oldest by lastActivity with zero subscribers.
@@ -694,6 +694,7 @@ export class ProcessLogStore {
             this._droppedPids++;
             if (this._persist)
                 this._dropQueue.add(bestPid);
+            this.retention.forget(bestPid);
             return;
         }
         // Tier 3: every pid has a subscriber. Don't silently drop a

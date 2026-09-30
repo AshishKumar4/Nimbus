@@ -34,29 +34,32 @@ export interface HeldLog {
 export declare class ProcessLogRetention {
     private readonly list;
     /**
-     * The pids only persisted rows hold: what an earlier instance flushed and
-     * this one has not touched. Listed from `list` on the first question (null
-     * until then); it only shrinks, as a pid is held or dropped.
+     * The pids persisted rows hold: what an earlier instance flushed. Listed
+     * from `list` on the first question (null until then); it only shrinks, as
+     * a pid's logs are dropped. A pid the store also holds in memory answers
+     * for itself and its row is skipped, but kept: the store lets go of a pid
+     * whose hydrate came back empty (a load that failed), and its rows still
+     * have to go.
      */
-    private persistedOnly;
+    private persisted;
     /**
      * @param list The persisted pids, minus any already queued for deletion;
      *   null while the store persists nothing.
      */
     constructor(list: () => PersistedLogPid[] | null);
     /**
-     * The earliest deadline over `held` and the persisted-only pids, or null
-     * when nothing retained will expire by itself.
+     * The earliest deadline over `held` and the persisted pids it does not
+     * hold, or null when nothing retained will expire by itself.
      */
     next(held: ReadonlyMap<number, HeldLog>, ageMs: number, isOrphan?: (pid: number) => boolean): number | null;
     /**
      * Every pid due at `now`: held ones for the store to drop from memory, and
-     * persisted-only ones, which leave this set here. The store drops the rows
-     * of both.
+     * persisted ones it does not hold. All of them leave this set here; the
+     * store drops their rows.
      */
     due(held: ReadonlyMap<number, HeldLog>, now: number, ageMs: number, isOrphan?: (pid: number) => boolean): number[];
-    /** The store holds `pid` now (created or hydrated): its memory state answers for it. */
-    held(pid: number): void;
+    /** The store dropped `pid`'s logs for another reason (the pid cap): its rows are going. */
+    forget(pid: number): void;
     /** The persisted rows changed owner (a new adapter): list them again. */
     reset(): void;
     private listed;
