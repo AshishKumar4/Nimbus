@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c3416a782079116303464832cda089c4e797b5aed4954c938fb636b2a21df4a5",
+  "fingerprint": "628ad62adfca7fb67c949d2753c5d767ddc83026486c240bfb300f9c403a03b4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1718,8 +1718,8 @@
     "packages/worker/dist/npm/resolve-facet.d.ts.map": "addbcab60f15c97730ade188eccb9701aff6a1e6e4ab811b4c2d454f63f1adea",
     "packages/worker/dist/npm/resolve-facet.js": "333ac7c44ae9bc4238e22ac74e83c03e34f45218e12b9939c934c90937cdcafa",
     "packages/worker/dist/npm/resolve-one-facet.d.ts": "88d889c1c8a4248c53ad6c6570e815d5dfbd030f902213f923273ab7a748f692",
-    "packages/worker/dist/npm/resolve-one-facet.d.ts.map": "bb87fc78b2a5e0c9b47ca0f21eb31f96ba62aee77f660cbe09ddbbbfac3be6bc",
-    "packages/worker/dist/npm/resolve-one-facet.js": "c597e790d29a92ed006c43150c01b95cf4069a9493e091cf7cba29fb7a1fb5a9",
+    "packages/worker/dist/npm/resolve-one-facet.d.ts.map": "03a7086af5a45f3b5dd0f719813c768c599b7e8b4c9100e521c63a93023c900e",
+    "packages/worker/dist/npm/resolve-one-facet.js": "6c98af1b35305a71df069fbc226f0b32c7e4d59be7ef7b3ab860d39c08a337b7",
     "packages/worker/dist/npm/resolver.d.ts": "dd1a2195e686e9d78f03345e93708f77ff2497e6b1ab07c969ae215546540205",
     "packages/worker/dist/npm/resolver.d.ts.map": "e329daee656d157f391bb905d0694706ce96ec93afb4175b42e68efcf66cd8bd",
     "packages/worker/dist/npm/resolver.js": "7bea3ae0628fdc6983c7a9d4576a55fb1cb30dfcf54b0b5d2d1c69f9418d8646",
@@ -2148,7 +2148,7 @@
     "packages/worker/src/npm/pre-bundle-facet.ts": "88bfad15f42a6339c9c51fe8b20e51965e4a3c1bb68e38753d526b5362b5defe",
     "packages/worker/src/npm/r2-cache.ts": "e01a937f7ba94040e5f4f6568c13e431ac088e4a3eec17785befca2d03d1e025",
     "packages/worker/src/npm/resolve-facet.ts": "0468d43a7fe1070511d7e2d7e04416ef06c096d50a089d1766cba59173c4471b",
-    "packages/worker/src/npm/resolve-one-facet.ts": "99f4055859b022fe1417bf3f761ed47af83f5b38945c7d2b88319e5247b56b11",
+    "packages/worker/src/npm/resolve-one-facet.ts": "1addc62669eb3c40826ca3c9c51241af21b780eb339a3b80644a5757673e4c8f",
     "packages/worker/src/npm/resolver.ts": "967c94621697109a4004eb92b26492824ff6d3c4605dd85fd7f295ce9a3df64a",
     "packages/worker/src/npm/semver.ts": "541d2fc57bcc100804afcf51d2790f89f62c934c5a500a2fed274bbe238b2e4f",
     "packages/worker/src/opencode-artifact.generated.ts": "bd0bbac01de5a617daf5aaf90c5f5d283a0ed9277f388d16500e9483e0d344a9",
