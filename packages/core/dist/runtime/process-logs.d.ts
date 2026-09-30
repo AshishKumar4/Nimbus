@@ -188,6 +188,8 @@ export declare class ProcessLogStore {
      * shrinks, as a pid is touched (and so hydrated) or dropped.
      */
     private _persistedOnly;
+    /** `_persistedOnly`'s earliest deadline for one `ageMs`; null once the set changes. */
+    private _persistedOnlyNext;
     /** Cumulative flushed-bytes counter (telemetry). */
     private _flushedChunks;
     private _flushedBytes;
@@ -302,6 +304,16 @@ export declare class ProcessLogStore {
      * wakes only when there is something to drop.
      */
     nextExpiry(ageMs?: number, isOrphan?: (pid: number) => boolean): number | null;
+    /**
+     * The earliest deadline among the pids only SQL holds, computed once per
+     * change to that set. Every output append asks for the next deadline, and
+     * the set can hold every earlier instance's pids, uncapped: it is walked
+     * when it changes, not per append. Its orphan answers cannot change while
+     * it stands, because pids are unique to the instance that spawned them and
+     * none of these is in this instance's process table (the test-only
+     * `resetLogStore` aside, whose pids leave the set on their next touch).
+     */
+    private _persistedOnlyExpiry;
     /**
      * The one retention rule: a pid's logs go `ageMs` after its exit, or,
      * with no exit recorded, three times that after its last activity once
