@@ -34,13 +34,21 @@ function pipe(bytes, stallAfter = Infinity) {
     },
   };
 }
-/** Everything a launch's stdin pipe delivers, as the exec pump would take it. */
+/**
+ * Everything a launch's stdin pipe delivers, as the exec pump would take it:
+ * its bytes, how many pieces carried them, and whether each piece owned its
+ * buffer rather than viewing into a larger one.
+ */
 async function drain(stdinPipe) {
   let total = 0;
+  let pieces = 0;
+  let owned = true;
   for (;;) {
     const piece = await stdinPipe.readBytes(64 * 1024);
-    if (piece === null) return total;
+    if (piece === null) return { total, pieces, owned };
     total += piece.byteLength;
+    pieces += 1;
+    owned &&= piece.byteLength === piece.buffer.byteLength;
   }
 }
 
@@ -56,7 +64,10 @@ function facetManager({ gate, fail } = {}) {
       launches.push(launch);
       if (gate) await gate(launches.length);
       if (fail) throw new Error('launch failed');
-      launch.delivered = opts.stdinPipe ? await drain(opts.stdinPipe) : 0;
+      const drained = opts.stdinPipe ? await drain(opts.stdinPipe) : { total: 0, pieces: 0, owned: true };
+      launch.delivered = drained.total;
+      launch.pieces = drained.pieces;
+      launch.owned = drained.owned;
       return { exitCode: 0, stdout: '', stderr: '' };
     },
   };
@@ -121,6 +132,66 @@ const run = (fm, stdin, signal) => runFresh(fm, 'require("fs").readFileSync(0)',
   const textPipe = { read: async () => { if (sent) return null; sent = true; return text; } };
   await run(fm, textPipe);
   assert.deepEqual(fm.launches.map((l) => [l.whole, l.heldAtStart, l.delivered]), [[false, SIXTEEN + 1, text.length]]);
+  assert.equal(fm.budget.held, 0);
+}
+
+/** A writer that writes `bytes` a byte at a time, with an empty read before each. */
+function trickle(bytes) {
+  let left = bytes;
+  let empty = false;
+  return {
+    read: async () => { throw new Error('the runner reads bytes'); },
+    async readBytes() {
+      if (left === 0) return null;
+      empty = !empty;
+      if (empty) return new Uint8Array(0);
+      left -= 1;
+      return new Uint8Array([121]);
+    },
+  };
+}
+
+// A writer's tiny writes, and empty reads between them, are held as a few
+// buffers of a read each, not one array per write: 128 KiB written a byte at
+// a time is replayed in 2 pieces.
+{
+  const fm = facetManager();
+  await run(fm, trickle(128 * 1024));
+  assert.deepEqual(fm.launches.map((l) => [l.whole, l.delivered, l.pieces]), [[true, 128 * 1024, 2]]);
+  assert.equal(fm.budget.held, 0);
+}
+
+// With a signal (the shell's, alive for the whole command), a read ahead of
+// many tiny reads leaves nothing per read behind on it: once collected, the
+// launch has retained under 4 MiB while the signal is still alive.
+{
+  const fm = facetManager();
+  const controller = new AbortController();
+  const heap = () => { Bun.gc(true); return process.memoryUsage().heapUsed; };
+  const before = heap();
+  await run(fm, trickle(256 * 1024), controller.signal);
+  const retained = heap() - before;
+  assert.equal(fm.launches.at(-1).delivered, 256 * 1024);
+  assert.ok(retained < 4 * 1024 * 1024, `a signalled read ahead of tiny reads retained ${retained} bytes`);
+  controller.abort();
+}
+
+// A piece that views into a larger buffer is copied, so the read ahead holds
+// only the bytes it was charged for, not the buffer behind them.
+{
+  const fm = facetManager();
+  const backing = new Uint8Array(1024 * 1024).fill(122);
+  let at = 0;
+  const views = {
+    read: async () => { throw new Error('the runner reads bytes'); },
+    async readBytes() {
+      if (at === 64 * 1024) return null;
+      at += 8 * 1024;
+      return backing.subarray(at - 8 * 1024, at);
+    },
+  };
+  await run(fm, views);
+  assert.deepEqual(fm.launches.map((l) => [l.whole, l.delivered, l.owned]), [[true, 64 * 1024, true]]);
   assert.equal(fm.budget.held, 0);
 }
 
