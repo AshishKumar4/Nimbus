@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d5acdcaa2829b75a44a7c09d536d7726df261ca497eb8b74a78edbb036bbe169",
+  "fingerprint": "695a1650172300e404b2520042eec16e14da1f20f4762222dfab5923c8d4025e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1551,8 +1551,8 @@
     "packages/worker/dist/facets/exec-telemetry.d.ts.map": "4795182269f7c552a1073e87b90de785dccc180ffccfb4ac4f11d39a8d36cbb4",
     "packages/worker/dist/facets/exec-telemetry.js": "ca016fce9d18f6a29cc2db43a71e958c52d39c25f2ca3f0ab12215a29065d0f9",
     "packages/worker/dist/facets/manager.d.ts": "563cc7d1502fda5b2a5580da873e003b9e0da9c10f65ef3f414d279d7ce21c8b",
-    "packages/worker/dist/facets/manager.d.ts.map": "8c9cbd28d9b5291172fd03c8e24879a69cb196cdc8366f75d16d2a720470c5d5",
-    "packages/worker/dist/facets/manager.js": "99b2ab85b3aa0820a13b1a54095906ea2ad25a7d4e1ed55ee12c918cc334e1f3",
+    "packages/worker/dist/facets/manager.d.ts.map": "d090f05d466a0987d5c8ed81609c2b6b78a4b0a129202432a144b7405bc0a11b",
+    "packages/worker/dist/facets/manager.js": "cb55e111be2de906b07bcd3c4a03b67f576e391ccfd89f703e4a24a4c86c3c81",
     "packages/worker/dist/facets/opencode-staging.d.ts": "91adb325e06e8ca0748860340218a0e31b5cb40b4f579059c66c32a56eb0e309",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "66ec3b46e5956d1fc56e6ca85a9712eece204de44e32491d1c1149e00f34bdc8",
     "packages/worker/dist/facets/opencode-staging.js": "81e3b8a0f62a0719c2fefbddc6cbb5bd8bf536388284ac58c179dcd3dcbeaf71",
@@ -2064,7 +2064,7 @@
     "packages/worker/src/facets/esbuild-bundle-pool.ts": "1f3163df705d4041f1b2cd9150e83e1262007d570c0d3cf703a044e529e3d71d",
     "packages/worker/src/facets/esbuild-transform.ts": "b01781df44e692b929a3f0da48d13acac0ee4821d94e0b66d0abd194942e97cd",
     "packages/worker/src/facets/exec-telemetry.ts": "8b680499e6b0ef582a456d2aa4d0873138dc6765d843b81e76910026d984d852",
-    "packages/worker/src/facets/manager.ts": "af02881823614b39d677765629e6fee6f4d7ee72c406953038ed916375fbc418",
+    "packages/worker/src/facets/manager.ts": "e4ef075c73e8cc3322126aa1b38e1fc4128695527c00d18b5c9e85e1c7ac89b7",
     "packages/worker/src/facets/opencode-staging.ts": "e5c78bd8159028f448266e0b7c94f2bb8dcfbcaa52e482a24e5dfd840b78a257",
     "packages/worker/src/facets/process.ts": "32272dd21783b141eeb079674bfcc9c0475a5a86100720fab5ef2312a00c9b20",
     "packages/worker/src/facets/read-profile.ts": "a9e55aa4bef8c22f5e2d8185cd27b76a5de6ec6757a5b0aa5a3484db16fef67b",
