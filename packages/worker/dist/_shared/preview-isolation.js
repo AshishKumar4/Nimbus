@@ -40,10 +40,13 @@
  *     ones that do not send CORP. https://developer.chrome.com/blog/coep-credentialless-origin-trial
  *
  * Guest headers are never rewritten: whether a preview asks for isolation, and
- * who may embed it, is the guest's own COEP and CORP.
+ * who may embed it, is the guest's own COEP and CORP, as the port registry
+ * last saw them on a document (`DocumentPolicy`, reported in the shell's
+ * stats).
  *
- * Pure: shared by the router (which serves the shell) and the shell itself
- * (bundled to `public/_assets/preview-isolation/`).
+ * Pure: shared by the router (which serves the shell) and the shell's
+ * preview-isolation controller (frontend/preview-isolation, bundled to
+ * `public/_assets/preview-isolation/`).
  */
 /** Query parameter on the session shell URL that asks for the isolated shell. */
 export const SHELL_ISOLATION_QUERY = 'isolated';
@@ -64,27 +67,6 @@ export function shellUrlInMode(href, isolated) {
     else
         url.searchParams.delete(SHELL_ISOLATION_QUERY);
     return url.href;
-}
-/**
- * The embedder policy a `Cross-Origin-Embedder-Policy` header value gives a
- * document. The header is a Structured Field item (RFC 8941); a value that
- * does not parse, or whose item is not the token `require-corp` or
- * `credentialless`, is `unsafe-none`.
- * https://html.spec.whatwg.org/multipage/browsers.html#obtain-an-embedder-policy
- */
-export function parseEmbedderPolicy(value) {
-    if (value === null)
-        return 'unsafe-none';
-    const token = parseStructuredItemToken(value);
-    return token === 'require-corp' || token === 'credentialless' ? token : 'unsafe-none';
-}
-/**
- * The CORP policy a header value states. Fetch compares the whole value
- * byte for byte, so anything else — two values, other casing — is null.
- * https://fetch.spec.whatwg.org/#cross-origin-resource-policy-internal-check
- */
-export function parseResourcePolicy(value) {
-    return value === 'same-origin' || value === 'same-site' || value === 'cross-origin' ? value : null;
 }
 /**
  * `same-site` needs the registrable domain, which only the Public Suffix List
@@ -115,135 +97,4 @@ export function planPreviewPane(document, relation, shell) {
     if (!asks)
         return 'none';
     return shell.topLevel && !shell.requested && embeddable ? 'isolate-shell' : 'own-tab';
-}
-// ── RFC 8941 item parsing ────────────────────────────────────────────────
-//
-// Only as much of Structured Field Values as deciding "is this item the token
-// X" needs: the whole item is parsed, parameters and all, because a value that
-// fails to parse anywhere is not the token either.
-// https://www.rfc-editor.org/rfc/rfc8941#name-parsing-structured-fields
-const TCHAR = /[!#$%&'*+\-.^_`|~0-9A-Za-z:/]/;
-const KEY_START = /[a-z*]/;
-const KEY_CHAR = /[a-z0-9_\-.*]/;
-const BASE64_CHAR = /[A-Za-z0-9+/=]/;
-class StructuredFieldCursor {
-    input;
-    position = 0;
-    constructor(input) {
-        this.input = input;
-    }
-    get done() { return this.position >= this.input.length; }
-    peek() { return this.input.charAt(this.position); }
-    take() { return this.input.charAt(this.position++); }
-    skipSpaces() { while (this.peek() === ' ')
-        this.position++; }
-}
-/** The bare item of an sf-item when it is a token, else null (not a token, or no valid item at all). */
-export function parseStructuredItemToken(value) {
-    const cursor = new StructuredFieldCursor(value);
-    cursor.skipSpaces();
-    const item = parseBareItem(cursor);
-    if (item === undefined || !parseParameters(cursor))
-        return null;
-    cursor.skipSpaces();
-    if (!cursor.done)
-        return null;
-    return item.kind === 'token' ? item.value : null;
-}
-function parseBareItem(cursor) {
-    const first = cursor.peek();
-    if (first === '-' || (first >= '0' && first <= '9'))
-        return parseNumber(cursor) ? { kind: 'other' } : undefined;
-    if (first === '"')
-        return parseString(cursor) ? { kind: 'other' } : undefined;
-    if (first === ':')
-        return parseByteSequence(cursor) ? { kind: 'other' } : undefined;
-    if (first === '?') {
-        cursor.take();
-        const bit = cursor.take();
-        return bit === '0' || bit === '1' ? { kind: 'other' } : undefined;
-    }
-    if (first === '*' || /[A-Za-z]/.test(first)) {
-        let token = cursor.take();
-        while (!cursor.done && TCHAR.test(cursor.peek()))
-            token += cursor.take();
-        return { kind: 'token', value: token };
-    }
-    return undefined;
-}
-function parseNumber(cursor) {
-    if (cursor.peek() === '-')
-        cursor.take();
-    let integerDigits = 0;
-    let fractionDigits = -1;
-    while (!cursor.done) {
-        const char = cursor.peek();
-        if (char >= '0' && char <= '9') {
-            cursor.take();
-            if (fractionDigits >= 0)
-                fractionDigits++;
-            else
-                integerDigits++;
-        }
-        else if (char === '.' && fractionDigits < 0) {
-            if (integerDigits > 12)
-                return false;
-            cursor.take();
-            fractionDigits = 0;
-        }
-        else {
-            break;
-        }
-    }
-    if (integerDigits === 0)
-        return false;
-    if (fractionDigits < 0)
-        return integerDigits <= 15;
-    return fractionDigits >= 1 && fractionDigits <= 3;
-}
-function parseString(cursor) {
-    cursor.take();
-    while (!cursor.done) {
-        const char = cursor.take();
-        if (char === '\\') {
-            const escaped = cursor.take();
-            if (escaped !== '"' && escaped !== '\\')
-                return false;
-        }
-        else if (char === '"') {
-            return true;
-        }
-        else if (char < ' ' || char > '~') {
-            return false;
-        }
-    }
-    return false;
-}
-function parseByteSequence(cursor) {
-    cursor.take();
-    while (!cursor.done) {
-        const char = cursor.take();
-        if (char === ':')
-            return true;
-        if (!BASE64_CHAR.test(char))
-            return false;
-    }
-    return false;
-}
-function parseParameters(cursor) {
-    while (cursor.peek() === ';') {
-        cursor.take();
-        cursor.skipSpaces();
-        if (!KEY_START.test(cursor.peek()))
-            return false;
-        cursor.take();
-        while (!cursor.done && KEY_CHAR.test(cursor.peek()))
-            cursor.take();
-        if (cursor.peek() === '=') {
-            cursor.take();
-            if (parseBareItem(cursor) === undefined)
-                return false;
-        }
-    }
-    return true;
 }

@@ -31,6 +31,8 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
+import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
+import type { AppDoor } from './routes.js';
 import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { type SessionAiHost } from './ai.js';
@@ -126,6 +128,13 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      *  open the file tree carry no watch state. */
     _fsWatchSubs?: Map<WebSocket, import('./fs-watch.js').FsWatchSub[]>;
     nimbusWrangler: NimbusWrangler | null;
+    /**
+     * The isolation headers of the last document each app door served
+     * (`/preview/` for Vite, `/__nimbus/worker/` for wrangler dev, placeholder
+     * pages included), reported in `/api/stats` as `appDocuments`. Ports keep
+     * theirs in the port registry.
+     */
+    appDocuments: Record<AppDoor, DocumentPolicy | null>;
     npmInstaller: NpmInstaller | null;
     /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
     fetchProxyEntrypoint: any;

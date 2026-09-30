@@ -9,6 +9,7 @@ import {
   type AgentTurnUsage,
   type StoredMessage,
 } from '../../../src/session/agent-contract.js';
+import { isIsolatedShellUrl } from '../../../src/_shared/preview-isolation.js';
 import * as api from '../api.js';
 import { usePinToBottom } from '../hooks.js';
 import { createLiveTurn, readAgentStream, type LiveTurn } from '../stream.js';
@@ -141,6 +142,10 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
         return;
       }
       setWaitingOAuth(true);
+      // The isolated shell's COOP severs a cross-origin popup, whose `closed`
+      // then reads true at once: there the callback's result is the only end
+      // of the wait. Connect stays available to start over.
+      if (isIsolatedShellUrl(new URL(location.href))) return;
       oauthPollRef.current = window.setInterval(() => {
         if (popup.closed) {
           stopOAuthPoll();

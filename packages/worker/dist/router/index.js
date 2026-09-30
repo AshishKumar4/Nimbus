@@ -196,6 +196,7 @@ export function createNimbusHandler(options = {}) {
                     redirectPath: url.pathname,
                     singleUseScope: 'session:preview',
                     reusableScope: null,
+                    embeddedNavigation: true,
                 });
             }
             const auth = await resolveNimbusRouteAuth(request, env, explicitMode, {
@@ -304,6 +305,7 @@ export function createNimbusHandler(options = {}) {
                     redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
                     singleUseScope: 'session:bootstrap',
                     reusableScope: 'session:attach',
+                    embeddedNavigation: false,
                 });
             }
             // Resolve tenant segment per auth mode and enforce session attach
@@ -548,14 +550,14 @@ async function handleAttachExchange(url, sessionId, env, options) {
         const clean = new URL(url);
         clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
         clean.pathname = options.redirectPath;
-        return new Response(null, {
-            status: 302,
-            headers: {
-                Location: clean.pathname + clean.search,
-                'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
-                'Cache-Control': 'no-store',
-            },
+        const headers = new Headers({
+            Location: clean.pathname + clean.search,
+            'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
+            'Cache-Control': 'no-store',
         });
+        if (options.embeddedNavigation)
+            headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+        return new Response(null, { status: 302, headers });
     }
     catch (e) {
         if (!(e instanceof NimbusAuthError)) {

@@ -1187,8 +1187,10 @@ a{color:#58a6ff}
 </main>
 <script>
 var result = ${JSON.stringify(result)};
-try { if (window.opener) window.opener.postMessage(result, location.origin); } catch {}
-try { var channel = new BroadcastChannel(result.type); channel.postMessage(result); channel.close(); } catch {}
+try {
+  if (window.opener) window.opener.postMessage(result, location.origin);
+  else { var channel = new BroadcastChannel(result.type); channel.postMessage(result); channel.close(); }
+} catch {}
 setTimeout(function(){ try { window.close(); } catch {} }, 700);
 </script>
 </body></html>`, {

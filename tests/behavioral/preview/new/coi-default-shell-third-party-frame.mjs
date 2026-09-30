@@ -7,13 +7,15 @@
 // policy anywhere above that frame would block it, so the default shell must
 // carry none, nothing may be added to the app's own response, and the pane
 // offers nothing. The isolated shell is the counter-check: it blocks the same
-// app (it does not ask for isolation), says why, and its "Reload normally"
-// brings the default shell back with the app showing again.
+// app (it does not ask for isolation) and the Preview tab's placeholder, says
+// why for both, and its "Reload normally" brings the default shell back with
+// the app showing again.
 //
 // Chrome runs with web security on: the rules under test are the browser's.
+// NIMBUS_PROBE_SCREENSHOTS=<dir> saves the isolated shell's offer, desktop and 390 px.
 
 import { AUTH_TOKEN, deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
-import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { applyProbeCookies, exchangeAttachCookie, launchBrowser, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -34,15 +36,39 @@ http.createServer((req, res) => {
 
 const sid = await mintSession();
 const t = new Terminal(sid);
-const browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
+// Chrome runs without its back/forward cache: a shell-mode switch changes
+// browsing context group, the page it leaves can stay frozen in that cache,
+// and puppeteer then routed evaluations to the frozen document (measured: 2
+// of 5 runs hung with it on, 6 of 6 passed with it off). The shell itself
+// gives the terminal back on pagehide either way.
+const browser = await launchBrowser({ timeout: 60_000, webSecurity: true, args: ['--disable-features=BackForwardCache'] });
+
+/** Save a screenshot for review when NIMBUS_PROBE_SCREENSHOTS names a directory. */
+async function screenshot(page, name) {
+  const dir = process.env.NIMBUS_PROBE_SCREENSHOTS;
+  if (dir) await page.screenshot({ path: `${dir}/${name}.png` });
+}
 
 async function showsApp(page) {
-  await page.waitForFunction((port) => {
-    const active = document.querySelector('#previewTabs .preview-tab.active');
-    const frame = document.getElementById('preview-frame');
-    return active?.textContent?.includes(':' + port)
-      && frame?.contentDocument?.getElementById('app')?.textContent === 'PLAIN-APP';
-  }, { timeout: 60_000 }, PORT);
+  try {
+    await page.waitForFunction((port) => {
+      const active = document.querySelector('#previewTabs .preview-tab.active');
+      const frame = document.getElementById('preview-frame');
+      return active?.textContent?.includes(':' + port)
+        && frame?.contentDocument?.getElementById('app')?.textContent === 'PLAIN-APP';
+    }, { timeout: 30_000, polling: 250 }, PORT);
+  } catch (error) {
+    const pane = await page.evaluate(() => {
+      const frame = document.getElementById('preview-frame');
+      return JSON.stringify({
+        url: location.href,
+        active: document.querySelector('#previewTabs .preview-tab.active')?.textContent,
+        src: frame.getAttribute('src'),
+        shown: frame.contentDocument?.body?.innerText?.slice(0, 120) ?? null,
+      });
+    }).catch((reason) => `unreadable: ${reason.message}`);
+    throw new Error(`the pane never showed the app: ${pane}`, { cause: error });
+  }
 }
 
 try {
@@ -99,8 +125,9 @@ try {
     'the app’s cookie is readable inside the pane',
     await page.evaluate(() => document.getElementById('preview-frame').contentDocument.cookie.includes('app_session=kept')),
   );
-  // The offer is decided asynchronously, from a HEAD of the app: wait for the
-  // decision on this tab, then require that it offered nothing.
+  // The offer is decided asynchronously, from the policy the session's stats
+  // report for the app: wait for the decision on this tab, then require that
+  // it offered nothing.
   await page.waitForFunction((port) => document.getElementById('previewIsolation').dataset.tab === 'port:' + port, { timeout: 30_000 }, PORT);
   a.check(
     'no isolation offer for an app that does not ask',
@@ -125,13 +152,34 @@ try {
       && frame.getAttribute('src')?.includes('/port/' + port + '/')
       && frame.contentDocument === null
       && notice && !notice.hidden
-      && document.getElementById('btnPreviewIsolationAction')?.textContent === 'Reload normally';
+      && document.getElementById('btnPreviewIsolationAction')?.getAttribute('aria-label')?.startsWith('Reload normally:');
   }, { timeout: 60_000 }, PORT);
   a.check('the isolated shell blocks the app and offers the default shell', true);
+  // The Preview tab's placeholder asks for no isolation either, so the
+  // isolated shell blocks it as well, and says so the same way.
+  const offerOn = (tabId, offer) => page.waitForFunction((tabId, offer) => {
+    const notice = document.getElementById('previewIsolation');
+    return notice.dataset.tab === tabId && notice.dataset.offer === offer && !notice.hidden;
+  }, { timeout: 30_000 }, tabId, offer);
+  const clickTab = (label) => page.evaluate((label) => {
+    [...document.querySelectorAll('#previewTabs .preview-tab')].find((tab) => tab.textContent.includes(label))?.click();
+  }, label);
+  await clickTab('Preview');
+  await offerOn('app:vite', 'default-shell');
+  a.check('the Preview tab, blocked in the isolated shell, is offered the default shell too', true);
+  await clickTab(':' + PORT);
+  await offerOn('port:' + PORT, 'default-shell');
+  await screenshot(page, 'final-desktop-isolated-offer-reload-normally');
+  await page.setViewport({ width: 390, height: 844 });
+  await screenshot(page, 'final-mobile-isolated-offer-reload-normally');
+  await page.setViewport({ width: 1280, height: 800 });
+  const switchStarted = Date.now();
   const [defaultAgain] = await Promise.all([
-    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90_000 }),
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }),
     page.click('#btnPreviewIsolationAction'),
   ]);
+  const switchMs = Date.now() - switchStarted;
+  a.check(`"Reload normally" reloads within 10 s (${switchMs} ms)`, switchMs < 10_000);
   a.check(
     '"Reload normally" returns to the default shell',
     new URL(page.url()).searchParams.get('isolated') === null
@@ -140,6 +188,8 @@ try {
   );
   await showsApp(page);
   a.check('the app shows in the pane again', true);
+  await waitForSessionTerminalText(page, /user@nimbus:/, 15_000);
+  a.check('the terminal reattaches after the switch', true);
 } catch (error) {
   a.check('probe completed', false, error instanceof Error ? error.stack : String(error));
 } finally {

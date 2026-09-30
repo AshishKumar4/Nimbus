@@ -28,5 +28,5 @@
  * />
  * ```
  */
-export { NimbusTerminal } from './NimbusTerminal.js';
+export { NimbusTerminal, NIMBUS_TERMINAL_SANDBOX } from './NimbusTerminal.js';
 export { useNimbusSession } from './useNimbusSession.js';

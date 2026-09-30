@@ -4,9 +4,10 @@
 //
 // Two halves. The router serves the isolated shell only when its URL asks,
 // and never adds a policy to anything a guest serves. The pure rules decide
-// what the preview pane offers from a preview document's own COEP/CORP, its
-// relation to the shell, and the shell's own state — the browser behaviour
-// they encode is proven in Chrome by tests/behavioral/preview/new/coi-*.
+// what the preview pane offers from a preview document's own COEP/CORP (as
+// the port registry reports it, tests/unit/port-registry-document-policy.mjs),
+// its relation to the shell, and the shell's own state — the browser
+// behaviour they encode is proven in Chrome by tests/behavioral/preview/new/coi-*.
 
 import assert from 'node:assert/strict';
 import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
@@ -14,8 +15,6 @@ import {
   ISOLATED_SHELL_HEADERS,
   SHELL_ISOLATION_QUERY,
   isIsolatedShellUrl,
-  parseEmbedderPolicy,
-  parseResourcePolicy,
   planPreviewPane,
   previewRelation,
   shellUrlInMode,
@@ -104,42 +103,6 @@ function legacyEnv() {
   assert.equal(isIsolatedShellUrl(new URL(isolated)), true);
   assert.equal(shellUrlInMode(isolated, false), base, 'leaving isolation keeps every other parameter');
   assert.equal(isIsolatedShellUrl(new URL(base)), false);
-}
-
-// ── COEP is a Structured Field item (RFC 8941) ───────────────────────────
-{
-  const cases = [
-    [null, 'unsafe-none'],
-    ['', 'unsafe-none'],
-    ['require-corp', 'require-corp'],
-    ['credentialless', 'credentialless'],
-    ['  require-corp  ', 'require-corp'],
-    ['require-corp; report-to="coep"', 'require-corp'],
-    ['credentialless;report-to="a;b"', 'credentialless'],
-    ['require-corp;report-to=endpoint;v=1.5;flag', 'require-corp'],
-    ['unsafe-none', 'unsafe-none'],
-    // Tokens are case-sensitive, and a list is not an item: browsers treat
-    // both as no policy at all, so the pane must not offer isolation.
-    ['Require-Corp', 'unsafe-none'],
-    ['require-corp, credentialless', 'unsafe-none'],
-    ['require-corp;', 'unsafe-none'],
-    ['require-corp;report-to="unterminated', 'unsafe-none'],
-    ['"require-corp"', 'unsafe-none'],
-    ['require-corp credentialless', 'unsafe-none'],
-  ];
-  for (const [value, expected] of cases) {
-    assert.equal(parseEmbedderPolicy(value), expected, `COEP ${JSON.stringify(value)}`);
-  }
-}
-
-// ── CORP is compared byte for byte ───────────────────────────────────────
-{
-  assert.equal(parseResourcePolicy('same-origin'), 'same-origin');
-  assert.equal(parseResourcePolicy('same-site'), 'same-site');
-  assert.equal(parseResourcePolicy('cross-origin'), 'cross-origin');
-  assert.equal(parseResourcePolicy(null), null);
-  assert.equal(parseResourcePolicy('Cross-Origin'), null);
-  assert.equal(parseResourcePolicy('same-site, same-origin'), null);
 }
 
 // ── relation: same-site only where it is provable without the PSL ────────

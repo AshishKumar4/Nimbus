@@ -15,6 +15,11 @@
 //   - no COEP: blocked by the isolated shell, so the default shell.
 //   - without the shell's `allow="cross-origin-isolated"` a cross-origin
 //     preview loads but is not isolated.
+//   - under enforce auth the pane reaches a host preview through the
+//     single-use token exchange's 302, and the isolated shell holds that hop
+//     to CORP too: the guest must still load isolated behind it.
+//   - inside the @nimbus-sh/react embed's default sandbox, the shell's "open
+//     in new tab" still gives the app an isolated top-level tab.
 // Guest headers are the ones the router forwarded, untouched.
 
 import { readFileSync } from 'node:fs';
@@ -22,8 +27,13 @@ import { makeAsserter } from '../../_driver.mjs';
 import { launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 const { createNimbusHandler } = await import('../../../../packages/worker/src/router/index.ts');
+const { issueNimbusToken } = await import('../../../../packages/worker/src/auth/token.ts');
 const isolation = await import('../../../../packages/worker/src/_shared/preview-isolation.ts');
+const { documentPolicyOf } = await import('../../../../packages/core/src/runtime/document-policy.ts');
+const { NIMBUS_TERMINAL_SANDBOX } = await import('../../../../packages/react/src/NimbusTerminal.tsx');
 
+// Every wait is 60 s: each one ends as soon as Chrome answers, and a machine
+// running other browsers (the suite's pool) slowed a 15 s one past its limit.
 const label = 'preview/new/coi-host-preview-rules';
 const a = makeAsserter(label);
 console.log(`${label} — local`);
@@ -97,6 +107,42 @@ const env = {
 const handler = createNimbusHandler({ auth: { mode: 'legacy' } });
 const server = Bun.serve({ port: 0, fetch: (request) => handler.fetch(request, env, { waitUntil() {} }) });
 const port = server.port;
+
+// The same preview door under enforce auth, as a deployment with a JWT secret
+// serves it: the pane's first request carries a single-use `nimbus_token`,
+// exchanged for a cookie by a 302 back to the clean URL.
+const consumed = new Set();
+const enforceEnv = {
+  ...env,
+  JWT_SECRET: 'coi-host-preview-rules-secret',
+  NIMBUS_SESSION: {
+    idFromName: (name) => ({ name }),
+    get: () => ({
+      fetch: (request) => env.NIMBUS_SESSION.get().fetch(request),
+      _rpcConsumeAttachBootstrap: async (jti) => !consumed.has(jti) && Boolean(consumed.add(jti)),
+    }),
+  },
+};
+const enforceHandler = createNimbusHandler({ auth: { mode: 'enforce' } });
+const enforceServer = Bun.serve({ port: 0, fetch: (request) => enforceHandler.fetch(request, enforceEnv, { waitUntil() {} }) });
+
+// An embedder page holding a shell in the React component's default sandbox;
+// the shell's ↗ opens the preview the way the real one does.
+const embedServer = Bun.serve({
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === '/embed') {
+      const shell = `http://127.0.0.1:${embedServer.port}/shell?child=${encodeURIComponent(url.searchParams.get('child'))}`;
+      return new Response(`<!doctype html><iframe id="embed" sandbox="${NIMBUS_TERMINAL_SANDBOX}" src="${shell}"></iframe>`, { headers: { 'Content-Type': 'text/html' } });
+    }
+    if (url.pathname === '/shell') {
+      const child = JSON.stringify(url.searchParams.get('child'));
+      return new Response(`<!doctype html><button id="open" onclick='window.open(${child}, "_blank", "noopener")'>open</button>`, { headers: { 'Content-Type': 'text/html' } });
+    }
+    return new Response('not found', { status: 404 });
+  },
+});
 const browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
 
 const SAME_SITE_SHELL = `http://nimbus.localhost:${port}`;
@@ -108,11 +154,11 @@ async function paneOutcome(shellOrigin, guestPort, { isolated = true, allow = tr
   const page = await browser.newPage();
   const child = previewUrl(guestPort);
   const query = new URLSearchParams({ child, ...(isolated ? { [isolation.SHELL_ISOLATION_QUERY]: '1' } : {}), ...(allow ? {} : { allow: 'none' }) });
-  const response = await page.goto(`${shellOrigin}/s/${sid}/?${query}`, { waitUntil: 'load' });
+  const response = await page.goto(`${shellOrigin}/s/${sid}/?${query}`, { waitUntil: 'load', timeout: 60_000 });
   const shellHeaders = response.headers();
   const shellIsolated = await page.evaluate(() => self.crossOriginIsolated);
   let outcome = null;
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 60_000;
   while (outcome === null && Date.now() < deadline) {
     const reported = await page.evaluate(() => window.__messages.find((m) => m && m.coiApp)?.coiApp ?? null);
     if (reported) outcome = { loaded: true, ...reported };
@@ -123,10 +169,7 @@ async function paneOutcome(shellOrigin, guestPort, { isolated = true, allow = tr
   const guest = await fetch(child);
   await guest.body?.cancel();
   const plan = isolation.planPreviewPane(
-    {
-      embedderPolicy: isolation.parseEmbedderPolicy(guest.headers.get('cross-origin-embedder-policy')),
-      resourcePolicy: isolation.parseResourcePolicy(guest.headers.get('cross-origin-resource-policy')),
-    },
+    documentPolicyOf(guest.headers),
     isolation.previewRelation(new URL(child), new URL(shellOrigin)),
     { requested: isolated, isolated: shellIsolated, topLevel: true },
   );
@@ -205,11 +248,68 @@ try {
     );
   }
 
+  // Enforce auth: the pane's navigation crosses the token exchange's 302.
+  {
+    // Single-use, so the header check and the browser each get their own.
+    const tokenUrl = async () => {
+      const token = await issueNimbusToken(enforceEnv, {
+        tn: 'acme', sub: 'alice', scopes: ['session:preview'], sid, jti: crypto.randomUUID(),
+      }, { ttlMs: 60_000 });
+      return `http://3002--${sid}.nimbus.localhost:${enforceServer.port}/?nimbus_token=${encodeURIComponent(token)}`;
+    };
+    const exchange = await fetch(await tokenUrl(), { redirect: 'manual' });
+    a.check(
+      'the preview door’s token exchange is a 302 carrying CORP cross-origin',
+      exchange.status === 302 && exchange.headers.get('cross-origin-resource-policy') === 'cross-origin',
+      `status=${exchange.status} corp=${exchange.headers.get('cross-origin-resource-policy')}`,
+    );
+    const page = await browser.newPage();
+    const query = new URLSearchParams({ child: await tokenUrl(), [isolation.SHELL_ISOLATION_QUERY]: '1' });
+    await page.goto(`${SAME_SITE_SHELL}/s/${sid}/?${query}`, { waitUntil: 'load', timeout: 60_000 });
+    let outcome = null;
+    const deadline = Date.now() + 60_000;
+    while (outcome === null && Date.now() < deadline) {
+      const reported = await page.evaluate(() => window.__messages.find((m) => m && m.coiApp)?.coiApp ?? null);
+      if (reported) outcome = { loaded: true, ...reported };
+      else if (page.frames().some((frame) => frame.url().startsWith('chrome-error://'))) outcome = { loaded: false };
+      else await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await page.close();
+    a.check(
+      'enforce auth, guest CORP cross-origin behind the token exchange: isolated in the pane (SAB + Worker + Atomics)',
+      outcome?.loaded === true && outcome.coi === true && outcome.value === 42,
+      JSON.stringify(outcome),
+    );
+  }
+
+  // The React embed's default sandbox: ↗ still gives the app an isolated tab.
+  {
+    const page = await browser.newPage();
+    await page.goto(`http://localhost:${embedServer.port}/embed?child=${encodeURIComponent(previewUrl(3000))}`, { waitUntil: 'load', timeout: 60_000 });
+    const shellFrame = page.frames().find((frame) => frame.url().includes('/shell'));
+    // The shell is cross-site to the embedder, so it renders in its own
+    // process, and a click only reaches it once it has presented a frame:
+    // measured, 2 of 20 clicks sent right after `load` never reached the
+    // button. Wait for that frame to paint, as a user's eye would.
+    await shellFrame.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const opened = browser.waitForTarget((target) => target.type() === 'page' && (target.url() === previewUrl(3000) || target.url().startsWith('chrome-error')), { timeout: 60_000 });
+    await shellFrame.click('#open');
+    const popup = await (await opened).page();
+    const result = await popup.waitForFunction(() => window.__result, { timeout: 60_000 }).then((handle) => handle.jsonValue(), () => null);
+    await popup.close();
+    await page.close();
+    a.check(
+      `the embed's sandbox (${NIMBUS_TERMINAL_SANDBOX.split(' ').at(-1)}) lets the opened app be isolated: SAB + Worker + Atomics`,
+      result?.coi === true && result.value === 42,
+      JSON.stringify(result),
+    );
+  }
+
   // Its own tab: top-level, isolated by its own headers.
   {
     const page = await browser.newPage();
-    await page.goto(previewUrl(3000), { waitUntil: 'load' });
-    const result = await (await page.waitForFunction(() => window.__result, { timeout: 15_000 })).jsonValue();
+    await page.goto(previewUrl(3000), { waitUntil: 'load', timeout: 60_000 });
+    const result = await (await page.waitForFunction(() => window.__result, { timeout: 60_000 })).jsonValue();
     await page.close();
     a.check(
       'guest CORP same-origin in its own tab: isolated, SAB + Worker + Atomics',
@@ -222,6 +322,8 @@ try {
 } finally {
   await browser.close().catch(() => {});
   server.stop(true);
+  enforceServer.stop(true);
+  embedServer.stop(true);
 }
 
 const summary = a.summary();

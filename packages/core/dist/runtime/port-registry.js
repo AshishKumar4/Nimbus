@@ -28,6 +28,7 @@
  *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { documentPolicyOf } from './document-policy.js';
 /**
  * Content codings this hop can undo. `DecompressionStream` decodes exactly
  * these; brotli and zstd have no decoder in the runtime, so a body in one of
@@ -169,6 +170,7 @@ export class PortRegistry {
             facetStub: target,
             registeredAt: Date.now(),
             capability: createPortCapability(),
+            document: null,
         });
         this.notifyPortWaiters(pid);
     }
@@ -396,6 +398,11 @@ export class PortRegistry {
                     headers: { 'Content-Type': 'application/json' },
                 });
             }
+            // A navigation's answer is the document the browser will isolate (or
+            // not) by these headers; a redirect is not a document.
+            if (request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {
+                entry.document = documentPolicyOf(response.headers);
+            }
             // Stream the facet's Response back. Status, status-text, and every
             // header pass through; only a content coding the hop cannot carry is
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
@@ -416,7 +423,7 @@ export class PortRegistry {
     get stats() {
         return {
             activePorts: this.ports.size,
-            ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid })),
+            ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid, document: e.document })),
         };
     }
     waitForPidPortChange(pid, timeoutMs) {

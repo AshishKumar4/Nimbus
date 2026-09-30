@@ -270,6 +270,13 @@ export class NimbusSession extends CloudflareDurableObject {
      *  open the file tree carry no watch state. */
     _fsWatchSubs;
     nimbusWrangler = null;
+    /**
+     * The isolation headers of the last document each app door served
+     * (`/preview/` for Vite, `/__nimbus/worker/` for wrangler dev, placeholder
+     * pages included), reported in `/api/stats` as `appDocuments`. Ports keep
+     * theirs in the port registry.
+     */
+    appDocuments = { vite: null, worker: null };
     npmInstaller = null;
     /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
     fetchProxyEntrypoint = null;

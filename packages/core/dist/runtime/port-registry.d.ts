@@ -27,6 +27,7 @@
  *   straight back, with one normalization: the hop speaks identity,
  *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
+import { type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
 export interface PortEntry {
     port: number;
@@ -44,6 +45,12 @@ export interface PortEntry {
      * one per `register`, which is what makes an unexposed port stay unexposed.
      */
     capability: string;
+    /**
+     * The isolation headers of the last document this registration served (a
+     * navigation's non-redirect response), null until it serves one. The shell
+     * reads it from `stats` to decide what the preview pane can offer.
+     */
+    document: DocumentPolicy | null;
 }
 export declare function createPortCapability(): string;
 /**
@@ -156,6 +163,7 @@ export declare class PortRegistry {
         ports: {
             port: number;
             pid: number;
+            document: DocumentPolicy | null;
         }[];
     };
     private waitForPidPortChange;

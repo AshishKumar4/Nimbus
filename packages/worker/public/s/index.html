@@ -150,17 +150,35 @@
     .preview-bar button:hover { color: #c9d1d9; }
     #preview-frame { flex: 1; border: none; background: white; width: 100%; }
     .preview-isolation {
-      display: flex; align-items: center; gap: 8px; padding: 4px 8px; flex-shrink: 0;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 4px 8px; flex-shrink: 0;
       background: #1c2128; border-bottom: 1px solid #30363d; color: #c9d1d9; font-size: 11px;
     }
     .preview-isolation[hidden], .panel-preview.markdown-mode .preview-isolation { display: none; }
-    .preview-isolation-text { flex: 1; min-width: 0; }
+    .preview-isolation-text { flex: 1 1 14em; min-width: 0; }
     .panel-preview.markdown-mode #btnOpenPreview { display: none; }
     .preview-isolation button {
       background: #21262d; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9;
       cursor: pointer; font-size: 11px; padding: 2px 8px; white-space: nowrap;
     }
     .preview-isolation button:hover { border-color: #58a6ff; }
+    .preview-isolation-short { display: none; }
+    /* A pane too narrow for the bar (a phone-width window) wraps it, so the
+       reload and open buttons stay inside the pane instead of past its edge. */
+    .panel-preview { container-type: inline-size; }
+    @container (max-width: 320px) {
+      .preview-bar { flex-wrap: wrap; }
+      .preview-bar .preview-tabs { min-width: 0; max-width: 100%; }
+      .preview-bar .url-bar { min-width: 0; flex-basis: 100%; }
+    }
+    /* Too narrow for the offer's words and a whole button: the strip becomes
+       one button with a one-word label, named in full by its aria-label and
+       title. A word, not a glyph: the bar's own ↻ sits right above it. */
+    @container (max-width: 200px) {
+      .preview-isolation { padding: 2px 4px; }
+      .preview-isolation-text, .preview-isolation-label { display: none; }
+      .preview-isolation-short { display: inline; }
+      .preview-isolation button { font-size: 10px; padding: 1px 3px; }
+    }
     #markdown-preview {
       display: none; flex: 1; min-height: 0; overflow: auto;
       background: #0d1117; color: #c9d1d9;
@@ -481,7 +499,7 @@
       </div>
       <div class="preview-isolation" id="previewIsolation" role="status" hidden>
         <span class="preview-isolation-text" id="previewIsolationText"></span>
-        <button type="button" id="btnPreviewIsolationAction"></button>
+        <button type="button" id="btnPreviewIsolationAction"><span class="preview-isolation-label"></span><span class="preview-isolation-short" aria-hidden="true"></span></button>
       </div>
       <iframe id="preview-frame" src="about:blank" allow="cross-origin-isolated"></iframe>
       <div id="markdown-preview" aria-label="Markdown preview">
@@ -747,6 +765,7 @@
 
       // Current open file state.
       let openPath = null;        // POSIX absolute path or null
+      let openRequests = 0;       // openFile calls so far; the latest wins
       let originalContent = '';   // last-saved content (for dirty check)
       let editor = null;          // Monaco editor instance
       let markdownUpdateTimer = null;
@@ -1026,6 +1045,10 @@
 
       async function openFile(path, options = {}) {
         if (!path) return;
+        // The last file asked for wins: an open still loading when another
+        // starts gives way, so the boot-time default can never land on top
+        // of a file the user picked while Monaco was loading.
+        const request = ++openRequests;
         // Dirty-prompt before switching files. If the current buffer has
         // unsaved changes, ask the user whether to save or discard.
         // Skip when switching to the SAME file (no-op) or when there
@@ -1050,9 +1073,12 @@
         try {
           result = await fsRequest({ type: 'fs-read', path }, 'fs-read-result');
         } catch (e) {
+          // A newer open owns the editor and its status line now.
+          if (request !== openRequests) return;
           setStatusFlash('open failed: ' + (e?.message || e));
           return;
         }
+        if (request !== openRequests) return;
         if (result.error) {
           if (result.binary) {
             setStatusFlash('binary file refused: ' + path);
@@ -1248,7 +1274,7 @@
       }
 
       function openDefaultWelcome() {
-        if (openPath) return Promise.resolve();
+        if (openRequests > 0) return Promise.resolve();
         return openFile(DEFAULT_WELCOME_PATH, { deferredDefault: true });
       }
 
@@ -1257,10 +1283,15 @@
         return showMarkdownPreview(openPath, editor.getValue());
       }
 
+      /** The open file's path while it has unsaved edits, else null. */
+      function unsavedPath() {
+        return openPath && editor && editor.getValue() !== originalContent ? openPath : null;
+      }
+
       return {
         ensureLoaded, openFile, save, openPalette, tryHandleFsResult,
         drainFsQueue, invalidateFileListCache, openDefaultWelcome,
-        refreshMarkdownPreview,
+        refreshMarkdownPreview, unsavedPath,
       };
     })();
 
@@ -2007,7 +2038,7 @@
 
       previewPanel.classList.remove('markdown-mode');
       if (markdownPreview) markdownPreview.classList.remove('active');
-      refreshPreviewIsolation(tab.id).catch(reportPreviewIsolationFailure);
+      showPreviewIsolation();
       if (previewFrame) {
         previewFrame.style.display = 'block';
         if (tab.type === 'port' && tab.attachPending) {
@@ -2064,13 +2095,14 @@
         const port = Number(entry?.port);
         if (!Number.isInteger(port) || port <= 0 || seen.has(port)) continue;
         seen.add(port);
-        ports.push({ port, pid: Number(entry?.pid) || 0 });
+        ports.push({ port, pid: Number(entry?.pid) || 0, document: entry?.document ?? null });
       }
       return ports;
     }
 
     async function syncPortPreviewTabs(portStats, canonicalPort, canonicalTabId) {
       const ports = normalizePortStats(portStats);
+      const isolation = await previewIsolation;
       const hiddenPort = Number.isInteger(canonicalPort) && canonicalPort > 0 ? canonicalPort : null;
       const visiblePorts = hiddenPort == null
         ? ports
@@ -2106,16 +2138,17 @@
           label: ':' + entry.port,
           title: 'Port ' + entry.port,
           ...navigation,
-          // A different process on the port may answer with other headers.
-          ...(existing && existing.pid !== entry.pid ? { documentPolicy: null } : {}),
+          // The isolation headers of the last document the port served.
+          document: entry.document,
           running: true,
-        }, { focusNew: !existing && (pendingPreviewFocus === null || pendingPreviewFocus === id) });
+        }, { focusNew: !existing && (isolation === null || isolation.claimsFocus(id)) });
       }
 
       if (activeWasRemoved || !activePreviewTabId || !previewTabs.has(activePreviewTabId)) {
         activatePreviewTab(activeWasCanonicalAlias && canonicalTabId ? canonicalTabId : firstAppTabId());
       } else {
         renderPreviewTabs();
+        showPreviewIsolation();
       }
     }
 
@@ -2180,6 +2213,7 @@
     }
 
     async function applyPreviewTarget(kind, stats) {
+      if (stats?.appDocuments) appDocuments = stats.appDocuments;
       const previousKind = previewBackendKind;
       previewBackendKind = kind === 'worker' || kind === 'vite' ? kind : 'none';
       const appKind = previewBackendKind === 'worker' ? 'worker' : 'vite';
@@ -2194,11 +2228,9 @@
       );
       // The first stats after a mode switch name every live tab; the tab the
       // switch was made for is focused if it is still among them.
-      if (stats && pendingPreviewFocus !== null) {
-        const focus = pendingPreviewFocus;
-        pendingPreviewFocus = null;
-        if (previewTabs.has(focus) && activePreviewTabId !== focus) activatePreviewTab(focus);
-      }
+      const isolation = stats ? await previewIsolation : null;
+      const focus = isolation ? isolation.takeFocusAfterReload() : null;
+      if (focus !== null && previewTabs.has(focus) && activePreviewTabId !== focus) activatePreviewTab(focus);
     }
 
     function reloadPreview() {
@@ -2207,7 +2239,6 @@
         Editor.refreshMarkdownPreview().catch(() => {});
         return;
       }
-      if (active) refreshPreviewIsolation(active.id, { force: true }).catch(reportPreviewIsolationFailure);
       if (active?.type === 'port' && active.attachPending) {
         refreshPortPreviewAttach(active);
         return;
@@ -2223,90 +2254,46 @@
     }
 
     // ── Cross-origin isolated previews ──
-    // A preview asks for isolation with its own document's COEP. The pane is
-    // an iframe, so it is isolated only inside an isolated shell (`?isolated=1`,
-    // COOP + COEP from the router), and the isolated shell blocks every
-    // preview that does not ask. Each iframe tab's document is asked once for
-    // its policy (HEAD: headers only), and the pane offers the shell mode, or
-    // the tab of its own, that shows the preview the way it asked. Moving
-    // between shell modes is a reload, so it is the user's to start.
-    const PREVIEW_FOCUS_KEY = 'nimbus.preview.focus:' + SESSION_ID;
-    let pendingPreviewFocus = null;
-    try {
-      pendingPreviewFocus = sessionStorage.getItem(PREVIEW_FOCUS_KEY);
-      sessionStorage.removeItem(PREVIEW_FOCUS_KEY);
-    } catch {}
-    const previewIsolationEl = document.getElementById('previewIsolation');
-    const previewIsolationText = document.getElementById('previewIsolationText');
-    const previewIsolationAction = document.getElementById('btnPreviewIsolationAction');
-    const PREVIEW_ISOLATION_OFFERS = {
-      'isolate-shell': {
-        text: 'This app asks for cross-origin isolation (SharedArrayBuffer, threads). The preview pane can give it that once the workspace reloads isolated.',
-        action: 'Reload isolated',
-      },
-      'default-shell': {
-        text: 'This workspace is running cross-origin isolated, which blocks previews that do not ask for isolation. Reload it normally to show this one.',
-        action: 'Reload normally',
-      },
-      'own-tab': {
-        text: 'This app asks for cross-origin isolation, which the preview pane cannot give it here. In a tab of its own it is isolated by its own headers.',
-        action: 'Open in new tab',
-      },
-    };
-    let previewIsolationOffer = 'none';
-    // The preview itself still loads as before; only the offer is missing.
-    function reportPreviewIsolationFailure(error) {
-      console.warn('[nimbus] preview isolation check failed:', error);
-    }
+    // A preview asks for isolation with its own document's COEP, which the
+    // stats report per port. The pane is an iframe, so it is isolated only
+    // inside an isolated shell (`?isolated=1`, COOP + COEP from the router),
+    // and the isolated shell blocks every preview that does not ask. The
+    // bundled controller decides and carries out the offer; the shell lends it
+    // the terminal socket and the preview URLs.
+    const previewIsolation = loadPreviewIsolation().then((module) => module.previewIsolation({
+      bar: document.getElementById('previewIsolation'),
+      text: document.getElementById('previewIsolationText'),
+      action: document.getElementById('btnPreviewIsolationAction'),
+      actionLabel: document.querySelector('#btnPreviewIsolationAction .preview-isolation-label'),
+      actionShort: document.querySelector('#btnPreviewIsolationAction .preview-isolation-short'),
+      sessionId: SESSION_ID,
+      openInNewTab: openPreviewInNewTab,
+      releaseTerminal,
+      unsavedPath: () => Editor.unsavedPath(),
+    })).catch((error) => {
+      // The previews themselves load as before; only the offer is missing.
+      console.warn('[nimbus] preview isolation offer unavailable:', error);
+      return null;
+    });
 
-    async function refreshPreviewIsolation(tabId, options = {}) {
-      const tab = previewTabs.get(tabId);
-      if (!tab || tab.type === 'markdown') return;
-      if (tab.documentPolicy && !options.force) {
-        await renderPreviewIsolation();
-        return;
-      }
-      const generation = (tab.documentPolicyGeneration || 0) + 1;
-      tab.documentPolicyGeneration = generation;
-      // The path door is same-origin, so its response headers are readable;
-      // the host door serves the same guest response untouched.
-      const documentUrl = tab.type === 'port' ? SESSION_PREFIX + '/port/' + Number(tab.port) + '/' : tab.url;
-      const [isolation, response] = await Promise.all([
-        loadPreviewIsolation(),
-        fetch(documentUrl, { method: 'HEAD', cache: 'no-store' }),
-      ]);
-      const current = previewTabs.get(tabId);
-      if (!current || current.documentPolicyGeneration !== generation) return;
-      current.documentPolicy = {
-        embedderPolicy: isolation.parseEmbedderPolicy(response.headers.get('Cross-Origin-Embedder-Policy')),
-        resourcePolicy: isolation.parseResourcePolicy(response.headers.get('Cross-Origin-Resource-Policy')),
-      };
-      await renderPreviewIsolation();
-    }
+    // The pane's document just answered through the port registry, which
+    // recorded its policy: read it now rather than at the next poll.
+    previewFrame.addEventListener('load', () => refreshStats());
 
-    async function renderPreviewIsolation() {
-      const isolation = await loadPreviewIsolation();
-      const active = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
-      const tab = active && active.type !== 'markdown' && active.documentPolicy ? active : null;
-      previewIsolationOffer = tab
-        ? isolation.planPreviewPane(
-          tab.documentPolicy,
-          isolation.previewRelation(new URL(tab.url, location.href), new URL(location.href)),
-          {
-            requested: isolation.isIsolatedShellUrl(new URL(location.href)),
-            isolated: self.crossOriginIsolated === true,
-            topLevel: window.parent === window,
-          },
-        )
-        : 'none';
-      // Which tab the offer was decided for: the decision is asynchronous.
-      previewIsolationEl.dataset.tab = tab ? tab.id : '';
-      previewIsolationEl.dataset.offer = previewIsolationOffer;
-      const offer = PREVIEW_ISOLATION_OFFERS[previewIsolationOffer];
-      previewIsolationEl.hidden = !offer;
-      if (!offer) return;
-      previewIsolationText.textContent = offer.text;
-      previewIsolationAction.textContent = offer.action;
+    // The app doors' last documents, from the stats: `{ vite, worker }`.
+    let appDocuments = { vite: null, worker: null };
+
+    function showPreviewIsolation() {
+      previewIsolation.then((isolation) => {
+        if (!isolation) return;
+        const tab = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
+        if (!tab || tab.type === 'markdown') {
+          isolation.show(null);
+          return;
+        }
+        const policy = tab.type === 'port' ? tab.document : appDocuments[tab.kind];
+        isolation.show({ id: tab.id, url: tab.url, document: policy ?? null });
+      });
     }
 
     // A host-form port preview needs a fresh single-use attach URL (the one
@@ -2318,31 +2305,19 @@
       window.open(new URL(url, location.href).href, '_blank', 'noopener');
     }
 
-    previewIsolationAction.onclick = async () => {
-      if (previewIsolationOffer === 'own-tab') {
-        await openPreviewInNewTab();
-        return;
-      }
-      const isolation = await loadPreviewIsolation();
-      try { sessionStorage.setItem(PREVIEW_FOCUS_KEY, activePreviewTabId); } catch {}
-      await releaseTerminal();
-      location.replace(isolation.shellUrlInMode(location.href, previewIsolationOffer === 'isolate-shell'));
-    };
-
-    // The session has one browser terminal, and the page after the reload
-    // must be able to take it. A COOP change moves the page to a new
-    // browsing context group, and the old page's socket did not close with
-    // it (measured on a throwaway: the reloaded shell's /ws answered 409 for
-    // 30 s and more). Close it here and wait for the closing handshake, so
-    // the session has dropped the socket before the new page dials.
-    function releaseTerminal() {
+    // The session has one browser terminal, and the page after a mode-switch
+    // reload must be able to take it: close this page's socket and wait for
+    // the session's answer, at most `limitMs`, so the terminal is free before
+    // the new page dials.
+    function releaseTerminal(limitMs) {
       const sock = ws;
       // Inert from here on: every handler, the reconnect included, is gated
       // on `sock === ws`.
       ws = null;
       if (!sock || sock.readyState === WebSocket.CLOSED) return Promise.resolve();
       return new Promise((resolve) => {
-        sock.addEventListener('close', resolve, { once: true });
+        const timer = setTimeout(resolve, limitMs);
+        sock.addEventListener('close', () => { clearTimeout(timer); resolve(); }, { once: true });
         sock.close(1000, 'shell mode switch');
       });
     }
@@ -2772,6 +2747,18 @@
     }
 
     // ── WebSocket ──
+    // A page that goes away gives the session's one terminal back with a
+    // close frame, so the next page can take it at once. Chrome does not
+    // close it for a navigation that changes browsing context group (between
+    // the default and the isolated shell): measured, the old socket kept the
+    // terminal and the next shell's /ws answered 409 for minutes.
+    addEventListener('pagehide', () => {
+      const sock = ws;
+      ws = null;
+      if (sock && sock.readyState !== WebSocket.CLOSED) sock.close(1000, 'page hidden');
+    });
+    // Back from the back/forward cache: dial again.
+    addEventListener('pageshow', (event) => { if (event.persisted && !ws) connect(); });
     function connect() {
       // A session the server has disowned is not worth redialling; Conn
       // has already told the user why.
