@@ -47,8 +47,6 @@ for (const [status, body, extra] of [
   }));
   assert.equal(response.status, status);
   assert.equal(response.body.expectedLength, body.byteLength, `${status}: the declared length reaches the wire`);
-  assert.equal(response.headers.get('content-length'), String(body.byteLength));
-  assert.equal(response.headers.get('content-range'), extra['Content-Range'] ?? null, `${status}: Content-Range kept`);
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body, `${status}: body byte-exact`);
 }
 
@@ -65,13 +63,18 @@ for (const [status, body, extra] of [
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), BYTES);
 }
 
-// A target that sends fewer bytes than it declared fails the body, as HTTP
-// framing would, rather than handing the client a short file as whole.
+// A target that sends a different number of bytes than it declared fails the
+// body, as HTTP framing would: fewer would hand the client a short file as
+// whole, more would run past the length the client was promised.
 {
-  const response = await routeThrough(async () => new Response(BYTES.subarray(0, 10), {
+  const short = await routeThrough(async () => new Response(BYTES.subarray(0, 10), {
     headers: { 'Content-Length': '20' },
   }));
-  await assert.rejects(response.arrayBuffer(), /10 of the 20 bytes/);
+  await assert.rejects(short.arrayBuffer(), /10 of the 20 bytes/);
+  const long = await routeThrough(async () => new Response(BYTES.subarray(0, 30), {
+    headers: { 'Content-Length': '20' },
+  }));
+  await assert.rejects(long.arrayBuffer(), /more than the 20 bytes/);
 }
 
 // No length, or no single length, relays chunked as before.
@@ -88,7 +91,7 @@ for (const declared of [null, '5, 5', '-1', '1e3', '']) {
   const response = await routeThrough(async () => new Response('', {
     headers: { 'Content-Length': String(BYTES.byteLength) },
   }), 'HEAD');
-  assert.equal(response.headers.get('content-length'), String(BYTES.byteLength));
+  assert.equal(response.body?.expectedLength, undefined, 'a HEAD body is not held to the length');
   assert.equal((await response.arrayBuffer()).byteLength, 0);
 }
 

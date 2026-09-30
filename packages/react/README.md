@@ -58,7 +58,7 @@ export function App() {
 | `onError` | `(e: NimbusTerminalError) => void` | | — | Fired on session-side errors. |
 | `style` | `CSSProperties` | | `{width:'100%',height:'100%'}` | Inline iframe styles. |
 | `className` | `string` | | — | Extra class on the iframe. |
-| `sandbox` | `string` | | `allow-scripts allow-same-origin allow-downloads allow-forms allow-popups` | iframe sandbox attribute. |
+| `sandbox` | `string` | | `allow-scripts allow-same-origin allow-downloads allow-forms allow-popups allow-popups-to-escape-sandbox` | iframe sandbox attribute. `allow-popups-to-escape-sandbox` lets a preview opened in its own tab leave the sandbox, which an app that asks for cross-origin isolation needs: a sandboxed top-level page cannot be isolated. Exported as `NIMBUS_TERMINAL_SANDBOX` to extend. |
 | `title` | `string` | | `Nimbus terminal` | Accessibility title. |
 
 ## Imperative handle

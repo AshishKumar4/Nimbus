@@ -29,6 +29,7 @@
  */
 
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
 
 export interface PortEntry {
@@ -47,6 +48,12 @@ export interface PortEntry {
    * one per `register`, which is what makes an unexposed port stay unexposed.
    */
   capability: string;
+  /**
+   * The isolation headers of the last document this registration served (a
+   * navigation's non-redirect response), null until it serves one. The shell
+   * reads it from `stats` to decide what the preview pane can offer.
+   */
+  document: DocumentPolicy | null;
 }
 
 /**
@@ -197,6 +204,7 @@ export class PortRegistry {
       facetStub: target,
       registeredAt: Date.now(),
       capability: createPortCapability(),
+      document: null,
     });
     this.notifyPortWaiters(pid);
   }
@@ -450,6 +458,12 @@ export class PortRegistry {
         );
       }
 
+      // A navigation's answer is the document the browser will isolate (or
+      // not) by these headers; a redirect is not a document.
+      if (request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {
+        entry.document = documentPolicyOf(response.headers);
+      }
+
       // Stream the facet's Response back. Status, status-text, and every
       // header pass through; only a content coding the hop cannot carry is
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
@@ -473,7 +487,7 @@ export class PortRegistry {
   get stats() {
     return {
       activePorts: this.ports.size,
-      ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid })),
+      ports: [...this.ports.entries()].map(([port, e]) => ({ port, pid: e.pid, document: e.document })),
     };
   }
 

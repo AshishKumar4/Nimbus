@@ -6,5 +6,5 @@
     "jsxImportSource": "preact",
     "types": []
   },
-  "include": ["agent-chat/**/*"]
+  "include": ["agent-chat/**/*", "preview-isolation/**/*"]
 }

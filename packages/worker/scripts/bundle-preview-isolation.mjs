@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 /**
- * bundle-preview-isolation.mjs — ship the preview-isolation rules to the shell.
+ * bundle-preview-isolation.mjs — build the shell's isolation offer.
  *
- * `src/_shared/preview-isolation.ts` is one module with two readers: the
- * router, which serves the isolated shell, and the shell page, which decides
- * what the preview pane offers. The router imports it from dist; this bundles
- * the same source into an ES module under public/_assets/preview-isolation/,
- * served by the ASSETS binding and dynamic-imported by public/s/index.html,
- * so the query name and the rules cannot drift between the two.
+ * Bundles frontend/preview-isolation/index.ts (the offer strip's controller)
+ * with the rules it shares with the router (src/_shared/preview-isolation.ts)
+ * into an ES module under public/_assets/preview-isolation/, served by the
+ * ASSETS binding and dynamic-imported by public/s/index.html, so the query
+ * name and the rules cannot drift between the router and the page.
  *
  * Output (committed, like the sibling _assets bundles):
  *   public/_assets/preview-isolation/preview-isolation.js
@@ -21,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 const result = await build({
-  entryPoints: [path.join(ROOT, 'src', '_shared', 'preview-isolation.ts')],
+  entryPoints: [path.join(ROOT, 'frontend', 'preview-isolation', 'index.ts')],
   outdir: path.join(ROOT, 'public', '_assets', 'preview-isolation'),
   entryNames: 'preview-isolation',
   bundle: true,

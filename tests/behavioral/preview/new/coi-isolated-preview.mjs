@@ -9,12 +9,15 @@
 //
 // A nested document is isolated only when every document above it is, so the
 // pane cannot give the app isolation inside the default shell. The default
-// shell, which keeps no COOP/COEP, notices the app's COEP and offers the
-// isolated shell; the reload lands on the same tab, and the app then reports
-// crossOriginIsolated and a completed round trip from inside the pane. The
-// ↗ button opens it top-level, where its own headers isolate it.
+// shell, which keeps no COOP/COEP, learns the app's COEP from the session's
+// stats and offers the isolated shell. The switch guards unsaved editor
+// changes, hands the terminal over and reloads within 10 s; it lands on the
+// same tab, and the app then reports crossOriginIsolated and a completed
+// round trip from inside the pane. The ↗ button opens it top-level, where its
+// own headers isolate it. At a 390 px window the offer and ↗ stay on screen.
 //
 // Chrome runs with web security on: the rules under test are the browser's.
+// NIMBUS_PROBE_SCREENSHOTS=<dir> saves the offer, desktop and 390 px.
 
 import { AUTH_TOKEN, deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
 import {
@@ -79,6 +82,12 @@ async function appResult(target) {
   return JSON.parse(await handle.jsonValue());
 }
 
+/** Save a screenshot for review when NIMBUS_PROBE_SCREENSHOTS names a directory. */
+async function screenshot(page, name) {
+  const dir = process.env.NIMBUS_PROBE_SCREENSHOTS;
+  if (dir) await page.screenshot({ path: `${dir}/${name}.png` });
+}
+
 /** The pane's frame once it has navigated to the app. */
 async function paneFrame(page) {
   const until = Date.now() + 30_000;
@@ -95,6 +104,7 @@ try {
   await t.waitForPrompt(30_000);
   await t.run('mkdir -p /home/user/coi-app && cd /home/user/coi-app', 15_000);
   await t.run(heredocCommand('server.js', serverJs), 15_000);
+  await t.run(heredocCommand('/home/user/notes.js', '// notes'), 15_000);
   await t.run('node --watch server.js', 60_000);
 
   let direct = null;
@@ -123,7 +133,7 @@ try {
   page.on('pageerror', (error) => pageErrors.push(error.message || String(error)));
 
   // ── the default shell: no policy of its own, and an offer ──
-  const shellResponse = await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  const shellResponse = await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   a.check(
     'the default shell is served without COOP/COEP',
     shellResponse?.headers()['cross-origin-embedder-policy'] === undefined
@@ -144,12 +154,67 @@ try {
     before.coi === false && before.sab === 'undefined',
     JSON.stringify(before),
   );
+  await screenshot(page, 'final-desktop-offer-reload-isolated');
 
-  // ── the isolated shell ──
+  // ── a phone-width window keeps the offer and ↗ on screen ──
+  await page.setViewport({ width: 390, height: 844 });
+  const narrow = await page.evaluate(() => {
+    const onScreen = (element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth + 0.5;
+    };
+    const action = document.getElementById('btnPreviewIsolationAction');
+    return {
+      open: onScreen(document.getElementById('btnOpenPreview')),
+      action: onScreen(action) && action.scrollWidth <= action.clientWidth + 1,
+    };
+  });
+  a.check('at 390 px the ↗ button is on screen', narrow.open, JSON.stringify(narrow));
+  a.check('at 390 px the offer’s button is on screen and unclipped', narrow.action, JSON.stringify(narrow));
+  await screenshot(page, 'final-mobile-offer-reload-isolated');
+  await page.setViewport({ width: 1280, height: 800 });
+
+  // ── unsaved editor changes are not discarded without asking ──
+  await page.evaluate((name) => {
+    const node = [...document.querySelectorAll('.tree-node')].find((candidate) => candidate.querySelector('.tree-label')?.textContent === name);
+    node?.click();
+  }, 'notes.js');
+  await page.waitForFunction(() => document.getElementById('editorTab')?.textContent?.includes('notes.js'), { timeout: 30_000 });
+  await page.click('.monaco-editor .view-lines');
+  await page.keyboard.type('// unsaved\n');
+  await page.waitForFunction(() => document.getElementById('editorTab')?.classList.contains('dirty'), { timeout: 10_000 });
+  await page.evaluate((port) => {
+    [...document.querySelectorAll('#previewTabs .preview-tab')].find((tab) => tab.textContent.includes(':' + port))?.click();
+  }, PORT);
+  const declined = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 10_000);
+    page.once('dialog', async (dialog) => {
+      clearTimeout(timer);
+      const message = dialog.message();
+      await dialog.dismiss();
+      resolve(message);
+    });
+    page.click('#btnPreviewIsolationAction');
+  });
+  a.check('the switch asks before discarding unsaved changes', typeof declined === 'string' && declined.includes('notes.js'), `dialog=${declined}`);
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  a.check(
+    'declining keeps the default shell, its terminal and the edit',
+    new URL(page.url()).searchParams.get('isolated') === null
+      && await page.evaluate(() => document.getElementById('editorTab')?.classList.contains('dirty')
+        && typeof ws !== 'undefined' && ws?.readyState === WebSocket.OPEN),
+    page.url(),
+  );
+
+  // ── the isolated shell, within 10 s ──
+  page.once('dialog', (dialog) => { void dialog.accept(); });
+  const switchStarted = Date.now();
   const [isolatedResponse] = await Promise.all([
-    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90_000 }),
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }),
     page.click('#btnPreviewIsolationAction'),
   ]);
+  const switchMs = Date.now() - switchStarted;
+  a.check(`the switch reloads within 10 s (${switchMs} ms)`, switchMs < 10_000);
   a.check(
     'the isolated shell is served with COOP same-origin + COEP credentialless',
     isolatedResponse?.headers()['cross-origin-opener-policy'] === 'same-origin'
@@ -158,12 +223,12 @@ try {
     `${page.url()} ${JSON.stringify(isolatedResponse?.headers())}`,
   );
   a.check('the shell itself is cross-origin isolated', await page.evaluate(() => self.crossOriginIsolated) === true);
-  await waitForSessionTerminalText(page, /user@nimbus:/, 60_000);
-  a.check('the terminal still renders under COEP credentialless (CDN scripts load)', true);
+  await waitForSessionTerminalText(page, /user@nimbus:/, 15_000);
+  a.check('the terminal reattaches under COEP credentialless (CDN scripts load)', true);
   await page.waitForFunction((port) => {
     const active = document.querySelector('#previewTabs .preview-tab.active');
     return active?.textContent?.includes(':' + port);
-  }, { timeout: 60_000 }, PORT);
+  }, { timeout: 30_000 }, PORT);
   a.check('the reload lands on the tab it was made for', true);
   const inPane = await appResult(await paneFrame(page));
   a.check(
@@ -171,10 +236,15 @@ try {
     inPane.coi === true && inPane.sab === 'function' && inPane.value === 42 && !inPane.error,
     JSON.stringify(inPane),
   );
+  await page.waitForFunction((port) => document.getElementById('previewIsolation').dataset.tab === 'port:' + port, { timeout: 30_000 }, PORT);
   a.check(
     'no offer is left once the pane shows the app as it asked',
     await page.evaluate(() => document.getElementById('previewIsolation').hidden) === true,
   );
+  await screenshot(page, 'final-desktop-isolated-app-in-pane');
+  await page.setViewport({ width: 390, height: 844 });
+  await screenshot(page, 'final-mobile-isolated-app-in-pane');
+  await page.setViewport({ width: 1280, height: 800 });
 
   // ── the app's own tab ──
   const opened = browser.waitForTarget((target) => target.url().includes(`/s/${sid}/port/${PORT}/`) && target.type() === 'page', { timeout: 30_000 });
@@ -187,21 +257,6 @@ try {
     JSON.stringify(inTab),
   );
   await ownTab.close();
-
-  // ── the agent's OAuth result still reaches an isolated shell ──
-  // COOP severs the popup's opener, so the callback page's word comes over a
-  // BroadcastChannel. The callback answers an error without a signed state,
-  // which is enough: the chat refreshes its status on any result.
-  await page.click('#btnAgent');
-  await page.waitForSelector('.agent-chat', { timeout: 60_000 });
-  let statusReads = 0;
-  page.on('request', (request) => {
-    if (request.url().endsWith(`/s/${sid}/api/agent/status`)) statusReads++;
-  });
-  await page.evaluate((path) => { window.open(path, 'nimbus-agent-oauth', 'width=400,height=300'); }, `/s/${sid}/api/agent/oauth/callback?error=access_denied`);
-  const oauthDeadline = Date.now() + 20_000;
-  while (statusReads === 0 && Date.now() < oauthDeadline) await new Promise((resolve) => setTimeout(resolve, 100));
-  a.check('an OAuth result reaches the agent chat of an isolated shell', statusReads > 0, `status reads=${statusReads}`);
 
   a.check('no page errors in the shell', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (error) {

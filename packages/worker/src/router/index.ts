@@ -364,6 +364,7 @@ export function createNimbusHandler(
           redirectPath: url.pathname,
           singleUseScope: 'session:preview',
           reusableScope: null,
+          embeddedNavigation: true,
         });
       }
 
@@ -488,6 +489,7 @@ export function createNimbusHandler(
           redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
           singleUseScope: 'session:bootstrap',
           reusableScope: 'session:attach',
+          embeddedNavigation: false,
         });
       }
 
@@ -767,6 +769,17 @@ async function handleAttachExchange(
     singleUseScope: string;
     /** Scope a reusable token must carry, or null to reject reusable tokens. */
     reusableScope: string | null;
+    /**
+     * The exchange is a hop of a nested navigation whose embedder may be
+     * cross-origin isolated: the preview pane of an isolated shell loads a
+     * host-form preview through it. Under an embedder policy every response
+     * of a nested navigation, redirects included, passes the CORP check, and
+     * a missing CORP counts as same-origin, so the redirect says
+     * `cross-origin`: it has no body to protect, and the guest's own document
+     * after it still answers for itself.
+     * https://html.spec.whatwg.org/multipage/browsers.html#check-a-navigation-response's-adherence-to-its-embedder-policy
+     */
+    embeddedNavigation: boolean;
   },
 ): Promise<Response> {
   const token = url.searchParams.get(NIMBUS_TOKEN_QUERY)!;
@@ -803,14 +816,13 @@ async function handleAttachExchange(
     const clean = new URL(url);
     clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
     clean.pathname = options.redirectPath;
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: clean.pathname + clean.search,
-        'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
-        'Cache-Control': 'no-store',
-      },
+    const headers = new Headers({
+      Location: clean.pathname + clean.search,
+      'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
+      'Cache-Control': 'no-store',
     });
+    if (options.embeddedNavigation) headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    return new Response(null, { status: 302, headers });
   } catch (e) {
     if (!(e instanceof NimbusAuthError)) {
       console.error('[nimbus] attach exchange error:', e);

@@ -11,9 +11,10 @@
 // brings the default shell back with the app showing again.
 //
 // Chrome runs with web security on: the rules under test are the browser's.
+// NIMBUS_PROBE_SCREENSHOTS=<dir> saves the isolated shell's offer, desktop and 390 px.
 
 import { AUTH_TOKEN, deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
-import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { applyProbeCookies, exchangeAttachCookie, launchBrowser, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -35,6 +36,12 @@ http.createServer((req, res) => {
 const sid = await mintSession();
 const t = new Terminal(sid);
 const browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
+
+/** Save a screenshot for review when NIMBUS_PROBE_SCREENSHOTS names a directory. */
+async function screenshot(page, name) {
+  const dir = process.env.NIMBUS_PROBE_SCREENSHOTS;
+  if (dir) await page.screenshot({ path: `${dir}/${name}.png` });
+}
 
 async function showsApp(page) {
   await page.waitForFunction((port) => {
@@ -128,10 +135,17 @@ try {
       && document.getElementById('btnPreviewIsolationAction')?.textContent === 'Reload normally';
   }, { timeout: 60_000 }, PORT);
   a.check('the isolated shell blocks the app and offers the default shell', true);
+  await screenshot(page, 'final-desktop-isolated-offer-reload-normally');
+  await page.setViewport({ width: 390, height: 844 });
+  await screenshot(page, 'final-mobile-isolated-offer-reload-normally');
+  await page.setViewport({ width: 1280, height: 800 });
+  const switchStarted = Date.now();
   const [defaultAgain] = await Promise.all([
-    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90_000 }),
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }),
     page.click('#btnPreviewIsolationAction'),
   ]);
+  const switchMs = Date.now() - switchStarted;
+  a.check(`"Reload normally" reloads within 10 s (${switchMs} ms)`, switchMs < 10_000);
   a.check(
     '"Reload normally" returns to the default shell',
     new URL(page.url()).searchParams.get('isolated') === null
@@ -140,6 +154,8 @@ try {
   );
   await showsApp(page);
   a.check('the app shows in the pane again', true);
+  await waitForSessionTerminalText(page, /user@nimbus:/, 15_000);
+  a.check('the terminal reattaches after the switch', true);
 } catch (error) {
   a.check('probe completed', false, error instanceof Error ? error.stack : String(error));
 } finally {
