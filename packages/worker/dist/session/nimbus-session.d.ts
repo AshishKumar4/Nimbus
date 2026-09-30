@@ -145,11 +145,12 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
-    /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
-     *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
-     *  prevented hibernation per CF DO docs). The alarm itself lives in
-     *  DO storage at key `w1_next_alarm_reasons`. */
-    _w1JanitorArmed: boolean;
+    /** W1: the retention deadline this instance armed the log-janitor alarm
+     *  for, or null (hibernation.ts ensureLogJanitor). Replaces the pre-W1
+     *  `processLogsTimer` setTimeout handle (which prevented hibernation per
+     *  CF DO docs). The alarm itself lives in DO storage at key
+     *  `w1_next_alarm_reasons`. */
+    _w1JanitorAt: number | null;
     /** W1: idempotency flag for the resident keep-alive alarm cycle — the
      *  recurring event that holds this object in memory for as long as a
      *  resident process runs (hibernation.ts ensureResidentKeepalive). */

@@ -95,6 +95,9 @@ export interface ProcessExitInfo {
  *   - pruneBeforeSeq removes chunk rows below the given seq. Called
  *     inside flush after the per-pid byte cap is exceeded; the store
  *     computes the cutoff seq from its own ring state.
+ *   - retained lists every pid that has rows, with what retention reads
+ *     (never the chunks). Called at most once per isolate-gen, the first
+ *     time retention is asked about.
  *   - Adapters MUST be synchronous from the store's POV. Real SQL
  *     calls in the DO are synchronous (storage.sql.exec is blocking
  *     against the SQLite engine); KV is not used by W9.
@@ -111,6 +114,15 @@ export interface PersistAdapter {
     persistExit(pid: number, info: ProcessExitInfo): void;
     dropPid(pid: number): void;
     pruneBeforeSeq(pid: number, seq: number): void;
+    retained(): PersistedLogPid[];
+}
+/** A pid as its persisted rows describe it to retention. */
+export interface PersistedLogPid {
+    pid: number;
+    /** When its exit was recorded; null when none was. */
+    exitAt: number | null;
+    /** Its newest chunk or exit, whichever is later. */
+    lastActivity: number;
 }
 export interface ProcessLogStoreOptions {
     /** Per-PID ring cap in bytes. Default 64 KB. */
@@ -167,6 +179,15 @@ export declare class ProcessLogStore {
      * remains in memory.
      */
     private _pruneQueue;
+    /**
+     * W9: pids whose rows only SQL holds — what a previous instance flushed
+     * and this one has not touched. Retention covers them too: an instance
+     * that woke from hibernation holds none of its predecessor's pids in
+     * memory, so a sweep of memory alone never drops them. Listed from the
+     * adapter on the first retention question (null until then); it only
+     * shrinks, as a pid is touched (and so hydrated) or dropped.
+     */
+    private _persistedOnly;
     /** Cumulative flushed-bytes counter (telemetry). */
     private _flushedChunks;
     private _flushedBytes;
@@ -260,8 +281,10 @@ export declare class ProcessLogStore {
     /** Subscribe to the exit event. Fires once. */
     subscribeExit(pid: number, cb: (e: ProcessExitInfo) => void): () => void;
     /**
-     * Drop all state for any PID whose process exited more than `ageMs`
-     * ago. Returns the number of PIDs purged.
+     * Drop all state for any PID whose process exited `ageMs` or more
+     * ago, whether this instance holds it in memory or only its persisted
+     * rows do. Returns the number of PIDs purged; their rows go at the next
+     * `flush()`.
      *
      * Optional `isOrphan(pid)` callback identifies PIDs whose owning
      * process vanished without a recorded exit (e.g., a long-running
@@ -269,6 +292,24 @@ export declare class ProcessLogStore {
      * longer grace window so leaked buffers don't accumulate forever.
      */
     dropOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number;
+    /**
+     * When `dropOlderThan(ageMs, isOrphan)` next has something to drop:
+     * the earliest retention deadline over every pid this store holds,
+     * in memory or only in its persisted rows. Null when nothing retained
+     * will expire by itself — each pid still runs, or has a reader. Both
+     * end in log activity (the exit is recorded; the reader unsubscribes),
+     * and that is when a host asks again, so a janitor armed from this
+     * wakes only when there is something to drop.
+     */
+    nextExpiry(ageMs?: number, isOrphan?: (pid: number) => boolean): number | null;
+    /**
+     * The one retention rule: a pid's logs go `ageMs` after its exit, or,
+     * with no exit recorded, three times that after its last activity once
+     * its process is gone (30 min by default). Null: nothing ends them yet.
+     */
+    private _expiresAt;
+    /** The pids only persisted rows hold (see `_persistedOnly`), listed once per isolate-gen. */
+    private _persistedPids;
     /**
      * W9: drain dirty buffers into the persist adapter. Synchronous from
      * the store's POV (the adapter's calls are sync; the production

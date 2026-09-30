@@ -186,6 +186,8 @@ export declare class SessionProcessSupervisor {
     setLogBroadcast(onChunk: (pid: number, chunk: LogChunk) => void, onExit: (pid: number, exit: ProcessExitInfo) => void): void;
     flushLogs(): void;
     dropLogsOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number;
+    /** See ProcessLogStore.nextExpiry — when dropLogsOlderThan next has work, or null. */
+    nextLogExpiry(ageMs?: number, isOrphan?: (pid: number) => boolean): number | null;
     logHibStats(): ReturnType<ProcessLogStore['hibStats']>;
     /**
      * Replace the in-memory log store with a fresh, unwired one. Test-only
