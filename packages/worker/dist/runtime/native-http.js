@@ -78,7 +78,28 @@ Object.defineProperty(builtins, "http", {
           return Reflect.apply(writeHead, this, arguments);
         };
       }
-      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref;
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit;
+      // An HTTP exchange keeps its process alive until it completes, as its
+      // connection does in Node, whether or not the server is still listening
+      // (a bound port is counted on its own): from 'request' until the response
+      // closes, finished or destroyed (the client went away, the header
+      // deadline passed). The response alone decides, as Node ties the
+      // exchange to it: a request body the handler never reads never ends
+      // here (workerd does not dump one), so it must not hold the process.
+      // One of the held connections __nimbusLiveHandles counts, never startup
+      // work: a response still streaming at boot (SSE, an HMR poll) does not
+      // hold a resident's boot answer.
+      const holdExchange = (response) => {
+        globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + 1;
+        response.once("close", () => {
+          globalThis.__nimbusOpenSockets--;
+          globalThis.__nimbusHandleReleased?.();
+        });
+      };
+      proto.emit = function (event, incoming, response) {
+        if (event === "request" && incoming && response) holdExchange(response);
+        return Reflect.apply(emit, this, arguments);
+      };
       // Keep RPC capabilities inside this closure, not on globals or server
       // properties visible to guest code. The setter refreshes the context
       // when an isolate is reused, without revealing its current value.

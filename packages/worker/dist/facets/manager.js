@@ -159,7 +159,7 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * are the program's exit and a signal. Callers that still pass a finite
  * deadline (the resident boot settle) arm the expiry timer.
  *
- * Three kinds of handle, each owned by the shim that creates them:
+ * Four kinds of handle, each owned by the shim that creates them:
  *
  *   - macrotask TIMERS and intervals (`__nimbusPendingTimers`), from the
  *     timer tracker below.
@@ -168,6 +168,10 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  *     PerformPromiseThen and surfaces nowhere else, so this counter is how
  *     awaited work is seen at all. See the shim's __nimbusTrackOp.
  *   - listening SERVERS (`__portRegistry`), open until the program closes
+ *     them.
+ *   - held CONNECTIONS (`__nimbusOpenSockets`): an HTTP exchange a server is
+ *     answering, a WebSocket client, a tls.connect socket, until it closes
+ *     (or is unref'd). Not startup work: a resident's boot does not wait on
  *     them.
  *
  * The loop subscribes to the exit promise ONCE — a per-pass
@@ -201,7 +205,8 @@ function __nimbusLiveHandles() {
   const __servers = globalThis.__portRegistry;
   let __bound = 0;
   if (__servers) for (const server of __servers.values()) if (!server.__nimbusUnrefed) __bound++;
-  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles");
+  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles")
+    + __nimbusHandleCount("__nimbusOpenSockets");
 }
 
 async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {

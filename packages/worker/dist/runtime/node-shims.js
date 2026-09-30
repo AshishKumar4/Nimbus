@@ -140,6 +140,23 @@ function __nimbusTrackOp(promise) {
   return promise;
 }
 
+// A connection the program holds open keeps it alive, as its socket does in
+// Node, until it closes or is unref'd: a WebSocket client, a tls.connect
+// socket. The returned setter holds (true) or lets go (false); it is the one
+// counter __nimbusLiveHandles reads for them, separate from startup work so a
+// socket opened at boot does not hold a resident's boot answer.
+function __nimbusHoldSocket() {
+  let held = false;
+  const hold = (want) => {
+    if (want === held) return;
+    held = want;
+    globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + (want ? 1 : -1);
+    if (!want) globalThis.__nimbusHandleReleased?.();
+  };
+  hold(true);
+  return hold;
+}
+
 async function __nimbusUseRpcResult(promise, use) {
   globalThis.__nimbusPendingOps++;
   try { return await __nimbusUseRpcResultUnref(promise, use); }
@@ -5031,6 +5048,8 @@ const __NimbusRelayedWebSocket = (() => {
       this._listeners = new Map();
       this._id = null;
       this._done = false;
+      // Open, or opening, until its close: a handle, as Node's WebSocket is.
+      this._hold = __nimbusHoldSocket();
       this._sends = Promise.resolve();
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
@@ -5093,6 +5112,7 @@ const __NimbusRelayedWebSocket = (() => {
       }
       if (event.kind === "close") {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: event.code, reason: event.reason,
@@ -5104,6 +5124,7 @@ const __NimbusRelayedWebSocket = (() => {
     _fail(error) {
       if (this._done) return;
       this._done = true;
+      this._hold(false);
       this.readyState = CLOSED;
       const message = (error && error.message) || String(error);
       this._emit({ type: "error", message, target: this });
@@ -5181,6 +5202,7 @@ const __NimbusRelayedWebSocket = (() => {
         );
       })().catch(() => {}).then(() => {
         this._done = true;
+        this._hold(false);
         this.readyState = CLOSED;
         this._emit({
           type: "close", code: code === undefined ? 1000 : code,
@@ -6121,10 +6143,29 @@ const __tlsMod = (() => {
   if (!real) {
     return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
   }
+  // A socket tls.connect opens holds the program until it closes or is
+  // unref'd, as in Node.
+  const connect = (...args) => {
+    const socket = real.connect(...args);
+    const hold = __nimbusHoldSocket();
+    let closed = false;
+    socket.once('close', () => { closed = true; hold(false); });
+    const ref = socket.ref, unref = socket.unref;
+    socket.ref = function () {
+      if (!closed) hold(true);
+      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+    };
+    socket.unref = function () {
+      hold(false);
+      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+    };
+    return socket;
+  };
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
+      if (p === 'connect') return connect;
       if (p === 'createServer') {
         return () => {
           const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
