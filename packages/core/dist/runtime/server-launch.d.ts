@@ -15,10 +15,13 @@
  *   false for a module it loads); anything else may go either way. Code after
  *   `return`, `throw` or `process.exit()` does not run.
  * - An argument decides only where the program branches on it: its own
- *   `process.argv` tests, and a CLI parser's (commander, yargs, sade, cac). A
- *   parser answers `--help`/`--version` itself and exits at `.parse()`, and a
- *   command's handler (`.command('serve').action(fn)`, yargs'
- *   `.command({ command: 'serve', handler })`) runs only when argv names it.
+ *   `process.argv` tests, and a CLI parser's (commander, yargs, sade, cac).
+ *   A parser's handlers (`.action(fn)`, `.command('serve').action(fn)`,
+ *   yargs' `.command({ command: 'serve', handler })`) are recorded where they
+ *   are registered and run only when it parses (`.parse()`, `.argv`): not at
+ *   all when argv holds `--help`/`--version`, which it answers and exits on,
+ *   and for a command only when argv names it. A parser is known through
+ *   ESM interop (`__toESM(require('commander'))`) as through `require`.
  * - A function runs when it is called, constructed, invoked immediately, or
  *   handed to a call as a callback (a listener, `.then`, a CLI's action or a
  *   command's `handler`); not when it is only defined or exported. Logging a
