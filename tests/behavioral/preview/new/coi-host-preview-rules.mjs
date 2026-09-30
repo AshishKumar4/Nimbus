@@ -287,6 +287,11 @@ try {
     const page = await browser.newPage();
     await page.goto(`http://localhost:${embedServer.port}/embed?child=${encodeURIComponent(previewUrl(3000))}`, { waitUntil: 'load', timeout: 60_000 });
     const shellFrame = page.frames().find((frame) => frame.url().includes('/shell'));
+    // The shell is cross-site to the embedder, so it renders in its own
+    // process, and a click only reaches it once it has presented a frame:
+    // measured, 2 of 20 clicks sent right after `load` never reached the
+    // button. Wait for that frame to paint, as a user's eye would.
+    await shellFrame.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const opened = browser.waitForTarget((target) => target.type() === 'page' && (target.url() === previewUrl(3000) || target.url().startsWith('chrome-error')), { timeout: 60_000 });
     await shellFrame.click('#open');
     const popup = await (await opened).page();
