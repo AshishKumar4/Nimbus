@@ -105,6 +105,18 @@ export interface OpencodeRunnerOptions {
     mode: OpencodeRunnerMode;
 }
 export type OpencodeRunnerMode = 'oneshot' | 'attached' | 'server';
+/**
+ * The facet-side TTY stdout for the OpenTUI span-feed path. createCliRenderer
+ * allocates the NativeSpanFeed iff `stdout !== process.stdout`; opencode passes
+ * no custom stdout, so bundle seam 7 defaults config.stdout to this global. It
+ * is a DISTINCT object (≠ process.stdout) that forwards every write to the
+ * facet's process.stdout (which streams live to the terminal RPC). The feed
+ * emits Uint8Array chunks of UTF-8 ANSI output; they are forwarded as bytes.
+ * Decoding them to a string first re-encodes every non-ASCII byte (borders,
+ * spinners, icons) on the way out. columns/rows/isTTY mirror the shim TTY so
+ * the renderer reads the live terminal geometry.
+ */
+export declare const OPENTUI_TTY_STDOUT_SRC: string;
 /** OpenTUI's cross-copy singleton registry key (@opentui/core, public). */
 export declare const OPENTUI_SINGLETON_SYMBOL = "@opentui/core/singleton";
 /** The registry entry holding the live CliRenderer set. */

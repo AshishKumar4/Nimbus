@@ -57,6 +57,109 @@ published independently in the `@nimbus-sh` npm scope.
   module"); it, its classifiers and the comment scanner's literal-blanking
   mode are deleted.
 
+- esbuild facets are handed the host Worker's compiled esbuild module
+  instead of 12 MiB of wasm bytes. The host already bundles
+  `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker
+  Loader shares a compiled `WebAssembly.Module` member with the dynamic
+  worker (workerd `worker-loader.c++`, `extractWasmModuleContent`).
+  - The staged `/_assets/esbuild-0.24.2.wasm` and its fetch, digest check,
+    and per-facet compile are gone, along with the `/api/_test/cache/wasm/*`
+    endpoints that benchmarked that fetch.
+  - The session's esbuild pool no longer retains the bytes. It no longer
+    holds 11,907,565 bytes of resident supervisor allocation credit for its
+    whole life. That resident lane was the credit pool's only use, so it is
+    removed.
+  - Measured locally on workerd 1.20260926.1 with esbuild's wasm: loading a
+    dynamic worker and serving its first fetch took 14 ms when handed the
+    Module and 64–75 ms when handed the bytes. On two Previews, a fresh
+    session's first `esbuild` run took a median of 1,133 ms (n=12) against
+    1,382 ms (n=8) for the build before the change.
+  - `@nimbus-sh/fabric` adds `describeHostWasm` (`host-wasm.js`). A host
+    records a module's id and wire size there. `IsolatePool` keys warm
+    slots by that id and refuses an undescribed Module.
+    `assertModuleMapWithinCodeLimit` counts the size, since a Module's
+    bytes still count toward the 64 MiB dynamic-worker code limit.
+  - The `worker-bundle-size` probe now checks the platform's limits as
+    documented, not the 7 MB index.js budget: `Total Upload` ≤ 64 MiB
+    uncompressed, and startup under 1 s as profiled by
+    `wrangler check startup`. Measured: 18.42 MiB, 192.6 ms active CPU on
+    local workerd.
+  - The other fixed wasm stays staged and is handed over as bytes: sql.js,
+    OpenTUI, yoga and tree-sitter (core, bash, powershell), 3.79 MB in all.
+    esbuild's handoff was free because the host already bundled it. With
+    these six bundled into the probe Worker, measured:
+    - idle workerd RSS locally +8.1 and +9.2 MB (two runs), in an isolate
+      every request and session shares, while most sessions never load them;
+    - startup +~8 ms (`wrangler check startup`, three runs each);
+    - Total Upload 18.4 → 22.0 MiB.
+  - `_throwaway-target.mjs up` logs the Preview deployment's
+    `startup_time_ms`, the platform's own startup figure.
+
+- Node children spawned with `stdio: 'inherit'` now relay stdout and stderr
+  through the parent's output streams. Their public streams stay null, but
+  child close waits for inherited output to drain, so it precedes the
+  parent's close-handler writes and does not end the parent's descriptors.
+  Inherited stdin uses the parent's input/terminal pump, preserves bytes
+  and EOF, and detaches when the child exits. Managed dispatch publishes
+  output as it arrives rather than buffering prompts until exit; active
+  live-stdin consumers hold the child alive without blocking resident
+  startup. Node eval, stdin and script children reuse the broker's reserved
+  pid, so their supervisor writes go straight to the child's queues, never
+  to the shell or an exit-only capture buffer. Previously inherited output
+  had no read loop at all; create-next-app hid npm's actual install output.
+
+- SQLite filesystem calls through a process view reuse one checked inode
+  traversal instead of re-walking every prefix, then walking again for the
+  operation and revision. The namespace is consulted before each operation;
+  links, mounts and beneath-root paths retain the component walk. A bounded
+  last-resolution proof is invalidated by inode-table changes, mutations and
+  confinement changes, and can share the checked parent among adjacent
+  entries. Git's 400-file status/add/commit benchmark is back within the
+  baseline's variation (50 alternating samples per revision in one process);
+  permission changes and mount overlays still take effect immediately.
+
+- `npm install` run by a node process (`create-next-app`, or any
+  `child_process.spawn('npm', ...)`) installs again. Its resolver's last
+  layer ran in-DO and its install batch followed at once, sized to the
+  Durable Object's Dynamic Worker headroom; the platform still counted the
+  resolver's workers for a moment after their calls returned and refused
+  the batch ("Dynamic worker concurrency limit exceeded"), so
+  create-next-app aborted with "npm install has failed". A pooled call the
+  platform refuses to start now waits and is sent again, as the platform
+  asks (up to 15 s), and the platform's limit message is recognised, so a
+  hit that outlasts the wait names the workers that were in flight.
+
+- `npm install` links every command of a project with more than about 120
+  of them. The installer wrote all of `node_modules/.bin` in one W7 stream,
+  which owns at most 128 paths, so the install failed at link-bins with
+  "w7-frame: batch exceeds 128 owned paths"; a bin manifest past one chunk
+  (a few hundred commands) failed with "expected 2 chunks, got 1". The shims
+  now go in waves, and each file in chunks.
+
+- A bash fork costs a fraction of what it did. Every fork instantiated
+  bash anew, grew the child's memory to the parent's (about 17 MB, mostly
+  the asyncify arena) and copied all of it, so a command-substitution loop
+  of 500 iterations ran the facet out of CPU time ("dispatch failed: Worker
+  exceeded CPU time limit") and `tests/unit/bash-pipes-jspi.mjs`' 2000-fork
+  pipeline ran local workerd out of 4 GB. A fork now takes the instance of a
+  process that exited normally when one is idle (up to four are kept per
+  session), and copies only what the child can read: the memory below and
+  above the arena, the unwind it resumes from, and each live setjmp capture
+  up to its high-water mark (about 1 MB). A 300-iteration loop instantiates
+  bash 4 times instead of 301; the 2000-fork pipeline peaks at 1.4 GB. On a
+  deployed Worker, `echo "$(printf ...)"` in a loop went from 140-175 ms a
+  fork (500 iterations exceeded the CPU limit) to 2000 iterations in 1.8 s.
+
+- A process's filesystem call on a SQLite path costs less: a stat five
+  components deep through the process bridge (`bind(...)`, `ProcessView`)
+  went from 23.5 to 11 µs. The bridge's walk looks each component up once
+  (the engine's credentialed view gains `kind(path)`, what `exists`,
+  `isFile`, `isDirectory` and `isSymlink` each looked up separately), the
+  namespace answers `composes` without normalizing a path whose first
+  component no mount shares, and `normalizeVfsPath` returns a key already in
+  canonical form as it is. The tools that now read a project through the
+  caller's view (git, npm, vite build) gain the same.
+
 - Native HTTP client I/O now remains live until the request's response body
   completes, errors or is cancelled, rather than ending at response headers.
   Referenced `listen(0)` allocations also keep the process alive until binding
@@ -107,7 +210,28 @@ published independently in the `@nimbus-sh` npm scope.
   a production Worker's deployment, and a Preview of the production Worker
   itself. It warns about any Worker binding the Preview does not redeclare.
   `apps/probe/wrangler.jsonc` carries a `previews` block that passes the
-  check. The throwaway tooling still deploys separate `nimbus-tw-*` Workers.
+  check.
+
+- Throwaway probe targets, local and CI's, are Worker Previews of
+  `nimbus-probe-previews`, a parent Worker with no production deployment.
+  They are no longer separate `nimbus-tw-*` Workers.
+  - `_throwaway-target.mjs up --name x` creates or updates Preview `tw-x` at
+    `tw-x-nimbus-probe-previews.<subdomain>.workers.dev`.
+  - Each Preview has its own Durable Object namespace and storage. Measured:
+    a file written in a session on one Preview is absent under the same
+    session id on another, and present again on the first.
+  - `JWT_SECRET` is uploaded with every deployment (`--secrets-file`), and
+    the dashboard's Previews Base configuration is ignored.
+  - A deploy counts as landed only when the Preview's latest deployment id is
+    the one reported and differs from the one before.
+  - `down` runs `wrangler preview delete` and confirms through the API. The
+    Preview's storage goes with it: a terminal no longer opens. Its
+    hostname kept answering from the edge for over two minutes afterwards.
+  - `list` shows every Preview under the parent, marking the ones no local
+    checkout holds.
+  - The parent is created with Preview URLs on.
+  - Staging stays two Workers: Cron Triggers and routes target production
+    only.
 
 - A rebuild stages a new opencode artifact only from the directory named by
   `NIMBUS_OPENCODE_DIST`, and a named directory that does not exist is an
@@ -153,9 +277,18 @@ published independently in the `@nimbus-sh` npm scope.
   their Worker with `enhanced_error_serialization`: add it to
   `compatibility_flags`, which keeps every other behavior of an older
   compatibility date, or set `compatibility_date` to 2026-04-21 or later.
-  `composeFabric` throws at startup on a workerd host without it, naming
-  both fixes, so such a deploy fails rather than every process seeing EIO
-  where the filesystem said ENOENT.
+  Without it `composeFabric` throws, naming both fixes, rather than every
+  process seeing EIO where the filesystem said ENOENT. It throws where the
+  embedder composes: a library host that composes through
+  `NimbusWorkspace.create({ fabric })` gets the error from its first
+  `NimbusWorkspace.create` (measured: HTTP 500 with that message), and a
+  Worker on `@nimbus-sh/worker`'s entry, which composes at module scope,
+  fails at startup (measured under `wrangler dev`). Verified on local
+  workerd: a host at 2025-12-01 with
+  only the flag added starts, and its processes get
+  ENOENT/ENOTDIR/ENOTEMPTY. `@nimbus-sh/config` lists the flag for a
+  `compatibilityDate` before 2026-04-21, as it lists `nodejs_compat` before
+  2026-08-04.
 
 - A destroyed session no longer keeps a live alarm when an alarm handler was
   running at the time of the destroy. The alarm dispatcher wrote its reasons
@@ -208,7 +341,10 @@ published independently in the `@nimbus-sh` npm scope.
   it; a mount the launch does not name, or one under a directory the process
   cannot search, is not walked. A change of the mount table is a poison at
   the process's next barrier, which relists. A namespace that is SQLite alone
-  lists and acquires exactly as before, synchronously. A synchronous call on
+  lists and acquires exactly as before, synchronously. With a mount, the
+  page's byte bound measures each SQLite name once, when SQLite lists it,
+  and then only the path the process sees (a 40,429-name listing
+  stringifies 18.1M characters instead of 32.5M). A synchronous call on
   a mounted path the launch did not list (or past the bound) answers EAGAIN,
   "<mount> is an asynchronous mount; this caller cannot wait for it", naming
   the `fs.promises` form that reads it; `require` of one reports the same,

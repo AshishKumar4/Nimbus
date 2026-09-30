@@ -95,7 +95,7 @@ export function installAuthorityFilesystem(imports, options) {
         return e;
     };
     // Content by inode, valid while the stat revision matches the one it was read at.
-    const resident = new Map();
+    const resident = options.resident ?? new Map();
     const residentBytes = options.residentBytes ?? 0;
     const residentContent = (fs, target, st) => {
         if (options.retainResident === false)

@@ -220,11 +220,12 @@ export const SUPERVISOR_OPS = [
   'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream',
   'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort', 'allocatePort',
   'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
+  'reportRuntimeCode',
   'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
   'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
   'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
   'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-  'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay',
+  'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
 ] as const;
 
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
@@ -285,6 +286,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   allocatePort: { method: '_rpcAllocatePort', args: ['pid'] },
   unregisterPort: { method: '_rpcUnregisterPort', args: ['pid', 0] },
   reportExit: { method: '_rpcReportExit', args: ['pid',0,1,2,3,4] },
+  reportRuntimeCode: { method: '_rpcReportRuntimeCode', args: ['pid',0,1] },
   routeLoopback: { method: '_rpcRouteLoopback', args: [0,1] },
   transform: { method: '_rpcTransform', args: [0,1] },
   cpSpawn: { method: '_rpcCpSpawn', args: [0] },
@@ -305,6 +307,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0,1] },
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
+  hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
 } as const;
 
 /** Every native op reads its filesystem the same way: the envelope's identity. */

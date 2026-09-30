@@ -785,6 +785,10 @@ async function transformWithEsbuild(
       const message = error instanceof Error ? error.message : String(error);
       if (!/top-level await.*not supported.*cjs/i.test(message)) throw error;
     }
+    // A hashbang is valid only at the start of a script. The TLA fallback
+    // moves the body into an async function, so keep its line as a comment
+    // before either fallback pass (Vite bin/vite.js imported by Vinext).
+    if (code.startsWith('#!')) code = '//' + code.slice(2);
 
     // esbuild emits no CommonJS for top-level await: emit the module as ESM
     // and lower its declarations around an async function body.
@@ -1099,8 +1103,8 @@ export class EsbuildService {
         const esb = await loadEsbuild();
         this._esbuild = esb;
         // Keep the bundled precompiled asset off importers' static graph until initialization.
-        const { default: esbuildWasmUrl } = await import('esbuild-wasm/esbuild.wasm');
-        if (!esbuildWasmUrl || typeof esbuildWasmUrl !== 'object') {
+        const { default: esbuildWasmModule } = await import('esbuild-wasm/esbuild.wasm');
+        if (!(esbuildWasmModule instanceof WebAssembly.Module)) {
           throw new Error(
             'esbuild-wasm bundled import is not a WebAssembly.Module. ' +
               'Rebuild the worker so wrangler resolves ' +
@@ -1115,15 +1119,14 @@ export class EsbuildService {
         let initTimeout: ReturnType<typeof setTimeout> | null = null;
         await Promise.race([
           esb.initialize({
-            // The host supplies a precompiled module; its asset declaration types the export as a string.
-            wasmModule: esbuildWasmUrl as unknown as WebAssembly.Module,
+            wasmModule: esbuildWasmModule,
             worker: false,
           }),
           new Promise<never>((_, reject) => {
             initTimeout = setTimeout(() => {
               reject(new Error(
                 `esbuild init exceeded ${INIT_TIMEOUT_MS / 1000}s. ` +
-                `wasmModule type=${typeof esbuildWasmUrl}; ` +
+                `wasmModule type=${typeof esbuildWasmModule}; ` +
                 `Likely cause: WebAssembly compile/init stall in workerd.`
               ));
             }, INIT_TIMEOUT_MS);

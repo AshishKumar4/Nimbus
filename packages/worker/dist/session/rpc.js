@@ -597,6 +597,12 @@ export async function _rpcHmrRelay(self, clientId, msg) {
         return;
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
+/** Poll the HMR queue in the same DO that owns its browser connections. */
+export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
+    if (!self.cirrusReal)
+        return [];
+    return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
+}
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -727,6 +733,8 @@ export async function _rpcStdout(self, pid, data) {
     // its output must not merge into this generation's logs or shell.
     if (isPriorGenerationPid(self, pid))
         return;
+    if (self.facetProcessManager?.routeOutput(pid, 1, data))
+        return;
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
     // output. Skip pid=0 (the supervisor-rpc fallback when no props.pid
@@ -756,6 +764,8 @@ export async function _rpcStdout(self, pid, data) {
 }
 export async function _rpcStderr(self, pid, data) {
     if (isPriorGenerationPid(self, pid))
+        return;
+    if (self.facetProcessManager?.routeOutput(pid, 2, data))
         return;
     try {
         if (pid > 0)
@@ -793,6 +803,15 @@ function shouldMirrorProcessOutputToShell(self, pid) {
     if (entry.state !== 'running')
         return false;
     return entry.attachedTty !== true && entry.foreground !== true;
+}
+/** A live server can catch a codegen miss and continue serving: persist its
+ * ledger before it is killed or evicted, without changing its process state. */
+export async function _rpcReportRuntimeCode(self, pid, entries, missedFiles = []) {
+    if (pid <= 0 || isPriorGenerationPid(self, pid))
+        throw new Error('Runtime code report from a stale process');
+    if (!self.facetManager)
+        throw new Error('Runtime code report has no process owner');
+    await self.facetManager.noteProcessRuntimeCode(pid, entries, missedFiles);
 }
 /**
  * Called by facets from their `finally` block after I/O has drained.

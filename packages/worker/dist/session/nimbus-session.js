@@ -14,11 +14,8 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // snapshotForStorage + rehydrateFromStorage; -routes uses getFailures +
 // getLastRpcFrame + getLastFacetId for /api/_diag/memory). Class file
 // no longer references any of them directly.
-// S10: classifyError, LRU_MAX_ENTRIES, fetchEsbuildWasmBytes moved to
-// sibling modules (-rpc, -routes, esbuild-wasm-bytes); class file no
-// longer references them directly. Phase 2 A'.5 renamed the function
-// (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
-// supervisor cache; goes through env.ASSETS on demand).
+// S10: classifyError and LRU_MAX_ENTRIES moved to sibling modules (-rpc,
+// -routes); class file no longer references them directly.
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
 // moved to sibling modules (-rpc uses recordFailure for _reportExternalExit;
@@ -26,11 +23,6 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // snapshotForStorage + rehydrateFromStorage; -routes uses getFailures +
 // getLastRpcFrame + getLastFacetId for /api/_diag/memory). Class file
 // no longer references any of them directly.
-// S10: classifyError, LRU_MAX_ENTRIES, fetchEsbuildWasmBytes moved to
-// sibling modules (-rpc, -routes, esbuild-wasm-bytes); class file no
-// longer references them directly. Phase 2 A'.5 renamed the function
-// (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
-// supervisor cache; goes through env.ASSETS on demand).
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { NIMBUS_VERSION } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
@@ -744,12 +736,14 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcFsAppendAck(this, writerId, moduleId, operationId, pid);
     }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
+    async _rpcHmrNextEvent(timeoutMs) { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
     async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
     async _rpcStderr(pid, data) { return _rpc._rpcStderr(this, pid, data); }
     async _rpcReportExit(pid, code, tail, residencyMisses, profileUnread, runtimeCode) { return _rpc._rpcReportExit(this, pid, code, tail, residencyMisses, profileUnread, runtimeCode); }
+    async _rpcReportRuntimeCode(pid, entries, missedFiles = []) { return _rpc._rpcReportRuntimeCode(this, pid, entries, missedFiles); }
     // W3 emitters / external-exit / log janitor
     _emitExitDump(pid, code) { return _rpc._emitExitDump(this, pid, code); }
     _emitShellExecDone(pid, cmd, code, durationMs) { return _rpc._emitShellExecDone(this, pid, cmd, code, durationMs); }

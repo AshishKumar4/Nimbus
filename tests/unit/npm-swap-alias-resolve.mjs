@@ -174,4 +174,30 @@ const REGISTRY = {
   console.log('  warm cache → esbuild answered from the entry keyed by its install name');
 }
 
+// ── rollup: only rollup 4 has native shards ──────────────────────────────
+// @rollup/wasm-node publishes 4.x only. Vite 3/4's rollup@^3 must install as
+// the plain-JS rollup 3 it asked for, not be moved to the target's latest 4.x.
+{
+  const ROLLUP = {
+    rollup: packument('rollup', { '3.29.4': {}, '3.29.5': {}, '4.63.5': { optionalDependencies: { '@rollup/rollup-linux-x64-gnu': '4.63.5' } } }),
+    '@rollup/wasm-node': packument('@rollup/wasm-node', { '4.0.0': {}, '4.63.5': {} }),
+  };
+  assert.deepEqual(applySwaps({ rollup: '^3.29.4' }).specs, { rollup: '^3.29.4' },
+    'the supervisor leaves a since-gated range for the resolver');
+  for (const topLevel of [true, false]) {
+    const three = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: '^3.27.1', topLevel }), registry(ROLLUP).env);
+    assert.equal(three.pkg?.version, '3.29.5', 'rollup@^3 resolves to rollup 3');
+    assert.match(three.pkg.tarballUrl, /\/rollup-3\.29\.5\.tgz$/, 'from rollup itself');
+    assert.ok(!three.events.some((e) => e.type === 'swap'), 'and is not announced as a swap');
+    const four = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: '^4.0.0', topLevel }), registry(ROLLUP).env);
+    assert.equal(four.pkg?.name, 'rollup');
+    assert.equal(four.pkg?.version, '4.63.5');
+    assert.match(four.pkg.tarballUrl, /wasm-node-4\.63\.5\.tgz$/, 'rollup 4 installs as @rollup/wasm-node');
+    assert.equal(four.events.filter((e) => e.type === 'swap').length, 1);
+    const latest = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: 'latest', topLevel }), registry(ROLLUP).env);
+    assert.match(latest.pkg.tarballUrl, /wasm-node-4\.63\.5\.tgz$/, 'latest is rollup 4, swapped');
+  }
+  console.log('  rollup@^3 installs as published; rollup 4 swaps to @rollup/wasm-node');
+}
+
 console.log('npm-swap-alias-resolve: ok');

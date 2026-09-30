@@ -11,14 +11,12 @@ import assert from 'node:assert/strict';
 import {
   buildPrefetchBundle,
   collectClosureWasmImages,
+  findInlineWasmImages,
   facetWasmImports,
-  generateEntrypointCode,
-  generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
 import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 
 
@@ -50,7 +48,6 @@ assert.deepEqual(images, new Map([
   [`/${PKG}/lib/small.wasm`, wasmImageDigest(small)],
 ]), 'the closure records every .wasm file with its content digest, whether or not it fit the bundle');
 // The shared digest is the only registry left — inline-wasm is gone (real-vite-module was deleted).
-assert.equal(wasmImageDigest(big), wasmImageDigest(big), 'the closure digest is stable and consistent');
 console.log('  the closure walk records a staged image and an over-cap image, by path and digest');
 
 // A cell is digested from the cell; a file from ranged reads, never whole:
@@ -82,6 +79,13 @@ console.log('  the closure walk records a staged image and an over-cap image, by
   ]), 'the literal-named sibling image is collected, with the same digest as a whole read');
 }
 
+// wasm-bindgen uses a single-assignment template path, not a quoted relative
+// literal. Its program still needs the same Loader-compiled image.
+const templateImages = await collectClosureWasmImages(vfs, {
+  [PKG + "/lib/bindings.js"]: "const wasmPath = `${__dirname}/small.wasm`; const bytes = require(\"fs\").readFileSync(wasmPath); new WebAssembly.Module(bytes);",
+}, []);
+assert.deepEqual(templateImages, [{ vfsPath: '/' + PKG + '/lib/small.wasm', digest: wasmImageDigest(small) }]);
+
 // ── the launch stages them as wasm map entries, under both keys ───────
 const imports = facetWasmImports([{ vfsPath: `/${PKG}/esbuild.wasm`, digest: undefined }], state.wasmImages);
 assert.deepEqual(imports, [
@@ -89,18 +93,6 @@ assert.deepEqual(imports, [
   { vfsPath: `/${PKG}/lib/small.wasm`, digest: wasmImageDigest(small), moduleName: '__nimbus_wasm_1.wasm' },
 ], 'an image the options name by path gets the closure\'s digest; one they do not name is added');
 
-const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const SHIMS = '/* __SHIMS_MARKER__ */';
-const oneShot = (await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS), imports)).code;
-const resident = (await generateLongRunningNodeCode('', state, { cred, wasmImports: imports }, false, nodeFacetSources(SHIMS))).code;
-for (const [label, code] of [['one-shot', oneShot], ['resident', resident]]) {
-  for (const [index, image] of imports.entries()) {
-    assert.ok(code.includes(`import __nimbusWasm${index} from ${JSON.stringify(image.moduleName)};`), `${label}: imports ${image.moduleName}`);
-    assert.ok(code.includes(`[${JSON.stringify(image.vfsPath.slice(1))}, __nimbusWasm${index}]`), `${label}: registers ${image.vfsPath} by path`);
-    assert.ok(code.includes(`[${JSON.stringify(image.digest)}, __nimbusWasm${index}]`), `${label}: registers ${image.vfsPath} by digest`);
-  }
-}
-console.log('  both generated entries import the map entries and register them by path and by digest');
 
 // ── the seam answers those bytes from the map, and refuses others loudly ──
 {
@@ -130,6 +122,31 @@ console.log('  both generated entries import the map entries and register them b
   assert.match(refused.message, /WebAssembly cannot be compiled from bytes here/);
   assert.match(refused.message, /Images this launch does carry: 1/);
   console.log('  the seam answers the closure\'s bytes by digest and refuses unknown bytes naming what it carries');
+}
+
+// ── inlined images: base64 and numeric array literals ───────────────────
+// A module that carries its wasm in its own source never reads it from disk,
+// so the closure walk cannot name it; the scan finds it by content. Both
+// shapes are real: es-module-lexer (Vite 8) inlines base64, xxhash-wasm
+// (Astro) a `new Uint8Array([0,97,115,109,…])`.
+{
+  const image = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 4, 1, 2, 0, 11]);
+  assert.ok(WebAssembly.validate(image), 'fixture is a valid module');
+  const padded = new Uint8Array(64);
+  padded.set(image);
+  const found = findInlineWasmImages({
+    'home/user/app/node_modules/xxhash-wasm/cjs/xxhash-wasm.cjs': `"use strict";const t=new Uint8Array([${[...image].join(',')}]);WebAssembly.instantiate(t,{});`,
+    'home/user/app/node_modules/spaced/index.js': `const w = new Uint8Array([ ${[...image].join(', ')} ]);`,
+    'home/user/app/node_modules/lexer/index.js': `const C=()=>Uint8Array.from(atob("${btoa(String.fromCharCode(...padded))}"),c=>c.charCodeAt(0));`,
+    'home/user/app/node_modules/not-wasm/index.js': 'const version = [0, 97, 115, 109, 2, 0, 0, 0, 5];',
+    'home/user/app/node_modules/out-of-range/index.js': 'const x = [0,97,115,109,1,0,0,0,300];',
+    'home/user/app/data.json': `[${[...image].join(',')}]`,
+  });
+  const digests = new Set(found.map((bytes) => wasmImageDigest(bytes)));
+  assert.equal(found.length, 2, `the array image (once, however spaced) and the base64 image; nothing else (found ${found.length})`);
+  assert.ok(digests.has(wasmImageDigest(image)), 'the numeric array literal is found with the exact bytes');
+  assert.ok(digests.has(wasmImageDigest(padded)), 'the base64 literal is found');
+  console.log('  inlined wasm is found by content in both shapes; version-2, out-of-range and non-JS cells are not');
 }
 
 console.log('closure-wasm-registry OK');

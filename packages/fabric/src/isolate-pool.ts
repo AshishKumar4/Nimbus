@@ -41,6 +41,7 @@ import {
 } from './vendor/errors.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { ModuleContent, WorkerLoader } from './vendor/types.js';
+import { hostWasmIdentity } from './host-wasm.js';
 
 /**
  * A function dispatched into a facet isolate, with the bindings that facet was
@@ -161,15 +162,19 @@ export interface IsolatePoolOptions {
   /**
    * WebAssembly modules to ship into the facet via the LOADER's
    * `modules` map. Map keys are module specifier paths (e.g.
-   * `'esbuild.wasm'`); values are the raw bytes.
+   * `'esbuild.wasm'`); values are the raw bytes, or a module the host
+   * already holds compiled.
    *
-   * Workerd registers each entry as `{ wasm: ArrayBuffer }` in the
-   * worker's modules map. The pool prepends a static
+   * Workerd registers each entry as `{ wasm }` in the worker's modules
+   * map. The pool prepends a static
    * `import __NIMBUS_WASM_<id> from './<key>';` to the generated
-   * worker.js so workerd compiles each at module-load (startup phase,
-   * where wasm code generation is permitted). The compiled Modules
-   * are exposed via `globalThis.__NIMBUS_WASM[<key>]` for the user
-   * function to read at request time.
+   * worker.js; bytes are compiled at the facet's module-load (startup
+   * phase, where wasm code generation is permitted), and a compiled
+   * module is shared with the facet as is, its compiled code included
+   * (workerd src/workerd/api/worker-loader.c++,
+   * extractWasmModuleContent). The Modules are exposed via
+   * `globalThis.__NIMBUS_WASM[<key>]` for the user function to read at
+   * request time.
    *
    * Why this works when other paths don't:
    *   - request-time `WebAssembly.compile()` — disallowed by workerd
@@ -178,15 +183,15 @@ export interface IsolatePoolOptions {
    *     structured-clone refuses ("Unable to deserialize cloned data").
    *   - inlining bytes in the preamble — 16 MiB string per dispatch
    *     OOMs the supervisor at module-source allocation time.
-   *   - LOADER modules-map (this) — bytes ride INSIDE the worker code
-   *     blob; workerd compiles wasm during its own startup pipeline,
-   *     never crossing structured-clone, never executing JS eval.
+   *   - LOADER modules-map (this) — the module rides INSIDE the worker
+   *     code blob, never crossing structured-clone, never executing JS
+   *     eval.
    *
-   * The bytes ARE part of the loader-cache key (workerd hashes the
-   * whole WorkerCode), so changing the wasm bytes invalidates warm
-   * slots — desirable when the bundled wasm version changes.
+   * A compiled module must be described (host-wasm.ts describeHostWasm):
+   * its identity keys warm slots, as the bytes' fingerprint does, and its
+   * size counts toward the dynamic-worker code limit.
    */
-  wasmModules?: Record<string, ArrayBuffer>;
+  wasmModules?: Record<string, ArrayBuffer | WebAssembly.Module>;
 }
 
 /** Per-call override (merged with pool defaults). */
@@ -243,6 +248,14 @@ interface ResolvedResilience {
   timeoutMs: number;
   retries: number;
 }
+
+/**
+ * How long one call waits, in all, for the platform to admit it after
+ * "Dynamic worker concurrency limit exceeded" (doubling from 50 ms, at most
+ * 2 s a wait). A deployed Durable Object admitted the refused batch after a
+ * 6 s pause; 15 s bounds a call that would never be admitted.
+ */
+const CAP_REFUSAL_WAIT_MS = 15_000;
 
 /**
  * esbuild runtime helpers re-declared at the top of every generated facet
@@ -416,13 +429,13 @@ export class IsolatePool {
     /** Identifier used inside the generated worker for both the static
      *  import binding and the globalThis exposure. Sanitised from `name`. */
     id: string;
-    bytes: ArrayBuffer;
+    wasm: ArrayBuffer | WebAssembly.Module;
   }>;
-  /** Hash of (name + byte length + first/last bytes) of every wasm
-   *  module, folded into the loader cache key so changes invalidate
-   *  warm slots. Hashing the FULL bytes would be O(20+ MiB) per dispatch
-   *  and is unnecessary — wasm bytes are pinned at deploy time, the
-   *  length+endpoints are a strong-enough fingerprint. */
+  /** Hash of every constructor-time wasm module, folded into the loader
+   *  cache key so changes invalidate warm slots: a compiled module by the
+   *  identity its host described, bytes by name + length + first/last
+   *  byte. Hashing the FULL bytes would be O(20+ MiB) per dispatch and is
+   *  unnecessary — they are pinned at deploy time. */
   private readonly wasmHash: string;
   /**
    * Short prefix of the owning DO's id, baked into the loader.get()
@@ -479,17 +492,36 @@ export class IsolatePool {
     // (e.g. 'esbuild.wasm' and 'esbuild_wasm' both sanitise to
     // 'esbuild_wasm') are rejected loudly because the generated worker
     // would otherwise have duplicate imports. Order is preserved.
-    const wasmEntries: Array<{ name: string; id: string; bytes: ArrayBuffer }> = [];
+    const wasmEntries: Array<{ name: string; id: string; wasm: ArrayBuffer | WebAssembly.Module }> = [];
+    const fingerprints: string[] = [];
     const seenIds = new Set<string>();
     if (opts?.wasmModules) {
-      for (const [name, bytes] of Object.entries(opts.wasmModules)) {
-        if (!(bytes instanceof ArrayBuffer)) {
+      for (const [name, wasm] of Object.entries(opts.wasmModules)) {
+        let fingerprint: string;
+        if (wasm instanceof ArrayBuffer) {
+          // Name + length + first/last byte: hashing 20+ MiB of wasm per
+          // dispatch would be wasteful, and these bytes change only with
+          // the deployed bundle.
+          const u = new Uint8Array(wasm);
+          const len = u.byteLength;
+          fingerprint = `${name}:${len}:${len > 0 ? u[0] : 0}:${len > 0 ? u[len - 1] : 0}`;
+        } else if (wasm instanceof WebAssembly.Module) {
+          const identity = hostWasmIdentity(wasm);
+          if (!identity) {
+            throw new BindingError(
+              `IsolatePool: wasmModules['${name}'] is a WebAssembly.Module nobody described; ` +
+              'pass it through describeHostWasm (@nimbus-sh/fabric/host-wasm.js) so warm slots ' +
+              'can be keyed by it and the code limit can count it.',
+            );
+          }
+          fingerprint = `${name}:host:${identity.id}:${identity.bytes}`;
+        } else {
           // Reached only when a caller broke the declared option type, so the
-          // value is whatever it really was rather than the ArrayBuffer here.
-          const got = (bytes as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
+          // value is whatever it really was rather than the union here.
+          const got = (wasm as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
           throw new BindingError(
-            `IsolatePool: wasmModules['${name}'] must be ArrayBuffer ` +
-            `(got ${got || typeof bytes}).`,
+            `IsolatePool: wasmModules['${name}'] must be an ArrayBuffer or a WebAssembly.Module ` +
+            `(got ${got || typeof wasm}).`,
           );
         }
         const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
@@ -500,28 +532,12 @@ export class IsolatePool {
           );
         }
         seenIds.add(id);
-        wasmEntries.push({ name, id, bytes });
+        wasmEntries.push({ name, id, wasm });
+        fingerprints.push(fingerprint);
       }
     }
     this.wasmModules = wasmEntries;
-    // Fingerprint: name + length + first/last byte of each module.
-    // Hashing 20+ MiB of wasm per dispatch would be wasteful; this
-    // fingerprint is bytes-stable for a given deployed bundle and only
-    // changes when the wasm itself changes (deploy-time event).
-    if (wasmEntries.length === 0) {
-      this.wasmHash = '0';
-    } else {
-      const fp = wasmEntries
-        .map((w) => {
-          const u = new Uint8Array(w.bytes);
-          const len = u.byteLength;
-          const first = len > 0 ? u[0] : 0;
-          const last  = len > 0 ? u[len - 1] : 0;
-          return `${w.name}:${len}:${first}:${last}`;
-        })
-        .join('|');
-      this.wasmHash = hashSource(fp);
-    }
+    this.wasmHash = fingerprints.length === 0 ? '0' : hashSource(fingerprints.join('|'));
 
     const bindings: Record<string, unknown> = { ...(opts?.extraBindings ?? {}) };
     this.supervisorKey = 's-none';
@@ -583,9 +599,9 @@ export class IsolatePool {
    */
   #materialisePerCallWasm(
     perCall: Record<string, ArrayBuffer> | undefined,
-  ): Array<{ name: string; id: string; bytes: ArrayBuffer }> {
+  ): Array<{ name: string; id: string; wasm: ArrayBuffer }> {
     if (!perCall) return [];
-    const out: Array<{ name: string; id: string; bytes: ArrayBuffer }> = [];
+    const out: Array<{ name: string; id: string; wasm: ArrayBuffer }> = [];
     const ctorIds = new Set(this.wasmModules.map((w) => w.id));
     const seen = new Set<string>();
     for (const [name, bytes] of Object.entries(perCall)) {
@@ -611,7 +627,7 @@ export class IsolatePool {
         );
       }
       seen.add(id);
-      out.push({ name, id, bytes });
+      out.push({ name, id, wasm: bytes });
     }
     return out;
   }
@@ -644,12 +660,12 @@ export class IsolatePool {
    * hashing the wasm were marginal; the correctness cost was severe.
    */
   #fingerprintWasm(
-    entries: Array<{ name: string; bytes: ArrayBuffer }>,
+    entries: Array<{ name: string; wasm: ArrayBuffer }>,
   ): string {
     if (entries.length === 0) return '0';
     const parts: string[] = [];
     for (const w of entries) {
-      const u = new Uint8Array(w.bytes);
+      const u = new Uint8Array(w.wasm);
       const len = u.byteLength;
       // djb2 over the bytes. Faster than crypto.subtle.digest at small
       // sizes, deterministic, and good enough for cache-key
@@ -676,7 +692,7 @@ export class IsolatePool {
    */
   #buildCode(
     fnSource: string,
-    perCallWasmEntries?: Array<{ name: string; id: string; bytes: ArrayBuffer }>,
+    perCallWasmEntries?: Array<{ name: string; id: string; wasm: ArrayBuffer }>,
   ) {
     const workerOpts = {
       compatibilityDate: CF_COMPAT_DATE,
@@ -726,7 +742,7 @@ export class IsolatePool {
     // (matters only for human-readable diffs; workerd doesn't care).
     const modules: Record<string, ModuleContent> = { 'worker.js': moduleSource };
     for (const w of allWasmEntries) {
-      modules[w.name] = { wasm: w.bytes };
+      modules[w.name] = { wasm: w.wasm };
     }
     assertModuleMapWithinCodeLimit(modules);
 
@@ -866,6 +882,8 @@ export class IsolatePool {
     const maxAttempts = 1 + resilience.retries;
     let lastError: Error | undefined;
     let retriedCloneRefusal = false;
+    let capRefusals = 0;
+    let capWaitedMs = 0;
     let attempt = 0;
     while (attempt < maxAttempts) {
       try {
@@ -945,6 +963,17 @@ export class IsolatePool {
           // If the supervisor DO is stale, a newer loader still cannot
           // deserialize back into it; only recycling that DO heals the
           // reverse direction. This refresh targets the stale-loader case.
+          continue;
+        }
+        if (cause === 'dynamic_worker_cap' && capWaitedMs < CAP_REFUSAL_WAIT_MS) {
+          // The platform refused to start this call: it still counts a
+          // worker this Durable Object's ledger has already given back (a
+          // fan-out's workers stay counted for a moment after their calls
+          // return). Nothing ran, so the call waits, as the platform asks,
+          // and is sent again; it does not spend an attempt.
+          const delay = Math.min(CAP_REFUSAL_WAIT_MS - capWaitedMs, 50 * 2 ** capRefusals++, 2000);
+          capWaitedMs += delay;
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
           continue;
         }
         if (attempt < maxAttempts - 1) {

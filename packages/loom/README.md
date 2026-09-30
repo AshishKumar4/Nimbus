@@ -30,7 +30,8 @@ Use a compatibility date of 2026-08-04 or later, or list `nodejs_compat` in
 dispatcher imports `AsyncLocalStorage` from `node:async_hooks`, which workerd
 ships only under `nodejs_compat` (on by date from 2026-08-04). Without it the
 module fails to load at deploy time. An actor that composes the fabric also
-needs 2026-04-21 or later; see `@nimbus-sh/fabric`.
+needs `enhanced_error_serialization` (2026-04-21 or later, or the flag); see
+`@nimbus-sh/fabric`.
 
 Actor classes must be SQLite-backed Durable Objects. State and schedules
 live in the actor's own SQLite.

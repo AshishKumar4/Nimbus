@@ -100,6 +100,10 @@ http.createServer((req, res) => {
   if (req.url === '/pending-drain') {
     console.log('blocked prior output');
   }
+  if (req.url === '/codegen') {
+    // Code produced while serving: staged for the next launch and reported.
+    try { globalThis.__nimbusRuntimeCode.compileFunction('async', [], 'return 1'); } catch {}
+  }
   if (req.url === '/stream') {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('data: live\\n\\n');
@@ -1461,6 +1465,36 @@ function request(path = 'first') {
     () => worker.handleHttpRequest(request('failure')),
     /injected durable write failure/,
     'durability failure rejects the request instead of returning 200',
+  );
+}
+
+// A failed report of generated code neither fails the response nor skips the
+// request's writes; it is told to the process's stderr.
+{
+  delete globalThis.__portRegistry;
+  const durable = new Map();
+  const stderr = [];
+  const supervisor = {
+    async writeFile(path, content) { durable.set(path, String(content)); },
+    async registerPort() {},
+    async unregisterPort() {},
+    async stdout() {},
+    async stderr(bytes) { stderr.push(new TextDecoder().decode(bytes)); },
+    async reportExit() {},
+    async reportRuntimeCode() { throw new Error('Runtime code report has no live launch'); },
+  };
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusProcess(
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
+  );
+  const response = await worker.handleHttpRequest(request('codegen'));
+  assert.equal(response.status, 200, 'a failed code report does not fail the response');
+  assert.equal(await response.text(), 'ok:/codegen');
+  assert.equal(durable.get('home/user/request-result.txt'), 'codegen', 'and the request\'s write is durable');
+  assert.ok(
+    stderr.some((text) => text.includes('runtime code persistence failed: Runtime code report has no live launch')),
+    `the failure reaches the process's stderr: ${JSON.stringify(stderr)}`,
   );
 }
 

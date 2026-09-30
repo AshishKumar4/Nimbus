@@ -247,6 +247,8 @@ export interface BashProc {
   /** jmp_buf address → the slot index its most recent setjmp captured into. */
   slotByEnv: Map<number, number>;
   freeSlots: number[];
+  /** Files its instance's reads keep resident (AuthorityFilesystemOptions.resident), cleared when it is reused. */
+  resident: Map<string, { revision: number; bytes: Uint8Array }>;
   DV(): DataView;
   U8(): Uint8Array;
   slotAddr(i: number): number;
@@ -277,7 +279,10 @@ export interface BashHeldExit {
 }
 
 export interface BashStats {
+  /** Bash instances this session instantiated. */
   instances: number;
+  /** Forks that took an exited process's instance instead of instantiating one. */
+  reused: number;
   memPeak: number;
   mainHi: number;
   slotHi: number;
@@ -305,6 +310,12 @@ export interface BashSession {
   stdinTty: boolean;
   stdin: BashStdin;
   procs: Map<number, BashProc>;
+  /**
+   * Processes that exited normally, each keeping its bash instance and
+   * memory for the next fork (doFork), which would otherwise instantiate
+   * bash and allocate and fill a new memory of the parent's size.
+   */
+  idle: BashProc[];
   pipes: Map<number, BashPipe>;
   runnable: BashProc[];
   /**

@@ -207,4 +207,25 @@ const manifestPath = npmBinManifestPath(nm);
   assert.match(vfs.readFileString(`${nm}/.bin/sass`), /sass-embedded\/dist\/cli\.js/);
 }
 
+// A project with more commands than one W7 stream may own (128 paths) links
+// every one of them. The whole set went in one stream, and npm install
+// failed at link-bins with "w7-frame: batch exceeds 128 owned paths".
+{
+  const harness = createSqliteVfsTestHarness();
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
+  const installer = new NpmInstaller(new ProcessFiles(rawVfs), harness.sql);
+  const resolved = new Map();
+  for (let i = 0; i < 300; i++) {
+    vfs.mkdir(`${nm}/tool${i}`, { recursive: true });
+    vfs.writeFile(`${nm}/tool${i}/cli.js`, '');
+    resolved.set(`tool${i}`, { name: `tool${i}`, version: '1.0.0', bin: { [`tool${i}`]: 'cli.js' } });
+  }
+  await installer.linkBins(resolved, { engine: vfs, nmDir: nm });
+  const shims = vfs.readdir(`${nm}/.bin`).map((entry) => entry.name).filter((name) => name.startsWith('tool'));
+  assert.equal(shims.length, 300, 'every command is linked');
+  assert.equal(Object.keys(JSON.parse(vfs.readFileString(npmBinManifestPath(nm))).bins).length, 300, 'and the manifest names them all');
+  assert.equal((await resolveNpmBin(vfs, '/home/user/project', 'tool299'))?.targetPath, `${nm}/tool299/cli.js`);
+}
+
 console.log('npm-bin-links: ok');

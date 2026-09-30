@@ -27,10 +27,8 @@ import {
 import {
   ESBUILD_CLI_L2_KEY,
   ESBUILD_JS_L2_KEY,
-  ESBUILD_WASM_L2_KEY,
   fetchEsbuildCliRunner,
   fetchEsbuildJsFnBody,
-  fetchEsbuildWasmBytes,
 } from '../../packages/worker/src/runtime/esbuild-wasm-bytes.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 import {
@@ -98,13 +96,7 @@ async function rejects(fn, match, what) {
 
 const cases = [
   {
-    label: 'esbuild wasm',
-    l2Key: ESBUILD_WASM_L2_KEY,
-    asset: path.join(workerRoot, 'public', '_assets', `esbuild-${ESBUILD_VERSION}.wasm`),
-    fetch: (env) => fetchEsbuildWasmBytes(env),
-  },
-  {
-    // The adapter is evaluated as facet code, so it is pinned like the wasm.
+    // The adapter is evaluated as facet code, so it is pinned.
     label: 'esbuild JS adapter',
     l2Key: ESBUILD_JS_L2_KEY,
     asset: path.join(workerRoot, 'public', '_assets', `esbuild-${ESBUILD_VERSION}.js`),

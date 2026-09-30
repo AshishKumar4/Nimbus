@@ -27,10 +27,14 @@ Use a compatibility date of 2026-08-04 or later, or list `nodejs_compat` in
 workerd ships only under `nodejs_compat`, on by date from 2026-08-04. Without
 it the module fails to load at deploy time.
 
-`composeFabric` also needs `enhanced_error_serialization`, on by date from
-2026-04-21. A program's filesystem errors reach it across workerd RPC, and
-only that flag carries their `code`. Composing on workerd without it throws
-at startup, so the deploy fails rather than every program seeing `EIO`.
+`composeFabric` also needs `enhanced_error_serialization`: a compatibility
+date of 2026-04-21 or later, or the flag in `compatibility_flags` on an older
+date. A program's filesystem errors reach it across workerd RPC, and only
+that flag carries their `code`. On workerd without it `composeFabric` throws,
+naming both fixes, rather than every program seeing `EIO`. It throws where
+it is called. At module scope the Worker fails at startup. A library host
+that composes through `NimbusWorkspace.create({ fabric })` deploys and
+starts, and its first create throws.
 
 Import the root inside a Worker. Outside workerd, import subpaths such as
 `@nimbus-sh/fabric/timers.js`, which are typed against plain objects and run

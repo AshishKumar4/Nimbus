@@ -218,6 +218,14 @@ const ROOT_POINT = '/';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
 
+/** An absolute path's first component when it is spelled plainly (not empty, `.` or `..`). */
+function firstComponent(path: string): string | undefined {
+  if (path.charCodeAt(0) !== 47) return undefined;
+  const end = path.indexOf('/', 1);
+  const first = end === -1 ? path.slice(1) : path.slice(1, end);
+  return first === '' || first === '.' || first === '..' ? undefined : first;
+}
+
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export function normalizePath(path: string): string {
   const out: string[] = [];
@@ -568,6 +576,11 @@ export class CompositeVFS implements VFS {
    * holds through a link or file higher up).
    */
   composes(path: string): boolean {
+    // A path whose first component is no mount point's first component is
+    // the root backend's alone: no mount, and no directory above one, is on
+    // it or above it. Only a spelling that `..` could move is normalized.
+    const first = firstComponent(path);
+    if (first !== undefined && !path.includes('/..') && this.table.synthesized.get(ROOT_POINT)?.has(first) !== true) return false;
     const at = normalizePath(path);
     if (this.route(at).mount.point !== ROOT_POINT) return true;
     if (at === ROOT_POINT) return false;

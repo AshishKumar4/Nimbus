@@ -18,16 +18,20 @@ name: behavioral
 #   Two PRs sharing one target grade each other's code — the same defect
 #   again, only faster and harder to see. A throwaway is named per run,
 #   deleted after it, and mints its own JWT_SECRET, so no token outlives
-#   the Worker it opens and no shared signing secret is needed here at
-#   all. `nimbus-staging` stays what the promote-to-prod runbook needs:
-#   a stable pre-production a human can browser-check, not something CI
-#   redeploys under them on every push. See AGENTS.md § Staging And
-#   Promote.
+#   the target it opens and no shared signing secret is needed here at
+#   all. It is a Worker Preview (`wrangler preview`) of
+#   `nimbus-probe-previews`, a parent Worker with no production deployment:
+#   each Preview gets its own Durable Object namespace and storage, and
+#   deleting it deletes them. `nimbus-staging` stays what the
+#   promote-to-prod runbook needs: a stable pre-production a human can
+#   browser-check, not something CI redeploys under them on every push.
+#   See AGENTS.md § Staging And Promote.
 #
 #   `nimbus` (production) and `nimbus-probe` are never deploy targets
-#   here. The throwaway path runs the isolation preflight before it
-#   invokes wrangler, and asserts the deploy landed by version id —
-#   `wrangler deploy` can fail in asset upload and still exit 0.
+#   here. The throwaway path runs the isolation preflight on apps/probe's
+#   `previews` block before it invokes wrangler, and asserts the deploy
+#   landed by the Preview's latest deployment id — `wrangler deploy` has
+#   failed in asset upload and still exited 0.
 #
 # MODES
 #   pull_request / workflow_dispatch — `--no-retry`. Any RED is a RED.
@@ -45,8 +49,9 @@ on:
 # Cancel in-flight runs for the same ref when a new commit arrives.
 # Saves runner minutes when contributors push amend-fix-amend on a PR.
 # A cancelled run may not reach its teardown step; every throwaway this
-# workflow creates is named `nimbus-tw-ci-*`, so
-# `bun tests/behavioral/_throwaway-target.mjs list` finds the strays.
+# workflow creates is a Preview named `tw-ci-*` under `nimbus-probe-previews`,
+# and `bun tests/behavioral/_throwaway-target.mjs list` lists every Preview
+# there, marking the strays no checkout holds.
 concurrency:
   group: behavioral-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -57,8 +62,8 @@ env:
   # deploy scripts require the pin; CI supplies it here.
   CLOUDFLARE_ACCOUNT_ID: f44999d1ddda7012e9a87729eba250f1
   # One name per run, recorded before the deploy so teardown can find it
-  # even when the deploy fails halfway — a failed deploy still creates the
-  # script. `_throwaway-target.mjs` prefixes `nimbus-tw-`.
+  # even when the deploy fails halfway — a failed deploy can still create
+  # the Preview. `_throwaway-target.mjs` names it `tw-<TARGET_NAME>`.
   TARGET_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
@@ -194,11 +199,12 @@ jobs:
         # `up` runs the dist-integrity gate (the build/bundle/build fixpoint,
         # then a refusal if rebuilding changed anything — so a commit whose
         # committed dist does not match its src fails HERE rather than being
-        # graded as if it did), runs the isolation preflight, deploys
-        # apps/probe under the throwaway name, verifies the active version id
-        # changed, sets a freshly generated JWT_SECRET and mints a matching
-        # token. It prints the two exports on stdout; its progress log goes
-        # to stderr.
+        # graded as if it did), runs the isolation preflight on apps/probe's
+        # `previews` block, deploys apps/probe as a Preview of
+        # nimbus-probe-previews with a freshly generated JWT_SECRET in the
+        # deployment, verifies the Preview's latest deployment id changed,
+        # and mints a matching token. It prints the two exports on stdout;
+        # its progress log goes to stderr.
         run: |
           bun tests/behavioral/_throwaway-target.mjs up --name "$TARGET_NAME" > target.env
           BASE="$(sed -n 's/^export BASE=//p' target.env)"
@@ -244,7 +250,8 @@ jobs:
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        # `down` deletes the script and then confirms it is gone against the
-        # API — a 404 on the hostname alone does not mean the script is
-        # absent. It exits non-zero when it cannot confirm, so a leak is loud.
+        # `down` deletes the Preview (and with it its Durable Object storage)
+        # and then confirms against the API that it is gone — a 404 on the
+        # hostname alone does not mean it is. It exits non-zero when it
+        # cannot confirm, so a leak is loud.
         run: bun tests/behavioral/_throwaway-target.mjs down --name "$TARGET_NAME"

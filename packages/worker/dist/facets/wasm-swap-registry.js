@@ -33,7 +33,7 @@
  * asserts equality with this module.
  */
 import { NATIVE_BIN_EXTENSIONS, NATIVE_UNSUPPORTED_ABI, NIMBUS_ABI_TARGET, PYODIDE_PACKAGE_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ROLLDOWN_ARTIFACT_VERSION } from '../rolldown-artifact.generated.js';
+import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 // ─────────────────────────────────────────────────────────────────────────
 // The policy
 // ─────────────────────────────────────────────────────────────────────────
@@ -60,6 +60,16 @@ const SWAPS = [
         reason: 'Native lightningcss ships platform .node bindings; lightningcss-wasm exposes the same transform/bundle/bundleAsync/browserslistToTargets API from one wasm module.',
         compat: 'drop-in',
     },
+    {
+        // Vite 7 and earlier bundle with rollup, whose dist/native.js requires a
+        // platform shard (@rollup/rollup-<platform>). @rollup/wasm-node is the
+        // same package built on one wasm-bindgen module (no WASI, no threads),
+        // with rollup's exports and bin, released version for version.
+        from: 'rollup',
+        to: '@rollup/wasm-node',
+        reason: 'Native rollup loads a platform .node shard; @rollup/wasm-node is the same rollup with its parser as one wasm module.',
+        compat: 'drop-in',
+    },
 ];
 /**
  * Sentinel bin target the installer writes for a `bin` staged artifact.
@@ -77,26 +87,29 @@ const STAGED_ARTIFACTS = [
         reason: 'opencode-ai ships a native launcher (bin/opencode.exe) and 12 platform-native shards; ' +
             'Nimbus runs the prebuilt opencode JS bundle instead.',
     },
-    // ── Rolldown (Vite 8's bundler) ─────────────────────────────────────
-    // Both names are answered by one staged build: rolldown's JS installs as
-    // published minus its 15 platform shards, and its `require` of the binding
-    // (native shard or `@rolldown/binding-wasm32-wasi`) is answered by the
-    // node runtime with the single-threaded wasm32-wasip1 build
-    // (scripts/rolldown/, public/_assets/rolldown/<version>/).
-    {
-        kind: 'binding',
-        from: 'rolldown',
-        artifact: 'rolldown-binding',
-        version: ROLLDOWN_ARTIFACT_VERSION,
-        reason: 'rolldown loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.',
-    },
-    {
-        kind: 'binding',
-        from: '@rolldown/binding-wasm32-wasi',
-        artifact: 'rolldown-binding',
-        version: ROLLDOWN_ARTIFACT_VERSION,
-        reason: 'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
-    },
+    // ── Threadless napi-rs bindings (rolldown, satteri, Astro's compiler) ─
+    // One staged build answers each binding's owner and every package name
+    // the owner requires it by: the owner's JS installs as published minus its
+    // platform shards, and its `require` of the binding (a native shard or the
+    // `-wasm32-wasi` package) is answered by the node runtime with the
+    // single-threaded wasm32-wasip1 build (scripts/napi-wasm/,
+    // public/_assets/napi-wasm/<name>/<version>/).
+    ...STAGED_BINDING_ARTIFACTS.flatMap((binding) => [
+        {
+            kind: 'binding',
+            from: binding.owner,
+            artifact: binding.name,
+            version: binding.version,
+            reason: `${binding.owner} loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.`,
+        },
+        ...binding.requiredAs.map((id) => ({
+            kind: 'binding',
+            from: id,
+            artifact: binding.name,
+            version: binding.version,
+            reason: 'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
+        })),
+    ]),
 ];
 const REJECTS = [
     // ── Same-require-name natives that crash at load time ────────────────

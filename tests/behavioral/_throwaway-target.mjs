@@ -9,10 +9,26 @@
 //   Bearer` is never consulted on those routes. `apps/probe` is the
 //   embedder that *does* speak bearer tokens: the core router's
 //   `POST /new` requires a `session:create` JWT signed with the target's
-//   own `JWT_SECRET`. This script deploys that embedder under a
-//   throwaway name, gives it a freshly generated secret, and mints
-//   matching tokens. No production auth is relaxed anywhere: the
+//   own `JWT_SECRET`. This script deploys that embedder as a Worker
+//   Preview under a throwaway name, gives it a freshly generated secret,
+//   and mints matching tokens. No production auth is relaxed anywhere: the
 //   throwaway simply holds a secret only this machine knows.
+//
+// WHY A PREVIEW
+//   Every throwaway is a Preview (`wrangler preview`) of one parent Worker,
+//   PREVIEW_PARENT, which never has a production deployment of its own.
+//   A Preview gets a Durable Object namespace and SQLite storage of its
+//   own, automatically, and deleting the Preview deletes them
+//   (https://developers.cloudflare.com/workers/previews/resources/#durable-objects).
+//   Its bindings come only from apps/probe's `previews` block, which
+//   scripts/deploy-isolation.mjs checks before anything is deployed, and
+//   its JWT_SECRET travels with each deployment (`--secrets-file`), never
+//   through the dashboard's Previews Base configuration
+//   (`--ignore-base-config`). A Preview is served at
+//   `<preview>-<parent>.<subdomain>.workers.dev`.
+//   Staging is not a Preview: Cron Triggers and routes target production
+//   only, and the least recently deployed Preview is deleted at the
+//   per-Worker limit (https://developers.cloudflare.com/workers/previews/).
 //
 //   Use a throwaway for a one-off question. For verifying a change before
 //   it ships — the whole suite, repeatedly, plus the hosted-demo surfaces
@@ -36,12 +52,12 @@
 //   token   [--name <n>] [--ttl-ms <ms>]
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //   down    [--name <n>] | --all
-//   list
+//   list    every Preview under the parent, and which ones this checkout holds
 //
 // STATE
 //   `.wrangler/throwaway-targets/<name>.json` (gitignored) holds the
-//   target's name, URL and signing secret so later commands need no
-//   environment beyond the account pin. A throwaway belongs to the
+//   target's name, Preview name, URL and signing secret so later commands
+//   need no environment beyond the account pin. A throwaway belongs to the
 //   checkout that stood it up, so the record stays with that checkout —
 //   and `up` reuses the secret it finds there rather than replacing it,
 //   which is what lets a target be redeployed under a suite that is
@@ -53,7 +69,8 @@
 //   session, which is how the shared anon pool got exhausted. Self-minted
 //   tokens make that failure mode structurally impossible.
 
-import { readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
@@ -62,12 +79,11 @@ import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
 import {
   ROOT,
   WRANGLER,
-  activeVersionId,
+  apiToken,
   assertCredentialHeld,
+  cfApi,
   createSession,
-  deployAndVerify,
   parseFlags,
-  putSecret,
   randomSecret,
   readState,
   requireAccountPin,
@@ -84,7 +100,15 @@ const NAME_PREFIX = 'nimbus-tw-';
 const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
 
 /**
- * How long the workers.dev edge may keep serving a deleted script.
+ * The Worker every throwaway is a Preview of. It holds no production
+ * deployment and no binding of its own; only its Previews are ever served.
+ * scripts/deploy-isolation.mjs refuses a Preview whose parent is a
+ * production Worker.
+ */
+const PREVIEW_PARENT = 'nimbus-probe-previews';
+
+/**
+ * How long the workers.dev edge may keep serving a deleted Preview.
  * Declared here rather than beside its use: the commands run at module
  * top level, before a `const` further down has initialised.
  */
@@ -110,6 +134,7 @@ await run();
 async function up() {
   const account = requireAccountPin();
   const name = flags.name ? qualify(flags.name) : `${NAME_PREFIX}${randomSuffix()}`;
+  const preview = previewName(name);
 
   // Redeploying a throwaway under a name it already has is routine — a
   // fix, a rebuild, another round. Minting a fresh secret for it is not:
@@ -121,55 +146,56 @@ async function up() {
   const secret = reuseSecret ? recorded.secret : randomSecret();
   const createdAt = recorded?.createdAt ?? new Date().toISOString();
 
-  // Before wrangler is invoked at all: `--name` overrides only the name, so
-  // every binding still comes from apps/probe's config. Verify none of them
-  // resolve to a production resource rather than remembering that they do
-  // not — a probe that skipped this wrote rows into the live demo D1.
+  // Before wrangler is invoked at all: a Preview binds what apps/probe's
+  // `previews` block names and nothing else. Verify none of it reaches a
+  // production resource, the parent's own resources or a production
+  // Worker, rather than remembering that it does not — a probe that skipped
+  // the Worker version of this check wrote rows into the live demo D1.
   const isolation = assertDeployIsolated({
     configPath: 'apps/probe/wrangler.jsonc',
-    workerName: name,
+    workerName: PREVIEW_PARENT,
+    preview: true,
     root: ROOT,
   });
   for (const note of isolation.shared) log(`shared with production — ${note}`);
   for (const gap of isolation.missing) log(`WARNING: ${gap}`);
-  log(`bindings verified: ${name} resolves no production resource`);
+  log(`bindings verified: Preview ${preview} of ${PREVIEW_PARENT} resolves no production resource`);
 
-  // Also before the build: a name already standing that this checkout
+  // Also before the build: a Preview already standing that this checkout
   // holds no secret for belongs to somebody else's run, and taking it
   // over is the one thing `up` must not do by accident.
+  const token = apiToken({ cwd: PROBE_APP, account });
+  const before = await latestDeployment({ account, token, preview });
   assertCredentialHeld({
     name,
     statePath: statePath(name),
     hasSecret: reuseSecret,
-    provisioned: Boolean(activeVersionId(name, { cwd: PROBE_APP, account })),
+    provisioned: before !== null,
     rotate: Boolean(flags['rotate-secrets']),
   });
 
   if (flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
 
-  // Recorded before the deploy, not after: `wrangler deploy` can create the
-  // script and still fail before it reports a URL, and a name nothing knows
-  // about is a name nobody tears down. `secretPushed` stays false until the
-  // secret is on the Worker, so a crashed `up` is retried with a secret that
-  // gets pushed rather than one only this machine believes in.
-  writeState(statePath(name), { name, base: null, secret, secretPushed: reuseSecret, createdAt });
+  await ensurePreviewParent({ account, token });
 
-  log(`deploying apps/probe as ${name}`);
+  // Recorded before the deploy, not after: `wrangler preview` can create
+  // the Preview and still fail before its deployment lands, and a name
+  // nothing knows about is a name nobody tears down. `secretPushed` stays
+  // false until a deployment carrying the secret is live, so a crashed
+  // `up` is retried with a secret that gets deployed rather than one only
+  // this machine believes in.
+  writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: reuseSecret, createdAt });
+
+  log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
-  const { base, versionId } = deployAndVerify({
-    cwd: PROBE_APP, account, name, args: ['--name', name, ...varOverrides],
-  });
-  if (!base) throw new Error(`deploy of ${name} printed no workers.dev URL`);
-  writeState(statePath(name), { name, base, secret, secretPushed: reuseSecret, createdAt });
-  log(`version ${versionId} is live at ${base}`);
-
-  if (reuseSecret) {
-    log(`keeping the JWT_SECRET already on ${name} — tokens minted earlier stay valid`);
-  } else {
-    log(`setting JWT_SECRET on ${name}`);
-    putSecret({ cwd: PROBE_APP, account, name, key: 'JWT_SECRET', value: secret });
-    writeState(statePath(name), { name, base, secret, secretPushed: true, createdAt });
-  }
+  const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before });
+  writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt });
+  // The platform's own measure of the script's startup, limit 1 s
+  // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
+  log(`deployment ${deploymentId} is live at ${base} (startup ${startupMs ?? '?'} ms)`);
+  log(reuseSecret
+    ? `kept the JWT_SECRET ${name} already had — tokens minted earlier stay valid`
+    : `deployed a new JWT_SECRET with ${name}`);
 
   const jwt = await mintProbeToken(secret, ttlMs());
   await waitForTarget(base, jwt);
@@ -199,11 +225,15 @@ async function down() {
   const account = requireAccountPin();
   const names = flags.all ? listStateNames() : [resolveName()];
   if (names.length === 0) log('no throwaway targets recorded');
+  const token = apiToken({ cwd: PROBE_APP, account });
 
   for (const name of names) {
-    log(`deleting ${name}`);
-    wrangle(WRANGLER, ['delete', '--name', name, '--force'], { cwd: PROBE_APP, account, allowFail: true });
-    const gone = await confirmDeleted(name, account);
+    const preview = readState(statePath(name))?.preview ?? previewName(name);
+    log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
+    wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
+      cwd: PROBE_APP, account, allowFail: true,
+    });
+    const gone = await confirmDeleted({ name, preview, account, token });
     rmSync(statePath(name), { force: true });
     if (!gone.ok) {
       console.error(`FAILED to confirm ${name} is gone: ${gone.reason}`);
@@ -214,53 +244,139 @@ async function down() {
   }
 }
 
-function list() {
-  for (const name of listStateNames()) {
-    const state = requireState(name);
-    process.stdout.write(`${name}\t${state.base ?? '(deploy incomplete)'}\t${state.createdAt}\n`);
+/**
+ * Every Preview under the parent, with the ones this checkout holds a
+ * record for marked. A cancelled CI run never reaches its teardown; its
+ * Preview (`tw-ci-*`) shows up here unmarked.
+ */
+async function list() {
+  const account = requireAccountPin();
+  const token = apiToken({ cwd: PROBE_APP, account });
+  const held = new Map(listStateNames().map((name) => [readState(statePath(name))?.preview ?? previewName(name), name]));
+  const listed = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews`, { account, token });
+  if (!listed.ok) throw new Error(`listing Previews of ${PREVIEW_PARENT} failed (${listed.status}): ${JSON.stringify(listed.errors)}`);
+  for (const p of listed.result ?? []) {
+    const local = held.get(p.name);
+    process.stdout.write(`${p.name}\t${workersDevUrlOf(p.urls) ?? '(no URL)'}\t${p.created_on ?? ''}\t${local ? `held here as ${local}` : 'not held here'}\n`);
   }
+}
+
+// ── Previews ─────────────────────────────────────────────────────────
+
+/** `nimbus-tw-x` → Preview `tw-x`; the parent's name already says nimbus. */
+function previewName(name) {
+  return name.slice('nimbus-'.length);
+}
+
+/** The latest deployment of `preview`, or null when there is no such Preview. */
+async function latestDeployment({ account, token, preview }) {
+  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}/deployments/latest`, { account, token });
+  return got.ok ? got.result : null;
+}
+
+/**
+ * The parent Worker, with Preview URLs on. `wrangler preview` would create
+ * a missing parent itself, but with `previews_enabled` taken from
+ * apps/probe's `preview_urls` (false there, for the probe Workers), and a
+ * Preview under such a parent has no URL.
+ */
+async function ensurePreviewParent({ account, token }) {
+  const subdomain = { enabled: true, previews_enabled: true };
+  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}`, { account, token });
+  if (!got.ok) {
+    log(`creating the Preview parent Worker ${PREVIEW_PARENT}`);
+    const created = await cfApi('/workers/workers', { account, token, method: 'POST', body: { name: PREVIEW_PARENT, subdomain } });
+    if (!created.ok) throw new Error(`creating ${PREVIEW_PARENT} failed (${created.status}): ${JSON.stringify(created.errors)}`);
+    return;
+  }
+  if (got.result?.subdomain?.enabled === true && got.result?.subdomain?.previews_enabled === true) return;
+  log(`turning Preview URLs on for ${PREVIEW_PARENT}`);
+  const patched = await cfApi(`/workers/workers/${PREVIEW_PARENT}`, {
+    account, token, method: 'PATCH', body: { subdomain }, contentType: 'application/merge-patch+json',
+  });
+  if (!patched.ok) throw new Error(`enabling Preview URLs on ${PREVIEW_PARENT} failed (${patched.status}): ${JSON.stringify(patched.errors)}`);
+}
+
+/**
+ * `wrangler preview`, then prove it. The same three facts as a Worker
+ * deploy (_deploy-target.mjs deployAndVerify): the command reported a
+ * deployment id, the API serves that id as the Preview's latest, and it
+ * differs from the latest before.
+ */
+async function deployPreview({ account, token, preview, secret, before }) {
+  // The secret travels with the deployment: each Preview deployment
+  // carries its own env, so every deploy uploads it again.
+  const dir = mkdtempSync(join(tmpdir(), 'nimbus-preview-secrets-'));
+  const secretsFile = join(dir, 'secrets.json');
+  let result;
+  try {
+    writeFileSync(secretsFile, JSON.stringify({ JWT_SECRET: secret }), { mode: 0o600 });
+    result = wrangle(WRANGLER, [
+      'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
+      '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides,
+    ], { cwd: PROBE_APP, account, allowFail: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const stdout = result.stdout || '';
+  let printed = null;
+  try {
+    printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
+  } catch { /* reported below */ }
+  const deploymentId = printed?.deployment?.id ?? null;
+  const latest = await latestDeployment({ account, token, preview });
+  const after = latest?.id ?? null;
+  if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
+    process.stderr.write(`${stdout}${result.stderr || ''}`);
+    const detail = !deploymentId
+      ? '`wrangler preview` reported no deployment id'
+      : after !== deploymentId
+        ? `the API serves ${after} as the latest deployment, not ${deploymentId}`
+        : `the latest deployment is still ${after} — nothing was deployed`;
+    throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land: ${detail}; wrangler exited ${result.status}`);
+  }
+  const base = workersDevUrlOf(printed.preview?.urls);
+  if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
+  return { base, deploymentId, startupMs: latest.startup_time_ms };
+}
+
+/** The workers.dev URL among a Preview's URLs, without a trailing slash. */
+function workersDevUrlOf(urls) {
+  return (urls ?? []).find((url) => /\.workers\.dev\/?$/.test(url))?.replace(/\/$/, '') ?? null;
 }
 
 // ── Teardown ─────────────────────────────────────────────────────────
 
 /**
- * Is the script gone?
+ * Is the Preview gone?
  *
- * The API answers that, and only the API: `wrangler deployments list` exits
- * 0 for a script that exists — even one that never finished deploying — and
- * 1 with `[code: 10007]` once it is really gone. A 404 on the workers.dev
- * hostname is not the same claim and never was, which is why it cannot
- * stand in for this check.
+ * The API answers that, and only the API: once the Preview is deleted, GET
+ * .../previews/<name> stops answering it. A 404 on its hostname is not the
+ * same claim, which is why it cannot stand in for this check.
  *
  * The hostname is polled afterwards for the operator's benefit, not as
  * evidence. It lags: measured 2026-08-05, a deleted Worker kept answering
- * 200 for ~30s after the API had stopped listing it. Reading it once,
- * immediately after `wrangler delete`, reported a correct deletion as a
- * failure — which in CI is a red teardown on every single run.
+ * 200 for ~30s after the API had stopped listing it.
  */
-async function confirmDeleted(name, account) {
-  const listed = wrangle(WRANGLER, ['deployments', 'list', '--name', name], {
-    cwd: PROBE_APP,
-    account,
-    allowFail: true,
-  });
-  if (listed.status === 0) return { ok: false, reason: 'the script is still listed by the API' };
+async function confirmDeleted({ name, preview, account, token }) {
+  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
+  if (got.ok) return { ok: false, reason: `the API still answers Preview ${preview}` };
 
   const base = readState(statePath(name))?.base;
-  if (!base) return { ok: true, reason: 'the script is not listed' };
+  if (!base) return { ok: true, reason: `Preview ${preview} is not listed (${got.status})` };
 
   const status = await waitForHostnameGone(base);
   return {
     ok: true,
     reason: status === null
-      ? 'the script is not listed and the hostname no longer serves it'
-      : `the script is not listed; ${base} still answers ${status} after `
+      ? `Preview ${preview} is not listed (${got.status}) and the hostname no longer serves it`
+      : `Preview ${preview} is not listed; ${base} still answers ${status} after `
         + `${HOSTNAME_SETTLE_MS}ms of edge propagation`,
   };
 }
 
 /**
- * Poll until the hostname stops serving the script. Returns null once it
+ * Poll until the hostname stops serving the Preview. Returns null once it
  * 404s or stops answering at all, otherwise the last status seen.
  */
 async function waitForHostnameGone(base) {

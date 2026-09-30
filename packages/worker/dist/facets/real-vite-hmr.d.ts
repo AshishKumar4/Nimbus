@@ -92,9 +92,6 @@ export declare class HmrBridge {
     /** Drop all clients (facet restart, session close). */
     closeAll(): void;
 }
-export declare function registerHmrBridge(doId: string, holder: {
-    hmr: HmrBridge;
-}): void;
 /**
  * WorkerEntrypoint the facet talks to via `env.CIRRUS_HMR`.
  *
@@ -113,7 +110,6 @@ export declare class CirrusHmrRPC extends WorkerEntrypoint<object, {
     doId?: string;
     route?: HostRoute;
 }> {
-    private _bridge;
     private _stub;
     hmrSend(clientId: string | null, msg: string): Promise<void>;
     hmrNextEvent(timeoutMs?: number): Promise<any[]>;

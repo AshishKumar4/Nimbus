@@ -22,6 +22,22 @@ try {
   page = await browser.newPage();
   await applyProbeCookies(page);
 
+  // What the embedded shell did, for a run where nimbus:ready never comes:
+  // its navigations (the bootstrap exchange redirects), its console, and any
+  // page error. A bare waitForFunction timeout says none of this.
+  const trail = [];
+  const sessionPath = `/s/${sid}/`;
+  page.on('response', (response) => {
+    if (response.url().includes(sessionPath)) trail.push(`${response.status()} ${new URL(response.url()).pathname}`);
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warn') trail.push(`console.${message.type()}: ${message.text().slice(0, 200)}`);
+  });
+  page.on('pageerror', (error) => trail.push(`pageerror: ${String(error?.message ?? error).slice(0, 200)}`));
+  page.on('requestfailed', (request) => {
+    if (request.url().includes(sessionPath)) trail.push(`failed ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`);
+  });
+
   // Parent page on the Nimbus origin so probe auth cookies flow to the
   // iframe. The shell posts with targetOrigin '*', so reception is the
   // same for a cross-origin embedder parent.
@@ -50,10 +66,18 @@ try {
 
   // Bounded poll: the shell posts nimbus:ready on its first WebSocket
   // ready message, so this also covers shell boot + WS attach.
-  await page.waitForFunction(
+  const arrived = await page.waitForFunction(
     () => (window.__nimbusMessages || []).some((m) => m.data && m.data.type === 'nimbus:ready'),
     { timeout: 90_000, polling: 250 },
-  );
+  ).then(() => true, () => false);
+  if (!arrived) {
+    const frame = page.frames().find((f) => f.url().includes(sessionPath));
+    a.check('parent receives nimbus:ready from the embedded shell within 90 s', false, JSON.stringify({
+      frameUrl: frame?.url() ?? null,
+      messages: await page.evaluate(() => window.__nimbusMessages).catch(() => null),
+      trail: trail.slice(-40),
+    }));
+  }
 
   const messages = await page.evaluate(() => window.__nimbusMessages);
   const ready = messages.find((m) => m.data && m.data.type === 'nimbus:ready');

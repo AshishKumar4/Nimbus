@@ -43,7 +43,8 @@ import {
   type PackageStagedArtifactEntry,
   type PackageSwapEntry,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ROLLDOWN_ARTIFACT_VERSION } from '../rolldown-artifact.generated.js';
+import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
+import { compareSemver, parseSemver } from '../npm/semver.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // The policy
@@ -74,6 +75,20 @@ const SWAPS: ReadonlyArray<PackageSwapEntry> = [
       'Native lightningcss ships platform .node bindings; lightningcss-wasm exposes the same transform/bundle/bundleAsync/browserslistToTargets API from one wasm module.',
     compat: 'drop-in',
   },
+  {
+    // Vite 7 and earlier bundle with rollup, whose dist/native.js requires a
+    // platform shard (@rollup/rollup-<platform>). @rollup/wasm-node is the
+    // same package built on one wasm-bindgen module (no WASI, no threads),
+    // with rollup's exports and bin, released version for version.
+    // Only rollup 4 has native shards; 2 and 3 are plain JavaScript and
+    // @rollup/wasm-node publishes 4.x only (Vite 3/4 keep their rollup 3).
+    from: 'rollup',
+    to: '@rollup/wasm-node',
+    since: '4.0.0',
+    reason:
+      'Native rollup loads a platform .node shard; @rollup/wasm-node is the same rollup with its parser as one wasm module.',
+    compat: 'drop-in',
+  },
 ];
 
 /**
@@ -94,28 +109,31 @@ const STAGED_ARTIFACTS: ReadonlyArray<PackageStagedArtifactEntry> = [
       'opencode-ai ships a native launcher (bin/opencode.exe) and 12 platform-native shards; ' +
       'Nimbus runs the prebuilt opencode JS bundle instead.',
   },
-  // ── Rolldown (Vite 8's bundler) ─────────────────────────────────────
-  // Both names are answered by one staged build: rolldown's JS installs as
-  // published minus its 15 platform shards, and its `require` of the binding
-  // (native shard or `@rolldown/binding-wasm32-wasi`) is answered by the
-  // node runtime with the single-threaded wasm32-wasip1 build
-  // (scripts/rolldown/, public/_assets/rolldown/<version>/).
-  {
-    kind: 'binding',
-    from: 'rolldown',
-    artifact: 'rolldown-binding',
-    version: ROLLDOWN_ARTIFACT_VERSION,
-    reason:
-      'rolldown loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.',
-  },
-  {
-    kind: 'binding',
-    from: '@rolldown/binding-wasm32-wasi',
-    artifact: 'rolldown-binding',
-    version: ROLLDOWN_ARTIFACT_VERSION,
-    reason:
-      'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
-  },
+  // ── Threadless napi-rs bindings (rolldown, satteri, Astro's compiler) ─
+  // One staged build answers each binding's owner and every package name
+  // the owner requires it by: the owner's JS installs as published minus its
+  // platform shards, and its `require` of the binding (a native shard or the
+  // `-wasm32-wasi` package) is answered by the node runtime with the
+  // single-threaded wasm32-wasip1 build (scripts/napi-wasm/,
+  // public/_assets/napi-wasm/<name>/<version>/).
+  ...STAGED_BINDING_ARTIFACTS.flatMap((binding): PackageStagedArtifactEntry[] => [
+    {
+      kind: 'binding',
+      from: binding.owner,
+      artifact: binding.name,
+      version: binding.version,
+      reason:
+        `${binding.owner} loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.`,
+    },
+    ...binding.requiredAs.map((id): PackageStagedArtifactEntry => ({
+      kind: 'binding',
+      from: id,
+      artifact: binding.name,
+      version: binding.version,
+      reason:
+        'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
+    })),
+  ]),
 ];
 
 const REJECTS: ReadonlyArray<PackageRejectEntry> = [
@@ -436,6 +454,14 @@ export function lookupSwap(name: string): PackageSwapEntry | undefined {
   return policyLookupSwap(PACKAGE_ABI_POLICY, name);
 }
 
+/** Whether `swap` stands in for exactly `version` of its package (a lockfile pin). */
+export function swapCoversVersion(swap: PackageSwapEntry, version: string): boolean {
+  if (!swap.since) return true;
+  const v = parseSemver(version);
+  const since = parseSemver(swap.since);
+  return v !== null && since !== null && compareSemver(v, since) >= 0;
+}
+
 export function lookupReject(name: string): PackageRejectEntry | undefined {
   return policyLookupReject(PACKAGE_ABI_POLICY, name);
 }
@@ -491,7 +517,10 @@ export function applySwaps(
   const swaps: PackageSwapEntry[] = [];
   for (const [name, range] of Object.entries(specs)) {
     const swap = lookupSwap(name);
-    if (swap && !String(range).startsWith('npm:')) {
+    // A swap with `since` is decided by the resolver, which reads the
+    // target's versions (resolve-one-facet.ts); a range alone cannot say
+    // whether it resolves to a version the swap covers.
+    if (swap && !swap.since && !String(range).startsWith('npm:')) {
       out[name] = swapAliasRange(swap, range);
       swaps.push(swap);
     } else {

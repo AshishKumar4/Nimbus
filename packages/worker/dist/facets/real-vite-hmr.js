@@ -194,19 +194,6 @@ export class HmrBridge {
     }
 }
 /**
- * Registry mapping `doId` → `CirrusReal` instance. Populated when
- * NimbusSession creates a CirrusReal. The facet-side RPC looks up the
- * right HmrBridge via this registry — otherwise CirrusHmrRPC.fetch
- * can't know WHICH session called it.
- */
-const _BRIDGES = new Map();
-export function registerHmrBridge(doId, holder) {
-    _BRIDGES.set(doId, holder);
-}
-// unregisterHmrBridge intentionally not exposed — the registry is GC'd
-// when the supervisor DO is evicted, and the cirrus-real comment at the
-// stop() site explains why we don't unregister mid-life.
-/**
  * WorkerEntrypoint the facet talks to via `env.CIRRUS_HMR`.
  *
  * hmrSend CANNOT write to browser WSs directly (workerd forbids
@@ -221,12 +208,6 @@ export function registerHmrBridge(doId, holder) {
  *          HmrBridge.
  */
 export class CirrusHmrRPC extends WorkerEntrypoint {
-    _bridge() {
-        const doId = this.ctx.props?.doId;
-        if (!doId)
-            return null;
-        return _BRIDGES.get(doId)?.hmr || null;
-    }
     _stub() {
         const doId = this.ctx.props?.doId;
         if (!doId)
@@ -261,12 +242,17 @@ export class CirrusHmrRPC extends WorkerEntrypoint {
         }
     }
     async hmrNextEvent(timeoutMs = 25_000) {
-        // Long-poll can stay on the WorkerEntrypoint side — nextEvents
-        // only awaits in-memory timers/queues, no WS I/O.
-        const b = this._bridge();
-        if (!b)
+        const resolved = this._stub();
+        if (!resolved)
             return [];
-        return b.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
+        try {
+            // The queue belongs to the session DO, just like its WebSockets. A
+            // WorkerEntrypoint cannot read a module-global map populated there.
+            return await useRpcResource(resolved.dispatch({ op: 'hmrNextEvent', args: [timeoutMs] }), (events) => events);
+        }
+        finally {
+            disposeRpcResource(resolved.stub);
+        }
     }
 }
 /**

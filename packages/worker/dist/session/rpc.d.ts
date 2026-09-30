@@ -245,6 +245,8 @@ export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleI
  * DO. The HmrBridge holds the client→WS map; we delegate to it.
  */
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
+/** Poll the HMR queue in the same DO that owns its browser connections. */
+export declare function _rpcHmrNextEvent(self: RpcHost, timeoutMs?: number): Promise<any[]>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -292,6 +294,9 @@ export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): P
 export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
 export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
 export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
+/** A live server can catch a codegen miss and continue serving: persist its
+ * ledger before it is killed or evicted, without changing its process state. */
+export declare function _rpcReportRuntimeCode(self: RpcHost, pid: number, entries: unknown[], missedFiles?: string[]): Promise<void>;
 /**
  * Called by facets from their `finally` block after I/O has drained.
  * Marks the log store so `logs` / `ps` can show the exit code, and

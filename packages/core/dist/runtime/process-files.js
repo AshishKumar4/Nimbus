@@ -23,7 +23,7 @@ import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
+import { readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { createSqliteDescriptorScope, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
@@ -525,18 +525,20 @@ class AwaitingProcessBridge {
         if (after === null && listing)
             listing.table = position.table;
         const page = feed.list(after === null ? null : `/${after}`, want, walk);
+        // SQLite measured its own entries when it listed them; each is measured
+        // here under the path the process sees, which only re-encodes that path.
         const fits = listPageBudget(root.epoch, root.cursor);
         const entries = [];
         let next = page.next === null ? null : page.next.slice(1);
         for (const entry of page.entries) {
             if (underKernelMount(entry.path))
                 continue;
-            const listed = { ...entry, path: entry.path.slice(1) };
-            if (!fits(listed)) {
+            const path = entry.path.slice(1);
+            if (!fits(entry, path)) {
                 next = entries[entries.length - 1].path;
                 break;
             }
-            entries.push(listed);
+            entries.push({ ...entry, path });
         }
         if (listing)
             listing.held = next === null ? null : { walk, next };
@@ -973,9 +975,10 @@ export class ProcessView {
     process) {
         this.process = process;
     }
-    async call(path, run) {
+    call(path, run) {
         try {
-            return await run();
+            const result = run();
+            return result instanceof Promise ? result.catch((error) => { throw toVfsError(error, path); }) : result;
         }
         catch (error) {
             throw toVfsError(error, path);
@@ -985,12 +988,24 @@ export class ProcessView {
         const stat = await this.call(path, () => this.process.stat(path, { followSymlinks: options?.follow !== false }));
         return stat === null ? null : vfsStatOf(stat);
     }
-    /** Whether anything is at `path` (links followed): access(F_OK). */
-    async exists(path) { return await exists(this, path); }
-    async isFile(path) { return await isFile(this, path); }
-    async isDirectory(path) { return await isDirectory(this, path); }
+    /** Probes need only the bridge's type, not another converted stat object. */
+    async probe(path, follow) {
+        try {
+            return await this.process.stat(path, { followSymlinks: follow });
+        }
+        catch (error) {
+            const failure = toVfsError(error, path);
+            if (isVfsError(failure, 'ENOTDIR'))
+                return null;
+            throw failure;
+        }
+    }
+    /** Whether anything is at `path` (links followed). */
+    async exists(path) { return (await this.probe(path, true)) !== null; }
+    async isFile(path) { return (await this.probe(path, true))?.type === 'file'; }
+    async isDirectory(path) { return (await this.probe(path, true))?.type === 'directory'; }
     /** Whether `path` itself is a symbolic link. */
-    async isSymlink(path) { return await isSymlink(this, path); }
+    async isSymlink(path) { return (await this.probe(path, false))?.type === 'symlink'; }
     /** The file's bytes as UTF-8 text. */
     async readFileString(path) { return await readText(this, path); }
     async readFile(path) {
