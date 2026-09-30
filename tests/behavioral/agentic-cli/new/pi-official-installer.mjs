@@ -94,7 +94,7 @@ try {
     /\/home\/user\/\.local\/bin\/pi|\/usr\/local\/bin\/pi/.test(checkText),
     JSON.stringify(checkText.slice(-1000)));
   a.check('pi --version exits as a short command after official install',
-    /\b\d+\.\d+\.\d+\b/.test(checkText) && !/\[bin started \(long-running\)/.test(checkText),
+    /^\d+\.\d+\.\d+\r?$/m.test(checkText) && !/\[bin started \(long-running\)/.test(checkText),
     JSON.stringify(checkText.slice(-1200)));
 
   const launch = await t.run('pi', 60_000);

@@ -10,7 +10,9 @@ published independently in the `@nimbus-sh` npm scope.
   Previously it typed those commands into the installer's answer instead,
   which accepted the offer and launched bare `pi`; the commands never ran.
   The probe now verifies that declining the offer returns the shell without
-  launching pi, then still checks the version and the attached TUI.
+  launching pi, then still checks the version and the attached TUI. A version
+  must be printed on its own line: the version in an error's install path is
+  not evidence that `pi --version` succeeded.
 
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
