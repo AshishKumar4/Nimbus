@@ -1003,9 +1003,13 @@ The port registry is already the right primitive for HTTP preview:
 - A process owns a port.
 - `/port/<n>/...` forwards a real `Request`.
 - The runtime returns a real `Response`.
-- PortRegistry avoids JSON body serialization. Current Node and virtual-socket
-  adapters still buffer internally in places; completion means streaming through
-  the adapter layer too.
+- PortRegistry avoids JSON body serialization and relays a body as a stream,
+  keeping a declared `Content-Length` (through a `FixedLengthStream`; any other
+  stream goes out chunked). Node's native `node:http` path streams end to end:
+  a 210 MiB file served by a Node static server downloads whole and by range
+  while the session isolate's per-minute memory peak stays at 67-96 MiB
+  (measured 2026-09-30, `tests/behavioral/preview/new/port-range-large-file.mjs`). The
+  virtual-socket adapters are not yet probed at that size.
 
 Language web servers should plug into this model:
 
@@ -1022,6 +1026,25 @@ Language web servers should plug into this model:
 
 When a new port appears, the browser preview pane should create or focus the
 corresponding tab. The tab model should de-dupe by kind and port.
+
+Cross-origin isolated previews: a preview asks for isolation with its own
+document's `Cross-Origin-Embedder-Policy` (`require-corp` or
+`credentialless`), and Nimbus never adds or rewrites COOP, COEP or CORP on a
+guest response. The pane is an iframe, and a nested document is isolated only
+when every document above it is, so the shell has two modes: the default
+shell (no COOP/COEP, unchanged) and the isolated shell (`/s/<id>/?isolated=1`,
+COOP `same-origin` + COEP `credentialless`;
+`packages/worker/src/_shared/preview-isolation.ts` holds the rules and their
+spec links). The shell HEADs each iframe tab's document through the path door
+and offers "Reload isolated", "Reload normally" or "Open in new tab"; ↗ opens
+any preview top-level, where its own headers isolate it. Limits: the pane of
+an embedded shell (the React component) is never isolated, because COOP is
+ignored in a frame; a host-form preview (`<port>--<sid>`) is cross-origin to
+the shell, so the isolated shell can embed it only with CORP `cross-origin`,
+or `same-site` under the shell's own host, and a guest sending CORP
+`same-origin` (halo-web does) is offered its own tab; a browser without
+`credentialless` (Safari) is offered the own tab too. Probed by
+`tests/behavioral/preview/new/coi-*.mjs` and `tests/unit/preview-isolation.mjs`.
 
 ## Durable Service Contract
 

@@ -14,7 +14,7 @@ import { clearNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, isNimbusClo
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, } from './agent-contract.js';
+import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
@@ -1063,6 +1063,7 @@ function json(body, status = 200, headers) {
 }
 function oauthResultHtml(ok, message, sessionId, headers) {
     const sessionPath = sessionId && isSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
+    const result = { type: AGENT_OAUTH_RESULT_CHANNEL, ok };
     const safeMessage = escapeHtml(message);
     const safePath = escapeHtml(sessionPath);
     const responseHeaders = new Headers(headers);
@@ -1083,7 +1084,9 @@ a{color:#58a6ff}
 <p><a href="${safePath}">Return to Nimbus</a></p>
 </main>
 <script>
-try { if (window.opener) window.opener.postMessage({ type: 'nimbus-agent-oauth', ok: ${ok ? 'true' : 'false'} }, location.origin); } catch {}
+var result = ${JSON.stringify(result)};
+try { if (window.opener) window.opener.postMessage(result, location.origin); } catch {}
+try { var channel = new BroadcastChannel(result.type); channel.postMessage(result); channel.close(); } catch {}
 setTimeout(function(){ try { window.close(); } catch {} }, 700);
 </script>
 </body></html>`, {

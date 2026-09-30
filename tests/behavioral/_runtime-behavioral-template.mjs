@@ -78,8 +78,9 @@ export async function launchBrowser(opts = {}) {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      // Allow cross-origin iframe DOM access for our tests
-      '--disable-web-security',
+      // Allow cross-origin iframe DOM access for our tests. A probe of the
+      // web platform's own isolation rules (COOP/COEP/CORP) keeps them on.
+      ...(opts.webSecurity ? [] : ['--disable-web-security']),
       ...(opts.args || []),
     ],
     defaultViewport: { width: 1280, height: 800 },

@@ -72,6 +72,8 @@ import {
   textFromParts,
   upsertStoredMessage,
   upsertToolPart,
+  AGENT_OAUTH_RESULT_CHANNEL,
+  type AgentOAuthResultMessage,
   type AgentStreamEvent,
   type AgentStatusPayload,
   type StoredMessage,
@@ -1163,6 +1165,7 @@ function oauthResultHtml(
   headers?: HeadersInit,
 ): Response {
   const sessionPath = sessionId && isSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
+  const result: AgentOAuthResultMessage = { type: AGENT_OAUTH_RESULT_CHANNEL, ok };
   const safeMessage = escapeHtml(message);
   const safePath = escapeHtml(sessionPath);
   const responseHeaders = new Headers(headers);
@@ -1183,7 +1186,9 @@ a{color:#58a6ff}
 <p><a href="${safePath}">Return to Nimbus</a></p>
 </main>
 <script>
-try { if (window.opener) window.opener.postMessage({ type: 'nimbus-agent-oauth', ok: ${ok ? 'true' : 'false'} }, location.origin); } catch {}
+var result = ${JSON.stringify(result)};
+try { if (window.opener) window.opener.postMessage(result, location.origin); } catch {}
+try { var channel = new BroadcastChannel(result.type); channel.postMessage(result); channel.close(); } catch {}
 setTimeout(function(){ try { window.close(); } catch {} }, 700);
 </script>
 </body></html>`, {

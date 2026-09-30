@@ -56,6 +56,8 @@ A behavioral probe suite in `tests/behavioral/` covers this table. Run it agains
 | In-session loopback networking — `curl http://127.0.0.1:<port>` reaches servers in other isolates; `node server.js` auto-promotes to a routeable resident process | ✅ |
 | Durable app URLs — a private preview URL per port that restarts the server on the next request after an eviction; `nimbus expose <port> --public` for a shareable link bound to the program; `nimbus app list / url / rotate / remove`; the same verbs in the SDK as `box.apps` | ✅ |
 | Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike | ✅ |
+| Large files and HTTP Range through port previews — Range, If-Range and If-None-Match reach the server; 206/304 come back with Content-Range, Content-Length and ETag; a 210 MiB file streams whole or by range with the session's memory bounded | ✅ |
+| Cross-origin isolated previews — an app that sends COEP (Emscripten `-pthread`: SharedArrayBuffer + Workers + Atomics) is isolated in its own tab, and in the preview pane after an isolated workspace reload when its CORP admits the workspace origin (path previews always; host previews with CORP `cross-origin`/`same-site`) | ✅ |
 | Unix permissions — real uid/gid ownership with `EACCES` enforced on read/write (including inside `bash`), durable `st_mode`, persisted `chmod` (octal + symbolic) + `chown`, exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
 | Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate) | Alpha |
 | Vite SPA dev server — full HMR to the preview iframe | ✅ |
@@ -106,7 +108,9 @@ nimbus expose 3000 --public  # prints a link anyone can open
 The preview pane on the right is tabbed. It keeps Markdown preview, the default
 app preview at `/s/<id>/preview/`, Worker preview, and live port previews
 together. When a new process exposes a port, Nimbus opens and focuses that port
-tab automatically.
+tab automatically. An app that asks for cross-origin isolation (its own
+`Cross-Origin-Embedder-Policy`) gets an offer to reload the workspace isolated,
+or to open the app in its own tab; every other app previews unchanged.
 
 Or write some C:
 

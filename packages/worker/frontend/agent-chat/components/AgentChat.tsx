@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
+  AGENT_OAUTH_RESULT_CHANNEL,
   interruptRunningTools,
   isInterruptedMessage,
   textFromParts,
@@ -112,16 +113,23 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
   }, []);
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== location.origin) return;
-      const data: unknown = event.data;
-      if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'nimbus-agent-oauth') {
+    const onResult = (data: unknown) => {
+      if (data && typeof data === 'object' && (data as { type?: unknown }).type === AGENT_OAUTH_RESULT_CHANNEL) {
         stopOAuthPoll();
         void refreshStatus();
       }
     };
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin === location.origin) onResult(event.data);
+    };
+    // Same origin by construction; see AGENT_OAUTH_RESULT_CHANNEL for why both.
+    const channel = new BroadcastChannel(AGENT_OAUTH_RESULT_CHANNEL);
+    channel.onmessage = (event: MessageEvent) => onResult(event.data);
     window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      channel.close();
+    };
   }, [stopOAuthPoll, refreshStatus]);
 
   const connect = useCallback(async () => {

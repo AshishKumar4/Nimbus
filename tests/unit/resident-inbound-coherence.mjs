@@ -18,6 +18,7 @@
 // A peer changes the file, then the event arrives, and the handler reads the
 // file synchronously.
 
+import './lib/workerd-fixed-length-stream.mjs';
 import assert from 'node:assert/strict';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { _acquireForRoutedRequest } from '../../packages/worker/src/session/rpc.ts';

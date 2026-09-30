@@ -154,6 +154,19 @@ server.listen(3000, '0.0.0.0', () => console.log('LISTENING 3000'));
     }
   }
 
+  // The switch below exercises a tab whose attach has finished, so let the
+  // pane finish loading the clean page first: a click that lands while the
+  // frame is still mid-navigation leaves it to finish that navigation rather
+  // than start another, and the counters above move at request time.
+  {
+    const deadline = Date.now() + 30_000;
+    let loaded = false;
+    while (!loaded && Date.now() < deadline) {
+      const frame = page.frames().find((candidate) => candidate.url() === previewCleanUrl);
+      loaded = frame !== undefined && await frame.evaluate(() => document.readyState).catch(() => '') === 'complete';
+      if (!loaded) await new Promise((r) => setTimeout(r, 100));
+    }
+  }
   const cleanRequestsBeforeSwitch = previewCleanRequests;
   await page.evaluate(() => {
     const click = (label) => Array.from(document.querySelectorAll('#previewTabs .preview-tab'))
