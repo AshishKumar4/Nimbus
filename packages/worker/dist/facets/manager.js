@@ -352,12 +352,13 @@ const ENTRYPOINT_TIMER_TRACKER = `
   const one = new Set(), iv = new Set();
   g.setTimeout = function(fn, ms, ...a){
     if (typeof fn !== "function") return st(fn, ms, ...a);
-    let id; g.__nimbusPendingTimers++;
-    id = st(function(){
+    // Counted once the timer exists: a delay the platform refuses throws, and
+    // a caught throw leaves no timer to wait for.
+    const id = st(function(){
       if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); }
       return fn.apply(this, arguments);
     }, ms, ...a);
-    one.add(id); return id;
+    g.__nimbusPendingTimers++; one.add(id); return id;
   };
   g.clearTimeout = function(id){ if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ct(id); };
   if (typeof si === "function") {
