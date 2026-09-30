@@ -23,7 +23,8 @@ try {
   await t.connect();
   await t.waitForPrompt(60_000);
 
-  const install = await t.run('npm install -g --ignore-scripts @earendil-works/pi-coding-agent', 240_000);
+  // Pin the bundled-chunk fixture: latest can drift away from the CPU regression.
+  const install = await t.run('npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.1', 240_000);
   const installOut = stripAnsi(install.output);
   a.check('Pi npm package installs from the public command',
     /added \d+ packages|Done!/.test(installOut) && !/npm install failed|ERR!|command not found/i.test(installOut),
