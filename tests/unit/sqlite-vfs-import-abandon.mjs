@@ -351,4 +351,52 @@ function target(dir = 'home') {
   assertClean(dst, 'many imports');
 }
 
+// ── A rollback brings back the staging a new import displaced ─────────────
+{
+  const src = source();
+  const dst = target();
+  // Chunks sent ahead, then the first page: the import holds a staging of its own.
+  const first = nextPage(src, dst, { at: 'first', root: 'proj' });
+  assert.ok(dst.raw.importChunks('home/proj', first.chunks).stored > 0);
+  assert.equal(dst.raw.importPage('home/proj', first.page, []).imported, 10);
+  assert.throws(() => dst.raw.withTransaction(() => {
+    dst.vfs.removeRecursive('home/proj');
+    // Another export's root page begins a new import there.
+    assert.equal(importPages(src, dst, { at: 'second', root: 'proj', dst: 'home/proj', limit: 1, pages: 1 }).imported, 1);
+    throw new Error('the embedder gives up');
+  }), /rolled back/);
+  assert.equal(imports(dst).length, 1, 'the first import is back');
+  assert.equal(importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', after: first.page.next }).imported, 31);
+  assert.equal(text(dst, 'home/proj/f15.txt'), 'v1 15\n');
+  dst.vfs.removeRecursive('home/proj');
+  assertClean(dst, 'a displaced staging, restored');
+}
+
+// ── Imports with no destination yet end in bounded groups ─────────────────
+{
+  const src = open();
+  src.vfs.mkdir('c');
+  for (let i = 0; i < 150; i++) src.vfs.writeFile(`c/f${i}`, `chunk ${i}\n`);
+  src.raw.snapshot('s');
+  const page = src.raw.exportPage({ at: 's', root: 'c' });
+  const chunks = src.raw.exportChunks(page.rows.flatMap((row) => row.pieces.map(([hash]) => hash))).chunks;
+  assert.equal(chunks.length, 150);
+  for (const [label, remove] of [['removeRecursive', (side) => side.vfs.removeRecursive('home')], ['rmdir', (side) => side.vfs.rmdir('home')]]) {
+    const dst = target();
+    // Chunks sent ahead of each import's first page: a job and a staging, no destination.
+    for (let i = 0; i < 150; i++) dst.raw.importChunks(`home/d${i}`, [chunks[i]]);
+    assert.equal(imports(dst).length, 150);
+    const firstStatement = dst.harness.statements.length;
+    remove(dst);
+    assert.equal(dst.vfs.exists('home'), false, `${label} removed home`);
+    assert.deepEqual(imports(dst), [], `${label} ended every import beneath it`);
+    const executed = new Map();
+    for (const statement of dst.harness.statements.slice(firstStatement)) {
+      if (statement.transaction !== null) executed.set(statement.transaction, (executed.get(statement.transaction) ?? 0) + 1);
+    }
+    for (const count of executed.values()) assert.ok(count <= MAX_TX_SQL_EXECS, `${label}: ${count} statements in one transaction`);
+    assertClean(dst, label);
+  }
+}
+
 console.log('sqlite-vfs-import-abandon: all assertions passed');

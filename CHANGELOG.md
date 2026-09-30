@@ -15,7 +15,9 @@ published independently in the `@nimbus-sh` npm scope.
   ends the import in the transaction that removes dst: the job row goes, and
   the staging it held (a manifest cut off mid-import, chunks sent ahead of
   their pages) is queued for collection, once the transaction commits (an
-  embedder's `withTransaction` that rolls back keeps it). Every export page
+  embedder's `withTransaction` that rolls back keeps it). Imports beneath a
+  removed directory that have only sent chunks, with no destination yet,
+  end first, in bounded transactions of their own. Every export page
   now names its snapshot (`VfsExportPage.source`, export schema 3), and an
   import takes pages only from the export its first page came from, so a
   late page of the abandoned import is refused, whether dst is empty or a
