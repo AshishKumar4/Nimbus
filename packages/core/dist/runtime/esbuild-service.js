@@ -753,7 +753,8 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
  * the process's, the rewrite that routes each one to the process's ESM loader.
  * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lower`
  * async-module-lowering.ts's `lowerAsyncModule`, passed in because this
- * function is serialized into the esbuild facet.
+ * function is serialized into the esbuild facet. `esbuildApi` is null only
+ * before esbuild is loaded, which a rewrite-only request does not wait for.
  */
 async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
     const parent = options?.dynamicImportParent;
@@ -762,6 +763,8 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
             throw new Error('a rewrite-only transform needs dynamicImportParent');
         return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
     }
+    if (esbuildApi === null)
+        throw new Error('esbuild transform before esbuild is loaded');
     if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
         // CJS emit replaces import.meta with an empty object even when syntax
         // support is enabled. First erase TypeScript/JSX with the module format

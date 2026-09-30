@@ -6,6 +6,11 @@
 import { isSemverRange, satisfiesRange } from './semver.js';
 import { parseRegistryRequest } from './resolve-one-facet.js';
 
+/** A parsed JSON object or array: a value whose fields can be read and set. */
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
+}
+
 export interface PackageLockEntry {
   name?: unknown;
   version?: unknown;
@@ -49,7 +54,10 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependenc
  * version its range accepts, and the lock's root must declare the same
  * dependency set, so a dependency removed from package.json is caught too.
  */
-export function packageLockMismatches(pkgJson: Record<string, unknown>, lock: PackageLock): string[] {
+export function packageLockMismatches(value: unknown, lock: PackageLock): string[] {
+  // A primitive document declares nothing; null has no fields to read.
+  if (value === null) throw new TypeError('package.json is null');
+  const pkgJson = isJsonObject(value) ? value : {};
   const out: string[] = [];
   const root = lock.packages[''] ?? {};
   for (const field of DEPENDENCY_FIELDS) {

@@ -26,6 +26,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
 import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { VITE_CONFIG_KEY } from '../session/keys.js';
+import { isJsonObject } from '../npm/package-lock.js';
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
 export async function registerHostedCommands(self, workspace) {
@@ -718,7 +719,10 @@ export async function registerHostedCommands(self, workspace) {
         await self.ensureNpmInstaller((msg) => {
             ctx.stdout.write('[npm] ' + msg + '\n');
         });
-        const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY });
+        const installer = self.npmInstaller;
+        if (!installer)
+            throw new Error('npm installer is not initialized');
+        const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY });
         if (result.failed.length > 0) {
             ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
         }
@@ -1136,13 +1140,23 @@ export async function registerHostedCommands(self, workspace) {
                     pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath));
                 }
                 catch (error) {
-                    if (error instanceof SyntaxError || error.code === 'ENOENT')
+                    if (error instanceof SyntaxError ||
+                        (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'))
                         return failed ? 1 : 0;
                     throw error;
                 }
                 for (const pkg of packages) {
-                    delete pkgJson.dependencies?.[pkg];
-                    delete pkgJson.devDependencies?.[pkg];
+                    // Fails where deleting the field would: null has no fields, and a string's own index cannot be deleted.
+                    if (pkgJson === null)
+                        throw new TypeError('package.json is null');
+                    for (const field of ['dependencies', 'devDependencies']) {
+                        const dependencies = isJsonObject(pkgJson) ? pkgJson[field] : undefined;
+                        if (isJsonObject(dependencies))
+                            delete dependencies[pkg];
+                        else if (typeof dependencies === 'string' && Object.hasOwn(Object(dependencies), pkg)) {
+                            throw new TypeError(`package.json ${field} is a string`);
+                        }
+                    }
                 }
                 // Releases before 0.13.2 wrote package.json as root.
                 await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), pkgPath);

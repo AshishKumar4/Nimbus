@@ -39,6 +39,7 @@ export declare function syscallError(code: VfsErrorCode, syscall: string, path?:
 }): VfsError;
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
 export declare function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsError;
+export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;
 /**
  * An error from a layer that throws `{ code }` errors (the SQLite engine, a
  * process bridge, Node's own fs) as Node's error for the call that met it:

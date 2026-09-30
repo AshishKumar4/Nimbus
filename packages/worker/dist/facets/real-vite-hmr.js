@@ -43,6 +43,17 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostOpDispatch, hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import { z } from 'zod/v4';
+const HmrEventSchema = z.discriminatedUnion('type', [
+    z.object({ type: z.literal('connection'), clientId: z.string() }),
+    z.object({ type: z.literal('disconnect'), clientId: z.string() }),
+    z.object({ type: z.literal('message'), clientId: z.string(), msg: z.string() }),
+    z.object({ type: z.literal('vfs'), event: z.string(), path: z.string(), oldPath: z.string().optional() }),
+]);
+const HmrEventsSchema = z.array(HmrEventSchema);
+function isHmrEvents(value) {
+    return HmrEventsSchema.safeParse(value).success;
+}
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
 // `false` (default), the hot-path console.log calls in `HmrBridge`
@@ -248,7 +259,11 @@ export class CirrusHmrRPC extends WorkerEntrypoint {
         try {
             // The queue belongs to the session DO, just like its WebSockets. A
             // WorkerEntrypoint cannot read a module-global map populated there.
-            return await useRpcResource(resolved.dispatch({ op: 'hmrNextEvent', args: [timeoutMs] }), (events) => events);
+            return await useRpcResource(resolved.dispatch({ op: 'hmrNextEvent', args: [timeoutMs] }), (events) => {
+                if (!isHmrEvents(events))
+                    throw new TypeError('HMR event batch failed validation');
+                return events;
+            });
         }
         finally {
             disposeRpcResource(resolved.stub);

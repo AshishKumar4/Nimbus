@@ -44,7 +44,7 @@
 import type { LogChunk, PersistAdapter, PersistedLogPid, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
-import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
+import { timers, type TimerHost, type TimerContext } from '@nimbus-sh/fabric/timers.js';
 import { RESIDENT_KEEPALIVE_DETACHED_MS, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 
@@ -338,7 +338,7 @@ export function logJanitorFired(host: LogJanitorHost): number | null {
   return host._w1JanitorAt;
 }
 
-export function ensureLogJanitor(host: HibHost, ctx: any): void {
+export function ensureLogJanitor(host: HibHost, ctx: TimerContext): void {
   armLogJanitor(host, (at) => timers(host, ctx).schedule('log-janitor', at));
 }
 

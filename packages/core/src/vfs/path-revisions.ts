@@ -85,7 +85,7 @@ export class PathRevisions {
     // budget, not once per mutation.
     while (this.bytes > this.budget) {
       const sorted = Float64Array.from(this.stamps.values()).sort();
-      this.dropThrough(sorted[Math.floor(sorted.length / 4)]!);
+      this.dropThrough(sorted[Math.floor(sorted.length / 4)]);
     }
   }
 

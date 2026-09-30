@@ -36,6 +36,24 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/fabric/composition.js';
+import { z } from 'zod/v4';
+declare const HmrEventSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    type: z.ZodLiteral<"connection">;
+    clientId: z.ZodString;
+}, z.core.$strip>, z.ZodObject<{
+    type: z.ZodLiteral<"disconnect">;
+    clientId: z.ZodString;
+}, z.core.$strip>, z.ZodObject<{
+    type: z.ZodLiteral<"message">;
+    clientId: z.ZodString;
+    msg: z.ZodString;
+}, z.core.$strip>, z.ZodObject<{
+    type: z.ZodLiteral<"vfs">;
+    event: z.ZodString;
+    path: z.ZodString;
+    oldPath: z.ZodOptional<z.ZodString>;
+}, z.core.$strip>], "type">;
+export type HmrEvent = z.infer<typeof HmrEventSchema>;
 /**
  * Supervisor-side registry of active HMR connections for a single
  * real-vite session. One instance lives on each NimbusSession that has
@@ -86,7 +104,7 @@ export declare class HmrBridge {
      * `timeoutMs` for the next batch of events. Returns an empty array
      * on timeout so the facet can loop without leaking a promise.
      */
-    nextEvents(timeoutMs?: number): Promise<any[]>;
+    nextEvents(timeoutMs?: number): Promise<HmrEvent[]>;
     /** Active client count. */
     get size(): number;
     /** Drop all clients (facet restart, session close). */
@@ -112,7 +130,7 @@ export declare class CirrusHmrRPC extends WorkerEntrypoint<object, {
 }> {
     private _stub;
     hmrSend(clientId: string | null, msg: string): Promise<void>;
-    hmrNextEvent(timeoutMs?: number): Promise<any[]>;
+    hmrNextEvent(timeoutMs?: number): Promise<HmrEvent[]>;
 }
 /**
  * ESM source for the `ws` npm module shim. Vite's bundle still
@@ -139,4 +157,5 @@ export declare function generateWsShimModuleCode(): string;
  * Supported events: add, change, unlink, addDir, unlinkDir, ready, all.
  */
 export declare function generateChokidarShimModuleCode(): string;
+export {};
 //# sourceMappingURL=real-vite-hmr.d.ts.map

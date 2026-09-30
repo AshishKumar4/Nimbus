@@ -28,6 +28,7 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
+import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
@@ -361,7 +362,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
-    _rpcHmrNextEvent(timeoutMs: number): Promise<any[]>;
+    _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{
         inodes: number;
         chunks: number;

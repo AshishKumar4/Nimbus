@@ -64,5 +64,5 @@ export declare function keepEsbuild<T extends {
  * for a failure, and what esbuild keeps is emptied: a result's code and map,
  * an error's stack and messages (keep-esbuild-heap.mjs).
  */
-export declare function startObservedEsbuild(newEsbuild: (webAssembly: typeof WebAssembly) => StartableEsbuild, wasmModule: WebAssembly.Module): Promise<KeptEsbuild<TransformEsbuild>>;
+export declare function startObservedEsbuild(newEsbuild: (webAssembly: object) => StartableEsbuild, wasmModule: WebAssembly.Module): Promise<KeptEsbuild<TransformEsbuild>>;
 //# sourceMappingURL=keep-esbuild.d.ts.map

@@ -83,6 +83,10 @@ export function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsErr
   return error instanceof VfsError && (code === undefined || error.code === code);
 }
 
+export function isVfsErrorCode(code: unknown): code is VfsErrorCode {
+  return typeof code === 'string' && Object.hasOwn(VFS_ERRNO, code);
+}
+
 /**
  * An error from a layer that throws `{ code }` errors (the SQLite engine, a
  * process bridge, Node's own fs) as Node's error for the call that met it:
@@ -97,13 +101,13 @@ export function toVfsError(error: unknown, syscall: string, path: string, dest?:
     if (error.syscall !== undefined || error.path !== undefined) return error;
     return syscallError(error.code, syscall, path, { detail: error.message.slice(error.code.length + 2), dest, cause: error });
   }
-  const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code === 'string' && code in VFS_ERRNO) {
-    const own = error as { syscall?: unknown; path?: unknown; dest?: unknown };
-    const call = typeof own.syscall === 'string' ? own.syscall : syscall;
+  if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return error;
+  const code = 'code' in error ? error.code : undefined;
+  if (isVfsErrorCode(code)) {
+    const call = 'syscall' in error && typeof error.syscall === 'string' ? error.syscall : syscall;
     // The caller's second path belongs to its own call, not to another the layer names.
-    const second = typeof own.dest === 'string' ? own.dest : call === syscall ? dest : undefined;
-    return syscallError(code as VfsErrorCode, call, typeof own.path === 'string' ? own.path : path, { dest: second, cause: error });
+    const second = 'dest' in error && typeof error.dest === 'string' ? error.dest : call === syscall ? dest : undefined;
+    return syscallError(code, call, 'path' in error && typeof error.path === 'string' ? error.path : path, { dest: second, cause: error });
   }
   return error;
 }

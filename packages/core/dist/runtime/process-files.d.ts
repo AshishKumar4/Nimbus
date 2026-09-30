@@ -77,6 +77,7 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     nameLaunch({ pid, cred }: NimbusFilesystemBinding, names: () => Iterable<string>): void;
     /** Where `pid`'s listings of the mounts beyond SQLite stand (made when `create`), or undefined. */
     private listingOf;
+    private createListing;
     bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge;
     openHost(cred: Readonly<VfsCred>, options?: {
         signal?: AbortSignal;

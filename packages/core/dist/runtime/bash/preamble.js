@@ -970,7 +970,7 @@ function makeProc(s, pid, ppid, fds) {
     s.procs.set(pid, proc);
     return proc;
 }
-/** A process's unwind state before it first runs. */
+/** A process's unwind state before it first runs; a reason's own fields are set when it unwinds for that reason. */
 function freshCtx() {
     return { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 };
 }
@@ -1012,10 +1012,9 @@ function reincarnate(s, bytes, pid, ppid, fds) {
     delete proc.cancelWaits;
     delete proc.pendingFs;
     // Its imports hold this very object.
-    const ctx = proc.ctx;
-    for (const key of Object.keys(ctx))
-        delete ctx[key];
-    Object.assign(ctx, freshCtx());
+    for (const key of Object.keys(proc.ctx))
+        Reflect.deleteProperty(proc.ctx, key);
+    Object.assign(proc.ctx, freshCtx());
     proc.MAIN_BUF = 0;
     proc.SLOT0 = 0;
     proc.pendingRead = null;

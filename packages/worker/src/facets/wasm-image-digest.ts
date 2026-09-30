@@ -15,6 +15,8 @@
  * node-shims.ts (`__nimbusWasmDigest`) because that copy runs inside a facet
  * with no imports; both must compute the same value, which a unit test pins.
  */
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
+
 export function wasmImageDigest(bytes: Uint8Array): string {
   return bytes.length + ':' + fnv1a(0x811c9dc5, bytes).toString(16);
 }
@@ -38,15 +40,15 @@ const DIGEST_SLICE_BYTES = 1024 * 1024;
  * when the file cannot be read.
  */
 export async function streamedWasmImageDigest(
-  fs: { stat(path: string): unknown; readRange(path: string, offset: number, length: number): unknown },
+  fs: Pick<RuntimeFsBridge, 'stat' | 'readRange'>,
   path: string,
 ): Promise<string | null> {
-  const st = await Promise.resolve(fs.stat(path)).catch(() => null) as { type?: string; size?: number } | null;
+  const st = await Promise.resolve(fs.stat(path)).catch(() => null);
   if (!st || st.type !== 'file' || typeof st.size !== 'number') return null;
   let hash = 0x811c9dc5;
   for (let offset = 0; offset < st.size; offset += DIGEST_SLICE_BYTES) {
     const slice = await Promise.resolve(fs.readRange(path, offset, Math.min(DIGEST_SLICE_BYTES, st.size - offset)))
-      .catch(() => null) as Uint8Array | null;
+      .catch(() => null);
     if (!slice) return null;
     hash = fnv1a(hash, slice);
   }

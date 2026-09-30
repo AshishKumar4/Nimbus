@@ -278,11 +278,14 @@ async function resolveFromManifest(vfs: VfsLike, nodeModulesPath: string, name: 
   if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath)) return null;
 
   try {
-    const manifest = JSON.parse(await vfs.readFileString(manifestPath)) as Partial<NpmBinManifest>;
-    if (manifest.version !== NPM_BIN_MANIFEST_VERSION || !manifest.bins || typeof manifest.bins !== 'object') {
+    const manifest: unknown = JSON.parse(await vfs.readFileString(manifestPath));
+    if (!manifest || typeof manifest !== 'object' || !('version' in manifest) ||
+        manifest.version !== NPM_BIN_MANIFEST_VERSION || !('bins' in manifest) ||
+        !manifest.bins || typeof manifest.bins !== 'object') {
       return null;
     }
-    return await validateEntry(vfs, manifest.bins[name]);
+    const entry: unknown = Reflect.get(manifest.bins, name);
+    return await validateEntry(vfs, entry);
   } catch {
     return null;
   }

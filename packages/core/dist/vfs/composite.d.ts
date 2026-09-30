@@ -26,10 +26,10 @@ import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntr
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
  */
-export interface FeedPosition {
+export interface FeedPosition<Epoch extends string | null = string> {
     readonly table: string;
     readonly feeds: Readonly<Record<string, {
-        readonly epoch: string;
+        readonly epoch: Epoch;
         readonly cursor: number;
     }>>;
 }
@@ -58,7 +58,7 @@ export type MountWalk = readonly VfsListEntry[];
  */
 export interface CompositeFeed {
     position(): FeedPosition;
-    since(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer;
+    since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
     list(after: string | null, limit: number, walked?: MountWalk): {
         entries: VfsListEntry[];
         next: string | null;

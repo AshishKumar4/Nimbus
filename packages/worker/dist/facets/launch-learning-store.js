@@ -217,7 +217,8 @@ export class LaunchLearningStore {
         const profileKeys = (this.profileKeys ?? []).filter((key) => key !== bundleKey);
         profileKeys.push(bundleKey);
         while (profileKeys.length > this.maxProfiles) {
-            const oldest = profileKeys.shift();
+            const oldest = profileKeys[0];
+            profileKeys.shift();
             this.profiles.delete(oldest);
             await this.storage.delete(PROFILE_PREFIX + oldest);
         }

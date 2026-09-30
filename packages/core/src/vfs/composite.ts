@@ -30,9 +30,9 @@ import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode 
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
  */
-export interface FeedPosition {
+export interface FeedPosition<Epoch extends string | null = string> {
   readonly table: string;
-  readonly feeds: Readonly<Record<string, { readonly epoch: string; readonly cursor: number }>>;
+  readonly feeds: Readonly<Record<string, { readonly epoch: Epoch; readonly cursor: number }>>;
 }
 
 /** One answer of the feed: every path changed since the position, or a poison (relist). */
@@ -62,7 +62,7 @@ export type MountWalk = readonly VfsListEntry[];
  */
 export interface CompositeFeed {
   position(): FeedPosition;
-  since(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer;
+  since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
   list(after: string | null, limit: number, walked?: MountWalk): { entries: VfsListEntry[]; next: string | null };
   /**
    * What the mounts without a feed hold where `named` points into them, as
@@ -94,7 +94,7 @@ export function comparePaths(a: string, b: string): number {
 /** `entries` in path order: as given when they already are (a backend's listing is), else sorted. */
 function inPathOrder(entries: readonly VfsListEntry[]): readonly VfsListEntry[] {
   for (let i = 1; i < entries.length; i++) {
-    if (comparePaths(entries[i - 1]!.path, entries[i]!.path) > 0) return [...entries].sort((a, b) => comparePaths(a.path, b.path));
+    if (comparePaths(entries[i - 1].path, entries[i].path) > 0) return [...entries].sort((a, b) => comparePaths(a.path, b.path));
   }
   return entries;
 }
@@ -103,8 +103,8 @@ function inPathOrder(entries: readonly VfsListEntry[]): readonly VfsListEntry[] 
 function mergeByPath(a: readonly VfsListEntry[], b: readonly VfsListEntry[], limit: number): VfsListEntry[] {
   const out: VfsListEntry[] = [];
   for (let i = 0, j = 0; out.length < limit && (i < a.length || j < b.length);) {
-    if (j >= b.length || (i < a.length && comparePaths(a[i]!.path, b[j]!.path) <= 0)) out.push(a[i++]!);
-    else out.push(b[j++]!);
+    if (j >= b.length || (i < a.length && comparePaths(a[i].path, b[j].path) <= 0)) out.push(a[i++]);
+    else out.push(b[j++]);
   }
   return out;
 }
@@ -246,6 +246,11 @@ function isPromise<T>(value: Awaitable<T>): value is Promise<T> {
   return typeof (value as { then?: unknown } | null)?.then === 'function';
 }
 
+function syncValue<T>(value: Awaitable<T>): T {
+  if (isPromise(value)) throw new Error('synchronous filesystem operation returned a promise');
+  return value;
+}
+
 /** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
 function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U> {
   return isPromise(value) ? value.then(next) : next(value);
@@ -383,7 +388,7 @@ export class CompositeVFS implements VFS {
     return !this.isStructural(path) || this.table.mounts.get(path) === mount;
   }
 
-  private feedSince(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer {
+  private feedSince(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer {
     const table = this.feedSignature();
     const sources = this.feedSources();
     const poison = (): FeedAnswer => ({ position: this.feedPosition(table, sources), poison: true, paths: [] });
@@ -550,8 +555,8 @@ export class CompositeVFS implements VFS {
     const depth = (path: string): number => path.split('/').length;
     const ordered = [...levels].sort((a, b) => depth(a) - depth(b) || comparePaths(a, b));
     for (let i = 0; i < ordered.length;) {
-      const batch = [ordered[i++]!];
-      while (i < ordered.length && batch.length < WALK_CONCURRENCY && depth(ordered[i]!) === depth(batch[0]!)) batch.push(ordered[i++]!);
+      const batch = [ordered[i++]];
+      while (i < ordered.length && batch.length < WALK_CONCURRENCY && depth(ordered[i]) === depth(batch[0])) batch.push(ordered[i++]);
       await Promise.all(batch.map(list));
     }
     const queue = [...wanted].filter((path) => found.get(path)?.kind === 'directory').sort(comparePaths);
@@ -629,11 +634,11 @@ export class CompositeVFS implements VFS {
 
   /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
   realpath(path: string): string {
-    return reported({ syscall: 'realpath', path }, () => {
-      const resolved = this.resolve(path, true, true) as string;
+    return syncValue(reported({ syscall: 'realpath', path }, () => {
+      const resolved = syncValue(this.resolve(path, true, true));
       if (this.statAt(resolved, false, true) === null) throw new Refusal('ENOENT', path);
       return resolved;
-    }) as string;
+    }));
   }
 
   /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
@@ -1021,8 +1026,7 @@ export class CompositeVFS implements VFS {
    * keeps its backend's), and a backend that numbers no inodes gets numbers
    * here, per path, stable while it stays mounted.
    */
-  private identify(path: string, stat: VfsStat | null): VfsStat | null {
-    if (stat === null) return null;
+  private identify(path: string, stat: VfsStat): VfsStat {
     const mount = this.table.mounts.get(path) ?? this.route(path).mount;
     const dev = mount.dev ?? stat.dev ?? 0;
     let ino = stat.ino;
@@ -1044,7 +1048,7 @@ export class CompositeVFS implements VFS {
         return absent(e);
       }
     };
-    return then(walked(), (path) => (path === null ? null : then(this.statResolved(path, follow, sync), (stat) => this.identify(path, stat))));
+    return then(walked(), (path) => (path === null ? null : then(this.statResolved(path, follow, sync), (stat) => stat === null ? null : this.identify(path, stat))));
   }
 
   /** The stat of a resolved namespace path, before its identity is stamped. */
@@ -1132,7 +1136,7 @@ export class CompositeVFS implements VFS {
       const listed = (): Awaitable<VfsDirent[]> => then(this.heldDirectory(path, sync), (held) => {
         if (held === null) return [];
         try {
-          const out = (this.ops(route, sync) as SyncVFS).readdir(route.rel);
+          const out = this.ops(route, sync).readdir(route.rel);
           return isPromise(out) ? out.catch((e: unknown) => this.emptyIfMissing(e)) : out;
         } catch (e) {
           return this.emptyIfMissing(e);
@@ -1141,7 +1145,7 @@ export class CompositeVFS implements VFS {
       return then(this.reachable(path, sync), () => then(listed(), finish));
     }
     const route = this.route(path);
-    const ops = this.ops(route, sync) as SyncVFS;
+    const ops = this.ops(route, sync);
     // opendir(O_DIRECTORY) answers ENOTDIR before a permission check.
     const notDirectoryFirst = (error: unknown): Awaitable<VfsDirent[]> => {
       if (!isVfsError(error, 'EACCES')) throw error;
@@ -1444,7 +1448,7 @@ export class CompositeVFS implements VFS {
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    return reported({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => (ops as SyncVFS).readFile(rel)));
+    return reported({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => ops.readFile(rel)));
   }
 
   async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
@@ -1452,7 +1456,7 @@ export class CompositeVFS implements VFS {
   }
 
   async writeFile(path: string, data: Uint8Array, options?: { mode?: number }): Promise<void> {
-    return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => (ops as SyncVFS).writeFile(rel, data, options)));
+    return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, options)));
   }
 
   async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void> {
@@ -1488,7 +1492,7 @@ export class CompositeVFS implements VFS {
     const entries = await this.readdirOf(dir, false);
     const out: Array<{ name: string; stat: VfsStat } | null> = entries.map(() => null);
     const statOne = async (i: number): Promise<void> => {
-      const entry = entries[i]!;
+      const entry = entries[i];
       const at = prefix + entry.name;
       let stat = entry.stat ?? null;
       if (stat === null) {
@@ -1499,7 +1503,7 @@ export class CompositeVFS implements VFS {
           stat = await this.softStat(this.ops(route, false), route.rel, false);
         }
       }
-      if (stat !== null) out[i] = { name: entry.name, stat: this.identify(at, stat)! };
+      if (stat !== null) out[i] = { name: entry.name, stat: this.identify(at, stat) };
     };
     for (let i = 0; i < entries.length; i += WALK_CONCURRENCY) {
       await Promise.all(entries.slice(i, i + WALK_CONCURRENCY).map((_, j) => statOne(i + j)));
@@ -1512,7 +1516,7 @@ export class CompositeVFS implements VFS {
   }
 
   async unlink(path: string): Promise<void> {
-    return reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, false, 'unlinked', (ops, rel) => (ops as SyncVFS).unlink(rel)));
+    return reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, false, 'unlinked', (ops, rel) => ops.unlink(rel)));
   }
 
   async rmdir(path: string): Promise<void> {
@@ -1568,40 +1572,40 @@ export class CompositeVFS implements VFS {
 
   private makeSync(): SyncVFS {
     return {
-      stat: (path, options) => reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () =>
-        this.statAt(path, options?.follow !== false, true)) as VfsStat | null,
-      readFile: (path) => reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => (ops as SyncVFS).readFile(rel))) as Uint8Array,
-      readRange: (path, offset, length) => reported({ syscall: 'open', path }, () =>
-        this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length))) as Uint8Array,
-      writeFile: (path, data, options) => reported({ syscall: 'open', path }, () =>
-        this.onMutation(path, true, true, 'written', (ops, rel) => (ops as SyncVFS).writeFile(rel, data, options))) as void,
-      writeRange: (path, offset, bytes) => reported({ syscall: 'open', path }, () =>
-        this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes))) as void,
-      truncate: (path, size) => reported({ syscall: 'open', path }, () =>
-        this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size))) as void,
-      readdir: (path) => reported({ syscall: 'scandir', path }, () => this.readdirAt(path, true)) as VfsDirent[],
-      mkdir: (path, options) => reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, true)) as void,
-      unlink: (path) => reported({ syscall: 'unlink', path }, () =>
-        this.onMutation(path, false, true, 'unlinked', (ops, rel) => (ops as SyncVFS).unlink(rel))) as void,
-      rmdir: (path) => reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true)) as void,
-      rename: (from, to) => reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true)) as void,
+      stat: (path, options) => syncValue(reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () =>
+        this.statAt(path, options?.follow !== false, true))),
+      readFile: (path) => syncValue(reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel)))),
+      readRange: (path, offset, length) => syncValue(reported({ syscall: 'open', path }, () =>
+        this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)))),
+      writeFile: (path, data, options) => syncValue(reported({ syscall: 'open', path }, () =>
+        this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options)))),
+      writeRange: (path, offset, bytes) => syncValue(reported({ syscall: 'open', path }, () =>
+        this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)))),
+      truncate: (path, size) => syncValue(reported({ syscall: 'open', path }, () =>
+        this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)))),
+      readdir: (path) => syncValue(reported({ syscall: 'scandir', path }, () => this.readdirAt(path, true))),
+      mkdir: (path, options) => syncValue(reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, true))),
+      unlink: (path) => syncValue(reported({ syscall: 'unlink', path }, () =>
+        this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel)))),
+      rmdir: (path) => syncValue(reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true))),
+      rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
       removeRecursive: (path) => { reported({ syscall: 'rm', path }, () => this.removeAt(path, true)); },
-      symlink: (target, path) => reported({ syscall: 'symlink', path: target, dest: path }, () =>
-        this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel))) as void,
-      readlink: (path) => reported({ syscall: 'readlink', path }, () =>
-        this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel))) as string,
-      chmod: (path, mode) => reported({ syscall: 'chmod', path }, () =>
-        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode))) as void,
-      chown: (path, uid, gid) => reported({ syscall: 'chown', path }, () =>
-        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid))) as void,
-      utimes: (path, a, m) => reported({ syscall: 'utime', path }, () =>
-        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m))) as void,
-      copy: (from, to, options) => reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () =>
-        this.copyAt(from, to, options, true)) as number,
-      writeFileIfRevision: (path, data, expected) => reported({ syscall: 'open', path }, () =>
-        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected))) as VfsCasResult,
-      readFileAtRevision: (path, revision, range) => reported({ syscall: 'open', path }, () =>
-        this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range))) as Uint8Array,
+      symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () =>
+        this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
+      readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () =>
+        this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
+      chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () =>
+        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),
+      chown: (path, uid, gid) => syncValue(reported({ syscall: 'chown', path }, () =>
+        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)))),
+      utimes: (path, a, m) => syncValue(reported({ syscall: 'utime', path }, () =>
+        this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)))),
+      copy: (from, to, options) => syncValue(reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () =>
+        this.copyAt(from, to, options, true))),
+      writeFileIfRevision: (path, data, expected) => syncValue(reported({ syscall: 'open', path }, () =>
+        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)))),
+      readFileAtRevision: (path, revision, range) => syncValue(reported({ syscall: 'open', path }, () =>
+        this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)))),
     };
   }
 }

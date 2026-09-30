@@ -6052,7 +6052,7 @@ export class SqliteVFS {
         if (!this.reachable(job.dst))
             return false;
         const parent = this.parentPath(job.dst);
-        if ((parent === '' ? ROOT_INODE : this.inodes.get(parent).ino) !== job.parentIno)
+        if ((parent === '' ? ROOT_INODE : this.inodes.get(parent)?.ino) !== job.parentIno)
             return false;
         const here = this.inodes.get(job.dst);
         return job.dstIno === undefined ? here === undefined : here?.ino === job.dstIno;

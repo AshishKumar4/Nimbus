@@ -179,9 +179,12 @@ export async function runFresh(facetMgr, code, opts) {
 }
 /** How many bytes of a pipe one read asks for. */
 const STDIN_CHUNK_BYTES = 64 * 1024;
+function isByteStream(stream) {
+    return !!stream.readBytes;
+}
 /** A shell stream's bytes: exact through readBytes, else its text encoded. */
 function stdinBytesOf(stream) {
-    if (stream.readBytes)
+    if (isByteStream(stream))
         return { readBytes: (maxLength) => stream.readBytes(maxLength) };
     // A text-only stream: at most `maxLength` bytes a read, as readBytes gives,
     // so a read ahead holds no more than it charged to the budget.

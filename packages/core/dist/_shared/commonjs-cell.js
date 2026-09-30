@@ -119,7 +119,7 @@ const ENTRY_DIR = 'entry/';
 function moduleNameUnder(dir, path) {
     let name = dir;
     for (const ch of path.replace(/^\/+/, '')) {
-        const code = ch.codePointAt(0);
+        const code = ch.charCodeAt(0);
         if (code > 0x20 && code < 0x7f && !MODULE_NAME_ESCAPED.includes(ch)) {
             name += ch;
             continue;
@@ -216,14 +216,12 @@ export function declaresWrapperBinding(source) {
 function patternBinds(node) {
     if (!node)
         return false;
-    const n = node;
-    switch (n.type) {
-        case 'Identifier': return WRAPPER_NAMES.has(n.name);
-        case 'ObjectPattern': return n.properties
-            .some((p) => patternBinds((p.type === 'RestElement' ? p.argument : p.value)));
-        case 'ArrayPattern': return n.elements.some((e) => patternBinds(e));
-        case 'RestElement': return patternBinds(n.argument);
-        case 'AssignmentPattern': return patternBinds(n.left);
+    switch (node.type) {
+        case 'Identifier': return WRAPPER_NAMES.has(node.name);
+        case 'ObjectPattern': return node.properties.some((p) => patternBinds(p.type === 'RestElement' ? p.argument : p.value));
+        case 'ArrayPattern': return node.elements.some((e) => patternBinds(e));
+        case 'RestElement': return patternBinds(node.argument);
+        case 'AssignmentPattern': return patternBinds(node.left);
         default: return false;
     }
 }
@@ -356,11 +354,14 @@ export function parseRuntimeCodeEntry(value) {
         return typeof v.path === 'string' && typeof v.text === 'string'
             ? { kind: 'module', path: v.path, text: v.text } : null;
     }
-    if (typeof v.kind !== 'string' || !Object.hasOwn(RUNTIME_FUNCTION_HEADS, v.kind))
+    if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind))
         return null;
     if (!Array.isArray(v.params) || !v.params.every((p) => typeof p === 'string') || typeof v.body !== 'string')
         return null;
     return { kind: v.kind, params: [...v.params], body: v.body };
+}
+function isRuntimeFunctionKind(kind) {
+    return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
 }
 /**
  * Why V8's constructor would refuse these arguments, or null when it would

@@ -94,7 +94,7 @@
  * costs one relaunch per change.
  */
 import { createHash } from 'node:crypto';
-import { parse, tokenizer, tokTypes, type Token } from 'acorn';
+import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
 
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -121,7 +121,7 @@ const ENTRY_DIR = 'entry/';
 function moduleNameUnder(dir: string, path: string): string {
   let name = dir;
   for (const ch of path.replace(/^\/+/, '')) {
-    const code = ch.codePointAt(0)!;
+    const code = ch.charCodeAt(0);
     if (code > 0x20 && code < 0x7f && !MODULE_NAME_ESCAPED.includes(ch)) {
       name += ch;
       continue;
@@ -206,7 +206,7 @@ const WRAPPER_BINDING_PARSE_MAX = 2 * 1024 * 1024;
 export function declaresWrapperBinding(source: string): boolean {
   if (!LEXICAL_WRAPPER_NAME.test(source)) return false;
   if (source.length > WRAPPER_BINDING_PARSE_MAX) return true;
-  let program;
+  let program: Program | undefined;
   for (const sourceType of ['script', 'module'] as const) {
     try {
       program = parse(source, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true, allowHashBang: true });
@@ -229,16 +229,14 @@ export function declaresWrapperBinding(source: string): boolean {
 }
 
 /** Whether a binding pattern binds one of the wrapper's names. */
-function patternBinds(node: { type: string } | null | undefined): boolean {
+function patternBinds(node: Pattern | null | undefined): boolean {
   if (!node) return false;
-  const n = node as Record<string, unknown> & { type: string };
-  switch (n.type) {
-    case 'Identifier': return WRAPPER_NAMES.has(n.name as string);
-    case 'ObjectPattern': return (n.properties as Array<Record<string, unknown> & { type: string }>)
-      .some((p) => patternBinds((p.type === 'RestElement' ? p.argument : p.value) as { type: string }));
-    case 'ArrayPattern': return (n.elements as Array<{ type: string } | null>).some((e) => patternBinds(e));
-    case 'RestElement': return patternBinds(n.argument as { type: string });
-    case 'AssignmentPattern': return patternBinds(n.left as { type: string });
+  switch (node.type) {
+    case 'Identifier': return WRAPPER_NAMES.has(node.name);
+    case 'ObjectPattern': return node.properties.some((p) => patternBinds(p.type === 'RestElement' ? p.argument : p.value));
+    case 'ArrayPattern': return node.elements.some((e) => patternBinds(e));
+    case 'RestElement': return patternBinds(node.argument);
+    case 'AssignmentPattern': return patternBinds(node.left);
     default: return false;
   }
 }
@@ -374,14 +372,18 @@ export function runtimeCodeModuleName(key: string): string {
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
   if (typeof value !== 'object' || value === null) return null;
-  const v = value as Record<string, unknown>;
+  const v: { kind?: unknown; path?: unknown; text?: unknown; params?: unknown; body?: unknown } = value;
   if (v.kind === 'module') {
     return typeof v.path === 'string' && typeof v.text === 'string'
       ? { kind: 'module', path: v.path, text: v.text } : null;
   }
-  if (typeof v.kind !== 'string' || !Object.hasOwn(RUNTIME_FUNCTION_HEADS, v.kind)) return null;
-  if (!Array.isArray(v.params) || !v.params.every((p) => typeof p === 'string') || typeof v.body !== 'string') return null;
-  return { kind: v.kind as RuntimeFunctionKind, params: [...v.params as string[]], body: v.body };
+  if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind)) return null;
+  if (!Array.isArray(v.params) || !v.params.every((p: unknown): p is string => typeof p === 'string') || typeof v.body !== 'string') return null;
+  return { kind: v.kind, params: [...v.params], body: v.body };
+}
+
+function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
+  return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
 }
 
 /**
@@ -403,7 +405,7 @@ export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: re
     [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
   ];
   for (const [text, bodyStart, emptyBody] of checks) {
-    let program;
+    let program: Program | undefined;
     try {
       program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
     } catch (e) {

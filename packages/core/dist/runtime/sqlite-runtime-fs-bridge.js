@@ -1070,9 +1070,9 @@ export function* walkBeneath(root, path, follow, cred) {
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
-function mountOp(fn, call, path) {
+function mountOp(fn, ...args) {
     if (typeof fn !== 'function')
-        throw callError('ENOTSUP', typeof call === 'string' ? { syscall: call, path: path } : call);
+        throw callError('ENOTSUP', args.length === 2 ? { syscall: args[0], path: args[1] } : args[0]);
     return fn;
 }
 /** Depth-first removal with base operations, for a backend without its own. */

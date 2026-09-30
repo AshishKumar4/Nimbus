@@ -176,6 +176,10 @@ function failureSync(run) {
   assert.equal(bridged.message, "ENOENT: no such file or directory, rename '/a' -> '/b'");
   const inner = toVfsError(Object.assign(new Error('ENOENT: lstat'), { code: 'ENOENT', syscall: 'lstat', path: '/a' }), 'rename', '/a', '/b');
   assert.deepEqual([inner.message, inner.dest], ["ENOENT: no such file or directory, lstat '/a'", undefined]);
+  for (const code of ['constructor', 'toString', '__proto__', 'ENOTREAL']) {
+    const unsupported = Object.assign(new Error('outside the VFS codes'), { code });
+    assert.equal(toVfsError(unsupported, 'open', '/x'), unsupported);
+  }
 }
 
 // ── The SDK's Flue adapter: a missing file is node's ENOENT too ────────────

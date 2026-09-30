@@ -88,7 +88,9 @@ function hourNow() {
 /** A refusal for space — the ledger's ENOSPC or SQLite's SQLITE_FULL — and nothing else. */
 function refusalReason(error) {
     if (isVfsError(error, 'ENOSPC') || classifyError(error) === 'sqlite_full') {
-        return String(error?.message ?? error);
+        const message = (typeof error === 'object' || typeof error === 'function') && error !== null && 'message' in error
+            ? error.message : undefined;
+        return String(message ?? error);
     }
     return null;
 }

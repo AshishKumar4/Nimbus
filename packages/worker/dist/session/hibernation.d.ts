@@ -42,7 +42,7 @@
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
-import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
+import { type TimerHost, type TimerContext } from '@nimbus-sh/fabric/timers.js';
 export type { WsHibernationConfigResult };
 /**
  * Minimal host shape. `_w9*` fields drop `private` on the class so
@@ -137,7 +137,7 @@ export declare function armLogJanitor(host: LogJanitorHost, schedule: LogJanitor
  * Durable Object storage caused object to be reset").
  */
 export declare function logJanitorFired(host: LogJanitorHost): number | null;
-export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
+export declare function ensureLogJanitor(host: HibHost, ctx: TimerContext): void;
 /** The fields the keep-alive rule reads and keeps; both hosts carry them. */
 export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */

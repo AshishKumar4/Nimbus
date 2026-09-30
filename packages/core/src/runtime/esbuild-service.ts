@@ -846,10 +846,11 @@ async function transformWithEsbuild(
  * the process's, the rewrite that routes each one to the process's ESM loader.
  * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lower`
  * async-module-lowering.ts's `lowerAsyncModule`, passed in because this
- * function is serialized into the esbuild facet.
+ * function is serialized into the esbuild facet. `esbuildApi` is null only
+ * before esbuild is loaded, which a rewrite-only request does not wait for.
  */
 async function runTransformRequest(
-  esbuildApi: EsbuildTransformApi,
+  esbuildApi: EsbuildTransformApi | null,
   code: string,
   options: EsbuildTransformOptions | undefined,
   rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean) => string,
@@ -860,6 +861,7 @@ async function runTransformRequest(
     if (parent === undefined) throw new Error('a rewrite-only transform needs dynamicImportParent');
     return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
   }
+  if (esbuildApi === null) throw new Error('esbuild transform before esbuild is loaded');
   if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
     // CJS emit replaces import.meta with an empty object even when syntax
     // support is enabled. First erase TypeScript/JSX with the module format
@@ -1223,7 +1225,7 @@ export class EsbuildService {
     }
     if (!options?.rewriteOnly) await this.ensureInit();
     const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
-    return runTransformRequest(this._esbuild!, prepared, options, rewriteDynamicImports, lowerAsyncModule);
+    return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports, lowerAsyncModule);
   }
 
   /**
@@ -1258,7 +1260,7 @@ export class EsbuildService {
     for (let j = 0; j < prepared.length; j++) {
       const { code, options } = prepared[j];
       try {
-        outcomes[positions[j]] = await runTransformRequest(this._esbuild!, code, options, rewriteDynamicImports, lowerAsyncModule);
+        outcomes[positions[j]] = await runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
       } catch (e) {
         outcomes[positions[j]] = { error: errorText(e) };
       }
