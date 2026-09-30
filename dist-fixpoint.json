@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0c6719748d75ebd7f26fd113425b643edcc1d1db358df3b03d05cf18b2ad52c3",
+  "fingerprint": "5cc07641d4eec754bb7ead6d60ab328991f4712792bcb35f5f193a77dea0228c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -264,9 +264,9 @@
     "packages/core/dist/runtime/process-io-protocol.d.ts": "2c4685bd888357685928ec84a8b4753550f51b4a4d784c0caa8a2eb9480c0be2",
     "packages/core/dist/runtime/process-io-protocol.d.ts.map": "a0c10a8b6e7cbb9c89716767ff32b5c417f9c90f4326e3b55e5e217a21455281",
     "packages/core/dist/runtime/process-io-protocol.js": "96174e11d4d8aaf770da58840e860079e802a5847bd63b7abe66aaca8d5b0872",
-    "packages/core/dist/runtime/process-logs.d.ts": "7be1bb4e4c5818baf3df4406e87e873f243f58f24f937176aa8daf3de94228b4",
-    "packages/core/dist/runtime/process-logs.d.ts.map": "280498d0a7a1d3ba371eda5ecbc44e619c0238afe39b6e907aed09f750324efe",
-    "packages/core/dist/runtime/process-logs.js": "c25dff3e8c01520c8646acc5431c7fc70bcaa83386b2ef6a7bf00e52630eb28c",
+    "packages/core/dist/runtime/process-logs.d.ts": "caee30596aede616ec8d2fb37ef36b5290af63598d57d11a6d9ce712dd392893",
+    "packages/core/dist/runtime/process-logs.d.ts.map": "180a7b72abe1d5a4c3d1e172325ef4227a49867505eabdf42f1514b0bbe72141",
+    "packages/core/dist/runtime/process-logs.js": "7023b1fd9a4c43604a0256020c891dd98f3b9284aef27f4404eaca7da451c4c4",
     "packages/core/dist/runtime/process-table.d.ts": "dee324ce483490a4550e697445fd5e7d68c8816578bc6cd3dec9d6579aaf181b",
     "packages/core/dist/runtime/process-table.d.ts.map": "471975d4568a4c1727706d917a9d3461449be86f08ad3c7a1f70caca1c039437",
     "packages/core/dist/runtime/process-table.js": "897fcb674715a5720e39df077fb76ea369614d5e9ef140db2198803254c58bea",
@@ -1001,7 +1001,7 @@
     "packages/core/src/runtime/process-input-routing.ts": "96ef539c05d1294945fd6988addadeba99b3748abfe13a76280ea0cfabc93830",
     "packages/core/src/runtime/process-input.ts": "19e1fd6d94f10f173bdd5f2ae8747ceb699965d1b34e1f48be4f9bba3b11323a",
     "packages/core/src/runtime/process-io-protocol.ts": "29dceff8de177b9c8186832ba36c67a8ffd616676b32424bbd21f9d5ba1dd62d",
-    "packages/core/src/runtime/process-logs.ts": "cf24d797796d24d8022e26540fb298f97b1bbe0311b596ef1cdfc948c6f827d0",
+    "packages/core/src/runtime/process-logs.ts": "933f41a10a577b865553656498f05ece575a9d38075473c01ff3d7d8852ad8fd",
     "packages/core/src/runtime/process-table.ts": "e8851341582fa9d8381a20896505fb0316609ea794fd5811cb6e0c448418699d",
     "packages/core/src/runtime/project-detect.ts": "96f64e8736668f738c08b0e61b24726e2a41ccf02049a476a7c4090e460063df",
     "packages/core/src/runtime/python-pip.ts": "95246c03853a6a6f8c8129154e7a364f206237fe95801aa454b598220ddba7f2",

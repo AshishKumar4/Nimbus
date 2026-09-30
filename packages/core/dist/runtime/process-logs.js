@@ -106,8 +106,12 @@ export class ProcessLogStore {
      * shrinks, as a pid is touched (and so hydrated) or dropped.
      */
     _persistedOnly = null;
-    /** `_persistedOnly`'s earliest deadline for one `ageMs`; null once the set changes. */
-    _persistedOnlyNext = null;
+    /**
+     * `_persistedOnly` ordered for deadline questions (see
+     * `_persistedOnlyExpiry`): its earliest exit, and its exitless pids by last
+     * activity, oldest first. Null until asked, and again whenever the set changes.
+     */
+    _persistedOnlyOrder = null;
     /** Cumulative flushed-bytes counter (telemetry). */
     _flushedChunks = 0;
     _flushedBytes = 0;
@@ -413,7 +417,7 @@ export class ProcessLogStore {
             if (expiresAt === null || expiresAt > now)
                 continue;
             persistedOnly.delete(pid);
-            this._persistedOnlyNext = null;
+            this._persistedOnlyOrder = null;
             this._dropQueue.add(pid);
             dropped++;
         }
@@ -443,28 +447,44 @@ export class ProcessLogStore {
         return next;
     }
     /**
-     * The earliest deadline among the pids only SQL holds, computed once per
-     * change to that set. Every output append asks for the next deadline, and
-     * the set can hold every earlier instance's pids, uncapped: it is walked
-     * when it changes, not per append. Its orphan answers cannot change while
-     * it stands, because pids are unique to the instance that spawned them and
-     * none of these is in this instance's process table (the test-only
-     * `resetLogStore` aside, whose pids leave the set on their next touch).
+     * The earliest deadline among the pids only SQL holds. Every output append
+     * asks for the next deadline, and the set can hold every earlier instance's
+     * pids, uncapped, so it is ordered once per change to it rather than
+     * walked per append (`_persistedOnlyOrder`). The order holds nothing that
+     * depends on `ageMs` or `isOrphan`: the earliest exit answers for every
+     * exited pid, and the exitless pids are asked about oldest first, so the
+     * first orphan among them is the earliest orphan deadline.
      */
     _persistedOnlyExpiry(ageMs, isOrphan) {
         const persistedOnly = this._persistedPids();
-        if (this._persistedOnlyNext?.ageMs === ageMs)
-            return this._persistedOnlyNext.at;
-        let at = null;
-        for (const [pid, row] of persistedOnly) {
-            const expiresAt = this._expiresAt(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
-            if (expiresAt !== null && (at === null || expiresAt < at))
-                at = expiresAt;
+        let order = this._persistedOnlyOrder;
+        if (!order) {
+            let firstExit = null;
+            const exitless = [];
+            for (const { pid, exitAt, lastActivity } of persistedOnly.values()) {
+                if (exitAt === null)
+                    exitless.push({ pid, exitAt, lastActivity });
+                else if (firstExit === null || exitAt < firstExit.exitAt)
+                    firstExit = { pid, exitAt, lastActivity };
+            }
+            exitless.sort((a, b) => a.lastActivity - b.lastActivity);
+            order = { firstExit, exitless };
+            // Only a listed set is kept: an unlisted one (no adapter, or a failed
+            // listing) is asked again next time.
+            if (this._persistedOnly)
+                this._persistedOnlyOrder = order;
         }
-        // Only a listed set is cached: an unlisted one (no adapter, or a failed
-        // listing) is asked again next time.
-        if (this._persistedOnly)
-            this._persistedOnlyNext = { ageMs, at };
+        let at = order.firstExit
+            ? this._expiresAt(order.firstExit.pid, order.firstExit.exitAt, order.firstExit.lastActivity, ageMs, isOrphan)
+            : null;
+        for (const row of order.exitless) {
+            const orphanAt = this._expiresAt(row.pid, null, row.lastActivity, ageMs, isOrphan);
+            if (orphanAt === null)
+                continue;
+            if (at === null || orphanAt < at)
+                at = orphanAt;
+            break;
+        }
         return at;
     }
     /**
@@ -642,7 +662,7 @@ export class ProcessLogStore {
             };
             this.pids.set(pid, s);
             if (this._persistedOnly?.delete(pid))
-                this._persistedOnlyNext = null;
+                this._persistedOnlyOrder = null;
             // W9: lazy hydrate the freshly-created state from persistent
             // storage. If we have an adapter and rows exist for this pid
             // (e.g., DO was hibernated and now woke), pull them into the
