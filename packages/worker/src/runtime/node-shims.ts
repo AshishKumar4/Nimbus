@@ -962,6 +962,7 @@ const __fsMod = (() => {
   // overlay of this process's own effects says it is gone until a barrier's
   // delta does.
   function _forgetSyncPath(k) {
+    delete _ownWriteTimes[k];
     _createdHere.delete(k);
     _announcedDirs.delete(k);
     _nsOwnSet(k, "absent");
@@ -974,6 +975,7 @@ const __fsMod = (() => {
    */
   function _parkWrite(k, cell) {
     _noteCreation(k);
+    _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
     delete __vfsBundleRevisions[k];
@@ -1309,6 +1311,11 @@ const __fsMod = (() => {
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
   const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+  // When this process last changed each path's content: the mtime its own
+  // writes carry until the namespace describes them. Reading the clock at
+  // each stat instead gave a file a new mtime on every stat, which a
+  // watcher polling mtimeMs reads as an edit.
+  const _ownWriteTimes = globalThis.__nimbusVfsWriteTimes || (globalThis.__nimbusVfsWriteTimes = Object.create(null));
   // Modes set locally that the authority has not received yet. Delivered once:
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
@@ -1345,7 +1352,9 @@ const __fsMod = (() => {
 
   function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
     const time = _localTimes[k];
-    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs : Date.now();
+    const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
+      : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
+      : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     const mtime = new Date(mtimeMs);
     const atime = new Date(atimeMs);
@@ -2467,6 +2476,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
+    _ownWriteTimes[k] = Date.now();
     const buf = _asBytes(cell);
     let next;
     if (size <= buf.byteLength) {
@@ -2530,6 +2540,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
+    _ownWriteTimes[k] = Date.now();
     const next = _spliceCell(_asBytes(cell), pos, bytes);
     if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
