@@ -305,6 +305,7 @@ const __streamMod = (() => {
         finished: false,
         highWaterMark: opts?.highWaterMark ?? 16384,
         needDrain: false,
+        autoDestroy: opts?.autoDestroy !== false,
         destroyed: false,
         corked: 0,
         bufferedLength: 0,
@@ -364,6 +365,11 @@ const __streamMod = (() => {
         if (err) this.emit('error', err);
         this.emit('finish');
         if (callback) callback(err);
+        // Node's autoDestroy, as in Readable's _emitEnd: 'close' follows
+        // 'finish' once a Duplex's readable side has ended too, so
+        // \`src.pipe(fs.createWriteStream(f)).on('close', …)\` fires.
+        const rs = this._readableState;
+        if (state.autoDestroy && (!rs || rs.endEmitted)) queueMicrotask(() => this.destroy());
       });
       return this;
     }
@@ -409,6 +415,7 @@ const __streamMod = (() => {
         finished: false,
         highWaterMark: opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384,
         needDrain: false,
+        autoDestroy: opts?.autoDestroy !== false,
         destroyed: false,
         corked: 0,
         bufferedLength: 0,
