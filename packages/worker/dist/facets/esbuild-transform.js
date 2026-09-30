@@ -11,7 +11,6 @@ import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
 import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-wasm-bytes.js';
 import { esbuildWasmModule } from '../runtime/host-wasm.js';
-import { TransformStore } from './transform-store.js';
 /**
  * The esbuild wasm's linear memory: measured over a pi launch's 23 slices, one
  * instance stays at 52 MiB (from 28), and a single 858 KiB module takes a
@@ -265,16 +264,15 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
 }
 /**
  * The esbuild a Durable Object's supervisor shares: its transforms and its
- * builds run in its esbuild facet, and build() reads `vfs` from here. Its
- * launch transform results are kept in the object's own SQLite, bound to the
+ * builds run in its esbuild facet, and build() reads `vfs` from here. The
  * facet's code (ESBUILD_FACET_WORKER_ID: the esbuild version, the facet body
- * and the staged CLI runner), so a re-driven or repeated launch reads them
- * back instead of transforming again.
+ * and the staged CLI runner) is the host's identity, which the launch's
+ * transform store keys its results by.
  */
 export function supervisorEsbuildService(ctx, env, vfs) {
     return new EsbuildService(vfs, {
         transformHost: esbuildTransformHost(ctx, env),
         buildHost: esbuildBuildHost(ctx, env),
-        results: new TransformStore(ctx.storage.sql, ctx.storage, ESBUILD_FACET_WORKER_ID),
+        transformHostId: ESBUILD_FACET_WORKER_ID,
     });
 }
