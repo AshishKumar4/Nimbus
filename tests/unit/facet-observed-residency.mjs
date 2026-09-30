@@ -147,8 +147,7 @@ import { writeModuleSet } from './lib/module-map-bundle.mjs';
   for (const d of ['home/user', app]) k.chown(d, 1000, 1000);
   const fs = processFiles(raw).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs;
   const state = await buildPrefetchBundle(
-    fs, `/${app}/entry.js`, `/${app}`, '', undefined, undefined,
-    new Set([`${app}/node_modules/vue/dist/vue.cjs.js`]),
+    fs, { scriptPath: `/${app}/entry.js`, cwd: `/${app}`, entryCode: '', observedReads: new Set([`${app}/node_modules/vue/dist/vue.cjs.js`]) },
   );
   assert.ok(`${app}/node_modules/vue/dist/vue.cjs.js` in state.bundle, 'the observed module is staged');
   assert.ok(`${app}/node_modules/vue/index.js` in state.bundle, 'the package main that loads it stays staged');
@@ -247,8 +246,7 @@ kernel.chown('home/user/example-app', 1000, 1000);
 // The premise, asserted rather than assumed: nothing already stages it.
 {
   const state = await buildPrefetchBundle(
-    processFiles(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs,
-    '/home/user/example-app/entry.js', '/home/user/example-app', '', undefined,
+    processFiles(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs, { scriptPath: '/home/user/example-app/entry.js', cwd: '/home/user/example-app', entryCode: '' },
   );
   assert.ok(
     !(DATA in state.bundle),

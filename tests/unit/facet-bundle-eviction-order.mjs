@@ -58,7 +58,7 @@ const DECL = `${PROJ}/types.d.ts`;
 const SIBLING = `${PROJ}/node_modules/chunky/dist/shared/helper-Bf6oL9fm.js`;
 
 const vfs = launchFs(files).fs;
-const state = await buildPrefetchBundle(vfs, `${PROJ}/app.js`, PROJ, files[`${PROJ}/app.js`]);
+const state = await buildPrefetchBundle(vfs, { scriptPath: `${PROJ}/app.js`, cwd: PROJ, entryCode: files[`${PROJ}/app.js`] });
 const bundle = state.bundle;
 
 assert.ok(state.truncated, 'the arrangement really does breach the bound and evict');

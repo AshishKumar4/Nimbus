@@ -639,6 +639,28 @@ export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<st
     added: number;
     bytes: number;
 }>;
+/** What buildPrefetchBundle builds a module map for, and with what. */
+export interface PrefetchBundleOptions {
+    /** The program's path; absent for `-e` code and stdin. */
+    scriptPath?: string;
+    cwd: string;
+    entryCode: string;
+    /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+    esbuild?: EsbuildService;
+    bundleProfile?: FacetBundleProfile;
+    /** Paths earlier runs of the same entry read synchronously and missed. */
+    observedReads?: ReadonlySet<string>;
+    /** The launch's pacer; a build without one runs in the caller's turn. */
+    pacer?: TurnBudget;
+    /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
+    maxBundleBytes?: number;
+    /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
+    learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+    /** Module files the process produced at run time, by path, as graph roots. */
+    runtimeModules?: ReadonlyMap<string, string>;
+    /** Where the launch's transform results are kept by content. */
+    transformStore?: BundleCellResultStore;
+}
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -655,7 +677,7 @@ export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<st
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, runtimeModules?: ReadonlyMap<string, string>, transformStore?: BundleCellResultStore): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.

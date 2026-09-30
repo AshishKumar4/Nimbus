@@ -206,10 +206,12 @@ export declare function transformBundleCells(cells: ReadonlyArray<{
  * The entry script as the facet compiles it (entryScriptRequest), read from
  * the store when it holds it. A host that rejects or cannot run the rewrite
  * throws: a failed entry rewrite must not reach a Worker Loader as native host
- * import(), or become an immutable cached image.
+ * import(), or become an immutable cached image. Its result is written paced,
+ * like a cell's.
  */
-export declare function transformEntryScript(code: string, parentUrl: string, { host, store }: {
+export declare function transformEntryScript(code: string, parentUrl: string, { host, store, pacer }: {
     host: BundleCellHost;
     store?: BundleCellResultStore | null;
+    pacer?: BundleCellPacer;
 }): Promise<string>;
 //# sourceMappingURL=bundle-cell-transform.d.ts.map

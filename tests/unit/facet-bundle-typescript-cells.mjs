@@ -111,7 +111,7 @@ const cjsEsbuild = new EsbuildService(undefined, {
 
 const vfs = launchFs(files).fs;
 const state = await buildPrefetchBundle(
-  vfs, `${TS}/bin/tsc`, `/${PROJ}`, files[`${TS}/bin/tsc`], cjsEsbuild,
+  vfs, { scriptPath: `${TS}/bin/tsc`, cwd: `/${PROJ}`, entryCode: files[`${TS}/bin/tsc`], esbuild: cjsEsbuild },
 );
 const { bundle } = state;
 

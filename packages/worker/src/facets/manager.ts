@@ -3609,6 +3609,29 @@ async function transformEsmInBundle(
   });
 }
 
+/** What buildPrefetchBundle builds a module map for, and with what. */
+export interface PrefetchBundleOptions {
+  /** The program's path; absent for `-e` code and stdin. */
+  scriptPath?: string;
+  cwd: string;
+  entryCode: string;
+  /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+  esbuild?: EsbuildService;
+  bundleProfile?: FacetBundleProfile;
+  /** Paths earlier runs of the same entry read synchronously and missed. */
+  observedReads?: ReadonlySet<string>;
+  /** The launch's pacer; a build without one runs in the caller's turn. */
+  pacer?: TurnBudget;
+  /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
+  maxBundleBytes?: number;
+  /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
+  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+  /** Module files the process produced at run time, by path, as graph roots. */
+  runtimeModules?: ReadonlyMap<string, string>;
+  /** Where the launch's transform results are kept by content. */
+  transformStore?: BundleCellResultStore;
+}
+
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -3625,20 +3648,7 @@ async function transformEsmInBundle(
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(
-  vfs: LaunchFs,
-  scriptPath: string | undefined,
-  cwd: string,
-  entryCode: string,
-  esbuild?: EsbuildService,
-  bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
-  observedReads?: ReadonlySet<string>,
-  pacer?: TurnBudget,
-  maxBundleBytes?: number,
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
-  runtimeModules?: ReadonlyMap<string, string>,
-  transformStore?: BundleCellResultStore,
-): Promise<FacetVfsState> {
+export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
   // with nothing watching: the estimator read 9.4 MiB while these bytes were
   // resetting the DO three times. Take the budget the enrichment passes are
@@ -3648,10 +3658,7 @@ export async function buildPrefetchBundle(
   const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
   prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
   try {
-    return await _buildPrefetchBundle(
-      vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer,
-      maxBundleBytes, learnedFor, runtimeModules, transformStore,
-    );
+    return await _buildPrefetchBundle(vfs, options);
   } finally {
     prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
     lease.release();
@@ -3660,17 +3667,19 @@ export async function buildPrefetchBundle(
 
 async function _buildPrefetchBundle(
   vfs: LaunchFs,
-  scriptPath: string | undefined,
-  cwd: string,
-  entryCode: string,
-  esbuild?: EsbuildService,
-  bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
-  observedReads?: ReadonlySet<string>,
-  pacer?: TurnBudget,
-  maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
-  runtimeModules?: ReadonlyMap<string, string>,
-  transformStore?: BundleCellResultStore,
+  {
+    scriptPath,
+    cwd,
+    entryCode,
+    esbuild,
+    bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
+    observedReads,
+    pacer,
+    maxBundleBytes = VFS_BUNDLE_MAX_BYTES,
+    learnedFor,
+    runtimeModules,
+    transformStore,
+  }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -4685,7 +4694,7 @@ export class FacetManager {
    * in the session's transform store. The module-map walk reads the script as
    * written, before this.
    */
-  private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string): Promise<string> {
+  private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string, pacer: TurnBudget): Promise<string> {
     if (!mayHaveDynamicImport(code)) return code;
     if (this.esbuild === null) throw new Error('entry dynamic import requires the transform service');
     const base = cwd.replace(/\/+$/, '') || '/';
@@ -4693,7 +4702,7 @@ export class FacetManager {
       ? `${base}/[eval]`
       : filename === '[stdin]' ? `${base}/[stdin]` : filename;
     const parentUrl = 'file:///' + path.replace(/^\/+/, '');
-    return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore() });
+    return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore(), pacer });
   }
 
   /**
@@ -5126,10 +5135,18 @@ export class FacetManager {
         runtimeModules.set(path, code.text);
       }
     }
-    const vfsState = await buildPrefetchBundle(
-      vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
-      learnedPaths, pacer, undefined, learnedFor, runtimeModules, this._transformStore(),
-    );
+    const vfsState = await buildPrefetchBundle(vfs, {
+      scriptPath: spec.scriptPath,
+      cwd: spec.cwd,
+      entryCode: spec.entryCode,
+      esbuild: this.esbuild ?? undefined,
+      bundleProfile: profile,
+      observedReads: learnedPaths,
+      pacer,
+      learnedFor,
+      runtimeModules,
+      transformStore: this._transformStore(),
+    });
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];
       const unresolved: string[] = [];
@@ -5568,7 +5585,7 @@ export class FacetManager {
       // the bundle), and plans nothing beyond them: a data plan is chosen from
       // a listing of the namespace, and a one-shot takes no listing of its own
       // (§2.8: the principal's image is where that comes from).
-      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
+      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, pacer, diagSink);
       this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
       await this._recordRuntimeCode(vfsState.bundleKey, result.runtimeCode);
       this.processes.exit(entry.pid, result.exitCode);
@@ -5668,6 +5685,7 @@ export class FacetManager {
     vfsState: FacetVfsState,
     dataPlan: string[],
     signal: AbortSignal,
+    pacer: TurnBudget,
     diagSink?: ExecDiagSink,
   ): Promise<FacetExecResult> {
     // Answered by _buildProcessBundle while the raw cells were still in
@@ -5719,7 +5737,7 @@ export class FacetManager {
             // The staged napi bindings ride by value too, from the worker's
             // own assets, for the same reason.
             const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
-            const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user');
+            const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
             const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
             const codeModules: Record<string, { cjs: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
@@ -5899,10 +5917,7 @@ export class FacetManager {
     if (this.vfs) this.imageStore.ensureDir();
     const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
     const vfsState: FacetVfsState = processVfs
-      ? await buildPrefetchBundle(
-          processVfs, undefined, opts.cwd, '', this.esbuild || undefined,
-          DEFAULT_FACET_BUNDLE_PROFILE,
-        )
+      ? await buildPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
       : { bundle: {}, reachableCount: 0, truncated: false };
 
     const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
@@ -6678,7 +6693,7 @@ export class FacetManager {
     // Each image is read by path when the facet loads, never by value here.
     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
     let generatedWorker: GeneratedNodeFacetCode | undefined = await generateLongRunningNodeCode(
-      await this._entryDynamicImports(code, opts.filename, cwd),
+      await this._entryDynamicImports(code, opts.filename, cwd, pacer),
       vfsState,
       { ...opts, env: processEnv, cred: entry.cred, wasmImports },
       usesSqlite,

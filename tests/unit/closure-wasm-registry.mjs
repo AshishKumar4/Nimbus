@@ -39,7 +39,7 @@ const vfs = launchFs(files).fs;
 const esbuild = { async transform(code) { return { code }; } };
 
 // ── the walk records both images, by path and digest ──────────────────
-const state = await buildPrefetchBundle(vfs, `${PKG}/bin/esbuild`, '/home/user/app', files[`${PKG}/bin/esbuild`], esbuild);
+const state = await buildPrefetchBundle(vfs, { scriptPath: `${PKG}/bin/esbuild`, cwd: '/home/user/app', entryCode: files[`${PKG}/bin/esbuild`], esbuild });
 assert.equal(`${PKG}/lib/small.wasm` in state.bundle, true, 'the small image is a bundle cell');
 assert.equal(`${PKG}/esbuild.wasm` in state.bundle, false, 'the big image is over the per-file cap and not a cell');
 const images = new Map((state.wasmImages ?? []).map((i) => [i.vfsPath, i.digest]));

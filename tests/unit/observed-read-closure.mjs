@@ -35,13 +35,11 @@ const bounded = launchFs({
   [app + '/node_modules/plugin/dep.cjs']: large,
 }).fs;
 await assert.rejects(
-  buildPrefetchBundle(bounded, '/' + app + '/entry.cjs', '/' + app, 'module.exports = 1;',
-    undefined, undefined, new Set([learned]), undefined, 1024),
+  buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', observedReads: new Set([learned]), maxBundleBytes: 1024 }),
   error => error instanceof ClosureBoundExceededError && error.outcome.lastPath === app + '/node_modules/plugin/dep.cjs',
   'a learned executable graph that cannot fit is refused, never published with a missing import',
 );
-const complete = await buildPrefetchBundle(bounded, '/' + app + '/entry.cjs', '/' + app, 'module.exports = 1;',
-  undefined, undefined, new Set([learned]), undefined, 4096);
+const complete = await buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', observedReads: new Set([learned]), maxBundleBytes: 4096 });
 const evaluate = filename => {
   const module = { exports: {} };
   const code = complete.bundle[filename];
@@ -54,8 +52,7 @@ const generatedPath = 'home/user/generated/config.timestamp-1.cjs';
 const dependencyPath = 'opt/runtime-plugin/deep/plugin.cjs';
 const generatedText = 'import plugin from "file:///opt/runtime-plugin/deep/plugin.cjs"; export default plugin;';
 const generatedFs = launchFs({ [dependencyPath]: 'module.exports = "loaded-from-generated-config";' }).fs;
-const generated = await buildPrefetchBundle(generatedFs, undefined, '/home/user/generated', '', undefined,
-  undefined, undefined, undefined, 4096, undefined, new Map([[generatedPath, generatedText]]));
+const generated = await buildPrefetchBundle(generatedFs, { cwd: '/home/user/generated', entryCode: '', maxBundleBytes: 4096, runtimeModules: new Map([[generatedPath, generatedText]]) });
 assert.equal(generated.bundle[dependencyPath], 'module.exports = "loaded-from-generated-config";',
   'a deleted temporary config still brings the imports of its retained executable source');
 console.log('observed-read-closure: ok');
