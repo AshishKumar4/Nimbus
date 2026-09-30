@@ -18,6 +18,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { lowerAsyncModule } from './async-module-lowering.js';
+import { markEsmNamespaceSource, namespaceHelperSource, nodeInterop } from './esm-interop.js';
 import {
   literalStringValue,
   nodeList,
@@ -346,20 +347,20 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
   const moduleTarget = moduleFactory ? 'arguments[2]' : 'module';
   const requireTarget = moduleFactory ? 'arguments[1]' : 'module.require';
   let importIndex = 0;
-  let markedEsm = false;
+  // Node's interop (esm-interop.ts): the marker tells an importer this is an
+  // ES module; `__esModule` only when it exports a default.
+  let exportsDefault = false;
+  let namespaces = false;
 
   for (const snippet of snippets) {
     const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
     if (bindingList && !/\}\s*from\b/.test(snippet)) {
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
       for (const binding of bindingList[1].split(',')) {
         const match = binding.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
         if (!match) return null;
         const local = match[1];
         const exported = match[2] || local;
+        exportsDefault ||= exported === 'default';
         exports.push(
           `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
         );
@@ -385,12 +386,13 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
         continue;
       }
       const moduleName = `__nimbus_import_${importIndex++}`;
-      imports.push(`const ${moduleName} = ${requireTarget}(${JSON.stringify(source)});`);
+      namespaces = true;
+      imports.push(`const ${moduleName} = __nimbus_namespace(${requireTarget}(${JSON.stringify(source)}));`);
       for (const specifier of specifiers) {
         const local = nodeName(nodeProp(specifier, 'local'));
         if (!local) return null;
         if (specifier.type === 'ImportDefaultSpecifier') {
-          imports.push(`const ${local} = ${moduleName} && ${moduleName}.__esModule ? ${moduleName}.default : ${moduleName};`);
+          imports.push(`const ${local} = ${moduleName}.default;`);
         } else if (specifier.type === 'ImportNamespaceSpecifier') {
           imports.push(`const ${local} = ${moduleName};`);
         } else if (specifier.type === 'ImportSpecifier') {
@@ -406,14 +408,11 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
 
     if (declaration.type === 'ExportNamedDeclaration') {
       if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration')) return null;
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
       for (const specifier of nodeList(declaration, 'specifiers')) {
         const local = nodeName(nodeProp(specifier, 'local'));
         const exported = nodeName(nodeProp(specifier, 'exported'));
         if (!local || !exported) return null;
+        exportsDefault ||= exported === 'default';
         exports.push(
           `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
         );
@@ -425,10 +424,7 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
       const value = nodeProp(declaration, 'declaration');
       if (!value || typeof value.start !== 'number' || typeof value.end !== 'number') return null;
       if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration') return null;
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
+      exportsDefault = true;
       exports.push(
         `Object.defineProperty(${moduleTarget}.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`,
       );
@@ -438,6 +434,12 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
     return null;
   }
 
+  // Marked before any require runs, so a module in an import cycle already
+  // sees this one as an ES module.
+  imports.unshift(
+    markEsmNamespaceSource(`${moduleTarget}.exports`, exportsDefault),
+    ...(namespaces ? [namespaceHelperSource('__nimbus_namespace')] : []),
+  );
   return { imports: imports.join('\n'), exports: exports.join('\n') };
 }
 interface SourceEdit {
@@ -746,14 +748,23 @@ type EsbuildTransformApi = Pick<typeof esbuild, 'transform'>;
 type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
 
 /**
- * `lower` is async-module-lowering.ts's `lowerAsyncModule`, passed in because
- * this function is serialized into the esbuild facet.
+ * The Acorn-based lowerings of an ES module to a CommonJS cell, passed into
+ * the functions below because they are serialized into the esbuild facet:
+ * async-module-lowering.ts's `lowerAsyncModule` for top-level await, and
+ * esm-interop.ts's `nodeInterop`, which gives esbuild's CommonJS output Node's
+ * ES module / CommonJS interop.
  */
+export interface EsmLowering {
+  asyncModule(esm: string): string;
+  nodeInterop(cjs: string): string;
+}
+const ESM_LOWERING: EsmLowering = { asyncModule: lowerAsyncModule, nodeInterop };
+
 async function transformWithEsbuild(
   esbuildApi: EsbuildTransformApi,
   code: string,
   options: EsbuildTransformOptions | undefined,
-  lower: (esm: string) => string,
+  lowering: EsmLowering,
 ): Promise<TransformResult> {
   const format = options?.format || 'esm';
   const loader = options?.loader || 'ts';
@@ -774,7 +785,7 @@ async function transformWithEsbuild(
         supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
       });
       return {
-        code: direct.code,
+        code: lowering.nodeInterop(direct.code),
         map: direct.map || '',
         warnings: direct.warnings?.map((warning) => ({
           text: warning.text,
@@ -802,7 +813,7 @@ async function transformWithEsbuild(
       supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
     });
     return {
-      code: lower(esm.code),
+      code: lowering.asyncModule(esm.code),
       map: '',
       warnings: esm.warnings?.map((warning) => ({
         text: warning.text,
@@ -839,8 +850,8 @@ async function transformWithEsbuild(
  * One transform request as a transform host runs it: esbuild (unless the
  * code is already CommonJS), then, for a module whose dynamic `import()` is
  * the process's, the rewrite that routes each one to the process's ESM loader.
- * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lower`
- * async-module-lowering.ts's `lowerAsyncModule`, passed in because this
+ * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lowering`
+ * the EsmLowering above, passed in because this
  * function is serialized into the esbuild facet.
  */
 async function runTransformRequest(
@@ -848,7 +859,7 @@ async function runTransformRequest(
   code: string,
   options: EsbuildTransformOptions | undefined,
   rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean) => string,
-  lower: (esm: string) => string,
+  lowering: EsmLowering,
 ): Promise<TransformResult> {
   const parent = options?.dynamicImportParent;
   if (options?.rewriteOnly) {
@@ -872,9 +883,9 @@ async function runTransformRequest(
       supported: { 'dynamic-import': true, 'import-meta': true },
     });
     const routed = rewrite(javascript.code, parent, true);
-    return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false }, lower);
+    return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false }, lowering);
   }
-  const result = await transformWithEsbuild(esbuildApi, code, options, lower);
+  const result = await transformWithEsbuild(esbuildApi, code, options, lowering);
   return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };
 }
 
@@ -1168,7 +1179,7 @@ export class EsbuildService {
     }
     if (!options?.rewriteOnly) await this.ensureInit();
     const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
-    return runTransformRequest(this._esbuild!, prepared, options, rewriteDynamicImports, lowerAsyncModule);
+    return runTransformRequest(this._esbuild!, prepared, options, rewriteDynamicImports, ESM_LOWERING);
   }
 
   /**
@@ -1203,7 +1214,7 @@ export class EsbuildService {
     for (let j = 0; j < prepared.length; j++) {
       const { code, options } = prepared[j];
       try {
-        outcomes[positions[j]] = await runTransformRequest(this._esbuild!, code, options, rewriteDynamicImports, lowerAsyncModule);
+        outcomes[positions[j]] = await runTransformRequest(this._esbuild!, code, options, rewriteDynamicImports, ESM_LOWERING);
       } catch (e) {
         outcomes[positions[j]] = { error: errorText(e) };
       }

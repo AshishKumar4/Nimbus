@@ -32,8 +32,8 @@ import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
  * build id keys. `wasmModule` and `newEsbuild` are bound by the lines before
  * it, and the runner installs `globalThis.__esbuildCliRun`, the
  * dynamic-import rewrite transforms run after esbuild,
- * `globalThis.__nimbusRewriteDynamicImports`, and the top-level-await
- * lowering, `globalThis.__nimbusLowerAsyncModule`.
+ * `globalThis.__nimbusRewriteDynamicImports`, and the ES module lowerings,
+ * `globalThis.__nimbusEsmLowering`.
  *
  * Every call gets its own esbuild — its own Go instance, stopped when the call
  * ends — so what one call grew goes with it. esbuild's linear memory only
@@ -54,7 +54,7 @@ const ESBUILD_FACET_BODY = [
   '      const outcomes = [];',
   '      for (const { code, options } of requests) {',
   '        try {',
-  '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule));',
+  '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusEsmLowering));',
   '        } catch (e) {',
   '          outcomes.push({ error: String((e && e.message) || e) });',
   '        }',
