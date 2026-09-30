@@ -8632,7 +8632,11 @@ function __nimbusStdinFileSource() {
 let __nimbusStdinTaken = false;
 let __nimbusQueuedStdin = null;
 function __nimbusStdinEnded() {
-  if (__nimbusStdinFileSource() !== null || !__nimbusLiveInputChannel()) return true;
+  // A `< file` preloaded up to the read ahead ends there only when the file
+  // does; one not preloaded is read whole by path when a synchronous read
+  // needs it (__nimbusTakeStdin).
+  if (__nimbusStdinFileSource() !== null) return __nimbusQueuedStdin === null || __nimbusQueuedStdin.ended;
+  if (!__nimbusLiveInputChannel()) return true;
   return __nimbusQueuedStdin !== null && __nimbusQueuedStdin.ended;
 }
 function __nimbusTakeStdin() {
@@ -8644,7 +8648,7 @@ function __nimbusTakeStdin() {
   if (file !== null) {
     // Not read before the entry ran (its code was not seen to read stdin
     // synchronously): the file as the process's own synchronous read of it.
-    return { bytes: __BufferMod.from(__fsMod.readFileSync(file.path)).subarray(file.offset), ended };
+    return { bytes: __fsMod.readFileSync(file.path).subarray(file.offset), ended };
   }
   if (__nimbusLiveInputChannel()) return { bytes: __BufferMod.alloc(0), ended };
   return { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : ""), ended };
@@ -8670,8 +8674,10 @@ function __nimbusStdinRemainder() {
 function __nimbusStdinWouldBlock(syscall) {
   // The whole message before the Error is built: its stack, which is what an
   // uncaught error prints, captures the message at construction.
-  const err = new Error("EAGAIN: resource temporarily unavailable, " + syscall + " '0'"
-    + " — stdin is a pipe that had not ended within the first 16 MiB when the program started, and a synchronous read cannot wait for the rest. Redirect a file instead (`node script.js < file`), which a synchronous read reads whole, or read process.stdin, which takes the pipe as it arrives");
+  const why = __nimbusStdinFileSource() !== null
+    ? " — stdin is a file larger than 16 MiB, and synchronous reads of it are served from its first 16 MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
+    : " — stdin is a pipe that had not ended within the first 16 MiB when the program started, and a synchronous read cannot wait for the rest. Redirect a file instead (`node script.js < file`), or read process.stdin, which takes the pipe as it arrives";
+  const err = new Error("EAGAIN: resource temporarily unavailable, " + syscall + " '0'" + why);
   err.code = "EAGAIN";
   err.errno = -11;
   err.syscall = syscall;
@@ -8740,15 +8746,31 @@ async function __nimbusTakeQueuedStdin(whole) {
 }
 // Before the entry runs: what its synchronous reads of fd 0 need in hand.
 // A pipe: what the channel holds (all of it when it ends within the read
-// ahead). A `< file` the program reads synchronously: the whole file, read
-// from the filesystem as the process's own read of it (no bound but the
-// isolate's). A file the program only streams is read as process.stdin reads.
+// ahead). A `< file` the program reads synchronously: the file from its
+// offset up to the read ahead, read in ranges into one buffer; a larger file
+// is never held whole, and process.stdin streams on from there. A file the
+// program only streams is read as process.stdin reads.
 async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) return;
-    const bytes = await __fsMod.promises.readFile(file.path);
-    __nimbusQueuedStdin = { bytes: __BufferMod.from(bytes).subarray(file.offset), ended: true };
+    const size = (await __fsMod.promises.stat(file.path)).size;
+    const want = Math.max(0, Math.min(size - file.offset, 16777216));
+    const bytes = __BufferMod.allocUnsafe(want);
+    let got = 0;
+    if (want > 0) {
+      await new Promise((resolve, reject) => {
+        const source = __fsMod.createReadStream(file.path, { start: file.offset, end: file.offset + want - 1 });
+        source.on("data", (chunk) => {
+          const n = Math.min(chunk.byteLength, want - got);
+          bytes.set(chunk.subarray(0, n), got);
+          got += n;
+        });
+        source.on("end", resolve);
+        source.on("error", reject);
+      });
+    }
+    __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= size, from: file.offset + got };
     return;
   }
   if (__nimbusLiveInputChannel()) {
@@ -8871,12 +8893,23 @@ function __makeProcessStdin() {
   const seed = () => {
     if (seeded) return;
     seeded = true;
-    // A `< file` nothing has read yet streams from the file itself, from
-    // the redirect's offset, as the program reads.
+    // A `< file` streams from the file itself as the program reads: after
+    // what a preload or synchronous reads left, from where that stopped.
     const file = __nimbusStdinFileSource();
-    if (file !== null && __nimbusSyncStdin === null && __nimbusQueuedStdin === null && !__nimbusStdinTaken) {
-      __nimbusStdinTaken = true;
-      const source = __fsMod.createReadStream(file.path, { start: file.offset });
+    if (file !== null) {
+      let from = file.offset;
+      if (__nimbusSyncStdin !== null || __nimbusQueuedStdin !== null || __nimbusStdinTaken) {
+        const first = __nimbusStdinRemainder();
+        if (first.length > 0) r.write(first);
+        if (__nimbusQueuedStdin === null || __nimbusQueuedStdin.ended) {
+          queueMicrotask(() => r.end());
+          return;
+        }
+        from = __nimbusQueuedStdin.from;
+      } else {
+        __nimbusStdinTaken = true;
+      }
+      const source = __fsMod.createReadStream(file.path, { start: from });
       source.on("error", (err) => r.destroy(err));
       source.pipe(r);
       return;

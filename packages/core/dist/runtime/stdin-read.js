@@ -34,8 +34,9 @@ const STDIN_DEVICES = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']);
  * synchronously starts. A pipe that ends within it is all delivered first;
  * past it, the program starts with the pipe streaming and a synchronous read
  * fails naming this bound (node-shims.ts, __nimbusStdinWouldBlock), so an
- * endless writer (`yes | node x.js`) costs this much at most. A `< file`
- * redirect is not bounded by it: fd 0 is the file.
+ * endless writer (`yes | node x.js`) costs this much at most. It also bounds
+ * what a synchronous reader of a `< file` redirect holds of the file (fd 0 is
+ * the file; process.stdin streams the rest of it).
  *
  * The read ahead is held in the session Durable Object until the program
  * takes it. Measured on a throwaway (2026-09-30; GraphQL
