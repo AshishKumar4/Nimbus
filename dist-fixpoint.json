@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6bf1c7a29c8a1a2fc820d7a2f0b43dc7ad6ed18ce39fd558e86a55b0af8cc06a",
+  "fingerprint": "f03bdb8f3c329e4f602a30bc133dfedc20958eb04a0b1dd71c66dadcba9bedee",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -235,8 +235,8 @@
     "packages/core/dist/runtime/os-contracts.d.ts.map": "6c1425641f8f73dd78e024e2a87b2230c8ba950a9b5e1100ea475b95cf88cf2d",
     "packages/core/dist/runtime/os-contracts.js": "542d9833e322d4e271347c33ac2b53edddb6a1c4b5e0b18389bece0db691936b",
     "packages/core/dist/runtime/port-registry.d.ts": "9f35272c50ae81cc846db134e3ebdda9a9956ada30fd8825811a97fc2af54d4e",
-    "packages/core/dist/runtime/port-registry.d.ts.map": "928090bbf01bd58f810cfabc7c441e130329fc4e9206fe8a4c1eb78c932e7e88",
-    "packages/core/dist/runtime/port-registry.js": "84c46350839e39eb615cea35d7e1e68a3e77d93d67e67749c9a0e08e63b5fe62",
+    "packages/core/dist/runtime/port-registry.d.ts.map": "554deb39b58a0be0937b24d82416432044703a1bb30eaa26692b0ee4ed52ef41",
+    "packages/core/dist/runtime/port-registry.js": "4a3bd8fe8a3dc160918e882f1af4b98e6fbc64ea341d11a93cf831339f1e12b6",
     "packages/core/dist/runtime/process-files.d.ts": "9eb62a1f77c35add6f84d9cab9dcf70abe1ee44e2033f586d9a795fbe6986ff2",
     "packages/core/dist/runtime/process-files.d.ts.map": "89a6386699ba8afd1d21886047dc64a9ce0b4b6ef9dce3f5553371bd2e878d97",
     "packages/core/dist/runtime/process-files.js": "a3660aeaf1442674256c8e445fc2ffb9a2db31babee00e7024faf90c6679c867",
@@ -969,7 +969,7 @@
     "packages/core/src/runtime/nimbus-command.ts": "7e9f4193169019241a972260d6abe7c163fa84d2659d600c39665371a1abd688",
     "packages/core/src/runtime/opentui-wasm-backend.ts": "75cc3af3aa7fc38386726b864b939aaf6d70454f7b2f0ee46efb612e6fab6c6b",
     "packages/core/src/runtime/os-contracts.ts": "68ee6d7476ccdcae1da4dc1cd65ccc14ea83fb5d85efb8f5cf571e6be428ff79",
-    "packages/core/src/runtime/port-registry.ts": "07917b55607852e7c5dd71b329ead7f7f9ba3a19c64a293b10a05418faf60875",
+    "packages/core/src/runtime/port-registry.ts": "fbb927425d9991f5e48479926a78003aba0bd74aee8fabe0b8ad7c467bcf14d9",
     "packages/core/src/runtime/process-files.ts": "626fc54bceb2abe59925bf0d14b754ae3bcce925e4d01fc4a5feff91f6ccc245",
     "packages/core/src/runtime/process-input-routing.ts": "96ef539c05d1294945fd6988addadeba99b3748abfe13a76280ea0cfabc93830",
     "packages/core/src/runtime/process-input.ts": "19e1fd6d94f10f173bdd5f2ae8747ceb699965d1b34e1f48be4f9bba3b11323a",
