@@ -57,9 +57,10 @@ import type {
   FunctionExpression,
   NewExpression,
   Pattern,
+  Program,
   SwitchStatement,
 } from 'acorn';
-import { forEachChild, forEachNode, isAstNode, parseJavaScriptProgram, type AstNode } from './javascript-ast.js';
+import { forEachChild, forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 
 type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
 type ClassNode = ClassDeclaration | AnonymousClassDeclaration | ClassExpression;
@@ -138,7 +139,7 @@ interface ModuleRecord {
   path: string | null;
   dir: string;
   entry: boolean;
-  ast: AstNode | null;
+  ast: Program | null;
   /** Relative specifier → VFS key (null: not the program's own, or absent). */
   deps: Map<string, string | null>;
   scope: Scope | null;
@@ -254,7 +255,7 @@ function isRelative(specifier: string): boolean {
  * (inside `packageRoot`, not a data file), else to null.
  */
 export async function resolveOwnModules(
-  ast: AstNode,
+  ast: Program,
   path: string | null,
   dir: string,
   packageRoot: string,
@@ -414,7 +415,7 @@ class ModuleGraph {
   /** Whether loading the module (running its top level) starts a server. */
   onLoad(record: ModuleRecord, hops: number): boolean {
     return this.memo(record, `load#${hops}`, () => {
-      if (record.ast?.type !== 'Program') return false;
+      if (record.ast === null) return false;
       const walk = new Walk(this, record, hops);
       walk.statements(record.ast.body);
       return walk.launches;
@@ -821,7 +822,8 @@ class Walk {
       case 'MemberExpression':
         // yargs' `.argv` parses as `.parse()` does.
         if (propertyName(e) === 'argv' && this.fromCliParser(e.object)) { this.parse(e.object, []); return; }
-        break;
+        forEachChild(e, (child) => this.expression(child));
+        return;
       case 'ConditionalExpression': {
         this.expression(e.test);
         const truth = this.truth(e.test);
@@ -837,9 +839,9 @@ class Walk {
         if (runsRight) this.expression(e.right);
         return;
       }
+      default:
+        forEachChild(e, (child) => this.expression(child));
     }
-    // acorn's node types declare no index signature; isAstNode gives the keyed view forEachChild reads.
-    if (isAstNode(e)) forEachChild(e, (child) => this.expression(child));
   }
 
   private call(node: CallExpression | NewExpression): void {
@@ -1100,10 +1102,11 @@ class Walk {
           args.push(v.value);
         }
         const target: string | readonly unknown[] = object.value;
-        // The method as the value has it, a string's or an array's (which has no startsWith).
-        const query: unknown = Reflect.get(typeof target === 'string' ? String.prototype : Array.prototype, method);
+        // `target[method]`: the array's own, or a string's through its wrapper.
+        const query: unknown = Reflect.get(Object(target), method, target);
         if (typeof query !== 'function') throw new TypeError(`${method} is not a function`);
-        return { value: Reflect.apply(query, target, args) };
+        const value: unknown = Reflect.apply(query, target, args);
+        return { value };
       }
       case 'UnaryExpression': {
         if (e.operator === 'void') return { value: undefined };

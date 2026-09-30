@@ -23,8 +23,8 @@
  * never runs costs at most that, while a missed read fails with EAGAIN.
  */
 
-import type { AnyNode } from 'acorn';
-import { forEachNode, parseJavaScriptProgram, type AstNode } from './javascript-ast.js';
+import type { AnyNode, Program } from 'acorn';
+import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { resolveOwnModules, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
 
 /** How many of the entry's own modules are read, and how many bytes of source in all. */
@@ -142,7 +142,7 @@ export async function programReadsStdinSync(program: StdinReadProgram, host: Ser
 }
 
 /** Whether a synchronous read of stdin appears anywhere in `ast`. */
-function readsStdinSync(ast: AstNode): boolean {
+function readsStdinSync(ast: Program): boolean {
   let found = false;
   forEachNode(ast, (n) => {
     if (found || n.type !== 'CallExpression' || n.arguments.length === 0) return;

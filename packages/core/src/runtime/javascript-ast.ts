@@ -3,18 +3,21 @@ import { parse, tokenizer, tokTypes, type AnyNode, type Program, type TokenType 
 export type AstNode = AnyNode & Record<string, unknown>;
 
 export function parseJavaScriptModule(source: string): AstNode {
-  return parse(source, {
+  const program = parse(source, {
     ecmaVersion: 'latest',
     sourceType: 'module',
     allowHashBang: true,
-  }) as AstNode;
+  });
+  // Program declares no index signature; the guard gives it AstNode's keyed view.
+  if (!isAstNode(program)) throw new TypeError(`acorn parsed a ${program.type}, not a node`);
+  return program;
 }
 
 /**
  * A program as Node would run it: an ES module, or a CommonJS script (whose
  * top level may `return`); null when it is neither.
  */
-export function parseJavaScriptProgram(source: string): AstNode | null {
+export function parseJavaScriptProgram(source: string): Program | null {
   const options = {
     ecmaVersion: 'latest',
     allowHashBang: true,
@@ -22,18 +25,15 @@ export function parseJavaScriptProgram(source: string): AstNode | null {
     allowAwaitOutsideFunction: true,
     allowImportExportEverywhere: true,
   } as const;
-  let program: Program;
   try {
-    program = parse(source, { ...options, sourceType: 'module' });
+    return parse(source, { ...options, sourceType: 'module' });
   } catch {
     try {
-      program = parse(source, { ...options, sourceType: 'script' });
+      return parse(source, { ...options, sourceType: 'script' });
     } catch {
       return null;
     }
   }
-  // acorn's Program declares no index signature; the guard gives AstNode's keyed view.
-  return isAstNode(program) ? program : null;
 }
 
 export function hasTopLevelModuleSyntax(source: string): boolean {
@@ -118,19 +118,46 @@ export function literalBooleanValue(node: AstNode | undefined): boolean | undefi
   return node?.type === 'Literal' && typeof node.value === 'boolean' ? node.value : undefined;
 }
 
+/** Every node type acorn's AnyNode names: `satisfies` holds the list to acorn's types. */
+const NODE_TYPES: ReadonlySet<string> = new Set(Object.keys({
+  ArrayExpression: true, ArrayPattern: true, ArrowFunctionExpression: true, AssignmentExpression: true,
+  AssignmentPattern: true, AwaitExpression: true, BinaryExpression: true, BlockStatement: true, BreakStatement: true,
+  CallExpression: true, CatchClause: true, ChainExpression: true, ClassBody: true, ClassDeclaration: true,
+  ClassExpression: true, ConditionalExpression: true, ContinueStatement: true, DebuggerStatement: true,
+  DoWhileStatement: true, EmptyStatement: true, ExportAllDeclaration: true, ExportDefaultDeclaration: true,
+  ExportNamedDeclaration: true, ExportSpecifier: true, ExpressionStatement: true, ForInStatement: true,
+  ForOfStatement: true, ForStatement: true, FunctionDeclaration: true, FunctionExpression: true, Identifier: true,
+  IfStatement: true, ImportAttribute: true, ImportDeclaration: true, ImportDefaultSpecifier: true,
+  ImportExpression: true, ImportNamespaceSpecifier: true, ImportSpecifier: true, LabeledStatement: true,
+  Literal: true, LogicalExpression: true, MemberExpression: true, MetaProperty: true, MethodDefinition: true,
+  NewExpression: true, ObjectExpression: true, ObjectPattern: true, ParenthesizedExpression: true,
+  PrivateIdentifier: true, Program: true, Property: true, PropertyDefinition: true, RestElement: true,
+  ReturnStatement: true, SequenceExpression: true, SpreadElement: true, StaticBlock: true, Super: true,
+  SwitchCase: true, SwitchStatement: true, TaggedTemplateExpression: true, TemplateElement: true,
+  TemplateLiteral: true, ThisExpression: true, ThrowStatement: true, TryStatement: true, UnaryExpression: true,
+  UpdateExpression: true, VariableDeclaration: true, VariableDeclarator: true, WhileStatement: true,
+  WithStatement: true, YieldExpression: true,
+} satisfies Record<AnyNode['type'], true>));
+
+/**
+ * A node of a tree acorn parsed: an object whose `type` is one of acorn's
+ * node types. Its other fields are acorn's, which this does not re-check.
+ */
 export function isAstNode(value: unknown): value is AstNode {
-  return !!value && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string';
+  return typeof value === 'object' && value !== null && 'type' in value
+    && typeof value.type === 'string' && NODE_TYPES.has(value.type);
 }
 
 const NON_CHILD_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
 
 /** Each child node of `node`. */
-export function forEachChild(node: AstNode, visit: (child: AstNode) => void): void {
-  for (const key in node) {
+export function forEachChild(node: AnyNode, visit: (child: AnyNode) => void): void {
+  for (const key of Object.keys(node)) {
     if (NON_CHILD_KEYS.has(key)) continue;
-    const child = node[key];
+    const child: unknown = Reflect.get(node, key);
     if (Array.isArray(child)) {
-      for (const c of child) if (isAstNode(c)) visit(c);
+      const children: readonly unknown[] = child;
+      for (const c of children) if (isAstNode(c)) visit(c);
     } else if (isAstNode(child)) {
       visit(child);
     }
@@ -138,7 +165,7 @@ export function forEachChild(node: AstNode, visit: (child: AstNode) => void): vo
 }
 
 /** Every node below `node`, functions included, in source order. */
-export function forEachNode(node: AstNode, visit: (n: AstNode) => void): void {
+export function forEachNode(node: AnyNode, visit: (n: AnyNode) => void): void {
   visit(node);
   forEachChild(node, (child) => forEachNode(child, visit));
 }

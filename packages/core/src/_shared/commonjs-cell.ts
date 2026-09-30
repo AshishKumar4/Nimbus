@@ -94,7 +94,7 @@
  * costs one relaunch per change.
  */
 import { createHash } from 'node:crypto';
-import { parse, tokenizer, tokTypes, type Pattern, type Token } from 'acorn';
+import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
 
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -206,7 +206,7 @@ const WRAPPER_BINDING_PARSE_MAX = 2 * 1024 * 1024;
 export function declaresWrapperBinding(source: string): boolean {
   if (!LEXICAL_WRAPPER_NAME.test(source)) return false;
   if (source.length > WRAPPER_BINDING_PARSE_MAX) return true;
-  let program;
+  let program: Program | undefined;
   for (const sourceType of ['script', 'module'] as const) {
     try {
       program = parse(source, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true, allowHashBang: true });
@@ -378,7 +378,7 @@ export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
       ? { kind: 'module', path: v.path, text: v.text } : null;
   }
   if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind)) return null;
-  if (!Array.isArray(v.params) || !v.params.every((p): p is string => typeof p === 'string') || typeof v.body !== 'string') return null;
+  if (!Array.isArray(v.params) || !v.params.every((p: unknown): p is string => typeof p === 'string') || typeof v.body !== 'string') return null;
   return { kind: v.kind, params: [...v.params], body: v.body };
 }
 
@@ -405,7 +405,7 @@ export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: re
     [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
   ];
   for (const [text, bodyStart, emptyBody] of checks) {
-    let program;
+    let program: Program | undefined;
     try {
       program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
     } catch (e) {
