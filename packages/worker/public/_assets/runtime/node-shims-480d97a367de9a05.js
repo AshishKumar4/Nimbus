@@ -7216,6 +7216,124 @@ function __nimbusIsCodegenRefusal(e) {
     ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
   ];
   const nativeToString = Function.prototype.toString;
+  const decodeLiteral = function decodeJavaScriptStringLiteral(source) {
+    const text = source.trim();
+    const quote = text[0];
+    if ((quote !== '"' && quote !== "'") || text.length < 2)
+        return undefined;
+    let result = '';
+    for (let i = 1; i < text.length; i++) {
+        const c = text[i];
+        if (c === quote)
+            return i === text.length - 1 ? result : undefined;
+        if (c === '\n' || c === '\r')
+            return undefined;
+        if (c !== '\\') {
+            result += c;
+            continue;
+        }
+        if (++i >= text.length)
+            return undefined;
+        const escaped = text[i];
+        switch (escaped) {
+            case 'n':
+                result += '\n';
+                break;
+            case 'r':
+                result += '\r';
+                break;
+            case 't':
+                result += '\t';
+                break;
+            case 'b':
+                result += '\b';
+                break;
+            case 'f':
+                result += '\f';
+                break;
+            case 'v':
+                result += '\v';
+                break;
+            case '\r':
+                if (text[i + 1] === '\n')
+                    i++;
+                break;
+            case '\n':
+            case '\u2028':
+            case '\u2029': break;
+            case 'x':
+            case 'u': {
+                const braced = escaped === 'u' && text[i + 1] === '{';
+                const start = i + (braced ? 2 : 1);
+                const end = braced ? text.indexOf('}', start) : start + (escaped === 'x' ? 2 : 4);
+                if (end <= start || end > text.length)
+                    return undefined;
+                const digits = text.slice(start, end);
+                if (!/^[0-9a-fA-F]+$/.test(digits))
+                    return undefined;
+                const point = Number.parseInt(digits, 16);
+                if (point > 0x10ffff)
+                    return undefined;
+                result += String.fromCodePoint(point);
+                i = braced ? end : end - 1;
+                break;
+            }
+            default: {
+                if (escaped >= '0' && escaped <= '7') {
+                    // 0..3 consumes up to three octal digits; 4..7 only two.
+                    const end = Math.min(text.length, i + (escaped <= '3' ? 3 : 2));
+                    let octal = escaped;
+                    while (i + 1 < end && text[i + 1] >= '0' && text[i + 1] <= '7')
+                        octal += text[++i];
+                    result += String.fromCharCode(Number.parseInt(octal, 8));
+                }
+                else
+                    result += escaped;
+            }
+        }
+    }
+    return undefined;
+};
+  // Vite's module runner compiles each SSR module with new AsyncFunction and
+  // imports its dependencies only when that module runs, so a refused module
+  // hid everything it imports and every launch learned one more module.
+  // Vite's SSR transform hoists a module's static imports into a generated
+  // prologue, one statement per line, after "use strict" and the export
+  // getters:
+  //   const __vite_ssr_import_N__ = await __vite_ssr_import__("<source>"[, <metadata JSON>]);
+  // Those imports are what the module would have run first, in this order.
+  // This reads that prologue and stops at the first other line.
+  const viteHoistedImports = (body) => {
+    const found = [];
+    for (const raw of body.split("\n")) {
+      const line = raw.trim();
+      if (line === "" || line === '"use strict";' || line.startsWith("__vite_ssr_exportName__(")) continue;
+      let rest = line;
+      if (rest.startsWith("const __vite_ssr_import_")) {
+        const bound = rest.indexOf("__ = ");
+        if (bound < 0) break;
+        rest = rest.slice(bound + 5);
+      }
+      const head = "await __vite_ssr_import__(";
+      if (!rest.startsWith(head) || !rest.endsWith(");")) break;
+      rest = rest.slice(head.length, -2);
+      const quote = rest[0];
+      if (quote !== '"' && quote !== "'") break;
+      let end = 1;
+      while (end < rest.length && rest[end] !== quote) end += rest[end] === "\\" ? 2 : 1;
+      if (end >= rest.length) break;
+      const source = decodeLiteral(rest.slice(0, end + 1));
+      if (typeof source !== "string") break;
+      const tail = rest.slice(end + 1).trim();
+      let metadata;
+      if (tail !== "") {
+        if (!tail.startsWith(",")) break;
+        try { metadata = JSON.parse(tail.slice(1)); } catch { break; }
+      }
+      found.push([source, metadata]);
+    }
+    return found;
+  };
   for (const [kind, Native] of kinds) {
     if (Native.__nimbusNative) continue;
     const routed = function (...args) {
@@ -7224,8 +7342,27 @@ function __nimbusIsCodegenRefusal(e) {
       } catch (e) {
         const service = globalThis.__nimbusRuntimeCode;
         if (!__nimbusIsCodegenRefusal(e) || !service) throw e;
+        const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
-        return service.compileFunction(kind, args.slice(0, -1).map(String), body);
+        try {
+          return service.compileFunction(kind, params, body);
+        } catch (refusal) {
+          const importAt = params.indexOf("__vite_ssr_import__");
+          if (kind !== "async" || importAt < 0 || !refusal || refusal.code !== "ERR_NIMBUS_CODE_NEXT_LAUNCH") throw refusal;
+          // The refusal is already recorded for the next launch. Before
+          // failing, run the module's hoisted imports through the runner's
+          // own import function, so their code is recorded in this launch.
+          const imports = viteHoistedImports(body);
+          return async function (...values) {
+            const load = values[importAt];
+            if (typeof load === "function") {
+              for (const [source, metadata] of imports) {
+                try { await load(source, metadata); } catch {}
+              }
+            }
+            throw refusal;
+          };
+        }
       }
     };
     Object.defineProperty(routed, "name", { value: Native.name });
