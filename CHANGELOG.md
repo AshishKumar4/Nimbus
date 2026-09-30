@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npx sirv-cli` starts. `require` of a package without `exports` reads
+  `main`, as Node does; the bundlers' `module` field is honoured only under
+  the `module` condition (browser/bundle resolution). tinydate@1's `module`
+  is `export default fn`, so `require('tinydate')` returned its namespace
+  and sirv-cli threw "tinydate is not a function". Legacy subpath
+  directories (`pkg/sub/package.json`) are Node's LOAD_AS_DIRECTORY through
+  `main`; the prefetch walk's synthetic re-export stubs for them are
+  deleted.
+
 - `npx serve` starts. An ES module with top-level await (serve 14's
   `build/main.js`, nuxi's bin) is emitted by esbuild as ESM and now lowered
   to a CommonJS body from Acorn's parse of its declarations. The previous

@@ -281,38 +281,14 @@ async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, pro
 }
 
 /**
- * X.5-L: result shape for `resolvePkgSubpathEx`. When a bare-spec
- * subpath resolves via the LEGACY directory-with-nested-package.json
- * pattern (e.g. `react-remove-scroll-bar/constants` where there's no
- * top-level `exports` field but `<pkgDir>/constants/package.json`
- * exists), we need to ship TWO bundle entries:
- *
- *   - the real resolved file at its canonical VFS path (so its own
- *     relative requires walk correctly), AND
- *   - a SYNTHETIC STUB at the path the runtime resolver probes for
- *     (`<pkgDir>/<subpath>.js`), since the runtime
- *     `__resolvePkgSubpath` mirror in node-shims.ts also misses the
- *     legacy directory pattern (X.5-M will fix runtime parity; until
- *     then, the stub bridges the gap).
- *
- * The stub is a minimal CJS re-export:
- *   `module.exports = require('./<rel-path-to-real-target>');`
- *
- * The relative path is computed from `<pkgDir>` (stub's modDir) to
- * the real resolved file. At runtime, the runtime resolver's
- * extension probe finds the stub at `<pkgDir>/<subpath>.js` (the
- * `.js` ext probe), loads it, the stub's relative require resolves
- * to the real file, and the load chain proceeds normally.
+ * Result shape for `resolvePkgSubpathEx`. A legacy subpath directory with
+ * its own package.json (`react-remove-scroll-bar/constants/package.json`
+ * with `main: "../dist/constants.js"`) is Node's LOAD_AS_DIRECTORY, which
+ * `resolveFile` and the runtime resolver both perform through `main`.
  */
 interface ResolveSubpathResult {
   /** Canonical resolved path to the real file. */
   resolved: string;
-  /**
-   * Optional synthetic stub to inject into the bundle at this path
-   * with this content, so the runtime resolver can find it via
-   * extension-list probe.
-   */
-  stub?: { path: string; content: string };
 }
 
 /**
@@ -325,23 +301,11 @@ interface ResolveSubpathResult {
  */
 
 /**
- * X.5-L: extended resolver. Same semantics as the original
- * resolvePkgSubpath (pre-X.5-L) for the common-case paths, plus a
- * legacy-directory-subpath fallback that emits a synthetic stub.
- *
  * Resolution order:
  *   1. `package.json#exports[<subpath>]` via shared resolver, condition=require.
  *   2. For root subpath ('.'): `pkg.main` then `<pkgDir>/index.{js,…}`.
- *   3. For non-root subpath: extension-probe `<pkgDir>/<subpath>` directly.
- *   4. **NEW (X.5-L):** if `<pkgDir>/<subpath>` is a directory, look
- *      for a nested `package.json` and follow its `module`/`main`
- *      relative to the subpath dir. This is the legacy pre-`exports`
- *      convention used by react-remove-scroll-bar/constants and
- *      similar (verbatim shape: `<pkgDir>/<sub>/package.json` with
- *      `main: "../dist/sub.js"`). Emits a stub at `<pkgDir>/<subpath>.js`
- *      (and `<pkgDir>/<subpath>` no-ext) so the runtime resolver
- *      finds it through its extension-probe loop without needing
- *      a runtime-side fix.
+ *   3. For non-root subpath: `<pkgDir>/<subpath>` as a file, then as a
+ *      directory (its package.json `main`, then its index).
  */
 async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   const pkgJsonPath = pkgDir + '/package.json';
@@ -353,10 +317,7 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
       return r ? { resolved: r } : null;
     }
     const r = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink, progress));
-    if (r) return { resolved: r };
-    // Even with no parent package.json, attempt the legacy nested-pkg
-    // fallback (consistent behaviour across the no-pkgjson branch).
-    return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress));
+    return r ? { resolved: r } : null;
   }
   let pkg: ResolvablePackageJson;
   const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
@@ -387,118 +348,12 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
     const idx = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
     return idx ? { resolved: idx } : null;
   }
-  // Non-root subpath: extension-probe first (most common path).
+  // Non-root subpath: the file, or the directory (resolveFile reads its main).
   const direct = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink, progress));
-  if (direct) return { resolved: direct };
-
-  // X.5-L: legacy directory-with-nested-package.json fallback. Only
-  // engaged when the standard probes have failed AND
-  // `<pkgDir>/<subpath>` exists as a directory.
-  return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress));
+  return direct ? { resolved: direct } : null;
 }
 
-/**
- * X.5-L: legacy pre-`exports`-field subpath convention.
- *
- * If `<pkgDir>/<subpath>` is a directory containing its own
- * `package.json`, follow that nested package.json's `module`/`main`
- * (in CJS-condition order: main → module) as a path relative to the
- * **subpath directory** (so `main: "../dist/x.js"` resolves to
- * `<pkgDir>/dist/x.js`).
- *
- * Returns the real resolved file plus a synthetic stub to inject at
- * `<pkgDir>/<subpath>.js`. The stub is a CJS one-liner that
- * re-exports the real target via a relative require — chosen over
- * duplicating the file content so we don't double-apply the
- * ESM→CJS transform in worker facets/manager.ts.
- *
- * Returns null if there's no directory match or no readable nested
- * package.json (caller falls through to its existing null return).
- */
-async function tryLegacyDirectorySubpath(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
-  if (subpath === '.' || !subpath.startsWith('./')) return null;
-
-  const subRelative = subpath.replace(/^\.\//, '');
-  const subDir = normalizePath(pkgDir + '/' + subRelative);
-  if (progress) await progress(METADATA_CANDIDATE_WORK + subDir.length);
-  if (!(await vfs.exists(subDir)) || !(await vfs.isDirectory(subDir))) return null;
-
-  const nestedPkgJson = subDir + '/package.json';
-  if (progress) await progress(METADATA_CANDIDATE_WORK + nestedPkgJson.length);
-  if (!(await vfs.exists(nestedPkgJson))) {
-    // Last-resort: probe `<subDir>/index.{js,…}`. This is already
-    // covered by `resolveFile(pkgDir + '/' + subRelative)`'s
-    // `/index.js` suffix probe, so reaching here means everything
-    // missed — return null.
-    return null;
-  }
-
-  let nested: { module?: string; main?: string };
-  const text = sink ? await sink(nestedPkgJson) : await packageText(vfs, nestedPkgJson, progress);
-  try { nested = JSON.parse(text ?? ''); }
-  catch { return null; }
-  // The runtime resolver reads this nested package.json to repeat the
-  // resolution; record it so its content ships in the bundle.
-
-  // Prefer `main` for CJS conditions; fall back to `module` if no main.
-  // (resolvePackageEntry would do the same prioritisation, but nested
-  // package.json files often only declare one of the two.)
-  const nestedEntry =
-    (typeof nested.main === 'string' && nested.main) ||
-    (typeof nested.module === 'string' && nested.module) ||
-    null;
-  if (!nestedEntry) return null;
-
-  // Resolve relative to the subpath dir; nestedEntry can be
-  // up-pointing (`../dist/x.js`) or relative-down (`./dist/x.js`).
-  const targetPath = normalizePath(subDir + '/' + nestedEntry.replace(/^\.\//, ''));
-  const resolved = (await resolveFile(vfs, targetPath, sink, progress));
-  if (!resolved) return null;
-
-  // Build the stub. The stub lives at `<pkgDir>/<subRelative>.js`
-  // (matches the runtime resolver's `.js` extension probe). Its
-  // modDir is the directory of the stub path.
-  const stubPath = normalizePath(pkgDir + '/' + subRelative + '.js');
-  const stubDir = stubPath.includes('/') ? stubPath.substring(0, stubPath.lastIndexOf('/')) : '.';
-  const stubRelTarget = relativeFrom(stubDir, resolved);
-  const stubContent =
-    `// X.5-L synthetic stub: re-export legacy directory-subpath target\n` +
-    `module.exports = require(${JSON.stringify('./' + stubRelTarget)});\n`;
-
-  return {
-    resolved,
-    stub: { path: stubPath, content: stubContent },
-  };
-}
-
-/**
- * Compute a relative path from `fromDir` to `toPath`. Both are
- * expected as VFS-style slash-separated paths with no leading slash.
- * The result is a slash-separated relative path WITHOUT a leading
- * `./` (caller adds the prefix if needed for require()).
- *
- * Examples:
- *   relativeFrom('a/b', 'a/c/d.js')  → '../c/d.js'
- *   relativeFrom('a/b', 'a/b/c.js')  → 'c.js'
- *   relativeFrom('a',   'a/b/c.js')  → 'b/c.js'
- */
-function relativeFrom(fromDir: string, toPath: string): string {
-  const f = fromDir.split('/').filter(s => s.length > 0);
-  const t = toPath.split('/').filter(s => s.length > 0);
-  let i = 0;
-  while (i < f.length && i < t.length && f[i] === t[i]) i++;
-  const ups = f.length - i;
-  const downs = t.slice(i);
-  const parts: string[] = [];
-  for (let k = 0; k < ups; k++) parts.push('..');
-  for (const d of downs) parts.push(d);
-  return parts.join('/') || '.';
-}
-
-/**
- * X.5-L: extended bare-spec resolver that also returns any synthetic
- * stub emitted by resolvePkgSubpathEx's legacy-directory branch.
- */
+/** Bare-spec resolver: the node_modules walk from `fromDir`. */
 async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   let pkgName: string;
   let subpath: string;
@@ -536,12 +391,7 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
   return null;
 }
 
-/**
- * X.5-L: extended require-resolver that surfaces synthetic stubs.
- * Used by `prefetchForRequire` to inject runtime-side stubs for
- * the legacy directory-subpath pattern. Relative paths never need
- * stubs, so for those we just return `{ resolved }` with no stub.
- */
+/** The require resolver `prefetchForRequire` walks with. */
 async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
     const base = id.startsWith('/')
@@ -774,20 +624,20 @@ export async function prefetchForRequire(
     return declined === null;
   }
 
-  // Metadata and generated stubs spend the same delta allowance as source.
-  async function stageCell(path: string, synthetic?: string, kind: 'module' | 'metadata' = 'module'): Promise<string | null> {
+  // Metadata spends the same delta allowance as source.
+  async function stageCell(path: string, kind: 'module' | 'metadata' = 'module'): Promise<string | null> {
     if (declined || closureExceeded) return null;
     if (bundle[path] !== undefined) return bundle[path];
     if (progress) await progress(METADATA_CANDIDATE_WORK + path.length);
     const held = policy?.held[path];
     const authorize = vfs.assertReadable;
-    const reuseHeld = synthetic === undefined && typeof held === 'string' && authorize !== undefined;
+    const reuseHeld = typeof held === 'string' && authorize !== undefined;
     if (reuseHeld) {
       try { await authorize.call(vfs, path); }
       catch { declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' }; return null; }
     }
     let size = 0;
-    if (synthetic === undefined && !reuseHeld && (policy || kind === 'module')) {
+    if (!reuseHeld && (policy || kind === 'module')) {
       try { size = (await vfs.stat(path))?.size ?? 0; } catch { /* the read decides */ }
       if (!fits(path, size)) return null;
       if (!policy && kind === 'module' && bytesSeen + size > maxBundleBytes) {
@@ -796,7 +646,7 @@ export async function prefetchForRequire(
       }
     }
     let content: string;
-    try { content = reuseHeld ? held : synthetic ?? await vfs.readFileString(path); }
+    try { content = reuseHeld ? held : await vfs.readFileString(path); }
     catch {
       if (policy) declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
@@ -813,7 +663,7 @@ export async function prefetchForRequire(
     }
     if (!policy && kind === 'module') bytesSeen += size;
     bundle[path] = content;
-    if (lazy && kind === 'module' && synthetic === undefined) speculative.add(path);
+    if (lazy && kind === 'module') speculative.add(path);
     if (progress) await progress(content.length);
     return content;
   }
@@ -848,7 +698,7 @@ export async function prefetchForRequire(
         if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
         if (!visited.has(pkgJsonPath) && (await vfs.exists(pkgJsonPath))) {
           visited.add(pkgJsonPath);
-          await stageCell(pkgJsonPath, undefined, 'metadata');
+          await stageCell(pkgJsonPath, 'metadata');
         }
       }
     }
@@ -873,7 +723,7 @@ export async function prefetchForRequire(
         if (progress) await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
         if ((await vfs.exists(dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
           visited.add(dirPkgJson);
-          await stageCell(dirPkgJson, undefined, 'metadata');
+          await stageCell(dirPkgJson, 'metadata');
         }
       }
     }
@@ -923,10 +773,7 @@ export async function prefetchForRequire(
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded || declined) break;
       const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
-      if (r) {
-        (await addFile(r.resolved));
-        if (r.stub) (await addStub(r.stub.path, r.stub.content));
-      }
+      if (r) (await addFile(r.resolved));
     }
     // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
     // require of './x' from this file's directory (pi-coding-agent's bin).
@@ -935,10 +782,7 @@ export async function prefetchForRequire(
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded || declined) break;
       const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
-      if (r) {
-        (await addFile(r.resolved));
-        if (r.stub) (await addStub(r.stub.path, r.stub.content));
-      }
+      if (r) (await addFile(r.resolved));
     }
     // X.5-C Fix #1: also follow ESM `import`/`export … from` statements.
     // Without this, packages whose `module` entry is ESM (react-remove-
@@ -951,10 +795,7 @@ export async function prefetchForRequire(
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded || declined) break;
       const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
-      if (r) {
-        (await addFile(r.resolved));
-        if (r.stub) (await addStub(r.stub.path, r.stub.content));
-      }
+      if (r) (await addFile(r.resolved));
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
     for (const match of stripped.matchAll(DYNIMPORT_RE)) {
@@ -966,28 +807,6 @@ export async function prefetchForRequire(
       if (closureExceeded) break;
       if (resolved) (await addFile(resolved));
     }
-  }
-
-  /**
-   * X.5-L: inject a synthetic stub into the bundle. Stubs are
-   * produced by resolvePkgSubpathEx's legacy-directory branch — they
-   * sit at the path the runtime resolver probes for (e.g.
-   * `<pkgDir>/<subpath>.js`) and re-export the real resolved file.
-   *
-   * We deliberately skip the recursion + package.json piggyback that
-   * `addFile` does: stubs are leaf one-liners with a single
-   * relative require, and the *real* target is added separately by
-   * `addFile(resolved)` with normal recursion.
-   */
-  async function addStub(stubPath: string, content: string): Promise<void> {
-    if (visited.has(stubPath)) return;
-    // Don't shadow a real on-disk file: if VFS already has something
-    // at this path, skip the stub. (Defence-in-depth — should never
-    // happen because the legacy-directory branch only fires when all
-    // extension probes missed.)
-    if ((await vfs.exists(stubPath)) && !(await vfs.isDirectory(stubPath))) return;
-    visited.add(stubPath);
-    await stageCell(stubPath, content);
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
@@ -1030,7 +849,7 @@ export async function prefetchForRequire(
    */
   async function addPkgJson(pkgJsonPath: string): Promise<string | null> {
     const k = strip(pkgJsonPath);
-    const content = await stageCell(k, undefined, 'metadata');
+    const content = await stageCell(k, 'metadata');
     visited.add(k);
     return content;
   }

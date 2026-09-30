@@ -2,9 +2,9 @@
 // facet-greedy-root-conditional-exports — the speculative main-entry pass
 // resolves a package's root entry through the shared exports resolver, in the
 // same order as the Nimbus runtime resolver (require-resolver.ts
-// resolvePkgSubpathEx), instead of reading `exports["."]` by hand. That order
-// is Nimbus's: module before main without exports, and a fallback past a
-// denied or missing exports entry. It is not asserted here as Node parity.
+// resolvePkgSubpathEx), instead of reading `exports["."]` by hand: exports,
+// then main as Node's require reads it (never the bundlers' `module` field),
+// and a fallback past a denied or missing exports entry.
 //
 // on-change@6.0.2 (nuxt's dependency) declares its root as a conditional map
 // with no "." key: `{ types: './source/index.d.ts', default: './source/index.js' }`
@@ -57,7 +57,7 @@ const files = {
   ...pkg('missing-entry', { exports: './gone.js', main: 'real.js' }, { 'real.js': 'module.exports = 8;\n' }),
   // A denied root and no main: nothing to guess, and the subpath is not the root.
   ...pkg('denied', { exports: { '.': null, './sub': './sub.js' } }, { 'sub.js': 'module.exports = 5;\n' }),
-  // No exports: module, then main.
+  // No exports: main. `module` is a bundler field Node's require never reads.
   ...pkg('legacy-main', { main: 'lib/main.js' }, { 'lib/main.js': 'module.exports = 6;\n' }),
   ...pkg('legacy-module', { module: 'esm/index.js', main: 'cjs/index.js' },
     { 'esm/index.js': 'export default 7;\n', 'cjs/index.js': 'module.exports = 7;\n' }),
@@ -99,7 +99,7 @@ assert.ok(has('fallback/present.js'), 'array fallback lands on the existing targ
 assert.ok(has('missing-entry/real.js') && !has('missing-entry/gone.js'), 'a declared entry the disk lacks falls through to main');
 assert.ok(!has('denied/sub.js') && !has('denied/index.js'), 'a denied root ("." null) stages no entry and does not reach for a subpath');
 assert.ok(has('legacy-main/lib/main.js'), 'main without exports');
-assert.ok(has('legacy-module/esm/index.js') && !has('legacy-module/cjs/index.js'), 'module before main without exports, as the runtime resolves it');
+assert.ok(has('legacy-module/cjs/index.js') && !has('legacy-module/esm/index.js'), 'main, not module, without exports, as Node requires it');
 assert.ok(!has('subpath-only/big/index.js'), 'a package the closure reached by subpath gets no main-entry guess');
 
 // Malformed metadata: bad fields are dropped field-wise, bad files degrade to
