@@ -457,8 +457,6 @@ export declare class SqliteVFS {
     private _pinGen;
     /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
     private readonly manifestWindows;
-    /** The staging content holding each import's chunks sent ahead of its pages, by job id. */
-    private readonly importStagings;
     /** Set when a write commits while imports are open: one may no longer be where it began (sweepStaleImports). */
     private importSweepPending;
     /** False once a sweep has found no import open, until one begins. */
@@ -1401,8 +1399,8 @@ export declare class SqliteVFS {
      * Store chunks for an import into `dst` ahead of its pages, a bounded
      * transaction at a time, so no page has to carry bytes and a file of any
      * size imports in frames. Each chunk is re-hashed first. They are held by
-     * a staging content the import owns until its last page; after a reset
-     * GC may take them, and importPage then names them in `want` again.
+     * a staging content the import's job names (`ahead`), until its last page
+     * or until the import ends.
      */
     importChunks(dst: string, chunks: Iterable<VfsExportChunk>): {
         stored: number;
@@ -1411,21 +1409,31 @@ export declare class SqliteVFS {
     private importJob;
     /** What an import beginning at `target` now records of where it stands (ImportJobArgsSchema). */
     private importPlacement;
+    /** Whether every directory above `path` is one, from the root down: a path an import can reach. */
+    private reachable;
     /**
-     * Whether an import is still where it began: dst's parent path resolves
-     * to the directory it began in, and dst to the inode the import made or
-     * found there (or to nothing, before it has one). A removal of dst or of
-     * any directory above it, a rename of either away, a directory made or
+     * Whether an import is still where it began: every directory above dst is
+     * one, dst's parent path resolves to the directory it began in, and dst
+     * to the inode the import made or found there (or to nothing, before it
+     * has one). A removal of dst or of any directory above it (mid-way through
+     * a sliced restore too), a rename of either away, a directory made or
      * renamed in its place: each leaves a path resolving elsewhere, so the
-     * removal that commits is what ends the import. A job from before this
-     * was recorded needs only its parent to exist.
+     * removal that commits is what ends the import. A job that records no
+     * parent (one from before this was recorded) is never placed.
      */
     private importPlaced;
+    /**
+     * Staging contents GC must step over: those a live operation is still
+     * assembling, and those an import's job names (its pending manifest, its
+     * chunks sent ahead), read from the job rows as they stand.
+     */
+    private stagingPins;
     /**
      * End every import no longer where it began (importPlaced): its row goes,
      * and what it staged (a pending manifest, chunks sent ahead) is queued for
      * collection, in bounded transactions. Such an import is already invisible
-     * to every page, frame and cursor; this reclaims what it held. Never inside
+     * to every page, frame and cursor; this reclaims what it held, in at most
+     * `maxTransactions` transactions, the rest at the next sweep. Never inside
      * an embedder's transaction, whose rollback brings the removal back.
      * Returns the transactions it ran.
      */

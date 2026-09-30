@@ -227,8 +227,13 @@ interface FsError extends Error {
     code: string;
     syscall: string;
     path: string;
+    /** The second path of a call that names two (rename, symlink's link). */
+    dest?: string;
 }
-/** Node's error for `syscall` failing on `path`: `ENOENT: no such file or directory, open 'x'`. */
-export declare function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError;
+/**
+ * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
+ * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
+ */
+export declare function fsError(code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath): FsError;
 export {};
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

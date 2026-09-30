@@ -548,13 +548,13 @@ export class SqliteRuntimeFsBridge {
         }
         const linkTarget = this.legacySymlinks.readlink(oldKey);
         if (linkTarget === null)
-            throw fsError('ENOENT', 'rename', from);
+            throw fsError('ENOENT', 'rename', from, to);
         const staleDestination = this.legacySymlinks.isSymlink(newKey);
         this.legacySymlinks.assertMutable(oldKey, ...(staleDestination ? [newKey] : []));
         this.assertParentDirectory(newPath, 'rename');
         if (this.vfs.exists(newPath)) {
             if (this.vfs.isDirectory(newPath))
-                throw fsError('EISDIR', 'rename', to);
+                throw fsError('EISDIR', 'rename', from, to);
             this.vfs.unlink(newPath);
         }
         this.vfs.symlink(linkTarget, newPath);
@@ -581,7 +581,7 @@ export class SqliteRuntimeFsBridge {
         }
         const p = located.path;
         if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) {
-            throw fsError('EEXIST', 'symlink', path);
+            throw fsError('EEXIST', 'symlink', target, path);
         }
         this.vfs.symlink(target, p);
     }
@@ -1112,11 +1112,16 @@ function mountParents(mount, path) {
     if (parent !== '')
         mount.mkdir(parent, { recursive: true });
 }
-/** Node's error for `syscall` failing on `path`: `ENOENT: no such file or directory, open 'x'`. */
-export function fsError(code, syscall, path) {
+/**
+ * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
+ * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
+ */
+export function fsError(code, syscall, path, dest) {
     const name = typeof path === 'string' ? path : path.path;
+    const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
     const description = errnoDescription(code);
-    return Object.assign(new Error(`${code}: ${description === undefined ? '' : `${description}, `}${syscall} '${name}'`), { code, syscall, path: name });
+    const message = `${code}: ${description === undefined ? '' : `${description}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
+    return Object.assign(new Error(message), { code, syscall, path: name, ...(second === undefined ? {} : { dest: second }) });
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;

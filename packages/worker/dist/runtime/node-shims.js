@@ -2898,11 +2898,12 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.symlink === "function") {
       const absPath = _resolve(path);
       await _awaitStructuralOrder(absPath);
-      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", path, () => undefined);
+      // Node names the target, then the link: "symlink 'target' -> 'link'".
+      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", String(target), () => undefined, path);
       _markVfsStale();
       return;
     }
-    throw _fsErr("ENOSYS", "symlink", path);
+    throw _fsErr("ENOSYS", "symlink", String(target), path);
   }
 
   async function _writeFileAsync(p, data, opts) {
