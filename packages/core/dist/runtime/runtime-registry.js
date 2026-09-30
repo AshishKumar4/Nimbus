@@ -41,6 +41,63 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { errorText } from '../_shared/error-text.js';
+/** A relative module specifier a source names by string literal. */
+const RELATIVE_SPECIFIER_RE = /\brequire\s*\(\s*(['"])(\.{1,2}\/[^'"\n]*)\1\s*\)|\bfrom\s*(['"])(\.{1,2}\/[^'"\n]*)\3|\bimport\s*\(\s*(['"])(\.{1,2}\/[^'"\n]*)\5\s*\)|\bimport\s+(['"])(\.{1,2}\/[^'"\n]*)\7/g;
+/** A server being created: http, https, http2 and net all name it so. */
+const CREATES_SERVER_RE = /\bcreateServer\s*\(/;
+/** How many of an entry's own modules are read: a launcher names a handful. */
+const LAUNCHER_MODULE_LIMIT = 8;
+/**
+ * The nearest directory at or above `dir` that holds a package.json, or null.
+ * The first one wins (Node's rule); the filesystem root is not a package.
+ */
+async function nearestPackageDir(fs, dir) {
+    for (let at = normalizeVfsPath(dir); at !== ''; at = at.slice(0, Math.max(0, at.lastIndexOf('/')))) {
+        if (await fs.exists(`${at}/package.json`))
+            return at;
+    }
+    return null;
+}
+/**
+ * Whether the entry at `entryPath` is a launcher for a server: a module its
+ * source names by relative path, inside its own package (its own directory
+ * when it has none), creates one.
+ *
+ * A server's port is reachable only from a resident process, which has to be
+ * chosen before the program runs, so the runner judges a program by its
+ * source (node-runner.ts looksLikeServer). The entry alone misses the usual
+ * bin: a few lines that parse argv and hand off to the package's server
+ * module (static-server's bin requires ../server.js, sirv-cli's ./index). One
+ * hop is where that module sits. Following further, or taking `.listen(` as
+ * a bind, also reaches the serve subcommands and event listeners of CLIs that
+ * finish (degit, concurrently, nx, vitest, measured against 40 packages), and
+ * a program that finishes in a resident process is never reported ended.
+ */
+async function entryLaunchesServer(fs, entryPath, source) {
+    const slash = entryPath.lastIndexOf('/');
+    const dir = slash > 0 ? entryPath.slice(0, slash) : '';
+    const root = (await nearestPackageDir(fs, dir)) ?? dir;
+    let read = 0;
+    for (const match of source.matchAll(RELATIVE_SPECIFIER_RE)) {
+        if (read >= LAUNCHER_MODULE_LIMIT)
+            break;
+        const specifier = match[2] ?? match[4] ?? match[6] ?? match[8];
+        if (!specifier || specifier.endsWith('.json'))
+            continue;
+        const target = await resolveRuntimeScriptPath(fs, dir, specifier);
+        if (target === null || target === entryPath)
+            continue;
+        if (root !== '' && !target.startsWith(`${root}/`))
+            continue;
+        read++;
+        try {
+            if (CREATES_SERVER_RE.test(await fs.readFileString(target)))
+                return true;
+        }
+        catch { /* unreadable: not a server module we can see */ }
+    }
+    return false;
+}
 /** Extensions probed when a target names no exact file, in Node's order. */
 const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
 /**
@@ -258,6 +315,10 @@ export function buildRuntimeHandler(spec, ctx0) {
             const nl = code.indexOf('\n');
             code = nl >= 0 ? code.substring(nl + 1) : '';
         }
+        // Read before the ESM rewrite: the entry's own specifiers, as written. A
+        // .bin wrapper has already decided residency by its own rule.
+        const launchesServer = spec.routesServers === true && binSpawn === undefined
+            && await entryLaunchesServer(fs, resolvedPath, code);
         // ── ESM-source detection (primitive: type:module entry scripts) ──
         //
         // A node facet runs every entry script as a CommonJS module body
@@ -288,30 +349,19 @@ export function buildRuntimeHandler(spec, ctx0) {
         // The guest's registry could take the ES module itself, but not resolve
         // its package imports or give it the file's own URL (commonjs-cell.ts).
         async function nearestPackageTypeIsModule(absPath) {
-            // Walk up dirs looking for the nearest package.json. First one
-            // wins (Node spec); we do NOT consult ancestors past it.
-            let dir = absPath.replace(/^\/+/, '');
-            const slash = dir.lastIndexOf('/');
-            dir = slash > 0 ? dir.substring(0, slash) : '';
-            const visited = new Set();
-            while (dir && !visited.has(dir)) {
-                visited.add(dir);
-                const pj = dir + '/package.json';
-                if ((await fs.exists(pj))) {
-                    try {
-                        const pkg = JSON.parse((await fs.readFileString(pj)));
-                        return pkg && pkg.type === 'module';
-                    }
-                    catch {
-                        return false;
-                    }
-                }
-                const last = dir.lastIndexOf('/');
-                if (last <= 0)
-                    break;
-                dir = dir.substring(0, last);
+            // The nearest package.json decides; ancestors past it are not consulted.
+            const key = absPath.replace(/^\/+/, '');
+            const slash = key.lastIndexOf('/');
+            const dir = await nearestPackageDir(fs, slash > 0 ? key.substring(0, slash) : '');
+            if (dir === null)
+                return false;
+            try {
+                const pkg = JSON.parse((await fs.readFileString(`${dir}/package.json`)));
+                return pkg && pkg.type === 'module';
             }
-            return false;
+            catch {
+                return false;
+            }
         }
         const scriptExt = vfsPathExtension(resolvedPath);
         const needsEsmTransform = scriptExt === '.mjs' ||
@@ -371,6 +421,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             ...reservedProcess,
             ...(captureOutput ? { captureOutput: true } : {}),
             ...(bundleProfile ? { bundleProfile } : {}),
+            ...(launchesServer ? { launchesServer: true } : {}),
         });
         if (result.stdout)
             ctx.stdout.write(result.stdout);
