@@ -136,7 +136,27 @@ const FILES = {
   ].join('\n'),
   // serve 14's shape: the refusal (ajv compiling a schema) is caught and the
   // program exits 1.
-  'caught.js': 'try { console.log("CAUGHT " + new Function("return 7")()); } catch (e) { console.log("CAUGHT " + e.name); process.exit(1); }',
+  'reported.js': 'try { console.log("REPORTED " + new Function("return 7")()); } catch (e) { console.log("REPORTED " + e.message); process.exit(1); }',
+  // TypeBox's CanEvaluate shape: a silent probe, then compile with Function
+  // or fall back. A launch that fails for an unrelated reason must not stage
+  // the probe, or the next launch's probe says yes and its check is refused.
+  'probe-fail.js': [
+    'const canEval = (() => { try { Function("null")(); return true; } catch { return false; } })();',
+    'const check = canEval ? new Function("x", "return x === 1") : (x) => x === 1;',
+    'console.log("PROBEFAIL " + canEval + " " + check(1));',
+    'if (require("fs").existsSync("fail.flag")) process.exit(1);',
+  ].join('\n'),
+  // process.stdin wraps data listeners; removal must still find them.
+  'stdin.js': [
+    'const f = () => {}, g = () => {};',
+    'process.stdin.on("data", f); process.stdin.off("data", f); process.stdin.on("data", g);',
+    'const afterOn = process.stdin.listenerCount("data");',
+    'const listed = process.stdin.listeners("data")[0] === g;',
+    'process.stdin.removeListener("data", g);',
+    'const onceFn = () => {}; process.stdin.once("data", onceFn); process.stdin.off("data", onceFn);',
+    'console.log("STDIN " + afterOn + " " + listed + " " + process.stdin.listenerCount("data"));',
+    'process.stdin.pause(); process.exit(0);',
+  ].join('\n'),
   // node:url's legacy API, compared with the host's real node below
   // (http-server reads `url.parse(req.url).pathname`).
   'url.js': [
@@ -234,17 +254,28 @@ try {
     assert.equal(staged.status, 0, staged.stdout);
     assert.match(staged.stdout, /^PLAIN 15$/m, 'the next launch runs the staged function');
     assert.match(staged.stdout, /^PROBE no$/m, 'a probe in a successful launch is never staged');
-    const caught = await terminal.run(`cd ${W} && node caught.js`);
-    assert.equal(caught.status, 1, caught.stdout);
-    assert.match(caught.stdout, /^CAUGHT EvalError$/m, caught.stdout);
-    const recovered = await terminal.run(`cd ${W} && node caught.js`);
+    const reported = await terminal.run(`cd ${W} && node reported.js`);
+    assert.equal(reported.status, 1, reported.stdout);
+    assert.match(reported.stdout, /^REPORTED Code generation from strings disallowed/m, reported.stdout);
+    const recovered = await terminal.run(`cd ${W} && node reported.js`);
     assert.equal(recovered.status, 0, recovered.stdout);
-    assert.match(recovered.stdout, /^CAUGHT 7$/m, 'a launch that failed after a caught refusal stages the text');
+    assert.match(recovered.stdout, /^REPORTED 7$/m, 'a refusal the program reported before exiting 1 is staged');
+
+    // A probe, then an unrelated failure, then a clean next launch.
+    const unrelated = await terminal.run(`cd ${W} && touch fail.flag && node probe-fail.js`);
+    assert.match(unrelated.stdout, /^PROBEFAIL false true$/m, unrelated.stdout);
+    const clean = await terminal.run(`cd ${W} && rm fail.flag && node probe-fail.js`);
+    assert.equal(clean.status, 0, clean.stdout);
+    assert.match(clean.stdout, /^PROBEFAIL false true$/m, 'an unrelated failure never stages a silent probe');
+
+    const stdin = await terminal.run(`cd ${W} && node stdin.js < /dev/null`);
+    assert.match(stdin.stdout, /^STDIN 1 true 0$/m, 'stdin data listeners are removed by the listener passed, as in node');
 
     const urlRun = await terminal.run(`cd ${W} && node url.js`);
     const hostUrl = spawnSync('node', ['-e', FILES['url.js']], { encoding: 'utf8' });
     assert.equal(hostUrl.status, 0, hostUrl.stderr);
     assert.equal(/^URL .*$/m.exec(urlRun.stdout)?.[0], /^URL .*$/m.exec(hostUrl.stdout)?.[0], 'url.parse/resolve/format answer as node does');
+
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {

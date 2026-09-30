@@ -14,10 +14,14 @@ published independently in the `@nimbus-sh` npm scope.
   deprecated wrapper with `new Function` as its module loads, which a
   Worker refuses at request time; the plain `Function` constructor was left
   native, so every launch crashed the same way and never bound its port.
-  It now answers text an earlier launch staged and stages the text it
-  refused only when the launch fails (an uncaught error, or a non-zero exit
-  such as serve 14's after ajv's refusal): a capability probe in a
-  successful launch (TypeBox's `Function("null")`) still answers "no".
+  It now answers text an earlier launch staged and stages one refused text
+  per failed launch, the one the failure is attributable to: the refusal an
+  uncaught error is, or, for a non-zero exit, the latest refusal the program
+  reported (read its message or stack; serve 14 prints ajv's refusal and
+  exits 1). A silent capability probe (TypeBox's `Function("null")`) is
+  never staged, even when the launch later fails for another reason.
+  `process.stdin.off`/`removeListener` remove wrapped `data` listeners again
+  (native `node:events` unwraps only `.listener`).
 
 - `npx http-server` serves. Node guests use workerd's native `node:events`
   instead of a hand-rolled `class EE`, so `EventEmitter.call(this)` with

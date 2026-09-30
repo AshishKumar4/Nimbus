@@ -5838,11 +5838,10 @@ const __cryptoMod = (() => {
 // schema check with \`Function\`; staging every text, the next launch staged the
 // probe's text but not the checks' — the probe said yes, the first check threw,
 // and pi's TUI died. So it answers only text an earlier launch staged, keeps
-// the native refusal otherwise, and stages the refused text only when the
-// launch fails (the service's plainFunction and stageFailedLaunch): a probe
-// with a working fallback answers the same in every successful launch, while
-// depd's wrapper (express 4) and ajv's validators (serve) run from the next
-// launch on.
+// the native refusal otherwise, and stages a refused text only when a failed
+// launch is attributable to it (the service's plainFunction, noteFailure and
+// stageFailedLaunch): a probe answers the same in every launch, while depd's
+// wrapper (express 4) and ajv's validators (serve) run from the next launch on.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
@@ -7244,9 +7243,24 @@ function __makeProcessStdin() {
       }
       return listener(out);
     };
-    wrapped.__orig = listener;
+    // node:events' own tag for a wrapper: listeners() answers the listener.
+    wrapped.listener = listener;
     return wrapped;
   }
+  // Removal finds the wrapper of the listener the program passes, including
+  // one once() wrapped first (whose own .listener is the program's).
+  const origRemove = r.removeListener.bind(r);
+  r.removeListener = function(event, listener) {
+    if (event === "data" && typeof listener === "function") {
+      const raw = r.rawListeners("data");
+      for (let i = raw.length - 1; i >= 0; i--) {
+        const w = raw[i];
+        if (w === listener || w.listener === listener || (w.listener && w.listener.listener === listener)) return origRemove(event, w);
+      }
+    }
+    return origRemove(event, listener);
+  };
+  r.off = r.removeListener;
   // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
   // listener, resume() or read(). An 'end', 'close' or 'error' listener on
   // paused stdin receives nothing. Vite's dev server registers
@@ -7505,6 +7519,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
     __nimbusReportProcessExit(error.code, "");
     return;
   }
+  if (globalThis.__nimbusRuntimeCode) globalThis.__nimbusRuntimeCode.noteFailure(error);
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
