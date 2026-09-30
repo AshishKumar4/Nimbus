@@ -28,7 +28,7 @@ import { applySwaps } from '../../packages/worker/src/facets/wasm-swap-registry.
 const PREAMBLE_SYMBOLS = [
   'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
   'NATIVE_EXECUTABLE_REJECT', 'NATIVE_PLATFORM_REJECT', 'IS_OPTIONAL_NATIVE_BINDING',
-  'PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION',
+  'PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE',
   'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
 Object.assign(
@@ -202,6 +202,29 @@ const REGISTRY = {
     assert.match(latest.pkg.tarballUrl, /wasm-node-4\.63\.5\.tgz$/, 'latest is rollup 4, swapped');
   }
   console.log('  rollup@^3 installs as published; rollup 4 swaps to @rollup/wasm-node');
+  // A mirror whose @rollup/wasm-node lags rollup: the target stands in only
+  // with the very version rollup resolved to. Without it rollup installs
+  // unswapped, with the note, never as wasm-node's own latest (4.0.0).
+  const lagging = registry({ rollup: ROLLUP.rollup, '@rollup/wasm-node': packument('@rollup/wasm-node', { '4.0.0': {} }) });
+  const behind = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: '^4.50.0' }), lagging.env);
+  assert.equal(behind.pkg?.version, '4.63.5', 'the version the range asked for');
+  assert.match(behind.pkg.tarballUrl, /\/rollup-4\.63\.5\.tgz$/, 'from rollup itself, unswapped');
+  assert.ok(!behind.events.some((e) => e.type === 'swap'), 'not announced as a swap');
+  assert.ok(behind.events.some((e) => e.type === 'advisory' && e.from === 'rollup' && /publishes no 4\.63\.5/.test(e.reason)),
+    `and the note says why it cannot run here: ${JSON.stringify(behind.events)}`);
+  console.log('  a lagging swap target never answers with a version outside the range');
+}
+
+// A semver range nothing satisfies is unresolved (npm's ETARGET), for a swap
+// target as for any package: it never falls back to the target's latest.
+{
+  const { specs } = applySwaps({ esbuild: '^0.30.0' });
+  const res = await resolveOnePackumentInFacet(spec({ range: specs.esbuild, topLevel: true }), registry(REGISTRY).env);
+  assert.equal(res.pkg, null, `no esbuild-wasm 0.30.x: nothing is installed, not 0.20.1 (${res.pkg?.version})`);
+  assert.equal(res.error?.type, 'unresolved');
+  const tag = await resolveOnePackumentInFacet(spec({ range: 'npm:esbuild-wasm@latest', topLevel: true }), registry(REGISTRY).env);
+  assert.equal(tag.pkg?.version, '0.20.1', 'a tag still resolves to its dist-tag');
+  console.log('  an unsatisfiable range is unresolved, never latest');
 }
 
 console.log('npm-swap-alias-resolve: ok');
