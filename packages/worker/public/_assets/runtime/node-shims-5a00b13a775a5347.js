@@ -5408,6 +5408,7 @@ const __streamMod = (() => {
         highWaterMark: opts?.highWaterMark ?? 16384,
         encoding: opts?.encoding || null,
         objectMode: opts?.objectMode ?? false,
+        autoDestroy: opts?.autoDestroy !== false,
         destroyed: false,
         readableLength: 0,
       };
@@ -5445,10 +5446,22 @@ const __streamMod = (() => {
       if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
         state.endEmitted = true;
         this.readable = false;
-        this.emit('end');
+        this._emitEnd();
         return true;
       }
       return false;
+    }
+
+    /**
+     * 'end', then Node's autoDestroy (on unless the stream opts out): a
+     * stream done reading, and done writing if it is a Duplex, is destroyed,
+     * so 'close' follows 'end'. Consumers wait on it: node-static ends the
+     * response on its file stream's 'close'.
+     */
+    _emitEnd() {
+      this.emit('end');
+      const ws = this._writableState;
+      if (this._readableState.autoDestroy && (!ws || ws.finished)) queueMicrotask(() => this.destroy());
     }
 
     /**
@@ -5481,7 +5494,7 @@ const __streamMod = (() => {
       if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
         state.endEmitted = true;
         this.readable = false;
-        queueMicrotask(() => this.emit('end'));
+        queueMicrotask(() => this._emitEnd());
       }
       return chunk;
     }
@@ -5495,7 +5508,7 @@ const __streamMod = (() => {
         else if (state.buffer.length === 0 && !state.endEmitted) {
           state.endEmitted = true;
           this.readable = false;
-          queueMicrotask(() => this.emit('end'));
+          queueMicrotask(() => this._emitEnd());
         }
         return false;
       }
