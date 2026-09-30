@@ -38,9 +38,12 @@ published independently in the `@nimbus-sh` npm scope.
   are followed as they are loaded and used, through aliases
   (`const make = http.createServer`) and re-exporting modules. An argument
   decides only where the program branches on it, as in Node: its own
-  `process.argv` tests, a CLI parser (commander, yargs, sade, cac) answering
-  `--help`/`--version` and exiting, or running only the command argv names;
-  a server that does not read `--help` or `build` still binds. `.listen`
+  `process.argv` tests, and a CLI parser (commander, yargs, sade, cac),
+  whose actions run only when it parses: none for `--help`/`--version`,
+  which it answers (`dev --help` too), and a command's only when argv names
+  it. An ES module entry decides as its CommonJS form does (a parser is
+  known through the transform's `__toESM(require(...))`). A server that does
+  not read `--help` or `build` still binds. `.listen`
   binds unless it is the program's own `listen` method or its first
   argument is provably not a port (a callback, `this`, a socket path;
   constants resolved, so `const p = 3000; app.listen(p)` binds). Measured

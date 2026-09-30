@@ -13,15 +13,33 @@
 // through an alias or a re-exporting module was missed. An argument decides
 // only where the program branches on it (its own process.argv tests, a CLI
 // parser's queries and commands), as in Node: a server handed `--help` or
-// `build` that does not read them still binds.
+// `build` that does not read them still binds, and a parser's action runs
+// only when the parser dispatches it (never for `--help`, which it answers).
+// An ES module entry decides as its CommonJS equivalent does.
 //
 // Through the public entry: the runtime handler (buildRuntimeHandler) over the
-// real runFresh, with a FacetManager that records which facet it was asked for.
+// real runFresh and the real esbuild transform an ES module entry takes, with a
+// FacetManager that records which facet it was asked for.
 
 import assert from 'node:assert/strict';
+import { plugin } from 'bun';
+import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
 import { runFresh } from '../../packages/worker/src/runtime/node-runner.ts';
 import { runBunScript } from '../../packages/worker/src/runtime/bun-runner.ts';
+
+// The compiled esbuild asset the host bundler supplies in production.
+const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
+const esbuildWasm = await WebAssembly.compile(await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')));
+plugin({
+  name: 'esbuild-wasm-asset',
+  setup(build) {
+    build.onLoad({ filter: /esbuild-wasm\/esbuild\.wasm$/ }, () => ({ exports: { default: esbuildWasm }, loader: 'object' }));
+  },
+});
+const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+const esbuild = new EsbuildService();
 
 function facetMgr() {
   const calls = { exec: 0, spawnNode: 0 };
@@ -50,7 +68,7 @@ async function invoke(files, args, { runtime = 'node', stdin = '', ...ctxExtra }
       run: (code, opts) => (runtime === 'bun' ? runBunScript(fm, code, opts) : runFresh(fm, code, opts)),
     },
     {
-      getEsbuild: () => ({ async transform(code) { return { code }; } }),
+      getEsbuild: () => esbuild,
       registry: { resolve: () => undefined },
     },
   );
@@ -190,6 +208,40 @@ assert.equal(await invoke({
   };
   assert.equal(await run(COMMANDER, 'cli.js', ['dev', '-p', '5173']), 'resident', 'the commander command that serves');
   assert.equal(await run(COMMANDER, 'cli.js', ['build']), 'one-shot', 'the commander command that builds');
+  assert.equal(await run(COMMANDER, 'cli.js', ['dev', '--help']), 'one-shot', 'commander answers dev --help without its action');
+}
+{
+  // Registered in one statement, parsed in another, with the help exit caught
+  // (Commander 11 prints dev's help and calls no action): CommonJS and the
+  // same program as an ES module decide alike.
+  const SUBCOMMAND = [
+    "program.command('dev').option('-p, --port <n>').action(startServer);",
+    'program.exitOverride();',
+    "try { program.parse(process.argv); } catch (error) { if (error.code !== 'commander.helpDisplayed') throw error; }",
+  ].join('\n');
+  const ROOT = 'program.action(boot).parse(process.argv);';
+  const SERVER_MODULE = 'export default function boot() { require(\'http\').createServer().listen(3000); }\nexport function startServer() { boot(); }\n';
+  for (const [format, files] of [
+    ['CommonJS', {
+      'package.json': '{"name":"cli"}',
+      'sub.js': `const { Command } = require('commander');\nconst { startServer } = require('./server.cjs');\nconst program = new Command();\n${SUBCOMMAND}`,
+      'root.js': `const { program } = require('commander');\nconst boot = require('./server.cjs').default;\n${ROOT}`,
+      'server.cjs': "exports.default = function boot() { require('http').createServer().listen(3000); };\nexports.startServer = () => exports.default();\n",
+    }],
+    ['an ES module', {
+      'package.json': '{"name":"cli","type":"module"}',
+      'sub.js': `import { Command } from 'commander';\nimport { startServer } from './server.js';\nconst program = new Command();\n${SUBCOMMAND}`,
+      'root.js': `import program from 'commander';\nimport boot from './server.js';\n${ROOT}`,
+      'server.js': SERVER_MODULE,
+    }],
+  ]) {
+    const cli = (entry, args) => invoke(Object.fromEntries(Object.entries(files).map(([name, text]) => [`home/user/cli/${name}`, text])),
+      [`/home/user/cli/${entry}`, ...args]);
+    assert.equal(await cli('sub.js', ['dev', '--help']), 'one-shot', `${format}: dev --help runs no action`);
+    assert.equal(await cli('sub.js', ['dev', '-p', '3000']), 'resident', `${format}: dev serves`);
+    assert.equal(await cli('root.js', ['--help']), 'one-shot', `${format}: the root action does not run for --help`);
+    assert.equal(await cli('root.js', ['public']), 'resident', `${format}: the root action serves`);
+  }
 }
 assert.equal(await run({ 'cli.js': "require('./wrapper.js')();", 'wrapper.js': "module.exports = require('./server.js');", 'server.js': SERVER_FACTORY },
   'cli.js'), 'resident', 'a second hop: a module re-exporting the server module');

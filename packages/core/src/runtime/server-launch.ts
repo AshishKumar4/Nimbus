@@ -15,10 +15,13 @@
  *   false for a module it loads); anything else may go either way. Code after
  *   `return`, `throw` or `process.exit()` does not run.
  * - An argument decides only where the program branches on it: its own
- *   `process.argv` tests, and a CLI parser's (commander, yargs, sade, cac). A
- *   parser answers `--help`/`--version` itself and exits at `.parse()`, and a
- *   command's handler (`.command('serve').action(fn)`, yargs'
- *   `.command({ command: 'serve', handler })`) runs only when argv names it.
+ *   `process.argv` tests, and a CLI parser's (commander, yargs, sade, cac).
+ *   A parser's handlers (`.action(fn)`, `.command('serve').action(fn)`,
+ *   yargs' `.command({ command: 'serve', handler })`) are recorded where they
+ *   are registered and run only when it parses (`.parse()`, `.argv`): not at
+ *   all when argv holds `--help`/`--version`, which it answers and exits on,
+ *   and for a command only when argv names it. A parser is known through
+ *   ESM interop (`__toESM(require('commander'))`) as through `require`.
  * - A function runs when it is called, constructed, invoked immediately, or
  *   handed to a call as a callback (a listener, `.then`, a CLI's action or a
  *   command's `handler`); not when it is only defined or exported. Logging a
@@ -105,6 +108,16 @@ export async function programLaunchesServer(program: ServerLaunchProgram, host: 
 
 type Completion = 'normal' | 'abrupt' | 'break';
 
+/**
+ * A CLI parser's handler, recorded where it was registered: it runs when a
+ * parser parses argv that names its command (`names`), or any argv (null).
+ */
+interface ParserHandler {
+  names: string[] | null;
+  /** Walk the handler in the module that registered it; whether it starts a server. */
+  run: () => boolean;
+}
+
 /** A value of one of the program's modules: the module itself, or an export (and members) of it. */
 interface ModuleRef {
   path: string;
@@ -187,6 +200,30 @@ function isNamed(node: AstNode, object: string, property: string): boolean {
     && propertyName(n) === property;
 }
 
+/**
+ * Module interop helpers a transform to CommonJS wraps an import in: esbuild's
+ * `__toESM`/`__toCommonJS`, TypeScript's `__importDefault`/`__importStar`,
+ * Babel's `_interopRequireDefault`/`_interopRequireWildcard`. They return the
+ * module; they call nothing it holds.
+ */
+const INTEROP_WRAPPER_RE = /^_*(?:toESM|toCommonJS|importDefault|importStar|interopRequire(?:Default|Wildcard)?)$/;
+
+/**
+ * The package or module a value is: `require('x')`, `import('x')`, or an
+ * interop wrapper around one (`__toESM(require('x'))`, as a transform to
+ * CommonJS writes an import).
+ */
+function interopSpecifier(node: AstNode): string | null {
+  const n = unwrap(node);
+  const direct = requiredSpecifier(n);
+  if (direct !== null) return direct;
+  if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && INTEROP_WRAPPER_RE.test(n.callee.name)
+    && n.arguments.length > 0) {
+    return requiredSpecifier(n.arguments[0]);
+  }
+  return null;
+}
+
 /** `require('<literal>')`'s or `import('<literal>')`'s specifier. */
 function requiredSpecifier(node: AstNode): string | null {
   const n = unwrap(node);
@@ -235,6 +272,7 @@ class ModuleGraph {
   private readonly unreadable = new Set<string>();
   private reads = 0;
   private bytes = 0;
+  private handlers: ParserHandler[] = [];
 
   constructor(private readonly program: ServerLaunchProgram, private readonly host: ServerLaunchHost) {}
 
@@ -289,6 +327,22 @@ class ModuleGraph {
 
   resetResults(): void {
     for (const record of this.modules.values()) record.results.clear();
+    this.handlers = [];
+  }
+
+  /** Record a CLI parser's handler until a parser parses. */
+  defer(handler: ParserHandler): void {
+    this.handlers.push(handler);
+  }
+
+  /** A parser parsed `argv`: run the handlers it dispatches; whether one starts a server. */
+  dispatch(argv: readonly string[]): boolean {
+    for (const handler of this.handlers.splice(0)) {
+      const runs = handler.names === null || handler.names.some((name) => name === '*' || name === '$0'
+        || name.startsWith('[') || name.startsWith('<') || argv.includes(name));
+      if (runs && handler.run()) return true;
+    }
+    return false;
   }
 
   /** The module at `path`, or undefined (noted to be read) when not read yet. */
@@ -389,7 +443,7 @@ function buildScope(record: ModuleRecord): Scope {
     scope.constants.set(name, init);
   };
   const packageOf = (init: AstNode | null) => {
-    const specifier = init ? requiredSpecifier(init) : null;
+    const specifier = init ? interopSpecifier(init) : null;
     return specifier !== null && !isRelative(specifier) ? specifier : null;
   };
   const bindPattern = (pattern: AstNode, init: AstNode | null) => {
@@ -704,7 +758,7 @@ class Walk {
         return;
       case 'MemberExpression':
         // yargs' `.argv` parses as `.parse()` does.
-        if (propertyName(e) === 'argv' && this.answersQuery(e.object)) return;
+        if (propertyName(e) === 'argv' && this.fromCliParser(e.object)) { this.parse(e.object, []); return; }
         forEachChild(e, (child) => this.expression(child));
         return;
       case 'ConditionalExpression': {
@@ -730,8 +784,12 @@ class Walk {
   private call(node: AstNode): void {
     const callee = unwrap(node.callee);
     if (this.startsServer(callee, node.arguments)) { this.launches = true; return; }
-    if (PARSE_CALLS.has(propertyName(callee) ?? '') && this.answersQuery(callee.object)) return;
-    const specifier = requiredSpecifier(node);
+    if (PARSE_CALLS.has(propertyName(callee) ?? '') && this.fromCliParser(callee.object)) {
+      this.parse(callee.object, node.arguments);
+      return;
+    }
+    // A require, or an interop wrapper around one: the module loads.
+    const specifier = interopSpecifier(node);
     if (specifier !== null) { this.load(specifier); return; }
 
     // The callee runs: an inline function, a local function or method, or a
@@ -743,24 +801,50 @@ class Walk {
     if (this.launches) return;
     this.expression(callee);
 
-    // What a call is handed, it may call: unless it is logging the value, or
-    // registering a command this invocation does not name.
+    // What a call is handed, it may call: unless it is logging the value. A
+    // CLI parser's handler runs when the parser dispatches it, not here.
     const logs = callee.type === 'MemberExpression' && unwrap(callee.object).type === 'Identifier'
       && unwrap(callee.object).name === 'console';
-    const calls = !logs && this.commandRuns(callee, node.arguments);
+    const registration = logs ? undefined : this.parserRegistration(callee, node.arguments);
+    const handed: AstNode[] = [];
     for (const argument of node.arguments) {
       if (this.launches || this.exited) return;
       const a = unwrap(argument.type === 'SpreadElement' ? argument.argument : argument);
-      if (isFunction(a)) { if (calls) this.run(a); continue; }
-      if (calls) {
-        this.invoke(a);
-        // A command object's handler (yargs' `.command({ handler })`).
-        if (a.type === 'ObjectExpression') {
-          for (const prop of a.properties) if (prop.type === 'Property' && isFunction(prop.value)) this.run(prop.value);
-        }
-      }
-      this.expression(a);
+      if (!logs) handed.push(a);
+      if (!isFunction(a)) this.expression(a);
     }
+    if (registration !== undefined) {
+      this.graph.defer({ names: registration, run: () => { this.callHanded(handed); return this.launches; } });
+    } else {
+      this.callHanded(handed);
+    }
+  }
+
+  /** Call what a call was handed: functions, values of the program's modules, a command object's handler. */
+  private callHanded(handed: AstNode[]): void {
+    for (const a of handed) {
+      if (this.launches || this.exited) return;
+      if (isFunction(a)) { this.run(a); continue; }
+      this.invoke(a);
+      // A command object's handler (yargs' `.command({ handler })`).
+      if (a.type === 'ObjectExpression') {
+        for (const prop of a.properties) if (prop.type === 'Property' && isFunction(prop.value)) this.run(prop.value);
+      }
+    }
+  }
+
+  /**
+   * A CLI parser parses argv: the chain before it registers its handlers,
+   * then a query (`--help`, `--version`) is answered and the program exits,
+   * or the handlers argv selects run.
+   */
+  private parse(parser: AstNode, args: AstNode[]): void {
+    this.expression(parser);
+    for (const a of args) this.expression(a);
+    if (this.launches || this.exited) return;
+    const argv = this.graph.argv.slice(1);
+    if (argv.some((arg) => PARSER_QUERIES.has(arg))) { this.exited = true; return; }
+    if (this.graph.dispatch(argv)) this.launches = true;
   }
 
   /** Whether `value` is a CLI parser, or a value of one (`program.command('x')`, `yargs(argv)`, `new Command()`). */
@@ -769,7 +853,7 @@ class Walk {
     // package, or a name bound to a value of one.
     let v = unwrap(value);
     for (;;) {
-      const specifier = requiredSpecifier(v);
+      const specifier = interopSpecifier(v);
       if (specifier !== null) return CLI_PARSERS.has(specifier);
       if (v.type === 'MemberExpression') v = unwrap(v.object);
       else if (v.type === 'CallExpression' || v.type === 'NewExpression') v = unwrap(v.callee);
@@ -782,21 +866,15 @@ class Walk {
     return init !== undefined && bindings < 8 && this.fromCliParser(init, bindings + 1);
   }
 
-  /** A CLI parser reading argv that holds a query answers it and exits the program. */
-  private answersQuery(parser: AstNode): boolean {
-    if (!this.graph.argv.slice(1).some((arg) => PARSER_QUERIES.has(arg)) || !this.fromCliParser(parser)) return false;
-    this.exited = true;
-    return true;
-  }
-
   /**
-   * Whether the functions handed to a call may run, as far as a CLI parser's
-   * commands decide: a command's handler runs only when argv names the
-   * command (or it is the default one).
+   * A CLI parser's handler registration (`.action(...)`, `.command(...)`):
+   * the command names argv must hold for it to run, or null when it runs
+   * whenever the parser parses (a root action, a default command).
+   * Undefined for any other call.
    */
-  private commandRuns(callee: AstNode, args: AstNode[]): boolean {
+  private parserRegistration(callee: AstNode, args: AstNode[]): string[] | null | undefined {
     const method = propertyName(callee);
-    if ((method !== 'command' && method !== 'action') || !this.fromCliParser(callee.object)) return true;
+    if ((method !== 'command' && method !== 'action') || !this.fromCliParser(callee.object)) return undefined;
     let registration: AstNode[] | null = method === 'command' ? args : null;
     // `.command('serve').option(...).action(fn)`: the nearest command down the chain.
     for (let at = unwrap(callee.object); registration === null && at.type === 'CallExpression';) {
@@ -805,7 +883,7 @@ class Walk {
       else if (inner.type === 'MemberExpression') at = unwrap(inner.object);
       else break;
     }
-    if (registration === null || registration.length === 0) return true;
+    if (registration === null || registration.length === 0) return null;
     const names: string[] = [];
     const addNames = (node: AstNode | undefined) => {
       const n = node ? unwrap(node) : null;
@@ -824,9 +902,7 @@ class Walk {
     }
     const isDefault = registration.some((arg: AstNode) => unwrap(arg).type === 'ObjectExpression'
       && unwrap(arg).properties.some((p: AstNode) => p.type === 'Property' && keyName(p.key, p.computed) === 'isDefault'));
-    const argv = this.graph.argv.slice(1);
-    return isDefault || names.length === 0
-      || names.some((name) => name === '*' || name === '$0' || name.startsWith('[') || name.startsWith('<') || argv.includes(name));
+    return isDefault || names.length === 0 ? null : names;
   }
 
   /** A call that creates a server, or listens on a port. */
@@ -896,6 +972,8 @@ class Walk {
     const o = unwrap(owner);
     const ref = moduleOf(this.record, this.scope, o);
     if (ref !== null) { this.use({ path: ref.path, members: [...ref.members, method] }); return; }
+    // A module calling its own export (`exports.start()`, `module.exports.start()`).
+    if (isExportsObject(o)) { this.useExport([method]); return; }
     if (o.type === 'ThisExpression') {
       // A method calling another of its class: every method of that name here.
       for (const byName of this.scope.members.values()) for (const fn of byName.get(method) ?? []) this.run(fn);
