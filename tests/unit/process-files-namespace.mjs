@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -66,6 +67,28 @@ assert.match(listed.stdout, /memory \/mnt\/data/);
   assert.ok(a > 0 && b > 0 && a !== b, 'distinct, never 0');
   assert.equal(two.stat('/mnt/bare/a').ino, a, 'stable across processes');
   ws.filesystem.vfs.unmount('/mnt/bare');
+}
+
+{
+  const partial = new MemoryVFS({ uid: 1000, gid: 1000 });
+  partial.mkdir('/tree');
+  files.vfs.mount('/partial', {
+    stat: partial.stat.bind(partial),
+    readFile: partial.readFile.bind(partial),
+    writeFile: partial.writeFile.bind(partial),
+    readdir: partial.readdir.bind(partial),
+    mkdir: partial.mkdir.bind(partial),
+    unlink: partial.unlink.bind(partial),
+    removeRecursive: async (path) => ({
+      removed: [], kept: [path],
+      failures: [{ path: `${path}/kept`, error: syscallError('EACCES', 'unlink', `${path}/kept`) }],
+    }),
+  });
+  const fs = files.bind({ pid: 4245, cred: USER });
+  await assert.rejects(() => fs.remove('/partial/tree', { recursive: true }), {
+    name: 'VfsError', code: 'EACCES', errno: -13, syscall: 'rm', path: '/partial/tree/kept',
+    message: "EACCES: permission denied, rm '/partial/tree/kept'",
+  });
 }
 
 // A released process is gone for good.

@@ -786,9 +786,9 @@ class AwaitingProcessBridge {
       }
       if (stat.type !== 'directory') return this.namespace.unlink(p);
       if (!options?.recursive) throw syscallError('EISDIR', 'rm', p);
-      const report = await this.mountOp('removeRecursive', 'rm', path)(p);
-      const failed = (report as { failures?: { path: string; code: string }[] } | undefined)?.failures?.[0];
-      if (failed) throw syscallError(failed.code as never, 'rm', failed.path);
+      const report: VfsRemoval | undefined = await this.mountOp('removeRecursive', 'rm', path)(p);
+      const failed = report?.failures?.[0];
+      if (failed) throw syscallError(failed.error.code, 'rm', failed.path);
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
