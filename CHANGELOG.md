@@ -25,8 +25,11 @@ published independently in the `@nimbus-sh` npm scope.
   of a pipe read before it starts, as Node's blocking read would wait for
   a slow writer; a pipe that ends within that is delivered whole
   (`cat package-lock.json | node -e "JSON.parse(fs.readFileSync(0))"`).
-  Past it a synchronous read fails with EAGAIN naming the bound and
-  suggesting `< file`, while `process.stdin` still reads the pipe. All
+  The 16 MiB is one budget for the session, since the read ahead is held in
+  its Durable Object: concurrent launches share it, and one that cannot
+  reserve it streams its pipe. Past it a synchronous read fails with EAGAIN
+  naming the bound and suggesting `< file`, while `process.stdin` still
+  reads the pipe. All
   those forms, `fs.read` of fd 0 and `process.stdin` share one position in
   stdin, so a program can read a header synchronously and stream the rest.
   `process.stdin.listeners('data')` lists a `once` listener as the
