@@ -10,7 +10,10 @@
 // in the entry, or `createServer(` in a module it names. So a comment, a
 // server started only for another subcommand, or a factory that is exported
 // and never called made a one-shot script resident, while a creator reached
-// through an alias or a re-exporting module was missed.
+// through an alias or a re-exporting module was missed. An argument decides
+// only where the program branches on it (its own process.argv tests, a CLI
+// parser's queries and commands), as in Node: a server handed `--help` or
+// `build` that does not read them still binds.
 //
 // Through the public entry: the runtime handler (buildRuntimeHandler) over the
 // real runFresh, with a FacetManager that records which facet it was asked for.
@@ -80,8 +83,20 @@ for (const [what, source] of [
   ['a server started in a called function', 'async function main() { await setup(); server.listen(8080); }\nmain().catch(console.error);'],
   ['an aliased creator', "const { createServer: make } = require('node:http'); make(handler);"],
   ['a creator bound off its module', "const http = require('http'); const make = http.createServer; make(handler);"],
+  ['a port in a constant', "const p = 3000;\nrequire('express')().listen(p);"],
+  ['a port with an environment default', "const p = process.env.APP_BIND || 8080;\napp.listen(p, () => console.log('up'));"],
+  ['a port a function is given', "function start(p) { app.listen(p); }\nstart(Number(process.argv[2]));"],
 ]) {
   assert.equal(await run({ 'server.js': source }, 'server.js'), 'resident', what);
+}
+for (const args of [['--help'], ['--version'], ['build']]) {
+  assert.equal(await run({ 'server.js': "require('http').createServer((q, s) => s.end('hi')).listen(5000);" }, 'server.js', args),
+    'resident', `a server that does not read ${args[0]} still binds`);
+}
+{
+  const USAGE = "if (process.argv.includes('--help')) { console.log('usage: server'); process.exit(0); }\nrequire('http').createServer().listen(3000);";
+  assert.equal(await run({ 'server.js': USAGE }, 'server.js', ['--help']), 'one-shot', 'a server that answers its own --help and exits');
+  assert.equal(await run({ 'server.js': USAGE }, 'server.js'), 'resident');
 }
 assert.equal(await invoke({}, ['-e', "require('http').createServer().listen(3000)"]), 'resident', 'node -e starts a server');
 assert.equal(await invoke({}, ['-'], { stdin: "require('http').createServer().listen(3000)" }), 'resident', 'node - starts a server');
@@ -92,9 +107,11 @@ assert.equal(await invoke({ 'home/user/b.js': 'Bun.serve({ port: 4000, fetch() {
 for (const [what, source] of [
   ['a build script', "console.log('build done'); process.exit(0);"],
   ['prose and comments about servers', "// app.listen(3000); createServer(handler)\nconst s = 'the server listens: serve(it)'; console.log(s);"],
-  ['an emitter\'s listen(handler)', "const messenger = connect(); messenger.listen((message) => handle(message)); messenger.listen(this, onKey); messenger.listen(reporter);"],
+  ['an emitter\'s listen(handler)', "const messenger = connect(); messenger.listen((message) => handle(message)); messenger.listen(this, onKey);"],
   ['a server only in a function never called', "function serve() { require('http').createServer().listen(1); }\nmodule.exports = serve;"],
   ['a server only after the program exited', "console.log('usage'); process.exit(1);\nrequire('http').createServer().listen(1);"],
+  ['listen on a socket path', "const sock = '/tmp/app.sock';\nrequire('net').Server.prototype.x; server.listen(sock);"],
+  ['listen given a callback', "function onMessage(m) { handle(m); }\nmessenger.listen(onMessage); bus.listen(handler.bind(bus));"],
 ]) {
   assert.equal(await run({ 'script.js': source }, 'script.js'), 'one-shot', what);
 }
@@ -125,9 +142,10 @@ for (const [what, source] of [
   };
   const bin = '/tmp/.npx-cache/node_modules/static-server/bin/static-server.js';
   assert.equal(await invoke(STATIC_SERVER, [bin, '-p', '9080', '/home/user/site']), 'resident', 'npx static-server');
-  for (const args of [['--version'], ['-h'], ['build']]) {
-    assert.equal(await invoke(STATIC_SERVER, [bin, ...args]), 'one-shot', `static-server ${args.join(' ')} answers and exits`);
+  for (const args of [['--version'], ['-h'], ['-p', '9080', '--help']]) {
+    assert.equal(await invoke(STATIC_SERVER, [bin, ...args]), 'one-shot', `commander answers static-server ${args.join(' ')} and exits`);
   }
+  assert.equal(await invoke(STATIC_SERVER, [bin, 'build']), 'resident', 'static-server build serves a directory named build');
   assert.equal(await invoke(STATIC_SERVER, [bin], { __nimbusBinSpawn: { callerPid: 9, command: 'static-server' } }),
     'one-shot', 'a .bin wrapper decided residency by its own rule');
 }
@@ -136,12 +154,43 @@ assert.equal(await invoke({
   'home/user/node_modules/sirv-esm/bin.js': "import sade from 'sade';\nimport { boot } from './lib/index.js';\nsade('sirv [dir]').action(boot).parse(process.argv);\n",
   'home/user/node_modules/sirv-esm/lib/index.js': "export function boot(dir, opts) { require('http').createServer(fn).listen(opts.port); }\nexport function help() {}\n",
 }, ['/home/user/node_modules/sirv-esm/bin.js', 'public']), 'resident', 'an ESM launcher handing its module to its CLI');
-assert.equal(await run({
-  'bin.js': "const run = require('./lib');\nrequire('yargs').command({ command: 'serve', handler: (argv) => run.serve(argv.port) }).parse();\n",
-  'lib/index.js': "module.exports = { init: require('./init'), serve: require('./serve') };\n",
-  'lib/init.js': "module.exports = () => console.log('init');\n",
-  'lib/serve.js': "module.exports = (port) => require('http').createServer().listen(port);\n",
-}, 'bin.js', ['serve']), 'resident', 'a command handler serving through an index of commands');
+assert.equal(await invoke({
+  'home/user/node_modules/sirv-esm/package.json': '{"name":"sirv-esm","type":"module"}',
+  'home/user/node_modules/sirv-esm/bin.js': "import sade from 'sade';\nimport { boot } from './lib/index.js';\nsade('sirv [dir]').action(boot).parse(process.argv);\n",
+  'home/user/node_modules/sirv-esm/lib/index.js': "export function boot(dir, opts) { require('http').createServer(fn).listen(opts.port); }\n",
+}, ['/home/user/node_modules/sirv-esm/bin.js', '--help']), 'one-shot', 'sade answers --help and exits');
+{
+  const YARGS = {
+    'bin.js': [
+      "const run = require('./lib');",
+      "require('yargs')",
+      "  .command({ command: 'init [path]', handler: (argv) => run.init(argv.path) })",
+      "  .command({ command: 'serve [path]', handler: (argv) => run.serve(argv.port) })",
+      '  .parse();',
+    ].join('\n'),
+    'lib/index.js': "module.exports = { init: require('./init'), serve: require('./serve') };\n",
+    'lib/init.js': "module.exports = () => console.log('init');\n",
+    'lib/serve.js': "module.exports = (port) => require('http').createServer().listen(port);\n",
+  };
+  assert.equal(await run(YARGS, 'bin.js', ['serve']), 'resident', 'a yargs command serving through an index of commands');
+  assert.equal(await run(YARGS, 'bin.js', ['init', 'docs']), 'one-shot', 'another yargs command');
+  assert.equal(await run(YARGS, 'bin.js', ['serve', '--help']), 'one-shot', 'yargs answers --help and exits');
+}
+{
+  const COMMANDER = {
+    'cli.js': [
+      "const { Command } = require('commander');",
+      "const { startDev } = require('./dev.js');",
+      'const program = new Command();',
+      "program.command('dev').option('-p, --port <n>').action((opts) => startDev(opts.port));",
+      "program.command('build').action(() => console.log('built'));",
+      'program.parse(process.argv);',
+    ].join('\n'),
+    'dev.js': "exports.startDev = (port) => require('http').createServer().listen(port);\n",
+  };
+  assert.equal(await run(COMMANDER, 'cli.js', ['dev', '-p', '5173']), 'resident', 'the commander command that serves');
+  assert.equal(await run(COMMANDER, 'cli.js', ['build']), 'one-shot', 'the commander command that builds');
+}
 assert.equal(await run({ 'cli.js': "require('./wrapper.js')();", 'wrapper.js': "module.exports = require('./server.js');", 'server.js': SERVER_FACTORY },
   'cli.js'), 'resident', 'a second hop: a module re-exporting the server module');
 assert.equal(await run({
@@ -171,6 +220,10 @@ for (const [what, files] of [
   ['another export of the server module', { 'cli.js': "const { version } = require('./lib.js');\nversion();", 'lib.js': "exports.version = () => '1.0';\nexports.serve = () => require('http').createServer().listen(1);\n" }],
   ['a server module that starts only as its own entry', { 'cli.js': "require('./server.js');", 'server.js': "const app = makeApp();\nif (require.main === module) app.listen(3000);\nmodule.exports = app;\n" }],
   ['a keypress listener in a module it loads', { 'cli.js': "require('./prompt.js');", 'prompt.js': 'class Prompt { start() { this.stop = keypress.listen(this, this.onKey.bind(this)); } }\nnew Prompt().start();\n' }],
+  ['listen on the program\'s own listener class', {
+    'cli.js': "const { CompletionListener } = require('./completion.js');\nconst commands = build();\nnew CompletionListener({}).listen(commands, signal);",
+    'completion.js': 'class CompletionListener { listen(commands) { return Promise.all(commands.map((c) => c.close)); } }\nexports.CompletionListener = CompletionListener;\n',
+  }],
 ]) {
   assert.equal(await run(files, 'cli.js'), 'one-shot', what);
 }

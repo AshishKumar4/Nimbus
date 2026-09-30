@@ -85,12 +85,5 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
   assert.equal(fm.calls.spawnNode.length, 1, 'a real Bun server still gets a resident process');
 }
 
-// a server asked a question it answers and exits on stays one-shot
-{
-  const fm = makeFacetMgr();
-  await runFresh(fm, SERVER, { argv: ['/home/user/server.js', '--version'], filename: '/home/user/server.js', launchesServer: true });
-  assert.equal(fm.calls.exec.length, 1, 'a query is answered one-shot');
-  assert.equal(fm.calls.spawnNode.length, 0);
-}
 
 console.log('node-runner-server-promotion: ok');

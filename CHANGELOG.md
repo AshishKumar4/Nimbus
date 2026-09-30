@@ -36,12 +36,19 @@ published independently in the `@nimbus-sh` npm scope.
   branches known false for its argv, code after `process.exit()`, and
   functions only defined or exported do not run; the package's own modules
   are followed as they are loaded and used, through aliases
-  (`const make = http.createServer`) and re-exporting modules; `.listen`
-  counts when given a port. A query (`--help`, `--version`) or `build`
-  stays one-shot. Measured on 48 bins of 37 packages: the same servers are
-  promoted, except `vercel` (its bundle is past the 2 MiB a walk reads) and
-  `cf-wrangler` (it serves from a child process); degit, concurrently, nx,
-  firebase and `vitest run` are not.
+  (`const make = http.createServer`) and re-exporting modules. An argument
+  decides only where the program branches on it, as in Node: its own
+  `process.argv` tests, a CLI parser (commander, yargs, sade, cac) answering
+  `--help`/`--version` and exiting, or running only the command argv names;
+  a server that does not read `--help` or `build` still binds. `.listen`
+  binds unless it is the program's own `listen` method or its first
+  argument is provably not a port (a callback, `this`, a socket path;
+  constants resolved, so `const p = 3000; app.listen(p)` binds). Measured
+  on 48 bins of 37 packages: the same servers are promoted, except `vercel`
+  (its bundle is past the 2 MiB a walk reads) and `cf-wrangler` (it serves
+  from a child process); degit, concurrently, nx, firebase and `vitest run`
+  are not. `docsify` is resident only for `serve`, and `sirv` and
+  `static-server` answer `--help`/`--version` one-shot.
 
 - node-static (`npx node-static`) serves its files; it answered 404 for every
   one. The guest's `url` module imitated Node's legacy API over WHATWG
