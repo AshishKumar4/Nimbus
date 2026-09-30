@@ -4811,7 +4811,7 @@ export class FacetManager {
    */
   private _transformStore(): TransformStore | undefined {
     const hostId = this.esbuild?.transformHostId;
-    const sql = (this.ctx.storage as { sql?: SqlStorage }).sql;
+    const sql = this.ctx.storage.sql;
     if (!hostId || !sql || !this.vfs) return undefined;
     return new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
   }
@@ -5373,12 +5373,12 @@ export class FacetManager {
         continue;
       }
       const path = entry.path.replace(/^\/+/, '');
-      const file: Record<string, string | Uint8Array> = { [path]: entry.text };
+      const file: Record<string, string> = { [path]: entry.text };
       const emits = new Map<string, string>();
       const lowered = new Set<string>();
       if (this.esbuild) await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer, this._transformStore());
       else _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
-      let code = emits.get(path) ?? file[path] as string;
+      let code = emits.get(path) ?? file[path];
       try {
         code = rewriteProvidedCommonJsModules(code);
       } catch {

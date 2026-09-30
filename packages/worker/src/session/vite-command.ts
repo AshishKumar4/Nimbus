@@ -323,7 +323,7 @@ export function createViteCommand(self: ViteHost) {
       // reads it through the engine, per request and after this command
       // has returned: at its engine key, which a mount has none of.
       const distRoot = resolveVfsPath(viteConfig.outDir || 'dist', cwd);
-      const servedDist = await engineKey(ctx.vfs, self.sqliteFs!, '/' + distRoot);
+      const servedDist = await engineKey(ctx.vfs, self.sqliteFs, '/' + distRoot);
       if (servedDist === null) {
         ctx.stderr.write(`vite: preview serves only a build on the workspace filesystem; /${distRoot} is on a mounted one\n`);
         return 1;
@@ -345,7 +345,7 @@ export function createViteCommand(self: ViteHost) {
         { longRunning: true },
       );
       self.viteDevServer = new ViteDevServer({
-        vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: servedDist,
+        vfs: self.sqliteFs, esbuild: self.esbuildService, root: servedDist,
         onHmrMessage: () => {},
         sql: self.ctx.storage.sql,
         basePath: previewBasePath,
@@ -420,7 +420,7 @@ export function createViteCommand(self: ViteHost) {
     // The dev server reads the project through the engine, per request and
     // after this command has returned: at its engine key, which a mount has
     // none of.
-    const servedRoot = await engineKey(ctx.vfs, self.sqliteFs!, '/' + vfsRoot);
+    const servedRoot = await engineKey(ctx.vfs, self.sqliteFs, '/' + vfsRoot);
     if (servedRoot === null) {
       ctx.stderr.write(`vite: the dev server serves only projects on the workspace filesystem; /${vfsRoot} is on a mounted one\n`);
       return 1;

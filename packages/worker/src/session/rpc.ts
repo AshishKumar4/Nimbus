@@ -88,6 +88,8 @@ import {
 import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
+import type { NimbusSession } from './nimbus-session.js';
+import type { HmrEvent } from '../facets/real-vite-hmr.js';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
 // would require enumerating ~25 fields/methods AND the protected ctx,
@@ -95,6 +97,12 @@ import { z } from 'zod/v4';
 // recommendation 1, the class delegators cast `this as any` at the
 // boundary; runtime impact is zero (TS-only).
 type RpcHost = any;
+
+type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
+type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
+type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
+  'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug'
+>;
 
 const WriteBatchInodeSchema: z.ZodType<BatchInodeEntry> = z.object({
   path: z.string(),
@@ -827,7 +835,7 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
 }
 
 /** Poll the HMR queue in the same DO that owns its browser connections. */
-export async function _rpcHmrNextEvent(self: RpcHost, timeoutMs: number = 25_000): Promise<any[]> {
+export async function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, timeoutMs: number = 25_000): Promise<HmrEvent[]> {
   if (!self.cirrusReal) return [];
   return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
 }
@@ -952,7 +960,7 @@ export async function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): Pro
  * an honest exit so a surviving process-terminal tab shows what happened
  * instead of a silent half-alive display.
  */
-function isPriorGenerationPid(self: RpcHost, pid: number): boolean {
+function isPriorGenerationPid(self: ProcessRpcHost, pid: number): boolean {
   return pid > 0 && pid <= self.processes.pidBase;
 }
 
@@ -1016,7 +1024,7 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): 
     }
 }
 
-function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
+function shouldMirrorProcessOutputToShell(self: ProcessRpcHost, pid: number): boolean {
   if (pid <= 0) return true;
   const entry = self.processes.get(pid);
   // No table entry: either a reaped process's late flush or a facet that
@@ -1034,7 +1042,7 @@ function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
 /** A live server can catch a codegen miss and continue serving: persist its
  * ledger before it is killed or evicted, without changing its process state. */
 export async function _rpcReportRuntimeCode(
-  self: RpcHost, pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = [],
+  self: ReportRpcHost, pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = [],
 ): Promise<void> {
   if (pid <= 0 || isPriorGenerationPid(self, pid)) throw new Error('Runtime code report from a stale process');
   if (!self.facetManager) throw new Error('Runtime code report has no process owner');
@@ -1050,7 +1058,7 @@ export async function _rpcReportRuntimeCode(
    * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
    */
 export async function _rpcReportExit(
-  self: RpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null,
+  self: ExitRpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null,
   runtimeCode?: unknown[], executedModules?: string[],
 ): Promise<void> {
     if (pid <= 0) return; // Ignore the pid-0 sentinel.
@@ -1301,11 +1309,11 @@ export async function _rpcRegisterPort(self: RpcHost, pid: number, port: number)
     await registerServingPort(self, pid, port);
 }
 
-export async function _rpcAllocatePort(self: RpcHost, pid: number): Promise<number> {
+export async function _rpcAllocatePort(self: Pick<NimbusSession, 'portRegistry'>, pid: number): Promise<number> {
     return self.portRegistry.allocate(pid);
 }
 
-export async function _rpcUnregisterPort(self: RpcHost, pid: number, port: number): Promise<void> {
+export async function _rpcUnregisterPort(self: Pick<NimbusSession, 'portRegistry'>, pid: number, port: number): Promise<void> {
     // A delayed close from the previous owner must not remove a rebound
     // listener belonging to another process.
     if (self.portRegistry.get(port)?.pid === pid) self.portRegistry.unregister(port);

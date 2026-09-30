@@ -30,6 +30,7 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
+import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
@@ -859,14 +860,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _rpc._rpcFsAppendAck(this as any, writerId, moduleId, operationId, pid);
   }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
-  async _rpcHmrNextEvent(timeoutMs: number): Promise<any[]> { return _rpc._rpcHmrNextEvent(this as any, timeoutMs); }
+  async _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]> { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
   async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
   async _rpcStderr(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
-  async _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
-  async _rpcReportRuntimeCode(pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> { return _rpc._rpcReportRuntimeCode(this as any, pid, entries, executedModules, dataReads); }
+  async _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void> { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
+  async _rpcReportRuntimeCode(pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> { return _rpc._rpcReportRuntimeCode(this, pid, entries, executedModules, dataReads); }
 
   // W3 emitters / external-exit / log janitor
   _emitExitDump(pid: number, code: number): void { return _rpc._emitExitDump(this as any, pid, code); }
@@ -876,8 +877,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   // Misc supervisor RPC
   async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return (await _rpc._rpcPrefetch(this as any, cwd, entryCode)); }
   async _rpcRegisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcRegisterPort(this as any, pid, port); }
-  async _rpcAllocatePort(pid: number): Promise<number> { return _rpc._rpcAllocatePort(this as any, pid); }
-  async _rpcUnregisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcUnregisterPort(this as any, pid, port); }
+  async _rpcAllocatePort(pid: number): Promise<number> { return _rpc._rpcAllocatePort(this, pid); }
+  async _rpcUnregisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcUnregisterPort(this, pid, port); }
   async _rpcRouteLoopback(port: number, request: Request): Promise<Response> { return _rpc._rpcRouteLoopback(this as any, port, request); }
   async _rpcTransform(code: string, loader: string): Promise<{ code: string; map: string } | null> { return _rpc._rpcTransform(this as any, code, loader); }
 

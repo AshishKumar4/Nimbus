@@ -46,6 +46,21 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostOpDispatch, hostNamespaceBinding, type HostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { HostRoute } from '@nimbus-sh/fabric/composition.js';
+import { z } from 'zod/v4';
+
+const HmrEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('connection'), clientId: z.string() }),
+  z.object({ type: z.literal('disconnect'), clientId: z.string() }),
+  z.object({ type: z.literal('message'), clientId: z.string(), msg: z.string() }),
+  z.object({ type: z.literal('vfs'), event: z.string(), path: z.string(), oldPath: z.string().optional() }),
+]);
+const HmrEventsSchema = z.array(HmrEventSchema);
+
+export type HmrEvent = z.infer<typeof HmrEventSchema>;
+
+function isHmrEvents(value: unknown): value is HmrEvent[] {
+  return HmrEventsSchema.safeParse(value).success;
+}
 
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
@@ -83,9 +98,9 @@ export class HmrBridge {
   /** clientId → WebSocket */
   private clients = new Map<string, WebSocket>();
   /** Pending events awaiting the next long-poll. */
-  private pending: Array<{ type: string; clientId?: string; msg?: string; path?: string; event?: string; oldPath?: string }> = [];
+  private pending: HmrEvent[] = [];
   /** Resolver for the currently-suspended long-poll, if any. */
-  private resolver: ((events: any[]) => void) | null = null;
+  private resolver: ((events: HmrEvent[]) => void) | null = null;
   /** Has the facet ever called hmrNextEvent? Used for diagnostics. */
   public _everAwaitedEvents = false;
   private _nextId = 1;
@@ -131,7 +146,7 @@ export class HmrBridge {
     this.push({ type: 'vfs', event, path, oldPath });
   }
 
-  private push(ev: any): void {
+  private push(ev: HmrEvent): void {
     this.pending.push(ev);
     if (this.resolver) {
       const r = this.resolver;
@@ -147,14 +162,14 @@ export class HmrBridge {
    * `timeoutMs` for the next batch of events. Returns an empty array
    * on timeout so the facet can loop without leaking a promise.
    */
-  async nextEvents(timeoutMs: number = 25_000): Promise<any[]> {
+  async nextEvents(timeoutMs: number = 25_000): Promise<HmrEvent[]> {
     this._everAwaitedEvents = true;
     if (this.pending.length > 0) {
       const batch = this.pending;
       this.pending = [];
       return batch;
     }
-    return new Promise((resolve) => {
+    return new Promise<HmrEvent[]>((resolve) => {
       this.resolver = resolve;
       setTimeout(() => {
         if (this.resolver === resolve) {
@@ -233,7 +248,7 @@ export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string; rout
     }
   }
 
-  async hmrNextEvent(timeoutMs: number = 25_000): Promise<any[]> {
+  async hmrNextEvent(timeoutMs: number = 25_000): Promise<HmrEvent[]> {
     const resolved = this._stub();
     if (!resolved) return [];
     try {
@@ -241,7 +256,10 @@ export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string; rout
       // WorkerEntrypoint cannot read a module-global map populated there.
       return await useRpcResource(
         resolved.dispatch({ op: 'hmrNextEvent', args: [timeoutMs] }),
-        (events) => events as any[],
+        (events) => {
+          if (!isHmrEvents(events)) throw new TypeError('HMR event batch failed validation');
+          return events;
+        },
       );
     } finally {
       disposeRpcResource(resolved.stub);
