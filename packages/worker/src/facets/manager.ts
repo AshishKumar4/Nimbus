@@ -875,7 +875,8 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
+        const __staged = globalThis.__nimbusRuntimeCode.stageUnhandled(e);
+        const trace = ((e && e.stack) || (e && e.message) || String(e)) + (__staged && "\\n" + __staged);
         stderr += trace + "\\n";
         exitCode = 1;
         if (__supervisor && !captureOutput) {
@@ -1337,7 +1338,8 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
+        const __staged = globalThis.__nimbusRuntimeCode.stageUnhandled(e);
+        const trace = ((e && e.stack) || (e && e.message) || String(e)) + (__staged && "\\n" + __staged);
         stderr += trace + "\\n";
         exitCode = 1;
         if (__supervisor && !captureOutput) {

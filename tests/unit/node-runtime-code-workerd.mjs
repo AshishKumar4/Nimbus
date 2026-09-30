@@ -16,9 +16,13 @@
 //     in the next launch of the same command — a one-shot's envelope and a
 //     resident process's exit report alike. Text the constructor would refuse
 //     throws its SyntaxError there and never runs.
-//   - The plain Function constructor stays native: a probe of it (TypeBox's
-//     CanEvaluate, `Function("null")()`) answers "no" in every launch, so code
-//     that probes once and then compiles everything keeps its fallback.
+//   - The plain Function constructor keeps the native refusal for text no
+//     launch staged, and stages a text only when its refusal ended the
+//     program: a probe of it (TypeBox's CanEvaluate, `Function("null")()`)
+//     that the program catches answers "no" in every launch, so code that
+//     probes once and then compiles everything keeps its fallback, while a
+//     module that builds a function as it loads (depd, under express 4) exits
+//     once and runs from the next launch on.
 //   - A SyntaxError in an entry names the file.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
@@ -71,6 +75,45 @@ const FILES = {
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
+  'events.js': [
+    'const EventEmitter = require("events");',
+    'function Legacy() { EventEmitter.call(this); }',
+    'require("util").inherits(Legacy, EventEmitter);',
+    'const legacy = new Legacy();',
+    'const out = {};',
+    'legacy.on("x", function (v) { out.legacy = [v, this === legacy]; });',
+    'legacy.emit("x", 1);',
+    // express's createApplication mixes EventEmitter.prototype into a function.
+    'const app = function () {};',
+    'for (const k of Object.getOwnPropertyNames(EventEmitter.prototype)) Object.defineProperty(app, k, Object.getOwnPropertyDescriptor(EventEmitter.prototype, k));',
+    'app.on("m", () => { out.mixin = true; }); app.emit("m");',
+    // Constructed, not created: a createServer call would make it a resident launch.
+    'const server = new (require("http").Server)();',
+    'out.server = server instanceof EventEmitter && server instanceof require("node:events").EventEmitter;',
+    'out.stream = require("stream").EventEmitter === EventEmitter;',
+    'out.max = server.setMaxListeners(20).getMaxListeners();',
+    '(async () => {',
+    '  const e = new EventEmitter({ captureRejections: true });',
+    '  const caught = new Promise((resolve) => e.on("error", (err) => resolve(err.message)));',
+    '  e.on("boom", async () => { throw new Error("rejected"); });',
+    '  e.emit("boom");',
+    '  out.captured = await caught;',
+    '  const once = EventEmitter.once(e, "ready");',
+    '  e.emit("ready", 7);',
+    '  out.once = (await once)[0];',
+    '  const ticks = EventEmitter.on(e, "tick");',
+    '  e.emit("tick", "a");',
+    '  out.on = (await ticks.next()).value[0];',
+    '  await ticks.return();',
+    '  console.log("EVENTS " + JSON.stringify(out));',
+    '})();',
+  ].join('\n'),
+  // depd's shape: a module that builds a function with `new Function` as it loads.
+  'plain.js': [
+    'const deprecated = new Function("fn", "\\"use strict\\"\\nreturn function (arg0) { return fn.apply(this, arguments) * 3 }")((a) => a);',
+    'console.log("PLAIN " + deprecated(5));',
+    'try { Function("null")(); console.log("PROBE yes"); } catch { console.log("PROBE no"); }',
+  ].join('\n'),
   'bad.js': 'const x = ;\n',
 };
 
@@ -92,12 +135,29 @@ try {
     assert.equal(grammar.status, 0, grammar.stdout);
     assert.match(grammar.stdout, /^GRAMMAR true 7$/m, grammar.stdout);
 
+    // One EventEmitter, workerd's: Node's function-constructor inheritance,
+    // express's prototype mixin, native http servers and the static helpers.
+    const events = await terminal.run(`cd ${W} && node events.js`);
+    assert.equal(events.status, 0, events.stdout);
+    assert.match(events.stdout,
+      /^EVENTS \{"legacy":\[1,true\],"mixin":true,"server":true,"stream":true,"max":20,"captured":"rejected","once":7,"on":"a"\}$/m,
+      events.stdout);
+
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,
       /FN fn!EvalError probe=false async!ERR_NIMBUS_CODE_NEXT_LAUNCH gen!ERR_NIMBUS_CODE_NEXT_LAUNCH vm!ERR_NIMBUS_CODE_NEXT_LAUNCH breakout!ERR_NIMBUS_CODE_NEXT_LAUNCH file!ERR_NIMBUS_CODE_NEXT_LAUNCH broke=undefined\n/,
       first.stdout);
     const second = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(second.stdout, /FN fn!EvalError probe=false async=function gen=7 vm=15 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
+
+    const refused = await terminal.run(`cd ${W} && node plain.js`);
+    assert.notEqual(refused.status, 0, refused.stdout);
+    assert.match(refused.stdout, /EvalError: Code generation from strings disallowed/, refused.stdout);
+    assert.match(refused.stdout, /ERR_NIMBUS_CODE_NEXT_LAUNCH/, 'the crash says the text is staged');
+    const staged = await terminal.run(`cd ${W} && node plain.js`);
+    assert.equal(staged.status, 0, staged.stdout);
+    assert.match(staged.stdout, /^PLAIN 15$/m, 'the next launch runs the staged function');
+    assert.match(staged.stdout, /^PROBE no$/m, 'a caught probe is never staged');
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {

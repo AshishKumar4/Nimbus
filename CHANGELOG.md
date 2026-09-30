@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- express 4 apps (`express.static`, `npx serve-static` setups) start from
+  their second launch. depd, loaded by express 4's body-parser, builds each
+  deprecated wrapper with `new Function` as its module loads, which a
+  Worker refuses at request time; the plain `Function` constructor was left
+  native, so every launch crashed the same way and never bound its port.
+  It now answers text an earlier launch staged and stages a text only when
+  its refusal ended the program: a capability probe the program catches
+  (TypeBox's `Function("null")`) still answers "no" in every launch.
+
 - `npx http-server` serves. Node guests use workerd's native `node:events`
   instead of a hand-rolled `class EE`, so `EventEmitter.call(this)` with
   `util.inherits` (union, and many older packages) works, native HTTP
