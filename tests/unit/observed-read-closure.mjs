@@ -38,8 +38,7 @@ const bounded = launchFs({
 // scans .js/.ts content files as text. Rooting it walked its imports into the
 // required graph, and a launch over the bound failed every time after.
 {
-  const scanned = await buildPrefetchBundle(bounded, '/' + app + '/entry.cjs', '/' + app, 'module.exports = 1;',
-    undefined, undefined, new Set([learned]), undefined, 1024);
+  const scanned = await buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', observedReads: new Set([learned]), maxBundleBytes: 1024 });
   assert.equal(scanned.bundle[learned], small, 'the read file is staged as the bytes it was read as');
   assert.equal(scanned.bundle[app + '/node_modules/plugin/dep.cjs'], undefined, 'its imports are not required');
 }
