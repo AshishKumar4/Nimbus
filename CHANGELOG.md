@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The official Pi installer probe answers its closing `Start pi now? [Y/n]`
+  prompt on the controlling terminal before checking PATH and `pi --version`.
+  Previously it typed those commands into the installer's answer instead,
+  which accepted the offer and launched bare `pi`; the commands never ran.
+  The probe now verifies that declining the offer returns the shell without
+  launching pi, then still checks the version and the attached TUI.
+
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
   `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker
