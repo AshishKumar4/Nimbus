@@ -57,33 +57,19 @@ export function isLongRunningInvocation(args) {
     }
     return false;
 }
-/** Arguments that ask a CLI a question it answers and exits on. */
-const QUERY_ARGS = new Set(['--help', '-h', 'help', '--version', '-v', 'version']);
-/** Whether `arg` is a query (`--help`, `--version`, …), not a request to serve. */
-export function isQueryArg(arg) {
-    return QUERY_ARGS.has(arg.trim().toLowerCase());
-}
-/**
- * Whether a serving CLI was asked for something that ends: a query, or
- * `build`, which means "produce an artifact and exit" in every CLI that also
- * serves. A resident process that ends is never reaped, so these stay one-shot.
- */
-export function endsWithoutServing(argv) {
-    return argv.some((arg) => isQueryArg(arg) || arg === 'build');
-}
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export async function runFresh(facetMgr, code, opts) {
     const args = opts.argv || [];
     // A program that starts a server runs in the keyed long-running facet even
     // without --watch: only its route stub is re-resolvable across requests
     // (the one-shot facet is LOADER.load, unkeyed), so only there is the port it
-    // binds reachable. The runtime handler judges that from the program's code
-    // before it runs (server-launch.ts), unless it was asked for something that
-    // ends. .bin wrapper invocations (skipSpawn) keep the one-shot fast path —
-    // those are CLIs, and their PID accounting assumes a single foreground exec.
+    // binds reachable. The runtime handler judges that from the code this
+    // invocation runs (server-launch.ts), its arguments included. .bin wrapper
+    // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
+    // their PID accounting assumes a single foreground exec.
     const wantsLongRunning = opts.forceLongRunning ||
         isLongRunningInvocation(args) ||
-        (!opts.skipSpawn && opts.launchesServer === true && !endsWithoutServing(args));
+        (!opts.skipSpawn && opts.launchesServer === true);
     if (!wantsLongRunning) {
         // Short path: fresh-isolate-per-call via facetMgr.exec.
         // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every

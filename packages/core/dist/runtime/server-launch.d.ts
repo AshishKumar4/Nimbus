@@ -14,6 +14,11 @@
  *   from it are known, as is `require.main === module` (true for the entry,
  *   false for a module it loads); anything else may go either way. Code after
  *   `return`, `throw` or `process.exit()` does not run.
+ * - An argument decides only where the program branches on it: its own
+ *   `process.argv` tests, and a CLI parser's (commander, yargs, sade, cac). A
+ *   parser answers `--help`/`--version` itself and exits at `.parse()`, and a
+ *   command's handler (`.command('serve').action(fn)`, yargs'
+ *   `.command({ command: 'serve', handler })`) runs only when argv names it.
  * - A function runs when it is called, constructed, invoked immediately, or
  *   handed to a call as a callback (a listener, `.then`, a CLI's action or a
  *   command's `handler`); not when it is only defined or exported. Logging a
@@ -21,7 +26,9 @@
  * - A server starts at a call of `createServer`, `createSecureServer` or
  *   `serve` (http, https, http2, net, Bun.serve, ...), however it was named (a
  *   destructured or aliased creator, `const make = http.createServer`,
- *   counts), and at a `.listen(...)` given a port, or nothing.
+ *   counts), and at a `.listen(...)` of anything but the program's own code,
+ *   unless its first argument is provably not a port: a callback, `this`, or
+ *   a socket path (a string that is not a number, constants resolved).
  * - Loading one of the program's own modules runs its top level. Using what
  *   it exports (calling, constructing, calling a method of, or handing it to a
  *   call) runs that export: the function exported under that name, a method

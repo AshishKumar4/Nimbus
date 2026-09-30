@@ -14,6 +14,11 @@
  *   from it are known, as is `require.main === module` (true for the entry,
  *   false for a module it loads); anything else may go either way. Code after
  *   `return`, `throw` or `process.exit()` does not run.
+ * - An argument decides only where the program branches on it: its own
+ *   `process.argv` tests, and a CLI parser's (commander, yargs, sade, cac). A
+ *   parser answers `--help`/`--version` itself and exits at `.parse()`, and a
+ *   command's handler (`.command('serve').action(fn)`, yargs'
+ *   `.command({ command: 'serve', handler })`) runs only when argv names it.
  * - A function runs when it is called, constructed, invoked immediately, or
  *   handed to a call as a callback (a listener, `.then`, a CLI's action or a
  *   command's `handler`); not when it is only defined or exported. Logging a
@@ -21,7 +26,9 @@
  * - A server starts at a call of `createServer`, `createSecureServer` or
  *   `serve` (http, https, http2, net, Bun.serve, ...), however it was named (a
  *   destructured or aliased creator, `const make = http.createServer`,
- *   counts), and at a `.listen(...)` given a port, or nothing.
+ *   counts), and at a `.listen(...)` of anything but the program's own code,
+ *   unless its first argument is provably not a port: a callback, `this`, or
+ *   a socket path (a string that is not a number, constants resolved).
  * - Loading one of the program's own modules runs its top level. Using what
  *   it exports (calling, constructing, calling a method of, or handing it to a
  *   call) runs that export: the function exported under that name, a method
@@ -36,8 +43,12 @@
 import { parseJavaScriptProgram } from './javascript-ast.js';
 /** Calls that create a server, as a member (`http.createServer`) or a bare name. */
 const CREATORS = new Set(['createServer', 'createSecureServer', 'serve']);
-/** A name that holds a port (`port`, `PORT`, `opts.port`, `httpPort`, `port_number`), not `reporter`. */
-const PORT_NAME_RE = /(?:^|_)port(?:$|_|[A-Z0-9])|Port(?:$|[A-Z0-9_])|PORT/;
+/** Argument parsers that answer a query themselves and exit, and dispatch commands. */
+const CLI_PARSERS = new Set(['commander', 'yargs', 'yargs/yargs', 'sade', 'cac']);
+/** The queries they answer: help and version. */
+const PARSER_QUERIES = new Set(['--help', '-h', '--version', '-V', '-v']);
+/** Their calls that read argv, answering a query or running a command. */
+const PARSE_CALLS = new Set(['parse', 'parseAsync', 'parseSync']);
 /** How many modules one decision reads, and how many bytes of source in all. */
 const MODULE_LIMIT = 24;
 const SOURCE_BYTE_BUDGET = 4 * 1024 * 1024;
@@ -260,8 +271,9 @@ class ModuleGraph {
 }
 function buildScope(record) {
     const scope = {
-        functions: new Map(), members: new Map(), modules: new Map(), creators: new Set(), instances: new Map(),
-        constants: new Map(), assigned: new Set(), exports: new Map(), reexports: new Map(), starExports: [],
+        functions: new Map(), members: new Map(), modules: new Map(), creators: new Set(), packages: new Map(),
+        instances: new Map(), constants: new Map(), assigned: new Set(), exports: new Map(), reexports: new Map(),
+        starExports: [],
     };
     if (record.ast === null)
         return scope;
@@ -327,16 +339,24 @@ function buildScope(record) {
             scope.assigned.add(name);
         scope.constants.set(name, init);
     };
+    const packageOf = (init) => {
+        const specifier = init ? requiredSpecifier(init) : null;
+        return specifier !== null && !isRelative(specifier) ? specifier : null;
+    };
     const bindPattern = (pattern, init) => {
         if (pattern.type === 'Identifier') {
             if (!init)
                 return;
+            const pkg = packageOf(init);
+            if (pkg !== null)
+                scope.packages.set(pattern.name, pkg);
             bindValue(pattern.name, init);
             constant(pattern.name, init);
             return;
         }
         if (pattern.type === 'ObjectPattern') {
             const ref = init ? moduleRef(init) : null;
+            const pkg = packageOf(init);
             for (const prop of pattern.properties) {
                 if (prop.type !== 'Property')
                     continue;
@@ -346,6 +366,8 @@ function buildScope(record) {
                     continue;
                 if (CREATORS.has(key))
                     scope.creators.add(local.name);
+                if (pkg !== null)
+                    scope.packages.set(local.name, pkg);
                 if (ref !== null)
                     scope.modules.set(local.name, { path: ref.path, members: [...ref.members, key] });
             }
@@ -391,6 +413,8 @@ function buildScope(record) {
                 for (const s of n.specifiers) {
                     if (s.type === 'ImportSpecifier' && CREATORS.has(keyName(s.imported, false) ?? ''))
                         scope.creators.add(s.local.name);
+                    if (!isRelative(n.source.value))
+                        scope.packages.set(s.local.name, n.source.value);
                     if (path === null)
                         continue;
                     const members = s.type === 'ImportDefaultSpecifier' ? ['default']
@@ -514,6 +538,8 @@ class Walk {
     record;
     hops;
     launches = false;
+    /** A CLI parser answered a query and the program exited. */
+    exited = false;
     scope;
     ran = new Set();
     constructor(graph, record, hops) {
@@ -568,7 +594,7 @@ class Walk {
     }
     statements(list) {
         for (const statement of list) {
-            if (this.launches)
+            if (this.launches || this.exited)
                 return 'abrupt';
             const completion = this.statement(statement);
             if (completion !== 'normal')
@@ -672,7 +698,7 @@ class Walk {
     }
     /** An expression that is evaluated: the calls in it run. */
     expression(e) {
-        if (this.launches)
+        if (this.launches || this.exited)
             return;
         switch (e.type) {
             case 'FunctionExpression':
@@ -687,6 +713,12 @@ class Walk {
                 return;
             case 'ImportExpression':
                 this.load(e.source.type === 'Literal' ? e.source.value : null);
+                return;
+            case 'MemberExpression':
+                // yargs' `.argv` parses as `.parse()` does.
+                if (propertyName(e) === 'argv' && this.answersQuery(e.object))
+                    return;
+                forEachChild(e, (child) => this.expression(child));
                 return;
             case 'ConditionalExpression': {
                 this.expression(e.test);
@@ -716,6 +748,8 @@ class Walk {
             this.launches = true;
             return;
         }
+        if (PARSE_CALLS.has(propertyName(callee) ?? '') && this.answersQuery(callee.object))
+            return;
         const specifier = requiredSpecifier(node);
         if (specifier !== null) {
             this.load(specifier);
@@ -733,18 +767,21 @@ class Walk {
         if (this.launches)
             return;
         this.expression(callee);
-        // What a call is handed, it may call. Logging a value does not call it.
+        // What a call is handed, it may call: unless it is logging the value, or
+        // registering a command this invocation does not name.
         const logs = callee.type === 'MemberExpression' && unwrap(callee.object).type === 'Identifier'
             && unwrap(callee.object).name === 'console';
+        const calls = !logs && this.commandRuns(callee, node.arguments);
         for (const argument of node.arguments) {
-            if (this.launches)
+            if (this.launches || this.exited)
                 return;
             const a = unwrap(argument.type === 'SpreadElement' ? argument.argument : argument);
             if (isFunction(a)) {
-                this.run(a);
+                if (calls)
+                    this.run(a);
                 continue;
             }
-            if (!logs) {
+            if (calls) {
                 this.invoke(a);
                 // A command object's handler (yargs' `.command({ handler })`).
                 if (a.type === 'ObjectExpression') {
@@ -756,36 +793,138 @@ class Walk {
             this.expression(a);
         }
     }
+    /** Whether `value` is a CLI parser, or a value of one (`program.command('x')`, `yargs(argv)`, `new Command()`). */
+    fromCliParser(value, bindings = 0) {
+        // Down a builder chain (`sade(...).option(...)...`) to its root: a parser
+        // package, or a name bound to a value of one.
+        let v = unwrap(value);
+        for (;;) {
+            const specifier = requiredSpecifier(v);
+            if (specifier !== null)
+                return CLI_PARSERS.has(specifier);
+            if (v.type === 'MemberExpression')
+                v = unwrap(v.object);
+            else if (v.type === 'CallExpression' || v.type === 'NewExpression')
+                v = unwrap(v.callee);
+            else
+                break;
+        }
+        if (v.type !== 'Identifier')
+            return false;
+        const pkg = this.scope.packages.get(v.name);
+        if (pkg !== undefined)
+            return CLI_PARSERS.has(pkg);
+        const init = this.scope.constants.get(v.name);
+        return init !== undefined && bindings < 8 && this.fromCliParser(init, bindings + 1);
+    }
+    /** A CLI parser reading argv that holds a query answers it and exits the program. */
+    answersQuery(parser) {
+        if (!this.graph.argv.slice(1).some((arg) => PARSER_QUERIES.has(arg)) || !this.fromCliParser(parser))
+            return false;
+        this.exited = true;
+        return true;
+    }
+    /**
+     * Whether the functions handed to a call may run, as far as a CLI parser's
+     * commands decide: a command's handler runs only when argv names the
+     * command (or it is the default one).
+     */
+    commandRuns(callee, args) {
+        const method = propertyName(callee);
+        if ((method !== 'command' && method !== 'action') || !this.fromCliParser(callee.object))
+            return true;
+        let registration = method === 'command' ? args : null;
+        // `.command('serve').option(...).action(fn)`: the nearest command down the chain.
+        for (let at = unwrap(callee.object); registration === null && at.type === 'CallExpression';) {
+            const inner = unwrap(at.callee);
+            if (propertyName(inner) === 'command')
+                registration = at.arguments;
+            else if (inner.type === 'MemberExpression')
+                at = unwrap(inner.object);
+            else
+                break;
+        }
+        if (registration === null || registration.length === 0)
+            return true;
+        const names = [];
+        const addNames = (node) => {
+            const n = node ? unwrap(node) : null;
+            if (n?.type === 'Literal' && typeof n.value === 'string')
+                names.push(n.value.trim().split(/\s+/)[0]);
+            else if (n?.type === 'ArrayExpression')
+                for (const element of n.elements)
+                    if (element)
+                        addNames(element);
+                    else if (n !== null)
+                        names.push('*');
+        };
+        const first = unwrap(registration[0]);
+        if (first.type === 'ObjectExpression') {
+            for (const prop of first.properties) {
+                const key = prop.type === 'Property' ? keyName(prop.key, prop.computed) : null;
+                if (key === 'command' || key === 'aliases')
+                    addNames(prop.value);
+            }
+        }
+        else {
+            addNames(first);
+        }
+        const isDefault = registration.some((arg) => unwrap(arg).type === 'ObjectExpression'
+            && unwrap(arg).properties.some((p) => p.type === 'Property' && keyName(p.key, p.computed) === 'isDefault'));
+        const argv = this.graph.argv.slice(1);
+        return isDefault || names.length === 0
+            || names.some((name) => name === '*' || name === '$0' || name.startsWith('[') || name.startsWith('<') || argv.includes(name));
+    }
     /** A call that creates a server, or listens on a port. */
     startsServer(callee, args) {
         const member = propertyName(callee);
         if (member === 'listen')
-            return args.length === 0 || this.portLike(args[0]);
+            return !this.ownsListen(callee.object) && (args.length === 0 || !this.notAPort(args[0]));
         if (member !== null)
             return CREATORS.has(member);
         return callee.type === 'Identifier' && (CREATORS.has(callee.name) || this.scope.creators.has(callee.name));
     }
     /**
-     * `.listen`'s first argument names a port: a number, a name holding a port
-     * (`PORT`, `opts.port`, `process.env.PORT || 3000`), or options with one.
-     * An emitter's or a messenger's `.listen(handler)` is not a server.
+     * The receiver's `listen` is the program's own code (a value of one of its
+     * modules, or a local object or class that defines `listen`): that code is
+     * walked when called, it is not a bind in itself.
      */
-    portLike(arg) {
-        let found = false;
+    ownsListen(receiver) {
+        const r = unwrap(receiver);
+        if (moduleOf(this.record, this.scope, r) !== null)
+            return true;
+        if (r.type !== 'Identifier')
+            return false;
+        const owner = this.scope.instances.get(r.name) ?? r.name;
+        return this.scope.modules.has(owner) || (this.scope.members.get(owner)?.has('listen') ?? false);
+    }
+    /**
+     * `.listen`'s first argument is provably not a port: a callback (a
+     * function, a local function's name, a bound function), `this` (a listener
+     * object), or a socket path (a string that is not a number, or options with
+     * a `path` and no `port`). Constants are resolved; anything else may be a
+     * port (`3000`, `const p = 3000`, `process.env.PORT || 3000`, a parameter).
+     */
+    notAPort(arg, depth = 0) {
         const a = unwrap(arg);
         if (isFunction(a) || a.type === 'ThisExpression')
-            return false;
-        forEachNode(a, (n) => {
-            if (found || isFunction(n))
-                return;
-            if (n.type === 'Literal' && typeof n.value === 'number')
-                found = true;
-            else if (n.type === 'Identifier' && PORT_NAME_RE.test(n.name))
-                found = true;
-            else if (n.type === 'Property' && keyName(n.key, n.computed) === 'port')
-                found = true;
-        });
-        return found;
+            return true;
+        if (a.type === 'CallExpression' && propertyName(unwrap(a.callee)) === 'bind')
+            return true;
+        const known = this.evaluate(a);
+        if (known !== undefined)
+            return typeof known.value === 'string' && !/^\d+$/.test(known.value);
+        if (a.type === 'Identifier') {
+            if (this.scope.functions.has(a.name))
+                return true;
+            const init = this.scope.constants.get(a.name);
+            return init !== undefined && !this.scope.assigned.has(a.name) && depth < 8 && this.notAPort(init, depth + 1);
+        }
+        if (a.type === 'ObjectExpression') {
+            const keys = a.properties.map((p) => (p.type === 'Property' ? keyName(p.key, p.computed) : null));
+            return keys.includes('path') && !keys.includes('port');
+        }
+        return false;
     }
     /** Whatever calling a value runs: local functions and methods, a module's exports. */
     invoke(value) {

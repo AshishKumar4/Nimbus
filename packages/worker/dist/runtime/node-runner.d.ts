@@ -48,14 +48,6 @@ import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.
  *   --inspect-brk (node --inspect-brk)
  */
 export declare function isLongRunningInvocation(args: string[]): boolean;
-/** Whether `arg` is a query (`--help`, `--version`, …), not a request to serve. */
-export declare function isQueryArg(arg: string): boolean;
-/**
- * Whether a serving CLI was asked for something that ends: a query, or
- * `build`, which means "produce an artifact and exit" in every CLI that also
- * serves. A resident process that ends is never reaped, so these stay one-shot.
- */
-export declare function endsWithoutServing(argv: readonly string[]): boolean;
 /** Result of a `runFresh` call. */
 export interface RunFreshResult {
     exitCode: number;
