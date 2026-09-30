@@ -6,27 +6,42 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - node-static sends a file's body; after the `url` fix below it answered 200
-  with an empty body. A guest stream emitted `'end'` and never `'close'`:
-  Node destroys a finished stream (`autoDestroy`, on by default), so
-  `'close'` follows `'end'`, and node-static pipes a file with
-  `{ end: false }` and ends the response on the file stream's `'close'`. A
-  readable stream that has ended, and finished writing if it is a Duplex,
-  now closes unless it was created with `autoDestroy: false`. A writable
-  stream closes after `'finish'` by the same rule, so a copy that waits on
-  the destination's `'close'` (`src.pipe(fs.createWriteStream(f))
-  .on('close', …)`) completes; a Duplex closes once both sides are done.
+  with an empty body. node-static pipes a file with `{ end: false }` and ends
+  the response on the file stream's `'close'`, which a guest stream never
+  emitted. Guest streams now keep Node's lifecycle, in Node 22's order:
+  - A stream that is done is destroyed and emits `'close'` (`autoDestroy`):
+    a readable after `'end'`, a writable after `'finish'`, a Duplex once both
+    sides are done. So a copy that waits on the destination's `'close'`
+    (`src.pipe(fs.createWriteStream(f)).on('close', …)`) completes.
+  - Writes run one at a time, and `end()` waits for every write to call back
+    before `_final` and `'finish'`. An asynchronous Transform's output is
+    delivered and an asynchronous write completes before `'finish'`; `end()`
+    used to run `_final` at once.
+  - A failed write, or `destroy()`, answers every queued write and `end()`
+    callback; a failed write then destroys the stream, as in Node.
+  - `autoDestroy: false` keeps a stream open, `emitClose: false` destroys it
+    without `'close'`, and fs streams read them from `autoClose` and
+    `emitClose`.
 
 - `npx static-server` serves instead of holding the terminal in the
   foreground with its port unreachable, and so do `npx sirv-cli` and
-  `npx live-server`. A port is reachable only from a resident process, chosen
-  before the program runs from its source, and only the entry file was read:
-  these bins parse argv and require the package's own server module
-  (static-server's `../server.js`). A module the entry names by relative path
-  inside its own package that creates a server (`createServer(`) now counts.
-  Only that one hop, and only a server's creation: following further, or
-  taking any `.listen(` as a bind, would also promote CLIs that finish
-  (degit, concurrently, nx, `vitest run`). A query (`--help`, `--version`)
-  or `build` of such a CLI stays one-shot, as it does for a named server bin.
+  `npx live-server`. A port is reachable only from a resident process, which
+  is chosen before the program runs, and a program that finishes there is
+  never reported ended. Whether `node <file>` (or `bun`, `node -e`,
+  `node -`) starts a server was a text match on the entry (`.listen(`,
+  `createServer(`, `serve(`), so these bins, which hand off to their
+  package's server module, were missed, while a comment or a server started
+  only for another subcommand made a script resident. It is now judged by
+  walking the code this invocation runs (core `runtime/server-launch.ts`):
+  branches known false for its argv, code after `process.exit()`, and
+  functions only defined or exported do not run; the package's own modules
+  are followed as they are loaded and used, through aliases
+  (`const make = http.createServer`) and re-exporting modules; `.listen`
+  counts when given a port. A query (`--help`, `--version`) or `build`
+  stays one-shot. Measured on 48 bins of 37 packages: the same servers are
+  promoted, except `vercel` (its bundle is past the 2 MiB a walk reads) and
+  `cf-wrangler` (it serves from a child process); degit, concurrently, nx,
+  firebase and `vitest run` are not.
 
 - node-static (`npx node-static`) serves its files; it answered 404 for every
   one. The guest's `url` module imitated Node's legacy API over WHATWG

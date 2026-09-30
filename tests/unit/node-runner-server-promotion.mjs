@@ -11,27 +11,11 @@
 // back to the unreachable one-shot path.
 
 import assert from 'node:assert/strict';
-import { looksLikeServer, runFresh } from '../../packages/worker/src/runtime/node-runner.ts';
+import { runFresh } from '../../packages/worker/src/runtime/node-runner.ts';
 import { runBunScript, BUN_SHIM_PREAMBLE } from '../../packages/worker/src/runtime/bun-runner.ts';
 
-// ── looksLikeServer signal ───────────────────────────────────────────────────
-for (const src of [
-  `const http = require('http'); http.createServer((q,s)=>s.end('hi')).listen(5000);`,
-  `require('http').createServer(h).listen(8765, '0.0.0.0');`,
-  `const app = require('express')(); app.listen(3000);`,
-  `import { serve } from './x'; Bun.serve({ port: 4000, fetch() {} });`,
-  `net.createServer(onConn).listen(9000);`,
-]) {
-  assert.equal(looksLikeServer(src), true, `should detect server: ${src.slice(0, 40)}`);
-}
-for (const src of [
-  `console.log('build done'); process.exit(0);`,
-  `const x = 1 + 2; require('fs').writeFileSync('/tmp/o', String(x));`,
-  `for (const f of files) transform(f); // preserve, deserve, observer`,
-  `const s = "the server listens"; console.log(s);`, // prose, not a call
-]) {
-  assert.equal(looksLikeServer(src), false, `should NOT detect server: ${src.slice(0, 40)}`);
-}
+// Whether a program starts a server is judged by the runtime handler from its
+// code (runtime-server-launcher.mjs); runFresh routes on that judgement.
 
 // ── runFresh routing decision (behaviour through the public entry) ────────────
 function makeFacetMgr() {
@@ -56,7 +40,7 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
 // server script (no --watch) → promoted to spawnNode
 {
   const fm = makeFacetMgr();
-  const r = await runFresh(fm, SERVER, { argv: [], filename: '/home/user/server.js' });
+  const r = await runFresh(fm, SERVER, { argv: [], filename: '/home/user/server.js', launchesServer: true });
   assert.equal(fm.calls.spawnNode.length, 1, 'server script routes to spawnNode');
   assert.equal(fm.calls.exec.length, 0, 'server script does NOT hit the one-shot exec facet');
   assert.equal(r.longRunning, true);
@@ -75,7 +59,7 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
 // .bin wrapper (skipSpawn) with server-shaped code → NOT promoted (stays exec)
 {
   const fm = makeFacetMgr();
-  await runFresh(fm, SERVER, { argv: [], filename: '/home/user/node_modules/.bin/x', skipSpawn: true, callerPid: 9 });
+  await runFresh(fm, SERVER, { argv: [], filename: '/home/user/node_modules/.bin/x', skipSpawn: true, callerPid: 9, launchesServer: true });
   assert.equal(fm.calls.exec.length, 1, 'skipSpawn CLI keeps the one-shot fast path');
   assert.equal(fm.calls.spawnNode.length, 0, 'skipSpawn CLI is not promoted');
 }
@@ -97,8 +81,16 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
 }
 {
   const fm = makeFacetMgr();
-  await runBunScript(fm, 'Bun.serve({fetch() { return new Response("ok"); }});', { argv: [] });
+  await runBunScript(fm, 'Bun.serve({fetch() { return new Response("ok"); }});', { argv: [], launchesServer: true });
   assert.equal(fm.calls.spawnNode.length, 1, 'a real Bun server still gets a resident process');
+}
+
+// a server asked a question it answers and exits on stays one-shot
+{
+  const fm = makeFacetMgr();
+  await runFresh(fm, SERVER, { argv: ['/home/user/server.js', '--version'], filename: '/home/user/server.js', launchesServer: true });
+  assert.equal(fm.calls.exec.length, 1, 'a query is answered one-shot');
+  assert.equal(fm.calls.spawnNode.length, 0);
 }
 
 console.log('node-runner-server-promotion: ok');
