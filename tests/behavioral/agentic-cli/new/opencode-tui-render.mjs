@@ -94,6 +94,13 @@ try {
       hasCsi(tui.rawOutput) && hasFrameChrome(tui.rawOutput)
         && !/Disallowed operation|CompileError|not pre-registered|NativeSpanFeed error|Aborted\(/.test(tui.output),
       JSON.stringify(tui.rawOutput.slice(-900)));
+    // Borders, spinners and icons are UTF-8 in the span feed. Re-encoding
+    // them on the way out showed "┃" as "â\u0094\u0083" (mojibake).
+    await tui.waitFor(() => /[\u2500-\u259f\u2800-\u28ff]/.test(tui.rawOutput), 30_000, 'box-drawing or spinner glyphs')
+      .catch(() => {});
+    a.check('[rung2] frame glyphs arrive as the characters drawn, not double-encoded',
+      /[\u2500-\u259f\u2800-\u28ff]/.test(tui.rawOutput) && !/[\u00c2\u00c3\u00e2][\u0080-\u00bf]/.test(tui.rawOutput),
+      JSON.stringify(tui.rawOutput.match(/[^\x00-\x7f]{1,12}/g)?.slice(0, 12)));
 
     // ── RUNG 2b: idle residency — the span-feed consumption-ack OOM killed the
     // facet at ~15s of resident rendering (chunks never freed → wasm linear
