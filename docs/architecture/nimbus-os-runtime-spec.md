@@ -118,7 +118,10 @@ Nimbus already has a real base:
   that launch (no request-time
   code generation, and a Worker Loader map cannot grow); the next launch of
   the same command stages it by content key as `gen/<sha256>.js`, kept in the
-  session's storage (`facets/runtime-code-store.ts`).
+  session's storage (`facets/launch-learning-store.ts`). The same store keeps,
+  apart, the modules a run tried to execute that its map lacked (the next
+  map's graph roots) and the files it read and did not have (staged as data,
+  never walked as code, whatever their extension).
 - Real Request/Response preview routing through `PortRegistry` without JSON
   serialization. Some current runtime adapters still buffer internally; the
   final socket/preview adapters should stream end to end.

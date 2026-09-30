@@ -503,7 +503,8 @@ let __nimbusRuntimeLedgerBytes = 0;
 let __nimbusRuntimeCodeReporter = null;
 let __nimbusCodeNotifyQueued = false;
 const __nimbusCodeAcknowledged = new Set();
-const __nimbusFilesAcknowledged = new Set();
+const __nimbusModulesAcknowledged = new Set();
+const __nimbusReadsAcknowledged = new Set();
 let __nimbusCodeSending = Promise.resolve();
 // A server may catch a compile miss (SSR error page) and never exit. Persist
 // new code independently of exit, in bounded batches, and acknowledge only
@@ -511,16 +512,24 @@ let __nimbusCodeSending = Promise.resolve();
 function __nimbusFlushRuntimeCode(supervisor) {
   if (!supervisor || typeof supervisor.reportRuntimeCode !== 'function') return Promise.resolve();
   const send = __nimbusCodeSending.then(async () => {
+    // Let outstanding repairs land and retire the misses they proved absent
+    // first: a path the authority does not have was the program's not-found
+    // branch, not something the next launch should stage.
+    if (typeof globalThis.__nimbusVfsResidencySettle === "function") {
+      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
+    }
     const entries = [...__nimbusRuntimeLedger].filter(([key]) => !__nimbusCodeAcknowledged.has(key));
-    const files = [...new Set([...(globalThis.__nimbusModuleMisses || []), ...(globalThis.__nimbusVfsResidencyMisses || [])])]
-      .filter((path) => !__nimbusFilesAcknowledged.has(path));
-    const batches = Math.max(Math.ceil(entries.length / 32), Math.ceil(files.length / 128));
+    const modules = [...(globalThis.__nimbusModuleMisses || [])].filter((path) => !__nimbusModulesAcknowledged.has(path));
+    const reads = [...(globalThis.__nimbusVfsResidencyMisses || [])].filter((path) => !__nimbusReadsAcknowledged.has(path));
+    const batches = Math.max(Math.ceil(entries.length / 32), Math.ceil(modules.length / 128), Math.ceil(reads.length / 128));
     for (let i = 0; i < batches; i++) {
       const batch = entries.slice(i * 32, (i + 1) * 32);
-      const paths = files.slice(i * 128, (i + 1) * 128);
-      await supervisor.reportRuntimeCode(batch.map(([, entry]) => entry), paths);
+      const executed = modules.slice(i * 128, (i + 1) * 128);
+      const read = reads.slice(i * 128, (i + 1) * 128);
+      await supervisor.reportRuntimeCode(batch.map(([, entry]) => entry), executed, read);
       for (const [key] of batch) __nimbusCodeAcknowledged.add(key);
-      for (const path of paths) __nimbusFilesAcknowledged.add(path);
+      for (const path of executed) __nimbusModulesAcknowledged.add(path);
+      for (const path of read) __nimbusReadsAcknowledged.add(path);
     }
   });
   __nimbusCodeSending = send.catch(() => undefined);
