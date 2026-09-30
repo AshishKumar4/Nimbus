@@ -40,8 +40,9 @@ const STDIN_DEVICES = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']);
  *
  * A pipe's read ahead is held in the session Durable Object until the
  * program takes it, so this is one budget for the whole session
- * (ReadAheadBudget), shared by its concurrent launches: a launch that cannot
- * reserve it streams its pipe instead. Measured on a throwaway (2026-09-30;
+ * (ReadAheadBudget), shared by its concurrent launches as they read: a launch
+ * the budget cannot cover streams the rest of its pipe. Measured on a
+ * throwaway (2026-09-30;
  * GraphQL durableObjectsPeriodicGroups, max memoryUsageBytes of the session
  * object per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`):
  * one 16 MiB read ahead at a time peaked at 59.5-82.0 MB of the 128 MB
@@ -51,10 +52,13 @@ const STDIN_DEVICES = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']);
  */
 export const STDIN_SYNC_READ_BYTES = 16 * 1024 * 1024;
 /**
- * The session's pipe read-ahead budget. A launch reserves its read ahead from
- * it before reading, gives back what it did not use as soon as the pipe
- * ended, gives back each piece as the program takes it, and releases the rest
- * however the launch ends (exit, abort, a failed launch).
+ * The session's pipe read-ahead budget. It counts the bytes of read ahead the
+ * session's Durable Object holds, not what launches might hold: a launch takes
+ * bytes from it a piece at a time, just before reading that piece, so a launch
+ * waiting on a slow writer holds almost none of it. A launch the budget cannot
+ * cover stops reading ahead and streams the rest; it gives back what it did
+ * not read at once, each piece as the program takes it, and the rest however
+ * the launch ends (exit, abort, a failed launch).
  */
 export class ReadAheadBudget {
     capacity;
@@ -62,19 +66,24 @@ export class ReadAheadBudget {
     constructor(capacity) {
         this.capacity = capacity;
     }
-    /** Bytes reserved now, across all launches. */
+    /** Bytes held now, across all launches. */
     get held() {
         return this.heldBytes;
     }
-    reserve(max) {
-        const bytes = Math.max(0, Math.min(max, this.capacity - this.heldBytes));
-        this.heldBytes += bytes;
-        let remaining = bytes;
+    /** An account for one launch's read ahead. */
+    open() {
+        let mine = 0;
         return {
-            bytes,
-            release: (n = remaining) => {
-                const back = Math.max(0, Math.min(n, remaining));
-                remaining -= back;
+            get held() { return mine; },
+            take: (max) => {
+                const got = Math.max(0, Math.min(max, this.capacity - this.heldBytes));
+                this.heldBytes += got;
+                mine += got;
+                return got;
+            },
+            give: (n = mine) => {
+                const back = Math.max(0, Math.min(n, mine));
+                mine -= back;
                 this.heldBytes -= back;
             },
         };

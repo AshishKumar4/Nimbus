@@ -34,8 +34,9 @@ import { type ServerLaunchHost } from './server-launch.js';
  *
  * A pipe's read ahead is held in the session Durable Object until the
  * program takes it, so this is one budget for the whole session
- * (ReadAheadBudget), shared by its concurrent launches: a launch that cannot
- * reserve it streams its pipe instead. Measured on a throwaway (2026-09-30;
+ * (ReadAheadBudget), shared by its concurrent launches as they read: a launch
+ * the budget cannot cover streams the rest of its pipe. Measured on a
+ * throwaway (2026-09-30;
  * GraphQL durableObjectsPeriodicGroups, max memoryUsageBytes of the session
  * object per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`):
  * one 16 MiB read ahead at a time peaked at 59.5-82.0 MB of the 128 MB
@@ -44,26 +45,35 @@ import { type ServerLaunchHost } from './server-launch.js';
  * whose reset ends every process in the session.
  */
 export declare const STDIN_SYNC_READ_BYTES: number;
-/** A share of a ReadAheadBudget: `bytes` granted, released in parts or whole. */
-export interface ReadAheadReservation {
-    /** The bytes granted: at most what was asked, 0 when the budget had none free. */
-    readonly bytes: number;
-    /** Return `n` bytes of the grant (all that remain when omitted); idempotent past zero. */
-    release(n?: number): void;
+/**
+ * What one launch holds of a ReadAheadBudget: bytes taken as they are about to
+ * be read, and given back as the program takes them.
+ */
+export interface ReadAheadAccount {
+    /** Bytes this launch holds now. */
+    readonly held: number;
+    /** Take up to `max` bytes from the budget; returns how many it got (0 when none is free). */
+    take(max: number): number;
+    /** Give back `n` bytes (all this launch holds when omitted); never more than it holds. */
+    give(n?: number): void;
 }
 /**
- * The session's pipe read-ahead budget. A launch reserves its read ahead from
- * it before reading, gives back what it did not use as soon as the pipe
- * ended, gives back each piece as the program takes it, and releases the rest
- * however the launch ends (exit, abort, a failed launch).
+ * The session's pipe read-ahead budget. It counts the bytes of read ahead the
+ * session's Durable Object holds, not what launches might hold: a launch takes
+ * bytes from it a piece at a time, just before reading that piece, so a launch
+ * waiting on a slow writer holds almost none of it. A launch the budget cannot
+ * cover stops reading ahead and streams the rest; it gives back what it did
+ * not read at once, each piece as the program takes it, and the rest however
+ * the launch ends (exit, abort, a failed launch).
  */
 export declare class ReadAheadBudget {
     readonly capacity: number;
     private heldBytes;
     constructor(capacity: number);
-    /** Bytes reserved now, across all launches. */
+    /** Bytes held now, across all launches. */
     get held(): number;
-    reserve(max: number): ReadAheadReservation;
+    /** An account for one launch's read ahead. */
+    open(): ReadAheadAccount;
 }
 export interface StdinReadProgram {
     /** The entry's code, as it will run (after any TypeScript/ESM transform). */
