@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-09-30
+
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for core: `toVfsError`'s signature, the `VfsError` message
+shape and VFS export schema 3 (see "Breaking changes for embedders").
+
 - Removing an import's destination abandons the import, so an interrupted
   import can be started again there. An import whose sender stopped after a
   page kept its `vfs_jobs` row after its destination was removed, and

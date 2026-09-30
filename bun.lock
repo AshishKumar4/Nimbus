@@ -57,16 +57,16 @@
     },
     "packages/cli": {
       "name": "@nimbus-sh/cli",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "bin": {
         "cli": "dist/bin.js",
         "nimbus": "dist/bin.js",
         "create-nimbus-app": "dist/scaffold-bin.js",
       },
       "dependencies": {
-        "@nimbus-sh/config": "^0.2.2",
-        "@nimbus-sh/sdk": "^0.9.0",
-        "@nimbus-sh/worker": "^0.11.0",
+        "@nimbus-sh/config": "^0.2.3",
+        "@nimbus-sh/sdk": "^0.10.0",
+        "@nimbus-sh/worker": "^0.12.0",
       },
       "devDependencies": {
         "@types/node": "^22.0.0",
@@ -87,16 +87,16 @@
     },
     "packages/config": {
       "name": "@nimbus-sh/config",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "devDependencies": {
         "typescript": "^5.7.0",
       },
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.13.1",
+      "version": "0.14.0",
       "dependencies": {
-        "@nimbus-sh/platform": "^0.6.0",
+        "@nimbus-sh/platform": "^0.7.0",
         "@renovatebot/pep440": "^5.0.0",
         "acorn": "^8.15.0",
         "acorn-walk": "^8.3.5",
@@ -119,15 +119,15 @@
         "create-nimbus-app": "bin.js",
       },
       "dependencies": {
-        "@nimbus-sh/cli": "^0.1.7",
+        "@nimbus-sh/cli": "^0.2.0",
       },
     },
     "packages/fabric": {
       "name": "@nimbus-sh/fabric",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "dependencies": {
-        "@nimbus-sh/core": "^0.13.0",
-        "@nimbus-sh/platform": "^0.6.0",
+        "@nimbus-sh/core": "^0.14.0",
+        "@nimbus-sh/platform": "^0.7.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -137,9 +137,9 @@
     },
     "packages/loom": {
       "name": "@nimbus-sh/loom",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
-        "@nimbus-sh/fabric": "^0.8.0",
+        "@nimbus-sh/fabric": "^0.9.0",
         "cron-schedule": "^6.0.0",
         "partyserver": "0.5.10",
         "zod": "^4.4.3",
@@ -151,7 +151,7 @@
     },
     "packages/platform": {
       "name": "@nimbus-sh/platform",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
         "typescript": "^5.7.0",
@@ -159,42 +159,42 @@
     },
     "packages/react": {
       "name": "@nimbus-sh/react",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "devDependencies": {
-        "@nimbus-sh/sdk": "^0.9.0",
+        "@nimbus-sh/sdk": "^0.10.0",
         "@types/react": "^19.0.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/sdk": "^0.9.0",
+        "@nimbus-sh/sdk": "^0.10.0",
         "react": ">=18.0.0",
       },
     },
     "packages/sdk": {
       "name": "@nimbus-sh/sdk",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "dependencies": {
-        "@nimbus-sh/core": "^0.13.0",
+        "@nimbus-sh/core": "^0.14.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
-        "@nimbus-sh/worker": "^0.11.0",
+        "@nimbus-sh/worker": "^0.12.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/core": "^0.13.0",
-        "@nimbus-sh/worker": "^0.11.0",
+        "@nimbus-sh/core": "^0.14.0",
+        "@nimbus-sh/worker": "^0.12.0",
       },
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
-        "@nimbus-sh/core": "^0.13.0",
-        "@nimbus-sh/fabric": "^0.8.0",
-        "@nimbus-sh/platform": "^0.6.0",
+        "@nimbus-sh/core": "^0.14.0",
+        "@nimbus-sh/fabric": "^0.9.0",
+        "@nimbus-sh/platform": "^0.7.0",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",
         "clean-git-ref": "^2.0.1",
