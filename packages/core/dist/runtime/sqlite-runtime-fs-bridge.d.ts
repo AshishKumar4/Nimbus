@@ -143,6 +143,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private resolveDataPath;
     /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
     private mountedLink;
+    /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
@@ -156,6 +157,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      */
     private buffer;
     private ensureParent;
+    /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */
     private assertParentDirectory;
     /**
      * Run one mutation of path `p` and report its revision on either side,
