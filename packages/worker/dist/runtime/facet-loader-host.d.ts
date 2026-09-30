@@ -11,6 +11,13 @@
  */
 import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetManager } from '../facets/manager.js';
+/**
+ * The esbuild a host's own Durable Object bundles with outside the session,
+ * built the way the supervisor's is: transforms and builds run in the
+ * object's esbuild facet, never in its isolate, whose esbuild-wasm heap only
+ * grows (28 MiB at first use).
+ */
+export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 export declare function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHost;
 /**
  * The two objects a IsolatePool needs from a FacetManager, via the manager's

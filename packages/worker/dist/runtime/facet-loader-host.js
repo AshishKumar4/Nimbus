@@ -1,4 +1,11 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+/**
+ * The esbuild a host's own Durable Object bundles with outside the session,
+ * built the way the supervisor's is: transforms and builds run in the
+ * object's esbuild facet, never in its isolate, whose esbuild-wasm heap only
+ * grows (28 MiB at first use).
+ */
+export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 export function loaderFacetHost(env, ctx) {
     return {
         // workerd suspends a guest through JSPI, which is what lets a syscall reach
