@@ -143,22 +143,9 @@ export interface BuildResult {
     metafile?: esbuild.Metafile;
 }
 /**
- * Share an esbuild between calls; retire it past its wasm memory high-water
- * mark and stop it only after its last in-flight caller finishes. Initialization
- * failures are forgotten. Stopping a wasm instance does not eagerly free its
- * memory: fresh instances per call leave memory awaiting GC and multiply the
- * live working set under parallel preview requests. Go reuses freed heap, so
- * reuse instead plateaus at the largest working set (Pi's 23 slices reached
- * 52 MiB shared, versus 153 MiB of uncollected per-call instances, in V8).
- * Self-contained for serialization into the transform facet.
+ * Source the esbuild facet evaluates next to esbuild: its transform and build
+ * helpers, and the esbuild it keeps for transforms (keep-esbuild.ts).
  */
-export declare function keepEsbuild<T extends {
-    stop(): unknown;
-}>(start: () => Promise<{
-    esbuild: T;
-    memoryBytes(): number;
-}>, highWaterBytes: number): <R>(use: (esbuild: T) => Promise<R>) => Promise<R>;
-/** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
 export declare function generateEsbuildFacetRuntimeSource(): string;
 /** One transform a {@link EsbuildTransformHost} runs. */
 export interface EsbuildTransformRequest {

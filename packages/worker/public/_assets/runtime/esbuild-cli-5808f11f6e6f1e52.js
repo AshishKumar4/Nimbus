@@ -649,12 +649,12 @@ return globalThis.Go;
   var nonASCIIidentifier = new RegExp("[" + nonASCIIidentifierStartChars + nonASCIIidentifierChars + "]");
   function isInAstralSet(code, set) {
     var pos = 65536;
-    for (var i2 = 0; i2 < set.length; i2 += 2) {
-      pos += set[i2];
+    for (var i = 0; i < set.length; i += 2) {
+      pos += set[i];
       if (pos > code) {
         return false;
       }
-      pos += set[i2 + 1];
+      pos += set[i + 1];
       if (pos >= code) {
         return true;
       }
@@ -819,10 +819,10 @@ return globalThis.Go;
   }
   function nextLineBreak(code, from, end) {
     if (end === void 0) end = code.length;
-    for (var i2 = from; i2 < end; i2++) {
-      var next = code.charCodeAt(i2);
+    for (var i = from; i < end; i++) {
+      var next = code.charCodeAt(i);
       if (isNewLine(next)) {
-        return i2 < end - 1 && next === 13 && code.charCodeAt(i2 + 1) === 10 ? i2 + 2 : i2 + 1;
+        return i < end - 1 && next === 13 && code.charCodeAt(i + 1) === 10 ? i + 2 : i + 1;
       }
     }
     return -1;
@@ -854,8 +854,8 @@ return globalThis.Go;
     this.line = line;
     this.column = col;
   };
-  Position.prototype.offset = function offset(n2) {
-    return new Position(this.line, this.column + n2);
+  Position.prototype.offset = function offset(n) {
+    return new Position(this.line, this.column + n);
   };
   var SourceLocation = function SourceLocation2(p, start, end) {
     this.start = start;
@@ -1036,8 +1036,8 @@ return globalThis.Go;
     return (this.currentVarScope().flags & SCOPE_ASYNC) > 0;
   };
   prototypeAccessors.canAwait.get = function() {
-    for (var i2 = this.scopeStack.length - 1; i2 >= 0; i2--) {
-      var ref2 = this.scopeStack[i2];
+    for (var i = this.scopeStack.length - 1; i >= 0; i--) {
+      var ref2 = this.scopeStack[i];
       var flags = ref2.flags;
       if (flags & (SCOPE_CLASS_STATIC_BLOCK | SCOPE_CLASS_FIELD_INIT)) {
         return false;
@@ -1069,8 +1069,8 @@ return globalThis.Go;
     return this.treatFunctionsAsVarInScope(this.currentScope());
   };
   prototypeAccessors.allowNewDotTarget.get = function() {
-    for (var i2 = this.scopeStack.length - 1; i2 >= 0; i2--) {
-      var ref2 = this.scopeStack[i2];
+    for (var i = this.scopeStack.length - 1; i >= 0; i--) {
+      var ref2 = this.scopeStack[i];
       var flags = ref2.flags;
       if (flags & (SCOPE_CLASS_STATIC_BLOCK | SCOPE_CLASS_FIELD_INIT) || flags & SCOPE_FUNCTION && !(flags & SCOPE_ARROW)) {
         return true;
@@ -1096,8 +1096,8 @@ return globalThis.Go;
     var plugins = [], len = arguments.length;
     while (len--) plugins[len] = arguments[len];
     var cls = this;
-    for (var i2 = 0; i2 < plugins.length; i2++) {
-      cls = plugins[i2](cls);
+    for (var i = 0; i < plugins.length; i++) {
+      cls = plugins[i](cls);
     }
     return cls;
   };
@@ -1252,8 +1252,8 @@ return globalThis.Go;
       node.body.push(stmt);
     }
     if (this.inModule) {
-      for (var i2 = 0, list = Object.keys(this.undefinedExports); i2 < list.length; i2 += 1) {
-        var name = list[i2];
+      for (var i = 0, list = Object.keys(this.undefinedExports); i < list.length; i += 1) {
+        var name = list[i];
         this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
       }
     }
@@ -1462,9 +1462,9 @@ return globalThis.Go;
       node.label = this.parseIdent();
       this.semicolon();
     }
-    var i2 = 0;
-    for (; i2 < this.labels.length; ++i2) {
-      var lab = this.labels[i2];
+    var i = 0;
+    for (; i < this.labels.length; ++i) {
+      var lab = this.labels[i];
       if (node.label == null || lab.name === node.label.name) {
         if (lab.kind != null && (isBreak || lab.kind === "loop")) {
           break;
@@ -1474,7 +1474,7 @@ return globalThis.Go;
         }
       }
     }
-    if (i2 === this.labels.length) {
+    if (i === this.labels.length) {
       this.raise(node.start, "Unsyntactic " + keyword);
     }
     return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement");
@@ -1727,8 +1727,8 @@ return globalThis.Go;
       }
     }
     var kind = this.type.isLoop ? "loop" : this.type === types$1._switch ? "switch" : null;
-    for (var i2 = this.labels.length - 1; i2 >= 0; i2--) {
-      var label$1 = this.labels[i2];
+    for (var i = this.labels.length - 1; i >= 0; i--) {
+      var label$1 = this.labels[i];
       if (label$1.statementStart === node.start) {
         label$1.statementStart = this.start;
         label$1.kind = kind;
@@ -2058,8 +2058,8 @@ return globalThis.Go;
     }
     var len = this.privateNameStack.length;
     var parent = len === 0 ? null : this.privateNameStack[len - 1];
-    for (var i2 = 0; i2 < used.length; ++i2) {
-      var id = used[i2];
+    for (var i = 0; i < used.length; ++i) {
+      var id = used[i];
       if (!hasOwn(declared, id.name)) {
         if (parent) {
           parent.used.push(id);
@@ -2145,8 +2145,8 @@ return globalThis.Go;
           node.attributes = this.parseWithClause();
         }
       } else {
-        for (var i2 = 0, list = node.specifiers; i2 < list.length; i2 += 1) {
-          var spec = list[i2];
+        for (var i = 0, list = node.specifiers; i < list.length; i += 1) {
+          var spec = list[i];
           this.checkUnreserved(spec.local);
           this.checkLocalExport(spec.local);
           if (spec.local.type === "Literal") {
@@ -2200,8 +2200,8 @@ return globalThis.Go;
     if (type === "Identifier") {
       this.checkExport(exports, pat, pat.start);
     } else if (type === "ObjectPattern") {
-      for (var i2 = 0, list = pat.properties; i2 < list.length; i2 += 1) {
-        var prop = list[i2];
+      for (var i = 0, list = pat.properties; i < list.length; i += 1) {
+        var prop = list[i];
         this.checkPatternExport(exports, prop);
       }
     } else if (type === "ArrayPattern") {
@@ -2223,8 +2223,8 @@ return globalThis.Go;
     if (!exports) {
       return;
     }
-    for (var i2 = 0, list = decls; i2 < list.length; i2 += 1) {
-      var decl = list[i2];
+    for (var i = 0, list = decls; i < list.length; i += 1) {
+      var decl = list[i];
       this.checkPatternExport(exports, decl.id);
     }
   };
@@ -2374,8 +2374,8 @@ return globalThis.Go;
     return this.parseIdent(true);
   };
   pp$8.adaptDirectivePrologue = function(statements) {
-    for (var i2 = 0; i2 < statements.length && this.isDirectiveCandidate(statements[i2]); ++i2) {
-      statements[i2].directive = statements[i2].expression.raw.slice(1, -1);
+    for (var i = 0; i < statements.length && this.isDirectiveCandidate(statements[i]); ++i) {
+      statements[i].directive = statements[i].expression.raw.slice(1, -1);
     }
   };
   pp$8.isDirectiveCandidate = function(statement) {
@@ -2401,8 +2401,8 @@ return globalThis.Go;
           if (refDestructuringErrors) {
             this.checkPatternErrors(refDestructuringErrors, true);
           }
-          for (var i2 = 0, list = node.properties; i2 < list.length; i2 += 1) {
-            var prop = list[i2];
+          for (var i = 0, list = node.properties; i < list.length; i += 1) {
+            var prop = list[i];
             this.toAssignable(prop, isBinding);
             if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
               this.raise(prop.argument.start, "Unexpected token");
@@ -2457,8 +2457,8 @@ return globalThis.Go;
   };
   pp$7.toAssignableList = function(exprList, isBinding) {
     var end = exprList.length;
-    for (var i2 = 0; i2 < end; i2++) {
-      var elt = exprList[i2];
+    for (var i = 0; i < end; i++) {
+      var elt = exprList[i];
       if (elt) {
         this.toAssignable(elt, isBinding);
       }
@@ -2589,8 +2589,8 @@ return globalThis.Go;
     if (bindingType === void 0) bindingType = BIND_NONE;
     switch (expr.type) {
       case "ObjectPattern":
-        for (var i2 = 0, list = expr.properties; i2 < list.length; i2 += 1) {
-          var prop = list[i2];
+        for (var i = 0, list = expr.properties; i < list.length; i += 1) {
+          var prop = list[i];
           this.checkLValInnerPattern(prop, bindingType, checkClashes);
         }
         break;
@@ -2673,8 +2673,8 @@ return globalThis.Go;
     return !this.exprAllowed;
   };
   pp$6.inGeneratorContext = function() {
-    for (var i2 = this.context.length - 1; i2 >= 1; i2--) {
-      var context = this.context[i2];
+    for (var i = this.context.length - 1; i >= 1; i--) {
+      var context = this.context[i];
       if (context.token === "function") {
         return context.generator;
       }
@@ -3035,15 +3035,15 @@ return globalThis.Go;
     }
     return result;
   };
-  pp$5.parseSubscripts = function(base2, startPos, startLoc, noCalls, forInit) {
-    var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base2.type === "Identifier" && base2.name === "async" && this.lastTokEnd === base2.end && !this.canInsertSemicolon() && base2.end - base2.start === 5 && this.potentialArrowAt === base2.start;
+  pp$5.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
+    var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
     var optionalChained = false;
     while (true) {
-      var element = this.parseSubscript(base2, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
+      var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
       if (element.optional) {
         optionalChained = true;
       }
-      if (element === base2 || element.type === "ArrowFunctionExpression") {
+      if (element === base || element.type === "ArrowFunctionExpression") {
         if (optionalChained) {
           var chainNode = this.startNodeAt(startPos, startLoc);
           chainNode.expression = element;
@@ -3051,7 +3051,7 @@ return globalThis.Go;
         }
         return element;
       }
-      base2 = element;
+      base = element;
     }
   };
   pp$5.shouldParseAsyncArrow = function() {
@@ -3060,7 +3060,7 @@ return globalThis.Go;
   pp$5.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
     return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
   };
-  pp$5.parseSubscript = function(base2, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
+  pp$5.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
     var optionalSupported = this.options.ecmaVersion >= 11;
     var optional = optionalSupported && this.eat(types$1.questionDot);
     if (noCalls && optional) {
@@ -3069,11 +3069,11 @@ return globalThis.Go;
     var computed = this.eat(types$1.bracketL);
     if (computed || optional && this.type !== types$1.parenL && this.type !== types$1.backQuote || this.eat(types$1.dot)) {
       var node = this.startNodeAt(startPos, startLoc);
-      node.object = base2;
+      node.object = base;
       if (computed) {
         node.property = this.parseExpression();
         this.expect(types$1.bracketR);
-      } else if (this.type === types$1.privateId && base2.type !== "Super") {
+      } else if (this.type === types$1.privateId && base.type !== "Super") {
         node.property = this.parsePrivateIdent();
       } else {
         node.property = this.parseIdent(this.options.allowReserved !== "never");
@@ -3082,7 +3082,7 @@ return globalThis.Go;
       if (optionalSupported) {
         node.optional = optional;
       }
-      base2 = this.finishNode(node, "MemberExpression");
+      base = this.finishNode(node, "MemberExpression");
     } else if (!noCalls && this.eat(types$1.parenL)) {
       var refDestructuringErrors = new DestructuringErrors(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
       this.yieldPos = 0;
@@ -3105,22 +3105,22 @@ return globalThis.Go;
       this.awaitPos = oldAwaitPos || this.awaitPos;
       this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
       var node$1 = this.startNodeAt(startPos, startLoc);
-      node$1.callee = base2;
+      node$1.callee = base;
       node$1.arguments = exprList;
       if (optionalSupported) {
         node$1.optional = optional;
       }
-      base2 = this.finishNode(node$1, "CallExpression");
+      base = this.finishNode(node$1, "CallExpression");
     } else if (this.type === types$1.backQuote) {
       if (optional || optionalChained) {
         this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
       }
       var node$2 = this.startNodeAt(startPos, startLoc);
-      node$2.tag = base2;
+      node$2.tag = base;
       node$2.quasi = this.parseTemplate({ isTagged: true });
-      base2 = this.finishNode(node$2, "TaggedTemplateExpression");
+      base = this.finishNode(node$2, "TaggedTemplateExpression");
     }
-    return base2;
+    return base;
   };
   pp$5.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
     if (this.type === types$1.slash) {
@@ -3670,8 +3670,8 @@ return globalThis.Go;
     this.exitScope();
   };
   pp$5.isSimpleParamList = function(params) {
-    for (var i2 = 0, list = params; i2 < list.length; i2 += 1) {
-      var param = list[i2];
+    for (var i = 0, list = params; i < list.length; i += 1) {
+      var param = list[i];
       if (param.type !== "Identifier") {
         return false;
       }
@@ -3680,8 +3680,8 @@ return globalThis.Go;
   };
   pp$5.checkParams = function(node, allowDuplicates) {
     var nameHash =   Object.create(null);
-    for (var i2 = 0, list = node.params; i2 < list.length; i2 += 1) {
-      var param = list[i2];
+    for (var i = 0, list = node.params; i < list.length; i += 1) {
+      var param = list[i];
       this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
     }
   };
@@ -3866,8 +3866,8 @@ return globalThis.Go;
       }
       scope$2.functions.push(name);
     } else {
-      for (var i2 = this.scopeStack.length - 1; i2 >= 0; --i2) {
-        var scope$3 = this.scopeStack[i2];
+      for (var i = this.scopeStack.length - 1; i >= 0; --i) {
+        var scope$3 = this.scopeStack[i];
         if (scope$3.lexical.indexOf(name) > -1 && !(scope$3.flags & SCOPE_SIMPLE_CATCH && scope$3.lexical[0] === name) || !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name) > -1) {
           redeclared = true;
           break;
@@ -3894,16 +3894,16 @@ return globalThis.Go;
     return this.scopeStack[this.scopeStack.length - 1];
   };
   pp$3.currentVarScope = function() {
-    for (var i2 = this.scopeStack.length - 1; ; i2--) {
-      var scope = this.scopeStack[i2];
+    for (var i = this.scopeStack.length - 1; ; i--) {
+      var scope = this.scopeStack[i];
       if (scope.flags & (SCOPE_VAR | SCOPE_CLASS_FIELD_INIT | SCOPE_CLASS_STATIC_BLOCK)) {
         return scope;
       }
     }
   };
   pp$3.currentThisScope = function() {
-    for (var i2 = this.scopeStack.length - 1; ; i2--) {
-      var scope = this.scopeStack[i2];
+    for (var i = this.scopeStack.length - 1; ; i--) {
+      var scope = this.scopeStack[i];
       if (scope.flags & (SCOPE_VAR | SCOPE_CLASS_FIELD_INIT | SCOPE_CLASS_STATIC_BLOCK) && !(scope.flags & SCOPE_ARROW)) {
         return scope;
       }
@@ -4008,17 +4008,17 @@ return globalThis.Go;
     d.nonBinary.sc = d.nonBinary.Script;
     d.nonBinary.scx = d.nonBinary.Script_Extensions;
   }
-  for (i2 = 0, list = [9, 10, 11, 12, 13, 14]; i2 < list.length; i2 += 1) {
-    ecmaVersion = list[i2];
+  for (i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
+    ecmaVersion = list[i];
     buildUnicodeData(ecmaVersion);
   }
   var ecmaVersion;
-  var i2;
+  var i;
   var list;
   var pp$1 = Parser.prototype;
-  var BranchID = function BranchID2(parent, base2) {
+  var BranchID = function BranchID2(parent, base) {
     this.parent = parent;
-    this.base = base2 || this;
+    this.base = base || this;
   };
   BranchID.prototype.separatedFrom = function separatedFrom(alt) {
     for (var self2 = this; self2; self2 = self2.parent) {
@@ -4072,32 +4072,32 @@ return globalThis.Go;
   RegExpValidationState.prototype.raise = function raise(message) {
     this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + message);
   };
-  RegExpValidationState.prototype.at = function at(i2, forceU) {
+  RegExpValidationState.prototype.at = function at(i, forceU) {
     if (forceU === void 0) forceU = false;
-    var s2 = this.source;
-    var l2 = s2.length;
-    if (i2 >= l2) {
+    var s = this.source;
+    var l = s.length;
+    if (i >= l) {
       return -1;
     }
-    var c2 = s2.charCodeAt(i2);
-    if (!(forceU || this.switchU) || c2 <= 55295 || c2 >= 57344 || i2 + 1 >= l2) {
-      return c2;
+    var c = s.charCodeAt(i);
+    if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i + 1 >= l) {
+      return c;
     }
-    var next = s2.charCodeAt(i2 + 1);
-    return next >= 56320 && next <= 57343 ? (c2 << 10) + next - 56613888 : c2;
+    var next = s.charCodeAt(i + 1);
+    return next >= 56320 && next <= 57343 ? (c << 10) + next - 56613888 : c;
   };
-  RegExpValidationState.prototype.nextIndex = function nextIndex(i2, forceU) {
+  RegExpValidationState.prototype.nextIndex = function nextIndex(i, forceU) {
     if (forceU === void 0) forceU = false;
-    var s2 = this.source;
-    var l2 = s2.length;
-    if (i2 >= l2) {
-      return l2;
+    var s = this.source;
+    var l = s.length;
+    if (i >= l) {
+      return l;
     }
-    var c2 = s2.charCodeAt(i2), next;
-    if (!(forceU || this.switchU) || c2 <= 55295 || c2 >= 57344 || i2 + 1 >= l2 || (next = s2.charCodeAt(i2 + 1)) < 56320 || next > 57343) {
-      return i2 + 1;
+    var c = s.charCodeAt(i), next;
+    if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i + 1 >= l || (next = s.charCodeAt(i + 1)) < 56320 || next > 57343) {
+      return i + 1;
     }
-    return i2 + 2;
+    return i + 2;
   };
   RegExpValidationState.prototype.current = function current(forceU) {
     if (forceU === void 0) forceU = false;
@@ -4122,8 +4122,8 @@ return globalThis.Go;
   RegExpValidationState.prototype.eatChars = function eatChars(chs, forceU) {
     if (forceU === void 0) forceU = false;
     var pos = this.pos;
-    for (var i2 = 0, list = chs; i2 < list.length; i2 += 1) {
-      var ch = list[i2];
+    for (var i = 0, list = chs; i < list.length; i += 1) {
+      var ch = list[i];
       var current2 = this.at(pos, forceU);
       if (current2 === -1 || current2 !== ch) {
         return false;
@@ -4136,24 +4136,24 @@ return globalThis.Go;
   pp$1.validateRegExpFlags = function(state) {
     var validFlags = state.validFlags;
     var flags = state.flags;
-    var u2 = false;
+    var u = false;
     var v = false;
-    for (var i2 = 0; i2 < flags.length; i2++) {
-      var flag = flags.charAt(i2);
+    for (var i = 0; i < flags.length; i++) {
+      var flag = flags.charAt(i);
       if (validFlags.indexOf(flag) === -1) {
         this.raise(state.start, "Invalid regular expression flag");
       }
-      if (flags.indexOf(flag, i2 + 1) > -1) {
+      if (flags.indexOf(flag, i + 1) > -1) {
         this.raise(state.start, "Duplicate regular expression flag");
       }
       if (flag === "u") {
-        u2 = true;
+        u = true;
       }
       if (flag === "v") {
         v = true;
       }
     }
-    if (this.options.ecmaVersion >= 15 && u2 && v) {
+    if (this.options.ecmaVersion >= 15 && u && v) {
       this.raise(state.start, "Invalid regular expression flag");
     }
   };
@@ -4198,8 +4198,8 @@ return globalThis.Go;
     if (state.maxBackReference > state.numCapturingParens) {
       state.raise("Invalid escape");
     }
-    for (var i2 = 0, list = state.backReferenceNames; i2 < list.length; i2 += 1) {
-      var name = list[i2];
+    for (var i = 0, list = state.backReferenceNames; i < list.length; i += 1) {
+      var name = list[i];
       if (!state.groupNames[name]) {
         state.raise("Invalid named capture referenced");
       }
@@ -4380,9 +4380,9 @@ return globalThis.Go;
             45
           );
           if (addModifiers || hasHyphen) {
-            for (var i2 = 0; i2 < addModifiers.length; i2++) {
-              var modifier = addModifiers.charAt(i2);
-              if (addModifiers.indexOf(modifier, i2 + 1) > -1) {
+            for (var i = 0; i < addModifiers.length; i++) {
+              var modifier = addModifiers.charAt(i);
+              if (addModifiers.indexOf(modifier, i + 1) > -1) {
                 state.raise("Duplicate regular expression modifiers");
               }
             }
@@ -4498,8 +4498,8 @@ return globalThis.Go;
       var known = state.groupNames[state.lastStringValue];
       if (known) {
         if (trackDisjunction) {
-          for (var i2 = 0, list = known; i2 < list.length; i2 += 1) {
-            var altID = list[i2];
+          for (var i = 0, list = known; i < list.length; i += 1) {
+            var altID = list[i];
             if (!altID.separatedFrom(state.branchID)) {
               state.raise("Duplicate capture group name");
             }
@@ -4591,14 +4591,14 @@ return globalThis.Go;
   pp$1.regexp_eatBackReference = function(state) {
     var start = state.pos;
     if (this.regexp_eatDecimalEscape(state)) {
-      var n2 = state.lastIntValue;
+      var n = state.lastIntValue;
       if (state.switchU) {
-        if (n2 > state.maxBackReference) {
-          state.maxBackReference = n2;
+        if (n > state.maxBackReference) {
+          state.maxBackReference = n;
         }
         return true;
       }
-      if (n2 <= state.numCapturingParens) {
+      if (n <= state.numCapturingParens) {
         return true;
       }
       state.pos = start;
@@ -5227,7 +5227,7 @@ return globalThis.Go;
   pp$1.regexp_eatFixedHexDigits = function(state, length) {
     var start = state.pos;
     state.lastIntValue = 0;
-    for (var i2 = 0; i2 < length; ++i2) {
+    for (var i = 0; i < length; ++i) {
       var ch = state.current();
       if (!isHexDigit(ch)) {
         state.pos = start;
@@ -5687,7 +5687,7 @@ return globalThis.Go;
     var value = null;
     try {
       value = new RegExp(pattern, flags);
-    } catch (e2) {
+    } catch (e) {
     }
     return this.finishToken(types$1.regexp, { pattern, flags, value });
   };
@@ -5695,7 +5695,7 @@ return globalThis.Go;
     var allowSeparators = this.options.ecmaVersion >= 12 && len === void 0;
     var isLegacyOctalNumericLiteral = maybeLegacyOctalNumericLiteral && this.input.charCodeAt(this.pos) === 48;
     var start = this.pos, total = 0, lastCode = 0;
-    for (var i2 = 0, e2 = len == null ? Infinity : len; i2 < e2; ++i2, ++this.pos) {
+    for (var i = 0, e = len == null ? Infinity : len; i < e; ++i, ++this.pos) {
       var code = this.input.charCodeAt(this.pos), val = void 0;
       if (allowSeparators && code === 95) {
         if (isLegacyOctalNumericLiteral) {
@@ -5704,7 +5704,7 @@ return globalThis.Go;
         if (lastCode === 95) {
           this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore");
         }
-        if (i2 === 0) {
+        if (i === 0) {
           this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits");
         }
         lastCode = code;
@@ -6022,11 +6022,11 @@ return globalThis.Go;
   };
   pp.readHexChar = function(len) {
     var codePos = this.pos;
-    var n2 = this.readInt(16, len);
-    if (n2 === null) {
+    var n = this.readInt(16, len);
+    if (n === null) {
       this.invalidStringToken(codePos, "Bad character escape sequence");
     }
-    return n2;
+    return n;
   };
   pp.readWord1 = function() {
     this.containsEsc = false;
@@ -6094,2964 +6094,2776 @@ return globalThis.Go;
     return Parser.tokenizer(input, options);
   }
 
-  function full(node, callback, baseVisitor, state, override) {
-    if (!baseVisitor) {
-      baseVisitor = base;
-    }
-    var last;
-    (function c2(node2, st, override2) {
-      var type = override2 || node2.type;
-      visitNode(baseVisitor, type, node2, st, c2);
-      if (last !== node2) {
-        callback(node2, st, type);
-        last = node2;
+  function createModuleLexer() {
+    let e, a, r, i = 2 << 19;
+    const s = 1 === new Uint8Array(new Uint16Array([1]).buffer)[0] ? function(e2, a2) {
+      const r2 = e2.length;
+      let i2 = 0;
+      for (; i2 < r2; ) a2[i2] = e2.charCodeAt(i2++);
+    } : function(e2, a2) {
+      const r2 = e2.length;
+      let i2 = 0;
+      for (; i2 < r2; ) {
+        const r3 = e2.charCodeAt(i2);
+        a2[i2++] = (255 & r3) << 8 | r3 >>> 8;
       }
-    })(node, state, override);
-  }
-  function skipThrough(node, st, c2) {
-    c2(node, st);
-  }
-  function ignore(_node, _st, _c) {
-  }
-  function visitNode(baseVisitor, type, node, st, c2) {
-    if (baseVisitor[type] == null) {
-      throw new Error("No walker function defined for node type " + type);
-    }
-    baseVisitor[type](node, st, c2);
-  }
-  var base = {};
-  base.Program = base.BlockStatement = base.StaticBlock = function(node, st, c2) {
-    for (var i2 = 0, list = node.body; i2 < list.length; i2 += 1) {
-      var stmt = list[i2];
-      c2(stmt, st, "Statement");
-    }
-  };
-  base.Statement = skipThrough;
-  base.EmptyStatement = ignore;
-  base.ExpressionStatement = base.ParenthesizedExpression = base.ChainExpression = function(node, st, c2) {
-    return c2(node.expression, st, "Expression");
-  };
-  base.IfStatement = function(node, st, c2) {
-    c2(node.test, st, "Expression");
-    c2(node.consequent, st, "Statement");
-    if (node.alternate) {
-      c2(node.alternate, st, "Statement");
-    }
-  };
-  base.LabeledStatement = function(node, st, c2) {
-    return c2(node.body, st, "Statement");
-  };
-  base.BreakStatement = base.ContinueStatement = ignore;
-  base.WithStatement = function(node, st, c2) {
-    c2(node.object, st, "Expression");
-    c2(node.body, st, "Statement");
-  };
-  base.SwitchStatement = function(node, st, c2) {
-    c2(node.discriminant, st, "Expression");
-    for (var i2 = 0, list = node.cases; i2 < list.length; i2 += 1) {
-      var cs = list[i2];
-      c2(cs, st);
-    }
-  };
-  base.SwitchCase = function(node, st, c2) {
-    if (node.test) {
-      c2(node.test, st, "Expression");
-    }
-    for (var i2 = 0, list = node.consequent; i2 < list.length; i2 += 1) {
-      var cons = list[i2];
-      c2(cons, st, "Statement");
-    }
-  };
-  base.ReturnStatement = base.YieldExpression = base.AwaitExpression = function(node, st, c2) {
-    if (node.argument) {
-      c2(node.argument, st, "Expression");
-    }
-  };
-  base.ThrowStatement = base.SpreadElement = function(node, st, c2) {
-    return c2(node.argument, st, "Expression");
-  };
-  base.TryStatement = function(node, st, c2) {
-    c2(node.block, st, "Statement");
-    if (node.handler) {
-      c2(node.handler, st);
-    }
-    if (node.finalizer) {
-      c2(node.finalizer, st, "Statement");
-    }
-  };
-  base.CatchClause = function(node, st, c2) {
-    if (node.param) {
-      c2(node.param, st, "Pattern");
-    }
-    c2(node.body, st, "Statement");
-  };
-  base.WhileStatement = base.DoWhileStatement = function(node, st, c2) {
-    c2(node.test, st, "Expression");
-    c2(node.body, st, "Statement");
-  };
-  base.ForStatement = function(node, st, c2) {
-    if (node.init) {
-      c2(node.init, st, "ForInit");
-    }
-    if (node.test) {
-      c2(node.test, st, "Expression");
-    }
-    if (node.update) {
-      c2(node.update, st, "Expression");
-    }
-    c2(node.body, st, "Statement");
-  };
-  base.ForInStatement = base.ForOfStatement = function(node, st, c2) {
-    c2(node.left, st, "ForInit");
-    c2(node.right, st, "Expression");
-    c2(node.body, st, "Statement");
-  };
-  base.ForInit = function(node, st, c2) {
-    if (node.type === "VariableDeclaration") {
-      c2(node, st);
-    } else {
-      c2(node, st, "Expression");
-    }
-  };
-  base.DebuggerStatement = ignore;
-  base.FunctionDeclaration = function(node, st, c2) {
-    return c2(node, st, "Function");
-  };
-  base.VariableDeclaration = function(node, st, c2) {
-    for (var i2 = 0, list = node.declarations; i2 < list.length; i2 += 1) {
-      var decl = list[i2];
-      c2(decl, st);
-    }
-  };
-  base.VariableDeclarator = function(node, st, c2) {
-    c2(node.id, st, "Pattern");
-    if (node.init) {
-      c2(node.init, st, "Expression");
-    }
-  };
-  base.Function = function(node, st, c2) {
-    if (node.id) {
-      c2(node.id, st, "Pattern");
-    }
-    for (var i2 = 0, list = node.params; i2 < list.length; i2 += 1) {
-      var param = list[i2];
-      c2(param, st, "Pattern");
-    }
-    c2(node.body, st, node.expression ? "Expression" : "Statement");
-  };
-  base.Pattern = function(node, st, c2) {
-    if (node.type === "Identifier") {
-      c2(node, st, "VariablePattern");
-    } else if (node.type === "MemberExpression") {
-      c2(node, st, "MemberPattern");
-    } else {
-      c2(node, st);
-    }
-  };
-  base.VariablePattern = ignore;
-  base.MemberPattern = skipThrough;
-  base.RestElement = function(node, st, c2) {
-    return c2(node.argument, st, "Pattern");
-  };
-  base.ArrayPattern = function(node, st, c2) {
-    for (var i2 = 0, list = node.elements; i2 < list.length; i2 += 1) {
-      var elt = list[i2];
-      if (elt) {
-        c2(elt, st, "Pattern");
-      }
-    }
-  };
-  base.ObjectPattern = function(node, st, c2) {
-    for (var i2 = 0, list = node.properties; i2 < list.length; i2 += 1) {
-      var prop = list[i2];
-      if (prop.type === "Property") {
-        if (prop.computed) {
-          c2(prop.key, st, "Expression");
-        }
-        c2(prop.value, st, "Pattern");
-      } else if (prop.type === "RestElement") {
-        c2(prop.argument, st, "Pattern");
-      }
-    }
-  };
-  base.Expression = skipThrough;
-  base.ThisExpression = base.Super = base.MetaProperty = ignore;
-  base.ArrayExpression = function(node, st, c2) {
-    for (var i2 = 0, list = node.elements; i2 < list.length; i2 += 1) {
-      var elt = list[i2];
-      if (elt) {
-        c2(elt, st, "Expression");
-      }
-    }
-  };
-  base.ObjectExpression = function(node, st, c2) {
-    for (var i2 = 0, list = node.properties; i2 < list.length; i2 += 1) {
-      var prop = list[i2];
-      c2(prop, st);
-    }
-  };
-  base.FunctionExpression = base.ArrowFunctionExpression = base.FunctionDeclaration;
-  base.SequenceExpression = function(node, st, c2) {
-    for (var i2 = 0, list = node.expressions; i2 < list.length; i2 += 1) {
-      var expr = list[i2];
-      c2(expr, st, "Expression");
-    }
-  };
-  base.TemplateLiteral = function(node, st, c2) {
-    for (var i2 = 0, list = node.quasis; i2 < list.length; i2 += 1) {
-      var quasi = list[i2];
-      c2(quasi, st);
-    }
-    for (var i$1 = 0, list$1 = node.expressions; i$1 < list$1.length; i$1 += 1) {
-      var expr = list$1[i$1];
-      c2(expr, st, "Expression");
-    }
-  };
-  base.TemplateElement = ignore;
-  base.UnaryExpression = base.UpdateExpression = function(node, st, c2) {
-    c2(node.argument, st, "Expression");
-  };
-  base.BinaryExpression = base.LogicalExpression = function(node, st, c2) {
-    c2(node.left, st, "Expression");
-    c2(node.right, st, "Expression");
-  };
-  base.AssignmentExpression = base.AssignmentPattern = function(node, st, c2) {
-    c2(node.left, st, "Pattern");
-    c2(node.right, st, "Expression");
-  };
-  base.ConditionalExpression = function(node, st, c2) {
-    c2(node.test, st, "Expression");
-    c2(node.consequent, st, "Expression");
-    c2(node.alternate, st, "Expression");
-  };
-  base.NewExpression = base.CallExpression = function(node, st, c2) {
-    c2(node.callee, st, "Expression");
-    if (node.arguments) {
-      for (var i2 = 0, list = node.arguments; i2 < list.length; i2 += 1) {
-        var arg = list[i2];
-        c2(arg, st, "Expression");
-      }
-    }
-  };
-  base.MemberExpression = function(node, st, c2) {
-    c2(node.object, st, "Expression");
-    if (node.computed) {
-      c2(node.property, st, "Expression");
-    }
-  };
-  base.ExportNamedDeclaration = base.ExportDefaultDeclaration = function(node, st, c2) {
-    if (node.declaration) {
-      c2(node.declaration, st, node.type === "ExportNamedDeclaration" || node.declaration.id ? "Statement" : "Expression");
-    }
-    if (node.source) {
-      c2(node.source, st, "Expression");
-    }
-    if (node.attributes) {
-      for (var i2 = 0, list = node.attributes; i2 < list.length; i2 += 1) {
-        var attr = list[i2];
-        c2(attr, st);
-      }
-    }
-  };
-  base.ExportAllDeclaration = function(node, st, c2) {
-    if (node.exported) {
-      c2(node.exported, st);
-    }
-    c2(node.source, st, "Expression");
-    if (node.attributes) {
-      for (var i2 = 0, list = node.attributes; i2 < list.length; i2 += 1) {
-        var attr = list[i2];
-        c2(attr, st);
-      }
-    }
-  };
-  base.ImportAttribute = function(node, st, c2) {
-    c2(node.value, st, "Expression");
-  };
-  base.ImportDeclaration = function(node, st, c2) {
-    for (var i2 = 0, list = node.specifiers; i2 < list.length; i2 += 1) {
-      var spec = list[i2];
-      c2(spec, st);
-    }
-    c2(node.source, st, "Expression");
-    if (node.attributes) {
-      for (var i$1 = 0, list$1 = node.attributes; i$1 < list$1.length; i$1 += 1) {
-        var attr = list$1[i$1];
-        c2(attr, st);
-      }
-    }
-  };
-  base.ImportExpression = function(node, st, c2) {
-    c2(node.source, st, "Expression");
-    if (node.options) {
-      c2(node.options, st, "Expression");
-    }
-  };
-  base.ImportSpecifier = base.ImportDefaultSpecifier = base.ImportNamespaceSpecifier = base.Identifier = base.PrivateIdentifier = base.Literal = ignore;
-  base.TaggedTemplateExpression = function(node, st, c2) {
-    c2(node.tag, st, "Expression");
-    c2(node.quasi, st, "Expression");
-  };
-  base.ClassDeclaration = base.ClassExpression = function(node, st, c2) {
-    return c2(node, st, "Class");
-  };
-  base.Class = function(node, st, c2) {
-    if (node.id) {
-      c2(node.id, st, "Pattern");
-    }
-    if (node.superClass) {
-      c2(node.superClass, st, "Expression");
-    }
-    c2(node.body, st);
-  };
-  base.ClassBody = function(node, st, c2) {
-    for (var i2 = 0, list = node.body; i2 < list.length; i2 += 1) {
-      var elt = list[i2];
-      c2(elt, st);
-    }
-  };
-  base.MethodDefinition = base.PropertyDefinition = base.Property = function(node, st, c2) {
-    if (node.computed) {
-      c2(node.key, st, "Expression");
-    }
-    if (node.value) {
-      c2(node.value, st, "Expression");
-    }
-  };
-
-  var e;
-  var a;
-  var r;
-  var i = 2 << 19;
-  var s = 1 === new Uint8Array(new Uint16Array([1]).buffer)[0] ? function(e2, a2) {
-    const r2 = e2.length;
-    let i2 = 0;
-    for (; i2 < r2; ) a2[i2] = e2.charCodeAt(i2++);
-  } : function(e2, a2) {
-    const r2 = e2.length;
-    let i2 = 0;
-    for (; i2 < r2; ) {
-      const r3 = e2.charCodeAt(i2);
-      a2[i2++] = (255 & r3) << 8 | r3 >>> 8;
-    }
-  };
-  var f = "xportportetaourceeferromsyncunctionlassvoyiedelecontininstantybreareturdebuggeawaithrwhileforifcatcfinallels";
-  var c;
-  var t;
-  var n;
-  function parse3(k2, l2 = "@") {
-    c = k2, t = l2;
-    const u2 = 2 * c.length + (2 << 18);
-    if (u2 > i || !e) {
-      for (; u2 > i; ) i *= 2;
-      a = new ArrayBuffer(i), s(f, new Uint16Array(a, 16, 108)), e = (function(e2, a2, r2) {
-        ;
-        var i2 = new e2.Int8Array(r2), s2 = new e2.Int16Array(r2), f2 = new e2.Int32Array(r2), c2 = new e2.Uint8Array(r2), t2 = new e2.Uint16Array(r2), n2 = 1040;
-        function b2() {
-          var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, b3 = 0, k4 = 0, o3 = 0, h3 = 0;
-          h3 = n2;
-          n2 = n2 + 10240 | 0;
-          i2[808] = 1;
-          i2[807] = 0;
-          s2[401] = 0;
-          s2[402] = 0;
-          f2[70] = f2[2];
-          i2[809] = 0;
-          f2[68] = 0;
-          i2[806] = 0;
-          f2[71] = h3 + 2048;
-          f2[72] = h3;
-          i2[810] = 0;
-          e3 = (f2[3] | 0) + -2 | 0;
-          f2[73] = e3;
-          a3 = e3 + (f2[66] << 1) | 0;
-          f2[74] = a3;
-          e: while (1) {
-            r3 = e3 + 2 | 0;
-            f2[73] = r3;
-            if (e3 >>> 0 >= a3 >>> 0) {
-              c3 = 19;
-              break;
-            }
-            a: do {
-              switch (s2[r3 >> 1] | 0) {
-                case 9:
-                case 10:
-                case 11:
-                case 12:
-                case 13:
-                case 32:
-                  break;
-                case 101: {
-                  if ((((s2[402] | 0) == 0 ? R(r3) | 0 : 0) ? (S(e3 + 4 | 0, 16, 10) | 0) == 0 : 0) ? (u3(), (i2[808] | 0) == 0) : 0) {
-                    c3 = 9;
-                    break e;
-                  } else c3 = 18;
-                  break;
-                }
-                case 105: {
-                  if (((s2[e3 + 4 >> 1] | 0) == 109 ? R(r3) | 0 : 0) ? (S(e3 + 6 | 0, 26, 8) | 0) == 0 : 0) {
-                    l3();
-                    c3 = 18;
-                  } else c3 = 18;
-                  break;
-                }
-                case 59: {
-                  c3 = 18;
-                  break;
-                }
-                case 47:
-                  switch (s2[e3 + 4 >> 1] | 0) {
-                    case 47: {
-                      F();
-                      break a;
-                    }
-                    case 42: {
-                      x(1);
-                      break a;
-                    }
-                    default: {
-                      c3 = 17;
-                      break e;
-                    }
-                  }
-                default: {
-                  c3 = 17;
-                  break e;
-                }
-              }
-            } while (0);
-            if ((c3 | 0) == 18) {
-              c3 = 0;
-              f2[70] = f2[73];
-            }
-            e3 = f2[73] | 0;
-            a3 = f2[74] | 0;
-          }
-          if ((c3 | 0) == 9) {
-            e3 = f2[73] | 0;
-            f2[70] = e3;
-            c3 = 20;
-          } else if ((c3 | 0) == 17) {
-            i2[808] = 0;
+    }, f = "xportportetaourceeferromsyncunctionlassvoyiedelecontininstantybreareturdebuggeawaithrwhileforifcatcfinallels";
+    let c, t, n;
+    function parse3(k2, l2 = "@") {
+      c = k2, t = l2;
+      const u2 = 2 * c.length + (2 << 18);
+      if (u2 > i || !e) {
+        for (; u2 > i; ) i *= 2;
+        a = new ArrayBuffer(i), s(f, new Uint16Array(a, 16, 108)), e = (function(e2, a2, r2) {
+          ;
+          var i2 = new e2.Int8Array(r2), s2 = new e2.Int16Array(r2), f2 = new e2.Int32Array(r2), c2 = new e2.Uint8Array(r2), t2 = new e2.Uint16Array(r2), n2 = 1040;
+          function b2() {
+            var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, b3 = 0, k4 = 0, o3 = 0, h3 = 0;
+            h3 = n2;
+            n2 = n2 + 10240 | 0;
+            i2[808] = 1;
+            i2[807] = 0;
+            s2[401] = 0;
+            s2[402] = 0;
+            f2[70] = f2[2];
+            i2[809] = 0;
+            f2[68] = 0;
+            i2[806] = 0;
+            f2[71] = h3 + 2048;
+            f2[72] = h3;
+            i2[810] = 0;
+            e3 = (f2[3] | 0) + -2 | 0;
             f2[73] = e3;
-            c3 = 20;
-          } else if ((c3 | 0) == 19) if (!(i2[806] | 0)) {
-            e3 = r3;
-            c3 = 20;
-          } else e3 = 0;
-          do {
-            if ((c3 | 0) == 20) {
-              e: while (1) {
-                r3 = e3 + 2 | 0;
-                f2[73] = r3;
-                if (e3 >>> 0 >= (f2[74] | 0) >>> 0) {
-                  c3 = 104;
-                  break;
+            a3 = e3 + (f2[66] << 1) | 0;
+            f2[74] = a3;
+            e: while (1) {
+              r3 = e3 + 2 | 0;
+              f2[73] = r3;
+              if (e3 >>> 0 >= a3 >>> 0) {
+                c3 = 19;
+                break;
+              }
+              a: do {
+                switch (s2[r3 >> 1] | 0) {
+                  case 9:
+                  case 10:
+                  case 11:
+                  case 12:
+                  case 13:
+                  case 32:
+                    break;
+                  case 101: {
+                    if ((((s2[402] | 0) == 0 ? R(r3) | 0 : 0) ? (S(e3 + 4 | 0, 16, 10) | 0) == 0 : 0) ? (u3(), (i2[808] | 0) == 0) : 0) {
+                      c3 = 9;
+                      break e;
+                    } else c3 = 18;
+                    break;
+                  }
+                  case 105: {
+                    if (((s2[e3 + 4 >> 1] | 0) == 109 ? R(r3) | 0 : 0) ? (S(e3 + 6 | 0, 26, 8) | 0) == 0 : 0) {
+                      l3();
+                      c3 = 18;
+                    } else c3 = 18;
+                    break;
+                  }
+                  case 59: {
+                    c3 = 18;
+                    break;
+                  }
+                  case 47:
+                    switch (s2[e3 + 4 >> 1] | 0) {
+                      case 47: {
+                        F();
+                        break a;
+                      }
+                      case 42: {
+                        x(1);
+                        break a;
+                      }
+                      default: {
+                        c3 = 17;
+                        break e;
+                      }
+                    }
+                  default: {
+                    c3 = 17;
+                    break e;
+                  }
                 }
-                a3 = s2[r3 >> 1] | 0;
-                a: do {
-                  switch (a3 << 16 >> 16) {
-                    case 9:
-                    case 10:
-                    case 11:
-                    case 12:
-                    case 13:
-                    case 32:
-                      break;
-                    case 101: {
-                      if (((s2[402] | 0) == 0 ? R(r3) | 0 : 0) ? (S(e3 + 4 | 0, 16, 10) | 0) == 0 : 0) {
-                        u3();
-                        c3 = 103;
-                      } else c3 = 103;
-                      break;
-                    }
-                    case 105: {
-                      if (((s2[e3 + 4 >> 1] | 0) == 109 ? R(r3) | 0 : 0) ? (S(e3 + 6 | 0, 26, 8) | 0) == 0 : 0) {
-                        l3();
-                        c3 = 103;
-                      } else c3 = 103;
-                      break;
-                    }
-                    case 99: {
-                      if ((((s2[e3 + 4 >> 1] | 0) == 108 ? R(r3) | 0 : 0) ? (S(e3 + 6 | 0, 88, 6) | 0) == 0 : 0) ? L(s2[e3 + 12 >> 1] | 0) | 0 : 0) {
-                        i2[810] = 1;
-                        c3 = 103;
-                      } else c3 = 103;
-                      break;
-                    }
-                    case 40: {
-                      r3 = f2[71] | 0;
-                      c3 = s2[402] | 0;
-                      f2[r3 + ((c3 & 65535) << 3) >> 2] = 1;
-                      a3 = f2[70] | 0;
-                      s2[402] = c3 + 1 << 16 >> 16;
-                      f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = a3;
-                      c3 = 103;
-                      break;
-                    }
-                    case 91: {
-                      r3 = f2[71] | 0;
-                      c3 = s2[402] | 0;
-                      f2[r3 + ((c3 & 65535) << 3) >> 2] = 8;
-                      a3 = f2[70] | 0;
-                      s2[402] = c3 + 1 << 16 >> 16;
-                      f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = a3;
-                      c3 = 103;
-                      break;
-                    }
-                    case 93: {
-                      e3 = s2[402] | 0;
-                      if (!(e3 << 16 >> 16)) {
-                        c3 = 40;
-                        break e;
+              } while (0);
+              if ((c3 | 0) == 18) {
+                c3 = 0;
+                f2[70] = f2[73];
+              }
+              e3 = f2[73] | 0;
+              a3 = f2[74] | 0;
+            }
+            if ((c3 | 0) == 9) {
+              e3 = f2[73] | 0;
+              f2[70] = e3;
+              c3 = 20;
+            } else if ((c3 | 0) == 17) {
+              i2[808] = 0;
+              f2[73] = e3;
+              c3 = 20;
+            } else if ((c3 | 0) == 19) if (!(i2[806] | 0)) {
+              e3 = r3;
+              c3 = 20;
+            } else e3 = 0;
+            do {
+              if ((c3 | 0) == 20) {
+                e: while (1) {
+                  r3 = e3 + 2 | 0;
+                  f2[73] = r3;
+                  if (e3 >>> 0 >= (f2[74] | 0) >>> 0) {
+                    c3 = 104;
+                    break;
+                  }
+                  a3 = s2[r3 >> 1] | 0;
+                  a: do {
+                    switch (a3 << 16 >> 16) {
+                      case 9:
+                      case 10:
+                      case 11:
+                      case 12:
+                      case 13:
+                      case 32:
+                        break;
+                      case 101: {
+                        if (((s2[402] | 0) == 0 ? R(r3) | 0 : 0) ? (S(e3 + 4 | 0, 16, 10) | 0) == 0 : 0) {
+                          u3();
+                          c3 = 103;
+                        } else c3 = 103;
+                        break;
                       }
-                      s2[402] = e3 + -1 << 16 >> 16;
-                      c3 = 103;
-                      break;
-                    }
-                    case 44: {
-                      a3 = s2[401] | 0;
-                      if (((a3 << 16 >> 16 != 0 ? (t3 = s2[402] | 0, t3 << 16 >> 16 != 0) : 0) ? (f2[(f2[71] | 0) + ((t3 & 65535) + -1 << 3) >> 2] | 0) == 5 : 0) ? (b3 = f2[(f2[72] | 0) + ((a3 & 65535) + -1 << 2) >> 2] | 0, (f2[b3 + 4 >> 2] | 0) == 0) : 0) {
-                        f2[b3 + 4 >> 2] = (f2[70] | 0) + 2;
-                        f2[73] = e3 + 4;
-                        v2(1) | 0;
-                        c3 = f2[73] | 0;
-                        f2[b3 + 16 >> 2] = c3;
-                        f2[73] = c3 + -2;
-                        c3 = 103;
-                      } else c3 = 103;
-                      break;
-                    }
-                    case 41: {
-                      a3 = s2[402] | 0;
-                      if (!(a3 << 16 >> 16)) {
-                        c3 = 48;
-                        break e;
+                      case 105: {
+                        if (((s2[e3 + 4 >> 1] | 0) == 109 ? R(r3) | 0 : 0) ? (S(e3 + 6 | 0, 26, 8) | 0) == 0 : 0) {
+                          l3();
+                          c3 = 103;
+                        } else c3 = 103;
+                        break;
                       }
-                      s2[402] = a3 + -1 << 16 >> 16;
-                      r3 = s2[401] | 0;
-                      if (r3 << 16 >> 16 != 0 ? (f2[(f2[71] | 0) + ((a3 + -1 & 65535) << 3) >> 2] | 0) == 5 : 0) {
-                        a3 = f2[(f2[72] | 0) + ((r3 & 65535) + -1 << 2) >> 2] | 0;
-                        if (!(f2[a3 + 4 >> 2] | 0)) f2[a3 + 4 >> 2] = (f2[70] | 0) + 2;
-                        f2[a3 + 12 >> 2] = e3 + 4;
-                        s2[401] = r3 + -1 << 16 >> 16;
-                        c3 = 103;
-                      } else c3 = 103;
-                      break;
-                    }
-                    case 123: {
-                      e3 = f2[70] | 0;
-                      c3 = f2[62] | 0;
-                      do {
-                        if ((s2[e3 >> 1] | 0) == 41 & (c3 | 0) != 0 ? (f2[c3 + 12 >> 2] | 0) == (e3 + 2 | 0) : 0) {
-                          a3 = f2[63] | 0;
-                          f2[62] = a3;
-                          if (!a3) {
-                            f2[58] = 0;
-                            break;
-                          } else {
-                            f2[a3 + 36 >> 2] = 0;
-                            break;
-                          }
-                        }
-                      } while (0);
-                      r3 = f2[71] | 0;
-                      c3 = s2[402] | 0;
-                      f2[r3 + ((c3 & 65535) << 3) >> 2] = (i2[810] | 0) == 0 ? 2 : 6;
-                      s2[402] = c3 + 1 << 16 >> 16;
-                      f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = e3;
-                      i2[810] = 0;
-                      c3 = 103;
-                      break;
-                    }
-                    case 125: {
-                      e3 = s2[402] | 0;
-                      if (!(e3 << 16 >> 16)) {
-                        c3 = 61;
-                        break e;
+                      case 99: {
+                        if ((((s2[e3 + 4 >> 1] | 0) == 108 ? R(r3) | 0 : 0) ? (S(e3 + 6 | 0, 88, 6) | 0) == 0 : 0) ? L(s2[e3 + 12 >> 1] | 0) | 0 : 0) {
+                          i2[810] = 1;
+                          c3 = 103;
+                        } else c3 = 103;
+                        break;
                       }
-                      c3 = f2[71] | 0;
-                      s2[402] = e3 + -1 << 16 >> 16;
-                      if ((f2[c3 + ((e3 + -1 & 65535) << 3) >> 2] | 0) == 4) {
-                        d2();
+                      case 40: {
+                        r3 = f2[71] | 0;
+                        c3 = s2[402] | 0;
+                        f2[r3 + ((c3 & 65535) << 3) >> 2] = 1;
+                        a3 = f2[70] | 0;
+                        s2[402] = c3 + 1 << 16 >> 16;
+                        f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = a3;
                         c3 = 103;
-                      } else c3 = 103;
-                      break;
-                    }
-                    case 34:
-                    case 39: {
-                      C(a3);
-                      c3 = 103;
-                      break;
-                    }
-                    case 47:
-                      switch (s2[e3 + 4 >> 1] | 0) {
-                        case 47: {
-                          F();
-                          break a;
+                        break;
+                      }
+                      case 91: {
+                        r3 = f2[71] | 0;
+                        c3 = s2[402] | 0;
+                        f2[r3 + ((c3 & 65535) << 3) >> 2] = 8;
+                        a3 = f2[70] | 0;
+                        s2[402] = c3 + 1 << 16 >> 16;
+                        f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = a3;
+                        c3 = 103;
+                        break;
+                      }
+                      case 93: {
+                        e3 = s2[402] | 0;
+                        if (!(e3 << 16 >> 16)) {
+                          c3 = 40;
+                          break e;
                         }
-                        case 42: {
-                          x(1);
-                          break a;
+                        s2[402] = e3 + -1 << 16 >> 16;
+                        c3 = 103;
+                        break;
+                      }
+                      case 44: {
+                        a3 = s2[401] | 0;
+                        if (((a3 << 16 >> 16 != 0 ? (t3 = s2[402] | 0, t3 << 16 >> 16 != 0) : 0) ? (f2[(f2[71] | 0) + ((t3 & 65535) + -1 << 3) >> 2] | 0) == 5 : 0) ? (b3 = f2[(f2[72] | 0) + ((a3 & 65535) + -1 << 2) >> 2] | 0, (f2[b3 + 4 >> 2] | 0) == 0) : 0) {
+                          f2[b3 + 4 >> 2] = (f2[70] | 0) + 2;
+                          f2[73] = e3 + 4;
+                          v2(1) | 0;
+                          c3 = f2[73] | 0;
+                          f2[b3 + 16 >> 2] = c3;
+                          f2[73] = c3 + -2;
+                          c3 = 103;
+                        } else c3 = 103;
+                        break;
+                      }
+                      case 41: {
+                        a3 = s2[402] | 0;
+                        if (!(a3 << 16 >> 16)) {
+                          c3 = 48;
+                          break e;
                         }
-                        default: {
-                          e3 = f2[70] | 0;
-                          a3 = s2[e3 >> 1] | 0;
-                          r: do {
-                            if (!($(a3) | 0)) if (a3 << 16 >> 16 == 41) {
-                              r3 = s2[402] | 0;
-                              if (!(K(f2[(f2[71] | 0) + ((r3 & 65535) << 3) + 4 >> 2] | 0) | 0)) c3 = 76;
-                            } else c3 = 75;
-                            else switch (a3 << 16 >> 16) {
-                              case 46:
-                                if (((s2[e3 + -2 >> 1] | 0) + -48 & 65535) < 10) {
-                                  c3 = 75;
-                                  break r;
-                                } else break r;
-                              case 43:
-                                if ((s2[e3 + -2 >> 1] | 0) == 43) {
-                                  c3 = 75;
-                                  break r;
-                                } else break r;
-                              case 45:
-                                if ((s2[e3 + -2 >> 1] | 0) == 45) {
-                                  c3 = 75;
-                                  break r;
-                                } else break r;
-                              default:
-                                break r;
+                        s2[402] = a3 + -1 << 16 >> 16;
+                        r3 = s2[401] | 0;
+                        if (r3 << 16 >> 16 != 0 ? (f2[(f2[71] | 0) + ((a3 + -1 & 65535) << 3) >> 2] | 0) == 5 : 0) {
+                          a3 = f2[(f2[72] | 0) + ((r3 & 65535) + -1 << 2) >> 2] | 0;
+                          if (!(f2[a3 + 4 >> 2] | 0)) f2[a3 + 4 >> 2] = (f2[70] | 0) + 2;
+                          f2[a3 + 12 >> 2] = e3 + 4;
+                          s2[401] = r3 + -1 << 16 >> 16;
+                          c3 = 103;
+                        } else c3 = 103;
+                        break;
+                      }
+                      case 123: {
+                        e3 = f2[70] | 0;
+                        c3 = f2[62] | 0;
+                        do {
+                          if ((s2[e3 >> 1] | 0) == 41 & (c3 | 0) != 0 ? (f2[c3 + 12 >> 2] | 0) == (e3 + 2 | 0) : 0) {
+                            a3 = f2[63] | 0;
+                            f2[62] = a3;
+                            if (!a3) {
+                              f2[58] = 0;
+                              break;
+                            } else {
+                              f2[a3 + 36 >> 2] = 0;
+                              break;
                             }
-                          } while (0);
-                          if ((c3 | 0) == 75) {
-                            r3 = s2[402] | 0;
-                            c3 = 76;
                           }
-                          r: do {
-                            if ((c3 | 0) == 76) {
-                              c3 = 0;
-                              if (r3 << 16 >> 16 != 0 ? (k4 = f2[71] | 0, o3 = (r3 & 65535) + -1 | 0, a3 << 16 >> 16 == 102 ? (f2[k4 + (o3 << 3) >> 2] | 0) == 1 : 0) : 0) {
-                                if (((s2[e3 + -2 >> 1] | 0) == 111 ? g(e3 + -4 | 0) | 0 : 0) ? E(f2[k4 + (o3 << 3) + 4 >> 2] | 0, 196, 3) | 0 : 0) break;
-                              } else c3 = 81;
-                              if ((c3 | 0) == 81 ? (0, a3 << 16 >> 16 == 125) : 0) {
-                                c3 = f2[71] | 0;
-                                r3 = r3 & 65535;
-                                if (U(f2[c3 + (r3 << 3) + 4 >> 2] | 0) | 0) break;
-                                if ((f2[c3 + (r3 << 3) >> 2] | 0) == 6) break;
-                              }
-                              if (!(w2(e3) | 0)) {
-                                switch (a3 << 16 >> 16) {
-                                  case 0:
+                        } while (0);
+                        r3 = f2[71] | 0;
+                        c3 = s2[402] | 0;
+                        f2[r3 + ((c3 & 65535) << 3) >> 2] = (i2[810] | 0) == 0 ? 2 : 6;
+                        s2[402] = c3 + 1 << 16 >> 16;
+                        f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = e3;
+                        i2[810] = 0;
+                        c3 = 103;
+                        break;
+                      }
+                      case 125: {
+                        e3 = s2[402] | 0;
+                        if (!(e3 << 16 >> 16)) {
+                          c3 = 61;
+                          break e;
+                        }
+                        c3 = f2[71] | 0;
+                        s2[402] = e3 + -1 << 16 >> 16;
+                        if ((f2[c3 + ((e3 + -1 & 65535) << 3) >> 2] | 0) == 4) {
+                          d2();
+                          c3 = 103;
+                        } else c3 = 103;
+                        break;
+                      }
+                      case 34:
+                      case 39: {
+                        C(a3);
+                        c3 = 103;
+                        break;
+                      }
+                      case 47:
+                        switch (s2[e3 + 4 >> 1] | 0) {
+                          case 47: {
+                            F();
+                            break a;
+                          }
+                          case 42: {
+                            x(1);
+                            break a;
+                          }
+                          default: {
+                            e3 = f2[70] | 0;
+                            a3 = s2[e3 >> 1] | 0;
+                            r: do {
+                              if (!($(a3) | 0)) if (a3 << 16 >> 16 == 41) {
+                                r3 = s2[402] | 0;
+                                if (!(K(f2[(f2[71] | 0) + ((r3 & 65535) << 3) + 4 >> 2] | 0) | 0)) c3 = 76;
+                              } else c3 = 75;
+                              else switch (a3 << 16 >> 16) {
+                                case 46:
+                                  if (((s2[e3 + -2 >> 1] | 0) + -48 & 65535) < 10) {
+                                    c3 = 75;
                                     break r;
-                                  case 47: {
-                                    if (i2[809] | 0) break r;
-                                    break;
-                                  }
-                                  default: {
-                                  }
+                                  } else break r;
+                                case 43:
+                                  if ((s2[e3 + -2 >> 1] | 0) == 43) {
+                                    c3 = 75;
+                                    break r;
+                                  } else break r;
+                                case 45:
+                                  if ((s2[e3 + -2 >> 1] | 0) == 45) {
+                                    c3 = 75;
+                                    break r;
+                                  } else break r;
+                                default:
+                                  break r;
+                              }
+                            } while (0);
+                            if ((c3 | 0) == 75) {
+                              r3 = s2[402] | 0;
+                              c3 = 76;
+                            }
+                            r: do {
+                              if ((c3 | 0) == 76) {
+                                c3 = 0;
+                                if (r3 << 16 >> 16 != 0 ? (k4 = f2[71] | 0, o3 = (r3 & 65535) + -1 | 0, a3 << 16 >> 16 == 102 ? (f2[k4 + (o3 << 3) >> 2] | 0) == 1 : 0) : 0) {
+                                  if (((s2[e3 + -2 >> 1] | 0) == 111 ? g(e3 + -4 | 0) | 0 : 0) ? E(f2[k4 + (o3 << 3) + 4 >> 2] | 0, 196, 3) | 0 : 0) break;
+                                } else c3 = 81;
+                                if ((c3 | 0) == 81 ? (0, a3 << 16 >> 16 == 125) : 0) {
+                                  c3 = f2[71] | 0;
+                                  r3 = r3 & 65535;
+                                  if (U(f2[c3 + (r3 << 3) + 4 >> 2] | 0) | 0) break;
+                                  if ((f2[c3 + (r3 << 3) >> 2] | 0) == 6) break;
                                 }
-                                c3 = f2[64] | 0;
-                                if ((c3 | 0 ? e3 >>> 0 >= (f2[c3 >> 2] | 0) >>> 0 : 0) ? e3 >>> 0 <= (f2[c3 + 4 >> 2] | 0) >>> 0 : 0) {
-                                  I();
-                                  i2[809] = 0;
-                                  c3 = 103;
-                                  break a;
-                                }
-                                r3 = f2[3] | 0;
-                                do {
-                                  if (e3 >>> 0 <= r3 >>> 0) break;
-                                  e3 = e3 + -2 | 0;
-                                  f2[70] = e3;
-                                  a3 = s2[e3 >> 1] | 0;
-                                } while (!(D(a3) | 0));
-                                if (M(a3) | 0) {
-                                  do {
-                                    if (e3 >>> 0 <= r3 >>> 0) break;
-                                    e3 = e3 + -2 | 0;
-                                    f2[70] = e3;
-                                  } while (M(s2[e3 >> 1] | 0) | 0);
-                                  if (q(e3) | 0) {
+                                if (!(w2(e3) | 0)) {
+                                  switch (a3 << 16 >> 16) {
+                                    case 0:
+                                      break r;
+                                    case 47: {
+                                      if (i2[809] | 0) break r;
+                                      break;
+                                    }
+                                    default: {
+                                    }
+                                  }
+                                  c3 = f2[64] | 0;
+                                  if ((c3 | 0 ? e3 >>> 0 >= (f2[c3 >> 2] | 0) >>> 0 : 0) ? e3 >>> 0 <= (f2[c3 + 4 >> 2] | 0) >>> 0 : 0) {
                                     I();
                                     i2[809] = 0;
                                     c3 = 103;
                                     break a;
                                   }
+                                  r3 = f2[3] | 0;
+                                  do {
+                                    if (e3 >>> 0 <= r3 >>> 0) break;
+                                    e3 = e3 + -2 | 0;
+                                    f2[70] = e3;
+                                    a3 = s2[e3 >> 1] | 0;
+                                  } while (!(D(a3) | 0));
+                                  if (M(a3) | 0) {
+                                    do {
+                                      if (e3 >>> 0 <= r3 >>> 0) break;
+                                      e3 = e3 + -2 | 0;
+                                      f2[70] = e3;
+                                    } while (M(s2[e3 >> 1] | 0) | 0);
+                                    if (q(e3) | 0) {
+                                      I();
+                                      i2[809] = 0;
+                                      c3 = 103;
+                                      break a;
+                                    }
+                                  }
+                                  i2[809] = 1;
+                                  c3 = 103;
+                                  break a;
                                 }
-                                i2[809] = 1;
-                                c3 = 103;
-                                break a;
                               }
-                            }
-                          } while (0);
-                          I();
-                          i2[809] = 0;
-                          c3 = 103;
-                          break a;
+                            } while (0);
+                            I();
+                            i2[809] = 0;
+                            c3 = 103;
+                            break a;
+                          }
                         }
+                      case 96: {
+                        r3 = f2[71] | 0;
+                        c3 = s2[402] | 0;
+                        f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = f2[70];
+                        s2[402] = c3 + 1 << 16 >> 16;
+                        f2[r3 + ((c3 & 65535) << 3) >> 2] = 3;
+                        d2();
+                        c3 = 103;
+                        break;
                       }
-                    case 96: {
-                      r3 = f2[71] | 0;
-                      c3 = s2[402] | 0;
-                      f2[r3 + ((c3 & 65535) << 3) + 4 >> 2] = f2[70];
-                      s2[402] = c3 + 1 << 16 >> 16;
-                      f2[r3 + ((c3 & 65535) << 3) >> 2] = 3;
-                      d2();
-                      c3 = 103;
-                      break;
+                      default:
+                        c3 = 103;
                     }
-                    default:
-                      c3 = 103;
+                  } while (0);
+                  if ((c3 | 0) == 103) {
+                    c3 = 0;
+                    f2[70] = f2[73];
                   }
-                } while (0);
-                if ((c3 | 0) == 103) {
-                  c3 = 0;
-                  f2[70] = f2[73];
+                  e3 = f2[73] | 0;
                 }
-                e3 = f2[73] | 0;
+                if ((c3 | 0) == 40) {
+                  ae();
+                  e3 = 0;
+                  break;
+                } else if ((c3 | 0) == 48) {
+                  ae();
+                  e3 = 0;
+                  break;
+                } else if ((c3 | 0) == 61) {
+                  ae();
+                  e3 = 0;
+                  break;
+                } else if ((c3 | 0) == 104) {
+                  e3 = (i2[806] | 0) == 0 ? (s2[401] | s2[402]) << 16 >> 16 == 0 : 0;
+                  break;
+                }
               }
-              if ((c3 | 0) == 40) {
-                ae();
-                e3 = 0;
-                break;
-              } else if ((c3 | 0) == 48) {
-                ae();
-                e3 = 0;
-                break;
-              } else if ((c3 | 0) == 61) {
-                ae();
-                e3 = 0;
-                break;
-              } else if ((c3 | 0) == 104) {
-                e3 = (i2[806] | 0) == 0 ? (s2[401] | s2[402]) << 16 >> 16 == 0 : 0;
-                break;
-              }
-            }
-          } while (0);
-          n2 = h3;
-          return e3 | 0;
-        }
-        function k3(e3) {
-          e3 = e3 | 0;
-          var a3 = 0, r3 = 0, c3 = 0, t3 = 0, n3 = 0, b3 = 0, k4 = 0, o3 = 0, h3 = 0, A2 = 0, p2 = 0, y2 = 0, m2 = 0, O2 = 0, T2 = 0;
-          y2 = s2[402] | 0;
-          a3 = f2[73] | 0;
-          f2[70] = a3;
-          k4 = a3;
-          p2 = a3;
-          o3 = y2;
-          A2 = 0;
-          e: while (1) {
-            r3 = f2[74] | 0;
-            t3 = o3 << 16 >> 16 == y2 << 16 >> 16;
-            c3 = A2 & e3;
-            b3 = a3;
-            while (1) {
-              n3 = b3 + 2 | 0;
-              if (b3 >>> 0 >= r3 >>> 0) {
-                a3 = 0;
-                h3 = 100;
-                break e;
-              }
-              a3 = s2[n3 >> 1] | 0;
-              if (!(M(a3) | 0)) {
-                if (t3) {
-                  switch (a3 << 16 >> 16) {
-                    case 125:
-                    case 93:
-                    case 41:
-                    case 59:
-                    case 44: {
+            } while (0);
+            n2 = h3;
+            return e3 | 0;
+          }
+          function k3(e3) {
+            e3 = e3 | 0;
+            var a3 = 0, r3 = 0, c3 = 0, t3 = 0, n3 = 0, b3 = 0, k4 = 0, o3 = 0, h3 = 0, A2 = 0, p2 = 0, y2 = 0, m2 = 0, O2 = 0, T2 = 0;
+            y2 = s2[402] | 0;
+            a3 = f2[73] | 0;
+            f2[70] = a3;
+            k4 = a3;
+            p2 = a3;
+            o3 = y2;
+            A2 = 0;
+            e: while (1) {
+              r3 = f2[74] | 0;
+              t3 = o3 << 16 >> 16 == y2 << 16 >> 16;
+              c3 = A2 & e3;
+              b3 = a3;
+              while (1) {
+                n3 = b3 + 2 | 0;
+                if (b3 >>> 0 >= r3 >>> 0) {
+                  a3 = 0;
+                  h3 = 100;
+                  break e;
+                }
+                a3 = s2[n3 >> 1] | 0;
+                if (!(M(a3) | 0)) {
+                  if (t3) {
+                    switch (a3 << 16 >> 16) {
+                      case 125:
+                      case 93:
+                      case 41:
+                      case 59:
+                      case 44: {
+                        h3 = 100;
+                        break e;
+                      }
+                      default: {
+                      }
+                    }
+                    if (c3 ? be(a3) | 0 : 0) {
                       h3 = 100;
                       break e;
                     }
-                    default: {
-                    }
                   }
-                  if (c3 ? be(a3) | 0 : 0) {
-                    h3 = 100;
-                    break e;
-                  }
+                  if (!(be(a3) | 0)) break;
                 }
-                if (!(be(a3) | 0)) break;
+                b3 = n3;
               }
-              b3 = n3;
-            }
-            f2[73] = n3;
-            a: do {
-              switch (a3 << 16 >> 16) {
-                case 101: {
-                  if ((o3 << 16 >> 16 == 0 ? R(n3) | 0 : 0) ? (S(b3 + 4 | 0, 16, 10) | 0) == 0 : 0) {
-                    u3();
-                    h3 = 89;
-                  } else h3 = 89;
-                  break;
-                }
-                case 105: {
-                  if (((s2[b3 + 4 >> 1] | 0) == 109 ? R(n3) | 0 : 0) ? (S(b3 + 6 | 0, 26, 8) | 0) == 0 : 0) {
-                    l3();
-                    h3 = 89;
-                  } else h3 = 89;
-                  break;
-                }
-                case 99: {
-                  if ((((s2[b3 + 4 >> 1] | 0) == 108 ? R(n3) | 0 : 0) ? (S(b3 + 6 | 0, 88, 6) | 0) == 0 : 0) ? L(s2[b3 + 12 >> 1] | 0) | 0 : 0) {
-                    i2[810] = 1;
-                    h3 = 89;
-                  } else h3 = 89;
-                  break;
-                }
-                case 40: {
-                  b3 = f2[71] | 0;
-                  h3 = o3 & 65535;
-                  f2[b3 + (h3 << 3) >> 2] = 1;
-                  s2[402] = o3 + 1 << 16 >> 16;
-                  f2[b3 + (h3 << 3) + 4 >> 2] = k4;
-                  h3 = 89;
-                  break;
-                }
-                case 91: {
-                  b3 = f2[71] | 0;
-                  h3 = o3 & 65535;
-                  f2[b3 + (h3 << 3) >> 2] = 8;
-                  s2[402] = o3 + 1 << 16 >> 16;
-                  f2[b3 + (h3 << 3) + 4 >> 2] = k4;
-                  h3 = 89;
-                  break;
-                }
-                case 93:
-                  if (!(o3 << 16 >> 16)) {
-                    ae();
-                    break a;
-                  } else {
-                    s2[402] = o3 + -1 << 16 >> 16;
-                    h3 = 89;
-                    break a;
+              f2[73] = n3;
+              a: do {
+                switch (a3 << 16 >> 16) {
+                  case 101: {
+                    if ((o3 << 16 >> 16 == 0 ? R(n3) | 0 : 0) ? (S(b3 + 4 | 0, 16, 10) | 0) == 0 : 0) {
+                      u3();
+                      h3 = 89;
+                    } else h3 = 89;
+                    break;
                   }
-                case 44: {
-                  r3 = s2[401] | 0;
-                  if ((!(o3 << 16 >> 16 == 0 | r3 << 16 >> 16 == 0) ? (f2[(f2[71] | 0) + ((o3 & 65535) + -1 << 3) >> 2] | 0) == 5 : 0) ? (m2 = f2[(f2[72] | 0) + ((r3 & 65535) + -1 << 2) >> 2] | 0, (f2[m2 + 4 >> 2] | 0) == 0) : 0) {
-                    f2[m2 + 4 >> 2] = p2 + 2;
-                    f2[73] = b3 + 4;
-                    v2(1) | 0;
-                    h3 = f2[73] | 0;
-                    f2[m2 + 16 >> 2] = h3;
-                    f2[73] = h3 + -2;
-                    h3 = 89;
-                  } else h3 = 89;
-                  break;
-                }
-                case 41: {
-                  if (!(o3 << 16 >> 16)) {
-                    ae();
-                    break a;
+                  case 105: {
+                    if (((s2[b3 + 4 >> 1] | 0) == 109 ? R(n3) | 0 : 0) ? (S(b3 + 6 | 0, 26, 8) | 0) == 0 : 0) {
+                      l3();
+                      h3 = 89;
+                    } else h3 = 89;
+                    break;
                   }
-                  h3 = o3 + -1 << 16 >> 16;
-                  s2[402] = h3;
-                  r3 = s2[401] | 0;
-                  if (r3 << 16 >> 16 != 0 ? (f2[(f2[71] | 0) + ((h3 & 65535) << 3) >> 2] | 0) == 5 : 0) {
-                    c3 = f2[(f2[72] | 0) + ((r3 & 65535) + -1 << 2) >> 2] | 0;
-                    if (!(f2[c3 + 4 >> 2] | 0)) f2[c3 + 4 >> 2] = p2 + 2;
-                    f2[c3 + 12 >> 2] = b3 + 4;
-                    s2[401] = r3 + -1 << 16 >> 16;
-                    h3 = 89;
-                  } else h3 = 89;
-                  break;
-                }
-                case 123: {
-                  h3 = f2[62] | 0;
-                  do {
-                    if ((s2[p2 >> 1] | 0) == 41 & (h3 | 0) != 0 ? (f2[h3 + 12 >> 2] | 0) == (p2 + 2 | 0) : 0) {
-                      r3 = f2[63] | 0;
-                      f2[62] = r3;
-                      if (!r3) {
-                        f2[58] = 0;
-                        break;
-                      } else {
-                        f2[r3 + 36 >> 2] = 0;
-                        break;
-                      }
-                    }
-                  } while (0);
-                  b3 = f2[71] | 0;
-                  h3 = o3 & 65535;
-                  f2[b3 + (h3 << 3) >> 2] = (i2[810] | 0) == 0 ? 2 : 6;
-                  s2[402] = o3 + 1 << 16 >> 16;
-                  f2[b3 + (h3 << 3) + 4 >> 2] = k4;
-                  i2[810] = 0;
-                  h3 = 89;
-                  break;
-                }
-                case 125: {
-                  if (!(o3 << 16 >> 16)) {
-                    ae();
-                    break a;
+                  case 99: {
+                    if ((((s2[b3 + 4 >> 1] | 0) == 108 ? R(n3) | 0 : 0) ? (S(b3 + 6 | 0, 88, 6) | 0) == 0 : 0) ? L(s2[b3 + 12 >> 1] | 0) | 0 : 0) {
+                      i2[810] = 1;
+                      h3 = 89;
+                    } else h3 = 89;
+                    break;
                   }
-                  k4 = f2[71] | 0;
-                  h3 = o3 + -1 << 16 >> 16;
-                  s2[402] = h3;
-                  if ((f2[k4 + ((h3 & 65535) << 3) >> 2] | 0) == 4) {
-                    d2();
+                  case 40: {
+                    b3 = f2[71] | 0;
+                    h3 = o3 & 65535;
+                    f2[b3 + (h3 << 3) >> 2] = 1;
+                    s2[402] = o3 + 1 << 16 >> 16;
+                    f2[b3 + (h3 << 3) + 4 >> 2] = k4;
                     h3 = 89;
-                  } else h3 = 89;
-                  break;
-                }
-                case 34:
-                case 39: {
-                  C(a3);
-                  h3 = 89;
-                  break;
-                }
-                case 47:
-                  switch (s2[b3 + 4 >> 1] | 0) {
-                    case 47: {
-                      F();
+                    break;
+                  }
+                  case 91: {
+                    b3 = f2[71] | 0;
+                    h3 = o3 & 65535;
+                    f2[b3 + (h3 << 3) >> 2] = 8;
+                    s2[402] = o3 + 1 << 16 >> 16;
+                    f2[b3 + (h3 << 3) + 4 >> 2] = k4;
+                    h3 = 89;
+                    break;
+                  }
+                  case 93:
+                    if (!(o3 << 16 >> 16)) {
+                      ae();
+                      break a;
+                    } else {
+                      s2[402] = o3 + -1 << 16 >> 16;
+                      h3 = 89;
                       break a;
                     }
-                    case 42: {
-                      x(1);
+                  case 44: {
+                    r3 = s2[401] | 0;
+                    if ((!(o3 << 16 >> 16 == 0 | r3 << 16 >> 16 == 0) ? (f2[(f2[71] | 0) + ((o3 & 65535) + -1 << 3) >> 2] | 0) == 5 : 0) ? (m2 = f2[(f2[72] | 0) + ((r3 & 65535) + -1 << 2) >> 2] | 0, (f2[m2 + 4 >> 2] | 0) == 0) : 0) {
+                      f2[m2 + 4 >> 2] = p2 + 2;
+                      f2[73] = b3 + 4;
+                      v2(1) | 0;
+                      h3 = f2[73] | 0;
+                      f2[m2 + 16 >> 2] = h3;
+                      f2[73] = h3 + -2;
+                      h3 = 89;
+                    } else h3 = 89;
+                    break;
+                  }
+                  case 41: {
+                    if (!(o3 << 16 >> 16)) {
+                      ae();
                       break a;
                     }
-                    default: {
-                      c3 = s2[p2 >> 1] | 0;
-                      r: do {
-                        if (!($(c3) | 0)) {
-                          if (!(c3 << 16 >> 16 == 41 ? K(f2[(f2[71] | 0) + ((o3 & 65535) << 3) + 4 >> 2] | 0) | 0 : 0)) h3 = 62;
-                        } else switch (c3 << 16 >> 16) {
-                          case 46:
-                            if (((s2[p2 + -2 >> 1] | 0) + -48 & 65535) < 10) {
-                              h3 = 62;
-                              break r;
-                            } else break r;
-                          case 43:
-                            if ((s2[p2 + -2 >> 1] | 0) == 43) {
-                              h3 = 62;
-                              break r;
-                            } else break r;
-                          case 45:
-                            if ((s2[p2 + -2 >> 1] | 0) == 45) {
-                              h3 = 62;
-                              break r;
-                            } else break r;
-                          default:
-                            break r;
+                    h3 = o3 + -1 << 16 >> 16;
+                    s2[402] = h3;
+                    r3 = s2[401] | 0;
+                    if (r3 << 16 >> 16 != 0 ? (f2[(f2[71] | 0) + ((h3 & 65535) << 3) >> 2] | 0) == 5 : 0) {
+                      c3 = f2[(f2[72] | 0) + ((r3 & 65535) + -1 << 2) >> 2] | 0;
+                      if (!(f2[c3 + 4 >> 2] | 0)) f2[c3 + 4 >> 2] = p2 + 2;
+                      f2[c3 + 12 >> 2] = b3 + 4;
+                      s2[401] = r3 + -1 << 16 >> 16;
+                      h3 = 89;
+                    } else h3 = 89;
+                    break;
+                  }
+                  case 123: {
+                    h3 = f2[62] | 0;
+                    do {
+                      if ((s2[p2 >> 1] | 0) == 41 & (h3 | 0) != 0 ? (f2[h3 + 12 >> 2] | 0) == (p2 + 2 | 0) : 0) {
+                        r3 = f2[63] | 0;
+                        f2[62] = r3;
+                        if (!r3) {
+                          f2[58] = 0;
+                          break;
+                        } else {
+                          f2[r3 + 36 >> 2] = 0;
+                          break;
                         }
-                      } while (0);
-                      r: do {
-                        if ((h3 | 0) == 62) {
-                          h3 = 0;
-                          if (o3 << 16 >> 16 != 0 ? (O2 = f2[71] | 0, T2 = (o3 & 65535) + -1 | 0, c3 << 16 >> 16 == 102 ? (f2[O2 + (T2 << 3) >> 2] | 0) == 1 : 0) : 0) {
-                            if (((s2[p2 + -2 >> 1] | 0) == 111 ? g(p2 + -4 | 0) | 0 : 0) ? E(f2[O2 + (T2 << 3) + 4 >> 2] | 0, 196, 3) | 0 : 0) break;
-                          } else h3 = 67;
-                          if ((h3 | 0) == 67 ? (0, c3 << 16 >> 16 == 125) : 0) {
-                            t3 = f2[71] | 0;
-                            r3 = o3 & 65535;
-                            if (U(f2[t3 + (r3 << 3) + 4 >> 2] | 0) | 0) break;
-                            if ((f2[t3 + (r3 << 3) >> 2] | 0) == 6) break;
-                          }
-                          if (!(w2(p2) | 0)) {
-                            switch (c3 << 16 >> 16) {
-                              case 0:
+                      }
+                    } while (0);
+                    b3 = f2[71] | 0;
+                    h3 = o3 & 65535;
+                    f2[b3 + (h3 << 3) >> 2] = (i2[810] | 0) == 0 ? 2 : 6;
+                    s2[402] = o3 + 1 << 16 >> 16;
+                    f2[b3 + (h3 << 3) + 4 >> 2] = k4;
+                    i2[810] = 0;
+                    h3 = 89;
+                    break;
+                  }
+                  case 125: {
+                    if (!(o3 << 16 >> 16)) {
+                      ae();
+                      break a;
+                    }
+                    k4 = f2[71] | 0;
+                    h3 = o3 + -1 << 16 >> 16;
+                    s2[402] = h3;
+                    if ((f2[k4 + ((h3 & 65535) << 3) >> 2] | 0) == 4) {
+                      d2();
+                      h3 = 89;
+                    } else h3 = 89;
+                    break;
+                  }
+                  case 34:
+                  case 39: {
+                    C(a3);
+                    h3 = 89;
+                    break;
+                  }
+                  case 47:
+                    switch (s2[b3 + 4 >> 1] | 0) {
+                      case 47: {
+                        F();
+                        break a;
+                      }
+                      case 42: {
+                        x(1);
+                        break a;
+                      }
+                      default: {
+                        c3 = s2[p2 >> 1] | 0;
+                        r: do {
+                          if (!($(c3) | 0)) {
+                            if (!(c3 << 16 >> 16 == 41 ? K(f2[(f2[71] | 0) + ((o3 & 65535) << 3) + 4 >> 2] | 0) | 0 : 0)) h3 = 62;
+                          } else switch (c3 << 16 >> 16) {
+                            case 46:
+                              if (((s2[p2 + -2 >> 1] | 0) + -48 & 65535) < 10) {
+                                h3 = 62;
                                 break r;
-                              case 47: {
-                                if (i2[809] | 0) break r;
-                                break;
-                              }
-                              default: {
-                              }
+                              } else break r;
+                            case 43:
+                              if ((s2[p2 + -2 >> 1] | 0) == 43) {
+                                h3 = 62;
+                                break r;
+                              } else break r;
+                            case 45:
+                              if ((s2[p2 + -2 >> 1] | 0) == 45) {
+                                h3 = 62;
+                                break r;
+                              } else break r;
+                            default:
+                              break r;
+                          }
+                        } while (0);
+                        r: do {
+                          if ((h3 | 0) == 62) {
+                            h3 = 0;
+                            if (o3 << 16 >> 16 != 0 ? (O2 = f2[71] | 0, T2 = (o3 & 65535) + -1 | 0, c3 << 16 >> 16 == 102 ? (f2[O2 + (T2 << 3) >> 2] | 0) == 1 : 0) : 0) {
+                              if (((s2[p2 + -2 >> 1] | 0) == 111 ? g(p2 + -4 | 0) | 0 : 0) ? E(f2[O2 + (T2 << 3) + 4 >> 2] | 0, 196, 3) | 0 : 0) break;
+                            } else h3 = 67;
+                            if ((h3 | 0) == 67 ? (0, c3 << 16 >> 16 == 125) : 0) {
+                              t3 = f2[71] | 0;
+                              r3 = o3 & 65535;
+                              if (U(f2[t3 + (r3 << 3) + 4 >> 2] | 0) | 0) break;
+                              if ((f2[t3 + (r3 << 3) >> 2] | 0) == 6) break;
                             }
-                            h3 = f2[64] | 0;
-                            if ((h3 | 0 ? p2 >>> 0 >= (f2[h3 >> 2] | 0) >>> 0 : 0) ? p2 >>> 0 <= (f2[h3 + 4 >> 2] | 0) >>> 0 : 0) {
-                              I();
-                              i2[809] = 0;
-                              h3 = 89;
-                              break a;
-                            }
-                            t3 = f2[3] | 0;
-                            r3 = p2;
-                            do {
-                              if (r3 >>> 0 <= t3 >>> 0) break;
-                              r3 = r3 + -2 | 0;
-                              f2[70] = r3;
-                              c3 = s2[r3 >> 1] | 0;
-                            } while (!(D(c3) | 0));
-                            if (M(c3) | 0) {
-                              do {
-                                if (r3 >>> 0 <= t3 >>> 0) break;
-                                r3 = r3 + -2 | 0;
-                                f2[70] = r3;
-                              } while (M(s2[r3 >> 1] | 0) | 0);
-                              if (q(r3) | 0) {
+                            if (!(w2(p2) | 0)) {
+                              switch (c3 << 16 >> 16) {
+                                case 0:
+                                  break r;
+                                case 47: {
+                                  if (i2[809] | 0) break r;
+                                  break;
+                                }
+                                default: {
+                                }
+                              }
+                              h3 = f2[64] | 0;
+                              if ((h3 | 0 ? p2 >>> 0 >= (f2[h3 >> 2] | 0) >>> 0 : 0) ? p2 >>> 0 <= (f2[h3 + 4 >> 2] | 0) >>> 0 : 0) {
                                 I();
                                 i2[809] = 0;
                                 h3 = 89;
                                 break a;
                               }
-                            }
-                            i2[809] = 1;
-                            h3 = 89;
-                            break a;
-                          }
-                        }
-                      } while (0);
-                      I();
-                      i2[809] = 0;
-                      h3 = 89;
-                      break a;
-                    }
-                  }
-                case 96: {
-                  b3 = f2[71] | 0;
-                  h3 = o3 & 65535;
-                  f2[b3 + (h3 << 3) + 4 >> 2] = k4;
-                  s2[402] = o3 + 1 << 16 >> 16;
-                  f2[b3 + (h3 << 3) >> 2] = 3;
-                  d2();
-                  h3 = 89;
-                  break;
-                }
-                default:
-                  h3 = 89;
-              }
-            } while (0);
-            if ((h3 | 0) == 89) {
-              h3 = 0;
-              f2[70] = f2[73];
-            }
-            if (i2[806] | 0) {
-              a3 = 0;
-              break;
-            }
-            r3 = f2[70] | 0;
-            a: do {
-              if ((r3 | 0) == (p2 | 0)) if (A2 & ((s2[402] | 0) == y2 << 16 >> 16 & e3)) {
-                a3 = s2[f2[73] >> 1] | 0;
-                if (be(a3) | 0) break e;
-                else a3 = 1;
-              } else a3 = A2;
-              else {
-                if (a3 << 16 >> 16 == 47) {
-                  a3 = (i2[809] | 0) == 0;
-                  break;
-                }
-                if (G(a3) | 0) a3 = 1;
-                else {
-                  switch (a3 << 16 >> 16) {
-                    case 96:
-                    case 34:
-                    case 39:
-                    case 41:
-                    case 93:
-                    case 125: {
-                      a3 = 1;
-                      break a;
-                    }
-                    default: {
-                    }
-                  }
-                  a3 = 0;
-                }
-              }
-            } while (0);
-            k4 = r3;
-            p2 = r3;
-            o3 = s2[402] | 0;
-            A2 = a3;
-            a3 = f2[73] | 0;
-          }
-          if ((h3 | 0) == 100) f2[73] = n3;
-          return a3 | 0;
-        }
-        function l3() {
-          var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, n3 = 0;
-          n3 = f2[73] | 0;
-          f2[73] = n3 + 12;
-          e3 = v2(1) | 0;
-          r3 = f2[73] | 0;
-          e: do {
-            if (e3 << 16 >> 16 != 46) {
-              if (!(e3 << 16 >> 16 == 115 & r3 >>> 0 > (n3 + 12 | 0) >>> 0)) {
-                if (!(e3 << 16 >> 16 == 100 & r3 >>> 0 > (n3 + 10 | 0) >>> 0)) {
-                  r3 = 0;
-                  t3 = 28;
-                  break;
-                }
-                if (S(r3 + 2 | 0, 50, 8) | 0) {
-                  a3 = r3;
-                  e3 = 100;
-                  r3 = 0;
-                  t3 = 60;
-                  break;
-                }
-                if (!(L(s2[r3 + 10 >> 1] | 0) | 0)) {
-                  a3 = r3;
-                  e3 = 100;
-                  r3 = 0;
-                  t3 = 60;
-                  break;
-                }
-                f2[73] = r3 + 10;
-                e3 = v2(1) | 0;
-                if (e3 << 16 >> 16 == 42) {
-                  e3 = 42;
-                  c3 = 2;
-                  t3 = 62;
-                  break;
-                }
-                f2[73] = r3;
-                r3 = 0;
-                t3 = 28;
-                break;
-              }
-              if ((S(r3 + 2 | 0, 40, 10) | 0) == 0 ? L(s2[r3 + 12 >> 1] | 0) | 0 : 0) {
-                f2[73] = r3 + 12;
-                e3 = v2(1) | 0;
-                a3 = f2[73] | 0;
-                if ((a3 | 0) != (r3 + 12 | 0)) {
-                  if (e3 << 16 >> 16 != 102) {
-                    r3 = 1;
-                    t3 = 28;
-                    break;
-                  }
-                  if (S(a3 + 2 | 0, 58, 6) | 0) {
-                    e3 = 102;
-                    r3 = 1;
-                    t3 = 60;
-                    break;
-                  }
-                  if (!(D(s2[a3 + 8 >> 1] | 0) | 0)) {
-                    e3 = 102;
-                    r3 = 1;
-                    t3 = 60;
-                    break;
-                  }
-                }
-                f2[73] = r3;
-                r3 = 0;
-                t3 = 28;
-              } else {
-                a3 = r3;
-                e3 = 115;
-                r3 = 0;
-                t3 = 60;
-              }
-            } else {
-              f2[73] = r3 + 2;
-              switch ((v2(1) | 0) << 16 >> 16) {
-                case 109: {
-                  e3 = f2[73] | 0;
-                  if (S(e3 + 2 | 0, 34, 6) | 0) break e;
-                  a3 = f2[70] | 0;
-                  if (!(N(a3) | 0) ? (s2[a3 >> 1] | 0) == 46 : 0) break e;
-                  A(n3, n3, e3 + 8 | 0, 2);
-                  break e;
-                }
-                case 115: {
-                  e3 = f2[73] | 0;
-                  if (S(e3 + 2 | 0, 40, 10) | 0) break e;
-                  a3 = f2[70] | 0;
-                  if (!(N(a3) | 0) ? (s2[a3 >> 1] | 0) == 46 : 0) break e;
-                  f2[73] = e3 + 12;
-                  e3 = v2(1) | 0;
-                  r3 = 1;
-                  t3 = 28;
-                  break e;
-                }
-                case 100: {
-                  e3 = f2[73] | 0;
-                  if (S(e3 + 2 | 0, 50, 8) | 0) break e;
-                  a3 = f2[70] | 0;
-                  if (!(N(a3) | 0) ? (s2[a3 >> 1] | 0) == 46 : 0) break e;
-                  f2[73] = e3 + 10;
-                  e3 = v2(1) | 0;
-                  r3 = 2;
-                  t3 = 28;
-                  break e;
-                }
-                default:
-                  break e;
-              }
-            }
-          } while (0);
-          e: do {
-            if ((t3 | 0) == 28) {
-              if (e3 << 16 >> 16 == 40) {
-                a3 = f2[71] | 0;
-                c3 = s2[402] | 0;
-                f2[a3 + ((c3 & 65535) << 3) >> 2] = 5;
-                e3 = f2[73] | 0;
-                s2[402] = c3 + 1 << 16 >> 16;
-                f2[a3 + ((c3 & 65535) << 3) + 4 >> 2] = e3;
-                if ((s2[f2[70] >> 1] | 0) == 46) break;
-                f2[73] = e3 + 2;
-                a3 = v2(1) | 0;
-                A(n3, f2[73] | 0, 0, e3);
-                if (!r3) e3 = f2[62] | 0;
-                else {
-                  e3 = f2[62] | 0;
-                  f2[e3 + 28 >> 2] = (r3 | 0) == 1 ? 5 : 7;
-                }
-                c3 = f2[72] | 0;
-                n3 = s2[401] | 0;
-                s2[401] = n3 + 1 << 16 >> 16;
-                f2[c3 + ((n3 & 65535) << 2) >> 2] = e3;
-                switch (a3 << 16 >> 16) {
-                  case 39: {
-                    C(39);
-                    break;
-                  }
-                  case 34: {
-                    C(34);
-                    break;
-                  }
-                  case 96: {
-                    if (!(y() | 0)) t3 = 37;
-                    break;
-                  }
-                  default:
-                    t3 = 37;
-                }
-                if ((t3 | 0) == 37) {
-                  f2[73] = (f2[73] | 0) + -2;
-                  break;
-                }
-                e3 = (f2[73] | 0) + 2 | 0;
-                f2[73] = e3;
-                switch ((v2(1) | 0) << 16 >> 16) {
-                  case 44: {
-                    f2[73] = (f2[73] | 0) + 2;
-                    v2(1) | 0;
-                    c3 = f2[62] | 0;
-                    f2[c3 + 4 >> 2] = e3;
-                    n3 = f2[73] | 0;
-                    f2[c3 + 16 >> 2] = n3;
-                    i2[c3 + 24 >> 0] = 1;
-                    f2[73] = n3 + -2;
-                    break e;
-                  }
-                  case 41: {
-                    s2[402] = (s2[402] | 0) + -1 << 16 >> 16;
-                    n3 = f2[62] | 0;
-                    f2[n3 + 4 >> 2] = e3;
-                    f2[n3 + 12 >> 2] = (f2[73] | 0) + 2;
-                    i2[n3 + 24 >> 0] = 1;
-                    s2[401] = (s2[401] | 0) + -1 << 16 >> 16;
-                    break e;
-                  }
-                  default: {
-                    f2[73] = (f2[73] | 0) + -2;
-                    break e;
-                  }
-                }
-              }
-              if (!((r3 | 0) == 0 & e3 << 16 >> 16 == 123)) {
-                switch (e3 << 16 >> 16) {
-                  case 42:
-                  case 39:
-                  case 34: {
-                    c3 = r3;
-                    t3 = 62;
-                    break e;
-                  }
-                  default: {
-                  }
-                }
-                a3 = f2[73] | 0;
-                t3 = 60;
-                break;
-              }
-              e3 = f2[73] | 0;
-              if (s2[402] | 0) {
-                f2[73] = e3 + -2;
-                break;
-              }
-              while (1) {
-                if (e3 >>> 0 >= (f2[74] | 0) >>> 0) break;
-                e3 = v2(1) | 0;
-                if (!(re(e3) | 0)) {
-                  if (e3 << 16 >> 16 == 125) {
-                    t3 = 50;
-                    break;
-                  }
-                } else C(e3);
-                e3 = (f2[73] | 0) + 2 | 0;
-                f2[73] = e3;
-              }
-              if ((t3 | 0) == 50) f2[73] = (f2[73] | 0) + 2;
-              c3 = (v2(1) | 0) << 16 >> 16 == 102;
-              e3 = f2[73] | 0;
-              if (c3 ? S(e3 + 2 | 0, 58, 6) | 0 : 0) {
-                ae();
-                break;
-              }
-              f2[73] = e3 + 8;
-              e3 = v2(1) | 0;
-              if (re(e3) | 0) {
-                o2(n3, e3, 0);
-                break;
-              } else {
-                ae();
-                break;
-              }
-            }
-          } while (0);
-          if ((t3 | 0) == 60) if ((a3 | 0) == (n3 + 12 | 0)) f2[73] = n3 + 10;
-          else {
-            c3 = r3;
-            t3 = 62;
-          }
-          do {
-            if ((t3 | 0) == 62) {
-              if (!((e3 << 16 >> 16 == 42 | (c3 | 0) != 2) & (s2[402] | 0) == 0)) {
-                f2[73] = (f2[73] | 0) + -2;
-                break;
-              }
-              e3 = f2[74] | 0;
-              a3 = f2[73] | 0;
-              while (1) {
-                if (a3 >>> 0 >= e3 >>> 0) {
-                  t3 = 69;
-                  break;
-                }
-                r3 = s2[a3 >> 1] | 0;
-                if (re(r3) | 0) {
-                  t3 = 67;
-                  break;
-                }
-                t3 = a3 + 2 | 0;
-                f2[73] = t3;
-                a3 = t3;
-              }
-              if ((t3 | 0) == 67) {
-                o2(n3, r3, c3);
-                break;
-              } else if ((t3 | 0) == 69) {
-                ae();
-                break;
-              }
-            }
-          } while (0);
-          return;
-        }
-        function u3() {
-          var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, n3 = 0, b3 = 0, l4 = 0, u4 = 0, h3 = 0;
-          l4 = f2[73] | 0;
-          u4 = f2[64] | 0;
-          f2[73] = l4 + 12;
-          a3 = v2(1) | 0;
-          e3 = f2[73] | 0;
-          if (!((e3 | 0) == (l4 + 12 | 0) ? !(O(a3) | 0) : 0)) h3 = 3;
-          e: do {
-            if ((h3 | 0) == 3) {
-              f2[65] = l4;
-              a: do {
-                switch (a3 << 16 >> 16) {
-                  case 123: {
-                    f2[73] = e3 + 2;
-                    e3 = v2(1) | 0;
-                    a3 = f2[73] | 0;
-                    while (1) {
-                      if (re(e3) | 0) {
-                        C(e3);
-                        e3 = (f2[73] | 0) + 2 | 0;
-                        f2[73] = e3;
-                      } else {
-                        H(e3) | 0;
-                        e3 = f2[73] | 0;
-                      }
-                      v2(1) | 0;
-                      e3 = p(a3, e3) | 0;
-                      if (e3 << 16 >> 16 == 44) {
-                        f2[73] = (f2[73] | 0) + 2;
-                        e3 = v2(1) | 0;
-                      }
-                      if (e3 << 16 >> 16 == 125) {
-                        h3 = 15;
-                        break;
-                      }
-                      h3 = a3;
-                      a3 = f2[73] | 0;
-                      if ((a3 | 0) == (h3 | 0)) {
-                        h3 = 12;
-                        break;
-                      }
-                      if (a3 >>> 0 > (f2[74] | 0) >>> 0) {
-                        h3 = 14;
-                        break;
-                      }
-                    }
-                    if ((h3 | 0) == 12) {
-                      ae();
-                      break e;
-                    } else if ((h3 | 0) == 14) {
-                      ae();
-                      break e;
-                    } else if ((h3 | 0) == 15) {
-                      i2[807] = 1;
-                      f2[73] = (f2[73] | 0) + 2;
-                      break a;
-                    }
-                    break;
-                  }
-                  case 42: {
-                    f2[73] = e3 + 2;
-                    v2(1) | 0;
-                    h3 = f2[73] | 0;
-                    p(h3, h3) | 0;
-                    break;
-                  }
-                  default: {
-                    i2[808] = 0;
-                    switch (a3 << 16 >> 16) {
-                      case 100: {
-                        f2[73] = e3 + 14;
-                        switch ((v2(1) | 0) << 16 >> 16) {
-                          case 97: {
-                            a3 = f2[73] | 0;
-                            if ((S(a3 + 2 | 0, 64, 8) | 0) == 0 ? M(s2[a3 + 10 >> 1] | 0) | 0 : 0) {
-                              f2[73] = a3 + 10;
-                              v2(0) | 0;
-                              h3 = 22;
-                            }
-                            break;
-                          }
-                          case 102: {
-                            h3 = 22;
-                            break;
-                          }
-                          case 99: {
-                            a3 = f2[73] | 0;
-                            if (((S(a3 + 2 | 0, 86, 8) | 0) == 0 ? (u4 = s2[a3 + 10 >> 1] | 0, L(u4) | 0 | u4 << 16 >> 16 == 123) : 0) ? (f2[73] = a3 + 10, r3 = v2(1) | 0, r3 << 16 >> 16 != 123) : 0) {
-                              b3 = r3;
-                              h3 = 31;
-                            }
-                            break;
-                          }
-                          default: {
-                          }
-                        }
-                        r: do {
-                          if ((h3 | 0) == 22 ? (c3 = f2[73] | 0, (S(c3 + 2 | 0, 72, 14) | 0) == 0) : 0) {
-                            a3 = s2[c3 + 16 >> 1] | 0;
-                            if (!(L(a3) | 0)) switch (a3 << 16 >> 16) {
-                              case 40:
-                              case 42:
-                                break;
-                              default:
-                                break r;
-                            }
-                            f2[73] = c3 + 16;
-                            a3 = v2(1) | 0;
-                            if (a3 << 16 >> 16 == 42) {
-                              f2[73] = (f2[73] | 0) + 2;
-                              a3 = v2(1) | 0;
-                            }
-                            if (a3 << 16 >> 16 != 40) {
-                              b3 = a3;
-                              h3 = 31;
+                              t3 = f2[3] | 0;
+                              r3 = p2;
+                              do {
+                                if (r3 >>> 0 <= t3 >>> 0) break;
+                                r3 = r3 + -2 | 0;
+                                f2[70] = r3;
+                                c3 = s2[r3 >> 1] | 0;
+                              } while (!(D(c3) | 0));
+                              if (M(c3) | 0) {
+                                do {
+                                  if (r3 >>> 0 <= t3 >>> 0) break;
+                                  r3 = r3 + -2 | 0;
+                                  f2[70] = r3;
+                                } while (M(s2[r3 >> 1] | 0) | 0);
+                                if (q(r3) | 0) {
+                                  I();
+                                  i2[809] = 0;
+                                  h3 = 89;
+                                  break a;
+                                }
+                              }
+                              i2[809] = 1;
+                              h3 = 89;
+                              break a;
                             }
                           }
                         } while (0);
-                        if ((h3 | 0) == 31 ? (t3 = f2[73] | 0, H(b3) | 0, n3 = f2[73] | 0, n3 >>> 0 > t3 >>> 0) : 0) {
-                          T(e3, e3 + 14 | 0, t3, n3);
-                          f2[73] = (f2[73] | 0) + -2;
-                          break e;
-                        }
-                        T(e3, e3 + 14 | 0, 0, 0);
-                        f2[73] = e3 + 12;
-                        break e;
+                        I();
+                        i2[809] = 0;
+                        h3 = 89;
+                        break a;
                       }
-                      case 97: {
-                        f2[73] = e3 + 10;
-                        v2(0) | 0;
-                        e3 = f2[73] | 0;
-                        h3 = 35;
-                        break;
-                      }
-                      case 102: {
-                        h3 = 35;
-                        break;
-                      }
-                      case 99: {
-                        if ((S(e3 + 2 | 0, 86, 8) | 0) == 0 ? D(s2[e3 + 10 >> 1] | 0) | 0 : 0) {
-                          f2[73] = e3 + 10;
-                          h3 = v2(1) | 0;
-                          u4 = f2[73] | 0;
-                          H(h3) | 0;
-                          h3 = f2[73] | 0;
-                          T(u4, h3, u4, h3);
-                          f2[73] = (f2[73] | 0) + -2;
-                          break e;
-                        }
-                        f2[73] = e3 + 4;
-                        e3 = e3 + 4 | 0;
-                        break;
-                      }
-                      case 108:
-                      case 118:
-                        break;
-                      default:
-                        break e;
                     }
-                    if ((h3 | 0) == 35) {
-                      f2[73] = e3 + 16;
-                      e3 = v2(1) | 0;
-                      if (e3 << 16 >> 16 == 42) {
-                        f2[73] = (f2[73] | 0) + 2;
-                        e3 = v2(1) | 0;
+                  case 96: {
+                    b3 = f2[71] | 0;
+                    h3 = o3 & 65535;
+                    f2[b3 + (h3 << 3) + 4 >> 2] = k4;
+                    s2[402] = o3 + 1 << 16 >> 16;
+                    f2[b3 + (h3 << 3) >> 2] = 3;
+                    d2();
+                    h3 = 89;
+                    break;
+                  }
+                  default:
+                    h3 = 89;
+                }
+              } while (0);
+              if ((h3 | 0) == 89) {
+                h3 = 0;
+                f2[70] = f2[73];
+              }
+              if (i2[806] | 0) {
+                a3 = 0;
+                break;
+              }
+              r3 = f2[70] | 0;
+              a: do {
+                if ((r3 | 0) == (p2 | 0)) if (A2 & ((s2[402] | 0) == y2 << 16 >> 16 & e3)) {
+                  a3 = s2[f2[73] >> 1] | 0;
+                  if (be(a3) | 0) break e;
+                  else a3 = 1;
+                } else a3 = A2;
+                else {
+                  if (a3 << 16 >> 16 == 47) {
+                    a3 = (i2[809] | 0) == 0;
+                    break;
+                  }
+                  if (G(a3) | 0) a3 = 1;
+                  else {
+                    switch (a3 << 16 >> 16) {
+                      case 96:
+                      case 34:
+                      case 39:
+                      case 41:
+                      case 93:
+                      case 125: {
+                        a3 = 1;
+                        break a;
                       }
-                      u4 = f2[73] | 0;
-                      H(e3) | 0;
-                      h3 = f2[73] | 0;
-                      T(u4, h3, u4, h3);
-                      f2[73] = (f2[73] | 0) + -2;
-                      break e;
+                      default: {
+                      }
                     }
-                    f2[73] = e3 + 6;
-                    i2[808] = 0;
-                    while (1) {
-                      a3 = v2(1) | 0;
-                      e3 = f2[73] | 0;
-                      if (e3 >>> 0 > (f2[74] | 0) >>> 0) break;
-                      a3 = P(a3) | 0;
-                      if ((f2[73] | 0) == (e3 | 0)) break;
-                      if (a3 << 16 >> 16 == 61) a3 = k3(1) | 0;
-                      e3 = f2[73] | 0;
-                      if (a3 << 16 >> 16 != 44) break;
-                      f2[73] = e3 + 2;
-                    }
-                    f2[73] = e3 + -2;
-                    break e;
+                    a3 = 0;
                   }
                 }
               } while (0);
-              h3 = (v2(1) | 0) << 16 >> 16 == 102;
-              e3 = f2[73] | 0;
-              if (h3 ? (S(e3 + 2 | 0, 58, 6) | 0) == 0 : 0) {
-                f2[73] = e3 + 8;
-                o2(l4, v2(1) | 0, 0);
-                e3 = (u4 | 0) == 0 ? 236 : u4 + 20 | 0;
-                while (1) {
-                  e3 = f2[e3 >> 2] | 0;
-                  if (!e3) break e;
-                  f2[e3 + 12 >> 2] = 0;
-                  f2[e3 + 8 >> 2] = 0;
-                  e3 = e3 + 20 | 0;
-                }
-              }
-              f2[73] = e3 + -2;
+              k4 = r3;
+              p2 = r3;
+              o3 = s2[402] | 0;
+              A2 = a3;
+              a3 = f2[73] | 0;
             }
-          } while (0);
-          return;
-        }
-        function o2(e3, a3, r3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          r3 = r3 | 0;
-          var i3 = 0, c3 = 0, t3 = 0, n3 = 0, b3 = 0;
-          i3 = (f2[73] | 0) + 2 | 0;
-          switch (a3 << 16 >> 16) {
-            case 39: {
-              C(39);
-              c3 = 5;
-              break;
-            }
-            case 34: {
-              C(34);
-              c3 = 5;
-              break;
-            }
-            default:
-              ae();
+            if ((h3 | 0) == 100) f2[73] = n3;
+            return a3 | 0;
           }
-          do {
-            if ((c3 | 0) == 5) {
-              A(e3, i3, f2[73] | 0, 1);
-              if ((r3 | 0) > 0) f2[(f2[62] | 0) + 28 >> 2] = (r3 | 0) == 1 ? 4 : 6;
-              f2[73] = (f2[73] | 0) + 2;
-              n3 = (v2(0) | 0) << 16 >> 16 == 119;
-              t3 = f2[73] | 0;
-              if (((n3 ? (s2[t3 + 2 >> 1] | 0) == 105 : 0) ? (s2[t3 + 4 >> 1] | 0) == 116 : 0) ? (s2[t3 + 6 >> 1] | 0) == 104 : 0) {
-                f2[73] = t3 + 8;
-                if ((v2(1) | 0) << 16 >> 16 != 123) {
-                  f2[73] = t3;
-                  break;
-                }
-                n3 = f2[73] | 0;
-                i3 = n3;
-                c3 = 0;
-                e: while (1) {
-                  f2[73] = i3 + 2;
-                  i3 = v2(1) | 0;
-                  do {
-                    if (i3 << 16 >> 16 != 39) {
-                      a3 = f2[73] | 0;
-                      if (i3 << 16 >> 16 == 34) {
-                        C(34);
-                        e3 = (f2[73] | 0) + 2 | 0;
-                        f2[73] = e3;
-                        i3 = v2(1) | 0;
-                        break;
-                      } else {
-                        i3 = H(i3) | 0;
-                        e3 = f2[73] | 0;
-                        break;
-                      }
-                    } else {
-                      a3 = f2[73] | 0;
-                      C(39);
-                      e3 = (f2[73] | 0) + 2 | 0;
-                      f2[73] = e3;
-                      i3 = v2(1) | 0;
-                    }
-                  } while (0);
-                  if (i3 << 16 >> 16 != 58) {
-                    c3 = 21;
+          function l3() {
+            var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, n3 = 0;
+            n3 = f2[73] | 0;
+            f2[73] = n3 + 12;
+            e3 = v2(1) | 0;
+            r3 = f2[73] | 0;
+            e: do {
+              if (e3 << 16 >> 16 != 46) {
+                if (!(e3 << 16 >> 16 == 115 & r3 >>> 0 > (n3 + 12 | 0) >>> 0)) {
+                  if (!(e3 << 16 >> 16 == 100 & r3 >>> 0 > (n3 + 10 | 0) >>> 0)) {
+                    r3 = 0;
+                    t3 = 28;
                     break;
                   }
-                  f2[73] = (f2[73] | 0) + 2;
-                  switch ((v2(1) | 0) << 16 >> 16) {
+                  if (S(r3 + 2 | 0, 50, 8) | 0) {
+                    a3 = r3;
+                    e3 = 100;
+                    r3 = 0;
+                    t3 = 60;
+                    break;
+                  }
+                  if (!(L(s2[r3 + 10 >> 1] | 0) | 0)) {
+                    a3 = r3;
+                    e3 = 100;
+                    r3 = 0;
+                    t3 = 60;
+                    break;
+                  }
+                  f2[73] = r3 + 10;
+                  e3 = v2(1) | 0;
+                  if (e3 << 16 >> 16 == 42) {
+                    e3 = 42;
+                    c3 = 2;
+                    t3 = 62;
+                    break;
+                  }
+                  f2[73] = r3;
+                  r3 = 0;
+                  t3 = 28;
+                  break;
+                }
+                if ((S(r3 + 2 | 0, 40, 10) | 0) == 0 ? L(s2[r3 + 12 >> 1] | 0) | 0 : 0) {
+                  f2[73] = r3 + 12;
+                  e3 = v2(1) | 0;
+                  a3 = f2[73] | 0;
+                  if ((a3 | 0) != (r3 + 12 | 0)) {
+                    if (e3 << 16 >> 16 != 102) {
+                      r3 = 1;
+                      t3 = 28;
+                      break;
+                    }
+                    if (S(a3 + 2 | 0, 58, 6) | 0) {
+                      e3 = 102;
+                      r3 = 1;
+                      t3 = 60;
+                      break;
+                    }
+                    if (!(D(s2[a3 + 8 >> 1] | 0) | 0)) {
+                      e3 = 102;
+                      r3 = 1;
+                      t3 = 60;
+                      break;
+                    }
+                  }
+                  f2[73] = r3;
+                  r3 = 0;
+                  t3 = 28;
+                } else {
+                  a3 = r3;
+                  e3 = 115;
+                  r3 = 0;
+                  t3 = 60;
+                }
+              } else {
+                f2[73] = r3 + 2;
+                switch ((v2(1) | 0) << 16 >> 16) {
+                  case 109: {
+                    e3 = f2[73] | 0;
+                    if (S(e3 + 2 | 0, 34, 6) | 0) break e;
+                    a3 = f2[70] | 0;
+                    if (!(N(a3) | 0) ? (s2[a3 >> 1] | 0) == 46 : 0) break e;
+                    A(n3, n3, e3 + 8 | 0, 2);
+                    break e;
+                  }
+                  case 115: {
+                    e3 = f2[73] | 0;
+                    if (S(e3 + 2 | 0, 40, 10) | 0) break e;
+                    a3 = f2[70] | 0;
+                    if (!(N(a3) | 0) ? (s2[a3 >> 1] | 0) == 46 : 0) break e;
+                    f2[73] = e3 + 12;
+                    e3 = v2(1) | 0;
+                    r3 = 1;
+                    t3 = 28;
+                    break e;
+                  }
+                  case 100: {
+                    e3 = f2[73] | 0;
+                    if (S(e3 + 2 | 0, 50, 8) | 0) break e;
+                    a3 = f2[70] | 0;
+                    if (!(N(a3) | 0) ? (s2[a3 >> 1] | 0) == 46 : 0) break e;
+                    f2[73] = e3 + 10;
+                    e3 = v2(1) | 0;
+                    r3 = 2;
+                    t3 = 28;
+                    break e;
+                  }
+                  default:
+                    break e;
+                }
+              }
+            } while (0);
+            e: do {
+              if ((t3 | 0) == 28) {
+                if (e3 << 16 >> 16 == 40) {
+                  a3 = f2[71] | 0;
+                  c3 = s2[402] | 0;
+                  f2[a3 + ((c3 & 65535) << 3) >> 2] = 5;
+                  e3 = f2[73] | 0;
+                  s2[402] = c3 + 1 << 16 >> 16;
+                  f2[a3 + ((c3 & 65535) << 3) + 4 >> 2] = e3;
+                  if ((s2[f2[70] >> 1] | 0) == 46) break;
+                  f2[73] = e3 + 2;
+                  a3 = v2(1) | 0;
+                  A(n3, f2[73] | 0, 0, e3);
+                  if (!r3) e3 = f2[62] | 0;
+                  else {
+                    e3 = f2[62] | 0;
+                    f2[e3 + 28 >> 2] = (r3 | 0) == 1 ? 5 : 7;
+                  }
+                  c3 = f2[72] | 0;
+                  n3 = s2[401] | 0;
+                  s2[401] = n3 + 1 << 16 >> 16;
+                  f2[c3 + ((n3 & 65535) << 2) >> 2] = e3;
+                  switch (a3 << 16 >> 16) {
                     case 39: {
-                      i3 = f2[73] | 0;
                       C(39);
                       break;
                     }
                     case 34: {
-                      i3 = f2[73] | 0;
                       C(34);
                       break;
                     }
-                    default: {
-                      c3 = 25;
-                      break e;
-                    }
-                  }
-                  b3 = (f2[73] | 0) + 2 | 0;
-                  r3 = f2[67] | 0;
-                  f2[67] = r3 + 20;
-                  f2[r3 >> 2] = a3;
-                  f2[r3 + 4 >> 2] = e3;
-                  f2[r3 + 8 >> 2] = i3;
-                  f2[r3 + 12 >> 2] = b3;
-                  f2[r3 + 16 >> 2] = 0;
-                  f2[((c3 | 0) == 0 ? (f2[62] | 0) + 32 | 0 : c3 + 16 | 0) >> 2] = r3;
-                  f2[73] = (f2[73] | 0) + 2;
-                  switch ((v2(1) | 0) << 16 >> 16) {
-                    case 125: {
-                      c3 = 29;
-                      break e;
-                    }
-                    case 44:
+                    case 96: {
+                      if (!(y() | 0)) t3 = 37;
                       break;
+                    }
+                    default:
+                      t3 = 37;
+                  }
+                  if ((t3 | 0) == 37) {
+                    f2[73] = (f2[73] | 0) + -2;
+                    break;
+                  }
+                  e3 = (f2[73] | 0) + 2 | 0;
+                  f2[73] = e3;
+                  switch ((v2(1) | 0) << 16 >> 16) {
+                    case 44: {
+                      f2[73] = (f2[73] | 0) + 2;
+                      v2(1) | 0;
+                      c3 = f2[62] | 0;
+                      f2[c3 + 4 >> 2] = e3;
+                      n3 = f2[73] | 0;
+                      f2[c3 + 16 >> 2] = n3;
+                      i2[c3 + 24 >> 0] = 1;
+                      f2[73] = n3 + -2;
+                      break e;
+                    }
+                    case 41: {
+                      s2[402] = (s2[402] | 0) + -1 << 16 >> 16;
+                      n3 = f2[62] | 0;
+                      f2[n3 + 4 >> 2] = e3;
+                      f2[n3 + 12 >> 2] = (f2[73] | 0) + 2;
+                      i2[n3 + 24 >> 0] = 1;
+                      s2[401] = (s2[401] | 0) + -1 << 16 >> 16;
+                      break e;
+                    }
                     default: {
-                      c3 = 27;
+                      f2[73] = (f2[73] | 0) + -2;
                       break e;
                     }
                   }
-                  i3 = (f2[73] | 0) + 2 | 0;
-                  f2[73] = i3;
-                  c3 = r3;
                 }
-                if ((c3 | 0) == 21) {
-                  f2[73] = t3;
+                if (!((r3 | 0) == 0 & e3 << 16 >> 16 == 123)) {
+                  switch (e3 << 16 >> 16) {
+                    case 42:
+                    case 39:
+                    case 34: {
+                      c3 = r3;
+                      t3 = 62;
+                      break e;
+                    }
+                    default: {
+                    }
+                  }
+                  a3 = f2[73] | 0;
+                  t3 = 60;
                   break;
-                } else if ((c3 | 0) == 25) {
-                  f2[73] = t3;
+                }
+                e3 = f2[73] | 0;
+                if (s2[402] | 0) {
+                  f2[73] = e3 + -2;
                   break;
-                } else if ((c3 | 0) == 27) {
-                  f2[73] = t3;
+                }
+                while (1) {
+                  if (e3 >>> 0 >= (f2[74] | 0) >>> 0) break;
+                  e3 = v2(1) | 0;
+                  if (!(re(e3) | 0)) {
+                    if (e3 << 16 >> 16 == 125) {
+                      t3 = 50;
+                      break;
+                    }
+                  } else C(e3);
+                  e3 = (f2[73] | 0) + 2 | 0;
+                  f2[73] = e3;
+                }
+                if ((t3 | 0) == 50) f2[73] = (f2[73] | 0) + 2;
+                c3 = (v2(1) | 0) << 16 >> 16 == 102;
+                e3 = f2[73] | 0;
+                if (c3 ? S(e3 + 2 | 0, 58, 6) | 0 : 0) {
+                  ae();
                   break;
-                } else if ((c3 | 0) == 29) {
-                  b3 = f2[62] | 0;
-                  f2[b3 + 16 >> 2] = n3;
-                  f2[b3 + 12 >> 2] = (f2[73] | 0) + 2;
+                }
+                f2[73] = e3 + 8;
+                e3 = v2(1) | 0;
+                if (re(e3) | 0) {
+                  o2(n3, e3, 0);
+                  break;
+                } else {
+                  ae();
                   break;
                 }
               }
-              f2[73] = t3 + -2;
+            } while (0);
+            if ((t3 | 0) == 60) if ((a3 | 0) == (n3 + 12 | 0)) f2[73] = n3 + 10;
+            else {
+              c3 = r3;
+              t3 = 62;
             }
-          } while (0);
-          return;
-        }
-        function h2() {
-          var e3 = 0, a3 = 0, r3 = 0, i3 = 0, c3 = 0, t3 = 0, n3 = 0;
-          e3 = f2[73] | 0;
-          c3 = (s2[e3 >> 1] | 0) == 123;
-          f2[73] = e3 + 2;
-          e3 = v2(1) | 0;
-          t3 = c3 ? 125 : 93;
-          e: while (1) {
-            if ((t3 | 0) == (e3 & 65535 | 0)) break;
-            i3 = f2[73] | 0;
-            if (i3 >>> 0 > (f2[74] | 0) >>> 0) break;
-            if ((e3 << 16 >> 16 == 46 ? (s2[i3 + 2 >> 1] | 0) == 46 : 0) ? (s2[i3 + 4 >> 1] | 0) == 46 : 0) {
-              f2[73] = i3 + 6;
-              e3 = P(v2(1) | 0) | 0;
-            } else n3 = 9;
-            a: do {
-              if ((n3 | 0) == 9) {
-                n3 = 0;
-                do {
-                  if (c3) {
-                    do {
-                      if (e3 << 16 >> 16 == 91) {
-                        k3(0) | 0;
-                        f2[73] = (f2[73] | 0) + 2;
-                        a3 = i3;
-                      } else {
+            do {
+              if ((t3 | 0) == 62) {
+                if (!((e3 << 16 >> 16 == 42 | (c3 | 0) != 2) & (s2[402] | 0) == 0)) {
+                  f2[73] = (f2[73] | 0) + -2;
+                  break;
+                }
+                e3 = f2[74] | 0;
+                a3 = f2[73] | 0;
+                while (1) {
+                  if (a3 >>> 0 >= e3 >>> 0) {
+                    t3 = 69;
+                    break;
+                  }
+                  r3 = s2[a3 >> 1] | 0;
+                  if (re(r3) | 0) {
+                    t3 = 67;
+                    break;
+                  }
+                  t3 = a3 + 2 | 0;
+                  f2[73] = t3;
+                  a3 = t3;
+                }
+                if ((t3 | 0) == 67) {
+                  o2(n3, r3, c3);
+                  break;
+                } else if ((t3 | 0) == 69) {
+                  ae();
+                  break;
+                }
+              }
+            } while (0);
+            return;
+          }
+          function u3() {
+            var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, n3 = 0, b3 = 0, l4 = 0, u4 = 0, h3 = 0;
+            l4 = f2[73] | 0;
+            u4 = f2[64] | 0;
+            f2[73] = l4 + 12;
+            a3 = v2(1) | 0;
+            e3 = f2[73] | 0;
+            if (!((e3 | 0) == (l4 + 12 | 0) ? !(O(a3) | 0) : 0)) h3 = 3;
+            e: do {
+              if ((h3 | 0) == 3) {
+                f2[65] = l4;
+                a: do {
+                  switch (a3 << 16 >> 16) {
+                    case 123: {
+                      f2[73] = e3 + 2;
+                      e3 = v2(1) | 0;
+                      a3 = f2[73] | 0;
+                      while (1) {
                         if (re(e3) | 0) {
                           C(e3);
-                          f2[73] = (f2[73] | 0) + 2;
-                          a3 = i3;
-                          break;
-                        }
-                        if ((e3 + -48 & 65535) >= 10) {
+                          e3 = (f2[73] | 0) + 2 | 0;
+                          f2[73] = e3;
+                        } else {
                           H(e3) | 0;
-                          a3 = f2[73] | 0;
+                          e3 = f2[73] | 0;
+                        }
+                        v2(1) | 0;
+                        e3 = p(a3, e3) | 0;
+                        if (e3 << 16 >> 16 == 44) {
+                          f2[73] = (f2[73] | 0) + 2;
+                          e3 = v2(1) | 0;
+                        }
+                        if (e3 << 16 >> 16 == 125) {
+                          h3 = 15;
                           break;
                         }
-                        e3 = i3;
-                        r: while (1) {
-                          r3 = e3 + 2 | 0;
-                          a3 = s2[r3 >> 1] | 0;
-                          i: do {
-                            if ((a3 + -48 & 65535) >= 10) {
-                              switch (a3 << 16 >> 16) {
-                                case 67:
-                                case 68:
-                                case 70:
-                                case 97:
-                                case 65:
-                                case 99:
-                                case 100:
-                                case 102:
-                                case 46:
-                                case 66:
-                                case 69:
-                                case 79:
-                                case 88:
-                                case 95:
-                                case 98:
-                                case 101:
-                                case 110:
-                                case 111:
-                                case 120:
-                                  break i;
-                                case 43:
-                                case 45:
+                        h3 = a3;
+                        a3 = f2[73] | 0;
+                        if ((a3 | 0) == (h3 | 0)) {
+                          h3 = 12;
+                          break;
+                        }
+                        if (a3 >>> 0 > (f2[74] | 0) >>> 0) {
+                          h3 = 14;
+                          break;
+                        }
+                      }
+                      if ((h3 | 0) == 12) {
+                        ae();
+                        break e;
+                      } else if ((h3 | 0) == 14) {
+                        ae();
+                        break e;
+                      } else if ((h3 | 0) == 15) {
+                        i2[807] = 1;
+                        f2[73] = (f2[73] | 0) + 2;
+                        break a;
+                      }
+                      break;
+                    }
+                    case 42: {
+                      f2[73] = e3 + 2;
+                      v2(1) | 0;
+                      h3 = f2[73] | 0;
+                      p(h3, h3) | 0;
+                      break;
+                    }
+                    default: {
+                      i2[808] = 0;
+                      switch (a3 << 16 >> 16) {
+                        case 100: {
+                          f2[73] = e3 + 14;
+                          switch ((v2(1) | 0) << 16 >> 16) {
+                            case 97: {
+                              a3 = f2[73] | 0;
+                              if ((S(a3 + 2 | 0, 64, 8) | 0) == 0 ? M(s2[a3 + 10 >> 1] | 0) | 0 : 0) {
+                                f2[73] = a3 + 10;
+                                v2(0) | 0;
+                                h3 = 22;
+                              }
+                              break;
+                            }
+                            case 102: {
+                              h3 = 22;
+                              break;
+                            }
+                            case 99: {
+                              a3 = f2[73] | 0;
+                              if (((S(a3 + 2 | 0, 86, 8) | 0) == 0 ? (u4 = s2[a3 + 10 >> 1] | 0, L(u4) | 0 | u4 << 16 >> 16 == 123) : 0) ? (f2[73] = a3 + 10, r3 = v2(1) | 0, r3 << 16 >> 16 != 123) : 0) {
+                                b3 = r3;
+                                h3 = 31;
+                              }
+                              break;
+                            }
+                            default: {
+                            }
+                          }
+                          r: do {
+                            if ((h3 | 0) == 22 ? (c3 = f2[73] | 0, (S(c3 + 2 | 0, 72, 14) | 0) == 0) : 0) {
+                              a3 = s2[c3 + 16 >> 1] | 0;
+                              if (!(L(a3) | 0)) switch (a3 << 16 >> 16) {
+                                case 40:
+                                case 42:
                                   break;
                                 default:
                                   break r;
                               }
-                              switch (s2[e3 >> 1] | 0) {
-                                case 69:
-                                case 101:
-                                  break;
-                                default:
-                                  break r;
+                              f2[73] = c3 + 16;
+                              a3 = v2(1) | 0;
+                              if (a3 << 16 >> 16 == 42) {
+                                f2[73] = (f2[73] | 0) + 2;
+                                a3 = v2(1) | 0;
+                              }
+                              if (a3 << 16 >> 16 != 40) {
+                                b3 = a3;
+                                h3 = 31;
                               }
                             }
                           } while (0);
-                          e3 = r3;
+                          if ((h3 | 0) == 31 ? (t3 = f2[73] | 0, H(b3) | 0, n3 = f2[73] | 0, n3 >>> 0 > t3 >>> 0) : 0) {
+                            T(e3, e3 + 14 | 0, t3, n3);
+                            f2[73] = (f2[73] | 0) + -2;
+                            break e;
+                          }
+                          T(e3, e3 + 14 | 0, 0, 0);
+                          f2[73] = e3 + 12;
+                          break e;
                         }
-                        f2[73] = r3;
-                        a3 = i3;
+                        case 97: {
+                          f2[73] = e3 + 10;
+                          v2(0) | 0;
+                          e3 = f2[73] | 0;
+                          h3 = 35;
+                          break;
+                        }
+                        case 102: {
+                          h3 = 35;
+                          break;
+                        }
+                        case 99: {
+                          if ((S(e3 + 2 | 0, 86, 8) | 0) == 0 ? D(s2[e3 + 10 >> 1] | 0) | 0 : 0) {
+                            f2[73] = e3 + 10;
+                            h3 = v2(1) | 0;
+                            u4 = f2[73] | 0;
+                            H(h3) | 0;
+                            h3 = f2[73] | 0;
+                            T(u4, h3, u4, h3);
+                            f2[73] = (f2[73] | 0) + -2;
+                            break e;
+                          }
+                          f2[73] = e3 + 4;
+                          e3 = e3 + 4 | 0;
+                          break;
+                        }
+                        case 108:
+                        case 118:
+                          break;
+                        default:
+                          break e;
                       }
-                    } while (0);
-                    e3 = v2(1) | 0;
-                    if (e3 << 16 >> 16 == 58) {
-                      f2[73] = (f2[73] | 0) + 2;
-                      e3 = P(v2(1) | 0) | 0;
-                      break;
+                      if ((h3 | 0) == 35) {
+                        f2[73] = e3 + 16;
+                        e3 = v2(1) | 0;
+                        if (e3 << 16 >> 16 == 42) {
+                          f2[73] = (f2[73] | 0) + 2;
+                          e3 = v2(1) | 0;
+                        }
+                        u4 = f2[73] | 0;
+                        H(e3) | 0;
+                        h3 = f2[73] | 0;
+                        T(u4, h3, u4, h3);
+                        f2[73] = (f2[73] | 0) + -2;
+                        break e;
+                      }
+                      f2[73] = e3 + 6;
+                      i2[808] = 0;
+                      while (1) {
+                        a3 = v2(1) | 0;
+                        e3 = f2[73] | 0;
+                        if (e3 >>> 0 > (f2[74] | 0) >>> 0) break;
+                        a3 = P(a3) | 0;
+                        if ((f2[73] | 0) == (e3 | 0)) break;
+                        if (a3 << 16 >> 16 == 61) a3 = k3(1) | 0;
+                        e3 = f2[73] | 0;
+                        if (a3 << 16 >> 16 != 44) break;
+                        f2[73] = e3 + 2;
+                      }
+                      f2[73] = e3 + -2;
+                      break e;
                     }
-                    if (a3 >>> 0 > i3 >>> 0) T(i3, a3, i3, a3);
-                  } else if (e3 << 16 >> 16 == 44) {
-                    f2[73] = i3 + 2;
-                    e3 = v2(1) | 0;
-                    break a;
-                  } else {
-                    e3 = P(e3) | 0;
-                    break;
                   }
                 } while (0);
-                if (e3 << 16 >> 16 == 61) e3 = k3(0) | 0;
-                if (e3 << 16 >> 16 != 44) break e;
-                f2[73] = (f2[73] | 0) + 2;
-                e3 = v2(1) | 0;
+                h3 = (v2(1) | 0) << 16 >> 16 == 102;
+                e3 = f2[73] | 0;
+                if (h3 ? (S(e3 + 2 | 0, 58, 6) | 0) == 0 : 0) {
+                  f2[73] = e3 + 8;
+                  o2(l4, v2(1) | 0, 0);
+                  e3 = (u4 | 0) == 0 ? 236 : u4 + 20 | 0;
+                  while (1) {
+                    e3 = f2[e3 >> 2] | 0;
+                    if (!e3) break e;
+                    f2[e3 + 12 >> 2] = 0;
+                    f2[e3 + 8 >> 2] = 0;
+                    e3 = e3 + 20 | 0;
+                  }
+                }
+                f2[73] = e3 + -2;
               }
             } while (0);
+            return;
           }
-          return;
-        }
-        function w2(e3) {
-          e3 = e3 | 0;
-          e: do {
-            switch (s2[e3 >> 1] | 0) {
-              case 100:
-                switch (s2[e3 + -2 >> 1] | 0) {
-                  case 105: {
-                    e3 = E(e3 + -4 | 0, 94, 2) | 0;
+          function o2(e3, a3, r3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            r3 = r3 | 0;
+            var i3 = 0, c3 = 0, t3 = 0, n3 = 0, b3 = 0;
+            i3 = (f2[73] | 0) + 2 | 0;
+            switch (a3 << 16 >> 16) {
+              case 39: {
+                C(39);
+                c3 = 5;
+                break;
+              }
+              case 34: {
+                C(34);
+                c3 = 5;
+                break;
+              }
+              default:
+                ae();
+            }
+            do {
+              if ((c3 | 0) == 5) {
+                A(e3, i3, f2[73] | 0, 1);
+                if ((r3 | 0) > 0) f2[(f2[62] | 0) + 28 >> 2] = (r3 | 0) == 1 ? 4 : 6;
+                f2[73] = (f2[73] | 0) + 2;
+                n3 = (v2(0) | 0) << 16 >> 16 == 119;
+                t3 = f2[73] | 0;
+                if (((n3 ? (s2[t3 + 2 >> 1] | 0) == 105 : 0) ? (s2[t3 + 4 >> 1] | 0) == 116 : 0) ? (s2[t3 + 6 >> 1] | 0) == 104 : 0) {
+                  f2[73] = t3 + 8;
+                  if ((v2(1) | 0) << 16 >> 16 != 123) {
+                    f2[73] = t3;
+                    break;
+                  }
+                  n3 = f2[73] | 0;
+                  i3 = n3;
+                  c3 = 0;
+                  e: while (1) {
+                    f2[73] = i3 + 2;
+                    i3 = v2(1) | 0;
+                    do {
+                      if (i3 << 16 >> 16 != 39) {
+                        a3 = f2[73] | 0;
+                        if (i3 << 16 >> 16 == 34) {
+                          C(34);
+                          e3 = (f2[73] | 0) + 2 | 0;
+                          f2[73] = e3;
+                          i3 = v2(1) | 0;
+                          break;
+                        } else {
+                          i3 = H(i3) | 0;
+                          e3 = f2[73] | 0;
+                          break;
+                        }
+                      } else {
+                        a3 = f2[73] | 0;
+                        C(39);
+                        e3 = (f2[73] | 0) + 2 | 0;
+                        f2[73] = e3;
+                        i3 = v2(1) | 0;
+                      }
+                    } while (0);
+                    if (i3 << 16 >> 16 != 58) {
+                      c3 = 21;
+                      break;
+                    }
+                    f2[73] = (f2[73] | 0) + 2;
+                    switch ((v2(1) | 0) << 16 >> 16) {
+                      case 39: {
+                        i3 = f2[73] | 0;
+                        C(39);
+                        break;
+                      }
+                      case 34: {
+                        i3 = f2[73] | 0;
+                        C(34);
+                        break;
+                      }
+                      default: {
+                        c3 = 25;
+                        break e;
+                      }
+                    }
+                    b3 = (f2[73] | 0) + 2 | 0;
+                    r3 = f2[67] | 0;
+                    f2[67] = r3 + 20;
+                    f2[r3 >> 2] = a3;
+                    f2[r3 + 4 >> 2] = e3;
+                    f2[r3 + 8 >> 2] = i3;
+                    f2[r3 + 12 >> 2] = b3;
+                    f2[r3 + 16 >> 2] = 0;
+                    f2[((c3 | 0) == 0 ? (f2[62] | 0) + 32 | 0 : c3 + 16 | 0) >> 2] = r3;
+                    f2[73] = (f2[73] | 0) + 2;
+                    switch ((v2(1) | 0) << 16 >> 16) {
+                      case 125: {
+                        c3 = 29;
+                        break e;
+                      }
+                      case 44:
+                        break;
+                      default: {
+                        c3 = 27;
+                        break e;
+                      }
+                    }
+                    i3 = (f2[73] | 0) + 2 | 0;
+                    f2[73] = i3;
+                    c3 = r3;
+                  }
+                  if ((c3 | 0) == 21) {
+                    f2[73] = t3;
+                    break;
+                  } else if ((c3 | 0) == 25) {
+                    f2[73] = t3;
+                    break;
+                  } else if ((c3 | 0) == 27) {
+                    f2[73] = t3;
+                    break;
+                  } else if ((c3 | 0) == 29) {
+                    b3 = f2[62] | 0;
+                    f2[b3 + 16 >> 2] = n3;
+                    f2[b3 + 12 >> 2] = (f2[73] | 0) + 2;
+                    break;
+                  }
+                }
+                f2[73] = t3 + -2;
+              }
+            } while (0);
+            return;
+          }
+          function h2() {
+            var e3 = 0, a3 = 0, r3 = 0, i3 = 0, c3 = 0, t3 = 0, n3 = 0;
+            e3 = f2[73] | 0;
+            c3 = (s2[e3 >> 1] | 0) == 123;
+            f2[73] = e3 + 2;
+            e3 = v2(1) | 0;
+            t3 = c3 ? 125 : 93;
+            e: while (1) {
+              if ((t3 | 0) == (e3 & 65535 | 0)) break;
+              i3 = f2[73] | 0;
+              if (i3 >>> 0 > (f2[74] | 0) >>> 0) break;
+              if ((e3 << 16 >> 16 == 46 ? (s2[i3 + 2 >> 1] | 0) == 46 : 0) ? (s2[i3 + 4 >> 1] | 0) == 46 : 0) {
+                f2[73] = i3 + 6;
+                e3 = P(v2(1) | 0) | 0;
+              } else n3 = 9;
+              a: do {
+                if ((n3 | 0) == 9) {
+                  n3 = 0;
+                  do {
+                    if (c3) {
+                      do {
+                        if (e3 << 16 >> 16 == 91) {
+                          k3(0) | 0;
+                          f2[73] = (f2[73] | 0) + 2;
+                          a3 = i3;
+                        } else {
+                          if (re(e3) | 0) {
+                            C(e3);
+                            f2[73] = (f2[73] | 0) + 2;
+                            a3 = i3;
+                            break;
+                          }
+                          if ((e3 + -48 & 65535) >= 10) {
+                            H(e3) | 0;
+                            a3 = f2[73] | 0;
+                            break;
+                          }
+                          e3 = i3;
+                          r: while (1) {
+                            r3 = e3 + 2 | 0;
+                            a3 = s2[r3 >> 1] | 0;
+                            i: do {
+                              if ((a3 + -48 & 65535) >= 10) {
+                                switch (a3 << 16 >> 16) {
+                                  case 67:
+                                  case 68:
+                                  case 70:
+                                  case 97:
+                                  case 65:
+                                  case 99:
+                                  case 100:
+                                  case 102:
+                                  case 46:
+                                  case 66:
+                                  case 69:
+                                  case 79:
+                                  case 88:
+                                  case 95:
+                                  case 98:
+                                  case 101:
+                                  case 110:
+                                  case 111:
+                                  case 120:
+                                    break i;
+                                  case 43:
+                                  case 45:
+                                    break;
+                                  default:
+                                    break r;
+                                }
+                                switch (s2[e3 >> 1] | 0) {
+                                  case 69:
+                                  case 101:
+                                    break;
+                                  default:
+                                    break r;
+                                }
+                              }
+                            } while (0);
+                            e3 = r3;
+                          }
+                          f2[73] = r3;
+                          a3 = i3;
+                        }
+                      } while (0);
+                      e3 = v2(1) | 0;
+                      if (e3 << 16 >> 16 == 58) {
+                        f2[73] = (f2[73] | 0) + 2;
+                        e3 = P(v2(1) | 0) | 0;
+                        break;
+                      }
+                      if (a3 >>> 0 > i3 >>> 0) T(i3, a3, i3, a3);
+                    } else if (e3 << 16 >> 16 == 44) {
+                      f2[73] = i3 + 2;
+                      e3 = v2(1) | 0;
+                      break a;
+                    } else {
+                      e3 = P(e3) | 0;
+                      break;
+                    }
+                  } while (0);
+                  if (e3 << 16 >> 16 == 61) e3 = k3(0) | 0;
+                  if (e3 << 16 >> 16 != 44) break e;
+                  f2[73] = (f2[73] | 0) + 2;
+                  e3 = v2(1) | 0;
+                }
+              } while (0);
+            }
+            return;
+          }
+          function w2(e3) {
+            e3 = e3 | 0;
+            e: do {
+              switch (s2[e3 >> 1] | 0) {
+                case 100:
+                  switch (s2[e3 + -2 >> 1] | 0) {
+                    case 105: {
+                      e3 = E(e3 + -4 | 0, 94, 2) | 0;
+                      break e;
+                    }
+                    case 108: {
+                      e3 = E(e3 + -4 | 0, 98, 3) | 0;
+                      break e;
+                    }
+                    default: {
+                      e3 = 0;
+                      break e;
+                    }
+                  }
+                case 101:
+                  switch (s2[e3 + -2 >> 1] | 0) {
+                    case 115:
+                      switch (s2[e3 + -4 >> 1] | 0) {
+                        case 108: {
+                          e3 = z(e3 + -6 | 0, 101) | 0;
+                          break e;
+                        }
+                        case 97: {
+                          e3 = z(e3 + -6 | 0, 99) | 0;
+                          break e;
+                        }
+                        default: {
+                          e3 = 0;
+                          break e;
+                        }
+                      }
+                    case 116: {
+                      e3 = E(e3 + -4 | 0, 104, 4) | 0;
+                      break e;
+                    }
+                    case 117: {
+                      e3 = E(e3 + -4 | 0, 112, 6) | 0;
+                      break e;
+                    }
+                    default: {
+                      e3 = 0;
+                      break e;
+                    }
+                  }
+                case 102: {
+                  if ((s2[e3 + -2 >> 1] | 0) == 111 ? (s2[e3 + -4 >> 1] | 0) == 101 : 0) switch (s2[e3 + -6 >> 1] | 0) {
+                    case 99: {
+                      e3 = E(e3 + -8 | 0, 124, 6) | 0;
+                      break e;
+                    }
+                    case 112: {
+                      e3 = E(e3 + -8 | 0, 136, 2) | 0;
+                      break e;
+                    }
+                    default: {
+                      e3 = 0;
+                      break e;
+                    }
+                  }
+                  else e3 = 0;
+                  break;
+                }
+                case 107: {
+                  e3 = E(e3 + -2 | 0, 140, 4) | 0;
+                  break;
+                }
+                case 110: {
+                  if (z(e3 + -2 | 0, 105) | 0) e3 = 1;
+                  else e3 = E(e3 + -2 | 0, 148, 5) | 0;
+                  break;
+                }
+                case 111: {
+                  e3 = z(e3 + -2 | 0, 100) | 0;
+                  break;
+                }
+                case 114: {
+                  e3 = E(e3 + -2 | 0, 158, 7) | 0;
+                  break;
+                }
+                case 116: {
+                  e3 = E(e3 + -2 | 0, 172, 4) | 0;
+                  break;
+                }
+                case 119:
+                  switch (s2[e3 + -2 >> 1] | 0) {
+                    case 101: {
+                      e3 = z(e3 + -4 | 0, 110) | 0;
+                      break e;
+                    }
+                    case 111: {
+                      e3 = E(e3 + -4 | 0, 180, 3) | 0;
+                      break e;
+                    }
+                    default: {
+                      e3 = 0;
+                      break e;
+                    }
+                  }
+                default:
+                  e3 = 0;
+              }
+            } while (0);
+            return e3 | 0;
+          }
+          function d2() {
+            var e3 = 0, a3 = 0, r3 = 0;
+            a3 = f2[74] | 0;
+            r3 = f2[73] | 0;
+            e: while (1) {
+              e3 = r3 + 2 | 0;
+              if (r3 >>> 0 >= a3 >>> 0) {
+                a3 = 10;
+                break;
+              }
+              switch (s2[e3 >> 1] | 0) {
+                case 96: {
+                  a3 = 7;
+                  break e;
+                }
+                case 36: {
+                  if ((s2[r3 + 4 >> 1] | 0) == 123) {
+                    a3 = 6;
                     break e;
                   }
-                  case 108: {
-                    e3 = E(e3 + -4 | 0, 98, 3) | 0;
-                    break e;
+                  break;
+                }
+                case 92: {
+                  e3 = r3 + 4 | 0;
+                  break;
+                }
+                default: {
+                }
+              }
+              r3 = e3;
+            }
+            if ((a3 | 0) == 6) {
+              e3 = r3 + 4 | 0;
+              f2[73] = e3;
+              a3 = f2[71] | 0;
+              r3 = s2[402] | 0;
+              f2[a3 + ((r3 & 65535) << 3) >> 2] = 4;
+              s2[402] = r3 + 1 << 16 >> 16;
+              f2[a3 + ((r3 & 65535) << 3) + 4 >> 2] = e3;
+            } else if ((a3 | 0) == 7) {
+              f2[73] = e3;
+              a3 = f2[71] | 0;
+              r3 = (s2[402] | 0) + -1 << 16 >> 16;
+              s2[402] = r3;
+              if ((f2[a3 + ((r3 & 65535) << 3) >> 2] | 0) != 3) ae();
+            } else if ((a3 | 0) == 10) {
+              f2[73] = e3;
+              ae();
+            }
+            return;
+          }
+          function v2(e3) {
+            e3 = e3 | 0;
+            var a3 = 0, r3 = 0, i3 = 0;
+            r3 = f2[73] | 0;
+            e: do {
+              a3 = s2[r3 >> 1] | 0;
+              a: do {
+                if (a3 << 16 >> 16 != 47) if (e3) if (L(a3) | 0) break;
+                else break e;
+                else if (M(a3) | 0) break;
+                else break e;
+                else switch (s2[r3 + 2 >> 1] | 0) {
+                  case 47: {
+                    F();
+                    break a;
+                  }
+                  case 42: {
+                    x(e3);
+                    break a;
                   }
                   default: {
-                    e3 = 0;
+                    a3 = 47;
                     break e;
                   }
                 }
-              case 101:
-                switch (s2[e3 + -2 >> 1] | 0) {
-                  case 115:
-                    switch (s2[e3 + -4 >> 1] | 0) {
-                      case 108: {
-                        e3 = z(e3 + -6 | 0, 101) | 0;
-                        break e;
-                      }
-                      case 97: {
-                        e3 = z(e3 + -6 | 0, 99) | 0;
+              } while (0);
+              i3 = f2[73] | 0;
+              r3 = i3 + 2 | 0;
+              f2[73] = r3;
+            } while (i3 >>> 0 < (f2[74] | 0) >>> 0);
+            return a3 | 0;
+          }
+          function A(e3, a3, r3, s3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            r3 = r3 | 0;
+            s3 = s3 | 0;
+            var c3 = 0, t3 = 0;
+            t3 = f2[67] | 0;
+            f2[67] = t3 + 40;
+            c3 = f2[62] | 0;
+            f2[((c3 | 0) == 0 ? 232 : c3 + 36 | 0) >> 2] = t3;
+            f2[63] = c3;
+            f2[62] = t3;
+            f2[t3 + 8 >> 2] = e3;
+            if (2 == (s3 | 0)) {
+              e3 = 3;
+              c3 = r3;
+            } else {
+              e3 = 1 == (s3 | 0) ? 1 : 2;
+              c3 = 1 == (s3 | 0) ? r3 + 2 | 0 : 0;
+            }
+            f2[t3 + 12 >> 2] = c3;
+            f2[t3 + 28 >> 2] = e3;
+            f2[t3 >> 2] = a3;
+            f2[t3 + 4 >> 2] = r3;
+            f2[t3 + 16 >> 2] = 0;
+            f2[t3 + 20 >> 2] = s3;
+            i2[t3 + 24 >> 0] = 1 == (s3 | 0) & 1;
+            f2[t3 + 32 >> 2] = 0;
+            f2[t3 + 36 >> 2] = 0;
+            if (1 == (s3 | 0) | 2 == (s3 | 0)) i2[807] = 1;
+            return;
+          }
+          function C(e3) {
+            e3 = e3 | 0;
+            var a3 = 0, r3 = 0, i3 = 0, c3 = 0;
+            c3 = f2[74] | 0;
+            a3 = f2[73] | 0;
+            while (1) {
+              i3 = a3 + 2 | 0;
+              if (a3 >>> 0 >= c3 >>> 0) {
+                a3 = 9;
+                break;
+              }
+              r3 = s2[i3 >> 1] | 0;
+              if (r3 << 16 >> 16 == e3 << 16 >> 16) {
+                a3 = 10;
+                break;
+              }
+              if (r3 << 16 >> 16 == 92) {
+                r3 = a3 + 4 | 0;
+                if ((s2[r3 >> 1] | 0) == 13) {
+                  a3 = a3 + 6 | 0;
+                  a3 = (s2[a3 >> 1] | 0) == 10 ? a3 : r3;
+                } else a3 = r3;
+              } else if (be(r3) | 0) {
+                a3 = 9;
+                break;
+              } else a3 = i3;
+            }
+            if ((a3 | 0) == 9) {
+              f2[73] = i3;
+              ae();
+            } else if ((a3 | 0) == 10) f2[73] = i3;
+            return;
+          }
+          function g(e3) {
+            e3 = e3 | 0;
+            var a3 = 0, r3 = 0;
+            a3 = s2[e3 >> 1] | 0;
+            if (L(a3) | 0) r3 = 3;
+            else switch (a3 << 16 >> 16) {
+              case 41:
+              case 125:
+              case 93: {
+                r3 = 3;
+                break;
+              }
+              default:
+                e3 = 0;
+            }
+            e: do {
+              if ((r3 | 0) == 3) {
+                r3 = f2[3] | 0;
+                while (1) {
+                  if (e3 >>> 0 <= r3 >>> 0) break;
+                  e3 = e3 + -2 | 0;
+                  if (!(L(a3) | 0)) break;
+                  a3 = s2[e3 >> 1] | 0;
+                }
+                switch (a3 << 16 >> 16) {
+                  case 41:
+                  case 125:
+                  case 93: {
+                    e3 = 1;
+                    break e;
+                  }
+                  default: {
+                  }
+                }
+                e3 = (O(a3) | 0) ^ 1;
+              }
+            } while (0);
+            return e3 | 0;
+          }
+          function p(e3, a3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            var r3 = 0, i3 = 0, c3 = 0, t3 = 0;
+            r3 = f2[73] | 0;
+            i3 = s2[r3 >> 1] | 0;
+            c3 = (e3 | 0) == (a3 | 0) ? 0 : e3;
+            t3 = (e3 | 0) == (a3 | 0) ? 0 : a3;
+            if (i3 << 16 >> 16 == 97) {
+              f2[73] = r3 + 4;
+              r3 = v2(1) | 0;
+              e3 = f2[73] | 0;
+              if (re(r3) | 0) {
+                C(r3);
+                a3 = (f2[73] | 0) + 2 | 0;
+                f2[73] = a3;
+              } else {
+                H(r3) | 0;
+                a3 = f2[73] | 0;
+              }
+              i3 = v2(1) | 0;
+              r3 = f2[73] | 0;
+            }
+            if ((r3 | 0) != (e3 | 0)) T(e3, a3, c3, t3);
+            return i3 | 0;
+          }
+          function y() {
+            var e3 = 0, a3 = 0, r3 = 0, i3 = 0;
+            i3 = f2[73] | 0;
+            r3 = f2[74] | 0;
+            a3 = i3;
+            e: while (1) {
+              e3 = a3 + 2 | 0;
+              if (a3 >>> 0 >= r3 >>> 0) {
+                a3 = 7;
+                break;
+              }
+              switch (s2[e3 >> 1] | 0) {
+                case 96: {
+                  a3 = 8;
+                  break e;
+                }
+                case 92: {
+                  e3 = a3 + 4 | 0;
+                  break;
+                }
+                case 36: {
+                  if ((s2[a3 + 4 >> 1] | 0) == 123) {
+                    a3 = 7;
+                    break e;
+                  }
+                  break;
+                }
+                default: {
+                }
+              }
+              a3 = e3;
+            }
+            if ((a3 | 0) == 7) {
+              f2[73] = i3;
+              e3 = 0;
+            } else if ((a3 | 0) == 8) {
+              f2[73] = e3;
+              e3 = 1;
+            }
+            return e3 | 0;
+          }
+          function m() {
+            var e3 = 0, a3 = 0, r3 = 0;
+            r3 = f2[74] | 0;
+            a3 = f2[73] | 0;
+            e: while (1) {
+              e3 = a3 + 2 | 0;
+              if (a3 >>> 0 >= r3 >>> 0) {
+                a3 = 6;
+                break;
+              }
+              switch (s2[e3 >> 1] | 0) {
+                case 13:
+                case 10: {
+                  a3 = 6;
+                  break e;
+                }
+                case 93: {
+                  a3 = 7;
+                  break e;
+                }
+                case 92: {
+                  e3 = a3 + 4 | 0;
+                  break;
+                }
+                default: {
+                }
+              }
+              a3 = e3;
+            }
+            if ((a3 | 0) == 6) {
+              f2[73] = e3;
+              ae();
+              e3 = 0;
+            } else if ((a3 | 0) == 7) {
+              f2[73] = e3;
+              e3 = 93;
+            }
+            return e3 | 0;
+          }
+          function I() {
+            var e3 = 0, a3 = 0;
+            e: while (1) {
+              e3 = f2[73] | 0;
+              f2[73] = e3 + 2;
+              if (e3 >>> 0 >= (f2[74] | 0) >>> 0) {
+                a3 = 7;
+                break;
+              }
+              switch (s2[e3 + 2 >> 1] | 0) {
+                case 13:
+                case 10: {
+                  a3 = 7;
+                  break e;
+                }
+                case 47:
+                  break e;
+                case 91: {
+                  m() | 0;
+                  break;
+                }
+                case 92: {
+                  f2[73] = e3 + 4;
+                  break;
+                }
+                default: {
+                }
+              }
+            }
+            if ((a3 | 0) == 7) ae();
+            return;
+          }
+          function U(e3) {
+            e3 = e3 | 0;
+            switch (s2[e3 >> 1] | 0) {
+              case 62: {
+                e3 = (s2[e3 + -2 >> 1] | 0) == 61;
+                break;
+              }
+              case 41:
+              case 59: {
+                e3 = 1;
+                break;
+              }
+              case 104: {
+                e3 = E(e3 + -2 | 0, 206, 4) | 0;
+                break;
+              }
+              case 121: {
+                e3 = E(e3 + -2 | 0, 214, 6) | 0;
+                break;
+              }
+              case 101: {
+                e3 = E(e3 + -2 | 0, 226, 3) | 0;
+                break;
+              }
+              default:
+                e3 = 0;
+            }
+            return e3 | 0;
+          }
+          function x(e3) {
+            e3 = e3 | 0;
+            var a3 = 0, r3 = 0, i3 = 0, c3 = 0, t3 = 0;
+            c3 = (f2[73] | 0) + 2 | 0;
+            f2[73] = c3;
+            r3 = f2[74] | 0;
+            while (1) {
+              a3 = c3 + 2 | 0;
+              if (c3 >>> 0 >= r3 >>> 0) break;
+              i3 = s2[a3 >> 1] | 0;
+              if (!e3 ? be(i3) | 0 : 0) break;
+              if (i3 << 16 >> 16 == 42 ? (s2[c3 + 4 >> 1] | 0) == 47 : 0) {
+                t3 = 8;
+                break;
+              }
+              c3 = a3;
+            }
+            if ((t3 | 0) == 8) {
+              f2[73] = a3;
+              a3 = c3 + 4 | 0;
+            }
+            f2[73] = a3;
+            return;
+          }
+          function S(e3, a3, r3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            r3 = r3 | 0;
+            var s3 = 0, f3 = 0;
+            e: do {
+              if (!r3) e3 = 0;
+              else {
+                while (1) {
+                  s3 = i2[e3 >> 0] | 0;
+                  f3 = i2[a3 >> 0] | 0;
+                  if (s3 << 24 >> 24 != f3 << 24 >> 24) break;
+                  r3 = r3 + -1 | 0;
+                  if (!r3) {
+                    e3 = 0;
+                    break e;
+                  } else {
+                    e3 = e3 + 1 | 0;
+                    a3 = a3 + 1 | 0;
+                  }
+                }
+                e3 = (s3 & 255) - (f3 & 255) | 0;
+              }
+            } while (0);
+            return e3 | 0;
+          }
+          function O(e3) {
+            e3 = e3 | 0;
+            e: do {
+              switch (e3 << 16 >> 16) {
+                case 38:
+                case 37:
+                case 33: {
+                  e3 = 1;
+                  break;
+                }
+                default:
+                  if ((e3 & -8) << 16 >> 16 == 40 | (e3 + -58 & 65535) < 6) e3 = 1;
+                  else {
+                    switch (e3 << 16 >> 16) {
+                      case 91:
+                      case 93:
+                      case 94: {
+                        e3 = 1;
                         break e;
                       }
                       default: {
-                        e3 = 0;
-                        break e;
                       }
                     }
-                  case 116: {
-                    e3 = E(e3 + -4 | 0, 104, 4) | 0;
-                    break e;
+                    e3 = (e3 + -123 & 65535) < 4;
                   }
-                  case 117: {
-                    e3 = E(e3 + -4 | 0, 112, 6) | 0;
+              }
+            } while (0);
+            return e3 | 0;
+          }
+          function $(e3) {
+            e3 = e3 | 0;
+            e: do {
+              switch (e3 << 16 >> 16) {
+                case 38:
+                case 37:
+                case 33:
+                  break;
+                default:
+                  if (!((e3 + -58 & 65535) < 6 | (e3 + -40 & 65535) < 7 & e3 << 16 >> 16 != 41)) {
+                    switch (e3 << 16 >> 16) {
+                      case 91:
+                      case 94:
+                        break e;
+                      default: {
+                      }
+                    }
+                    return e3 << 16 >> 16 != 125 & (e3 + -123 & 65535) < 4 | 0;
+                  }
+              }
+            } while (0);
+            return 1;
+          }
+          function T(e3, a3, r3, s3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            r3 = r3 | 0;
+            s3 = s3 | 0;
+            var c3 = 0, t3 = 0;
+            c3 = f2[67] | 0;
+            f2[67] = c3 + 24;
+            t3 = f2[64] | 0;
+            f2[((t3 | 0) == 0 ? 236 : t3 + 20 | 0) >> 2] = c3;
+            f2[64] = c3;
+            f2[c3 >> 2] = e3;
+            f2[c3 + 4 >> 2] = a3;
+            f2[c3 + 8 >> 2] = r3;
+            f2[c3 + 12 >> 2] = s3;
+            f2[c3 + 16 >> 2] = f2[65];
+            f2[c3 + 20 >> 2] = 0;
+            i2[807] = 1;
+            return;
+          }
+          function j(e3) {
+            e3 = e3 | 0;
+            var a3 = 0;
+            a3 = s2[e3 >> 1] | 0;
+            e: do {
+              if ((a3 + -9 & 65535) >= 5) {
+                switch (a3 << 16 >> 16) {
+                  case 160:
+                  case 32: {
+                    a3 = 1;
                     break e;
                   }
                   default: {
-                    e3 = 0;
-                    break e;
                   }
                 }
-              case 102: {
-                if ((s2[e3 + -2 >> 1] | 0) == 111 ? (s2[e3 + -4 >> 1] | 0) == 101 : 0) switch (s2[e3 + -6 >> 1] | 0) {
-                  case 99: {
-                    e3 = E(e3 + -8 | 0, 124, 6) | 0;
-                    break e;
-                  }
-                  case 112: {
-                    e3 = E(e3 + -8 | 0, 136, 2) | 0;
-                    break e;
-                  }
-                  default: {
-                    e3 = 0;
-                    break e;
-                  }
-                }
-                else e3 = 0;
+                if (O(a3) | 0) return a3 << 16 >> 16 != 46 | (N(e3) | 0) | 0;
+                else a3 = 0;
+              } else a3 = 1;
+            } while (0);
+            return a3 | 0;
+          }
+          function B(e3) {
+            e3 = e3 | 0;
+            var a3 = 0, r3 = 0;
+            r3 = n2;
+            n2 = n2 + 16 | 0;
+            f2[r3 >> 2] = 0;
+            f2[66] = e3;
+            a3 = f2[3] | 0;
+            s2[a3 + (e3 << 1) >> 1] = 0;
+            f2[r3 >> 2] = a3 + (e3 << 1) + 2;
+            f2[67] = a3 + (e3 << 1) + 2;
+            f2[58] = 0;
+            f2[62] = 0;
+            f2[60] = 0;
+            f2[59] = 0;
+            f2[64] = 0;
+            f2[61] = 0;
+            n2 = r3;
+            return a3 | 0;
+          }
+          function E(e3, a3, r3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            r3 = r3 | 0;
+            var i3 = 0, s3 = 0;
+            s3 = e3 + (0 - r3 << 1) + 2 | 0;
+            i3 = f2[3] | 0;
+            if (s3 >>> 0 >= i3 >>> 0 ? (S(s3, a3, r3 << 1) | 0) == 0 : 0) if ((s3 | 0) == (i3 | 0)) i3 = 1;
+            else i3 = j(e3 + (0 - r3 << 1) | 0) | 0;
+            else i3 = 0;
+            return i3 | 0;
+          }
+          function P(e3) {
+            e3 = e3 | 0;
+            var a3 = 0;
+            switch (e3 << 16 >> 16) {
+              case 91:
+              case 123: {
+                h2();
+                f2[73] = (f2[73] | 0) + 2;
                 break;
               }
+              default: {
+                a3 = f2[73] | 0;
+                H(e3) | 0;
+                e3 = f2[73] | 0;
+                if (e3 >>> 0 > a3 >>> 0) T(a3, e3, a3, e3);
+              }
+            }
+            return v2(1) | 0;
+          }
+          function q(e3) {
+            e3 = e3 | 0;
+            switch (s2[e3 >> 1] | 0) {
               case 107: {
                 e3 = E(e3 + -2 | 0, 140, 4) | 0;
                 break;
               }
-              case 110: {
-                if (z(e3 + -2 | 0, 105) | 0) e3 = 1;
-                else e3 = E(e3 + -2 | 0, 148, 5) | 0;
+              case 101: {
+                if ((s2[e3 + -2 >> 1] | 0) == 117) e3 = E(e3 + -4 | 0, 112, 6) | 0;
+                else e3 = 0;
                 break;
               }
-              case 111: {
-                e3 = z(e3 + -2 | 0, 100) | 0;
-                break;
-              }
-              case 114: {
-                e3 = E(e3 + -2 | 0, 158, 7) | 0;
-                break;
-              }
-              case 116: {
-                e3 = E(e3 + -2 | 0, 172, 4) | 0;
-                break;
-              }
-              case 119:
-                switch (s2[e3 + -2 >> 1] | 0) {
-                  case 101: {
-                    e3 = z(e3 + -4 | 0, 110) | 0;
-                    break e;
-                  }
-                  case 111: {
-                    e3 = E(e3 + -4 | 0, 180, 3) | 0;
-                    break e;
-                  }
-                  default: {
-                    e3 = 0;
-                    break e;
-                  }
-                }
               default:
                 e3 = 0;
             }
-          } while (0);
-          return e3 | 0;
-        }
-        function d2() {
-          var e3 = 0, a3 = 0, r3 = 0;
-          a3 = f2[74] | 0;
-          r3 = f2[73] | 0;
-          e: while (1) {
-            e3 = r3 + 2 | 0;
-            if (r3 >>> 0 >= a3 >>> 0) {
-              a3 = 10;
-              break;
-            }
-            switch (s2[e3 >> 1] | 0) {
-              case 96: {
-                a3 = 7;
-                break e;
-              }
-              case 36: {
-                if ((s2[r3 + 4 >> 1] | 0) == 123) {
-                  a3 = 6;
-                  break e;
-                }
-                break;
-              }
-              case 92: {
-                e3 = r3 + 4 | 0;
-                break;
-              }
-              default: {
-              }
-            }
-            r3 = e3;
+            return e3 | 0;
           }
-          if ((a3 | 0) == 6) {
-            e3 = r3 + 4 | 0;
-            f2[73] = e3;
-            a3 = f2[71] | 0;
-            r3 = s2[402] | 0;
-            f2[a3 + ((r3 & 65535) << 3) >> 2] = 4;
-            s2[402] = r3 + 1 << 16 >> 16;
-            f2[a3 + ((r3 & 65535) << 3) + 4 >> 2] = e3;
-          } else if ((a3 | 0) == 7) {
-            f2[73] = e3;
-            a3 = f2[71] | 0;
-            r3 = (s2[402] | 0) + -1 << 16 >> 16;
-            s2[402] = r3;
-            if ((f2[a3 + ((r3 & 65535) << 3) >> 2] | 0) != 3) ae();
-          } else if ((a3 | 0) == 10) {
-            f2[73] = e3;
-            ae();
+          function z(e3, a3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            var r3 = 0;
+            r3 = f2[3] | 0;
+            if (r3 >>> 0 <= e3 >>> 0 ? (s2[e3 >> 1] | 0) == a3 << 16 >> 16 : 0) if ((r3 | 0) == (e3 | 0)) r3 = 1;
+            else r3 = D(s2[e3 + -2 >> 1] | 0) | 0;
+            else r3 = 0;
+            return r3 | 0;
           }
-          return;
-        }
-        function v2(e3) {
-          e3 = e3 | 0;
-          var a3 = 0, r3 = 0, i3 = 0;
-          r3 = f2[73] | 0;
-          e: do {
-            a3 = s2[r3 >> 1] | 0;
-            a: do {
-              if (a3 << 16 >> 16 != 47) if (e3) if (L(a3) | 0) break;
-              else break e;
-              else if (M(a3) | 0) break;
-              else break e;
-              else switch (s2[r3 + 2 >> 1] | 0) {
-                case 47: {
-                  F();
-                  break a;
+          function D(e3) {
+            e3 = e3 | 0;
+            e: do {
+              if ((e3 + -9 & 65535) < 5) e3 = 1;
+              else {
+                switch (e3 << 16 >> 16) {
+                  case 32:
+                  case 160: {
+                    e3 = 1;
+                    break e;
+                  }
+                  default: {
+                  }
                 }
-                case 42: {
-                  x(e3);
-                  break a;
-                }
-                default: {
-                  a3 = 47;
-                  break e;
-                }
+                e3 = e3 << 16 >> 16 != 46 & (O(e3) | 0);
               }
             } while (0);
-            i3 = f2[73] | 0;
-            r3 = i3 + 2 | 0;
-            f2[73] = r3;
-          } while (i3 >>> 0 < (f2[74] | 0) >>> 0);
-          return a3 | 0;
-        }
-        function A(e3, a3, r3, s3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          r3 = r3 | 0;
-          s3 = s3 | 0;
-          var c3 = 0, t3 = 0;
-          t3 = f2[67] | 0;
-          f2[67] = t3 + 40;
-          c3 = f2[62] | 0;
-          f2[((c3 | 0) == 0 ? 232 : c3 + 36 | 0) >> 2] = t3;
-          f2[63] = c3;
-          f2[62] = t3;
-          f2[t3 + 8 >> 2] = e3;
-          if (2 == (s3 | 0)) {
-            e3 = 3;
-            c3 = r3;
-          } else {
-            e3 = 1 == (s3 | 0) ? 1 : 2;
-            c3 = 1 == (s3 | 0) ? r3 + 2 | 0 : 0;
+            return e3 | 0;
           }
-          f2[t3 + 12 >> 2] = c3;
-          f2[t3 + 28 >> 2] = e3;
-          f2[t3 >> 2] = a3;
-          f2[t3 + 4 >> 2] = r3;
-          f2[t3 + 16 >> 2] = 0;
-          f2[t3 + 20 >> 2] = s3;
-          i2[t3 + 24 >> 0] = 1 == (s3 | 0) & 1;
-          f2[t3 + 32 >> 2] = 0;
-          f2[t3 + 36 >> 2] = 0;
-          if (1 == (s3 | 0) | 2 == (s3 | 0)) i2[807] = 1;
-          return;
-        }
-        function C(e3) {
-          e3 = e3 | 0;
-          var a3 = 0, r3 = 0, i3 = 0, c3 = 0;
-          c3 = f2[74] | 0;
-          a3 = f2[73] | 0;
-          while (1) {
-            i3 = a3 + 2 | 0;
-            if (a3 >>> 0 >= c3 >>> 0) {
-              a3 = 9;
-              break;
-            }
-            r3 = s2[i3 >> 1] | 0;
-            if (r3 << 16 >> 16 == e3 << 16 >> 16) {
-              a3 = 10;
-              break;
-            }
-            if (r3 << 16 >> 16 == 92) {
-              r3 = a3 + 4 | 0;
-              if ((s2[r3 >> 1] | 0) == 13) {
-                a3 = a3 + 6 | 0;
-                a3 = (s2[a3 >> 1] | 0) == 10 ? a3 : r3;
-              } else a3 = r3;
-            } else if (be(r3) | 0) {
-              a3 = 9;
-              break;
-            } else a3 = i3;
-          }
-          if ((a3 | 0) == 9) {
-            f2[73] = i3;
-            ae();
-          } else if ((a3 | 0) == 10) f2[73] = i3;
-          return;
-        }
-        function g(e3) {
-          e3 = e3 | 0;
-          var a3 = 0, r3 = 0;
-          a3 = s2[e3 >> 1] | 0;
-          if (L(a3) | 0) r3 = 3;
-          else switch (a3 << 16 >> 16) {
-            case 41:
-            case 125:
-            case 93: {
-              r3 = 3;
-              break;
-            }
-            default:
-              e3 = 0;
-          }
-          e: do {
-            if ((r3 | 0) == 3) {
-              r3 = f2[3] | 0;
-              while (1) {
-                if (e3 >>> 0 <= r3 >>> 0) break;
-                e3 = e3 + -2 | 0;
-                if (!(L(a3) | 0)) break;
-                a3 = s2[e3 >> 1] | 0;
-              }
-              switch (a3 << 16 >> 16) {
-                case 41:
-                case 125:
-                case 93: {
-                  e3 = 1;
-                  break e;
-                }
-                default: {
-                }
-              }
-              e3 = (O(a3) | 0) ^ 1;
-            }
-          } while (0);
-          return e3 | 0;
-        }
-        function p(e3, a3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          var r3 = 0, i3 = 0, c3 = 0, t3 = 0;
-          r3 = f2[73] | 0;
-          i3 = s2[r3 >> 1] | 0;
-          c3 = (e3 | 0) == (a3 | 0) ? 0 : e3;
-          t3 = (e3 | 0) == (a3 | 0) ? 0 : a3;
-          if (i3 << 16 >> 16 == 97) {
-            f2[73] = r3 + 4;
-            r3 = v2(1) | 0;
-            e3 = f2[73] | 0;
-            if (re(r3) | 0) {
-              C(r3);
-              a3 = (f2[73] | 0) + 2 | 0;
-              f2[73] = a3;
-            } else {
-              H(r3) | 0;
-              a3 = f2[73] | 0;
-            }
-            i3 = v2(1) | 0;
+          function F() {
+            var e3 = 0, a3 = 0, r3 = 0;
+            e3 = f2[74] | 0;
             r3 = f2[73] | 0;
-          }
-          if ((r3 | 0) != (e3 | 0)) T(e3, a3, c3, t3);
-          return i3 | 0;
-        }
-        function y() {
-          var e3 = 0, a3 = 0, r3 = 0, i3 = 0;
-          i3 = f2[73] | 0;
-          r3 = f2[74] | 0;
-          a3 = i3;
-          e: while (1) {
-            e3 = a3 + 2 | 0;
-            if (a3 >>> 0 >= r3 >>> 0) {
-              a3 = 7;
-              break;
-            }
-            switch (s2[e3 >> 1] | 0) {
-              case 96: {
-                a3 = 8;
-                break e;
-              }
-              case 92: {
-                e3 = a3 + 4 | 0;
-                break;
-              }
-              case 36: {
-                if ((s2[a3 + 4 >> 1] | 0) == 123) {
-                  a3 = 7;
+            e: while (1) {
+              a3 = r3 + 2 | 0;
+              if (r3 >>> 0 >= e3 >>> 0) break;
+              switch (s2[a3 >> 1] | 0) {
+                case 13:
+                case 10:
                   break e;
-                }
-                break;
-              }
-              default: {
+                default:
+                  r3 = a3;
               }
             }
-            a3 = e3;
-          }
-          if ((a3 | 0) == 7) {
-            f2[73] = i3;
-            e3 = 0;
-          } else if ((a3 | 0) == 8) {
-            f2[73] = e3;
-            e3 = 1;
-          }
-          return e3 | 0;
-        }
-        function m() {
-          var e3 = 0, a3 = 0, r3 = 0;
-          r3 = f2[74] | 0;
-          a3 = f2[73] | 0;
-          e: while (1) {
-            e3 = a3 + 2 | 0;
-            if (a3 >>> 0 >= r3 >>> 0) {
-              a3 = 6;
-              break;
-            }
-            switch (s2[e3 >> 1] | 0) {
-              case 13:
-              case 10: {
-                a3 = 6;
-                break e;
-              }
-              case 93: {
-                a3 = 7;
-                break e;
-              }
-              case 92: {
-                e3 = a3 + 4 | 0;
-                break;
-              }
-              default: {
-              }
-            }
-            a3 = e3;
-          }
-          if ((a3 | 0) == 6) {
-            f2[73] = e3;
-            ae();
-            e3 = 0;
-          } else if ((a3 | 0) == 7) {
-            f2[73] = e3;
-            e3 = 93;
-          }
-          return e3 | 0;
-        }
-        function I() {
-          var e3 = 0, a3 = 0;
-          e: while (1) {
-            e3 = f2[73] | 0;
-            f2[73] = e3 + 2;
-            if (e3 >>> 0 >= (f2[74] | 0) >>> 0) {
-              a3 = 7;
-              break;
-            }
-            switch (s2[e3 + 2 >> 1] | 0) {
-              case 13:
-              case 10: {
-                a3 = 7;
-                break e;
-              }
-              case 47:
-                break e;
-              case 91: {
-                m() | 0;
-                break;
-              }
-              case 92: {
-                f2[73] = e3 + 4;
-                break;
-              }
-              default: {
-              }
-            }
-          }
-          if ((a3 | 0) == 7) ae();
-          return;
-        }
-        function U(e3) {
-          e3 = e3 | 0;
-          switch (s2[e3 >> 1] | 0) {
-            case 62: {
-              e3 = (s2[e3 + -2 >> 1] | 0) == 61;
-              break;
-            }
-            case 41:
-            case 59: {
-              e3 = 1;
-              break;
-            }
-            case 104: {
-              e3 = E(e3 + -2 | 0, 206, 4) | 0;
-              break;
-            }
-            case 121: {
-              e3 = E(e3 + -2 | 0, 214, 6) | 0;
-              break;
-            }
-            case 101: {
-              e3 = E(e3 + -2 | 0, 226, 3) | 0;
-              break;
-            }
-            default:
-              e3 = 0;
-          }
-          return e3 | 0;
-        }
-        function x(e3) {
-          e3 = e3 | 0;
-          var a3 = 0, r3 = 0, i3 = 0, c3 = 0, t3 = 0;
-          c3 = (f2[73] | 0) + 2 | 0;
-          f2[73] = c3;
-          r3 = f2[74] | 0;
-          while (1) {
-            a3 = c3 + 2 | 0;
-            if (c3 >>> 0 >= r3 >>> 0) break;
-            i3 = s2[a3 >> 1] | 0;
-            if (!e3 ? be(i3) | 0 : 0) break;
-            if (i3 << 16 >> 16 == 42 ? (s2[c3 + 4 >> 1] | 0) == 47 : 0) {
-              t3 = 8;
-              break;
-            }
-            c3 = a3;
-          }
-          if ((t3 | 0) == 8) {
             f2[73] = a3;
-            a3 = c3 + 4 | 0;
+            return;
           }
-          f2[73] = a3;
-          return;
-        }
-        function S(e3, a3, r3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          r3 = r3 | 0;
-          var s3 = 0, f3 = 0;
-          e: do {
-            if (!r3) e3 = 0;
-            else {
-              while (1) {
-                s3 = i2[e3 >> 0] | 0;
-                f3 = i2[a3 >> 0] | 0;
-                if (s3 << 24 >> 24 != f3 << 24 >> 24) break;
-                r3 = r3 + -1 | 0;
-                if (!r3) {
-                  e3 = 0;
-                  break e;
-                } else {
-                  e3 = e3 + 1 | 0;
-                  a3 = a3 + 1 | 0;
+          function G(e3) {
+            e3 = e3 | 0;
+            e: do {
+              if (((e3 & -33) + -65 & 65535) < 26 | (e3 + -48 & 65535) < 10) e3 = 1;
+              else {
+                switch (e3 << 16 >> 16) {
+                  case 36:
+                  case 95: {
+                    e3 = 1;
+                    break e;
+                  }
+                  default: {
+                  }
                 }
+                e3 = (e3 & 65535) > 127;
               }
-              e3 = (s3 & 255) - (f3 & 255) | 0;
+            } while (0);
+            return e3 | 0;
+          }
+          function H(e3) {
+            e3 = e3 | 0;
+            while (1) {
+              if (L(e3) | 0) break;
+              if (O(e3) | 0) break;
+              e3 = (f2[73] | 0) + 2 | 0;
+              f2[73] = e3;
+              e3 = s2[e3 >> 1] | 0;
+              if (!(e3 << 16 >> 16)) {
+                e3 = 0;
+                break;
+              }
             }
-          } while (0);
-          return e3 | 0;
-        }
-        function O(e3) {
-          e3 = e3 | 0;
-          e: do {
+            return e3 | 0;
+          }
+          function J() {
+            var e3 = 0;
+            e3 = f2[(f2[60] | 0) + 20 >> 2] | 0;
+            switch (e3 | 0) {
+              case 1: {
+                e3 = -1;
+                break;
+              }
+              case 2: {
+                e3 = -2;
+                break;
+              }
+              default:
+                e3 = e3 - (f2[3] | 0) >> 1;
+            }
+            return e3 | 0;
+          }
+          function K(e3) {
+            e3 = e3 | 0;
+            if (!(E(e3, 186, 5) | 0) ? !(E(e3, 196, 3) | 0) : 0) e3 = E(e3, 202, 2) | 0;
+            else e3 = 1;
+            return e3 | 0;
+          }
+          function L(e3) {
+            e3 = e3 | 0;
             switch (e3 << 16 >> 16) {
-              case 38:
-              case 37:
-              case 33: {
+              case 160:
+              case 9:
+              case 10:
+              case 11:
+              case 12:
+              case 13:
+              case 32: {
                 e3 = 1;
                 break;
               }
               default:
-                if ((e3 & -8) << 16 >> 16 == 40 | (e3 + -58 & 65535) < 6) e3 = 1;
-                else {
-                  switch (e3 << 16 >> 16) {
-                    case 91:
-                    case 93:
-                    case 94: {
-                      e3 = 1;
-                      break e;
-                    }
-                    default: {
-                    }
-                  }
-                  e3 = (e3 + -123 & 65535) < 4;
-                }
+                e3 = 0;
             }
-          } while (0);
-          return e3 | 0;
-        }
-        function $(e3) {
-          e3 = e3 | 0;
-          e: do {
+            return e3 | 0;
+          }
+          function M(e3) {
+            e3 = e3 | 0;
             switch (e3 << 16 >> 16) {
-              case 38:
-              case 37:
-              case 33:
+              case 160:
+              case 32:
+              case 12:
+              case 11:
+              case 9: {
+                e3 = 1;
                 break;
+              }
               default:
-                if (!((e3 + -58 & 65535) < 6 | (e3 + -40 & 65535) < 7 & e3 << 16 >> 16 != 41)) {
-                  switch (e3 << 16 >> 16) {
-                    case 91:
-                    case 94:
-                      break e;
-                    default: {
-                    }
-                  }
-                  return e3 << 16 >> 16 != 125 & (e3 + -123 & 65535) < 4 | 0;
-                }
+                e3 = 0;
             }
-          } while (0);
-          return 1;
-        }
-        function T(e3, a3, r3, s3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          r3 = r3 | 0;
-          s3 = s3 | 0;
-          var c3 = 0, t3 = 0;
-          c3 = f2[67] | 0;
-          f2[67] = c3 + 24;
-          t3 = f2[64] | 0;
-          f2[((t3 | 0) == 0 ? 236 : t3 + 20 | 0) >> 2] = c3;
-          f2[64] = c3;
-          f2[c3 >> 2] = e3;
-          f2[c3 + 4 >> 2] = a3;
-          f2[c3 + 8 >> 2] = r3;
-          f2[c3 + 12 >> 2] = s3;
-          f2[c3 + 16 >> 2] = f2[65];
-          f2[c3 + 20 >> 2] = 0;
-          i2[807] = 1;
-          return;
-        }
-        function j(e3) {
-          e3 = e3 | 0;
-          var a3 = 0;
-          a3 = s2[e3 >> 1] | 0;
-          e: do {
-            if ((a3 + -9 & 65535) >= 5) {
-              switch (a3 << 16 >> 16) {
-                case 160:
-                case 32: {
-                  a3 = 1;
-                  break e;
-                }
-                default: {
-                }
-              }
-              if (O(a3) | 0) return a3 << 16 >> 16 != 46 | (N(e3) | 0) | 0;
-              else a3 = 0;
-            } else a3 = 1;
-          } while (0);
-          return a3 | 0;
-        }
-        function B(e3) {
-          e3 = e3 | 0;
-          var a3 = 0, r3 = 0;
-          r3 = n2;
-          n2 = n2 + 16 | 0;
-          f2[r3 >> 2] = 0;
-          f2[66] = e3;
-          a3 = f2[3] | 0;
-          s2[a3 + (e3 << 1) >> 1] = 0;
-          f2[r3 >> 2] = a3 + (e3 << 1) + 2;
-          f2[67] = a3 + (e3 << 1) + 2;
-          f2[58] = 0;
-          f2[62] = 0;
-          f2[60] = 0;
-          f2[59] = 0;
-          f2[64] = 0;
-          f2[61] = 0;
-          n2 = r3;
-          return a3 | 0;
-        }
-        function E(e3, a3, r3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          r3 = r3 | 0;
-          var i3 = 0, s3 = 0;
-          s3 = e3 + (0 - r3 << 1) + 2 | 0;
-          i3 = f2[3] | 0;
-          if (s3 >>> 0 >= i3 >>> 0 ? (S(s3, a3, r3 << 1) | 0) == 0 : 0) if ((s3 | 0) == (i3 | 0)) i3 = 1;
-          else i3 = j(e3 + (0 - r3 << 1) | 0) | 0;
-          else i3 = 0;
-          return i3 | 0;
-        }
-        function P(e3) {
-          e3 = e3 | 0;
-          var a3 = 0;
-          switch (e3 << 16 >> 16) {
-            case 91:
-            case 123: {
-              h2();
-              f2[73] = (f2[73] | 0) + 2;
-              break;
-            }
-            default: {
-              a3 = f2[73] | 0;
-              H(e3) | 0;
-              e3 = f2[73] | 0;
-              if (e3 >>> 0 > a3 >>> 0) T(a3, e3, a3, e3);
-            }
+            return e3 | 0;
           }
-          return v2(1) | 0;
-        }
-        function q(e3) {
-          e3 = e3 | 0;
-          switch (s2[e3 >> 1] | 0) {
-            case 107: {
-              e3 = E(e3 + -2 | 0, 140, 4) | 0;
-              break;
-            }
-            case 101: {
-              if ((s2[e3 + -2 >> 1] | 0) == 117) e3 = E(e3 + -4 | 0, 112, 6) | 0;
-              else e3 = 0;
-              break;
-            }
-            default:
-              e3 = 0;
+          function N(e3) {
+            e3 = e3 | 0;
+            if ((s2[e3 >> 1] | 0) == 46 ? (s2[e3 + -2 >> 1] | 0) == 46 : 0) e3 = (s2[e3 + -4 >> 1] | 0) == 46;
+            else e3 = 0;
+            return e3 | 0;
           }
-          return e3 | 0;
-        }
-        function z(e3, a3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          var r3 = 0;
-          r3 = f2[3] | 0;
-          if (r3 >>> 0 <= e3 >>> 0 ? (s2[e3 >> 1] | 0) == a3 << 16 >> 16 : 0) if ((r3 | 0) == (e3 | 0)) r3 = 1;
-          else r3 = D(s2[e3 + -2 >> 1] | 0) | 0;
-          else r3 = 0;
-          return r3 | 0;
-        }
-        function D(e3) {
-          e3 = e3 | 0;
-          e: do {
-            if ((e3 + -9 & 65535) < 5) e3 = 1;
-            else {
-              switch (e3 << 16 >> 16) {
-                case 32:
-                case 160: {
-                  e3 = 1;
-                  break e;
-                }
-                default: {
-                }
-              }
-              e3 = e3 << 16 >> 16 != 46 & (O(e3) | 0);
-            }
-          } while (0);
-          return e3 | 0;
-        }
-        function F() {
-          var e3 = 0, a3 = 0, r3 = 0;
-          e3 = f2[74] | 0;
-          r3 = f2[73] | 0;
-          e: while (1) {
-            a3 = r3 + 2 | 0;
-            if (r3 >>> 0 >= e3 >>> 0) break;
-            switch (s2[a3 >> 1] | 0) {
-              case 13:
-              case 10:
-                break e;
-              default:
-                r3 = a3;
-            }
+          function Q() {
+            var e3 = 0;
+            e3 = f2[69] | 0;
+            e3 = f2[((e3 | 0) == 0 ? (f2[60] | 0) + 32 | 0 : e3 + 16 | 0) >> 2] | 0;
+            f2[69] = e3;
+            return (e3 | 0) != 0 | 0;
           }
-          f2[73] = a3;
-          return;
-        }
-        function G(e3) {
-          e3 = e3 | 0;
-          e: do {
-            if (((e3 & -33) + -65 & 65535) < 26 | (e3 + -48 & 65535) < 10) e3 = 1;
-            else {
-              switch (e3 << 16 >> 16) {
-                case 36:
-                case 95: {
-                  e3 = 1;
-                  break e;
-                }
-                default: {
-                }
-              }
-              e3 = (e3 & 65535) > 127;
-            }
-          } while (0);
-          return e3 | 0;
-        }
-        function H(e3) {
-          e3 = e3 | 0;
-          while (1) {
-            if (L(e3) | 0) break;
-            if (O(e3) | 0) break;
-            e3 = (f2[73] | 0) + 2 | 0;
-            f2[73] = e3;
-            e3 = s2[e3 >> 1] | 0;
-            if (!(e3 << 16 >> 16)) {
-              e3 = 0;
-              break;
-            }
+          function R(e3) {
+            e3 = e3 | 0;
+            if ((f2[3] | 0) == (e3 | 0)) e3 = 1;
+            else e3 = j(e3 + -2 | 0) | 0;
+            return e3 | 0;
           }
-          return e3 | 0;
-        }
-        function J() {
-          var e3 = 0;
-          e3 = f2[(f2[60] | 0) + 20 >> 2] | 0;
-          switch (e3 | 0) {
-            case 1: {
-              e3 = -1;
-              break;
-            }
-            case 2: {
-              e3 = -2;
-              break;
-            }
-            default:
-              e3 = e3 - (f2[3] | 0) >> 1;
+          function V() {
+            var e3 = 0;
+            e3 = f2[(f2[61] | 0) + 12 >> 2] | 0;
+            if (!e3) e3 = -1;
+            else e3 = e3 - (f2[3] | 0) >> 1;
+            return e3 | 0;
           }
-          return e3 | 0;
-        }
-        function K(e3) {
-          e3 = e3 | 0;
-          if (!(E(e3, 186, 5) | 0) ? !(E(e3, 196, 3) | 0) : 0) e3 = E(e3, 202, 2) | 0;
-          else e3 = 1;
-          return e3 | 0;
-        }
-        function L(e3) {
-          e3 = e3 | 0;
-          switch (e3 << 16 >> 16) {
-            case 160:
-            case 9:
-            case 10:
-            case 11:
-            case 12:
-            case 13:
-            case 32: {
-              e3 = 1;
-              break;
-            }
-            default:
-              e3 = 0;
+          function W() {
+            var e3 = 0;
+            e3 = f2[(f2[60] | 0) + 12 >> 2] | 0;
+            if (!e3) e3 = -1;
+            else e3 = e3 - (f2[3] | 0) >> 1;
+            return e3 | 0;
           }
-          return e3 | 0;
-        }
-        function M(e3) {
-          e3 = e3 | 0;
-          switch (e3 << 16 >> 16) {
-            case 160:
-            case 32:
-            case 12:
-            case 11:
-            case 9: {
-              e3 = 1;
-              break;
-            }
-            default:
-              e3 = 0;
+          function X() {
+            var e3 = 0;
+            e3 = f2[(f2[61] | 0) + 8 >> 2] | 0;
+            if (!e3) e3 = -1;
+            else e3 = e3 - (f2[3] | 0) >> 1;
+            return e3 | 0;
           }
-          return e3 | 0;
-        }
-        function N(e3) {
-          e3 = e3 | 0;
-          if ((s2[e3 >> 1] | 0) == 46 ? (s2[e3 + -2 >> 1] | 0) == 46 : 0) e3 = (s2[e3 + -4 >> 1] | 0) == 46;
-          else e3 = 0;
-          return e3 | 0;
-        }
-        function Q() {
-          var e3 = 0;
-          e3 = f2[69] | 0;
-          e3 = f2[((e3 | 0) == 0 ? (f2[60] | 0) + 32 | 0 : e3 + 16 | 0) >> 2] | 0;
-          f2[69] = e3;
-          return (e3 | 0) != 0 | 0;
-        }
-        function R(e3) {
-          e3 = e3 | 0;
-          if ((f2[3] | 0) == (e3 | 0)) e3 = 1;
-          else e3 = j(e3 + -2 | 0) | 0;
-          return e3 | 0;
-        }
-        function V() {
-          var e3 = 0;
-          e3 = f2[(f2[61] | 0) + 12 >> 2] | 0;
-          if (!e3) e3 = -1;
-          else e3 = e3 - (f2[3] | 0) >> 1;
-          return e3 | 0;
-        }
-        function W() {
-          var e3 = 0;
-          e3 = f2[(f2[60] | 0) + 12 >> 2] | 0;
-          if (!e3) e3 = -1;
-          else e3 = e3 - (f2[3] | 0) >> 1;
-          return e3 | 0;
-        }
-        function X() {
-          var e3 = 0;
-          e3 = f2[(f2[61] | 0) + 8 >> 2] | 0;
-          if (!e3) e3 = -1;
-          else e3 = e3 - (f2[3] | 0) >> 1;
-          return e3 | 0;
-        }
-        function Y() {
-          var e3 = 0;
-          e3 = f2[(f2[60] | 0) + 16 >> 2] | 0;
-          if (!e3) e3 = -1;
-          else e3 = e3 - (f2[3] | 0) >> 1;
-          return e3 | 0;
-        }
-        function Z() {
-          var e3 = 0;
-          e3 = f2[(f2[60] | 0) + 4 >> 2] | 0;
-          if (!e3) e3 = -1;
-          else e3 = e3 - (f2[3] | 0) >> 1;
-          return e3 | 0;
-        }
-        function _() {
-          var e3 = 0;
-          e3 = f2[60] | 0;
-          e3 = f2[((e3 | 0) == 0 ? 232 : e3 + 36 | 0) >> 2] | 0;
-          f2[60] = e3;
-          return (e3 | 0) != 0 | 0;
-        }
-        function ee() {
-          var e3 = 0;
-          e3 = f2[61] | 0;
-          e3 = f2[((e3 | 0) == 0 ? 236 : e3 + 20 | 0) >> 2] | 0;
-          f2[61] = e3;
-          return (e3 | 0) != 0 | 0;
-        }
-        function ae() {
-          i2[806] = 1;
-          f2[68] = (f2[73] | 0) - (f2[3] | 0) >> 1;
-          f2[73] = (f2[74] | 0) + 2;
-          return;
-        }
-        function re(e3) {
-          e3 = e3 | 0;
-          return e3 << 16 >> 16 == 39 | e3 << 16 >> 16 == 34 | 0;
-        }
-        function ie() {
-          return (f2[(f2[61] | 0) + 16 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function se() {
-          return (f2[(f2[69] | 0) + 12 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function fe() {
-          return (f2[(f2[69] | 0) + 8 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function ce() {
-          return (f2[(f2[69] | 0) + 4 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function te() {
-          return (f2[(f2[60] | 0) + 8 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function ne() {
-          return (f2[(f2[61] | 0) + 4 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function be(e3) {
-          e3 = e3 | 0;
-          return e3 << 16 >> 16 == 13 | e3 << 16 >> 16 == 10 | 0;
-        }
-        function ke() {
-          return (f2[f2[69] >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function le() {
-          return (f2[f2[60] >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function ue() {
-          return (f2[f2[61] >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
-        }
-        function oe() {
-          return c2[(f2[60] | 0) + 24 >> 0] | 0 | 0;
-        }
-        function he(e3) {
-          e3 = e3 | 0;
-          f2[3] = e3;
-          return;
-        }
-        function we() {
-          return f2[(f2[60] | 0) + 28 >> 2] | 0;
-        }
-        function de() {
-          return (i2[807] | 0) != 0 | 0;
-        }
-        function ve() {
-          return (i2[808] | 0) != 0 | 0;
-        }
-        function Ae() {
-          f2[69] = 0;
-          return;
-        }
-        function Ce() {
-          return f2[68] | 0;
-        }
-        function ge(e3, a3) {
-          e3 = e3 | 0;
-          a3 = a3 | 0;
-          n2 = e3 + a3 + 15 & -16;
-          return a3;
-        }
-        return { su: ge, ai: Y, ake: ce, aks: ke, ave: se, avs: fe, e: Ce, ee: ne, ele: V, els: X, es: ue, ess: ie, f: ve, id: J, ie: Z, ip: oe, is: le, it: we, ms: de, p: b2, ra: Q, re: ee, ri: _, rsa: Ae, sa: B, se: W, ses: he, ss: te };
-      })("undefined" != typeof globalThis ? globalThis : self, {}, a), r = e.su(i - (2 << 17), 1040);
-    }
-    const h = c.length + 1;
-    e.ses(r), e.sa(h - 1), s(c, new Uint16Array(a, r, h)), e.p() || (n = e.e(), o());
-    const w = [], d = [];
-    for (; e.ri(); ) {
-      const a2 = e.is(), r2 = e.ie(), i2 = e.ai(), s2 = e.id(), f2 = e.ss(), t2 = e.se(), n2 = e.it();
-      let k3;
-      e.ip() && (k3 = b(-1 === s2 ? a2 : a2 + 1, c.charCodeAt(-1 === s2 ? a2 - 1 : a2)));
-      let l3 = null;
-      for (l3 = [], e.rsa(); e.ra(); ) {
-        const a3 = e.aks(), r3 = e.ake(), i3 = e.avs(), s3 = e.ave();
-        l3.push([v(a3, r3), v(i3, s3)]);
+          function Y() {
+            var e3 = 0;
+            e3 = f2[(f2[60] | 0) + 16 >> 2] | 0;
+            if (!e3) e3 = -1;
+            else e3 = e3 - (f2[3] | 0) >> 1;
+            return e3 | 0;
+          }
+          function Z() {
+            var e3 = 0;
+            e3 = f2[(f2[60] | 0) + 4 >> 2] | 0;
+            if (!e3) e3 = -1;
+            else e3 = e3 - (f2[3] | 0) >> 1;
+            return e3 | 0;
+          }
+          function _() {
+            var e3 = 0;
+            e3 = f2[60] | 0;
+            e3 = f2[((e3 | 0) == 0 ? 232 : e3 + 36 | 0) >> 2] | 0;
+            f2[60] = e3;
+            return (e3 | 0) != 0 | 0;
+          }
+          function ee() {
+            var e3 = 0;
+            e3 = f2[61] | 0;
+            e3 = f2[((e3 | 0) == 0 ? 236 : e3 + 20 | 0) >> 2] | 0;
+            f2[61] = e3;
+            return (e3 | 0) != 0 | 0;
+          }
+          function ae() {
+            i2[806] = 1;
+            f2[68] = (f2[73] | 0) - (f2[3] | 0) >> 1;
+            f2[73] = (f2[74] | 0) + 2;
+            return;
+          }
+          function re(e3) {
+            e3 = e3 | 0;
+            return e3 << 16 >> 16 == 39 | e3 << 16 >> 16 == 34 | 0;
+          }
+          function ie() {
+            return (f2[(f2[61] | 0) + 16 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function se() {
+            return (f2[(f2[69] | 0) + 12 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function fe() {
+            return (f2[(f2[69] | 0) + 8 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function ce() {
+            return (f2[(f2[69] | 0) + 4 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function te() {
+            return (f2[(f2[60] | 0) + 8 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function ne() {
+            return (f2[(f2[61] | 0) + 4 >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function be(e3) {
+            e3 = e3 | 0;
+            return e3 << 16 >> 16 == 13 | e3 << 16 >> 16 == 10 | 0;
+          }
+          function ke() {
+            return (f2[f2[69] >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function le() {
+            return (f2[f2[60] >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function ue() {
+            return (f2[f2[61] >> 2] | 0) - (f2[3] | 0) >> 1 | 0;
+          }
+          function oe() {
+            return c2[(f2[60] | 0) + 24 >> 0] | 0 | 0;
+          }
+          function he(e3) {
+            e3 = e3 | 0;
+            f2[3] = e3;
+            return;
+          }
+          function we() {
+            return f2[(f2[60] | 0) + 28 >> 2] | 0;
+          }
+          function de() {
+            return (i2[807] | 0) != 0 | 0;
+          }
+          function ve() {
+            return (i2[808] | 0) != 0 | 0;
+          }
+          function Ae() {
+            f2[69] = 0;
+            return;
+          }
+          function Ce() {
+            return f2[68] | 0;
+          }
+          function ge(e3, a3) {
+            e3 = e3 | 0;
+            a3 = a3 | 0;
+            n2 = e3 + a3 + 15 & -16;
+            return a3;
+          }
+          return { su: ge, ai: Y, ake: ce, aks: ke, ave: se, avs: fe, e: Ce, ee: ne, ele: V, els: X, es: ue, ess: ie, f: ve, id: J, ie: Z, ip: oe, is: le, it: we, ms: de, p: b2, ra: Q, re: ee, ri: _, rsa: Ae, sa: B, se: W, ses: he, ss: te };
+        })("undefined" != typeof globalThis ? globalThis : self, {}, a), r = e.su(i - (2 << 17), 1040);
       }
-      l3 = l3.length > 0 ? l3 : null, w.push({ t: n2, n: k3, s: a2, e: r2, ss: f2, se: t2, d: s2, a: i2, at: l3 });
-    }
-    for (; e.re(); ) {
-      const a2 = e.es(), r2 = e.ee(), i2 = e.els(), s2 = e.ele(), f2 = i2 < 0 ? void 0 : v(i2, s2), c2 = v(a2, r2);
-      d.push({ s: a2, e: r2, ls: i2, le: s2, ss: e.ess(), n: c2, ln: f2 });
-    }
-    return [w, d, !!e.f(), !!e.ms()];
-    function v(e2, a2) {
-      const r2 = c.charCodeAt(e2);
-      return 34 === r2 || 39 === r2 ? b(e2 + 1, r2) : c.slice(e2, a2);
-    }
-  }
-  function b(e2, a2) {
-    n = e2;
-    let r2 = "", i2 = n;
-    for (; ; ) {
-      n >= c.length && o();
-      const e3 = c.charCodeAt(n);
-      if (e3 === a2) break;
-      92 === e3 ? (r2 += c.slice(i2, n), r2 += k(), i2 = n) : (8232 === e3 || 8233 === e3 || u(e3) && 96 !== a2 && o(), ++n);
-    }
-    return r2 += c.slice(i2, n++), r2;
-  }
-  function k() {
-    let e2 = c.charCodeAt(++n);
-    switch (++n, e2) {
-      case 110:
-        return "\n";
-      case 114:
-        return "\r";
-      case 120:
-        return String.fromCharCode(l(2));
-      case 117:
-        return (function() {
-          const e3 = c.charCodeAt(n);
-          let a2;
-          123 === e3 ? (++n, a2 = l(c.indexOf("}", n) - n), ++n, a2 > 1114111 && o()) : a2 = l(4);
-          return a2 <= 65535 ? String.fromCharCode(a2) : (a2 -= 65536, String.fromCharCode(55296 + (a2 >> 10), 56320 + (1023 & a2)));
-        })();
-      case 116:
-        return "	";
-      case 98:
-        return "\b";
-      case 118:
-        return "\v";
-      case 102:
-        return "\f";
-      case 13:
-        10 === c.charCodeAt(n) && ++n;
-      case 10:
-        return "";
-      case 56:
-      case 57:
-        o();
-      default:
-        if (e2 >= 48 && e2 <= 55) {
-          let a2 = c.substr(n - 1, 3).match(/^[0-7]+/)[0], r2 = parseInt(a2, 8);
-          return r2 > 255 && (a2 = a2.slice(0, -1), r2 = parseInt(a2, 8)), n += a2.length - 1, e2 = c.charCodeAt(n), "0" === a2 && 56 !== e2 && 57 !== e2 || o(), String.fromCharCode(r2);
+      const h = c.length + 1;
+      e.ses(r), e.sa(h - 1), s(c, new Uint16Array(a, r, h)), e.p() || (n = e.e(), o());
+      const w = [], d = [];
+      for (; e.ri(); ) {
+        const a2 = e.is(), r2 = e.ie(), i2 = e.ai(), s2 = e.id(), f2 = e.ss(), t2 = e.se(), n2 = e.it();
+        let k3;
+        e.ip() && (k3 = b(-1 === s2 ? a2 : a2 + 1, c.charCodeAt(-1 === s2 ? a2 - 1 : a2)));
+        let l3 = null;
+        for (l3 = [], e.rsa(); e.ra(); ) {
+          const a3 = e.aks(), r3 = e.ake(), i3 = e.avs(), s3 = e.ave();
+          l3.push([v(a3, r3), v(i3, s3)]);
         }
-        return u(e2) ? "" : String.fromCharCode(e2);
+        l3 = l3.length > 0 ? l3 : null, w.push({ t: n2, n: k3, s: a2, e: r2, ss: f2, se: t2, d: s2, a: i2, at: l3 });
+      }
+      for (; e.re(); ) {
+        const a2 = e.es(), r2 = e.ee(), i2 = e.els(), s2 = e.ele(), f2 = i2 < 0 ? void 0 : v(i2, s2), c2 = v(a2, r2);
+        d.push({ s: a2, e: r2, ls: i2, le: s2, ss: e.ess(), n: c2, ln: f2 });
+      }
+      return [w, d, !!e.f(), !!e.ms()];
+      function v(e2, a2) {
+        const r2 = c.charCodeAt(e2);
+        return 34 === r2 || 39 === r2 ? b(e2 + 1, r2) : c.slice(e2, a2);
+      }
     }
-  }
-  function l(e2) {
-    const a2 = n;
-    let r2 = 0, i2 = 0;
-    for (let a3 = 0; a3 < e2; ++a3, ++n) {
-      let e3, s2 = c.charCodeAt(n);
-      if (95 !== s2) {
-        if (s2 >= 97) e3 = s2 - 97 + 10;
-        else if (s2 >= 65) e3 = s2 - 65 + 10;
-        else {
-          if (!(s2 >= 48 && s2 <= 57)) break;
-          e3 = s2 - 48;
-        }
-        if (e3 >= 16) break;
-        i2 = s2, r2 = 16 * r2 + e3;
-      } else 95 !== i2 && 0 !== a3 || o(), i2 = s2;
+    function b(e2, a2) {
+      n = e2;
+      let r2 = "", i2 = n;
+      for (; ; ) {
+        n >= c.length && o();
+        const e3 = c.charCodeAt(n);
+        if (e3 === a2) break;
+        92 === e3 ? (r2 += c.slice(i2, n), r2 += k(), i2 = n) : (8232 === e3 || 8233 === e3 || u(e3) && 96 !== a2 && o(), ++n);
+      }
+      return r2 += c.slice(i2, n++), r2;
     }
-    return 95 !== i2 && n - a2 === e2 || o(), r2;
-  }
-  function u(e2) {
-    return 13 === e2 || 10 === e2;
-  }
-  function o() {
-    throw Object.assign(Error(`Parse error ${t}:${c.slice(0, n).split("\n").length}:${n - c.lastIndexOf("\n", n - 1)}`), { idx: n });
+    function k() {
+      let e2 = c.charCodeAt(++n);
+      switch (++n, e2) {
+        case 110:
+          return "\n";
+        case 114:
+          return "\r";
+        case 120:
+          return String.fromCharCode(l(2));
+        case 117:
+          return (function() {
+            const e3 = c.charCodeAt(n);
+            let a2;
+            123 === e3 ? (++n, a2 = l(c.indexOf("}", n) - n), ++n, a2 > 1114111 && o()) : a2 = l(4);
+            return a2 <= 65535 ? String.fromCharCode(a2) : (a2 -= 65536, String.fromCharCode(55296 + (a2 >> 10), 56320 + (1023 & a2)));
+          })();
+        case 116:
+          return "	";
+        case 98:
+          return "\b";
+        case 118:
+          return "\v";
+        case 102:
+          return "\f";
+        case 13:
+          10 === c.charCodeAt(n) && ++n;
+        case 10:
+          return "";
+        case 56:
+        case 57:
+          o();
+        default:
+          if (e2 >= 48 && e2 <= 55) {
+            let a2 = c.substr(n - 1, 3).match(/^[0-7]+/)[0], r2 = parseInt(a2, 8);
+            return r2 > 255 && (a2 = a2.slice(0, -1), r2 = parseInt(a2, 8)), n += a2.length - 1, e2 = c.charCodeAt(n), "0" === a2 && 56 !== e2 && 57 !== e2 || o(), String.fromCharCode(r2);
+          }
+          return u(e2) ? "" : String.fromCharCode(e2);
+      }
+    }
+    function l(e2) {
+      const a2 = n;
+      let r2 = 0, i2 = 0;
+      for (let a3 = 0; a3 < e2; ++a3, ++n) {
+        let e3, s2 = c.charCodeAt(n);
+        if (95 !== s2) {
+          if (s2 >= 97) e3 = s2 - 97 + 10;
+          else if (s2 >= 65) e3 = s2 - 65 + 10;
+          else {
+            if (!(s2 >= 48 && s2 <= 57)) break;
+            e3 = s2 - 48;
+          }
+          if (e3 >= 16) break;
+          i2 = s2, r2 = 16 * r2 + e3;
+        } else 95 !== i2 && 0 !== a3 || o(), i2 = s2;
+      }
+      return 95 !== i2 && n - a2 === e2 || o(), r2;
+    }
+    function u(e2) {
+      return 13 === e2 || 10 === e2;
+    }
+    function o() {
+      throw Object.assign(Error(`Parse error ${t}:${c.slice(0, n).split("\n").length}:${n - c.lastIndexOf("\n", n - 1)}`), { idx: n });
+    }
+    return parse3;
   }
 
   var DYNAMIC_IMPORT_HELPER = "__nimbusDynamicImport";
   function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
   }
-  var DYNAMIC_IMPORT_TYPE = 2;
-  var IMPORT_META_TYPE = 3;
-  var OffsetTokens = class _OffsetTokens extends Parser {
-    static at(code, start, expressionAllowed = true) {
-      const tokens = new _OffsetTokens({ ecmaVersion: "latest", sourceType: "script", allowHashBang: true }, code);
-      Reflect.set(tokens, "pos", start);
-      Reflect.set(tokens, "start", start);
-      Reflect.set(tokens, "end", start);
-      Reflect.set(tokens, "exprAllowed", expressionAllowed);
-      return tokens;
+  var DYNAMIC_IMPORT = 2;
+  var IMPORT_META = 3;
+  var METADATA_BINDING = "__nimbusMetadataModule";
+  var IMPORT_SYNTAX = /\bimport\s*(?:[(.]|\/[/*])/;
+  var IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
+  var RETAINED_LEXER_CHARS = 256 * 1024;
+  var moduleLexer = null;
+  function lexImports(source) {
+    const lex = moduleLexer ??= createModuleLexer();
+    if (source.length > RETAINED_LEXER_CHARS) moduleLexer = null;
+    return lex(source)[0];
+  }
+  function isLexerError(error) {
+    return error instanceof Error && typeof Reflect.get(error, "idx") === "number";
+  }
+  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
+    const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
+    if (!mayHaveDynamicImport(code) && !metadata) return code;
+    let lexed;
+    try {
+      lexed = rewriteFromLexer(code, parentUrl, metadata);
+    } catch (error) {
+      if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
+      lexed = null;
     }
-    take() {
-      return Reflect.apply(Reflect.get(Parser.prototype, "getToken"), this, []);
+    return lexed ?? rewriteWithGrammar(code, parentUrl, metadata);
+  }
+  function rewriteFromLexer(code, parentUrl, metadata) {
+    const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
+    const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
+    const imports = lexImports(source);
+    const lines = new Lines(source);
+    const passed = passedOver(source, lines, imports, ambiguousSlashes(source, lines));
+    if (passed === null) return null;
+    const calls = [];
+    const metas = [];
+    for (const entry of imports) {
+      if (entry.t === DYNAMIC_IMPORT) calls.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
+      else if (metadata && entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
     }
-    raise(_position, message) {
-      throw new SyntaxError(message);
+    for (const at2 of passed) {
+      const site = callAt(source, at2);
+      if (site === null) return null;
+      calls.push(site);
+    }
+    calls.sort((a, b) => a.ss - b.ss);
+    const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
+    const edits = [];
+    let validatedEnd = -1;
+    for (const site of calls) {
+      if (site.ss >= validatedEnd) {
+        const shape = callShape(source, site);
+        if (shape === null) return null;
+        if (shape === "method") continue;
+        if (!validImportArguments(source.slice(site.ss, site.se))) return null;
+        validatedEnd = site.se;
+      }
+      edits.push({ start: site.ss, end: site.d + 1, text: call });
+    }
+    if (!edits.length && !metas.length) return code;
+    if (!metas.length) return applyEdits(code, edits, metas, null, 0);
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+  }
+  var LINE_END = /[\n\r\u2028\u2029]/g;
+  function lineEnd(text, at2) {
+    LINE_END.lastIndex = at2;
+    return LINE_END.exec(text)?.index ?? text.length;
+  }
+  var BEFORE_AMBIGUOUS_SLASH = /(?:\}|\+\+|--|(?<![\w$.\\])(?:extends|of|default|yield|await))(?=[\s/])|\.(?=\s|\/[/*])/g;
+  var MEMBER_KEYWORD = /^(?:case|debugger|delete|do|else|in|instanceof|new|return|throw|typeof|void|yield|await)(?![\w$])/;
+  function ambiguousSlashes(source, lines) {
+    const slashes = [];
+    let imports = null;
+    for (const match of source.matchAll(BEFORE_AMBIGUOUS_SLASH)) {
+      let after = match.index + match[0].length;
+      if (match[0] === ".") {
+        const name = skipTrivia(source, after).at;
+        const keyword = MEMBER_KEYWORD.exec(source.slice(name, name + 11));
+        if (keyword === null) continue;
+        after = name + keyword[0].length;
+      }
+      const slash = skipTrivia(source, after).at;
+      if (source[slash] !== "/" || source[slash + 1] === "/" || source[slash + 1] === "*") continue;
+      const body = regexBody(source, slash);
+      if (!IMPORT_SYNTAX.test(body)) {
+        if (!/['"`]/.test(body)) continue;
+        imports ??= Array.from(source.matchAll(IMPORT_SYNTAX_ALL), (found) => found.index);
+        const next = imports[firstAtOrAfter(imports, slash)];
+        if (next === void 0 || next >= lines.endOf(slash)) continue;
+      }
+      slashes.push(slash);
+    }
+    return slashes;
+  }
+  var IMPORT_SYNTAX_ALL = new RegExp(IMPORT_SYNTAX.source, "g");
+  function firstAtOrAfter(positions, at2) {
+    let low = 0;
+    let high = positions.length;
+    while (low < high) {
+      const middle = low + high >>> 1;
+      if (positions[middle] < at2) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+  var Lines = class {
+    constructor(source) {
+      this.source = source;
+      this.breaks = Array.from(source.matchAll(/[\n\r\u2028\u2029]/g), (found) => found.index);
+    }
+    source;
+    breaks;
+    endOf(at2) {
+      return this.breaks[firstAtOrAfter(this.breaks, at2)] ?? this.source.length;
+    }
+    startOf(at2) {
+      const before = firstAtOrAfter(this.breaks, at2) - 1;
+      return before < 0 ? 0 : this.breaks[before] + 1;
     }
   };
-  function needsFullGrammar(code, imports) {
-    for (const entry of imports) {
-      if (entry.t === DYNAMIC_IMPORT_TYPE && OffsetTokens.at(code, entry.se, false).take().type === types$1.braceL) return true;
+  function regexBody(source, slash) {
+    let inClass = false;
+    for (let at2 = slash + 1; at2 < source.length; at2++) {
+      const ch = source[at2];
+      if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") return source.slice(slash + 1, at2);
+      if (ch === "\\") at2++;
+      else if (ch === "[") inClass = true;
+      else if (ch === "]") inClass = false;
+      else if (ch === "/" && !inClass) return source.slice(slash + 1, at2);
     }
-    const recognized = new Set(imports.map((entry) => entry.ss));
-    const missing = [];
-    for (const match of code.matchAll(/\bimport\s*(?:\(|\/[/*])/g)) {
-      if (!recognized.has(match.index)) missing.push(match.index);
+    return source.slice(slash + 1);
+  }
+  var CODE_MARK = " import.meta ";
+  function passedOver(source, lines, imports, slashes) {
+    const reported =   new Set();
+    for (const entry of imports) if (entry.t === DYNAMIC_IMPORT) reported.add(entry.ss);
+    const marks = slashes.map((at2) => ({ at: at2, call: false }));
+    for (const match of source.matchAll(/\bimport\s*(?:\(|\/[/*])|<!--|-->/g)) {
+      const at2 = match.index;
+      if (match[0] === "<!--") marks.push({ at: at2, call: false });
+      else if (match[0] === "-->") {
+        let before = at2;
+        while (before > 0 && (source[before - 1] === " " || source[before - 1] === "	")) before--;
+        if (before === lines.startOf(at2)) marks.push({ at: at2, call: false });
+      } else if (!reported.has(at2) && !isMemberName(source, at2)) marks.push({ at: at2, call: true });
     }
-    if (!missing.length) return false;
-    try {
-      const tokens = tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true });
-      let previous = types$1.eof;
-      let next = 0;
-      for (; ; ) {
-        const token = tokens.getToken();
-        while (next < missing.length && missing[next] < token.start) next++;
-        if (token.type === types$1.eof || next === missing.length) return false;
-        if (token.type === types$1.regexp && missing[next] < token.end) return true;
-        if (token.type === types$1._import && missing[next] === token.start && previous !== types$1.dot && previous !== types$1.questionDot) {
-          if (tokens.getToken().type === types$1.parenL) return true;
+    if (!marks.length) return [];
+    marks.sort((a, b) => a.at - b.at);
+    const parts = [];
+    let from = 0;
+    for (const { at: at2 } of marks) {
+      parts.push(source.slice(from, at2), CODE_MARK);
+      from = at2;
+    }
+    parts.push(source.slice(from));
+    const code =   new Set();
+    for (const entry of lexImports(parts.join(""))) if (entry.t === IMPORT_META) code.add(entry.s);
+    const passed = [];
+    for (const [index, { at: at2, call }] of marks.entries()) {
+      if (!code.has(at2 + index * CODE_MARK.length + 1)) continue;
+      if (!call) return null;
+      passed.push(at2);
+    }
+    return passed;
+  }
+  function isMemberName(source, at2) {
+    let before = at2;
+    while (before > 0 && /\s/.test(source[before - 1])) before--;
+    return source[before - 1] === "." && source[before - 2] !== ".";
+  }
+  function callAt(source, at2) {
+    const open = skipTrivia(source, at2 + "import".length).at;
+    if (source[open] !== "(") return null;
+    for (let window = 1024; ; window *= 2) {
+      const text = source.slice(open, open + window);
+      try {
+        const tokens = tokenizer2(text, { ecmaVersion: "latest" });
+        let depth = 0;
+        for (let token = tokens.getToken(); token.type !== types$1.eof; token = tokens.getToken()) {
+          if (token.type === types$1.parenL) depth++;
+          else if (token.type === types$1.parenR && --depth === 0) return { ss: at2, se: open + token.end, d: open, lexed: false };
         }
-        previous = token.type;
-      }
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      return true;
-    }
-  }
-  function rewriteWithFullGrammar(code, parentUrl, metadata) {
-    for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
-      try {
-        const ast = Parser.parse(code, { ecmaVersion: "latest", sourceType, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, allowHashBang: true });
-        const edits = [];
-        const metas = [];
-        const names =   new Set();
-        const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
-        full(ast, (node) => {
-          if (node.type === "ImportExpression") {
-            const tokens = OffsetTokens.at(code, node.start);
-            tokens.take();
-            edits.push({ start: node.start, end: tokens.take().end, text: call });
-          } else if (metadata && node.type === "MetaProperty" && Reflect.get(node, "meta").name === "import") {
-            metas.push({ start: node.start, end: node.end });
-          } else if (metadata && node.type === "Identifier") {
-            const name = Reflect.get(node, "name");
-            if (typeof name === "string" && name.startsWith(METADATA_BINDING)) names.add(name);
-          }
-        });
-        if (!edits.length && !metas.length) return code;
-        return applyEdits(code, edits, metas, names, metas.length ? afterDirectives(code) : 0);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
       }
+      if (open + window >= source.length) return null;
     }
-    return code;
   }
-  var IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
-  var METADATA_BINDING = "__nimbusMetadataModule";
-  function escapedCaptureNames(code) {
-    const names =   new Set();
-    for (let at2 = code.indexOf("\\u"); at2 !== -1; at2 = code.indexOf("\\u", at2)) {
-      let start = at2;
-      while (start > 0 && IDENTIFIER_PART.test(code[start - 1])) start--;
-      try {
-        const token = OffsetTokens.at(code, start).take();
-        const value = Reflect.get(token, "value");
-        if (token.type === types$1.name && typeof value === "string" && value.startsWith(METADATA_BINDING)) names.add(value);
-        at2 = Math.max(at2 + 2, token.end);
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-        at2 += 2;
-      }
-    }
-    return names;
-  }
-  function afterDirectives(code) {
-    const tokens = OffsetTokens.at(code, 0);
-    let token = tokens.take();
-    let insertion = token.start;
-    while (token.type === types$1.string) {
-      const expression = parseExpressionAt2(code, token.start, { ecmaVersion: "latest", sourceType: "script" });
-      if (expression.type !== "Literal" || typeof Reflect.get(expression, "value") !== "string") break;
-      do {
-        token = tokens.take();
-      } while (token.start < expression.end);
-      if (token.type === types$1.semi) {
-        insertion = token.end;
-        token = tokens.take();
+  function skipTrivia(source, at2) {
+    let newline = false;
+    for (; ; ) {
+      const ch = source[at2];
+      if (ch === "/" && source[at2 + 1] === "/") {
+        at2 = lineEnd(source, at2);
         continue;
       }
-      if (token.type !== types$1.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
-      insertion = expression.end;
+      if (ch === "/" && source[at2 + 1] === "*") {
+        const close = source.indexOf("*/", at2 + 2);
+        if (close < 0) return { at: source.length, newline };
+        if (/[\n\r\u2028\u2029]/.test(source.slice(at2, close))) newline = true;
+        at2 = close + 2;
+        continue;
+      }
+      if (ch !== void 0 && /\s/.test(ch)) {
+        if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") newline = true;
+        at2++;
+        continue;
+      }
+      return { at: at2, newline };
     }
-    return insertion;
+  }
+  function afterNew(source, at2) {
+    return /(?:^|[^\w$.\\])new(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*$/.test(source.slice(Math.max(0, at2 - 256), at2));
+  }
+  function callShape(source, site) {
+    if (afterNew(source, site.ss)) return null;
+    const next = skipTrivia(source, site.se);
+    if (source[next.at] !== "{") return site.lexed ? "call" : null;
+    if (!next.newline) return "method";
+    const rest = source.slice(site.ss);
+    const member = closes("(class{", rest, "ClassBody") || closes("({", rest, "ObjectExpression");
+    if (!member) return "call";
+    return closes("(function(){", rest, "BlockStatement") || closes("(async function*(){", rest, "BlockStatement") ? null : "method";
+  }
+  var ContainerClosed = class extends Error {
+  };
+  function closes(prefix, rest, type) {
+    const start = prefix.length - 1;
+    const ContainerParser = Parser.extend((Base) => {
+      const finishNode = Reflect.get(Base.prototype, "finishNode");
+      return class extends Base {
+        finishNode(node, nodeType) {
+          const finished = Reflect.apply(finishNode, this, [node, nodeType]);
+          if (nodeType === type && node.start === start) throw new ContainerClosed();
+          return finished;
+        }
+      };
+    });
+    for (const sourceType of ["script", "module"]) {
+      try {
+        ContainerParser.parse(prefix + rest, {
+          ecmaVersion: "latest",
+          sourceType,
+          allowAwaitOutsideFunction: true,
+          allowSuperOutsideMethod: true,
+          checkPrivateFields: false
+        });
+      } catch (error) {
+        if (error instanceof ContainerClosed) return true;
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+    }
+    return false;
   }
   function validImportArguments(fragment) {
     for (const prefix of ["async function(){return ", "async function*(){return "]) {
@@ -9070,33 +8882,121 @@ return globalThis.Go;
     }
     return false;
   }
-  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
-    const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
-    if (!mayHaveDynamicImport(code) && !metadata) return code;
+  function escapedCaptureNames(code) {
+    const names =   new Set();
+    for (let at2 = code.indexOf("\\u"); at2 !== -1; at2 = code.indexOf("\\u", at2)) {
+      let start = at2;
+      while (start > 0 && IDENTIFIER_PART.test(code[start - 1])) start--;
+      let end = at2;
+      while (end < code.length) {
+        if (code[end] === "\\" && code[end + 1] === "u") {
+          const close = code[end + 2] === "{" ? code.indexOf("}", end + 3) : end + 5;
+          if (close < 0 || close > end + 9) break;
+          end = close + 1;
+        } else if (IDENTIFIER_PART.test(code[end])) {
+          end++;
+        } else {
+          break;
+        }
+      }
+      try {
+        const token = tokenizer2(code.slice(start, end), { ecmaVersion: "latest" }).getToken();
+        const value = Reflect.get(token, "value");
+        if (token.type === types$1.name && typeof value === "string" && value.startsWith(METADATA_BINDING)) names.add(value);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+      at2 = Math.max(at2 + 2, end);
+    }
+    return names;
+  }
+  function afterDirectives(code) {
+    const tokens = tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true });
+    let token = tokens.getToken();
+    let insertion = token.start;
+    while (token.type === types$1.string) {
+      const expression = parseExpressionAt2(code, token.start, { ecmaVersion: "latest", sourceType: "script" });
+      if (expression.type !== "Literal" || typeof Reflect.get(expression, "value") !== "string") break;
+      do {
+        token = tokens.getToken();
+      } while (token.start < expression.end);
+      if (token.type === types$1.semi) {
+        insertion = token.end;
+        token = tokens.getToken();
+        continue;
+      }
+      if (token.type !== types$1.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
+      insertion = expression.end;
+    }
+    return insertion;
+  }
+  function rewriteWithGrammar(code, parentUrl, metadata) {
     const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
     const edits = [];
     const metas = [];
-    let validatedEnd = -1;
-    try {
-      const [imports] = parse3(code);
-      if (needsFullGrammar(code, imports)) return rewriteWithFullGrammar(code, parentUrl, metadata);
-      for (const entry of imports) {
-        if (entry.t === DYNAMIC_IMPORT_TYPE) {
-          if (entry.ss >= validatedEnd) {
-            if (!validImportArguments(code.slice(entry.ss, entry.se))) return code;
-            validatedEnd = entry.se;
-          }
-          edits.push({ start: entry.ss, end: entry.d + 1, text: call });
-        } else if (metadata && entry.t === IMPORT_META_TYPE) {
-          metas.push({ start: entry.s, end: entry.e });
+    const names = metadata ?   new Set() : null;
+    let StreamingParser = Parser.extend((Base) => {
+      const parseStatement = Reflect.get(Base.prototype, "parseStatement");
+      const parseDynamicImport = Reflect.get(Base.prototype, "parseDynamicImport");
+      return class extends Base {
+        parseDynamicImport(node) {
+          const end = Reflect.get(this, "end");
+          const parsed = Reflect.apply(parseDynamicImport, this, [node]);
+          edits.push({ start: node.start, end, text: call });
+          return parsed;
         }
+        parseStatement(context, topLevel, exports) {
+          const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
+          if (!topLevel) return node;
+          if (node.type === "ExpressionStatement") {
+            const expression = Reflect.get(node, "expression");
+            if (expression?.type === "Literal" && typeof expression.value === "string") return node;
+          }
+          return { type: "EmptyStatement", start: node.start, end: node.end };
+        }
+      };
+    });
+    if (metadata) StreamingParser = StreamingParser.extend((Base) => {
+      const parseIdent = Reflect.get(Base.prototype, "parseIdent");
+      const parseImportMeta = Reflect.get(Base.prototype, "parseImportMeta");
+      return class extends Base {
+        parseImportMeta(node) {
+          const parsed = Reflect.apply(parseImportMeta, this, [node]);
+          metas.push({ start: node.start, end: node.end });
+          return parsed;
+        }
+        parseIdent(liberal) {
+          const node = Reflect.apply(parseIdent, this, [liberal]);
+          names.add(Reflect.get(node, "name"));
+          return node;
+        }
+      };
+    });
+    for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
+      edits.length = 0;
+      metas.length = 0;
+      names?.clear();
+      let program;
+      try {
+        program = StreamingParser.parse(code, {
+          ecmaVersion: "latest",
+          sourceType,
+          allowReturnOutsideFunction: true,
+          allowAwaitOutsideFunction: true,
+          allowHashBang: true
+        });
+      } catch {
+        continue;
       }
       if (!edits.length && !metas.length) return code;
-      return applyEdits(code, edits, metas, metas.length ? escapedCaptureNames(code) : null, metas.length ? afterDirectives(code) : 0);
-    } catch (error) {
-      if (error instanceof SyntaxError || error instanceof Error && typeof Reflect.get(error, "idx") === "number") return code;
-      throw error;
+      let insertion = program.body[0]?.start ?? code.length;
+      for (const statement of program.body) {
+        if (typeof Reflect.get(statement, "directive") !== "string") break;
+        insertion = statement.end;
+      }
+      return applyEdits(code, edits, metas, names, insertion);
     }
+    return code;
   }
   function applyEdits(code, edits, metas, names, insertion) {
     if (metas.length) {
@@ -9108,7 +9008,7 @@ return globalThis.Go;
 const ${binding} = arguments[2];
 ` });
     }
-    edits.sort((a2, b2) => a2.start - b2.start || a2.end - b2.end);
+    edits.sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];
     let at2 = 0;
     for (const { start, end, text } of edits) {
