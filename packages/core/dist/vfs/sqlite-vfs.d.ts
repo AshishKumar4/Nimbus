@@ -1007,13 +1007,16 @@ export declare class SqliteVFS {
     private contentUnshared;
     private newPlan;
     /**
-     * End the imports beneath `paths` that have no destination yet (only
-     * importChunks has run for them), in bounded transactions of their own,
-     * before a removal of those paths. Removing a path ends every import
-     * beneath it, and no single transaction could admit any number of these:
-     * one whose destination exists ends with that destination's own removal.
+     * The imports beneath the directories `paths` that have no destination
+     * yet (only importChunks has run for them). A removal plan ends the
+     * imports whose destination it removes; these it cannot name, so the
+     * removal takes them before it commits and ends them after (endImports),
+     * and a removal that is refused ends none.
      */
-    private endStagedImportsBeneath;
+    private stagedImportsBeneath;
+    /** End `jobs`, in bounded transactions: their rows go and their staging is queued for collection. */
+    private endImports;
+    private hasDestination;
     /** Every import in progress, with the staging contents it holds. */
     private openImports;
     /** Create a state-0 content in its own transaction and hold it live. */
