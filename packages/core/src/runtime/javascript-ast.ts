@@ -1,4 +1,4 @@
-import { parse, tokenizer, tokTypes, type AnyNode, type TokenType } from 'acorn';
+import { parse, tokenizer, tokTypes, type AnyNode, type Program, type TokenType } from 'acorn';
 
 export type AstNode = AnyNode & Record<string, unknown>;
 
@@ -22,15 +22,18 @@ export function parseJavaScriptProgram(source: string): AstNode | null {
     allowAwaitOutsideFunction: true,
     allowImportExportEverywhere: true,
   } as const;
+  let program: Program;
   try {
-    return parse(source, { ...options, sourceType: 'module' }) as AstNode;
+    program = parse(source, { ...options, sourceType: 'module' });
   } catch {
     try {
-      return parse(source, { ...options, sourceType: 'script' }) as AstNode;
+      program = parse(source, { ...options, sourceType: 'script' });
     } catch {
       return null;
     }
   }
+  // acorn's Program declares no index signature; the guard gives AstNode's keyed view.
+  return isAstNode(program) ? program : null;
 }
 
 export function hasTopLevelModuleSyntax(source: string): boolean {
@@ -122,21 +125,20 @@ export function isAstNode(value: unknown): value is AstNode {
 const NON_CHILD_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
 
 /** Each child node of `node`. */
-export function forEachChild<N extends { type: string }>(node: N, visit: (child: N) => void): void {
-  const fields = node as unknown as Record<string, unknown>;
-  for (const key in fields) {
+export function forEachChild(node: AstNode, visit: (child: AstNode) => void): void {
+  for (const key in node) {
     if (NON_CHILD_KEYS.has(key)) continue;
-    const child = fields[key];
+    const child = node[key];
     if (Array.isArray(child)) {
-      for (const c of child) if (isAstNode(c)) visit(c as unknown as N);
+      for (const c of child) if (isAstNode(c)) visit(c);
     } else if (isAstNode(child)) {
-      visit(child as unknown as N);
+      visit(child);
     }
   }
 }
 
 /** Every node below `node`, functions included, in source order. */
-export function forEachNode<N extends { type: string }>(node: N, visit: (n: N) => void): void {
+export function forEachNode(node: AstNode, visit: (n: AstNode) => void): void {
   visit(node);
   forEachChild(node, (child) => forEachNode(child, visit));
 }

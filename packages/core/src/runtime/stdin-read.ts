@@ -23,15 +23,9 @@
  * never runs costs at most that, while a missed read fails with EAGAIN.
  */
 
-import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import type { AnyNode } from 'acorn';
+import { forEachNode, parseJavaScriptProgram, type AstNode } from './javascript-ast.js';
 import { resolveOwnModules, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
-
-/** An acorn node, read structurally (javascript-ast.ts parses it). */
-interface AstNode {
-  type: string;
-  // biome-ignore lint/suspicious/noExplicitAny: ESTree children are read structurally, per node type.
-  [key: string]: any;
-}
 
 /** How many of the entry's own modules are read, and how many bytes of source in all. */
 const MODULE_LIMIT = 24;
@@ -128,7 +122,7 @@ export interface StdinReadProgram {
 /** Whether `program`, or one of its own modules it loads, reads stdin synchronously. */
 export async function programReadsStdinSync(program: StdinReadProgram, host: ServerLaunchHost): Promise<boolean> {
   if (program.source.length > SERVER_LAUNCH_MODULE_BYTES) return false;
-  const entry = parseJavaScriptProgram(program.source) as unknown as AstNode | null;
+  const entry = parseJavaScriptProgram(program.source);
   if (entry === null) return false;
   if (readsStdinSync(entry)) return true;
   const deps = await resolveOwnModules(entry, program.path, program.dir, program.packageRoot, host);
@@ -141,7 +135,7 @@ export async function programReadsStdinSync(program: StdinReadProgram, host: Ser
     const source = await host.read(path);
     if (source === null) continue;
     bytes += source.length;
-    const ast = parseJavaScriptProgram(source) as unknown as AstNode | null;
+    const ast = parseJavaScriptProgram(source);
     if (ast !== null && readsStdinSync(ast)) return true;
   }
   return false;
@@ -161,7 +155,7 @@ function readsStdinSync(ast: AstNode): boolean {
 }
 
 /** The function a call reaches: `f`, `x.f`, `x['f']`, or esbuild's `(0, x.f)`. */
-function calleeName(callee: AstNode): string | null {
+function calleeName(callee: AnyNode): string | null {
   let at = callee;
   while (at.type === 'SequenceExpression' || at.type === 'ParenthesizedExpression' || at.type === 'ChainExpression') {
     at = at.type === 'SequenceExpression' ? at.expressions[at.expressions.length - 1] : at.expression;
@@ -173,7 +167,7 @@ function calleeName(callee: AstNode): string | null {
 }
 
 /** `0`, or `process.stdin.fd`. */
-function isStdinFd(node: AstNode): boolean {
+function isStdinFd(node: AnyNode): boolean {
   if (node.type === 'Literal') return node.value === 0;
   return node.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier' && node.property.name === 'fd'
     && node.object.type === 'MemberExpression' && !node.object.computed
@@ -182,8 +176,8 @@ function isStdinFd(node: AstNode): boolean {
 }
 
 /** `'/dev/stdin'` or `'/proc/self/fd/0'`, as a string or a template without expressions. */
-function isStdinDevice(node: AstNode): boolean {
+function isStdinDevice(node: AnyNode): boolean {
   if (node.type === 'Literal') return typeof node.value === 'string' && STDIN_DEVICES.has(node.value);
   return node.type === 'TemplateLiteral' && node.expressions.length === 0
-    && STDIN_DEVICES.has(node.quasis[0]?.value?.cooked);
+    && STDIN_DEVICES.has(node.quasis[0]?.value?.cooked ?? '');
 }

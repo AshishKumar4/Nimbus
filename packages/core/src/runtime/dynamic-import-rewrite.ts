@@ -335,9 +335,9 @@ class ImportCollector extends Parser {
     // Acorn enters this production at the opening parenthesis. Its end,
     // not source.start (which can exclude grouping parentheses), is the
     // exact end of the prefix we replace. Acorn validates the arguments.
-    const end = Reflect.get(this, 'end') as number;
+    const end: unknown = Reflect.get(this, 'end');
     const parsed: Node = Reflect.apply(PARSE_DYNAMIC_IMPORT, this, [node]);
-    this.collected.edits.push({ start: node.start, end, text: this.collected.call });
+    if (typeof end === 'number') this.collected.edits.push({ start: node.start, end, text: this.collected.call });
     return parsed;
   }
   parseStatement(context: unknown, topLevel: boolean, exports: unknown): Node {
@@ -360,7 +360,8 @@ class MetadataCollector extends ImportCollector {
   }
   parseIdent(liberal: boolean): Node {
     const node: Node = Reflect.apply(PARSE_IDENT, this, [liberal]);
-    this.collected.names!.add(Reflect.get(node, 'name'));
+    const name: unknown = Reflect.get(node, 'name');
+    if (typeof name === 'string') this.collected.names?.add(name);
     return node;
   }
 }
@@ -403,7 +404,7 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean):
 function applyEdits(code: string, edits: Edit[], metas: Span[], names: Set<string> | null, insertion: number): string {
   if (metas.length) {
     let binding = METADATA_BINDING;
-    while (code.includes(binding) || names!.has(binding)) binding += '_';
+    while (code.includes(binding) || names?.has(binding)) binding += '_';
     for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
     edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
   }

@@ -13,7 +13,7 @@
  * Runs in the esbuild facet (installed by esbuild-cli/preamble.ts) and, for
  * in-process transforms, in esbuild-service.ts.
  */
-import { Parser, type ModuleDeclaration, type Pattern, type Statement } from 'acorn';
+import { Parser, type Pattern } from 'acorn';
 
 interface Edit { start: number; end: number; text: string }
 
@@ -41,7 +41,7 @@ export function lowerAsyncModule(esm: string): string {
   // into a function. Kept as a comment so line numbers stay put.
   if (esm.startsWith('#!')) edits.push({ start: 0, end: 2, text: '//' });
 
-  for (const node of program.body as Array<Statement | ModuleDeclaration>) {
+  for (const node of program.body) {
     switch (node.type) {
       case 'ImportDeclaration': {
         edits.push({ start: node.start, end: node.end, text: '' });
