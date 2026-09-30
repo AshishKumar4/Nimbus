@@ -42,6 +42,7 @@
  *       under load doesn't write-amplify.
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
+import { ProcessLogRetention } from './process-log-retention.js';
 /** Detect binary content — rough but good enough for "this is not text". */
 function looksBinary(s) {
     if (s.length === 0)
@@ -97,21 +98,10 @@ export class ProcessLogStore {
      * remains in memory.
      */
     _pruneQueue = new Map();
-    /**
-     * W9: pids whose rows only SQL holds — what a previous instance flushed
-     * and this one has not touched. Retention covers them too: an instance
-     * that woke from hibernation holds none of its predecessor's pids in
-     * memory, so a sweep of memory alone never drops them. Listed from the
-     * adapter on the first retention question (null until then); it only
-     * shrinks, as a pid is touched (and so hydrated) or dropped.
-     */
-    _persistedOnly = null;
-    /**
-     * `_persistedOnly` ordered for deadline questions (see
-     * `_persistedOnlyExpiry`): its earliest exit, and its exitless pids by last
-     * activity, oldest first. Null until asked, and again whenever the set changes.
-     */
-    _persistedOnlyOrder = null;
+    /** When logs go, over memory and the rows only SQL holds (process-log-retention.ts). */
+    retention = new ProcessLogRetention(() => this._persist?.retained().filter((row) => !this._dropQueue.has(row.pid)) ?? null);
+    /** Fires when a retention deadline may have appeared (see `setRetentionHook`). */
+    _onRetention = null;
     /** Cumulative flushed-bytes counter (telemetry). */
     _flushedChunks = 0;
     _flushedBytes = 0;
@@ -137,6 +127,16 @@ export class ProcessLogStore {
      */
     setPersist(adapter) {
         this._persist = adapter;
+        this.retention.reset();
+    }
+    /**
+     * Install the hook that fires when a retention deadline may have
+     * appeared: a pid's logs begin, its exit is recorded, or a reader of it
+     * leaves. Appending to a pid already held moves no deadline earlier, so
+     * it does not fire; a host asks `nextExpiry` from here, not per chunk.
+     */
+    setRetentionHook(onRetention) {
+        this._onRetention = onRetention;
     }
     // ── Instance-level broadcast hooks ──────────────────────────────────
     /**
@@ -204,7 +204,11 @@ export class ProcessLogStore {
     append(pid, stream, data) {
         if (!data)
             return;
+        const begins = !this.pids.has(pid);
         const state = this._getOrCreate(pid);
+        // Logs that begin may already have a deadline: an orphan's (its process is gone).
+        if (begins)
+            this._onRetention?.();
         // Binary detection on the raw incoming chunk (before splitting).
         if (looksBinary(data)) {
             const placeholder = `[${data.length} bytes of binary output]\n`;
@@ -367,6 +371,7 @@ export class ProcessLogStore {
             }
             catch { /* swallow broadcast errors */ }
         }
+        this._onRetention?.();
     }
     /**
      * Subscribe to new chunks for this pid. Returns unsubscribe fn.
@@ -377,7 +382,11 @@ export class ProcessLogStore {
     subscribe(pid, cb) {
         const state = this._getOrCreate(pid);
         state.subscribers.add(cb);
-        return () => { state.subscribers.delete(cb); };
+        // A reader holds the pid past its deadline, so its leaving may bring one.
+        return () => {
+            if (state.subscribers.delete(cb))
+                this._onRetention?.();
+        };
     }
     /** Subscribe to the exit event. Fires once. */
     subscribeExit(pid, cb) {
@@ -386,10 +395,10 @@ export class ProcessLogStore {
         return () => { state.exitSubscribers.delete(cb); };
     }
     /**
-     * Drop all state for any PID whose process exited `ageMs` or more
-     * ago, whether this instance holds it in memory or only its persisted
-     * rows do. Returns the number of PIDs purged; their rows go at the next
-     * `flush()`.
+     * Drop all state for any PID whose logs are due (see
+     * process-log-retention.ts), whether this instance holds it in memory or
+     * only its persisted rows do. Returns the number of PIDs purged; their
+     * rows go at the next `flush()`.
      *
      * Optional `isOrphan(pid)` callback identifies PIDs whose owning
      * process vanished without a recorded exit (e.g., a long-running
@@ -397,127 +406,21 @@ export class ProcessLogStore {
      * longer grace window so leaked buffers don't accumulate forever.
      */
     dropOlderThan(ageMs = this.retainAfterExitMs, isOrphan) {
-        const now = Date.now();
-        let dropped = 0;
-        for (const [pid, state] of this.pids) {
-            // A reader holds it; see nextExpiry.
-            if (state.subscribers.size !== 0)
-                continue;
-            const expiresAt = this._expiresAt(pid, state.exit?.at ?? null, state.lastActivity, ageMs, isOrphan);
-            if (expiresAt === null || expiresAt > now)
-                continue;
+        const due = this.retention.due(this.pids, Date.now(), ageMs, isOrphan);
+        for (const pid of due) {
             this.pids.delete(pid);
             if (this._persist)
                 this._dropQueue.add(pid);
-            dropped++;
         }
-        const persistedOnly = this._persistedPids();
-        for (const [pid, row] of persistedOnly) {
-            const expiresAt = this._expiresAt(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
-            if (expiresAt === null || expiresAt > now)
-                continue;
-            persistedOnly.delete(pid);
-            this._persistedOnlyOrder = null;
-            this._dropQueue.add(pid);
-            dropped++;
-        }
-        return dropped;
+        return due.length;
     }
     /**
-     * When `dropOlderThan(ageMs, isOrphan)` next has something to drop:
-     * the earliest retention deadline over every pid this store holds,
-     * in memory or only in its persisted rows. Null when nothing retained
-     * will expire by itself — each pid still runs, or has a reader. Both
-     * end in log activity (the exit is recorded; the reader unsubscribes),
-     * and that is when a host asks again, so a janitor armed from this
-     * wakes only when there is something to drop.
+     * When `dropOlderThan(ageMs, isOrphan)` next has something to drop, or
+     * null when nothing retained will expire by itself — each pid still
+     * runs, or has a reader. Ask again when the retention hook fires.
      */
     nextExpiry(ageMs = this.retainAfterExitMs, isOrphan) {
-        let next = null;
-        for (const [pid, state] of this.pids) {
-            if (state.subscribers.size !== 0)
-                continue;
-            const expiresAt = this._expiresAt(pid, state.exit?.at ?? null, state.lastActivity, ageMs, isOrphan);
-            if (expiresAt !== null && (next === null || expiresAt < next))
-                next = expiresAt;
-        }
-        const persisted = this._persistedOnlyExpiry(ageMs, isOrphan);
-        if (persisted !== null && (next === null || persisted < next))
-            next = persisted;
-        return next;
-    }
-    /**
-     * The earliest deadline among the pids only SQL holds. Every output append
-     * asks for the next deadline, and the set can hold every earlier instance's
-     * pids, uncapped, so it is ordered once per change to it rather than
-     * walked per append (`_persistedOnlyOrder`). The order holds nothing that
-     * depends on `ageMs` or `isOrphan`: the earliest exit answers for every
-     * exited pid, and the exitless pids are asked about oldest first, so the
-     * first orphan among them is the earliest orphan deadline.
-     */
-    _persistedOnlyExpiry(ageMs, isOrphan) {
-        const persistedOnly = this._persistedPids();
-        let order = this._persistedOnlyOrder;
-        if (!order) {
-            let firstExit = null;
-            const exitless = [];
-            for (const { pid, exitAt, lastActivity } of persistedOnly.values()) {
-                if (exitAt === null)
-                    exitless.push({ pid, exitAt, lastActivity });
-                else if (firstExit === null || exitAt < firstExit.exitAt)
-                    firstExit = { pid, exitAt, lastActivity };
-            }
-            exitless.sort((a, b) => a.lastActivity - b.lastActivity);
-            order = { firstExit, exitless };
-            // Only a listed set is kept: an unlisted one (no adapter, or a failed
-            // listing) is asked again next time.
-            if (this._persistedOnly)
-                this._persistedOnlyOrder = order;
-        }
-        let at = order.firstExit
-            ? this._expiresAt(order.firstExit.pid, order.firstExit.exitAt, order.firstExit.lastActivity, ageMs, isOrphan)
-            : null;
-        for (const row of order.exitless) {
-            const orphanAt = this._expiresAt(row.pid, null, row.lastActivity, ageMs, isOrphan);
-            if (orphanAt === null)
-                continue;
-            if (at === null || orphanAt < at)
-                at = orphanAt;
-            break;
-        }
-        return at;
-    }
-    /**
-     * The one retention rule: a pid's logs go `ageMs` after its exit, or,
-     * with no exit recorded, three times that after its last activity once
-     * its process is gone (30 min by default). Null: nothing ends them yet.
-     */
-    _expiresAt(pid, exitAt, lastActivity, ageMs, isOrphan) {
-        if (exitAt !== null)
-            return exitAt + ageMs;
-        return isOrphan?.(pid) ? lastActivity + ageMs * 3 : null;
-    }
-    /** The pids only persisted rows hold (see `_persistedOnly`), listed once per isolate-gen. */
-    _persistedPids() {
-        if (this._persistedOnly)
-            return this._persistedOnly;
-        if (!this._persist)
-            return new Map();
-        let rows;
-        try {
-            rows = this._persist.retained();
-        }
-        catch {
-            // Fail-soft like every adapter call; the next question lists again.
-            return new Map();
-        }
-        const listed = new Map();
-        for (const row of rows) {
-            if (!this.pids.has(row.pid) && !this._dropQueue.has(row.pid))
-                listed.set(row.pid, row);
-        }
-        this._persistedOnly = listed;
-        return listed;
+        return this.retention.next(this.pids, ageMs, isOrphan);
     }
     /**
      * W9: drain dirty buffers into the persist adapter. Synchronous from
@@ -661,8 +564,7 @@ export class ProcessLogStore {
                 flushedHighSeq: -1,
             };
             this.pids.set(pid, s);
-            if (this._persistedOnly?.delete(pid))
-                this._persistedOnlyOrder = null;
+            this.retention.held(pid);
             // W9: lazy hydrate the freshly-created state from persistent
             // storage. If we have an adapter and rows exist for this pid
             // (e.g., DO was hibernated and now woke), pull them into the

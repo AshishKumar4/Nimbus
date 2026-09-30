@@ -90,7 +90,7 @@ export declare function wireHibernationOnConstruct(ctx: any): WsHibernationConfi
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export declare function wireProcessLogPersist(host: HibHost, ctx: any): void;
-export declare function installLogPersistence(host: Pick<HibHost, '_w9PersistWired' | '_w9SchemaInit' | 'processes'>, ctx: DurableObjectState, onActivity: () => void): void;
+export declare function installLogPersistence(host: Pick<HibHost, '_w9PersistWired' | '_w9SchemaInit' | 'processes'>, ctx: DurableObjectState, onActivity: () => void, onRetention: () => void): void;
 /**
  * W1: lift the destroyed-session tombstone when a destroyed session id is
  * LEGITIMATELY re-initialized (documented SDK flow: stable job ids reuse a
@@ -101,19 +101,43 @@ export declare function installLogPersistence(host: Pick<HibHost, '_w9PersistWir
  * straggler facet RPCs never reach them, so a dead session stays inert.
  */
 export declare function clearDestroyedTombstone(host: HibHost, ctx: any): void;
+/** The fields the log-janitor rule reads and keeps; both hosts carry them. */
+export type LogJanitorHost = Pick<HibHost, 'processes' | '_w1JanitorAt' | '_w1SessionDestroyed'>;
+/** Arm the host's `log-janitor` alarm at `at`; resolves false when it could not. */
+export type LogJanitorSchedule = (at: number) => Promise<boolean>;
 /**
  * W1: arm the log-janitor alarm for the next retention deadline
  * (`processes.nextLogExpiry`): the moment a retained pid's logs are due to
- * go. Called from the log-activity hook, because a deadline only appears
- * there — a process's exit, or a reader of its logs leaving. Nothing retained
+ * go. Called from the retention hook, because a deadline only appears there
+ * — logs that begin, an exit, a reader leaving, a reap. Nothing retained
  * that can expire means nothing is armed: a running process, the session's
  * own shell included, holds no deadline until it exits.
  *
  * Why an alarm and not setTimeout: a pending setTimeout keeps the DO from
  * hibernating, and the deadline is ten minutes out. The alarm survives
  * hibernation and wakes the object only when there is something to drop.
+ *
+ * The one rule for both hosts: the session DO schedules through the fabric
+ * timer mux, a hosted runtime through its embedder's lifecycle.
  */
-export declare function ensureLogJanitor(host: HibHost, ctx: any, isOrphan?: (pid: number) => boolean): void;
+export declare function armLogJanitor(host: LogJanitorHost, schedule: LogJanitorSchedule): void;
+/**
+ * W1: the log-janitor alarm fired. Drops every log that is due, from memory
+ * and SQL (this may be the first event of an instance woken for it, holding
+ * nothing in memory), and flushes the drops in the same turn: nothing else
+ * may flush this instance. Returns the next deadline to fire at, recorded as
+ * armed, or null.
+ *
+ * Never a cadence: the janitor used to self-renew every 60s (first
+ * unconditionally, then while any process ran — and the session's own shell
+ * always runs), so every session that ever ran a process kept booting its
+ * DO every ~60s. The accumulated fleet of deleted probe sessions produced
+ * continuous DO-storage churn (measured ~24 zombie boots/s on 2026-07-13)
+ * that intermittently reset LIVE session DOs mid-run ("Internal error in
+ * Durable Object storage caused object to be reset").
+ */
+export declare function logJanitorFired(host: LogJanitorHost): number | null;
+export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
 /** The fields the keep-alive rule reads and keeps; both hosts carry them. */
 export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
@@ -189,16 +213,12 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  * dispatcher with this session's handlers registered:
  *   - `'w9-flush'` → processes.flushLogs()
  *   - `'resident-launch'` → pumpResidentLaunches()
- *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck) over
- *     memory and SQL; re-arm at the next retention deadline, if any.
+ *   - `'log-janitor'` → logJanitorFired: drop what is due, over memory
+ *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
- *
- * `janitorOrphanCheck` is the orphan-pid predicate provided by the
- * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
- * so HibHost doesn't need to import ProcessTable.
  */
-export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanCheck?: (pid: number) => boolean, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo): Promise<void>;
+export declare function dispatchAlarm(host: HibHost, ctx: any, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo): Promise<void>;
 /**
  * W9: synchronous flush of the process-log ring on session close.
  * Wraps `processes.flushLogs()` in a try/catch so a flush failure

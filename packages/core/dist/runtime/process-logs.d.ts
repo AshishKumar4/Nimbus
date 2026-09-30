@@ -42,6 +42,8 @@
  *       under load doesn't write-amplify.
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
+import { type PersistedLogPid } from './process-log-retention.js';
+export type { PersistedLogPid };
 export type LogStream = 'stdout' | 'stderr';
 export interface LogChunk {
     ts: number;
@@ -116,14 +118,6 @@ export interface PersistAdapter {
     pruneBeforeSeq(pid: number, seq: number): void;
     retained(): PersistedLogPid[];
 }
-/** A pid as its persisted rows describe it to retention. */
-export interface PersistedLogPid {
-    pid: number;
-    /** When its exit was recorded; null when none was. */
-    exitAt: number | null;
-    /** Its newest chunk or exit, whichever is later. */
-    lastActivity: number;
-}
 export interface ProcessLogStoreOptions {
     /** Per-PID ring cap in bytes. Default 64 KB. */
     perPidBytes?: number;
@@ -179,21 +173,10 @@ export declare class ProcessLogStore {
      * remains in memory.
      */
     private _pruneQueue;
-    /**
-     * W9: pids whose rows only SQL holds — what a previous instance flushed
-     * and this one has not touched. Retention covers them too: an instance
-     * that woke from hibernation holds none of its predecessor's pids in
-     * memory, so a sweep of memory alone never drops them. Listed from the
-     * adapter on the first retention question (null until then); it only
-     * shrinks, as a pid is touched (and so hydrated) or dropped.
-     */
-    private _persistedOnly;
-    /**
-     * `_persistedOnly` ordered for deadline questions (see
-     * `_persistedOnlyExpiry`): its earliest exit, and its exitless pids by last
-     * activity, oldest first. Null until asked, and again whenever the set changes.
-     */
-    private _persistedOnlyOrder;
+    /** When logs go, over memory and the rows only SQL holds (process-log-retention.ts). */
+    private readonly retention;
+    /** Fires when a retention deadline may have appeared (see `setRetentionHook`). */
+    private _onRetention;
     /** Cumulative flushed-bytes counter (telemetry). */
     private _flushedChunks;
     private _flushedBytes;
@@ -213,6 +196,13 @@ export declare class ProcessLogStore {
      * adapter in the constructor, before any append happens.
      */
     setPersist(adapter: PersistAdapter): void;
+    /**
+     * Install the hook that fires when a retention deadline may have
+     * appeared: a pid's logs begin, its exit is recorded, or a reader of it
+     * leaves. Appending to a pid already held moves no deadline earlier, so
+     * it does not fire; a host asks `nextExpiry` from here, not per chunk.
+     */
+    setRetentionHook(onRetention: () => void): void;
     /**
      * Fire for EVERY appended chunk / recorded exit, across all pids, in
      * addition to the per-pid `subscribe`/`subscribeExit` callbacks.
@@ -287,10 +277,10 @@ export declare class ProcessLogStore {
     /** Subscribe to the exit event. Fires once. */
     subscribeExit(pid: number, cb: (e: ProcessExitInfo) => void): () => void;
     /**
-     * Drop all state for any PID whose process exited `ageMs` or more
-     * ago, whether this instance holds it in memory or only its persisted
-     * rows do. Returns the number of PIDs purged; their rows go at the next
-     * `flush()`.
+     * Drop all state for any PID whose logs are due (see
+     * process-log-retention.ts), whether this instance holds it in memory or
+     * only its persisted rows do. Returns the number of PIDs purged; their
+     * rows go at the next `flush()`.
      *
      * Optional `isOrphan(pid)` callback identifies PIDs whose owning
      * process vanished without a recorded exit (e.g., a long-running
@@ -299,33 +289,11 @@ export declare class ProcessLogStore {
      */
     dropOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number;
     /**
-     * When `dropOlderThan(ageMs, isOrphan)` next has something to drop:
-     * the earliest retention deadline over every pid this store holds,
-     * in memory or only in its persisted rows. Null when nothing retained
-     * will expire by itself — each pid still runs, or has a reader. Both
-     * end in log activity (the exit is recorded; the reader unsubscribes),
-     * and that is when a host asks again, so a janitor armed from this
-     * wakes only when there is something to drop.
+     * When `dropOlderThan(ageMs, isOrphan)` next has something to drop, or
+     * null when nothing retained will expire by itself — each pid still
+     * runs, or has a reader. Ask again when the retention hook fires.
      */
     nextExpiry(ageMs?: number, isOrphan?: (pid: number) => boolean): number | null;
-    /**
-     * The earliest deadline among the pids only SQL holds. Every output append
-     * asks for the next deadline, and the set can hold every earlier instance's
-     * pids, uncapped, so it is ordered once per change to it rather than
-     * walked per append (`_persistedOnlyOrder`). The order holds nothing that
-     * depends on `ageMs` or `isOrphan`: the earliest exit answers for every
-     * exited pid, and the exitless pids are asked about oldest first, so the
-     * first orphan among them is the earliest orphan deadline.
-     */
-    private _persistedOnlyExpiry;
-    /**
-     * The one retention rule: a pid's logs go `ageMs` after its exit, or,
-     * with no exit recorded, three times that after its last activity once
-     * its process is gone (30 min by default). Null: nothing ends them yet.
-     */
-    private _expiresAt;
-    /** The pids only persisted rows hold (see `_persistedOnly`), listed once per isolate-gen. */
-    private _persistedPids;
     /**
      * W9: drain dirty buffers into the persist adapter. Synchronous from
      * the store's POV (the adapter's calls are sync; the production

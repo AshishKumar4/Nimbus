@@ -356,7 +356,6 @@ export declare function _reportExternalExit(self: RpcHost, pid: number, code: nu
 * already removed it, or it never fully registered. Long-running
 * facets that hang and get GC'd fall into this category.
 */
-export declare function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => boolean;
 export declare function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>>;
 export declare function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
 export declare function _rpcAllocatePort(self: RpcHost, pid: number): Promise<number>;

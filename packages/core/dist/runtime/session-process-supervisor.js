@@ -41,6 +41,10 @@ export class SessionProcessSupervisor {
     terminators = new Map();
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     logActivity = null;
+    /** Fires when a log retention deadline may have appeared; see setLogPersist. */
+    logRetention = null;
+    /** The orphan rule's "process is gone": this table no longer holds it. */
+    isLogOrphan = (pid) => !this.table.get(pid);
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
@@ -148,9 +152,16 @@ export class SessionProcessSupervisor {
         this.fireTerminal(pid, wasRunning);
         return killed;
     }
-    /** Clean up exited processes older than maxAge ms. */
+    /**
+     * Clean up exited processes older than maxAge ms. A reaped pid whose logs
+     * hold no exit (a process killed around its log) is an orphan from here,
+     * which gives its logs a deadline.
+     */
     reap(maxAge) {
-        return this.table.reap(maxAge);
+        const reaped = this.table.reap(maxAge);
+        if (reaped > 0)
+            this.logRetention?.();
+        return reaped;
     }
     get stats() {
         return this.table.stats;
@@ -292,13 +303,7 @@ export class SessionProcessSupervisor {
         return this.logs.snapshot(pid);
     }
     subscribeLogs(pid, cb) {
-        const unsubscribe = this.logs.subscribe(pid, cb);
-        // A reader holds a pid's logs past their retention (see
-        // ProcessLogStore.nextExpiry), so its leaving is log activity too.
-        return () => {
-            unsubscribe();
-            this.logActivity?.();
-        };
+        return this.logs.subscribe(pid, cb);
     }
     subscribeExit(pid, cb) {
         return this.logs.subscribeExit(pid, cb);
@@ -310,11 +315,16 @@ export class SessionProcessSupervisor {
     /**
      * Install the SQL-backed persistence adapter. `onActivity` fires after
      * every appendOutput/markExit so the host can schedule debounced
-     * flushes without the store knowing about timers.
+     * flushes without the store knowing about timers. `onRetention` fires
+     * only when a retention deadline may have appeared — a pid's logs
+     * begin, its exit is recorded, a reader leaves, or the table reaps — so
+     * the host re-reads `nextLogExpiry` there and never per chunk.
      */
-    setLogPersist(adapter, onActivity) {
+    setLogPersist(adapter, onActivity, onRetention) {
         this.logs.setPersist(adapter);
         this.logActivity = onActivity;
+        this.logRetention = onRetention ?? null;
+        this.logs.setRetentionHook(() => this.logRetention?.());
     }
     /**
      * Install the instance-level chunk/exit broadcast (the hibernation-safe
@@ -326,12 +336,13 @@ export class SessionProcessSupervisor {
     flushLogs() {
         this.logs.flush();
     }
-    dropLogsOlderThan(ageMs, isOrphan) {
-        return this.logs.dropOlderThan(ageMs, isOrphan);
+    /** Drop the logs that are due; a pid this table no longer holds counts as an orphan. */
+    dropLogsOlderThan(ageMs) {
+        return this.logs.dropOlderThan(ageMs, this.isLogOrphan);
     }
-    /** See ProcessLogStore.nextExpiry — when dropLogsOlderThan next has work, or null. */
-    nextLogExpiry(ageMs, isOrphan) {
-        return this.logs.nextExpiry(ageMs, isOrphan);
+    /** When dropLogsOlderThan next has work, by the same orphan rule, or null. */
+    nextLogExpiry() {
+        return this.logs.nextExpiry(undefined, this.isLogOrphan);
     }
     logHibStats() {
         return this.logs.hibStats();
@@ -344,5 +355,6 @@ export class SessionProcessSupervisor {
     resetLogStore() {
         this.logs = new ProcessLogStore();
         this.logActivity = null;
+        this.logRetention = null;
     }
 }

@@ -509,12 +509,11 @@ export class NimbusSession extends CloudflareDurableObject {
      * storage map managed by `scheduleAlarm` (see ./hibernation.ts).
      * Dispatches every pending reason whose deadline has passed, then
      * re-arms `ctx.storage.setAlarm` at the earliest remaining deadline.
-     * Today's reasons: 'w9-flush' (process-log SQL drain) and
-     * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
-     * orphan-pid predicate so we close over the process supervisor here.
+     * Today's reasons: 'w9-flush' (process-log SQL drain), 'log-janitor'
+     * (retention sweep), 'resident-launch' and 'resident-keepalive'.
      */
     async alarm(alarmInfo) {
-        return _w9DoDispatchAlarm(this, this.ctx, _rpc._logJanitorOrphanCheck(this), () => this._pumpResidentLaunches(), alarmInfo);
+        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo);
     }
     /**
      * Grant the fresh turn a suspended launch asked for.
