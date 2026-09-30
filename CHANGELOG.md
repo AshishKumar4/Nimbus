@@ -639,6 +639,10 @@ shape and VFS export schema 3 (see "Breaking changes for embedders").
   its modules read their real URL (`file:///bundle/<module>`), so its
   `createRequire(import.meta.url)` calls construct without a rewrite.
 
+## 2026-09-28 (second release)
+
+Published as core 0.13.1.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other
@@ -648,6 +652,11 @@ shape and VFS export schema 3 (see "Breaking changes for embedders").
   and a process's bridge, as coreutils and Node do. The bridge checked the
   link's own entry and answered EEXIST. A plain `mkdir` of the link, and
   `mkdir -p` of a link to a file or of a dangling link, still fail.
+
+## 2026-09-28
+
+Published as core 0.13.0, worker 0.11.0, fabric 0.8.0, platform 0.6.0,
+sdk 0.9.0, config 0.2.2, and cli, loom, react and create-nimbus-app 0.2.0.
 
 - A process's filesystem read that the session has not answered after 5 s
   is sent again on a fresh stub, and the first success is used. Under
