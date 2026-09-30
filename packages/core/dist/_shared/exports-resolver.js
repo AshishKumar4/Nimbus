@@ -173,7 +173,7 @@ function resolveConditionValue(target, conditions) {
 }
 /**
  * Resolve a package's entry-point file relative to its directory.
- * Priority: exports → module → main → null.
+ * Priority: exports → module (only under the `module` condition) → main → null.
  * For non-root subpaths without an `exports` field, returns the subpath
  * itself (caller probes filesystem with extension-list).
  */
@@ -190,9 +190,14 @@ export function resolvePackageEntry(pkg, subpath = '.', conditions = DEFAULT_ESM
         // mis-declare exports).
         return null;
     }
-    // 2. Root entry: module → main
+    // 2. Root entry. `module` is the bundlers' field, the legacy spelling of
+    // the `module` condition; Node's require never reads it
+    // (https://nodejs.org/api/modules.html#all-together, LOAD_NODE_MODULES →
+    // LOAD_AS_DIRECTORY reads "main"). tinydate@1: main is CommonJS
+    // `module.exports = fn`, module is `export default fn`, and sirv-cli's
+    // require('tinydate') must get the function.
     if (subpath === '.') {
-        if (pkg.module)
+        if (conditions.includes('module') && pkg.module)
             return pkg.module;
         if (pkg.main)
             return pkg.main;
@@ -333,7 +338,7 @@ function resolvePackageEntry(pkg, subpath, conditions) {
     return null;
   }
   if (subpath === '.') {
-    if (pkg.module) return pkg.module;
+    if (conditions.includes('module') && pkg.module) return pkg.module;
     if (pkg.main) return pkg.main;
     return null;
   }

@@ -15,6 +15,8 @@
 export const NATIVE_HTTP_SOURCE = `
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
+const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent", "referer", "authorization",
+  "proxy-authorization", "if-modified-since", "if-unmodified-since", "from", "location", "max-forwards"]);
 Object.defineProperty(builtins, "http", {
   configurable: true, enumerable: true,
   get() {
@@ -179,7 +181,25 @@ Object.defineProperty(builtins, "http", {
       let detach = () => {};
       let timer;
       let nativeResponse;
-      const captureResponse = (_request, response) => { nativeResponse = response; };
+      const captureResponse = (incoming, response) => {
+        nativeResponse = response;
+        // workerd's #toReqRes keeps only the text before the first unquoted
+        // comma of these fields (splitHeaderValue, meant to pick the first of
+        // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
+        // and "(KHTML" of a Chrome User-Agent. The edge has already joined any
+        // duplicates here, so the full value is Node's value.
+        // workerd v1.20260926.1 src/node/internal/internal_http_server.ts
+        // multipleForbiddenHeaders and #toReqRes.
+        const raw = incoming.rawHeaders;
+        for (let i = 0; i + 1 < raw.length; i += 2) {
+          const name = String(raw[i]).toLowerCase();
+          if (!__nativeSplitHeaderFields.has(name)) continue;
+          const full = inbound.headers.get(name);
+          if (full === null || full === raw[i + 1]) continue;
+          raw[i + 1] = full;
+          incoming.headers[name] = full;
+        }
+      };
       const dispatch = async () => {
         // effect-platform binds first and attaches its request handler later.
         // Do not let the native server silently drop that first request.

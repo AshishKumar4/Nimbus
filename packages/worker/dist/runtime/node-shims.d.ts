@@ -6,7 +6,7 @@
  *   - path: complete POSIX path operations
  *   - os/process: Linux edge environment simulation
  *   - Buffer: Uint8Array wrapper with encoding support
- *   - events: full EventEmitter
+ *   - events: workerd's native node:events
  *   - stream: real Readable/Writable/Transform/Duplex with backpressure
  *   - crypto: createHash (FNV-1a sync, SubtleCrypto async), randomBytes/UUID
  *   - zlib: forward to workerd's native node:zlib when the facet real-import

@@ -6,7 +6,7 @@
  *   - path: complete POSIX path operations
  *   - os/process: Linux edge environment simulation
  *   - Buffer: Uint8Array wrapper with encoding support
- *   - events: full EventEmitter
+ *   - events: workerd's native node:events
  *   - stream: real Readable/Writable/Transform/Duplex with backpressure
  *   - crypto: createHash (FNV-1a sync, SubtleCrypto async), randomBytes/UUID
  *   - zlib: forward to workerd's native node:zlib when the facet real-import
@@ -5405,36 +5405,16 @@ const __osMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  events module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __eventsMod = (() => {
-  // X.5-Z5 (Z5 §1 follow-on): every method that reads/writes \`this._e\`
-  // lazy-initializes it. Userland (notably express's createApplication
-  // — express/lib/express.js:36-42) mixin-copies EventEmitter.prototype
-  // onto a plain function via merge-descriptors; the EE constructor
-  // never runs on that target so \`_e\` is undefined. The lazy guard
-  // \`(this._e ??= {})\` matches Node's behaviour (Node initializes
-  // _events on first use too) and makes mixin-copy patterns safe.
-  class EE {
-    constructor() { this._e = {}; this._maxListeners = 10; }
-    on(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).push(fn); return this; }
-    addListener(n, fn) { return this.on(n, fn); }
-    once(n, fn) { const w = (...a) => { this.removeListener(n, w); fn(...a); }; w.__orig = fn; return this.on(n, w); }
-    _remove(n, fn) { const e = (this._e ??= {}); if (e[n]) e[n] = e[n].filter(f => f !== fn && f.__orig !== fn); return this; }
-    off(n, fn) { return this._remove(n, fn); }
-    removeListener(n, fn) { return this._remove(n, fn); }
-    removeAllListeners(n) { if (n) { const e = (this._e ??= {}); delete e[n]; } else this._e = {}; return this; }
-    emit(n, ...a) { const e = (this._e ??= {}); const fns = e[n]; if (!fns || !fns.length) return false; for (const fn of [...fns]) fn(...a); return true; }
-    listeners(n) { const e = (this._e ??= {}); return (e[n] || []).map(f => f.__orig || f); }
-    listenerCount(n) { const e = (this._e ??= {}); return (e[n] || []).length; }
-    eventNames() { const e = (this._e ??= {}); return Object.keys(e).filter(k => e[k].length > 0); }
-    setMaxListeners(n) { this._maxListeners = n; return this; }
-    getMaxListeners() { return this._maxListeners; }
-    prependListener(n, fn) { const e = (this._e ??= {}); (e[n] = e[n] || []).unshift(fn); return this; }
-    rawListeners(n) { const e = (this._e ??= {}); return e[n] || []; }
-  }
-  EE.EventEmitter = EE;
-  EE.defaultMaxListeners = 10;
-  return EE;
-})();
+// workerd's own node:events (nodejs_compat). Its EventEmitter is Node's
+// function constructor, so \`EventEmitter.call(this)\` + util.inherits,
+// mixin-copies of EventEmitter.prototype (express's createApplication) and
+// the static once/on/captureRejections helpers behave as in Node, and native
+// node:http servers are instances of the same class userland requires.
+// https://developers.cloudflare.com/workers/runtime-apis/nodejs/events/ and
+// workerd v1.20260926.1 src/node/internal/events.ts (\`export function
+// EventEmitter\`; http servers extend it in internal_http_server.ts).
+const __eventsMod = typeof __real_events !== "undefined"
+  ? (__real_events.default ?? __real_events.EventEmitter) : globalThis.process.getBuiltinModule("events");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  stream module (real, with backpressure) ────────────────────────
@@ -5891,18 +5871,22 @@ const __cryptoMod = (() => {
 // which is how \`(async function () {}).constructor\` finds it. A facet without
 // the service (opencode's) keeps the native refusal.
 //
-// The plain \`Function\` constructor is left native, on evidence: code probes it
-// once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
+// The plain \`Function\` constructor is routed differently, on evidence: code
+// probes it once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
 // \`Function("null")\`, remembers whether it worked, and then compiles every
-// schema check with \`Function\`. Routed, the next launch staged the probe's
-// text but not the checks' — the probe said yes, the first check threw, and
-// pi's TUI died where the native refusal had kept it on TypeBox's interpreter.
-// Staging is per text, so a probe can never vouch for the texts after it.
+// schema check with \`Function\`; staging every text, the next launch staged the
+// probe's text but not the checks' — the probe said yes, the first check threw,
+// and pi's TUI died. So it answers only text an earlier launch staged, keeps
+// the native refusal otherwise, and stages a text only when its refusal ended
+// the program (the service's plainFunction and stageUnhandled): a probe the
+// program catches answers the same in every launch, while depd's wrapper,
+// built as express 4 loads, runs from the next launch on.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
 (() => {
   const kinds = [
+    ["function", Function],
     ["async", Object.getPrototypeOf(async function () {}).constructor],
     ["generator", Object.getPrototypeOf(function* () {}).constructor],
     ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
@@ -5917,7 +5901,8 @@ function __nimbusIsCodegenRefusal(e) {
         const service = globalThis.__nimbusRuntimeCode;
         if (!__nimbusIsCodegenRefusal(e) || !service) throw e;
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
-        return service.compileFunction(kind, args.slice(0, -1).map(String), body);
+        const params = args.slice(0, -1).map(String);
+        return kind === "function" ? service.plainFunction(params, body, e) : service.compileFunction(kind, params, body);
       }
     };
     Object.defineProperty(routed, "name", { value: Native.name });
@@ -5927,6 +5912,7 @@ function __nimbusIsCodegenRefusal(e) {
     Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
     Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
+    if (kind === "function") globalThis.Function = routed;
   }
 })();
 
@@ -7352,7 +7338,8 @@ function __nimbusFailUnhandledAsync(error, kind) {
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
-  const line = label + __nimbusRuntimeErrorTrace(error) + "\\n";
+  const staged = globalThis.__nimbusRuntimeCode ? globalThis.__nimbusRuntimeCode.stageUnhandled(error) : "";
+  const line = label + __nimbusRuntimeErrorTrace(error) + "\\n" + (staged && staged + "\\n");
   stderr += line;
   if (__supervisor && typeof __supervisor.stderr === "function") {
     try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}

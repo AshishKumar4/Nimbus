@@ -466,26 +466,40 @@ const __nimbusRuntimeKeys = new Set(__NIMBUS_RUNTIME_CODE);
 const __nimbusRuntimeLedger = new Map();
 let __nimbusRuntimeLedgerBytes = 0;
 const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};
-function __nimbusRuntimeCodeCompile(entry, describe) {
+function __nimbusRuntimeCodeKey(entry) {
   const __source = entry.kind === "module"
     ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
     : JSON.stringify([entry.kind, entry.params, entry.body]);
-  const __key = __nimbusCreateHash("sha256").update(__source).digest("hex");
-  if (__nimbusRuntimeKeys.has(__key)) return __nimbusRegistryRequire("./gen/" + __key + ".js");
-  const __charge = __source.length + ${RUNTIME_CODE_ENTRY_OVERHEAD};
+  return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };
+}
+// This launch's module for the code, or undefined when it was not staged.
+function __nimbusRuntimeCodeStaged(key) {
+  return __nimbusRuntimeKeys.has(key) ? __nimbusRegistryRequire("./gen/" + key + ".js") : undefined;
+}
+function __nimbusRuntimeCodeRecord({ source, key }, entry) {
+  const __charge = source.length + ${RUNTIME_CODE_ENTRY_OVERHEAD};
   if (
-    !__nimbusRuntimeLedger.has(__key)
+    !__nimbusRuntimeLedger.has(key)
     && __nimbusRuntimeLedger.size < ${RUNTIME_CODE_MAX_ENTRIES}
     && __nimbusRuntimeLedgerBytes + __charge <= ${RUNTIME_CODE_MAX_BYTES}
   ) {
-    __nimbusRuntimeLedger.set(__key, entry);
+    __nimbusRuntimeLedger.set(key, entry);
     __nimbusRuntimeLedgerBytes += __charge;
   }
+}
+function __nimbusRuntimeCodeCompile(entry, describe) {
+  const __id = __nimbusRuntimeCodeKey(entry);
+  const __staged = __nimbusRuntimeCodeStaged(__id.key);
+  if (__staged !== undefined) return __staged;
+  __nimbusRuntimeCodeRecord(__id, entry);
   const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with. It is staged: the next launch of this command compiles it.");
   __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
-  __err.key = __key;
+  __err.key = __id.key;
   throw __err;
 }
+// The plain Function constructor's refusal, as the program sees it: the
+// native EvalError, carrying the arguments for stageUnhandled.
+const __nimbusUnstagedCode = Symbol.for("nimbus.runtime-code.unstaged");
 // The wrapper function of a file that is not one of the launch's cells.
 function __nimbusRuntimeModule(path, text) {
   return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
@@ -497,6 +511,31 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
   },
   compileModule(path, text) {
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
+  },
+  // The plain Function constructor answers only what an earlier launch staged
+  // and otherwise keeps the native refusal, marked with its arguments. Code
+  // probes it (TypeBox's CanEvaluate tries Function("null") and then compiles
+  // every check with it), so a refusal the program handles is never staged:
+  // the probe's answer is the same in every launch.
+  plainFunction(params, body, refusal) {
+    const __entry = { kind: "function", params: Array.from(params, String), body: String(body) };
+    const __staged = __nimbusRuntimeCodeStaged(__nimbusRuntimeCodeKey(__entry).key);
+    if (__staged !== undefined) return __staged;
+    Object.defineProperty(refusal, __nimbusUnstagedCode, { value: __entry });
+    throw refusal;
+  },
+  // A refusal that ended the program (depd, loaded by express 4's
+  // body-parser, builds each deprecated wrapper with \`new Function\` as its
+  // module loads): stage its text for the next launch. Returns the line (no
+  // newline) the crash report adds, or "".
+  stageUnhandled(error) {
+    for (let __e = error, __depth = 0; __e !== null && typeof __e === "object" && __depth < 8; __e = __e.cause, __depth++) {
+      const __entry = __e[__nimbusUnstagedCode];
+      if (__entry === undefined) continue;
+      __nimbusRuntimeCodeRecord(__nimbusRuntimeCodeKey(__entry), __entry);
+      return "Nimbus [ERR_NIMBUS_CODE_NEXT_LAUNCH]: the code this program handed the Function constructor was produced after the launch started; it is staged, and the next launch of this command compiles it.";
+    }
+    return "";
   },
 });
 // What this launch could not compile, for the next launch of its command.

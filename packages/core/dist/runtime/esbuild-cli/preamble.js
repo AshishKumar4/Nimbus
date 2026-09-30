@@ -18,15 +18,17 @@
  * IIFE may contain no import, export or top-level await;
  * `globalThis.__esbuildCliRun` is its entry point.
  *
- * The same staged script carries the one other thing the facet runs that
+ * The same staged script carries the two other things the facet runs that
  * esbuild does not: the parse that routes a module's dynamic `import()` to the
  * process's ESM loader (dynamic-import-rewrite.ts), installed as
- * `globalThis.__nimbusRewriteDynamicImports` for the facet's transforms. It is
- * acorn's parse of a whole module, which is why it runs here and not in the
- * session's isolate.
+ * `globalThis.__nimbusRewriteDynamicImports`, and the lowering of a module
+ * with top-level await to a CommonJS body (async-module-lowering.ts), as
+ * `globalThis.__nimbusLowerAsyncModule`. Both are acorn parses of a whole
+ * module, which is why they run here and not in the session's isolate.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
+import { lowerAsyncModule } from '../async-module-lowering.js';
 // Node's open(2) flag values. Go reads them off `fs.constants`.
 const O_WRONLY = 0o1, O_RDWR = 0o2, O_CREAT = 0o100, O_EXCL = 0o200, O_TRUNC = 0o1000, O_APPEND = 0o2000;
 const O_DIRECTORY = 0o200000;
@@ -348,3 +350,4 @@ globalThis.__esbuildCliRun = async function __esbuildCliRun(args, supervisor, ou
     return exitCode;
 };
 globalThis.__nimbusRewriteDynamicImports = rewriteDynamicImports;
+globalThis.__nimbusLowerAsyncModule = lowerAsyncModule;
