@@ -28,6 +28,7 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { normalizeVfsPath } from './path.js';
+import { PathRevisions } from './path-revisions.js';
 import { z } from 'zod/v4';
 import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_READ_BATCH_REQUEST_BYTES, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
 import { CHUNK_SIZE, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, SQL_MAX_BOUND_PARAMETERS, DO_STORAGE_LIMIT_BYTES, } from '@nimbus-sh/platform/limits.js';
@@ -491,7 +492,10 @@ function accessChanged(path) {
  * never ENOENT: `get` falls through to SQLite, which is the authority.
  *
  * It stays coherent the way the always-resident map it replaces did: every
- * committed publication `set`s or `delete`s the paths it wrote.
+ * committed publication `set`s or `delete`s the paths it wrote. A `set`
+ * replaces a resident entry and admits nothing: writing a path says nothing
+ * about reading it next, and a workspace that writes a million files would
+ * otherwise fill the cache with them. Only a lookup (`get`) admits.
  *
  * Two generations rather than a list: a hit in the young one is one Map
  * lookup, a hit in the old one promotes the entry, and when the young one
@@ -538,10 +542,13 @@ class InodeTable {
     peek(path) {
         return this.young.get(path) ?? this.old.get(path);
     }
+    /** A committed entry replaces the resident one; a path not resident stays out. */
     set(path, inode) {
         this.epoch++;
-        this.old.delete(path);
-        this.admit(path, inode);
+        if (this.young.has(path))
+            this.young.set(path, inode);
+        else if (this.old.delete(path))
+            this.admit(path, inode);
     }
     delete(path) {
         this.epoch++;
@@ -619,34 +626,29 @@ export class SqliteVFS {
     _usedBytes = 0;
     _revision = 0;
     // ── Per-path revisions ────────────────────────────────────────────────
-    // _revision is the monotonic mutation clock. Every mutation stamps the
-    // mutated path AND each of its ancestors with the clock value, so
-    // revision(dir) is a subtree watermark: it changes iff something under
-    // dir changed. Consumers (runtime snapshot caches, page caches, handle
-    // staleness checks) key on revision(path) instead of the global clock,
-    // so unrelated writes no longer invalidate them. The stamps are in memory;
-    // a file without one reports its row's generation, and anything else the
-    // floor, which starts at the clock at open.
-    //
-    // Bounded by bytes, like the invalidation log below: a million-file tree
-    // written in one lifetime would otherwise hold a revision per path. Past
-    // the budget the oldest quarter goes at once (dropOldestPathRevisions),
-    // and a path with no entry reports _revisionFloor, the newest revision
-    // dropped, which is at least the last revision of every path without an
-    // entry. It must never report less: a resident row, a write receipt or an
-    // expected revision compared against a smaller number would be vouched for
-    // by a revision older than the path's last change. The floor only rises,
-    // so a dropped path can report a higher revision with nothing under it
-    // changed, which costs its readers a refetch, never a stale byte.
-    _pathRevisions = new Map();
-    _pathRevisionBytes = 0;
-    _revisionFloor = 0;
-    pathRevisionBudget;
-    static PATH_REVISIONS_MAX_BYTES = 16 * 1024 * 1024;
+    // _revision is the monotonic mutation clock. revision(dir) is a subtree
+    // watermark: it changes iff something under dir changed. Consumers
+    // (runtime snapshot caches, page caches, handle staleness checks) key on
+    // revision(path) instead of the global clock, so unrelated writes no
+    // longer invalidate them. The stamps, the floor and the rule a path
+    // reports by are PathRevisions (path-revisions.ts); SQLite holds the rest.
+    pathRevisions;
+    static PATH_REVISIONS_MAX_BYTES = 1024 * 1024;
+    /**
+     * What each transaction committed since the last publication wrote at each
+     * path: its row's generation or its tombstone's, and whether the row is a
+     * file's. An operation of several transactions (rename, an embedder's
+     * withTransaction) publishes once, at its last generation, but a path it
+     * wrote in an earlier one holds that earlier generation in SQLite, and
+     * that is what the path reports. bumpRevision logs each path at its
+     * report, so the log, the delta from SQLite, list(), stat and readRange's
+     * expectedRevision name one number for it.
+     */
+    committedRows = new Map();
     transactionPublication = null;
     // ── Invalidation log (facet cache coherence) ──────────────────────────
     // A facet's resident set is a cache of this VFS, and it learns what to
-    // drop by asking `invalidatedSince(cursor)` for the delta. _pathRevisions
+    // drop by asking `invalidatedSince(cursor)` for the delta. pathRevisions
     // cannot serve that: it answers "what is the watermark under here", not
     // "what changed since when".
     //
@@ -820,7 +822,6 @@ export class SqliteVFS {
         if (!Number.isSafeInteger(pathRevisionBytes) || pathRevisionBytes < 0) {
             throw vfsError('EINVAL', `per-path revision budget must be a byte count, not ${pathRevisionBytes}`);
         }
-        this.pathRevisionBudget = pathRevisionBytes;
         this.tombstoneRetain = options.tombstoneRows ?? TOMBSTONE_RETAIN_ROWS;
         this.coldStore = options.coldStore ?? null;
         if (!Number.isSafeInteger(this.tombstoneRetain) || this.tombstoneRetain < 0) {
@@ -860,6 +861,9 @@ export class SqliteVFS {
         this.events = new VfsEventEmitter();
         this.inodes = new InodeTable(inodeCacheEntries, (path) => this.loadInode(path), this.openNodes);
         this.initSchema();
+        // Nothing is stamped yet, and every earlier mutation is at or below the
+        // clock at open: a directory or a missing path reports at least it.
+        this.pathRevisions = new PathRevisions(pathRevisionBytes, this._gen);
         for (const row of this.sql.exec("SELECT args FROM vfs_jobs WHERE kind = 'import'")) {
             const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
             if (job.preserveInos)
@@ -1074,9 +1078,6 @@ export class SqliteVFS {
         this._epoch = String(state.incarnation);
         this._tombstoneFloor = Number(state.tomb_floor);
         this._revision = this._gen;
-        // Nothing is stamped yet, and every earlier mutation is at or below the
-        // clock at open: a directory or a missing path reports it.
-        this._revisionFloor = this._gen;
         this._invalidationFloor = this._gen;
         this.legacyTables = this.presentLegacyTables();
         if (this.legacyTables.length > 0)
@@ -1974,11 +1975,10 @@ export class SqliteVFS {
     /**
      * Without a path: the global mutation clock, which is the last committed
      * generation (`vfs_state.gen`) as of the last publication. With a path:
-     * the clock value at the last mutation inside that path's subtree, or the
-     * revision floor if that is older than the revisions still held (0 if
-     * nothing under it changed in this lifetime and nothing has been dropped).
-     * Never less than the last mutation. `revision('')` equals the global clock
-     * by construction (every mutation stamps all ancestors).
+     * the clock value at the last mutation inside that path's subtree, or a
+     * later one (the revision floor) if that is older than what is still held.
+     * Never less than the last mutation, never more than the clock.
+     * `revision('')` equals the global clock.
      */
     revision(path, cred) {
         if (path === undefined)
@@ -1989,36 +1989,42 @@ export class SqliteVFS {
         if (p === '')
             return this._revision;
         // Mutations stamp the path a name resolves to, so that is the counter.
-        let resolved = p;
+        let resolved;
         try {
-            resolved = this.resolvePath(p, cred ?? CRED_KERNEL, true, true).path;
+            resolved = this.resolvePath(p, cred ?? CRED_KERNEL, true, true);
         }
-        catch { /* the name's own */ }
-        return this.pathRevision(resolved);
+        catch {
+            // A name that does not resolve is the name's own counter. Read, not
+            // admitted: no lookup of it will find it through that name.
+            return this.pathRevision(p, this.inodes.peek(p) ?? this.loadInode(p) ?? null);
+        }
+        // The walk's own lookup of the leaf: a second would read SQLite again for a missing one.
+        return this.pathRevision(resolved.path, resolved.inode ?? null);
     }
     /**
-     * A storage key's revision: its own stamp; else, for a file or symlink,
-     * its row's generation, which its last mutation wrote and which survives
-     * restarts, so an untouched file keeps its revision across incarnations;
-     * else the floor. Never more than the global clock, so a row written by a
-     * transaction not yet published reports the clock.
+     * A storage key's revision (PathRevisions.report), from what SQLite holds
+     * at it: `inode`, its row (null for none), or else its tombstone.
      */
     pathRevision(key, inode) {
-        const stamped = this._pathRevisions.get(key);
-        if (stamped !== undefined)
-            return stamped;
-        const node = inode ?? this.inodes.get(key);
-        if (node !== undefined && !node.isDir)
-            return Math.min(node.gen, this._revision);
-        return this._revisionFloor;
+        if (inode !== null)
+            return this.pathRevisions.report(key, inode.gen, !inode.isDir, this._revision);
+        const tombstone = [...this.sql.exec('SELECT gen FROM vfs_tombstones WHERE path = ?', key)][0];
+        return this.pathRevisions.report(key, Number(tombstone?.gen ?? 0), false, this._revision);
     }
     /**
-     * Advance the clock to the committed generation, stamp every path + its
-     * ancestors, and record the mutation in the invalidation log. Every
-     * mutation commits at least one generation before it gets here, so the
-     * clock is strictly monotonic and equals `vfs_state.gen` after each
-     * publication; an operation of several transactions ticks it once, to its
-     * last generation.
+     * Advance the clock to the committed generation, stamp the directories
+     * above every path (PathRevisions.stamp), and record the mutation in the
+     * invalidation log. Every mutation commits at least one generation before
+     * it gets here, so the clock is strictly monotonic and equals
+     * `vfs_state.gen` after each publication; an operation of several
+     * transactions ticks it once, to its last generation.
+     *
+     * Each path is logged at what it now reports, which for a path without a
+     * stamp is what its last transaction wrote to SQLite (committedRows): in
+     * an operation of several transactions, that can be below the clock. So
+     * a reader that dates what it holds by the log and fetches with that as
+     * its expected revision fetches at the path's revision, and the delta
+     * from SQLite, which reads those same generations, names the same number.
      *
      * This is the single mutation chokepoint for coherence purposes. `rename`
      * bypasses the `_writeBatchOnce` funnel but reaches here, so a hook sited
@@ -2060,35 +2066,29 @@ export class SqliteVFS {
             this.advanceGeneration();
         const rev = this._gen;
         this._revision = rev;
-        for (const path of paths) {
-            let p = normalizeVfsPath(path);
-            const mutated = p;
-            while (p !== '') {
-                const stamped = this._pathRevisions.get(p);
-                // Stamped by this bump already, and so was every ancestor.
-                if (stamped === rev)
-                    break;
-                if (stamped === undefined)
-                    this._pathRevisionBytes += SqliteVFS.entryBytes(p);
-                this._pathRevisions.set(p, rev);
-                p = this.parentPath(p);
-            }
-            if (mutated === '')
-                continue;
-            this._record(rev, mutated, structural.get(mutated));
-            const parent = this.parentPath(mutated);
+        const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
+        this.pathRevisions.stamp(keys, rev);
+        for (const key of keys) {
+            // A path no transaction of this publication wrote a row for is at the
+            // generation advanceGeneration committed, the clock.
+            const committed = this.committedRows.get(key);
+            this._record(this.pathRevisions.report(key, committed?.gen ?? rev, committed?.file ?? false, rev), key, structural.get(key));
+            // A directory above a mutated path is stamped at the clock, and one
+            // whose stamp was dropped since is at the floor, which the drop raised
+            // to the clock.
+            const parent = this.parentPath(key);
             if (parent !== '')
                 this._record(rev, parent);
         }
-        if (this._pathRevisionBytes > this.pathRevisionBudget)
-            this.dropOldestPathRevisions();
+        this.committedRows.clear();
         if (this._invalidationBytes <= SqliteVFS.INVALIDATION_LOG_MAX_BYTES)
             return;
         let dropped = 0;
         while (dropped < this._invalidations.length
             && this._invalidationBytes > SqliteVFS.INVALIDATION_LOG_MAX_BYTES) {
             this._invalidationBytes -= SqliteVFS.entryBytes(this._invalidations[dropped].path);
-            this._invalidationFloor = this._invalidations[dropped].rev;
+            // An operation logs its paths at their own generations, not in order.
+            this._invalidationFloor = Math.max(this._invalidationFloor, this._invalidations[dropped].rev);
             dropped++;
         }
         if (dropped > 0)
@@ -2101,29 +2101,6 @@ export class SqliteVFS {
             gen = Number([...this.sql.exec('UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen')][0].gen);
         });
         this._gen = gen;
-    }
-    /**
-     * Drop every per-path revision at or below the oldest quarter's newest,
-     * and raise the floor to it. A quarter at a time, so the sort is paid once
-     * per quarter of the budget, not once per mutation.
-     *
-     * Everything at or below one revision goes together, and a directory is
-     * stamped whenever anything under it is, so it is never older than what it
-     * holds: a dropped directory takes everything under it along, and
-     * revision(dir) stays at or above the revision of every path under it.
-     */
-    dropOldestPathRevisions() {
-        while (this._pathRevisionBytes > this.pathRevisionBudget) {
-            const stamps = Float64Array.from(this._pathRevisions.values()).sort();
-            const cutoff = stamps[Math.floor(stamps.length / 4)];
-            for (const [path, stamped] of this._pathRevisions) {
-                if (stamped > cutoff)
-                    continue;
-                this._pathRevisions.delete(path);
-                this._pathRevisionBytes -= SqliteVFS.entryBytes(path);
-            }
-            this._revisionFloor = Math.max(this._revisionFloor, cutoff);
-        }
     }
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     static entryBytes(path) {
@@ -4485,6 +4462,7 @@ export class SqliteVFS {
             for (const row of page) {
                 const path = job.dst + String(row.path).slice(job.src.length);
                 published.push(path);
+                this.committedRows.set(path, { gen, file: Number(row.kind) !== INODE_KIND_DIRECTORY });
                 if (!this._countersLoaded)
                     continue;
                 if (Number(row.kind) === INODE_KIND_DIRECTORY)
@@ -7124,6 +7102,7 @@ export class SqliteVFS {
                 this._countersLoaded = false;
                 this.contentKeyMemo.clear();
                 this.manifestWindows.clear();
+                this.committedRows.clear();
                 // Generations the rollback discarded are reissued; nothing published them.
                 const state = [...this.sql.exec('SELECT gen, pin_gen FROM vfs_state WHERE slot = 1')][0];
                 this._gen = Number(state.gen);
@@ -7229,7 +7208,7 @@ export class SqliteVFS {
         // Identity and the reference a row replaces are decided by the state
         // before this transaction: a path it both deletes and republishes keeps
         // its number, as it did when every inode was resident.
-        const prior = plan.inodes.map((inode, index) => (inode.detached ?? (priors ? priors[index] : this.inodes.get(inode.path))));
+        const prior = plan.inodes.map((inode, index) => (inode.detached ?? (priors ? priors[index] : this.inodes.peek(inode.path) ?? this.loadInode(inode.path))));
         const deletedPrior = new Map();
         for (const entry of plan.deletes)
             deletedPrior.set(entry.path, entry.prior);
@@ -7570,6 +7549,13 @@ export class SqliteVFS {
             throw error;
         }
         this._gen = gen;
+        // Deletions first, as the transaction ran them: a path it removed and
+        // wrote again holds the row.
+        for (const entry of plan.deletes)
+            this.committedRows.set(entry.path, { gen, file: false });
+        for (const inode of plan.inodes)
+            if (!inode.detached)
+                this.committedRows.set(inode.path, { gen, file: !inode.isDir });
         for (const staging of created)
             if (!staging.durable)
                 this.activeStagingContentIds.add(staging.id);
@@ -7806,14 +7792,23 @@ export class SqliteVFS {
         }
         return this._tombstoneRows;
     }
-    /** Drop the oldest page of tombstones and raise the floor to the newest dropped. */
+    /**
+     * Drop the oldest page of published tombstones and raise the floors to the
+     * newest dropped. A path whose tombstone went reports the revision floor
+     * (PathRevisions.report), which must then cover its removal; a floor above
+     * the clock would be one no report may reach yet. So a tombstone an
+     * operation wrote and has not published (the public runContentMaintenance
+     * inside withTransaction; a commit that threw after it was durable) stays.
+     */
     pruneTombstones() {
-        const edge = [...this.sql.exec('SELECT gen FROM vfs_tombstones ORDER BY gen LIMIT 1 OFFSET ?', Math.min(TOMBSTONE_PRUNE_PAGE_ROWS, Math.max(1, this.tombstoneRows() - this.tombstoneRetain)) - 1)][0];
+        const edge = [...this.sql.exec('SELECT gen FROM vfs_tombstones WHERE gen <= ? ORDER BY gen LIMIT 1 OFFSET ?', this._revision, Math.min(TOMBSTONE_PRUNE_PAGE_ROWS, Math.max(1, this.tombstoneRows() - this.tombstoneRetain)) - 1)][0];
         if (edge === undefined) {
             this._tombstoneRows = null;
             return;
         }
         const floor = Number(edge.gen);
+        if (floor > this._revision)
+            throw new Error(`[sqlite-vfs] a tombstone prune reached ${floor}, past the published clock ${this._revision}`);
         let removed = 0;
         this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: TOMBSTONE_PRUNE_PAGE_ROWS * 2 + 1, sqlExecs: 3, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
             removed = [...this.sql.exec('DELETE FROM vfs_tombstones WHERE gen <= ? RETURNING 1', floor)].length;
@@ -7821,6 +7816,8 @@ export class SqliteVFS {
         });
         this._tombstoneFloor = Math.max(this._tombstoneFloor, floor);
         this._tombstoneRows = Math.max(0, this.tombstoneRows() - removed);
+        if (floor > this.pathRevisions.floor)
+            this.pathRevisions.dropThrough(floor);
     }
     /**
      * The next page of queued ids of `kind` past the cursor, pinned ones
@@ -8206,8 +8203,8 @@ export class SqliteVFS {
         const { plan, deletedInodes } = prepared;
         // What stood at each published path before this transaction. Read now,
         // while it is still true: after the commit, a lookup finds the row the
-        // commit wrote.
-        const priors = plan.inodes.map((entry) => this.inodes.get(entry.path));
+        // commit wrote. Not admitted: replacing a file is not a use of it.
+        const priors = plan.inodes.map((entry) => this.inodes.peek(entry.path) ?? this.loadInode(entry.path));
         try {
             this.executeTransactionPlan(plan, execution, onCommit, priors);
         }
@@ -8584,14 +8581,9 @@ export class SqliteVFS {
                 cacheCapacity: this.inodes.capacity,
                 memoryEstimate: this.inodes.size * 200, // ~200 bytes per resident entry
             },
-            // Per-path revisions held, against their byte budget. A path without
-            // one reports `floor`.
-            pathRevisions: {
-                paths: this._pathRevisions.size,
-                bytes: this._pathRevisionBytes,
-                maxBytes: this.pathRevisionBudget,
-                floor: this._revisionFloor,
-            },
+            // Directory revision stamps held, against their byte budget. A
+            // directory or missing path without one reports at least `floor`.
+            pathRevisions: this.pathRevisions.stats(),
         };
     }
 }

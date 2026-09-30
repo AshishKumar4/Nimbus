@@ -2,8 +2,9 @@
 // A path whose revision the supervisor dropped never vouches for a stale
 // resident row.
 //
-// SqliteVFS holds per-path revisions under a byte budget; a file it dropped
-// reports its row's generation, anything else the floor. The resident
+// SqliteVFS holds directory revision stamps under a byte budget; a file
+// reports its row's generation, and a directory or missing path without a
+// stamp at least the floor. The resident
 // store's reconcile keeps a row dated at or above the revision fsList reports
 // for its path, so a dropped path reporting 0, or anything below its last
 // write, would keep the bytes that write replaced. Nothing is mocked below
@@ -93,19 +94,23 @@ assert.equal(booted.filled, 8);
 const heldAt = store.__residentProvenance(TARGET);
 assert.equal(asText(store.__residentGet(TARGET)), 'v1-3');
 
-// ── A peer rewrites the target; churn then drops its revision ─────────────
+// ── A peer rewrites the target; churn then raises the floor past it ──────
 kfs.writeFile(TARGET, 'v2-peer');
 const writtenAt = kfs.revision(TARGET);
 assert.ok(writtenAt > heldAt);
 kfs.mkdir('churn', { mode: 0o755 });
 let churn = 0;
-while (rawVfs.getStats().pathRevisions.floor < writtenAt) kfs.writeFile(`churn/c${churn++}`, 'x');
-assert.equal(kfs.revision(TARGET), writtenAt, 'a dropped file reports its row generation: exactly its write');
+// A stamp is a directory's: each churn write stamps a directory of its own.
+while (rawVfs.getStats().pathRevisions.floor < writtenAt) {
+  kfs.mkdir(`churn/c${churn}`, { mode: 0o755 });
+  kfs.writeFile(`churn/c${churn++}/x`, 'x');
+}
+assert.equal(kfs.revision(TARGET), writtenAt, 'a file reports its row generation: exactly its write');
 
-// The listing reports the dropped path at or above its write, so above the
-// row's date. Reporting 0 there is what would keep the row.
+// The listing reports the path at or above its write, so above the row's
+// date. Reporting 0 there is what would keep the row.
 const listedAt = await listedRevision(TARGET);
-assert.ok(listedAt >= writtenAt, `a dropped path listed at ${listedAt}, below its write at ${writtenAt}`);
+assert.ok(listedAt >= writtenAt, `a path under the floor listed at ${listedAt}, below its write at ${writtenAt}`);
 
 // ── The reconcile: the stale row goes, the peer's bytes come back ─────────
 const repaired = await store.__residentSynchronizeFromSupervisor(supervisor);
@@ -114,8 +119,8 @@ assert.equal(asText(store.__residentGet(TARGET)), 'v2-peer', 'a floor-reported r
 assertNoStaleByte(store, 'after the floor rose');
 assert.ok(store.__residentProvenance(TARGET) >= writtenAt);
 
-// Untouched rows are kept: a file whose stamp was dropped lists at its row's
-// generation, the revision it was dated at. Only the rewritten one goes, and
+// Untouched rows are kept: a file lists at its row's generation, the
+// revision it was dated at, whatever the floor. Only the rewritten one goes, and
 // only it is refetched: the churn is named by the namespace but not in the
 // launch's data plan.
 assert.equal(repaired.dropped, 1, 'only the rewritten row was dropped');

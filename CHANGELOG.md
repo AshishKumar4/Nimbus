@@ -5,6 +5,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A workspace no longer holds memory for every file it writes or removes.
+  `SqliteVFS` kept each written file's inode in its cache and a revision
+  stamp for every path written or removed, about 350 B per file, up to
+  64k inodes and 16 MiB of stamps: a workspace kept for an isolate's life
+  grew by 21 MiB of heap over 100,000 files. A write now replaces a cached
+  inode but admits none, the cache holds 8,192 entries (about 2.4 MiB), and
+  only directories hold revision stamps (1 MiB at most): a file or a
+  removed path reports the generation SQLite wrote with it, its row's or
+  its tombstone's. Writing 100,000 files grows the heap by 0.1 MiB.
+  `revision(path)` keeps its contract: never below the last change at or
+  under the path, never above the clock, a directory never below anything
+  under it. A pruned tombstone raises the floor, as a dropped stamp does,
+  and only a published one is pruned. An operation of several transactions
+  (a rename, an embedder's `withTransaction`) publishes each path at the
+  generation SQLite holds for it, which is what `revision(path)`, `list()`,
+  `stat` and the delta from SQLite name too: an atomic write (write a temp
+  file, rename it over) no longer leaves a resident reader fetching at a
+  revision the path does not report, which `readRange` refused with ESTALE.
+
 - Removing an import's destination abandons the import, so an interrupted
   import can be started again there. An import whose sender stopped after a
   page kept its `vfs_jobs` row after its destination was removed, and

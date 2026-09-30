@@ -7,7 +7,7 @@ edition: 1.0.0
 formalScope: abstract-model-only
 requirements:
   VFS-REV-001:
-    statement: A path's reported revision (content-store P5 rule) never falls below its own last mutation nor rises above the clock, a directory never reports below any path under it, so every report of a path made before a mutation of it is below every report made after, and the floor never decreases.
+    statement: With stamps held only for directories (a written or removed path reports the generation of its row or tombstone) and operations of several transactions (each path at its own generation, published at the last), a path's reported revision never falls below its own last mutation nor rises above the clock, a directory never reports below any path under it, so every report of a path made before a mutation of it is below every report made after, and the floor never decreases.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.RevisionFloor.revision_ge_last
@@ -19,6 +19,12 @@ requirements:
       - Nimbus.Vfs.RevisionFloor.step_inv
       - Nimbus.Vfs.RevisionFloor.walk_eq
       - Nimbus.Vfs.RevisionFloor.walkAll_eq
+      - Nimbus.Vfs.RevisionFloor.not_under_dropLast
+      - Nimbus.Vfs.RevisionFloor.stampOne_eq
+      - Nimbus.Vfs.RevisionFloor.stampOne_closed
+      - Nimbus.Vfs.RevisionFloor.above_iff
+      - Nimbus.Vfs.RevisionFloor.bump_stamps
+      - Nimbus.Vfs.RevisionFloor.bump_stamps_above
       - Nimbus.Refine.RevisionFloorCases.dropOnce_step
       - Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
       - Nimbus.Refine.RevisionFloorCases.execBump_reach
@@ -32,19 +38,45 @@ requirements:
       - Nimbus.Vfs.RevisionFloor.walked_closed
       - Nimbus.Vfs.RevisionFloor.bump_inv
       - Nimbus.Vfs.RevisionFloor.drop_inv
+      - Nimbus.Vfs.RevisionFloor.forget_inv
       - Nimbus.Vfs.RevisionFloor.last_step
       - Nimbus.Vfs.RevisionFloor.steps_facts
     tsRefs:
+      - packages/core/src/vfs/path-revisions.ts#PathRevisions.stamp
+      - packages/core/src/vfs/path-revisions.ts#PathRevisions.dropThrough
+      - packages/core/src/vfs/path-revisions.ts#PathRevisions.report
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.revision
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pathRevision
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.bumpRevision
-      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.dropOldestPathRevisions
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pruneTombstones
     refinement:
       - lean/fixtures/revision-floor.json :: tests/unit/revision-floor-refinement.mjs
     remainingEvidence:
       - Paths are component lists; normalizeVfsPath and a confined caller's storageKey are not modeled
       - The code's cutoff rule is exercised by the fixtures; every theorem holds for any cutoff at or below the clock
-      - One bump is one operation at clock + 1; multi-transaction operations (a row's generation below the operation's revision) and jumping revisions are not modeled, and neither are deletes' tombstones (Nimbus.Coherence.DurableDelta covers those)
+      - A bump names exactly the paths whose rows or tombstones it writes (the code's affectedPaths), each at the generation of the transaction that wrote it last; the fixtures cover one transaction, rename (two) and embedder transactions of writes and removals, not a rename's multi-group phases, copyTree slices or restore
+      - A tombstone prune is a drop to the pruned edge followed by forget, and no fixture prunes one (the code keeps 65,536)
+  VFS-REV-003:
+    statement: The invalidation log names every path a publication mutated at the revision the path reports right after it (its stamp, else its row's generation for a file, else the later of the floor and its own generation), and the directory of each at the publication's revision, which it reports too, whatever the stamp budget drops.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.RevisionFloor.log_eq_revision
+      - Nimbus.Vfs.RevisionFloor.parent_log_eq_revision
+      - Nimbus.Vfs.RevisionFloor.drops_facts
+      - Nimbus.Vfs.RevisionFloor.drops_reachable
+      - Nimbus.Vfs.RevisionFloor.drops_trans
+      - Nimbus.Refine.RevisionFloorCases.dropOnce_drops
+      - Nimbus.Refine.RevisionFloorCases.dropWhileOver_drops
+      - Nimbus.Refine.RevisionFloorCases.execBump_drops
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.bumpRevision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.committedRows
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.executeTransactionPlan
+    refinement:
+      - lean/fixtures/revision-floor.json :: tests/unit/revision-floor-refinement.mjs
+    remainingEvidence:
+      - The log is modeled as what bumpRevision records for one publication (logRev), not as the bounded list invalidatedSince reads; merging entries per path at the newest is the fixture's, and the refinement test compares invalidatedSince's answer with it
+      - The delta from SQLite (invalidatedFromSql) is not modeled; tests/unit/sqlite-vfs-range-revision.mjs checks that it names a file at the revision the file reports
   VFS-REV-002:
     statement: Reporting an unheld path at 0 rather than at the floor reports a path below its last write.
     status: by-construction-witness
