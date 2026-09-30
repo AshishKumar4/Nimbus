@@ -731,13 +731,13 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
       const p = await this.path(path);
       if (options?.createParents) await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
-      await this.mountOp('writeRange', 'open', path, this.namespace.writeRange)(p, offset, bytes);
+      await this.namespace.writeRange(p, offset, bytes);
       return this.receipt();
     });
   }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-      await this.mountOp('truncate', 'open', path, this.namespace.truncate)((await this.path(path)), size);
+      await this.namespace.truncate((await this.path(path)), size);
       return this.receipt();
     });
   }
@@ -746,19 +746,19 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const p = (await this.path(path, options?.followSymlinks !== false));
       const now = Date.now();
       const kept = atimeMs === undefined || mtimeMs === undefined ? await this.namespace.stat(p) : null;
-      await this.mountOp('utimes', options?.followSymlinks === false ? 'lutime' : 'utime', path, this.namespace.utimes)(p, atimeMs === undefined ? (kept?.atimeMs ?? now) : (atimeMs ?? now), mtimeMs === undefined ? (kept?.mtimeMs ?? now) : (mtimeMs ?? now));
+      await this.namespace.utimes(p, atimeMs === undefined ? (kept?.atimeMs ?? now) : (atimeMs ?? now), mtimeMs === undefined ? (kept?.mtimeMs ?? now) : (mtimeMs ?? now));
       return this.receipt();
     });
   }
   chmod(path: RuntimeFsPath, mode: number) {
     return this.either([path], () => this.bridge.chmod(path, mode), async () => {
-      await this.mountOp('chmod', 'chmod', path, this.namespace.chmod)((await this.path(path)), mode);
+      await this.namespace.chmod((await this.path(path)), mode);
       return this.receipt();
     });
   }
   chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }) {
     return this.either([path], () => this.bridge.chown(path, uid, gid, options), async () => {
-      await this.mountOp('chown', options?.followSymlinks === false ? 'lchown' : 'chown', path, this.namespace.chown)((await this.path(path, options?.followSymlinks !== false)), uid, gid);
+      await this.namespace.chown((await this.path(path, options?.followSymlinks !== false)), uid, gid);
       return this.receipt();
     });
   }
@@ -781,19 +781,19 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink((await this.path(path, false))));
   }
   rmdir(path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.rmdir(path), async () => this.mountOp('rmdir', 'rmdir', path, this.namespace.rmdir)((await this.path(path, false))));
+    return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
   }
   rename(from: RuntimeFsPath, to: RuntimeFsPath) {
-    return this.either([from, to], () => this.bridge.rename(from, to), async () => this.mountOp('rename', 'rename', from, this.namespace.rename)((await this.path(from, false)), (await this.path(to, false))));
+    return this.either([from, to], () => this.bridge.rename(from, to), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
   }
   realpath(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
   }
   readlink(path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.mountOp('readlink', 'readlink', path, this.namespace.readlink)((await this.path(path, false)))));
+    return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.namespace.readlink((await this.path(path, false)))));
   }
   symlink(target: string, path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.symlink(target, path), async () => this.mountOp('symlink', 'symlink', path, this.namespace.symlink)(target, (await this.path(path, false))));
+    return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
   }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }) {
     return this.either([path], () => this.bridge.remove(path, options), async () => {
@@ -805,17 +805,17 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       }
       if (stat.type !== 'directory') return this.namespace.unlink(p);
       if (!options?.recursive) throw syscallError('EISDIR', 'rm', p);
-      const report: VfsRemoval | undefined = await this.mountOp('removeRecursive', 'rm', path, this.namespace.removeRecursive)(p);
+      const report: VfsRemoval | undefined = await this.namespace.removeRecursive(p);
       const failed = report?.failures?.[0];
       if (failed) throw syscallError(failed.error.code, 'rm', failed.path);
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
-    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.mountOp('copy', 'copyfile', from, this.namespace.copy)((await this.path(from)), (await this.path(to)), { recursive: false }));
+    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
   }
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }) {
     return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
-      await this.mountOp('copy', 'cp', from, this.namespace.copy)((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
+      await this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
       return 0;
     });
   }
@@ -886,7 +886,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
       this.live();
       try {
-        await this.mountOp('writeRange', 'write', d.path, this.namespace.writeRange)(d.path, start, bytes);
+        await this.namespace.writeRange(d.path, start, bytes);
       } catch (error) {
         if (!(error instanceof VfsError && error.code === 'ENOTSUP')) throw error;
         const file = await this.namespace.readFile(d.path);
@@ -943,28 +943,20 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number) {
     return this.on(handleId, () => this.bridge.ftruncate(handleId, size), async (d) => {
       if (!d.flags.write) throw fsError('EINVAL', 'ftruncate', d.path);
-      await this.mountOp('truncate', 'ftruncate', d.path, this.namespace.truncate)(d.path, size);
+      await this.namespace.truncate(d.path, size);
     });
   }
 
   fchmod(handleId: number, mode: number) {
-    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.mountOp('chmod', 'fchmod', d.path, this.namespace.chmod)(d.path, mode); });
+    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.namespace.chmod(d.path, mode); });
   }
 
   fchown(handleId: number, uid: number, gid: number) {
-    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.mountOp('chown', 'fchown', d.path, this.namespace.chown)(d.path, uid, gid); });
+    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.namespace.chown(d.path, uid, gid); });
   }
 
   futimes(handleId: number, atimeMs: number, mtimeMs: number) {
-    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.mountOp('utimes', 'futime', d.path, this.namespace.utimes)(d.path, atimeMs, mtimeMs); });
-  }
-
-  /** The namespace's `name`, or ENOTSUP for `syscall` when it has none. */
-  private mountOp<Args extends unknown[], Result>(name: keyof VFS, syscall: string, path: RuntimeFsPath, op: ((...args: Args) => Result) | undefined): (...args: Args) => Result {
-    if (typeof op !== 'function') {
-      throw syscallError('ENOTSUP', syscall, typeof path === 'string' ? path : path.path, { detail: `this filesystem does not support ${String(name)}` });
-    }
-    return op.bind(this.namespace);
+    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.namespace.utimes(d.path, atimeMs, mtimeMs); });
   }
 }
 
