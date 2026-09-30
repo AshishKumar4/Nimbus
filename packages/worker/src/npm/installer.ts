@@ -45,7 +45,7 @@ import {
   type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
-import { JsonObjectSchema, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
+import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import {
@@ -1952,9 +1952,10 @@ export class NpmInstaller {
 
     // A package.json the install cannot read or write fails it; a corrupt one is left as it is.
     const text = await fs.readFileString(pkgJsonPath);
-    let parsed: unknown;
-    try { parsed = JSON.parse(text); } catch { return; }
-    const pkgJson = JsonObjectSchema.parse(parsed);
+    let pkgJson: unknown;
+    try { pkgJson = JSON.parse(text); } catch { return; }
+    // A document or dependency map that is not an object cannot take a field.
+    if (!isJsonObject(pkgJson)) throw new TypeError('package.json is not an object');
     if (!pkgJson.dependencies) pkgJson.dependencies = {};
 
     for (const spec of explicitPackages) {
@@ -1965,7 +1966,8 @@ export class NpmInstaller {
       const { name } = parseExplicitPackageSpec(spec);
       const pkg = resolved.get(name);
       if (pkg) {
-        const dependencies = JsonObjectSchema.parse(pkgJson.dependencies);
+        const dependencies = pkgJson.dependencies;
+        if (!isJsonObject(dependencies)) throw new TypeError('package.json dependencies is not an object');
         dependencies[name] = '^' + pkg.version;
       }
     }

@@ -30,7 +30,7 @@ import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.j
 import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { VITE_CONFIG_KEY } from '../session/keys.js';
 import type { SessionInternal } from '../session/internal.js';
-import { isJsonObject, JsonObjectSchema, PackageJsonSchema } from '../npm/package-lock.js';
+import { isJsonObject } from '../npm/package-lock.js';
 
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
@@ -1219,21 +1219,21 @@ registry.register('npm', async (ctx: any) => {
     // or write fails the command, a corrupt one is left as it is.
     const pkgPath = `/${cwdKey}/package.json`;
     try {
-      let parsed: unknown;
-      try { parsed = JSON.parse(await ctx.vfs.readFileString(pkgPath)); }
+      let pkgJson: unknown;
+      try { pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath)); }
       catch (error) {
         if (error instanceof SyntaxError ||
             (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) return failed ? 1 : 0;
         throw error;
       }
-      const pkgJson = PackageJsonSchema.parse(parsed);
       for (const pkg of packages) {
-        if (!isJsonObject(pkgJson)) continue;
+        // Fails where deleting the field would: null has no fields, and a string's own index cannot be deleted.
+        if (pkgJson === null) throw new TypeError('package.json is null');
         for (const field of ['dependencies', 'devDependencies'] as const) {
-          const dependencies = pkgJson[field];
+          const dependencies = isJsonObject(pkgJson) ? pkgJson[field] : undefined;
           if (isJsonObject(dependencies)) delete dependencies[pkg];
-          else if (typeof dependencies === 'string' && Object.prototype.hasOwnProperty.call(dependencies, pkg)) {
-            JsonObjectSchema.parse(dependencies);
+          else if (typeof dependencies === 'string' && Object.hasOwn(Object(dependencies), pkg)) {
+            throw new TypeError(`package.json ${field} is a string`);
           }
         }
       }

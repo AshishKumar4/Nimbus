@@ -5,17 +5,11 @@
  */
 import { isSemverRange, satisfiesRange } from './semver.js';
 import { parseRegistryRequest } from './resolve-one-facet.js';
-import { z } from 'zod/v4';
 
+/** A parsed JSON object or array: a value whose fields can be read and set. */
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
 }
-
-export const JsonObjectSchema = z.custom<Record<string, unknown>>(isJsonObject);
-type PackageJson = Record<string, unknown> | string | number | boolean;
-export const PackageJsonSchema = z.custom<PackageJson>((value): value is PackageJson =>
-  isJsonObject(value) || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean',
-);
 
 export interface PackageLockEntry {
   name?: unknown;
@@ -61,8 +55,9 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependenc
  * dependency set, so a dependency removed from package.json is caught too.
  */
 export function packageLockMismatches(value: unknown, lock: PackageLock): string[] {
-  const parsed = PackageJsonSchema.parse(value);
-  const pkgJson = isJsonObject(parsed) ? parsed : {};
+  // A primitive document declares nothing; null has no fields to read.
+  if (value === null) throw new TypeError('package.json is null');
+  const pkgJson = isJsonObject(value) ? value : {};
   const out: string[] = [];
   const root = lock.packages[''] ?? {};
   for (const field of DEPENDENCY_FIELDS) {

@@ -58,12 +58,12 @@
 import type { ResolvedPackage } from './resolver.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { ParsedSemver, resolveVersion, isSemverRange, parseSemver } from './semver.js';
+import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, resolveVersion } from './semver.js';
 
 declare const RESOLVE_VERSION: typeof resolveVersion;
 declare const IS_SEMVER_RANGE: typeof isSemverRange;
 declare const PARSE_SEMVER: typeof parseSemver;
-declare const COMPARE_SEMVER: (a: ParsedSemver | null, b: ParsedSemver | null) => number;
+declare const COMPARE_SEMVER: typeof compareSemver;
 
 declare const __nimbusUseRpcResult: <T, R>(
   promise: Promise<T>,
@@ -445,16 +445,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   type Packument = { versions: NonNullable<unknown>; 'dist-tags'?: unknown };
   const hasVersions = (value: unknown): value is Packument =>
     value !== null && typeof value === 'object' && 'versions' in value && !!value.versions;
-  // JavaScript property access boxes primitive values.
-  const readProperty = (value: unknown, key: string): unknown => {
-    if (value === null || value === undefined) return undefined;
-    const target: unknown = Object(value);
-    if ((target !== null && typeof target === 'object') || typeof target === 'function') {
-      const field: unknown = Reflect.get(target, key);
-      return field;
-    }
-    return undefined;
-  };
+  // `value[key]` as JavaScript reads it, a primitive's through its wrapper; undefined for null and undefined.
+  const readProperty = (value: unknown, key: string): unknown =>
+    value === null || value === undefined ? undefined : Reflect.get(Object(value), key);
   type Loaded = { data: Packument; bytes: number; source: ResolveOneResult['packumentSource'] } | { failed: ResolveOneResult };
   const loadPackument = async (name: string): Promise<Loaded> => {
   let packumentText: string | null = null;
@@ -566,7 +559,14 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   let version = pickVersion(packument.data);
   if (__swap && __swap.since) {
     const own = version;
-    const covered = own !== null && readProperty(packument.data.versions, String(own)) !== undefined && COMPARE_SEMVER(PARSE_SEMVER(String(own)), PARSE_SEMVER(__swap.since)) >= 0;
+    let covered = false;
+    if (own !== null && readProperty(packument.data.versions, String(own)) !== undefined) {
+      const ownSemver = PARSE_SEMVER(String(own));
+      const since = PARSE_SEMVER(__swap.since);
+      // A version that does not parse cannot be ordered: the resolve fails, as it always has.
+      if (ownSemver === null || since === null) throw new TypeError(`${ownSemver === null ? own : __swap.since} is not a semver version`);
+      covered = COMPARE_SEMVER(ownSemver, since) >= 0;
+    }
     if (covered) {
       const target = await loadPackument(__swap.to);
       if ('failed' in target) return target.failed;
@@ -672,7 +672,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // Top-5 sibling versions.
   const sorted = Object.keys(data.versions)
     .map((v) => ({ v, p: PARSE_SEMVER(v) }))
-    .filter((x) => x.p !== null)
+    .filter((x): x is { v: string; p: ParsedSemver } => x.p !== null)
     .sort((a, b) => COMPARE_SEMVER(b.p, a.p));
   for (let i = 0; i < Math.min(5, sorted.length); i++) {
     const otherVer = sorted[i].v;
