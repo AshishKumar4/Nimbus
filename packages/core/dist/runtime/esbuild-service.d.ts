@@ -9,7 +9,6 @@
  * VFS resolver plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
-import type { BundleCellResultStore } from './bundle-cell-transform.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -234,12 +233,12 @@ export interface EsbuildServiceOptions {
     /** Where build() runs. Absent: this isolate. */
     buildHost?: EsbuildBuildHost;
     /**
-     * Where the launch pipeline keeps this service's transform results across
-     * launches (bundle-cell-transform.ts). A store is bound to the transform
-     * host whose results it holds, so it is given with that host, never apart
-     * from it. Absent: nothing is kept, and every launch transforms every cell.
+     * The transform host's code identity, given with the host: equal ids
+     * transform equal requests to equal outcomes. It is what lets a launch keep
+     * its results (bundle-cell-transform.ts): a store bound to one id never
+     * serves another's. Absent: the host's results are not kept.
      */
-    results?: BundleCellResultStore;
+    transformHostId?: string;
 }
 /**
  * What a build reads modules through: a view of the namespace as some
@@ -273,8 +272,8 @@ export declare class EsbuildService {
     private vfs;
     private readonly transformHost;
     private readonly buildHost;
-    /** See EsbuildServiceOptions.results. */
-    readonly results: BundleCellResultStore | null;
+    /** See EsbuildServiceOptions.transformHostId. */
+    readonly transformHostId: string | null;
     private initialized;
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */

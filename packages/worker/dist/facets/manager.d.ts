@@ -25,6 +25,7 @@ import { type PortVisibility } from '../session/port-capability.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -239,7 +240,7 @@ interface FacetVfsState {
     /** Diagnostics: was the bundle truncated by the encoded-size cap? */
     truncated: boolean;
     /** Diagnostics: how the build's transforms were answered. */
-    transforms?: BundleTransformStats;
+    transforms?: BundleCellTransformStats;
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -638,21 +639,6 @@ export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<st
     added: number;
     bytes: number;
 }>;
-/** How a build's transforms were answered, for the launch's diagnostics. */
-interface BundleTransformStats {
-    /** Cells the pipeline covered (needsBundleCellTransform). */
-    cells: number;
-    /** Answered from the esbuild service's store, with no transform at all. */
-    stored: number;
-    /** Transformed by this build: lowered, or rewritten for dynamic import(). */
-    transformed: number;
-    /** esbuild's verdict was a rejection; the cell is a diagnostic shim. */
-    failed: number;
-    /** Source sent to the transform host. */
-    hostBytes: number;
-    /** Wall time of the pass, turns it yielded included. */
-    ms: number;
-}
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -669,7 +655,7 @@ interface BundleTransformStats {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, runtimeModules?: ReadonlyMap<string, string>): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, runtimeModules?: ReadonlyMap<string, string>, transformStore?: BundleCellResultStore): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -1091,10 +1077,18 @@ export declare class FacetManager {
      * to the process's ESM loader, with the entry's own URL as the parent (Node
      * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
      * in the esbuild facet like every cell's, and its result is kept by content
-     * in the esbuild service's store. The module-map walk reads the script as
+     * in the session's transform store. The module-map walk reads the script as
      * written, before this.
      */
     private _entryDynamicImports;
+    /**
+     * The store this session's launches keep their transform results in: the
+     * session's database, admitted through its storage ledger, bound to the
+     * esbuild service's transform host. None when the host has no identity (a
+     * result could not be told apart from another host's) or there is no
+     * filesystem to admit against.
+     */
+    private _transformStore;
     /**
      * The pacer every launch is built under: the session's alarm-driven turn
      * pump, the deployment's chunk bound, and the one check a suspended launch

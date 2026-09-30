@@ -91,12 +91,16 @@ export type BundleCell = {
  | {
     readonly outcome: EsbuildTransformOutcome;
 });
-/** What a cell stages as, and what a store keeps for it. */
+/** What a cell stages as. */
 export interface BundleCellResult {
     /** The cell's code: CommonJS, the TypeScript emit, or the diagnostic shim. */
     readonly code: string;
     readonly lowered: boolean;
-    /** esbuild's verdict was a rejection, and `code` is the shim that reports it. */
+    /**
+     * esbuild's verdict was a rejection, and `code` is the shim that reports it.
+     * Never stored: a host can report a crash as a rejection, and a stored shim
+     * would outlive the crash in every launch after it.
+     */
     readonly failed: boolean;
 }
 /**
@@ -120,6 +124,11 @@ export declare function settleBundleCell(cell: BundleCell, outcome: EsbuildTrans
  * parent. Its result is the host's code as returned.
  */
 export declare function entryScriptRequest(code: string, parentUrl: string): EsbuildTransformRequest;
+/** A result as a store keeps it: only transforms that succeeded are kept. */
+export interface StoredBundleCell {
+    readonly code: string;
+    readonly lowered: boolean;
+}
 /**
  * Transform results kept across launches, by content: the worker's
  * TransformStore over the session's SQLite. A store is bound to the transform
@@ -132,12 +141,75 @@ export interface BundleCellResultStore {
      */
     key(kind: 'cell' | 'entry', at: string, source: string): Promise<string>;
     /** The results held for `keys`; a key the store does not hold is absent. */
-    getMany(keys: readonly string[]): Map<string, BundleCellResult>;
+    getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
     /**
      * Keep `result` under `key`. `spend` accounts each slice written, so a
-     * paced caller's writes land on as many turns as they take. Never throws:
-     * a result the store cannot keep costs the next launch a transform.
+     * paced caller's writes land on as many turns as they take, and what it
+     * throws (the launch is no longer wanted) is thrown from here. Resolves
+     * null, or the reason storage refused the result for space; every other
+     * storage failure throws.
      */
-    put(key: string, result: BundleCellResult, spend?: (bytes: number) => Promise<void>): Promise<void>;
+    put(key: string, result: StoredBundleCell, spend?: (bytes: number) => Promise<void>): Promise<string | null>;
 }
+/** The transform host transformBundleCells sends its requests to: EsbuildService.transformMany. */
+export interface BundleCellHost {
+    transformMany(requests: readonly EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
+}
+/** What paces a launch: a TurnBudget, which ends the turn once a chunk's worth of work is spent. */
+export interface BundleCellPacer {
+    spend(bytes: number): Promise<void>;
+}
+/** How a launch's transforms were answered, for its diagnostics. */
+export interface BundleCellTransformStats {
+    /** Cells the pipeline covered (needsBundleCellTransform). */
+    cells: number;
+    /** Answered from the store, with no transform at all. */
+    stored: number;
+    /** Transformed by this launch: lowered, or rewritten for dynamic import(). */
+    transformed: number;
+    /** esbuild's verdict was a rejection; the cell is a diagnostic shim. */
+    failed: number;
+    /** Source sent to the transform host. */
+    hostBytes: number;
+    /** Results the store refused, storage being full, and the first refusal's reason. */
+    storeErrors: number;
+    storeError?: string;
+    /** Wall time of the pass, turns it yielded included. */
+    ms: number;
+}
+/**
+ * Transform `cells` (each needsBundleCellTransform) and hand each result to
+ * `place` as it settles.
+ *
+ * The cells go one transform slice at a time (transformSlices): the store is
+ * asked for the slice, the session's own steps run on its misses — accounted
+ * to the pacer first, since they are computation in this isolate — the host
+ * transforms what remains in one call, each result it produced is stored, and
+ * the host's work is spent before the next slice. A launch's transforms then
+ * take as many turns as they need rather than one turn waiting on all of them:
+ * pi's held an alarm turn for 14-16 s.
+ *
+ * Only a paced launch stores what it transforms: its writes land on as many
+ * turns as they take, where an unpaced one would put every write in one turn.
+ * A transient host failure throws (settleBundleCell) before anything of its
+ * slice is placed.
+ */
+export declare function transformBundleCells(cells: ReadonlyArray<{
+    readonly path: string;
+    readonly source: string;
+}>, { host, store, pacer }: {
+    host: BundleCellHost;
+    store?: BundleCellResultStore | null;
+    pacer?: BundleCellPacer;
+}, place: (path: string, result: BundleCellResult) => void): Promise<BundleCellTransformStats>;
+/**
+ * The entry script as the facet compiles it (entryScriptRequest), read from
+ * the store when it holds it. A host that rejects or cannot run the rewrite
+ * throws: a failed entry rewrite must not reach a Worker Loader as native host
+ * import(), or become an immutable cached image.
+ */
+export declare function transformEntryScript(code: string, parentUrl: string, { host, store }: {
+    host: BundleCellHost;
+    store?: BundleCellResultStore | null;
+}): Promise<string>;
 //# sourceMappingURL=bundle-cell-transform.d.ts.map

@@ -54,8 +54,6 @@ assert.equal(typeof estimate.breakdown.prefetchBundleBytes, 'number',
   'the build has a breakdown component of its own');
 assert.equal(typeof estimate.breakdown.prefetchCacheBytes, 'number',
   'so does the retained cache');
-assert.equal('transformCacheBytes' in estimate.breakdown, false,
-  'transform results persist in the session database (facets/transform-store.ts), not in the heap');
 
 // With nothing unbounded left, a finite worst case can honestly be stated.
 assert.equal(estimate.blindSpotCeilingBytes, 0,

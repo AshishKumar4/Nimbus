@@ -22,7 +22,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
-import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, } from './esbuild-service.js';
+import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
 /**
@@ -187,4 +187,107 @@ export function settleBundleCell(cell, outcome) {
  */
 export function entryScriptRequest(code, parentUrl) {
     return { code, options: { rewriteOnly: true, dynamicImportParent: parentUrl } };
+}
+/**
+ * Transform `cells` (each needsBundleCellTransform) and hand each result to
+ * `place` as it settles.
+ *
+ * The cells go one transform slice at a time (transformSlices): the store is
+ * asked for the slice, the session's own steps run on its misses — accounted
+ * to the pacer first, since they are computation in this isolate — the host
+ * transforms what remains in one call, each result it produced is stored, and
+ * the host's work is spent before the next slice. A launch's transforms then
+ * take as many turns as they need rather than one turn waiting on all of them:
+ * pi's held an alarm turn for 14-16 s.
+ *
+ * Only a paced launch stores what it transforms: its writes land on as many
+ * turns as they take, where an unpaced one would put every write in one turn.
+ * A transient host failure throws (settleBundleCell) before anything of its
+ * slice is placed.
+ */
+export async function transformBundleCells(cells, { host, store, pacer }, place) {
+    const started = Date.now();
+    const stats = {
+        cells: cells.length, stored: 0, transformed: 0, failed: 0, hostBytes: 0, storeErrors: 0, ms: 0,
+    };
+    const spend = pacer ? (bytes) => pacer.spend(bytes) : undefined;
+    const settle = async (cell, key, outcome) => {
+        const result = settleBundleCell(cell, outcome);
+        place(cell.path, result);
+        if (result.failed) {
+            stats.failed++;
+            return;
+        }
+        stats.transformed++;
+        if (!store || key === undefined || !spend)
+            return;
+        const refused = await store.put(key, { code: result.code, lowered: result.lowered }, spend);
+        if (refused === null)
+            return;
+        stats.storeErrors++;
+        stats.storeError ??= refused;
+    };
+    for (const slice of transformSlices(cells, (cell) => cell.source.length)) {
+        const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source))) : [];
+        const held = store ? store.getMany(keys) : new Map();
+        const pending = [];
+        for (const [i, { path, source }] of slice.entries()) {
+            const key = keys[i];
+            const kept = key === undefined ? undefined : held.get(key);
+            if (kept) {
+                place(path, { ...kept, failed: false });
+                stats.stored++;
+                continue;
+            }
+            if (pacer)
+                await pacer.spend(source.length);
+            const cell = prepareBundleCell(path, source);
+            if ('outcome' in cell)
+                await settle(cell, key, cell.outcome);
+            else
+                pending.push({ cell, key });
+        }
+        if (pending.length === 0)
+            continue;
+        let outcomes;
+        try {
+            outcomes = await host.transformMany(pending.map(({ cell }) => cell.request));
+        }
+        catch (e) {
+            // Publishing a whole-bundle diagnostic would poison the next launch.
+            throw new Error(`esbuild transform service unavailable: ${errorText(e)}`, { cause: e });
+        }
+        let bytes = 0;
+        for (const [i, { cell, key }] of pending.entries()) {
+            bytes += cell.request.code.length;
+            await settle(cell, key, outcomes[i]);
+        }
+        stats.hostBytes += bytes;
+        // The host's work on this slice belongs to the turn that waited for it.
+        if (pacer)
+            await pacer.spend(bytes);
+    }
+    stats.ms = Date.now() - started;
+    return stats;
+}
+/**
+ * The entry script as the facet compiles it (entryScriptRequest), read from
+ * the store when it holds it. A host that rejects or cannot run the rewrite
+ * throws: a failed entry rewrite must not reach a Worker Loader as native host
+ * import(), or become an immutable cached image.
+ */
+export async function transformEntryScript(code, parentUrl, { host, store }) {
+    const key = store ? await store.key('entry', parentUrl, code) : undefined;
+    const kept = store && key !== undefined ? store.getMany([key]).get(key) : undefined;
+    if (kept)
+        return kept.code;
+    const [outcome] = await host.transformMany([entryScriptRequest(code, parentUrl)]);
+    if (outcome === undefined)
+        throw new Error('entry transform service returned no outcome');
+    if ('error' in outcome)
+        throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
+    // One entry script: a single small write, which needs no pacing.
+    if (store && key !== undefined)
+        await store.put(key, { code: outcome.code, lowered: false });
+    return outcome.code;
 }
