@@ -362,6 +362,7 @@ const nodeSpec: RuntimeSpec = {
     '\nExecution via DO Facets (isolated V8 isolate)',
   run: (code, opts) => runFresh(facetMgr, code, opts),
   supportsBinSpawn: true,
+  routesServers: true,
 };
 {
   const oneShotNode = buildRuntimeHandler(nodeSpec, {
@@ -423,6 +424,7 @@ const bunSpec: RuntimeSpec = {
     'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
     'Execution via DO Facets (isolated V8 isolate per call).',
   run: (code, opts) => runBunScript(facetMgr, code, opts),
+  routesServers: true,
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).
     install: async (ctx: any, reg) => {

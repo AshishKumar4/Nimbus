@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npx static-server` serves instead of holding the terminal in the
+  foreground with its port unreachable, and so do `npx sirv-cli` and
+  `npx live-server`. A port is reachable only from a resident process, chosen
+  before the program runs from its source, and only the entry file was read:
+  these bins parse argv and require the package's own server module
+  (static-server's `../server.js`). A module the entry names by relative path
+  inside its own package that creates a server (`createServer(`) now counts.
+  Only that one hop, and only a server's creation: following further, or
+  taking any `.listen(` as a bind, would also promote CLIs that finish
+  (degit, concurrently, nx, `vitest run`). A query (`--help`, `--version`)
+  or `build` of such a CLI stays one-shot, as it does for a named server bin.
+
 - node-static (`npx node-static`) serves its files; it answered 404 for every
   one. The guest's `url` module imitated Node's legacy API over WHATWG
   `new URL()`, which throws for the path-only URL a server receives as
