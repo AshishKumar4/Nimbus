@@ -21,7 +21,7 @@ const factory = new Function(
 const APP = 'home/user/app';
 const fs = (declareNamespace({ metadata: {
     [APP]: { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
-    [`${APP}/root-owned.json`]: { type: 'file', size: 13, mode: 0o100644, uid: 0, gid: 0 },
+    [APP + '/root-owned.json']: { type: 'file', size: 13, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 1234, ctime: 5678, ino: 42 },
     [`${APP}/etc-like`]: { type: 'directory', size: 0, mode: 0o40755, uid: 0, gid: 0 },
     [`${APP}/mine-already.txt`]: { type: 'file', size: 4, mode: 0o100600, uid: 1000, gid: 1000 },
     tmp: { type: 'directory', size: 0, mode: 0o41777, uid: 0, gid: 0 },
@@ -58,6 +58,10 @@ const notFabricated = (p) => {
 // Described: exactly what the metadata says.
 assert.deepEqual(own(`/${APP}/root-owned.json`), { uid: 0, gid: 0, mode: '644' });
 assert.deepEqual(own(`/${APP}/etc-like`), { uid: 0, gid: 0, mode: '755' });
+const dated = fs.statSync('/' + APP + '/root-owned.json');
+assert.deepEqual([dated.atimeMs, dated.mtimeMs, dated.ctimeMs, dated.birthtimeMs, dated.ino], [0, 1234, 5678, 5678, 42],
+  'chokidar sees authoritative numeric timestamps and inode identity, including epoch zero');
+assert.deepEqual([dated.atime.getTime(), dated.mtime.getTime(), dated.ctime.getTime()], [0, 1234, 5678]);
 
 // Not described: never the reader's own.
 notFabricated(`/${APP}/undescribed.json`);   // bundle content, no metadata row

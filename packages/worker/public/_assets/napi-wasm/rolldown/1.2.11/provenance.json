@@ -1,0 +1,69 @@
+{
+  "artifact": "rolldown",
+  "version": "1.2.11",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.11.tar.gz",
+    "sha256": "fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403"
+  },
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1",
+    "mode": "wrapper",
+    "rustflags": [
+      "--cfg",
+      "tokio_unstable",
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "napi-wasm/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfile": {
+      "origin": "scripts/napi-wasm/rolldown/Cargo.lock (upstream's, pruned to this build)",
+      "sha256": "2e0f37b366cc59702cca940f424e4c184804cc4040b4d6050315842b9f34f229",
+      "packages": 318,
+      "upstreamPackages": 405
+    }
+  },
+  "seams": [],
+  "npm": {
+    "owner": "rolldown",
+    "requiredAs": [
+      "@rolldown/binding-wasm32-wasi"
+    ]
+  },
+  "wasm": {
+    "memoryMinPages": 86,
+    "sharedMemory": false,
+    "pumped": true,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "clock_time_get",
+      "fd_close",
+      "fd_fdstat_get",
+      "fd_filestat_get",
+      "fd_prestat_get",
+      "fd_prestat_dir_name",
+      "fd_read",
+      "fd_readdir",
+      "fd_write",
+      "path_create_directory",
+      "path_filestat_get",
+      "path_open",
+      "path_readlink",
+      "path_remove_directory",
+      "path_unlink_file",
+      "poll_oneoff",
+      "proc_exit",
+      "sched_yield"
+    ]
+  },
+  "outputs": {
+    "rolldown.wasm": {
+      "bytes": 13472165,
+      "sha256": "9e38287a3d6f106d50fa9eeb774f264130fd960a39f194d6380de731a4d7ed58"
+    }
+  }
+}

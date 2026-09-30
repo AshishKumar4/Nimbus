@@ -9,6 +9,7 @@
  * VFS resolver plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
+import type { BundleCellResultStore } from './bundle-cell-transform.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -215,6 +216,13 @@ export interface EsbuildServiceOptions {
     transformHost?: EsbuildTransformHost;
     /** Where build() runs. Absent: this isolate. */
     buildHost?: EsbuildBuildHost;
+    /**
+     * Where the launch pipeline keeps this service's transform results across
+     * launches (bundle-cell-transform.ts). A store is bound to the transform
+     * host whose results it holds, so it is given with that host, never apart
+     * from it. Absent: nothing is kept, and every launch transforms every cell.
+     */
+    results?: BundleCellResultStore;
 }
 /**
  * What a build reads modules through: a view of the namespace as some
@@ -227,10 +235,29 @@ export interface EsbuildReadFs {
     readFile(path: string): Awaitable<Uint8Array>;
     readFileString(path: string): Awaitable<string>;
 }
+/**
+ * Source bytes and files one transform host call carries. Bounds CPU work as
+ * well as source retention per invocation: in live pi launch profiles the
+ * 1 MiB/256-file slice beginning at export-html/index.js exceeded the guest
+ * CPU budget even though its first 4 MiB rewrite-only chunk had completed.
+ * Smaller independent calls preserve every input and result, while preventing
+ * many small full transforms sharing one budget. It is also the unit a paced
+ * launch spends its turns in, so no one turn waits on more than a slice.
+ */
+export declare const TRANSFORM_SLICE_SOURCE_BYTES: number;
+export declare const TRANSFORM_SLICE_FILES = 32;
+/**
+ * `items` in order, cut into transform slices: each at most
+ * TRANSFORM_SLICE_FILES items and TRANSFORM_SLICE_SOURCE_BYTES of source,
+ * except that an item larger than the byte bound travels alone.
+ */
+export declare function transformSlices<T>(items: readonly T[], sourceBytes: (item: T) => number): T[][];
 export declare class EsbuildService {
     private vfs;
     private readonly transformHost;
     private readonly buildHost;
+    /** See EsbuildServiceOptions.results. */
+    readonly results: BundleCellResultStore | null;
     private initialized;
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */

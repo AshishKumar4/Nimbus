@@ -289,13 +289,22 @@ for (const entry of PACKAGE_ABI_POLICY.stagedArtifacts) {
   assert.equal(facetPkg.cpu, undefined);
   assert.equal(facetPkg.libc, undefined);
 }
-// rolldown and the wasm package it requires are answered by one staged
-// binding; neither is refused any longer.
-for (const name of ['rolldown', '@rolldown/binding-wasm32-wasi']) {
-  const staged = lookupStagedArtifact(name);
-  assert.equal(staged?.kind, 'binding', `${name} is a staged binding`);
-  assert.equal(staged?.artifact, 'rolldown-binding');
-  assert.equal(lookupReject(name), undefined, `${name} has no reject entry`);
+// Each staged napi binding answers its owner package and every package name
+// the owner requires it by (Astro 7 needs satteri and its compiler; Vite 8
+// and Nuxt need rolldown), at the version the binding is built from; none of
+// them is refused.
+for (const [owner, wasi, artifact] of [
+  ['rolldown', '@rolldown/binding-wasm32-wasi', 'rolldown'],
+  ['satteri', '@bruits/satteri-wasm32-wasi', 'satteri'],
+  ['@astrojs/compiler-binding', '@astrojs/compiler-binding-wasm32-wasi', 'astro-compiler'],
+]) {
+  for (const name of [owner, wasi]) {
+    const staged = lookupStagedArtifact(name);
+    assert.equal(staged?.kind, 'binding', `${name} is a staged binding`);
+    assert.equal(staged?.artifact, artifact, `${name} is answered by the ${artifact} build`);
+    assert.match(staged?.version ?? '', /^\d+\.\d+\.\d+$/, `${name} names the version it is built from`);
+    assert.equal(lookupReject(name), undefined, `${name} has no reject entry`);
+  }
 }
 // Names with no staged entry are left untouched by both paths.
 assert.equal(facet.STAGED_ARTIFACT('left-pad'), undefined);

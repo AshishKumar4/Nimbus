@@ -64,6 +64,7 @@ import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:n
 export function getRealNodeImportsCode() {
     return `
 import * as __real_crypto from 'node:crypto';
+import * as __real_buffer from 'node:buffer';
 import * as __real_tls from 'node:tls';
 import * as __real_async_hooks from 'node:async_hooks';
 import * as __real_diagnostics_channel from 'node:diagnostics_channel';

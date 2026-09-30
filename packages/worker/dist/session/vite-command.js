@@ -511,8 +511,8 @@ export function createViteCommand(self) {
                 }
                 ctx.stdout.write('\n  \x1b[2mWorks:\x1b[0m @vitejs/plugin-react, JSX/TSX transforms, SPA fallback, HMR.\n');
                 ctx.stdout.write('  \x1b[2mPartial:\x1b[0m other plugins (Babel-family generally OK; SWC blocked).\n');
-                ctx.stdout.write('  \x1b[2mBuild:\x1b[0m your project\'s Vite 8 builds through its JS API (rolldown runs as a single-threaded wasm binding);\n');
-                ctx.stdout.write('         the `vite build` CLI still stops loading vite.config (a Worker cannot compile code at runtime).\n');
+                ctx.stdout.write('  \x1b[2mBuild:\x1b[0m your project\'s Vite 8 CLI uses the staged single-threaded rolldown binding.\n');
+                ctx.stdout.write('         Generated config code may need a relaunch; Nimbus reports exactly what the next launch stages.\n');
                 ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mNIMBUS_REAL_VITE=0 vite\x1b[2m for Cirrus.\x1b[0m\n\n');
                 return 0;
             }

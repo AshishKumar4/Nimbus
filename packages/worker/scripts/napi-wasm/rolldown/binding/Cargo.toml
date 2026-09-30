@@ -1,0 +1,36 @@
+# The single-threaded wasm32-wasip1 build of rolldown's N-API binding.
+#
+# This crate is a wrapper, not a fork: it links upstream `rolldown_binding`
+# unmodified (a path dependency into the pinned, digest-verified source
+# archive that ../../build.mjs extracts next to this directory) and adds
+# the one thing upstream only ships for wasm32-wasip1-threads: an async
+# runtime. `src/lib.rs` registers a napi `AsyncRuntime` backend that runs
+# rolldown's tokio tasks on a current-thread runtime driven from the host's
+# JavaScript event loop, so the binding never spawns a thread, never shares
+# memory and never executes `memory.atomic.wait32`.
+#
+# Every upstream `#[napi]` export is re-exported from this cdylib (rustc
+# exports the `#[no_mangle]` registration symbols of every linked crate).
+
+[package]
+name = "nimbus_rolldown_binding"
+version = "1.2.11"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+rolldown_binding = { path = "../rolldown-1.2.11/crates/rolldown_binding" }
+# `async-runtime` is napi-rs's upstream switch for plugging a custom
+# scheduler into generated `#[napi] async fn`s; it unifies with the
+# `async` (tokio_rt) feature rolldown already enables.
+napi = { version = "3", default-features = false, features = ["napi4", "async-runtime", "tokio_rt"] }
+napi-derive = { version = "3", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+
+[build-dependencies]
+napi-build = "2"

@@ -399,7 +399,7 @@ function shebangWords(text: string): string[] {
 }
 
 const LONG_RUNNING_BIN_NAMES = new Set([
-  'vite', 'next', 'astro', 'nuxt', 'remix', 'serve', 'http-server',
+  'vite', 'vinext', 'next', 'astro', 'nuxt', 'remix', 'serve', 'http-server',
   'wrangler', 'nodemon', 'tsx', 'ts-node-dev', 'webpack-dev-server',
   'parcel', 'rollup', 'esbuild', 'turbo',
 ]);

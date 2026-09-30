@@ -1,5 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { EsbuildService, generateEsbuildFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, generateEsbuildFacetRuntimeSource, transformSlices, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -11,6 +11,7 @@ import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
 import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-wasm-bytes.js';
 import { esbuildWasmModule } from '../runtime/host-wasm.js';
+import { TransformStore } from './transform-store.js';
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, and the `esbuild` command's runner, which its
@@ -64,17 +65,6 @@ const ESBUILD_FACET_BODY = [
 ].join('\n');
 // The loader serves the code it cached under an id, so the id carries the code.
 export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
-/**
- * Bound CPU work as well as source retention per invocation. In live pi
- * launch profiles the 1 MiB/256-file slice beginning at export-html/index.js
- * exceeded the guest CPU budget even though its first 4 MiB rewrite-only
- * chunk had completed. Smaller independent calls preserve every input and
- * result, while preventing many small full transforms sharing one budget.
- * Oversized single files still travel alone (large bundles use the bounded
- * rewrite rather than growing esbuild's Go heap).
- */
-const TRANSFORM_BATCH_SOURCE_BYTES = 256 * 1024;
-const TRANSFORM_BATCH_FILES = 32;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
  * `wasmModule` is the host Worker's own compiled esbuild module
@@ -187,15 +177,7 @@ export function esbuildTransformHost(ctx, env) {
         // onEsbuildFacet).
         const endFetch = beginLoaderFetch(ctx, ESBUILD_FACET_WORKER_ID);
         try {
-            for (let start = 0; start < requests.length;) {
-                let end = start;
-                let bytes = 0;
-                while (end < requests.length
-                    && (end === start || (bytes + requests[end].code.length <= TRANSFORM_BATCH_SOURCE_BYTES && end - start < TRANSFORM_BATCH_FILES))) {
-                    bytes += requests[end].code.length;
-                    end++;
-                }
-                const slice = requests.slice(start, end);
+            for (const slice of transformSlices(requests, (request) => request.code.length)) {
                 let answered = null;
                 let failure = null;
                 for (let attempt = 1; answered === null && attempt <= SLICE_ATTEMPTS; attempt++) {
@@ -219,7 +201,6 @@ export function esbuildTransformHost(ctx, env) {
                 }
                 for (const outcome of answered)
                     outcomes.push(outcome);
-                start = end;
             }
         }
         finally {
@@ -254,11 +235,16 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
 }
 /**
  * The esbuild a Durable Object's supervisor shares: its transforms and its
- * builds run in its esbuild facet, and build() reads `vfs` from here.
+ * builds run in its esbuild facet, and build() reads `vfs` from here. Its
+ * launch transform results are kept in the object's own SQLite, bound to the
+ * facet's code (ESBUILD_FACET_WORKER_ID: the esbuild version, the facet body
+ * and the staged CLI runner), so a re-driven or repeated launch reads them
+ * back instead of transforming again.
  */
 export function supervisorEsbuildService(ctx, env, vfs) {
     return new EsbuildService(vfs, {
         transformHost: esbuildTransformHost(ctx, env),
         buildHost: esbuildBuildHost(ctx, env),
+        results: new TransformStore(ctx.storage.sql, ctx.storage, ESBUILD_FACET_WORKER_ID),
     });
 }

@@ -352,6 +352,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
+    _rpcHmrNextEvent(timeoutMs: number): Promise<any[]>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{
         inodes: number;
         chunks: number;
@@ -364,6 +365,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
     _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[]): Promise<void>;
+    _rpcReportRuntimeCode(pid: number, entries: unknown[], missedFiles?: string[]): Promise<void>;
     _emitExitDump(pid: number, code: number): void;
     _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void;
     _reportExternalExit(pid: number, code: number, reason: string): void;

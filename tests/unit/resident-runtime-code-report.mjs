@@ -19,7 +19,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { _rpcReportExit } from '../../packages/worker/src/session/rpc.ts';
+import { _rpcReportExit, _rpcReportRuntimeCode } from '../../packages/worker/src/session/rpc.ts';
 import { runtimeCodeKey, runtimeCodeModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
@@ -52,7 +52,10 @@ const lastMap = () => world.boots.at(-1).config.modules;
 
 // The session side of the op, as the session composes it.
 const session = { processes, facetManager: manager, terminal: null, nimbusDebug: false, _emitExitDump() {} };
-const dispatch = createSupervisorOpHandler({ vfs, host: { _rpcReportExit: (...args) => _rpcReportExit(session, ...args) } });
+const dispatch = createSupervisorOpHandler({ vfs, host: {
+  _rpcReportExit: (...args) => _rpcReportExit(session, ...args),
+  _rpcReportRuntimeCode: (...args) => _rpcReportRuntimeCode(session, ...args),
+} });
 
 const first = await spawn();
 const produced = { kind: 'async', params: ['a'], body: 'return a + 1;' };
@@ -62,6 +65,24 @@ const second = await spawn();
 assert.notEqual(second.pid, first.pid);
 const name = runtimeCodeModuleName(runtimeCodeKey(produced));
 assert.ok(name in lastMap(), `the next launch carries ${name}: ${Object.keys(lastMap()).filter((n) => n.startsWith('gen/')).join(', ') || 'no gen/ modules'}`);
-assert.match(lastMap()[name].cjs, /async function anonymous\(a\n\) \{\nreturn a \+ 1;\n\}/);
+function compiled(name) {
+  const mod = {exports: {}};
+  new Function('module', lastMap()[name].cjs)(mod);
+  return mod.exports;
+}
+assert.equal(await compiled(name)(41), 42, 'the next launch can execute the reported constructor with its arguments');
+
+// A server catches a generated-code miss and continues serving an error page.
+// It need not exit to teach the next launch: the live report is durable before
+// acknowledgement, even when the supervisor subsequently kills the server.
+const caught = { kind: 'async', params: [], body: 'return "rendered page";' };
+await dispatch({ op: 'reportRuntimeCode', pid: second.pid, args: [[caught]] });
+assert.equal(processes.get(second.pid).state, 'running', 'learning code does not terminate the server');
+manager.kill(second.pid, 'SIGKILL');
+await spawn();
+const caughtName = runtimeCodeModuleName(runtimeCodeKey(caught));
+assert.ok(caughtName in lastMap(), 'a caught SSR compile miss survives a kill without an exit ledger');
+assert.equal(await compiled(caughtName)(), 'rendered page', 'the caught SSR function executes after its producer was killed');
+await assert.rejects(dispatch({ op: 'reportRuntimeCode', pid: second.pid, args: [[caught]] }), /live launch/);
 
 console.log('resident-runtime-code-report: ok');

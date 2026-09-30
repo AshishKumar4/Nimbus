@@ -736,12 +736,14 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcFsAppendAck(this, writerId, moduleId, operationId, pid);
     }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
+    async _rpcHmrNextEvent(timeoutMs) { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
     async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
     async _rpcStderr(pid, data) { return _rpc._rpcStderr(this, pid, data); }
     async _rpcReportExit(pid, code, tail, residencyMisses, profileUnread, runtimeCode) { return _rpc._rpcReportExit(this, pid, code, tail, residencyMisses, profileUnread, runtimeCode); }
+    async _rpcReportRuntimeCode(pid, entries, missedFiles = []) { return _rpc._rpcReportRuntimeCode(this, pid, entries, missedFiles); }
     // W3 emitters / external-exit / log janitor
     _emitExitDump(pid, code) { return _rpc._emitExitDump(this, pid, code); }
     _emitShellExecDone(pid, cmd, code, durationMs) { return _rpc._emitShellExecDone(this, pid, cmd, code, durationMs); }

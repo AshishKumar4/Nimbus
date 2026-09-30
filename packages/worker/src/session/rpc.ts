@@ -826,6 +826,12 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 
+/** Poll the HMR queue in the same DO that owns its browser connections. */
+export async function _rpcHmrNextEvent(self: RpcHost, timeoutMs: number = 25_000): Promise<any[]> {
+  if (!self.cirrusReal) return [];
+  return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
+}
+
 
 
   /**
@@ -1023,6 +1029,14 @@ function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
   // would land after the shell's prompt.
   if (entry.state !== 'running') return false;
   return entry.attachedTty !== true && entry.foreground !== true;
+}
+
+/** A live server can catch a codegen miss and continue serving: persist its
+ * ledger before it is killed or evicted, without changing its process state. */
+export async function _rpcReportRuntimeCode(self: RpcHost, pid: number, entries: unknown[], missedFiles: string[] = []): Promise<void> {
+  if (pid <= 0 || isPriorGenerationPid(self, pid)) throw new Error('Runtime code report from a stale process');
+  if (!self.facetManager) throw new Error('Runtime code report has no process owner');
+  await self.facetManager.noteProcessRuntimeCode(pid, entries, missedFiles);
 }
 
   /**

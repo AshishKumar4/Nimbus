@@ -463,130 +463,17 @@ __pathMod.posix = __pathMod;
 __pathMod.win32 = __pathMod;
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  Buffer shim ────────────────────────────────────────────────────
+// ──  Native Buffer ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __BufferMod = (() => {
-  const _enc = new TextEncoder();
-  const _dec = new TextDecoder();
-  // The unwrapped view helper. Buffer methods are installed as own
-  // properties on each instance, so `this.subarray` is the Buffer-returning
-  // override — internal slicing must reach past it to avoid re-wrapping
-  // throwaway views.
-  const _view = Uint8Array.prototype.subarray;
-
-  function from(d, encoding, length) {
-    if (typeof d === "string") {
-      if (encoding === "base64") {
-        const bin = atob(d); const a = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
-        return _wrap(a);
-      }
-      if (encoding === "hex") {
-        const a = new Uint8Array(d.length / 2);
-        for (let i = 0; i < a.length; i++) a[i] = parseInt(d.substr(i*2, 2), 16);
-        return _wrap(a);
-      }
-      return _wrap(_enc.encode(d));
-    }
-    if (d instanceof Uint8Array) return _wrap(new Uint8Array(d));
-    // Buffer.from(arrayBuffer[, byteOffset[, length]]) is a view that shares
-    // the memory, bounded by the two numbers — napi-wasm hands every result
-    // buffer back as Buffer.from(wasmMemory.buffer, ptr, len). Ignoring the
-    // bounds returned the whole memory instead (lightningcss-wasm's minified
-    // CSS came back as 1.4 MB of mostly NUL bytes).
-    if (d instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && d instanceof SharedArrayBuffer)) {
-      const offset = encoding === undefined ? 0 : Math.trunc(Number(encoding)) || 0;
-      if (offset < 0 || offset > d.byteLength) throw new RangeError('"offset" is outside of buffer bounds');
-      const size = length === undefined ? d.byteLength - offset : Math.trunc(Number(length)) || 0;
-      if (size < 0 || offset + size > d.byteLength) throw new RangeError('"length" is outside of buffer bounds');
-      return _wrap(new Uint8Array(d, offset, size));
-    }
-    if (Array.isArray(d)) return _wrap(new Uint8Array(d));
-    return _wrap(new Uint8Array(0));
-  }
-
-  function alloc(n, fill) { const a = new Uint8Array(n); if (fill !== undefined) a.fill(typeof fill === "number" ? fill : 0); return _wrap(a); }
-  function allocUnsafe(n) { return _wrap(new Uint8Array(Number(n) || 0)); }
-  // Marker check plus native-brand recognition: forwarded node:* builtins
-  // (zlib streams and results, crypto) hand back the host realm's own Buffer
-  // instances, which carry no __isBuffer marker. Their constructor brand is
-  // the closest cross-realm equivalent of Node's instanceof check, so
-  // Buffer.isBuffer stays truthful across the shim/native boundary instead
-  // of rejecting genuine host Buffers. Always returns a boolean (the old
-  // single-expression form leaked an undefined when the marker was absent).
-  function isBuffer(o) {
-    if (!(o instanceof Uint8Array)) return false;
-    if (o.__isBuffer) return true;
-    const ctor = o.constructor;
-    return typeof ctor === "function" && ctor.name === "Buffer";
-  }
-  function concat(bufs, len) {
-    const total = len ?? bufs.reduce((s, b) => s + b.length, 0);
-    const r = new Uint8Array(total); let off = 0;
-    for (const b of bufs) { r.set(_view.call(b, 0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
-    return _wrap(r);
-  }
-  function byteLength(value, encoding) {
-    if (typeof value === "string") {
-      if (encoding === "base64") {
-        try { return from(value, "base64").byteLength; } catch { return 0; }
-      }
-      if (encoding === "hex") return Math.floor(value.length / 2);
-      return _enc.encode(value).length;
-    }
-    if (value instanceof ArrayBuffer) return value.byteLength;
-    if (value instanceof Uint8Array) return value.byteLength;
-    return 0;
-  }
-  function compare(a, b) {
-    const aa = from(a);
-    const bb = from(b);
-    const n = Math.min(aa.length, bb.length);
-    for (let i = 0; i < n; i++) {
-      if (aa[i] !== bb[i]) return aa[i] < bb[i] ? -1 : 1;
-    }
-    if (aa.length === bb.length) return 0;
-    return aa.length < bb.length ? -1 : 1;
-  }
-  function isEncoding(enc) {
-    if (!enc) return false;
-    return ["utf8", "utf-8", "base64", "hex", "ascii", "latin1", "binary"].includes(String(enc).toLowerCase());
-  }
-  function _wrap(u8) {
-    u8.__isBuffer = true;
-    u8.toString = function(encoding) {
-      if (!encoding || encoding === "utf8" || encoding === "utf-8") return _dec.decode(this);
-      if (encoding === "base64") { let s = ""; for (const b of this) s += String.fromCharCode(b); return btoa(s); }
-      if (encoding === "hex") { let s = ""; for (const b of this) s += b.toString(16).padStart(2, "0"); return s; }
-      return _dec.decode(this);
-    };
-    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(_view.call(b, 0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
-    // Node's Buffer#subarray returns a Buffer over the same memory, and
-    // Buffer#slice is documented as its alias. Without the override a slice
-    // came back as a bare Uint8Array whose toString() is the comma-joined
-    // byte list — silent corruption for anything that slices then stringifies.
-    u8.subarray = function(s, e) { return _wrap(_view.call(this, s, e)); };
-    u8.slice = u8.subarray;
-    u8.copy = function(t, tOff, sOff, sEnd) { t.set(_view.call(this, sOff || 0, sEnd), tOff || 0); };
-    u8.equals = function(o) { if (this.length !== o.length) return false; for (let i = 0; i < this.length; i++) if (this[i] !== o[i]) return false; return true; };
-    u8.toJSON = function() { return { type: "Buffer", data: Array.from(this) }; };
-    u8.indexOf = function(v) { if (typeof v === "number") return Uint8Array.prototype.indexOf.call(this, v); const b = typeof v === "string" ? _enc.encode(v) : v; outer: for (let i = 0; i <= this.length - b.length; i++) { for (let j = 0; j < b.length; j++) if (this[i+j] !== b[j]) continue outer; return i; } return -1; };
-    return u8;
-  }
-  const B = Object.assign(from, {
-    from,
-    alloc,
-    allocUnsafe,
-    allocUnsafeSlow: allocUnsafe,
-    isBuffer,
-    concat,
-    byteLength,
-    compare,
-    isEncoding,
-    poolSize: 8192,
-  });
-  return B;
-})();
+// Workers' native Buffer is already used by crypto, zlib and node:http.
+// Keep that one constructor everywhere: a second partial implementation lost
+// offsets, UTF-16 writes and numeric/prototype APIs required by napi and Vite.
+// Non-Workers embedders obtain the same native module through their Node API;
+// there is deliberately no emulated Buffer fallback.
+const __bufferModule = typeof __real_buffer !== "undefined"
+  ? (__real_buffer.default ?? __real_buffer) : globalThis.process?.getBuiltinModule?.("node:buffer");
+if (!__bufferModule?.Buffer) throw new Error("Nimbus node runtime requires native node:buffer");
+const __BufferMod = __bufferModule.Buffer;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Process output is bytes ─────────────────────────────────────────
@@ -903,6 +790,7 @@ const __fsMod = (() => {
       type: kind === 1 ? "directory" : kind === 2 ? "symlink" : "file",
       size: Number(row.size), mode: Number(row.mode), uid: Number(row.uid), gid: Number(row.gid),
       atime: Number(row.atime), mtime: Number(row.mtime), ctime: Number(row.ctime),
+      ino: Number(row.ino),
     };
   }
 
@@ -1102,6 +990,7 @@ const __fsMod = (() => {
   function _recordMiss(k) {
     if (k === "" || _residencyMisses.has(k)) return;
     _residencyMisses.add(k);
+    if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
     _stats.misses++;
   }
 
@@ -1395,6 +1284,7 @@ const __fsMod = (() => {
       mtime,
       ctime: mtime,
       birthtime: mtime,
+      atimeMs, mtimeMs, ctimeMs: mtimeMs, birthtimeMs: mtimeMs,
       mode: localMode === undefined ? fullMode : typeMode | localMode,
       uid: Number(uid),
       gid: Number(gid),
@@ -2566,8 +2456,8 @@ const __fsMod = (() => {
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
     const size = Number(meta?.size || 0);
-    const mtime = new Date(Number(meta?.mtime || Date.now()));
-    const atime = new Date(Number(meta?.atime || meta?.mtime || Date.now()));
+    const mtime = new Date(Number(meta?.mtime ?? Date.now()));
+    const atime = new Date(Number(meta?.atime ?? meta?.mtime ?? Date.now()));
     const mode = Number(meta?.mode ?? (isDir ? 0o755 : 0o644));
     const stat = _localStatObject(key, isDir, isSymlink, size, mode, meta?.uid, meta?.gid);
     // This process's own utimes, until it is reported back, ahead of the
@@ -2577,6 +2467,11 @@ const __fsMod = (() => {
     stat.mtime = own && Number.isFinite(own.mtimeMs) ? new Date(own.mtimeMs) : mtime;
     stat.ctime = new Date(Number(meta?.ctime ?? meta?.mtime ?? Date.now()));
     stat.birthtime = stat.ctime;
+    stat.atimeMs = stat.atime.getTime();
+    stat.mtimeMs = stat.mtime.getTime();
+    stat.ctimeMs = stat.ctime.getTime();
+    stat.birthtimeMs = stat.birthtime.getTime();
+    if (meta?.ino !== undefined) stat.ino = Number(meta.ino);
     return stat;
   }
 
@@ -4856,16 +4751,47 @@ const __fsMod = (() => {
       watcher.close = () => { watcher._closed = true; watcher.removeAllListeners(); };
       watcher._closed = false;
       if (listener) watcher.on("change", listener);
-      // Poll for changes every 500ms (simple but functional)
+      // A resident-store read reassembles a fresh byte buffer every time;
+      // object identity is not file identity. It also changes representation
+      // when data is hydrated, without a filesystem mutation. Compare the
+      // namespace's inode metadata instead, without reading content. Its
+      // revision is a listing cursor, not an inode edit: a relist after an
+      // unrelated write must not restart every watched configuration file.
+      // Heap-only embedders have no namespace, so compare bytes.
       const absPath = _resolve(filename);
       const key = _strip(absPath);
-      let lastContent = _bundleLookup(absPath);
+      function snapshot() {
+        if (typeof __nsReady === "function") {
+          // A relist temporarily makes metadata unavailable. Falling back
+          // to byte cells here invents two changes: leaving and re-entering
+          // the namespace, even when the watched inode never changed.
+          if (!_nsActive()) return null;
+          const found = __nsResolve(key, true);
+          if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
+          const row = found.row;
+          return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
+        }
+        const cell = _bundleLookup(absPath);
+        return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
+      }
+      function equal(a, b) {
+        if (a.stamp !== undefined || b.stamp !== undefined) return a.stamp === b.stamp;
+        if (a.data === b.data) return true;
+        const x = typeof a.data === "string" ? __nimbusOutEnc.encode(a.data) : a.data;
+        const y = typeof b.data === "string" ? __nimbusOutEnc.encode(b.data) : b.data;
+        if (!(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== y.length) return false;
+        for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+        return true;
+      }
+      let previous = snapshot();
       const interval = setInterval(() => {
         if (watcher._closed) { clearInterval(interval); return; }
-        const current = _bundleLookup(absPath);
-        if (current !== lastContent) {
-          lastContent = current;
-          const eventType = current === undefined ? "rename" : "change";
+        const current = snapshot();
+        if (current === null) return;
+        if (previous === null) { previous = current; return; }
+        if (!equal(current, previous)) {
+          const eventType = current.absent || previous.absent ? "rename" : "change";
+          previous = current;
           watcher.emit("change", eventType, __pathMod.basename(filename));
         }
       }, 500);
@@ -5253,6 +5179,8 @@ const __osMod = {
     return { uid, gid, username: root ? "root" : "user", homedir: root ? "/root" : "/home/user", shell: "/bin/sh" };
   },
   cpus: () => [{ model: "DO vCPU", speed: 3000, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }],
+  // One JavaScript thread per Worker isolate, irrespective of the host CPU.
+  availableParallelism: () => 1,
   totalmem: () => 128 * 1024 * 1024, freemem: () => 64 * 1024 * 1024,
   loadavg: () => [0, 0, 0], uptime: () => 3600,
   networkInterfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true }] }),
@@ -7212,6 +7140,102 @@ const __cryptoMod = (() => {
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
+// es-module-lexer decodes quoted import/export names with indirect eval and
+// swallows failures. A single quoted string is data, not executable code:
+// decode it without compiling, preserving native eval (including its Workers
+// refusal) for everything else. No general-evaluation capability is exposed,
+// and Function("null") / eval("1 + 1") feature probes remain refused.
+(() => {
+  const nativeEval = globalThis.eval;
+  if (nativeEval.__nimbusNative) return;
+  const decode = function decodeJavaScriptStringLiteral(source) {
+    const text = source.trim();
+    const quote = text[0];
+    if ((quote !== '"' && quote !== "'") || text.length < 2)
+        return undefined;
+    let result = '';
+    for (let i = 1; i < text.length; i++) {
+        const c = text[i];
+        if (c === quote)
+            return i === text.length - 1 ? result : undefined;
+        if (c === '\n' || c === '\r')
+            return undefined;
+        if (c !== '\\') {
+            result += c;
+            continue;
+        }
+        if (++i >= text.length)
+            return undefined;
+        const escaped = text[i];
+        switch (escaped) {
+            case 'n':
+                result += '\n';
+                break;
+            case 'r':
+                result += '\r';
+                break;
+            case 't':
+                result += '\t';
+                break;
+            case 'b':
+                result += '\b';
+                break;
+            case 'f':
+                result += '\f';
+                break;
+            case 'v':
+                result += '\v';
+                break;
+            case '\r':
+                if (text[i + 1] === '\n')
+                    i++;
+                break;
+            case '\n':
+            case '\u2028':
+            case '\u2029': break;
+            case 'x':
+            case 'u': {
+                const braced = escaped === 'u' && text[i + 1] === '{';
+                const start = i + (braced ? 2 : 1);
+                const end = braced ? text.indexOf('}', start) : start + (escaped === 'x' ? 2 : 4);
+                if (end <= start || end > text.length)
+                    return undefined;
+                const digits = text.slice(start, end);
+                if (!/^[0-9a-fA-F]+$/.test(digits))
+                    return undefined;
+                const point = Number.parseInt(digits, 16);
+                if (point > 0x10ffff)
+                    return undefined;
+                result += String.fromCodePoint(point);
+                i = braced ? end : end - 1;
+                break;
+            }
+            default: {
+                if (escaped >= '0' && escaped <= '7') {
+                    // 0..3 consumes up to three octal digits; 4..7 only two.
+                    const end = Math.min(text.length, i + (escaped <= '3' ? 3 : 2));
+                    let octal = escaped;
+                    while (i + 1 < end && text[i + 1] >= '0' && text[i + 1] <= '7')
+                        octal += text[++i];
+                    result += String.fromCharCode(Number.parseInt(octal, 8));
+                }
+                else
+                    result += escaped;
+            }
+        }
+    }
+    return undefined;
+};
+  const routed = { eval(source) {
+    if (typeof source === "string") {
+      const value = decode(source);
+      if (value !== undefined) return value;
+    }
+    return Reflect.apply(nativeEval, undefined, [source]);
+  } }.eval;
+  Object.defineProperty(routed, "__nimbusNative", { value: nativeEval });
+  globalThis.eval = routed;
+})();
 (() => {
   const kinds = [
     ["async", Object.getPrototypeOf(async function () {}).constructor],
@@ -7279,7 +7303,22 @@ const __vmMod = (() => {
     isContext: real?.isContext ?? ((o) => !!o),
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
-    runInThisContext: wrapRuntimeEval('runInThisContext'),
+    // jiti evaluates a parenthesized (async) CommonJS wrapper expression.
+    // Stage that expression as a zero-argument function returning its value;
+    // the wrapper itself executes only when the caller invokes it. This is
+    // not a vm context or a global-script evaluator: declarations/completion
+    // values spanning statements, execution deadlines and context mutation
+    // have no equivalent here and remain unsupported.
+    runInThisContext: (code, options = {}) => {
+      try { return wrapRuntimeEval('runInThisContext')(code, options); }
+      catch (e) {
+        const service = globalThis.__nimbusRuntimeCode;
+        if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
+          || options?.timeout !== undefined || options?.breakOnSigint
+          || options?.importModuleDynamically || options?.cachedData) throw e;
+        return service.compileFunction("function", [], "return (\n" + String(code) + "\n);")();
+      }
+    },
     // A function of `params` and `code` is what the Function constructor
     // builds, so a refusal goes to the same runtime-code service. Context
     // extensions and a parsing context have no such form.
@@ -8504,8 +8543,14 @@ function __makeProcessStdin() {
     wrapped.__orig = listener;
     return wrapped;
   }
+  // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
+  // listener, resume() or read(). An 'end', 'close' or 'error' listener on
+  // paused stdin receives nothing. Vite's dev server registers
+  // process.stdin.on("end", closeServerAndExit); seeding on that listener
+  // ended stdin at once, and every Vite dev server (Astro's included) shut
+  // itself down seconds after it started.
   r.on = function(event, listener) {
-    seed();
+    if (event === "data" || event === "readable") seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
       const ret = origOn(event, wrapped);
@@ -8649,7 +8694,10 @@ const __processMod = {
   },
   execPath: "/usr/local/bin/node",
   execArgv: [],
-  pid: 1, ppid: 0, title: "node",
+  // The pid belongs to the supervisor, not to the host isolate. A constant 1
+  // made every new Vinext process claim its predecessor's stale lock.
+  get pid() { return typeof __nimbusProcessId === "number" ? __nimbusProcessId : Number(env?.NIMBUS_CP_CHILD_PID || 1); },
+  ppid: 0, title: "node",
   stdout: __makeProcessOutputStream("stdout"),
   stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
@@ -8676,8 +8724,18 @@ const __processMod = {
   uptime: () => 0,
   kill: (pid, signal) => {
     const n = Number(pid);
-    if (n === __processMod.pid || n === 0) return __nimbusSignalSelf(signal || "SIGTERM");
-    return false;
+    if (n === __processMod.pid || n === 0) {
+      if (signal === 0) return true; // existence probe, never deliver SIGTERM
+      return __nimbusSignalSelf(signal === undefined ? "SIGTERM" : signal);
+    }
+    // Node's process.kill throws on failure; returning false falsely told
+    // Vinext/Astro lockfile probes that every stale pid was still alive.
+    // There is no synchronous cross-isolate process table or signal syscall.
+    // Do not invent ESRCH for a pid we cannot inspect: report ENOSYS honestly.
+    const error = new Error("kill: synchronous cross-isolate process signalling is unavailable; use the owning child-process handle");
+    error.code = "ENOSYS";
+    error.syscall = "kill";
+    throw error;
   },
   getuid: () => Number(cred.uid),
   geteuid: () => Number(cred.uid),
@@ -8786,7 +8844,7 @@ builtins.stream = __streamMod;
 // Idempotent guard so a future streams.ts revision that already exposes
 // EventEmitter doesn't get clobbered.
 if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
-builtins.buffer = { Buffer: __BufferMod };
+builtins.buffer = __bufferModule;
 builtins.util = __utilMod;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
@@ -10478,6 +10536,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       // included) — core/_shared/commonjs-cell.ts, RUNTIME CODE. A content
       // key the launch already carries answers now.
       (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
+      if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       cell = __nimbusRuntimeModule(normalizedPath, text);
@@ -11128,13 +11187,43 @@ function __esmLoad(resolution) {
     names.add("default");
     ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
   } else if (resolution.format === "data") {
-    const match = /^data:application\/json(;[^,]*)?,/.exec(resolution.url);
-    if (!match) {
-      throw Object.assign(new Error("Nimbus: a data: URL module can only be JSON here; code cannot be compiled after the process starts: " + resolution.url.slice(0, 64)), { code: "ERR_NIMBUS_DATA_MODULE" });
+    const url = new URL(resolution.url);
+    const comma = url.pathname.indexOf(',');
+    const header = url.pathname.slice(0, comma);
+    const mediaType = header.split(';')[0].toLowerCase();
+    const payload = url.pathname.slice(comma + 1);
+    const text = header.split(';').includes('base64')
+      ? __BufferMod.from(decodeURIComponent(payload), 'base64').toString('utf8') : decodeURIComponent(payload);
+    if (mediaType === "application/json") {
+      const value = JSON.parse(text);
+      ns = __esmNamespaceOf(["default"], () => value);
+    } else if (mediaType === "text/javascript" || mediaType === "application/javascript") {
+      // A data URL produced at runtime is a module body, just like a written
+      // file. It is staged by the same runtime-code service, retaining its URL
+      // as the import base (relative imports from data URLs remain invalid).
+      const cell = __nimbusRuntimeModule(resolution.url, text);
+      const mod = { exports: {} };
+      Object.defineProperty(mod, "__nimbusImportMeta", { value: {
+        url: resolution.url,
+        resolve: (id) => __nimbusImportMetaResolve(id, resolution.url),
+      } });
+      const requireData = (id) => {
+        const resolved = __esmResolver.resolveSync(String(id), resolution.url);
+        if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
+        if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
+        throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
+      };
+      const result = cell(mod.exports, requireData, mod, undefined, undefined);
+      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
+      if (result && typeof result.then === "function") {
+        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+        __esmNamespaces.set(resolution.url, pending);
+        return pending;
+      }
+      ns = namespace();
+    } else {
+      throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
     }
-    const body = resolution.url.slice(match[0].length);
-    const value = JSON.parse(match[1] && match[1].includes(";base64") ? atob(body) : decodeURIComponent(body));
-    ns = __esmNamespaceOf(["default"], () => value);
   } else {
     const key = resolution.path.replace(/^\/+/, "");
     const esm = resolution.format === "module"
