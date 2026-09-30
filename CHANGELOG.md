@@ -20,10 +20,14 @@ published independently in the `@nimbus-sh` npm scope.
   V8 replay of Pi 0.87.1's 273-module launch made 23 slices (19 esbuild
   starts), retaining up to 153 MiB of uncollected wasm memories; kept, the
   instance plateaued at 52 MiB. A single 858 KiB module takes a fresh one to
-  92 MiB. Instances are collectable, not a permanent leak. A transform whose
-  instance died is answered as transient, so its launch fails as unavailable
-  instead of caching a diagnostic shim of sound source. Builds and CLI calls
-  keep their separate instances.
+  92 MiB. Instances are collectable, not a permanent leak. esbuild's adapter
+  keeps every call's result reachable while its instance lives, so a kept
+  instance hands out copies and empties the results it keeps: 120 transforms
+  of a 190 KiB module left 19.2 of their 23.1 MiB of output on V8's heap
+  before, and none after. A transform whose instance died is answered as
+  transient, so its launch fails as unavailable instead of caching a
+  diagnostic shim of sound source. Builds and CLI calls keep their separate
+  instances.
 
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles

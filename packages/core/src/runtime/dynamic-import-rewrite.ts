@@ -9,8 +9,8 @@
  * (rewriteWithGrammar, which streams: it drops each completed top-level
  * statement). That is when:
  * - the lexer cannot lex the cell;
- * - a `/` in code it may have misread (see BEFORE_AMBIGUOUS_SLASH) could open
- *   a regex that holds import syntax, or a quote with import syntax later on
+ * - a `/` in code it may have misread (import-lexer-hazards.ts) could open a
+ *   regex that holds import syntax, or a quote with import syntax later on
  *   its line;
  * - an HTML-like comment sits in code, which the lexer reads as code;
  * - an import() follows `new`, or has arguments Acorn rejects;
@@ -23,8 +23,9 @@
  * directives, and unicode-escaped words that could collide with the metadata
  * capture's name.
  */
-import { Parser, parseExpressionAt, tokenizer, tokTypes, type Node, type Program } from 'acorn';
+import { Parser, parseExpressionAt, tokenizer, tokTypes, type Node, type Options, type Program } from 'acorn';
 import { createModuleLexer, type LexedImport, type ModuleLexer } from './module-lexer.js';
+import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
 
@@ -39,7 +40,6 @@ interface Span { start: number; end: number }
 const DYNAMIC_IMPORT = 2;
 const IMPORT_META = 3;
 const METADATA_BINDING = '__nimbusMetadataModule';
-const IMPORT_SYNTAX = /\bimport\s*(?:[(.]|\/[/*])/;
 const IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
 
 /**
@@ -85,7 +85,7 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean): s
   const source = hashbang ? ' '.repeat(hashbang) + code.slice(hashbang) : code;
   const imports = lexImports(source);
   const lines = new Lines(source);
-  const passed = passedOver(source, lines, imports, ambiguousSlashes(source, lines));
+  const passed = passedOver(source, imports, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
   if (passed === null) return null;
 
   const calls: CallSite[] = [];
@@ -95,9 +95,10 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean): s
     else if (metadata && entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
   }
   for (const at of passed) {
-    const site = callAt(source, at);
-    if (site === null) return null;
-    calls.push(site);
+    const open = skipTrivia(source, at + 'import'.length).at;
+    const end = source[open] === '(' ? parenthesisEnd(source, open) : null;
+    if (end === null) return null;
+    calls.push({ ss: at, se: end, d: open, lexed: false });
   }
   calls.sort((a, b) => a.ss - b.ss);
 
@@ -121,135 +122,26 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean): s
   return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
 }
 
-const LINE_END = /[\n\r\u2028\u2029]/g;
-
-function lineEnd(text: string, at: number): number {
-  LINE_END.lastIndex = at;
-  return LINE_END.exec(text)?.index ?? text.length;
-}
-
-/**
- * What can precede a `/` es-module-lexer reads differently from the grammar.
- * It reads division after `}` (a block's or an expression's), after `++` or
- * `--` (postfix, or prefix after a line break), and after extends, of or
- * default; and a regex after yield or await (identifiers, in a script), and
- * after a keyword it takes for one that is a member name past whitespace or a
- * comment (`x.\nreturn`). A member name right after its dot (`x.of`) is read
- * right. Only what whitespace, a comment or a `/` follows is matched; the
- * whitespace and comments are skipped by skipTrivia, not by the pattern.
- */
-const BEFORE_AMBIGUOUS_SLASH = /(?:\}|\+\+|--|(?<![\w$.\\])(?:extends|of|default|yield|await))(?=[\s/])|\.(?=\s|\/[/*])/g;
-
-/** The keywords es-module-lexer reads a regex after, as member names. */
-const MEMBER_KEYWORD = /^(?:case|debugger|delete|do|else|in|instanceof|new|return|throw|typeof|void|yield|await)(?![\w$])/;
-
-/**
- * The possibly misread `/`s that matter, for passedOver to check whether they
- * are in code at all. One matters when the text it would open as a regex, to
- * its closing `/` or its line's end, holds import syntax; or when that text
- * holds a quote and import syntax follows on its line, since a quote read the
- * other way opens a string that runs to that line's end. Most such `/`s are
- * no code, though, and stand in text read right: a template's (`${dir}/`), or
- * a regex's, closing one after a quantifier (`/a{4}/`).
- */
-function ambiguousSlashes(source: string, lines: Lines): number[] {
-  const slashes: number[] = [];
-  let imports: number[] | null = null;
-  for (const match of source.matchAll(BEFORE_AMBIGUOUS_SLASH)) {
-    let after = match.index + match[0].length;
-    if (match[0] === '.') {
-      const name = skipTrivia(source, after).at;
-      const keyword = MEMBER_KEYWORD.exec(source.slice(name, name + 11));
-      if (keyword === null) continue;
-      after = name + keyword[0].length;
-    }
-    const slash = skipTrivia(source, after).at;
-    if (source[slash] !== '/' || source[slash + 1] === '/' || source[slash + 1] === '*') continue;
-    const body = regexBody(source, slash);
-    if (!IMPORT_SYNTAX.test(body)) {
-      if (!/['"`]/.test(body)) continue;
-      imports ??= Array.from(source.matchAll(IMPORT_SYNTAX_ALL), (found) => found.index);
-      const next = imports[firstAtOrAfter(imports, slash)];
-      if (next === undefined || next >= lines.endOf(slash)) continue;
-    }
-    slashes.push(slash);
-  }
-  return slashes;
-}
-
-const IMPORT_SYNTAX_ALL = new RegExp(IMPORT_SYNTAX.source, 'g');
-
-/** The index of the first of the ascending `positions` at or after `at`. */
-function firstAtOrAfter(positions: readonly number[], at: number): number {
-  let low = 0;
-  let high = positions.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (positions[middle] < at) low = middle + 1;
-    else high = middle;
-  }
-  return low;
-}
-
-/** Where a cell's lines start and end, for lines that can run to megabytes. */
-class Lines {
-  private readonly breaks: number[];
-  constructor(private readonly source: string) {
-    this.breaks = Array.from(source.matchAll(/[\n\r\u2028\u2029]/g), (found) => found.index);
-  }
-  /** The line break ending the line `at` is on, or the cell's end. */
-  endOf(at: number): number {
-    return this.breaks[firstAtOrAfter(this.breaks, at)] ?? this.source.length;
-  }
-  /** Where the line `at` is on starts. */
-  startOf(at: number): number {
-    const before = firstAtOrAfter(this.breaks, at) - 1;
-    return before < 0 ? 0 : this.breaks[before] + 1;
-  }
-}
-
-/** The text a regex opened by the `/` at `slash` would hold. */
-function regexBody(source: string, slash: number): string {
-  let inClass = false;
-  for (let at = slash + 1; at < source.length; at++) {
-    const ch = source[at];
-    if (ch === '\n' || ch === '\r' || ch === '\u2028' || ch === '\u2029') return source.slice(slash + 1, at);
-    if (ch === '\\') at++;
-    else if (ch === '[') inClass = true;
-    else if (ch === ']') inClass = false;
-    else if (ch === '/' && !inClass) return source.slice(slash + 1, at);
-  }
-  return source.slice(slash + 1);
-}
-
 /** Marks the lexer reports only where it reads the marked spot as code. */
 const CODE_MARK = ' import.meta ';
 
 /**
  * Where the lexer passed over an `import(` in code, the positions of those
- * `import`s; null where a spot only the grammar reads right is in code: an
- * HTML-like comment, or one of the ambiguous `slashes`. A member call
- * (`x.import(`, `x?.import(`) is no import. Any other `import(` the lexer did
- * not report is in a comment, a string, a template or a regex, or it is a
- * method or a call followed by `{`, which the lexer drops. One more lexing of
- * the cell, with a mark before each spot, tells which the lexer reads as code:
- * a mark is only reported there. Marks in text change nothing the lexer reads;
- * the first reported before a slash can (the slash becomes a division), but
- * that one already settles it.
+ * `import`s; null where one of the `hazards`, a spot only the grammar reads
+ * right, is in code. A member call (`x.import(`, `x?.import(`) is no import.
+ * Any other `import(` the lexer did not report is in a comment, a string, a
+ * template or a regex, or it is a method or a call followed by `{`, which the
+ * lexer drops. One more lexing of the cell, with a mark before each spot,
+ * tells which the lexer reads as code: a mark is only reported there. Marks
+ * in text change nothing the lexer reads; the first reported before a hazard
+ * can (a slash after it becomes a division), but that one already settles it.
  */
-function passedOver(source: string, lines: Lines, imports: readonly LexedImport[], slashes: readonly number[]): number[] | null {
+function passedOver(source: string, imports: readonly LexedImport[], hazards: readonly number[]): number[] | null {
   const reported = new Set<number>();
   for (const entry of imports) if (entry.t === DYNAMIC_IMPORT) reported.add(entry.ss);
-  const marks: { at: number; call: boolean }[] = slashes.map((at) => ({ at, call: false }));
-  for (const match of source.matchAll(/\bimport\s*(?:\(|\/[/*])|<!--|-->/g)) {
-    const at = match.index;
-    if (match[0] === '<!--') marks.push({ at, call: false });
-    else if (match[0] === '-->') {
-      // An HTML close comment opens a line; elsewhere `-->` is `--` and `>`.
-      let before = at;
-      while (before > 0 && (source[before - 1] === ' ' || source[before - 1] === '\t')) before--;
-      if (before === lines.startOf(at)) marks.push({ at, call: false });
-    } else if (!reported.has(at) && !isMemberName(source, at)) marks.push({ at, call: true });
+  const marks: { at: number; call: boolean }[] = hazards.map((at) => ({ at, call: false }));
+  for (const match of source.matchAll(/\bimport\s*(?:\(|\/[/*])/g)) {
+    if (!reported.has(match.index) && !isMemberName(source, match.index)) marks.push({ at: match.index, call: true });
   }
   if (!marks.length) return [];
   marks.sort((a, b) => a.at - b.at);
@@ -279,56 +171,6 @@ function isMemberName(source: string, at: number): boolean {
   return source[before - 1] === '.' && source[before - 2] !== '.';
 }
 
-/**
- * The call at `at`, an `import(` in code the lexer passed over: where its
- * parenthesis opens and where it closes, from Acorn's tokens over a window
- * from the parenthesis that doubles until the parentheses balance. Null if
- * they never do.
- */
-function callAt(source: string, at: number): CallSite | null {
-  const open = skipTrivia(source, at + 'import'.length).at;
-  if (source[open] !== '(') return null;
-  for (let window = 1024; ; window *= 2) {
-    const text = source.slice(open, open + window);
-    try {
-      const tokens = tokenizer(text, { ecmaVersion: 'latest' });
-      let depth = 0;
-      for (let token = tokens.getToken(); token.type !== tokTypes.eof; token = tokens.getToken()) {
-        if (token.type === tokTypes.parenL) depth++;
-        else if (token.type === tokTypes.parenR && --depth === 0) return { ss: at, se: open + token.end, d: open, lexed: false };
-      }
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-    }
-    if (open + window >= source.length) return null;
-  }
-}
-
-/** Past whitespace and comments from `at`, and whether a line ended there. */
-function skipTrivia(source: string, at: number): { at: number; newline: boolean } {
-  let newline = false;
-  for (;;) {
-    const ch = source[at];
-    if (ch === '/' && source[at + 1] === '/') {
-      at = lineEnd(source, at);
-      continue;
-    }
-    if (ch === '/' && source[at + 1] === '*') {
-      const close = source.indexOf('*/', at + 2);
-      if (close < 0) return { at: source.length, newline };
-      if (/[\n\r\u2028\u2029]/.test(source.slice(at, close))) newline = true;
-      at = close + 2;
-      continue;
-    }
-    if (ch !== undefined && /\s/.test(ch)) {
-      if (ch === '\n' || ch === '\r' || ch === '\u2028' || ch === '\u2029') newline = true;
-      at++;
-      continue;
-    }
-    return { at, newline };
-  }
-}
-
 /** `new` right before `at`, across whitespace and comments. */
 function afterNew(source: string, at: number): boolean {
   return /(?:^|[^\w$.\\])new(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*$/.test(source.slice(Math.max(0, at - 256), at));
@@ -353,7 +195,26 @@ function callShape(source: string, site: CallSite): 'call' | 'method' | null {
   return closes('(function(){', rest, 'BlockStatement') || closes('(async function*(){', rest, 'BlockStatement') ? null : 'method';
 }
 
+// Acorn's own productions, which the parsers below extend.
+const PARSE_STATEMENT = Reflect.get(Parser.prototype, 'parseStatement');
+const PARSE_DYNAMIC_IMPORT = Reflect.get(Parser.prototype, 'parseDynamicImport');
+const PARSE_IMPORT_META = Reflect.get(Parser.prototype, 'parseImportMeta');
+const PARSE_IDENT = Reflect.get(Parser.prototype, 'parseIdent');
+const FINISH_NODE = Reflect.get(Parser.prototype, 'finishNode');
+
 class ContainerClosed extends Error {}
+
+/** Acorn, stopped as it finishes the `containerType` node at `containerStart`. */
+class ContainerParser extends Parser {
+  constructor(options: Options, input: string, private readonly containerType: string, private readonly containerStart: number) {
+    super(options, input);
+  }
+  finishNode(node: Node, type: string): Node {
+    const finished: Node = Reflect.apply(FINISH_NODE, this, [node, type]);
+    if (type === this.containerType && node.start === this.containerStart) throw new ContainerClosed();
+    return finished;
+  }
+}
 
 /**
  * Whether `rest`, opened by `prefix` (ending in `{`), parses as a `type` node
@@ -361,23 +222,12 @@ class ContainerClosed extends Error {}
  * stopped as it finishes that node.
  */
 function closes(prefix: string, rest: string, type: string): boolean {
-  const start = prefix.length - 1;
-  const ContainerParser = Parser.extend((Base) => {
-    const finishNode = Reflect.get(Base.prototype, 'finishNode');
-    return class extends Base {
-      finishNode(node: Node, nodeType: string): Node {
-        const finished: Node = Reflect.apply(finishNode, this, [node, nodeType]);
-        if (nodeType === type && node.start === start) throw new ContainerClosed();
-        return finished;
-      }
-    };
-  });
   for (const sourceType of ['script', 'module'] as const) {
     try {
-      ContainerParser.parse(prefix + rest, {
+      new ContainerParser({
         ecmaVersion: 'latest', sourceType, allowAwaitOutsideFunction: true,
         allowSuperOutsideMethod: true, checkPrivateFields: false,
-      });
+      }, prefix + rest, type, prefix.length - 1).parse();
     } catch (error) {
       if (error instanceof ContainerClosed) return true;
       if (!(error instanceof SyntaxError)) throw error;
@@ -464,77 +314,88 @@ function afterDirectives(code: string): number {
   return insertion;
 }
 
+/** What the grammar's reading collects, as its parser recognizes it. */
+interface Collected {
+  call: string;
+  edits: Edit[];
+  metas: Span[];
+  /** Every identifier, which the metadata capture's name must not shadow. */
+  names: Set<string> | null;
+}
+
 /**
- * The grammar's reading: Acorn's parser, collecting imports as it recognizes
- * them and dropping each completed top-level statement, so only the one being
- * parsed is held. A cell it cannot parse in either goal is returned as
- * written, for its compile to report.
+ * Acorn, collecting each import() call as it recognizes one and dropping each
+ * completed top-level statement, so only the one being parsed is held.
+ */
+class ImportCollector extends Parser {
+  constructor(options: Options, input: string, protected readonly collected: Collected) {
+    super(options, input);
+  }
+  parseDynamicImport(node: Node): Node {
+    // Acorn enters this production at the opening parenthesis. Its end,
+    // not source.start (which can exclude grouping parentheses), is the
+    // exact end of the prefix we replace. Acorn validates the arguments.
+    const end = Reflect.get(this, 'end') as number;
+    const parsed: Node = Reflect.apply(PARSE_DYNAMIC_IMPORT, this, [node]);
+    this.collected.edits.push({ start: node.start, end, text: this.collected.call });
+    return parsed;
+  }
+  parseStatement(context: unknown, topLevel: boolean, exports: unknown): Node {
+    const node: Node = Reflect.apply(PARSE_STATEMENT, this, [context, topLevel, exports]);
+    if (!topLevel) return node;
+    if (node.type === 'ExpressionStatement') {
+      const expression = Reflect.get(node, 'expression');
+      if (expression?.type === 'Literal' && typeof expression.value === 'string') return node;
+    }
+    return { type: 'EmptyStatement', start: node.start, end: node.end };
+  }
+}
+
+/** An ImportCollector that also collects import.meta, and every identifier. */
+class MetadataCollector extends ImportCollector {
+  parseImportMeta(node: Node): Node {
+    const parsed: Node = Reflect.apply(PARSE_IMPORT_META, this, [node]);
+    this.collected.metas.push({ start: node.start, end: node.end });
+    return parsed;
+  }
+  parseIdent(liberal: boolean): Node {
+    const node: Node = Reflect.apply(PARSE_IDENT, this, [liberal]);
+    this.collected.names!.add(Reflect.get(node, 'name'));
+    return node;
+  }
+}
+
+/**
+ * The grammar's reading of the cell. A cell it cannot parse in either goal is
+ * returned as written, for its compile to report.
  */
 function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean): string {
-  const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
-  const edits: Edit[] = [];
-  const metas: Span[] = [];
-  const names = metadata ? new Set<string>() : null;
-  let StreamingParser = Parser.extend((Base) => {
-    const parseStatement = Reflect.get(Base.prototype, 'parseStatement');
-    const parseDynamicImport = Reflect.get(Base.prototype, 'parseDynamicImport');
-    return class extends Base {
-      parseDynamicImport(node: Node): Node {
-        // Acorn enters this production at the opening parenthesis. Its end,
-        // not source.start (which can exclude grouping parentheses), is the
-        // exact end of the prefix we replace. Acorn validates the arguments.
-        const end = Reflect.get(this, 'end') as number;
-        const parsed: Node = Reflect.apply(parseDynamicImport, this, [node]);
-        edits.push({ start: node.start, end, text: call });
-        return parsed;
-      }
-      parseStatement(context: unknown, topLevel: boolean, exports: unknown): Node {
-        const node: Node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
-        if (!topLevel) return node;
-        if (node.type === 'ExpressionStatement') {
-          const expression = Reflect.get(node, 'expression');
-          if (expression?.type === 'Literal' && typeof expression.value === 'string') return node;
-        }
-        return { type: 'EmptyStatement', start: node.start, end: node.end };
-      }
-    };
-  });
-  // The capture must not shadow user bindings, including escaped identifiers.
+  const collected: Collected = {
+    call: DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ',
+    edits: [],
+    metas: [],
+    names: metadata ? new Set<string>() : null,
+  };
   // Import-only cells need no identifier collection.
-  if (metadata) StreamingParser = StreamingParser.extend((Base) => {
-    const parseIdent = Reflect.get(Base.prototype, 'parseIdent');
-    const parseImportMeta = Reflect.get(Base.prototype, 'parseImportMeta');
-    return class extends Base {
-      parseImportMeta(node: Node): Node {
-        const parsed: Node = Reflect.apply(parseImportMeta, this, [node]);
-        metas.push({ start: node.start, end: node.end });
-        return parsed;
-      }
-      parseIdent(liberal: boolean): Node {
-        const node: Node = Reflect.apply(parseIdent, this, [liberal]);
-        names!.add(Reflect.get(node, 'name'));
-        return node;
-      }
-    };
-  });
+  const Collector = metadata ? MetadataCollector : ImportCollector;
   for (const sourceType of metadata ? ['module', 'script'] as const : ['script', 'module'] as const) {
-    edits.length = 0; metas.length = 0; names?.clear();
+    collected.edits.length = 0; collected.metas.length = 0; collected.names?.clear();
     let program: Program;
     try {
-      program = StreamingParser.parse(code, {
+      program = new Collector({
         ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true,
         allowAwaitOutsideFunction: true, allowHashBang: true,
-      });
+      }, code, collected).parse();
     } catch {
       continue;
     }
-    if (!edits.length && !metas.length) return code;
+    if (!collected.edits.length && !collected.metas.length) return code;
     let insertion = program.body[0]?.start ?? code.length;
     for (const statement of program.body) {
       if (typeof Reflect.get(statement, 'directive') !== 'string') break;
       insertion = statement.end;
     }
-    return applyEdits(code, edits, metas, names, insertion);
+    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
   }
   return code;
 }
