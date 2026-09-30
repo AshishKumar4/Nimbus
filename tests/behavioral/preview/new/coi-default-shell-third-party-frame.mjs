@@ -7,8 +7,9 @@
 // policy anywhere above that frame would block it, so the default shell must
 // carry none, nothing may be added to the app's own response, and the pane
 // offers nothing. The isolated shell is the counter-check: it blocks the same
-// app (it does not ask for isolation), says why, and its "Reload normally"
-// brings the default shell back with the app showing again.
+// app (it does not ask for isolation) and the Preview tab's placeholder, says
+// why for both, and its "Reload normally" brings the default shell back with
+// the app showing again.
 //
 // Chrome runs with web security on: the rules under test are the browser's.
 // NIMBUS_PROBE_SCREENSHOTS=<dir> saves the isolated shell's offer, desktop and 390 px.
@@ -154,6 +155,20 @@ try {
       && document.getElementById('btnPreviewIsolationAction')?.getAttribute('aria-label')?.startsWith('Reload normally:');
   }, { timeout: 60_000 }, PORT);
   a.check('the isolated shell blocks the app and offers the default shell', true);
+  // The Preview tab's placeholder asks for no isolation either, so the
+  // isolated shell blocks it as well, and says so the same way.
+  const offerOn = (tabId, offer) => page.waitForFunction((tabId, offer) => {
+    const notice = document.getElementById('previewIsolation');
+    return notice.dataset.tab === tabId && notice.dataset.offer === offer && !notice.hidden;
+  }, { timeout: 30_000 }, tabId, offer);
+  const clickTab = (label) => page.evaluate((label) => {
+    [...document.querySelectorAll('#previewTabs .preview-tab')].find((tab) => tab.textContent.includes(label))?.click();
+  }, label);
+  await clickTab('Preview');
+  await offerOn('app:vite', 'default-shell');
+  a.check('the Preview tab, blocked in the isolated shell, is offered the default shell too', true);
+  await clickTab(':' + PORT);
+  await offerOn('port:' + PORT, 'default-shell');
   await screenshot(page, 'final-desktop-isolated-offer-reload-normally');
   await page.setViewport({ width: 390, height: 844 });
   await screenshot(page, 'final-mobile-isolated-offer-reload-normally');

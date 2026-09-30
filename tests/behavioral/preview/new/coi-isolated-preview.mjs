@@ -162,8 +162,9 @@ try {
   await screenshot(page, 'final-desktop-offer-reload-isolated');
 
   // ── a phone-width window keeps the offer and ↗ on screen, words whole ──
-  // The pane is ~80 px wide there: the offer collapses to one icon button
-  // named by its label and tooltip, and no word is broken to fit.
+  // The pane is ~80 px wide there: the offer collapses to one button with a
+  // one-word label, named in full by its aria-label and tooltip, and no word
+  // is broken to fit.
   await page.setViewport({ width: 390, height: 844 });
   const narrow = await page.evaluate(() => {
     const onScreen = (element) => {
@@ -176,16 +177,17 @@ try {
     return {
       open: onScreen(document.getElementById('btnOpenPreview')),
       action: onScreen(action) && action.scrollWidth <= action.clientWidth + 1,
-      icon: action.querySelector('.preview-isolation-icon').textContent,
-      words: [text, action.querySelector('.preview-isolation-label')].filter(shown).map((element) => element.textContent),
+      words: [text, action.querySelector('.preview-isolation-label'), action.querySelector('.preview-isolation-short')]
+        .filter(shown).map((element) => element.textContent),
+      oneLine: action.getClientRects().length === 1 && action.getBoundingClientRect().height < 2 * parseFloat(getComputedStyle(action).fontSize) + 8,
       name: action.getAttribute('aria-label'),
       tooltip: action.title,
     };
   });
   a.check('at 390 px the ↗ button is on screen', narrow.open, JSON.stringify(narrow));
   a.check(
-    'at 390 px the offer is one whole icon button (↻), named "Reload isolated" by label and tooltip, with no words to break',
-    narrow.action && narrow.icon === '\u21bb' && narrow.words.length === 0
+    'at 390 px the offer is one whole button reading "Isolate" on one line, named "Reload isolated" by label and tooltip',
+    narrow.action && narrow.oneLine && JSON.stringify(narrow.words) === '["Isolate"]'
       && narrow.name?.startsWith('Reload isolated:') && narrow.tooltip === narrow.name,
     JSON.stringify(narrow),
   );

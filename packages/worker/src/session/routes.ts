@@ -49,6 +49,7 @@ import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import { documentPolicyOf } from '@nimbus-sh/core/runtime/document-policy.js';
 import { startRealVite } from './start-real-vite.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
@@ -332,7 +333,35 @@ async function parseJsonBody<T>(request: Request, schema: z.ZodType<T>): Promise
   return parsed.data;
 }
 
+/** The session's two app doors: the Vite preview and the wrangler dev worker. */
+export type AppDoor = 'vite' | 'worker';
+
+/**
+ * Which app door a session path is, if any. `/__nimbus/worker/*` is the
+ * worker's canonical path and bare `/worker/*` its deprecated alias.
+ */
+function appDoorOf(pathname: string): AppDoor | null {
+  if (pathname.startsWith('/preview/') || pathname === '/preview') return 'vite';
+  if (
+    pathname.startsWith('/__nimbus/worker/') || pathname === '/__nimbus/worker'
+    || pathname.startsWith('/worker/') || pathname === '/worker'
+  ) return 'worker';
+  return null;
+}
+
 export async function handleFetch(self: RoutesHost, request: Request): Promise<Response> {
+  const response = await routeFetch(self, request);
+  // An app door's navigation answer is the document the preview pane shows
+  // for its tab; the shell reads its isolation headers from the stats (the
+  // same report ports get from the port registry). A redirect is not one.
+  const door = appDoorOf(new URL(request.url).pathname);
+  if (door !== null && request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {
+    self.appDocuments[door] = documentPolicyOf(response.headers);
+  }
+  return response;
+}
+
+async function routeFetch(self: RoutesHost, request: Request): Promise<Response> {
     const url = new URL(request.url);
     // The peer end of the fetch-semantic WebSocket hop, before anything else:
     // this request is a sibling coordinator's, not a browser's, and it names
@@ -986,6 +1015,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         ports: portStats,
         vite: viteStats,
         wrangler: wranglerStats,
+        appDocuments: self.appDocuments,
       });
     }
 
@@ -1125,7 +1155,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     // ── Preview route: serves the Vite dev server output ──
     // Uses in-process ViteDevServer (synchronous VFS access + esbuild transforms).
     // This is reliable and avoids facet lifecycle issues.
-    if (url.pathname.startsWith('/preview/') || url.pathname === '/preview') {
+    if (appDoorOf(url.pathname) === 'vite') {
       // Ensure the starter project exists even if the user hits /preview/
       // before opening a terminal session. Idempotent — no-op if already seeded.
       try {
@@ -1223,9 +1253,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     // back-compat — same handler — but the response carries a
     // `Deprecation` and `Sunset` header so callers can migrate. New
     // sessions are encouraged to use the namespaced form.
-    const workerPathMatch =
-      url.pathname.startsWith('/__nimbus/worker/') || url.pathname === '/__nimbus/worker' ||
-      url.pathname.startsWith('/worker/') || url.pathname === '/worker';
+    const workerPathMatch = appDoorOf(url.pathname) === 'worker';
     const isLegacyWorkerPath =
       url.pathname.startsWith('/worker/') || url.pathname === '/worker';
     if (workerPathMatch) {

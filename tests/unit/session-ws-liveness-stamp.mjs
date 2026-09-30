@@ -93,6 +93,19 @@ const owned = (ws) => hasLiveShellOwner(undefined, [ws]);
 }
 
 {
+  // The close is answered first (RFC 6455 §5.5.1), and an answer the runtime
+  // refuses must not leave the stamp behind to refuse the next terminal.
+  const ws = shellSocket(null);
+  const answers = [];
+  ws.close = (code, reason) => { answers.push([code, reason]); throw new TypeError('close refused'); };
+  tagShellSocket(ws);
+  await wsClose(host(), ws, 4000, 'bye', true);
+  assert.deepEqual(answers, [[4000, 'bye']], 'the peer’s close is answered with its own code and reason');
+  assert.equal(owned(ws), false);
+  console.log('  [5b] a refused close answer still frees the terminal');
+}
+
+{
   // workerd cancels a handler that outruns the 5 s cap. Same conclusion.
   const ws = shellSocket(null);
   tagShellSocket(ws);

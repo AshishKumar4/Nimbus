@@ -161,7 +161,7 @@
       cursor: pointer; font-size: 11px; padding: 2px 8px; white-space: nowrap;
     }
     .preview-isolation button:hover { border-color: #58a6ff; }
-    .preview-isolation-icon { display: none; }
+    .preview-isolation-short { display: none; }
     /* A pane too narrow for the bar (a phone-width window) wraps it, so the
        reload and open buttons stay inside the pane instead of past its edge. */
     .panel-preview { container-type: inline-size; }
@@ -171,12 +171,12 @@
       .preview-bar .url-bar { min-width: 0; flex-basis: 100%; }
     }
     /* Too narrow for the offer's words and a whole button: the strip becomes
-       one icon button, in the bar's icon style, named by its label and title. */
+       one button with a one-word label, named in full by its aria-label and
+       title. A word, not a glyph: the bar's own ↻ sits right above it. */
     @container (max-width: 200px) {
       .preview-isolation { padding: 2px 8px; }
       .preview-isolation-text, .preview-isolation-label { display: none; }
-      .preview-isolation-icon { display: inline; }
-      .preview-isolation button { font-size: 14px; line-height: 1; padding: 2px 6px; }
+      .preview-isolation-short { display: inline; }
     }
     #markdown-preview {
       display: none; flex: 1; min-height: 0; overflow: auto;
@@ -498,7 +498,7 @@
       </div>
       <div class="preview-isolation" id="previewIsolation" role="status" hidden>
         <span class="preview-isolation-text" id="previewIsolationText"></span>
-        <button type="button" id="btnPreviewIsolationAction"><span class="preview-isolation-label"></span><span class="preview-isolation-icon" aria-hidden="true"></span></button>
+        <button type="button" id="btnPreviewIsolationAction"><span class="preview-isolation-label"></span><span class="preview-isolation-short" aria-hidden="true"></span></button>
       </div>
       <iframe id="preview-frame" src="about:blank" allow="cross-origin-isolated"></iframe>
       <div id="markdown-preview" aria-label="Markdown preview">
@@ -2204,6 +2204,7 @@
     }
 
     async function applyPreviewTarget(kind, stats) {
+      if (stats?.appDocuments) appDocuments = stats.appDocuments;
       const previousKind = previewBackendKind;
       previewBackendKind = kind === 'worker' || kind === 'vite' ? kind : 'none';
       const appKind = previewBackendKind === 'worker' ? 'worker' : 'vite';
@@ -2255,7 +2256,7 @@
       text: document.getElementById('previewIsolationText'),
       action: document.getElementById('btnPreviewIsolationAction'),
       actionLabel: document.querySelector('#btnPreviewIsolationAction .preview-isolation-label'),
-      actionIcon: document.querySelector('#btnPreviewIsolationAction .preview-isolation-icon'),
+      actionShort: document.querySelector('#btnPreviewIsolationAction .preview-isolation-short'),
       sessionId: SESSION_ID,
       openInNewTab: openPreviewInNewTab,
       releaseTerminal,
@@ -2270,13 +2271,19 @@
     // recorded its policy: read it now rather than at the next poll.
     previewFrame.addEventListener('load', () => refreshStats());
 
+    // The app doors' last documents, from the stats: `{ vite, worker }`.
+    let appDocuments = { vite: null, worker: null };
+
     function showPreviewIsolation() {
       previewIsolation.then((isolation) => {
         if (!isolation) return;
         const tab = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
-        isolation.show(tab && tab.type === 'port'
-          ? { id: tab.id, url: tab.url, document: tab.document }
-          : null);
+        if (!tab || tab.type === 'markdown') {
+          isolation.show(null);
+          return;
+        }
+        const policy = tab.type === 'port' ? tab.document : appDocuments[tab.kind];
+        isolation.show({ id: tab.id, url: tab.url, document: policy ?? null });
       });
     }
 
@@ -2739,7 +2746,7 @@
     addEventListener('pagehide', () => {
       const sock = ws;
       ws = null;
-      if (sock && sock.readyState === WebSocket.OPEN) sock.close(1000, 'page hidden');
+      if (sock && sock.readyState !== WebSocket.CLOSED) sock.close(1000, 'page hidden');
     });
     // Back from the back/forward cache: dial again.
     addEventListener('pageshow', (event) => { if (event.persisted && !ws) connect(); });
