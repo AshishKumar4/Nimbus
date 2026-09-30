@@ -17,18 +17,20 @@
 //     resident process's exit report alike. Text the constructor would refuse
 //     throws its SyntaxError there and never runs.
 //   - The plain Function constructor keeps the native refusal for text no
-//     launch staged, and stages a text only when its refusal ended the
-//     program: a probe of it (TypeBox's CanEvaluate, `Function("null")()`)
-//     that the program catches answers "no" in every launch, so code that
-//     probes once and then compiles everything keeps its fallback, while a
-//     module that builds a function as it loads (depd, under express 4) exits
-//     once and runs from the next launch on.
+//     launch staged, and stages what it refused only when the launch fails:
+//     a probe of it (TypeBox's CanEvaluate, `Function("null")()`) in a
+//     successful launch answers "no" every time, so code that probes once and
+//     then compiles everything keeps its fallback, while a module that builds
+//     a function as it loads (depd, under express 4) or a program that exits
+//     1 after a refusal (serve's ajv) fails once and runs from the next
+//     launch on.
 //   - A SyntaxError in an entry names the file.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
@@ -114,6 +116,16 @@ const FILES = {
     'console.log("PLAIN " + deprecated(5));',
     'try { Function("null")(); console.log("PROBE yes"); } catch { console.log("PROBE no"); }',
   ].join('\n'),
+  // serve 14's shape: the refusal (ajv compiling a schema) is caught and the
+  // program exits 1.
+  'caught.js': 'try { console.log("CAUGHT " + new Function("return 7")()); } catch (e) { console.log("CAUGHT " + e.name); process.exit(1); }',
+  // node:url's legacy API, compared with the host's real node below
+  // (http-server reads `url.parse(req.url).pathname`).
+  'url.js': [
+    'const url = require("url");',
+    'const pick = (u) => ({ protocol: u.protocol, auth: u.auth, host: u.host, port: u.port, hostname: u.hostname, hash: u.hash, search: u.search, query: u.query, pathname: u.pathname, path: u.path, href: u.href });',
+    'console.log("URL " + JSON.stringify([pick(url.parse("/hello.txt?x=1#h")), pick(url.parse("http://u:p@host:8080/a/b?q=1", true)), url.resolve("/a/b/c", "../d"), url.format({ pathname: "/x", query: { a: 1 } })]));',
+  ].join('\n'),
   'bad.js': 'const x = ;\n',
 };
 
@@ -157,7 +169,18 @@ try {
     const staged = await terminal.run(`cd ${W} && node plain.js`);
     assert.equal(staged.status, 0, staged.stdout);
     assert.match(staged.stdout, /^PLAIN 15$/m, 'the next launch runs the staged function');
-    assert.match(staged.stdout, /^PROBE no$/m, 'a caught probe is never staged');
+    assert.match(staged.stdout, /^PROBE no$/m, 'a probe in a successful launch is never staged');
+    const caught = await terminal.run(`cd ${W} && node caught.js`);
+    assert.equal(caught.status, 1, caught.stdout);
+    assert.match(caught.stdout, /^CAUGHT EvalError$/m, caught.stdout);
+    const recovered = await terminal.run(`cd ${W} && node caught.js`);
+    assert.equal(recovered.status, 0, recovered.stdout);
+    assert.match(recovered.stdout, /^CAUGHT 7$/m, 'a launch that failed after a caught refusal stages the text');
+
+    const urlRun = await terminal.run(`cd ${W} && node url.js`);
+    const hostUrl = spawnSync('node', ['-e', FILES['url.js']], { encoding: 'utf8' });
+    assert.equal(hostUrl.status, 0, hostUrl.stderr);
+    assert.equal(/^URL .*$/m.exec(urlRun.stdout)?.[0], /^URL .*$/m.exec(hostUrl.stdout)?.[0], 'url.parse/resolve/format answer as node does');
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {

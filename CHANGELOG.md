@@ -10,9 +10,10 @@ published independently in the `@nimbus-sh` npm scope.
   deprecated wrapper with `new Function` as its module loads, which a
   Worker refuses at request time; the plain `Function` constructor was left
   native, so every launch crashed the same way and never bound its port.
-  It now answers text an earlier launch staged and stages a text only when
-  its refusal ended the program: a capability probe the program catches
-  (TypeBox's `Function("null")`) still answers "no" in every launch.
+  It now answers text an earlier launch staged and stages the text it
+  refused only when the launch fails (an uncaught error, or a non-zero exit
+  such as serve 14's after ajv's refusal): a capability probe in a
+  successful launch (TypeBox's `Function("null")`) still answers "no".
 
 - `npx http-server` serves. Node guests use workerd's native `node:events`
   instead of a hand-rolled `class EE`, so `EventEmitter.call(this)` with
@@ -21,6 +22,10 @@ published independently in the `@nimbus-sh` npm scope.
   static `once`/`on`/`captureRejections`/`setMaxListeners` helpers are
   Node's. Shim streams no longer emit `'error'` after being destroyed
   (Node's errorOrDestroy); with a real emitter that error would throw.
+  `url.parse`/`format`/`resolve` are workerd's native `node:url` legacy API:
+  the hand-rolled parse answered only `{ href }` for a relative URL, so
+  http-server's `url.parse(req.url).pathname` was undefined and every
+  request was a 400.
 
 - Node HTTP guests see full request header values again. workerd's native
   server keeps only the text before the first unquoted comma of Host,

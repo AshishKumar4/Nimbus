@@ -875,8 +875,7 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
-        const __staged = globalThis.__nimbusRuntimeCode.stageUnhandled(e);
-        const trace = ((e && e.stack) || (e && e.message) || String(e)) + (__staged && "\\n" + __staged);
+        const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
         if (__supervisor && !captureOutput) {
@@ -913,6 +912,13 @@ ${RESIDENCY_MISS_REPORT}
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
       if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
+    }
+    // A failed launch stages the Function-constructor text it was refused
+    // (commonjs-cell.ts, stageFailedLaunch).
+    const __stagedCode = exitCode !== 0 ? globalThis.__nimbusRuntimeCode.stageFailedLaunch() : "";
+    if (__stagedCode) {
+      stderr += __stagedCode + "\\n";
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__stagedCode + "\\n"));
     }
 
     await __drainPendingIO();
@@ -1338,8 +1344,7 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
-        const __staged = globalThis.__nimbusRuntimeCode.stageUnhandled(e);
-        const trace = ((e && e.stack) || (e && e.message) || String(e)) + (__staged && "\\n" + __staged);
+        const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
         if (__supervisor && !captureOutput) {
@@ -1373,6 +1378,13 @@ ${RESIDENCY_MISS_REPORT}
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
+      }
+      // A failed launch stages the Function-constructor text it was refused
+      // (commonjs-cell.ts, stageFailedLaunch).
+      const __stagedCode = Number(code ?? 0) !== 0 ? globalThis.__nimbusRuntimeCode.stageFailedLaunch() : "";
+      if (__stagedCode) {
+        stderr += __stagedCode + "\\n";
+        try { await __supervisor.stderr(__nimbusOutEnc.encode(__stagedCode + "\\n")); } catch {}
       }
       await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger());
       __nimbusProcessExitReported = true;
