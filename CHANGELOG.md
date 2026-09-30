@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-09-30
+
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
+message shape, VFS export schema 3 (its pages carry `source`), and the
+`enhanced_error_serialization` requirement; each is described below.
+
 - A workspace no longer holds memory for every file it writes or removes.
   `SqliteVFS` kept each written file's inode in its cache and a revision
   stamp for every path written or removed, about 350 B per file, up to
@@ -750,6 +759,10 @@ published independently in the `@nimbus-sh` npm scope.
   its modules read their real URL (`file:///bundle/<module>`), so its
   `createRequire(import.meta.url)` calls construct without a rewrite.
 
+## 2026-09-28 (second release)
+
+Published as core 0.13.1.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other
@@ -759,6 +772,11 @@ published independently in the `@nimbus-sh` npm scope.
   and a process's bridge, as coreutils and Node do. The bridge checked the
   link's own entry and answered EEXIST. A plain `mkdir` of the link, and
   `mkdir -p` of a link to a file or of a dangling link, still fail.
+
+## 2026-09-28
+
+Published as core 0.13.0, worker 0.11.0, fabric 0.8.0, platform 0.6.0,
+sdk 0.9.0, config 0.2.2, and cli, loom, react and create-nimbus-app 0.2.0.
 
 - A process's filesystem read that the session has not answered after 5 s
   is sent again on a fresh stub, and the first success is used. Under
