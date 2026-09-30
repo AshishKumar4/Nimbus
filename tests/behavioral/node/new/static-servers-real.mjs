@@ -44,12 +44,15 @@ const SITE = '/home/user/static-site';
 const EXPRESS_APP = '/home/user/express-static';
 const CONTENT = `static-servers-real ${Date.now().toString(36)} — Grüße ✓ 静的\n`;
 const LAUNCH_BUDGET_MS = 180_000;
-const MAX_LAUNCHES = 4;
+// depd (express 4) and ajv (serve) build one function per call site or schema,
+// in sequence, so each failed launch reveals one more text.
+const MAX_LAUNCHES = 10;
 
 const SERVERS = [
   { name: 'http-server', port: 8101, cwd: '/home/user', command: `npx http-server ${SITE} -p 8101` },
   { name: 'serve', port: 8102, cwd: '/home/user', command: `npx serve ${SITE} -l 8102` },
-  { name: 'sirv-cli', port: 8103, cwd: '/home/user', command: `npx sirv-cli ${SITE} --port 8103` },
+  // sirv-cli reads $PORT before --port, and a Nimbus session exports PORT=3000.
+  { name: 'sirv-cli', port: 8103, cwd: '/home/user', command: `PORT=8103 npx sirv-cli ${SITE} --port 8103` },
   { name: 'express.static', port: 8104, cwd: EXPRESS_APP, command: 'node app.js' },
   { name: 'node-static', port: 8105, cwd: '/home/user', command: `npx node-static -p 8105 ${SITE}` },
 ];
