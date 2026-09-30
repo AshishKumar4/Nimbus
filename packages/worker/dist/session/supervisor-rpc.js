@@ -199,11 +199,15 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const operation = envelope.delivery?.op ?? envelope.op;
         // The binding's props, minted by supervisorBindingProps: attribute values only, nothing trusted.
         const props = this.ctx.props;
+        const doId = typeof props === 'object' && props !== null && 'doId' in props && typeof props.doId === 'string'
+            ? props.doId : undefined;
+        const writerId = typeof props === 'object' && props !== null && 'writerId' in props && typeof props.writerId === 'string'
+            ? props.writerId : undefined;
         return traced(`nimbus.supervisor.${trace.kind}`, {
             'nimbus.op': operation,
             'nimbus.pid': envelope.pid,
-            'nimbus.session_do': props?.doId,
-            'nimbus.writer_id': envelope.writerId ?? props?.writerId,
+            'nimbus.session_do': doId,
+            'nimbus.writer_id': envelope.writerId ?? writerId,
             'nimbus.operation_id': trace.operationId,
             'nimbus.host_incarnation': envelope.delivery?.hostIncarnation,
             'nimbus.read_id': envelope.readId,

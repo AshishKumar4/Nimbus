@@ -160,5 +160,5 @@ function isStdinDevice(node) {
     if (node.type === 'Literal')
         return typeof node.value === 'string' && STDIN_DEVICES.has(node.value);
     return node.type === 'TemplateLiteral' && node.expressions.length === 0
-        && STDIN_DEVICES.has(node.quasis[0]?.value?.cooked);
+        && STDIN_DEVICES.has(node.quasis[0]?.value?.cooked ?? '');
 }

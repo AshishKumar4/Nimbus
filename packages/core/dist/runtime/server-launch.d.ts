@@ -43,6 +43,7 @@
  * and how large; a source past it, or one the parser cannot read, starts
  * nothing.
  */
+import type { Program } from 'acorn';
 /** How large a module may be to be walked: parsing costs about 50 ms a MiB. */
 export declare const SERVER_LAUNCH_MODULE_BYTES: number;
 /** How the analysis reads the program's modules: the command's own view. */
@@ -72,7 +73,5 @@ export declare function programLaunchesServer(program: ServerLaunchProgram, host
  * each relative specifier to its VFS key when it is the program's own code
  * (inside `packageRoot`, not a data file), else to null.
  */
-export declare function resolveOwnModules(ast: {
-    type: string;
-}, path: string | null, dir: string, packageRoot: string, host: ServerLaunchHost): Promise<Map<string, string | null>>;
+export declare function resolveOwnModules(ast: Program, path: string | null, dir: string, packageRoot: string, host: ServerLaunchHost): Promise<Map<string, string | null>>;
 //# sourceMappingURL=server-launch.d.ts.map

@@ -92,7 +92,7 @@ export async function startObservedEsbuild(newEsbuild, wasmModule) {
     const observed = Object.create(WebAssembly, {
         instantiate: {
             value: async (module, imports) => {
-                const gojs = Object(Reflect.get(imports, 'gojs'));
+                const gojs = imports.gojs ?? {};
                 const wasmExit = gojs['runtime.wasmExit'];
                 let watched = imports;
                 if (typeof wasmExit === 'function') {
@@ -139,10 +139,9 @@ export async function startObservedEsbuild(newEsbuild, wasmModule) {
                     }
                     // The kept promise holds its error too, and an error's unformatted
                     // stack holds the frames that made it: the transform, and its input.
-                    const failure = Object.assign(new Error(error.message), {
-                        errors: Reflect.get(error, 'errors'),
-                        warnings: Reflect.get(error, 'warnings'),
-                    });
+                    const errors = Reflect.get(error, 'errors');
+                    const warnings = Reflect.get(error, 'warnings');
+                    const failure = Object.assign(new Error(error.message), { errors, warnings });
                     if (closed)
                         Reflect.set(failure, 'transient', true);
                     error.stack = '';

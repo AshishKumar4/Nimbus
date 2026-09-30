@@ -15,6 +15,7 @@
  * node-shims.ts (`__nimbusWasmDigest`) because that copy runs inside a facet
  * with no imports; both must compute the same value, which a unit test pins.
  */
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 export declare function wasmImageDigest(bytes: Uint8Array): string;
 /**
  * `wasmImageDigest` of a file, read one slice at a time: the coordinator
@@ -22,10 +23,7 @@ export declare function wasmImageDigest(bytes: Uint8Array): string;
  * a 15 MiB image read whole beside it was enough to reset the isolate. Null
  * when the file cannot be read.
  */
-export declare function streamedWasmImageDigest(fs: {
-    stat(path: string): unknown;
-    readRange(path: string, offset: number, length: number): unknown;
-}, path: string): Promise<string | null>;
+export declare function streamedWasmImageDigest(fs: Pick<RuntimeFsBridge, 'stat' | 'readRange'>, path: string): Promise<string | null>;
 /** One wasm image a launch registers: where the program reads it, and its content key. */
 export interface WasmImageRecord {
     /** Absolute VFS path (leading slash). */

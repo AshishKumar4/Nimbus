@@ -6094,6 +6094,85 @@ return globalThis.Go;
     return Parser.tokenizer(input, options);
   }
 
+  var NODE_TYPES = new Set(Object.keys({
+    ArrayExpression: true,
+    ArrayPattern: true,
+    ArrowFunctionExpression: true,
+    AssignmentExpression: true,
+    AssignmentPattern: true,
+    AwaitExpression: true,
+    BinaryExpression: true,
+    BlockStatement: true,
+    BreakStatement: true,
+    CallExpression: true,
+    CatchClause: true,
+    ChainExpression: true,
+    ClassBody: true,
+    ClassDeclaration: true,
+    ClassExpression: true,
+    ConditionalExpression: true,
+    ContinueStatement: true,
+    DebuggerStatement: true,
+    DoWhileStatement: true,
+    EmptyStatement: true,
+    ExportAllDeclaration: true,
+    ExportDefaultDeclaration: true,
+    ExportNamedDeclaration: true,
+    ExportSpecifier: true,
+    ExpressionStatement: true,
+    ForInStatement: true,
+    ForOfStatement: true,
+    ForStatement: true,
+    FunctionDeclaration: true,
+    FunctionExpression: true,
+    Identifier: true,
+    IfStatement: true,
+    ImportAttribute: true,
+    ImportDeclaration: true,
+    ImportDefaultSpecifier: true,
+    ImportExpression: true,
+    ImportNamespaceSpecifier: true,
+    ImportSpecifier: true,
+    LabeledStatement: true,
+    Literal: true,
+    LogicalExpression: true,
+    MemberExpression: true,
+    MetaProperty: true,
+    MethodDefinition: true,
+    NewExpression: true,
+    ObjectExpression: true,
+    ObjectPattern: true,
+    ParenthesizedExpression: true,
+    PrivateIdentifier: true,
+    Program: true,
+    Property: true,
+    PropertyDefinition: true,
+    RestElement: true,
+    ReturnStatement: true,
+    SequenceExpression: true,
+    SpreadElement: true,
+    StaticBlock: true,
+    Super: true,
+    SwitchCase: true,
+    SwitchStatement: true,
+    TaggedTemplateExpression: true,
+    TemplateElement: true,
+    TemplateLiteral: true,
+    ThisExpression: true,
+    ThrowStatement: true,
+    TryStatement: true,
+    UnaryExpression: true,
+    UpdateExpression: true,
+    VariableDeclaration: true,
+    VariableDeclarator: true,
+    WhileStatement: true,
+    WithStatement: true,
+    YieldExpression: true
+  }));
+  function isAstNode(value) {
+    return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && NODE_TYPES.has(value.type);
+  }
+
   function createModuleLexer() {
     let e, a, r, i = 2 << 19;
     const s = 1 === new Uint8Array(new Uint16Array([1]).buffer)[0] ? function(e2, a2) {
@@ -6109,7 +6188,7 @@ return globalThis.Go;
       }
     }, f = "xportportetaourceeferromsyncunctionlassvoyiedelecontininstantybreareturdebuggeawaithrwhileforifcatcfinallels";
     let c, t, n;
-    function parse3(k2, l2 = "@") {
+    function parse4(k2, l2 = "@") {
       c = k2, t = l2;
       const u2 = 2 * c.length + (2 << 18);
       if (u2 > i || !e) {
@@ -8604,7 +8683,7 @@ return globalThis.Go;
     function o() {
       throw Object.assign(Error(`Parse error ${t}:${c.slice(0, n).split("\n").length}:${n - c.lastIndexOf("\n", n - 1)}`), { idx: n });
     }
-    return parse3;
+    return parse4;
   }
 
   var IMPORT_SYNTAX = /\bimport\s*(?:[(.]|\/[/*])/;
@@ -8854,6 +8933,12 @@ return globalThis.Go;
   var PARSE_IMPORT_META = Reflect.get(Parser.prototype, "parseImportMeta");
   var PARSE_IDENT = Reflect.get(Parser.prototype, "parseIdent");
   var FINISH_NODE = Reflect.get(Parser.prototype, "finishNode");
+  function produce(production, parser, args) {
+    if (typeof production !== "function") throw new TypeError("acorn has no such production");
+    const node = Reflect.apply(production, parser, args);
+    if (!isAstNode(node)) throw new TypeError("an acorn production made no node");
+    return node;
+  }
   var ContainerClosed = class extends Error {
   };
   var ContainerParser = class extends Parser {
@@ -8865,7 +8950,7 @@ return globalThis.Go;
     containerType;
     containerStart;
     finishNode(node, type) {
-      const finished = Reflect.apply(FINISH_NODE, this, [node, type]);
+      const finished = produce(FINISH_NODE, this, [node, type]);
       if (type === this.containerType && node.start === this.containerStart) throw new ContainerClosed();
       return finished;
     }
@@ -8960,29 +9045,28 @@ return globalThis.Go;
     collected;
     parseDynamicImport(node) {
       const end = Reflect.get(this, "end");
-      const parsed = Reflect.apply(PARSE_DYNAMIC_IMPORT, this, [node]);
-      this.collected.edits.push({ start: node.start, end, text: this.collected.call });
+      const parsed = produce(PARSE_DYNAMIC_IMPORT, this, [node]);
+      if (typeof end === "number") this.collected.edits.push({ start: node.start, end, text: this.collected.call });
       return parsed;
     }
     parseStatement(context, topLevel, exports) {
-      const node = Reflect.apply(PARSE_STATEMENT, this, [context, topLevel, exports]);
+      const node = produce(PARSE_STATEMENT, this, [context, topLevel, exports]);
       if (!topLevel) return node;
-      if (node.type === "ExpressionStatement") {
-        const expression = Reflect.get(node, "expression");
-        if (expression?.type === "Literal" && typeof expression.value === "string") return node;
+      if (node.type === "ExpressionStatement" && node.expression.type === "Literal" && typeof node.expression.value === "string") {
+        return node;
       }
       return { type: "EmptyStatement", start: node.start, end: node.end };
     }
   };
   var MetadataCollector = class extends ImportCollector {
     parseImportMeta(node) {
-      const parsed = Reflect.apply(PARSE_IMPORT_META, this, [node]);
+      const parsed = produce(PARSE_IMPORT_META, this, [node]);
       this.collected.metas.push({ start: node.start, end: node.end });
       return parsed;
     }
     parseIdent(liberal) {
-      const node = Reflect.apply(PARSE_IDENT, this, [liberal]);
-      this.collected.names.add(Reflect.get(node, "name"));
+      const node = produce(PARSE_IDENT, this, [liberal]);
+      if (node.type === "Identifier") this.collected.names?.add(node.name);
       return node;
     }
   };
@@ -9023,7 +9107,7 @@ return globalThis.Go;
   function applyEdits(code, edits, metas, names, insertion) {
     if (metas.length) {
       let binding = METADATA_BINDING;
-      while (code.includes(binding) || names.has(binding)) binding += "_";
+      while (code.includes(binding) || names?.has(binding)) binding += "_";
       for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
       edits.push({ start: insertion, end: insertion, text: `
 "use strict";

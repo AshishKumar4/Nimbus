@@ -26,10 +26,10 @@ export class MemoryVFS {
         this.root = this.entry('directory', 0o755);
     }
     entry(type, mode) {
-        return {
-            type, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
-            children: type === 'directory' ? new Map() : null,
+        const fields = {
+            data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
         };
+        return type === 'directory' ? { type, ...fields, children: new Map() } : { type, ...fields, children: null };
     }
     touch(entry) {
         entry.mtimeMs = Date.now();

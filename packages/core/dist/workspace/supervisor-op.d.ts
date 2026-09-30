@@ -163,7 +163,7 @@ declare const NATIVE_OPS: {
     fsSync: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsRealpath: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string>;
     fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number | void>;
     fsCopyTree: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<{
         root: string;

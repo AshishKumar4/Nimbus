@@ -239,7 +239,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const candidates = entries.filter((e) => e.name === request.installName);
         if (candidates.length === 0)
             return null;
-        // @ts-ignore — preamble.
         const picked = RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
         if (!picked)
             return null;
@@ -296,6 +295,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             return nativeReject;
         return out(pkgFromCache, 0, 'cache-hit');
     }
+    const hasVersions = (value) => value !== null && typeof value === 'object' && 'versions' in value && !!value.versions;
+    // `value[key]` as JavaScript reads it, a primitive's through its wrapper; undefined for null and undefined.
+    const readProperty = (value, key) => value === null || value === undefined ? undefined : Reflect.get(Object(value), key);
     const loadPackument = async (name) => {
         let packumentText = null;
         let packumentSource = 'network';
@@ -362,13 +364,14 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             loaded = JSON.parse(packumentText);
         }
         catch (e) {
-            messages.push(`[resolve-one] ${name}: malformed packument: ${e?.message ?? e}`);
+            const detail = e instanceof Error ? e.message : e;
+            messages.push(`[resolve-one] ${name}: malformed packument: ${detail}`);
             return { failed: out(null, loadedBytes, packumentSource, {
                     type: 'unresolved',
-                    reason: `malformed packument for ${name}: ${e?.message ?? e}`,
+                    reason: `malformed packument for ${name}: ${detail}`,
                 }) };
         }
-        if (!loaded || !loaded.versions) {
+        if (!loaded || !hasVersions(loaded)) {
             return { failed: out(null, loadedBytes, packumentSource, {
                     type: 'unresolved',
                     reason: `packument for ${name} carries no versions`,
@@ -383,18 +386,16 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     //    that lacks the range's versions handed back its own latest).
     const pickVersion = (packument) => {
         let picked = null;
-        if (request.range && packument.versions[request.range])
+        if (request.range && readProperty(packument.versions, request.range))
             picked = request.range;
         if (!picked && request.range && request.range !== 'latest') {
-            // @ts-ignore — preamble.
             picked = RESOLVE_VERSION(Object.keys(packument.versions), request.range);
         }
         if (!picked)
-            picked = packument['dist-tags']?.[request.range] || null;
+            picked = readProperty(packument['dist-tags'], request.range) || null;
         const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
-        // @ts-ignore — preamble.
         if (!picked && (open || !IS_SEMVER_RANGE(request.range)))
-            picked = packument['dist-tags']?.latest || null;
+            picked = readProperty(packument['dist-tags'], 'latest') || null;
         return picked;
     };
     // A `since` swap is decided on the package itself: resolve its own
@@ -410,13 +411,20 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     let version = pickVersion(packument.data);
     if (__swap && __swap.since) {
         const own = version;
-        // @ts-ignore — preamble.
-        const covered = own !== null && packument.data.versions[own] !== undefined && COMPARE_SEMVER(PARSE_SEMVER(own), PARSE_SEMVER(__swap.since)) >= 0;
+        let covered = false;
+        if (own !== null && readProperty(packument.data.versions, String(own)) !== undefined) {
+            const ownSemver = PARSE_SEMVER(String(own));
+            const since = PARSE_SEMVER(__swap.since);
+            // A version that does not parse cannot be ordered: the resolve fails, as it always has.
+            if (ownSemver === null || since === null)
+                throw new TypeError(`${ownSemver === null ? own : __swap.since} is not a semver version`);
+            covered = COMPARE_SEMVER(ownSemver, since) >= 0;
+        }
         if (covered) {
             const target = await loadPackument(__swap.to);
             if ('failed' in target)
                 return target.failed;
-            if (target.data.versions[own] !== undefined) {
+            if (readProperty(target.data.versions, String(own)) !== undefined) {
                 announceSwap(__swap);
                 effName = __swap.to;
                 packument = target;
@@ -433,7 +441,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const data = packument.data;
     const bytes = packument.bytes;
     const packumentSource = packument.source;
-    if (!version || !data.versions[version]) {
+    if (!version || !readProperty(data.versions, String(version))) {
         messages.push(`[resolve-one] ${effName}: no version satisfies ${request.range}`);
         return out(null, bytes, packumentSource, {
             type: 'unresolved',
@@ -441,7 +449,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         });
     }
     // 4. Materialise ResolvedPackage.
-    const vData = data.versions[version];
+    const vData = readProperty(data.versions, String(version));
     const versionToResolved = (v) => {
         const packageName = request.installName || v.name;
         const binField = v.bin || {};
@@ -521,16 +529,14 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     });
     // Top-5 sibling versions.
     const sorted = Object.keys(data.versions)
-        // @ts-ignore — preamble.
         .map((v) => ({ v, p: PARSE_SEMVER(v) }))
         .filter((x) => x.p !== null)
-        // @ts-ignore — preamble.
         .sort((a, b) => COMPARE_SEMVER(b.p, a.p));
     for (let i = 0; i < Math.min(5, sorted.length); i++) {
         const otherVer = sorted[i].v;
         if (otherVer === pkg.version)
             continue;
-        const otherData = data.versions[otherVer];
+        const otherData = readProperty(data.versions, otherVer);
         if (!otherData)
             continue;
         try {

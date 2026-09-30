@@ -1,10 +1,14 @@
 import { parse, tokenizer, tokTypes } from 'acorn';
 export function parseJavaScriptModule(source) {
-    return parse(source, {
+    const program = parse(source, {
         ecmaVersion: 'latest',
         sourceType: 'module',
         allowHashBang: true,
     });
+    // Program declares no index signature; the guard gives it AstNode's keyed view.
+    if (!isAstNode(program))
+        throw new TypeError(`acorn parsed a ${program.type}, not a node`);
+    return program;
 }
 /**
  * A program as Node would run it: an ES module, or a CommonJS script (whose
@@ -114,19 +118,44 @@ export function literalStringValue(node) {
 export function literalBooleanValue(node) {
     return node?.type === 'Literal' && typeof node.value === 'boolean' ? node.value : undefined;
 }
+/** Every node type acorn's AnyNode names: `satisfies` holds the list to acorn's types. */
+const NODE_TYPES = new Set(Object.keys({
+    ArrayExpression: true, ArrayPattern: true, ArrowFunctionExpression: true, AssignmentExpression: true,
+    AssignmentPattern: true, AwaitExpression: true, BinaryExpression: true, BlockStatement: true, BreakStatement: true,
+    CallExpression: true, CatchClause: true, ChainExpression: true, ClassBody: true, ClassDeclaration: true,
+    ClassExpression: true, ConditionalExpression: true, ContinueStatement: true, DebuggerStatement: true,
+    DoWhileStatement: true, EmptyStatement: true, ExportAllDeclaration: true, ExportDefaultDeclaration: true,
+    ExportNamedDeclaration: true, ExportSpecifier: true, ExpressionStatement: true, ForInStatement: true,
+    ForOfStatement: true, ForStatement: true, FunctionDeclaration: true, FunctionExpression: true, Identifier: true,
+    IfStatement: true, ImportAttribute: true, ImportDeclaration: true, ImportDefaultSpecifier: true,
+    ImportExpression: true, ImportNamespaceSpecifier: true, ImportSpecifier: true, LabeledStatement: true,
+    Literal: true, LogicalExpression: true, MemberExpression: true, MetaProperty: true, MethodDefinition: true,
+    NewExpression: true, ObjectExpression: true, ObjectPattern: true, ParenthesizedExpression: true,
+    PrivateIdentifier: true, Program: true, Property: true, PropertyDefinition: true, RestElement: true,
+    ReturnStatement: true, SequenceExpression: true, SpreadElement: true, StaticBlock: true, Super: true,
+    SwitchCase: true, SwitchStatement: true, TaggedTemplateExpression: true, TemplateElement: true,
+    TemplateLiteral: true, ThisExpression: true, ThrowStatement: true, TryStatement: true, UnaryExpression: true,
+    UpdateExpression: true, VariableDeclaration: true, VariableDeclarator: true, WhileStatement: true,
+    WithStatement: true, YieldExpression: true,
+}));
+/**
+ * A node of a tree acorn parsed: an object whose `type` is one of acorn's
+ * node types. Its other fields are acorn's, which this does not re-check.
+ */
 export function isAstNode(value) {
-    return !!value && typeof value === 'object' && typeof value.type === 'string';
+    return typeof value === 'object' && value !== null && 'type' in value
+        && typeof value.type === 'string' && NODE_TYPES.has(value.type);
 }
 const NON_CHILD_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
 /** Each child node of `node`. */
 export function forEachChild(node, visit) {
-    const fields = node;
-    for (const key in fields) {
+    for (const key of Object.keys(node)) {
         if (NON_CHILD_KEYS.has(key))
             continue;
-        const child = fields[key];
+        const child = Reflect.get(node, key);
         if (Array.isArray(child)) {
-            for (const c of child)
+            const children = child;
+            for (const c of children)
                 if (isAstNode(c))
                     visit(c);
         }

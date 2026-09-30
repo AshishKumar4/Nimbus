@@ -28,7 +28,12 @@ import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabr
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
+import type { NimbusSession } from './nimbus-session.js';
+import type { HmrEvent } from '../facets/real-vite-hmr.js';
 type RpcHost = any;
+type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
+type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
+type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**
@@ -246,7 +251,7 @@ export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleI
  */
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
 /** Poll the HMR queue in the same DO that owns its browser connections. */
-export declare function _rpcHmrNextEvent(self: RpcHost, timeoutMs?: number): Promise<any[]>;
+export declare function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, timeoutMs?: number): Promise<HmrEvent[]>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -296,7 +301,7 @@ export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array)
 export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
 /** A live server can catch a codegen miss and continue serving: persist its
  * ledger before it is killed or evicted, without changing its process state. */
-export declare function _rpcReportRuntimeCode(self: RpcHost, pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
+export declare function _rpcReportRuntimeCode(self: ReportRpcHost, pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
 /**
  * Called by facets from their `finally` block after I/O has drained.
  * Marks the log store so `logs` / `ps` can show the exit code, and
@@ -305,7 +310,7 @@ export declare function _rpcReportRuntimeCode(self: RpcHost, pid: number, entrie
  *
  * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
  */
-export declare function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
+export declare function _rpcReportExit(self: ExitRpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
 /**
  * Emit a formatted exit-dump banner + last 30 lines of output to the
  * terminal. Called from both the facet-reported exit path and the
@@ -358,8 +363,8 @@ export declare function _reportExternalExit(self: RpcHost, pid: number, code: nu
 */
 export declare function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>>;
 export declare function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
-export declare function _rpcAllocatePort(self: RpcHost, pid: number): Promise<number>;
-export declare function _rpcUnregisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
+export declare function _rpcAllocatePort(self: Pick<NimbusSession, 'portRegistry'>, pid: number): Promise<number>;
+export declare function _rpcUnregisterPort(self: Pick<NimbusSession, 'portRegistry'>, pid: number, port: number): Promise<void>;
 export declare function _rpcRouteLoopback(self: RpcHost, port: number, request: Request): Promise<Response>;
 export declare function _rpcTransform(self: RpcHost, code: string, loader: string): Promise<{
     code: string;

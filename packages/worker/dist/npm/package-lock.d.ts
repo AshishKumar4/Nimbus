@@ -1,3 +1,5 @@
+/** A parsed JSON object or array: a value whose fields can be read and set. */
+export declare function isJsonObject(value: unknown): value is Record<string, unknown>;
 export interface PackageLockEntry {
     name?: unknown;
     version?: unknown;
@@ -26,7 +28,7 @@ export declare function parsePackageLock(text: string, lockName: string): Packag
  * version its range accepts, and the lock's root must declare the same
  * dependency set, so a dependency removed from package.json is caught too.
  */
-export declare function packageLockMismatches(pkgJson: Record<string, unknown>, lock: PackageLock): string[];
+export declare function packageLockMismatches(value: unknown, lock: PackageLock): string[];
 export declare function stringRecord(value: unknown): Record<string, string>;
 export declare function stringList(value: unknown): string[] | undefined;
 //# sourceMappingURL=package-lock.d.ts.map

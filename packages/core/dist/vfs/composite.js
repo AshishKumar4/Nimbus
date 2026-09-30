@@ -103,6 +103,11 @@ function parentOf(path) {
 function isPromise(value) {
     return typeof value?.then === 'function';
 }
+function syncValue(value) {
+    if (isPromise(value))
+        throw new Error('synchronous filesystem operation returned a promise');
+    return value;
+}
 /** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
 function then(value, next) {
     return isPromise(value) ? value.then(next) : next(value);
@@ -505,12 +510,12 @@ export class CompositeVFS {
     }
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
     realpath(path) {
-        return reported({ syscall: 'realpath', path }, () => {
-            const resolved = this.resolve(path, true, true);
+        return syncValue(reported({ syscall: 'realpath', path }, () => {
+            const resolved = syncValue(this.resolve(path, true, true));
             if (this.statAt(resolved, false, true) === null)
                 throw new Refusal('ENOENT', path);
             return resolved;
-        });
+        }));
     }
     /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
     async realpathAsync(path) {
@@ -907,8 +912,6 @@ export class CompositeVFS {
      * here, per path, stable while it stays mounted.
      */
     identify(path, stat) {
-        if (stat === null)
-            return null;
         const mount = this.table.mounts.get(path) ?? this.route(path).mount;
         const dev = mount.dev ?? stat.dev ?? 0;
         let ino = stat.ino;
@@ -932,7 +935,7 @@ export class CompositeVFS {
                 return absent(e);
             }
         };
-        return then(walked(), (path) => (path === null ? null : then(this.statResolved(path, follow, sync), (stat) => this.identify(path, stat))));
+        return then(walked(), (path) => (path === null ? null : then(this.statResolved(path, follow, sync), (stat) => stat === null ? null : this.identify(path, stat))));
     }
     /** The stat of a resolved namespace path, before its identity is stamped. */
     statResolved(path, follow, sync) {
@@ -1461,26 +1464,26 @@ export class CompositeVFS {
     }
     makeSync() {
         return {
-            stat: (path, options) => reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, true)),
-            readFile: (path) => reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel))),
-            readRange: (path, offset, length) => reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length))),
-            writeFile: (path, data, options) => reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options))),
-            writeRange: (path, offset, bytes) => reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes))),
-            truncate: (path, size) => reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size))),
-            readdir: (path) => reported({ syscall: 'scandir', path }, () => this.readdirAt(path, true)),
-            mkdir: (path, options) => reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, true)),
-            unlink: (path) => reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel))),
-            rmdir: (path) => reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true)),
-            rename: (from, to) => reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true)),
+            stat: (path, options) => syncValue(reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, true))),
+            readFile: (path) => syncValue(reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel)))),
+            readRange: (path, offset, length) => syncValue(reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)))),
+            writeFile: (path, data, options) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options)))),
+            writeRange: (path, offset, bytes) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)))),
+            truncate: (path, size) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)))),
+            readdir: (path) => syncValue(reported({ syscall: 'scandir', path }, () => this.readdirAt(path, true))),
+            mkdir: (path, options) => syncValue(reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, true))),
+            unlink: (path) => syncValue(reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel)))),
+            rmdir: (path) => syncValue(reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true))),
+            rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
             removeRecursive: (path) => { reported({ syscall: 'rm', path }, () => this.removeAt(path, true)); },
-            symlink: (target, path) => reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel))),
-            readlink: (path) => reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel))),
-            chmod: (path, mode) => reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode))),
-            chown: (path, uid, gid) => reported({ syscall: 'chown', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid))),
-            utimes: (path, a, m) => reported({ syscall: 'utime', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m))),
-            copy: (from, to, options) => reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, true)),
-            writeFileIfRevision: (path, data, expected) => reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected))),
-            readFileAtRevision: (path, revision, range) => reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range))),
+            symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
+            readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
+            chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),
+            chown: (path, uid, gid) => syncValue(reported({ syscall: 'chown', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)))),
+            utimes: (path, a, m) => syncValue(reported({ syscall: 'utime', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)))),
+            copy: (from, to, options) => syncValue(reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, true))),
+            writeFileIfRevision: (path, data, expected) => syncValue(reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)))),
+            readFileAtRevision: (path, revision, range) => syncValue(reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)))),
         };
     }
 }

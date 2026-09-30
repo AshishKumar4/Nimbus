@@ -24,6 +24,7 @@
  * capture's name.
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes } from 'acorn';
+import { isAstNode } from './javascript-ast.js';
 import { createModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
@@ -206,6 +207,15 @@ const PARSE_DYNAMIC_IMPORT = Reflect.get(Parser.prototype, 'parseDynamicImport')
 const PARSE_IMPORT_META = Reflect.get(Parser.prototype, 'parseImportMeta');
 const PARSE_IDENT = Reflect.get(Parser.prototype, 'parseIdent');
 const FINISH_NODE = Reflect.get(Parser.prototype, 'finishNode');
+/** What acorn's own `production` makes on `parser`: a node, checked as one. */
+function produce(production, parser, args) {
+    if (typeof production !== 'function')
+        throw new TypeError('acorn has no such production');
+    const node = Reflect.apply(production, parser, args);
+    if (!isAstNode(node))
+        throw new TypeError('an acorn production made no node');
+    return node;
+}
 class ContainerClosed extends Error {
 }
 /** Acorn, stopped as it finishes the `containerType` node at `containerStart`. */
@@ -218,7 +228,7 @@ class ContainerParser extends Parser {
         this.containerStart = containerStart;
     }
     finishNode(node, type) {
-        const finished = Reflect.apply(FINISH_NODE, this, [node, type]);
+        const finished = produce(FINISH_NODE, this, [node, type]);
         if (type === this.containerType && node.start === this.containerStart)
             throw new ContainerClosed();
         return finished;
@@ -349,18 +359,17 @@ class ImportCollector extends Parser {
         // not source.start (which can exclude grouping parentheses), is the
         // exact end of the prefix we replace. Acorn validates the arguments.
         const end = Reflect.get(this, 'end');
-        const parsed = Reflect.apply(PARSE_DYNAMIC_IMPORT, this, [node]);
-        this.collected.edits.push({ start: node.start, end, text: this.collected.call });
+        const parsed = produce(PARSE_DYNAMIC_IMPORT, this, [node]);
+        if (typeof end === 'number')
+            this.collected.edits.push({ start: node.start, end, text: this.collected.call });
         return parsed;
     }
     parseStatement(context, topLevel, exports) {
-        const node = Reflect.apply(PARSE_STATEMENT, this, [context, topLevel, exports]);
+        const node = produce(PARSE_STATEMENT, this, [context, topLevel, exports]);
         if (!topLevel)
             return node;
-        if (node.type === 'ExpressionStatement') {
-            const expression = Reflect.get(node, 'expression');
-            if (expression?.type === 'Literal' && typeof expression.value === 'string')
-                return node;
+        if (node.type === 'ExpressionStatement' && node.expression.type === 'Literal' && typeof node.expression.value === 'string') {
+            return node;
         }
         return { type: 'EmptyStatement', start: node.start, end: node.end };
     }
@@ -368,13 +377,14 @@ class ImportCollector extends Parser {
 /** An ImportCollector that also collects import.meta, and every identifier. */
 class MetadataCollector extends ImportCollector {
     parseImportMeta(node) {
-        const parsed = Reflect.apply(PARSE_IMPORT_META, this, [node]);
+        const parsed = produce(PARSE_IMPORT_META, this, [node]);
         this.collected.metas.push({ start: node.start, end: node.end });
         return parsed;
     }
     parseIdent(liberal) {
-        const node = Reflect.apply(PARSE_IDENT, this, [liberal]);
-        this.collected.names.add(Reflect.get(node, 'name'));
+        const node = produce(PARSE_IDENT, this, [liberal]);
+        if (node.type === 'Identifier')
+            this.collected.names?.add(node.name);
         return node;
     }
 }
@@ -420,7 +430,7 @@ function rewriteWithGrammar(code, parentUrl, metadata) {
 function applyEdits(code, edits, metas, names, insertion) {
     if (metas.length) {
         let binding = METADATA_BINDING;
-        while (code.includes(binding) || names.has(binding))
+        while (code.includes(binding) || names?.has(binding))
             binding += '_';
         for (const meta of metas)
             edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });

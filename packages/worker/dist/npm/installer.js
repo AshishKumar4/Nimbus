@@ -31,7 +31,7 @@ import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
-import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
+import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
@@ -1742,6 +1742,9 @@ export class NpmInstaller {
         catch {
             return;
         }
+        // A document or dependency map that is not an object cannot take a field.
+        if (!isJsonObject(pkgJson))
+            throw new TypeError('package.json is not an object');
         if (!pkgJson.dependencies)
             pkgJson.dependencies = {};
         for (const spec of explicitPackages) {
@@ -1752,7 +1755,10 @@ export class NpmInstaller {
             const { name } = parseExplicitPackageSpec(spec);
             const pkg = resolved.get(name);
             if (pkg) {
-                pkgJson.dependencies[name] = '^' + pkg.version;
+                const dependencies = pkgJson.dependencies;
+                if (!isJsonObject(dependencies))
+                    throw new TypeError('package.json dependencies is not an object');
+                dependencies[name] = '^' + pkg.version;
             }
         }
         // `npm init` and npm-fast before 0.13.2 wrote package.json as root.

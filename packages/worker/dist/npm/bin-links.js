@@ -226,10 +226,13 @@ async function resolveFromManifest(vfs, nodeModulesPath, name) {
         return null;
     try {
         const manifest = JSON.parse(await vfs.readFileString(manifestPath));
-        if (manifest.version !== NPM_BIN_MANIFEST_VERSION || !manifest.bins || typeof manifest.bins !== 'object') {
+        if (!manifest || typeof manifest !== 'object' || !('version' in manifest) ||
+            manifest.version !== NPM_BIN_MANIFEST_VERSION || !('bins' in manifest) ||
+            !manifest.bins || typeof manifest.bins !== 'object') {
             return null;
         }
-        return await validateEntry(vfs, manifest.bins[name]);
+        const entry = Reflect.get(manifest.bins, name);
+        return await validateEntry(vfs, entry);
     }
     catch {
         return null;
