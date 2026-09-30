@@ -344,8 +344,9 @@ export interface SqliteVfsOptions {
      */
     readonly inodeCacheEntries?: number;
     /**
-     * Bytes of per-path revisions held; defaults to 16 MiB. Past it the oldest
-     * are dropped, and a path without one reports the newest revision dropped.
+     * Bytes of directory revision stamps held; defaults to 1 MiB. Past it the
+     * oldest are dropped, and a directory without one reports at least the
+     * newest revision dropped.
      */
     readonly pathRevisionBytes?: number;
     /**
@@ -759,28 +760,35 @@ export declare class SqliteVFS {
     /**
      * Without a path: the global mutation clock, which is the last committed
      * generation (`vfs_state.gen`) as of the last publication. With a path:
-     * the clock value at the last mutation inside that path's subtree, or the
-     * revision floor if that is older than the revisions still held (0 if
-     * nothing under it changed in this lifetime and nothing has been dropped).
-     * Never less than the last mutation. `revision('')` equals the global clock
-     * by construction (every mutation stamps all ancestors).
+     * the clock value at the last mutation inside that path's subtree, or a
+     * later one (the revision floor) if that is older than what is still held.
+     * Never less than the last mutation, never more than the clock.
+     * `revision('')` equals the global clock.
      */
     revision(path?: string, cred?: VfsCred): number;
     /**
-     * A storage key's revision: its own stamp; else, for a file or symlink,
-     * its row's generation, which its last mutation wrote and which survives
+     * A storage key's revision: its stamp; else, for a file or symlink, its
+     * row's generation, which its last mutation wrote and which survives
      * restarts, so an untouched file keeps its revision across incarnations;
-     * else the floor. Never more than the global clock, so a row written by a
-     * transaction not yet published reports the clock.
+     * else (a directory, or no row) the floor or the generation of its row or
+     * tombstone, whichever is later. Never more than the global clock, so a
+     * row written by a transaction not yet published reports the clock.
+     * `inode` is the row at `key`, null for none; omitted, it is looked up.
      */
     private pathRevision;
     /**
-     * Advance the clock to the committed generation, stamp every path + its
-     * ancestors, and record the mutation in the invalidation log. Every
+     * Advance the clock to the committed generation, stamp the directories
+     * above every path, and record the mutation in the invalidation log. Every
      * mutation commits at least one generation before it gets here, so the
      * clock is strictly monotonic and equals `vfs_state.gen` after each
      * publication; an operation of several transactions ticks it once, to its
      * last generation.
+     *
+     * A mutated path is stamped only if it holds a stamp already (it was a
+     * directory something was written under): the transaction that mutated it
+     * wrote its row's or its tombstone's generation, which is what
+     * pathRevision reports for it without one. Stamping it too would hold a
+     * revision in memory for every file ever written or removed.
      *
      * This is the single mutation chokepoint for coherence purposes. `rename`
      * bypasses the `_writeBatchOnce` funnel but reaches here, so a hook sited
@@ -803,11 +811,17 @@ export declare class SqliteVFS {
      * per quarter of the budget, not once per mutation.
      *
      * Everything at or below one revision goes together, and a directory is
-     * stamped whenever anything under it is, so it is never older than what it
-     * holds: a dropped directory takes everything under it along, and
+     * stamped whenever anything under it is mutated, so it is never older than
+     * what it holds: a dropped directory takes every stamp under it along, and
      * revision(dir) stays at or above the revision of every path under it.
      */
     private dropOldestPathRevisions;
+    /**
+     * Raise the floor to `cutoff`, dropping every stamp at or below it: a stamp
+     * under the floor would report its directory below a missing path under
+     * it, which reports the floor.
+     */
+    private dropPathRevisionsThrough;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     private static entryBytes;
     private _record;
