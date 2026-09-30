@@ -2,25 +2,38 @@
 // keepEsbuild — the esbuild the facet keeps between transform calls.
 //
 // One esbuild serves every call until a call leaves its wasm memory past the
-// high-water mark. From then on it takes no new call, and it is stopped once,
-// when its last call ends, never while a call is still running on it. A start
-// that failed is forgotten.
+// high-water mark, or leaves it closed (its Go program exited). From then on
+// it takes no new call, and it is stopped once, when its last call ends, never
+// while a call is still running on it; a stop that fails does not change that
+// call's outcome. A start that failed is forgotten.
 
 import assert from 'node:assert/strict';
-import { keepEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { keepEsbuild } from '../../packages/core/src/runtime/keep-esbuild.ts';
 
 const HIGH_WATER = 100;
 
-/** Fake esbuilds: a use sets `esbuild.memory` to what it left the instance at. */
-function world({ failStarts = 0 } = {}) {
+/**
+ * Fake esbuilds: a use sets `esbuild.memory` to what it left the instance at,
+ * and `esbuild.closed` when it left it dead. `stopFails` makes stop() throw
+ * ('throw') or reject ('reject').
+ */
+function world({ failStarts = 0, stopFails = null } = {}) {
   const started = [];
   let failing = failStarts;
   const start = async () => {
     await Promise.resolve();
     if (failing-- > 0) throw new Error('wasm instantiation failed');
-    const esbuild = { memory: 28, stops: 0, stop() { this.stops++; } };
+    const esbuild = {
+      memory: 28, closed: false, stops: 0,
+      stop() {
+        this.stops++;
+        if (stopFails === 'throw') throw new Error('stop threw');
+        if (stopFails === 'reject') return Promise.reject(new Error('stop rejected'));
+        return Promise.resolve();
+      },
+    };
     started.push(esbuild);
-    return { esbuild, memoryBytes: () => esbuild.memory };
+    return { esbuild, memoryBytes: () => esbuild.memory, closed: () => esbuild.closed };
   };
   return { started, withEsbuild: keepEsbuild(start, HIGH_WATER) };
 }
@@ -97,6 +110,46 @@ const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(await withEsbuild(async () => 3), 3, 'the next call starts afresh rather than reusing the rejection');
   assert.equal(started.length, 1);
   console.log('  ok  a failed start is not kept');
+}
+
+// ── A call that leaves the esbuild closed retires it, however little memory ─
+{
+  const { started, withEsbuild } = world();
+  const held = deferred();
+  const inFlight = withEsbuild(async (esbuild) => { await held.promise; return esbuild; });
+  await turn();
+  await assert.rejects(withEsbuild(async (esbuild) => {
+    esbuild.closed = true;
+    throw new Error('Go program has already exited');
+  }), /already exited/);
+  assert.equal(started[0].memory, 28, 'far under the mark');
+  assert.equal(started[0].stops, 0, 'a call still runs on it, so it is not stopped yet');
+  const next = await withEsbuild(async (esbuild) => esbuild);
+  assert.equal(started.length, 2, 'the next call starts a fresh esbuild rather than the dead one');
+  assert.equal(next, started[1]);
+  held.resolve();
+  assert.equal(await inFlight, started[0]);
+  assert.equal(started[0].stops, 1, 'the dead esbuild is stopped once, after its last call');
+  assert.equal(started[1].stops, 0);
+  console.log('  ok  a call that leaves the esbuild closed retires it');
+}
+
+// ── A stop that fails does not replace the outcome of the call it followed ──
+for (const stopFails of ['throw', 'reject']) {
+  const { started, withEsbuild } = world({ stopFails });
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    assert.equal(await withEsbuild(async (esbuild) => { esbuild.memory = 500; return 'transformed'; }), 'transformed');
+    await assert.rejects(withEsbuild(async (esbuild) => { esbuild.memory = 500; throw new Error('the use failed'); }), /the use failed/);
+    await turn();
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  assert.deepEqual(started.map((esbuild) => esbuild.stops), [1, 1], 'each retired esbuild was stopped');
+  assert.deepEqual(unhandled, [], 'and a failed stop surfaced nowhere as an unhandled rejection');
+  console.log(`  ok  a stop that ${stopFails}s leaves the call's outcome as it was`);
 }
 
 console.log('keep-esbuild OK');

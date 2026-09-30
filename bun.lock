@@ -100,7 +100,6 @@
         "@renovatebot/pep440": "^5.0.0",
         "acorn": "^8.15.0",
         "acorn-walk": "^8.3.5",
-        "es-module-lexer": "^2.3.1",
         "esbuild-wasm": "0.24.2",
         "magic-string": "^0.30.21",
         "pip-requirements-js": "^1.0.3",
@@ -108,6 +107,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
+        "es-module-lexer": "2.3.1",
         "typescript": "^5.7.0",
       },
     },

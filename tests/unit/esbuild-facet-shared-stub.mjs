@@ -2,10 +2,11 @@
 // A Durable Object's transforms, builds and `esbuild` commands share one
 // esbuild facet stub (facets/esbuild-transform.ts): callers that overlap wait
 // on one facet load, transforms share one esbuild until a call leaves its wasm
-// memory past the high-water mark (a fresh esbuild per call left every stopped
-// instance's memory waiting on a garbage collection, and calls that overlapped
-// or followed closely exceeded the facet's memory limit), and a stub or an
-// initialization that failed is dropped so the next call gets a working one.
+// memory past the high-water mark or leaves it dead (a fresh esbuild per call
+// left every stopped instance's memory waiting on a garbage collection, and
+// calls that overlapped or followed closely exceeded the facet's memory limit),
+// and a stub, an initialization or an esbuild that failed is dropped so the
+// next call gets a working one.
 //
 // The facet is the module production loads (esbuildFacetWorkerCode over the
 // staged assets), evaluated here (lib/esbuild-facet-harness.mjs); its
@@ -19,6 +20,7 @@ import {
 import {
   durableObject,
   esbuilds,
+  exitGo,
   freshFacetClass,
   releaseFacetHarness,
   resetEsbuilds,
@@ -72,6 +74,28 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   await host([request]);
   assert.equal(esbuilds.initializations, 2, 'and kept');
   console.log('  ok  a module that takes esbuild past the high-water mark retires it');
+}
+
+// ── A dead esbuild is retired, and what it failed is no verdict on the source ─
+{
+  resetEsbuilds();
+  const { ctx, env } = durableObject(await freshFacetClass());
+  const host = esbuildTransformHost(ctx, env);
+  const [before] = await host([request]);
+  assert.equal(before.error, undefined, before.error);
+  // As a fatal Go error (out of memory, say) ends esbuild's program.
+  exitGo();
+  const [failed] = await host([request]);
+  assert.ok('error' in failed, 'a transform on the exited esbuild fails');
+  // The launch then fails as unavailable, rather than caching a diagnostic
+  // shim of the source that every later launch would load.
+  assert.equal(failed.transient, true, `and is answered as transient: ${JSON.stringify(failed)}`);
+  const [after] = await host([request]);
+  assert.equal(after.error, undefined, `the next call runs on a fresh esbuild: ${after.error}`);
+  assert.match(after.code, /const n = 1;/);
+  assert.equal(esbuilds.initializations, 2);
+  assert.equal(esbuilds.stops, 1, 'the dead one was stopped');
+  console.log('  ok  a dead esbuild is retired, and the transform it failed is transient');
 }
 
 // ── A failed initialization is not kept: the next transform initializes afresh ─
