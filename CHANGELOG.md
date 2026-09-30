@@ -18,6 +18,18 @@ published independently in the `@nimbus-sh` npm scope.
   import is refused rather than written into whatever is at dst now. An
   import nobody removed still resumes after a reset.
 
+- A filesystem error's message is Node's: `ENOENT: no such file or
+  directory, open 'x'`, with libuv's description, the syscall, the path
+  after a space, and `-> 'dest'` for a call that names two paths.
+  `VfsError` joined a supplied path with a comma (`..., open, 'x'`), the
+  runtime bridge and hosted node's `fs` left the description out
+  (`ENOENT: open 'x'`), and the shell printed the engine's bare
+  `ENOENT: home/user/w/nope`. Every `VfsError` now names its syscall
+  (`err.syscall`, and `err.dest` for a rename, copy or symlink), including
+  the namespace's own refusals, which report the call that met them. The
+  new `syscallError(code, syscall, path, { dest, detail })` makes one.
+  `toVfsError(error, syscall, path, dest?)` takes the call it converts for.
+
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. A guest stream emitted `'end'` and never `'close'`:
   Node destroys a finished stream (`autoDestroy`, on by default), so

@@ -88,13 +88,13 @@ export class NimbusFlueApi implements NimbusFlueSandboxApi {
 
   async readFile(path: string): Promise<string> {
     const content = await this.sandbox.files.read(path);
-    if (content == null) throw enoent(path);
+    if (content == null) throw enoent('open', path);
     return content;
   }
 
   async readFileBuffer(path: string): Promise<Uint8Array> {
     const content = await this.sandbox.files.readBytes(path);
-    if (content == null) throw enoent(path);
+    if (content == null) throw enoent('open', path);
     return content;
   }
 
@@ -104,7 +104,7 @@ export class NimbusFlueApi implements NimbusFlueSandboxApi {
 
   async stat(path: string): Promise<NimbusFlueFileStat> {
     const stat = await this.sandbox.files.stat(path);
-    if (!stat) throw enoent(path);
+    if (!stat) throw enoent('stat', path);
     return toFlueStat(stat);
   }
 
@@ -176,10 +176,9 @@ function secondsToMilliseconds(timeout: number | undefined): number | undefined 
   return Math.max(1, Math.round(timeout * 1000));
 }
 
-function enoent(path: string): Error {
-  const error = new Error(`ENOENT: no such file or directory, '${path}'`) as Error & { code: string };
-  error.code = 'ENOENT';
-  return error;
+/** Node's error for `syscall` finding nothing at `path`: `ENOENT: no such file or directory, open 'x'`. */
+function enoent(syscall: string, path: string): Error {
+  return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT', errno: -2, syscall, path });
 }
 
 function abortError(signal: AbortSignal): Error {

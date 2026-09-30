@@ -48,6 +48,7 @@ import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -1251,8 +1252,12 @@ const __fsMod = (() => {
     }
   }
 
+  // libuv's words for each code: Node's message is "ENOENT: no such file or
+  // directory, open 'x'".
+  const _errnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
   function _fsErr(code, syscall, p) {
-    const err = new Error(code + ": " + syscall + " '" + p + "'");
+    const described = Object.prototype.hasOwnProperty.call(_errnoDescription, code) ? _errnoDescription[code] + ", " : "";
+    const err = new Error(code + ": " + described + syscall + " '" + p + "'");
     err.code = code;
     const errno = Number(__constantsMod[code]);
     err.errno = Number.isInteger(errno) ? -errno : -1;

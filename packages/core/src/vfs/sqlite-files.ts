@@ -11,7 +11,7 @@
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat } from './vfs.js';
-import { toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
+import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 
 function absolute(key: string): string {
   return key.startsWith('/') ? key : `/${key}`;
@@ -76,11 +76,12 @@ export class SqliteFiles implements VFS {
     return new SqliteFiles(this.engine, this.engine.as(cred));
   }
 
-  private run<T>(path: string, op: () => T): T {
+  /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
+  private run<T>(syscall: string, path: string, op: () => T, dest?: string): T {
     try {
       return op();
     } catch (error) {
-      throw toVfsError(error, path);
+      throw toVfsError(error, syscall, path, dest);
     }
   }
 
@@ -92,89 +93,89 @@ export class SqliteFiles implements VFS {
     try {
       return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);
     } catch (error) {
-      const converted = toVfsError(error, path);
+      const converted = toVfsError(error, options?.follow === false ? 'lstat' : 'stat', path);
       if (converted instanceof VfsError && converted.code === 'ENOENT') return null;
       throw converted;
     }
   }
 
   readFile(path: string): Uint8Array {
-    return this.run(path, () => this.view.readFile(path));
+    return this.run('open', path, () => this.view.readFile(path));
   }
 
   readRange(path: string, offset: number, length: number): Uint8Array {
-    return this.run(path, () => this.view.readRange(path, offset, length));
+    return this.run('open', path, () => this.view.readRange(path, offset, length));
   }
 
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): void {
-    this.run(path, () => this.view.writeFile(path, data, options));
+    this.run('open', path, () => this.view.writeFile(path, data, options));
   }
 
   writeRange(path: string, offset: number, bytes: Uint8Array): void {
-    this.run(path, () => this.view.writeRange(path, offset, bytes));
+    this.run('open', path, () => this.view.writeRange(path, offset, bytes));
   }
 
   truncate(path: string, size: number): void {
-    this.run(path, () => this.view.truncate(path, size));
+    this.run('open', path, () => this.view.truncate(path, size));
   }
 
   readdir(path: string): VfsDirent[] {
-    return this.run(path, () => this.view.readdir(path).map((entry) => ({ name: entry.name, type: entry.type })));
+    return this.run('scandir', path, () => this.view.readdir(path).map((entry) => ({ name: entry.name, type: entry.type })));
   }
 
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void {
-    this.run(path, () => {
+    this.run('mkdir', path, () => {
       // mkdir(2): an existing name is EEXIST (the engine's own mkdir is idempotent).
-      if (!options?.recursive && this.view.exists(path)) throw new VfsError('EEXIST', 'file exists', path);
+      if (!options?.recursive && this.view.exists(path)) throw syscallError('EEXIST', 'mkdir', path);
       this.view.mkdir(path, options);
     });
   }
 
   unlink(path: string): void {
-    this.run(path, () => this.view.unlink(path));
+    this.run('unlink', path, () => this.view.unlink(path));
   }
 
   rmdir(path: string): void {
-    this.run(path, () => this.view.rmdir(path));
+    this.run('rmdir', path, () => this.view.rmdir(path));
   }
 
   rename(from: string, to: string): void {
-    this.run(from, () => this.view.rename(from, to));
+    this.run('rename', from, () => this.view.rename(from, to), to);
   }
 
   removeRecursive(path: string): void {
-    this.run(path, () => { this.view.removeRecursive(path); });
+    this.run('rm', path, () => { this.view.removeRecursive(path); });
   }
 
   symlink(target: string, path: string): void {
-    this.run(path, () => this.view.symlink(target, path));
+    this.run('symlink', target, () => this.view.symlink(target, path), path);
   }
 
   readlink(path: string): string {
-    return this.run(path, () => this.view.readlink(path));
+    return this.run('readlink', path, () => this.view.readlink(path));
   }
 
   chmod(path: string, mode: number): void {
-    this.run(path, () => this.view.chmod(path, mode));
+    this.run('chmod', path, () => this.view.chmod(path, mode));
   }
 
   chown(path: string, uid: number, gid: number): void {
-    this.run(path, () => this.view.chown(path, uid, gid));
+    this.run('chown', path, () => this.view.chown(path, uid, gid));
   }
 
   utimes(path: string, atimeMs: number, mtimeMs: number): void {
-    this.run(path, () => this.view.utimes(path, atimeMs, mtimeMs));
+    this.run('utime', path, () => this.view.utimes(path, atimeMs, mtimeMs));
   }
 
   /** Copy inside the database: rows, not bytes. */
   copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): number {
-    return this.run(from, () => {
+    return this.run(options?.recursive ? 'cp' : 'copyfile', from, () => {
       if (!options?.recursive) {
         this.view.copyFile(from, to);
         return 1;
       }
       return this.view.copyTree(from, to, { preserve: options.preserve });
-    });
+    }, to);
   }
 
   /**
@@ -183,7 +184,7 @@ export class SqliteFiles implements VFS {
    * this isolate's turn on the same database.
    */
   writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): VfsCasResult {
-    return this.run(path, () => {
+    return this.run('open', path, () => {
       // Absent is revision 0; revisions compare as strings, so '0' and 0 agree.
       const current = this.stat(path)?.revision ?? 0;
       if (String(current) !== String(expected)) return { ok: false, revision: current };

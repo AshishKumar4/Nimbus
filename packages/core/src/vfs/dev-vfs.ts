@@ -13,7 +13,7 @@
  * /dev/tcp is the WASI socket prefix, not a node here.
  */
 import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
-import { VfsError } from './vfs-error.js';
+import { syscallError } from './vfs-error.js';
 
 const S_IFCHR = 0o020000;
 const DEV_MODE = S_IFCHR | 0o666;
@@ -27,7 +27,7 @@ interface DevNode {
   readonly unbounded: boolean;
   /** Fill with the device's bytes; absent means always at EOF. */
   readonly fill?: (out: Uint8Array) => void;
-  readonly write: (path: string) => void;
+  readonly write: (path: string, syscall: string) => void;
 }
 
 const discard = (): void => {};
@@ -41,7 +41,7 @@ function fillRandom(out: Uint8Array): void {
 const DEVICES: ReadonlyMap<string, DevNode> = new Map<string, DevNode>([
   ['null', { unbounded: false, write: discard }],
   ['zero', { unbounded: true, fill: zeros, write: discard }],
-  ['full', { unbounded: true, fill: zeros, write: (path) => { throw new VfsError('ENOSPC', 'no space left on device', path); } }],
+  ['full', { unbounded: true, fill: zeros, write: (path, syscall) => { throw syscallError('ENOSPC', syscall, path); } }],
   ['random', { unbounded: true, fill: fillRandom, write: discard }],
   ['urandom', { unbounded: true, fill: fillRandom, write: discard }],
   ['stdin', { unbounded: false, write: discard }],
@@ -57,9 +57,10 @@ function name(path: string): string {
 export class DevVFS implements VFS {
   readonly sync: SyncVFS = this as unknown as SyncVFS;
 
-  private node(path: string): DevNode {
+  /** The device at `path`; ENOENT for `syscall` when there is none. */
+  private node(path: string, syscall: string): DevNode {
     const found = DEVICES.get(name(path));
-    if (found === undefined) throw new VfsError('ENOENT', 'no such device', path);
+    if (found === undefined) throw syscallError('ENOENT', syscall, path);
     return found;
   }
 
@@ -70,15 +71,15 @@ export class DevVFS implements VFS {
   }
 
   readFile(path: string): Uint8Array {
-    if (name(path) === '') throw new VfsError('EISDIR', 'is a directory', path);
-    if (this.node(path).unbounded) {
-      throw new VfsError('EINVAL', 'this device produces bytes without end; read a bounded slice (head -c N, dd count=N)', path);
+    if (name(path) === '') throw syscallError('EISDIR', 'read', path);
+    if (this.node(path, 'open').unbounded) {
+      throw syscallError('EINVAL', 'read', path, { detail: 'this device produces bytes without end; read a bounded slice (head -c N, dd count=N)' });
     }
     return new Uint8Array(0);
   }
 
   readRange(path: string, _offset: number, length: number): Uint8Array {
-    const node = this.node(path);
+    const node = this.node(path, 'open');
     if (node.fill === undefined) return new Uint8Array(0);
     const out = new Uint8Array(Math.min(length, MAX_DEVICE_READ));
     node.fill(out);
@@ -86,37 +87,38 @@ export class DevVFS implements VFS {
   }
 
   writeFile(path: string): void {
-    this.node(path).write(path);
+    this.node(path, 'open').write(path, 'write');
   }
 
   writeRange(path: string): void {
-    this.node(path).write(path);
+    this.node(path, 'open').write(path, 'write');
   }
 
   /** A device has no length to set; the node must exist. */
   truncate(path: string): void {
-    this.node(path);
+    this.node(path, 'open');
   }
 
   readdir(path: string): VfsDirent[] {
     if (name(path) !== '') {
-      this.node(path);
-      throw new VfsError('ENOTDIR', 'not a directory', path);
+      this.node(path, 'scandir');
+      throw syscallError('ENOTDIR', 'scandir', path);
     }
     return [...DEVICES.keys()].map((device) => ({ name: device, type: 'file' as const }));
   }
 
   mkdir(path: string): void {
-    throw new VfsError('EPERM', 'devices are not created here', path);
+    throw syscallError('EPERM', 'mkdir', path, { detail: 'devices are not created here' });
   }
 
   unlink(path: string): void {
-    this.node(path);
-    throw new VfsError('EPERM', 'a device node cannot be removed', path);
+    this.node(path, 'unlink');
+    throw syscallError('EPERM', 'unlink', path, { detail: 'a device node cannot be removed' });
   }
 
   rmdir(path: string): void {
-    throw new VfsError(name(path) === '' ? 'EBUSY' : 'ENOTDIR', name(path) === '' ? 'the device directory' : 'not a directory', path);
+    if (name(path) === '') throw syscallError('EBUSY', 'rmdir', path, { detail: 'the device directory' });
+    throw syscallError('ENOTDIR', 'rmdir', path);
   }
 
   describe() {

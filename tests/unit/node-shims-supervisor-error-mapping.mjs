@@ -67,6 +67,11 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
   assert.equal(error.errno, errno, `errno matches ${code}`);
   assert.equal(error.syscall, 'stat', 'the syscall is filled in from the call site');
   assert.equal(error.path, '/home/user/gone.txt', 'the path is filled in from the call site');
+  assert.equal(
+    error.message,
+    `${code}: ${{ ENOENT: 'no such file or directory', EACCES: 'permission denied', ENOTDIR: 'not a directory' }[code]}, stat '/home/user/gone.txt'`,
+    "the message is node's",
+  );
 }
 
 // ── an UNCODED failure still reaches the program as an fs error ───────────

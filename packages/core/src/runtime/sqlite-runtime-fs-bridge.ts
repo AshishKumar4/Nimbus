@@ -3,6 +3,7 @@ import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import type { SyncVFS, VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
+import { errnoDescription } from '../vfs/vfs-error.js';
 import type {
   RuntimeFileHandle,
   RuntimeFsPath,
@@ -1102,9 +1103,11 @@ function mountParents(mount: SyncVFS, path: string): void {
   if (parent !== '') mount.mkdir(parent, { recursive: true });
 }
 
+/** Node's error for `syscall` failing on `path`: `ENOENT: no such file or directory, open 'x'`. */
 export function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError {
   const name = typeof path === 'string' ? path : path.path;
-  return Object.assign(new Error(`${code}: ${syscall} '${name}'`), { code, syscall, path: name });
+  const description = errnoDescription(code);
+  return Object.assign(new Error(`${code}: ${description === undefined ? '' : `${description}, `}${syscall} '${name}'`), { code, syscall, path: name });
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

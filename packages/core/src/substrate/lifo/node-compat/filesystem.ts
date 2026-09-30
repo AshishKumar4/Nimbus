@@ -1,5 +1,5 @@
 import type { RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
-import { VfsError } from '../../../vfs/vfs-error.js';
+import { syscallError } from '../../../vfs/vfs-error.js';
 
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
 export interface NodeFilesystem {
@@ -40,7 +40,7 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
   if (!fs) throw new Error('This Node interpreter requires a synchronous filesystem capability; asynchronous hosts use the resident Node runtime');
   const read = (path: string): Uint8Array => {
     const data = fs.readFile(path);
-    if (data === null) throw new VfsError('ENOENT', path);
+    if (data === null) throw syscallError('ENOENT', 'open', path);
     return data;
   };
   let listener: (() => void) | undefined;
@@ -66,7 +66,7 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     isDirectory: path => fs.stat(path)?.type === 'directory',
     stat(path) {
       const stat = fs.stat(path);
-      if (!stat) throw new VfsError('ENOENT', path);
+      if (!stat) throw syscallError('ENOENT', 'stat', path);
       return stat;
     },
     mkdir: (path, options) => fs.mkdir(path, options),
