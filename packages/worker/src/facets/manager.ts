@@ -3664,6 +3664,8 @@ async function transformEsmInBundle(
       if (kept) {
         place(path, kept);
         stats.stored++;
+        // Reading it back is this isolate's work too, if far less.
+        if (pacer) await pacer.spend(kept.code.length);
         continue;
       }
       if (pacer) await pacer.spend(source.length);
