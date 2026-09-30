@@ -399,4 +399,45 @@ function target(dir = 'home') {
   }
 }
 
+// ── Ending an import is cleanup: a full store, a refused batch, a reset ───
+{
+  const src = source();
+  const { chunks } = nextPage(src, target(), { at: 'first', root: 'proj' });
+  const harness = createSqliteVfsTestHarness();
+  const probe = new SqliteVFS(harness.sql, harness.ctx);
+  probe.as(CRED_KERNEL).mkdir('home/d', { recursive: true });
+  const raw = new SqliteVFS(harness.sql, harness.ctx, undefined, { storageLimit: probe.databaseBytes() + 1_048_576, storageKernelReserve: 0 });
+  const dst = { harness, raw, vfs: raw.as(CRED_KERNEL) };
+  dst.raw.importChunks('home/d/x', [chunks[0]]);
+  dst.raw.ledger.fill('full', dst.raw.ledger.limit - dst.raw.ledger.view().used);
+  assert.throws(() => dst.vfs.writeFile('home/grow', 'x'), (error) => error.code === 'ENOSPC', 'the store is full');
+  dst.vfs.rmdir('home/d');
+  assert.deepEqual(imports(dst), [], 'a full store still ends the import beneath a removed directory');
+  dst.raw.ledger.deleteFacet('full');
+  assertClean(dst, 'a full store');
+}
+{
+  const src = source();
+  const dst = target();
+  const { chunks } = nextPage(src, dst, { at: 'first', root: 'proj' });
+  dst.raw.importChunks('home/x', [chunks[0]]);
+  const rows = Array.from({ length: 300 }, (_, i) => ({ path: `top${i}`, parentPath: '', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }));
+  assert.throws(() => dst.vfs.writeBatch({ inodes: rows, chunks: [], deletePaths: ['home'] }), (error) => error.code === 'E2BIG');
+  assert.equal(dst.vfs.exists('home'), true, 'a refused batch removes nothing');
+  assert.equal(imports(dst).length, 1, 'and ends no import');
+  // A reset after the removal commits, before the import beneath it ends: its
+  // first page finds no directory to land in, and lands once there is one.
+  dst.harness.setFaultInjector((statement) => (/DELETE FROM vfs_jobs/.test(statement.sql) ? new Error('reset after the removal') : null));
+  assert.throws(() => dst.vfs.removeRecursive('home'), /reset after the removal/);
+  dst.harness.clearFault();
+  const reopened = open(createSqliteVfsTestHarness(dst.harness.db));
+  assert.equal(reopened.vfs.exists('home'), false);
+  assert.equal(imports(reopened).length, 1, 'the import outlived its directory');
+  assert.throws(() => importPages(src, reopened, { at: 'first', root: 'proj', dst: 'home/x', pages: 1 }), /ENOENT/);
+  assert.equal(reopened.vfs.exists('home/x'), false, 'nothing landed without a parent');
+  reopened.vfs.mkdir('home');
+  assert.equal(importPages(src, reopened, { at: 'first', root: 'proj', dst: 'home/x' }).imported, 41);
+  assertClean(reopened, 'an import that outlived its directory');
+}
+
 console.log('sqlite-vfs-import-abandon: all assertions passed');
