@@ -76,16 +76,21 @@ export interface RuntimeRunOpts {
     signal?: AbortSignal;
     /**
      * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
-     * `node x.js < in.txt`); absent when stdin is the terminal. A stream is
-     * delivered as it arrives, never held for the pipe to end before the
-     * program starts (`tail -f log | node x.js` runs x.js at once). A string is
-     * all of it, read before the program starts, because the program's code
-     * reads stdin synchronously (stdin-read.ts): that read cannot wait for input
-     * arriving after it runs.
+     * `node x.js < in.txt`); absent when stdin is the terminal. A runner
+     * delivers its bytes as they arrive, never holding the program for the
+     * pipe's end (`tail -f log | node x.js` runs x.js at once).
      */
-    stdin?: string | {
+    stdin?: {
         read(): Promise<string | null>;
+        readBytes?(maxLength: number): Promise<Uint8Array | null>;
     };
+    /**
+     * The program's code reads stdin synchronously (stdin-read.ts), which
+     * cannot wait for bytes arriving after it runs: a one-shot runner reads up
+     * to STDIN_SYNC_READ_BYTES of the pipe before starting it. Never set for a
+     * program that starts a server.
+     */
+    stdinReadsSync?: boolean;
     /**
      * Running the program starts a server (server-launch.ts). Set only for a
      * runtime that routes servers (RuntimeSpec.routesServers), when no .bin

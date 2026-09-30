@@ -19,6 +19,7 @@ import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModule
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
+import { bytesToBase64 } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
@@ -102,7 +103,7 @@ function* launchNames(cwd, program, argv, modules, refs) {
 }
 // A piped stdin's largest single write to the process input channel, a
 // quarter of that queue's bound (core/runtime/process-input.ts).
-const STDIN_PIPE_PIECE_CHARS = 64 * 1024;
+const STDIN_PIPE_PIECE_BYTES = 64 * 1024;
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -582,6 +583,8 @@ export default {
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
     const __nimbusLiveInputPid = Number(args.stdinPid || 0);
+    // Or all of it, byte-exact, when it ended before the program started.
+    const __nimbusStdinBase64 = typeof args.stdinBase64 === "string" ? args.stdinBase64 : null;
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -4983,20 +4986,18 @@ export class FacetManager {
         let stopped = false;
         void (async () => {
             for (;;) {
-                const chunk = await pipe.read();
+                // A piece at a time: the queue is bounded, and one larger than its
+                // room would never fit.
+                const piece = await pipe.readBytes(STDIN_PIPE_PIECE_BYTES);
                 if (stopped)
                     return;
-                if (chunk === null) {
+                if (piece === null) {
                     this.processes.endInput(pid);
                     return;
                 }
-                // The queue is bounded; a piece larger than its room would never fit.
-                for (let at = 0; at < chunk.length; at += STDIN_PIPE_PIECE_CHARS) {
-                    const piece = chunk.slice(at, at + STDIN_PIPE_PIECE_CHARS);
-                    while (!this.processes.writeInput(pid, piece).ok) {
-                        if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped)
-                            return;
-                    }
+                while (!this.processes.writeInputBytes(pid, piece).ok) {
+                    if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped)
+                        return;
                 }
             }
         })().catch(() => { if (!stopped)
@@ -5065,7 +5066,9 @@ export class FacetManager {
             filename: opts.filename || '<eval>',
             dirname: opts.dirname || '/home/user',
             stdin: opts.stdin || '',
-            // The input channel a pipe or redirect streams through (_pumpStdinPipe).
+            // A pipe or redirect: bytes that ended before the start, or the input
+            // channel it streams through (_pumpStdinPipe).
+            ...(opts.stdinBytes ? { stdinBase64: bytesToBase64(opts.stdinBytes) } : {}),
             stdinPid: opts.stdinPipe ? entry.pid : 0,
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },

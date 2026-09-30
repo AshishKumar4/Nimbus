@@ -6,6 +6,7 @@ export type WireEncoded = WireScalar | WireEncoded[] | {
 export type WireDecoded = WireScalar | Uint8Array | WireDecoded[] | {
     [key: string]: WireDecoded;
 };
+export declare function bytesToBase64(bytes: Uint8Array): string;
 export declare const WireEncoder: z.ZodType<WireEncoded>;
 export declare const WireDecoder: z.ZodType<WireDecoded>;
 export {};

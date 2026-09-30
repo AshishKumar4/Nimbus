@@ -37,6 +37,10 @@ import { type WasmImageRecord } from './wasm-image-digest.js';
  * adapter over it (requireFsOverBridge), made once per bridge.
  */
 type LaunchFs = RuntimeFsBridge;
+/** A pipe or redirect's bytes, exactly as written, until it ends (null). */
+export interface StdinBytes {
+    readBytes(maxLength: number): Promise<Uint8Array | null>;
+}
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -1336,9 +1340,9 @@ export declare class FacetManager {
          * process's input channel as it arrives, from before the program
          * starts; the program is never held for the pipe to end.
          */
-        stdinPipe?: {
-            read(): Promise<string | null>;
-        };
+        stdinPipe?: StdinBytes;
+        /** All of a pipe or redirect that ended before the program starts, byte-exact. */
+        stdinBytes?: Uint8Array;
     }): Promise<FacetExecResult>;
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:

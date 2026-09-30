@@ -62,10 +62,13 @@ export interface RunFreshOpts {
     cwd?: string;
     filename?: string;
     dirname?: string;
-    /** A pipe or redirect: streamed, or all of it (runtime-registry's RuntimeRunOpts.stdin). */
-    stdin?: string | {
+    /** A pipe or redirect (runtime-registry's RuntimeRunOpts.stdin). */
+    stdin?: {
         read(): Promise<string | null>;
+        readBytes?(maxLength: number): Promise<Uint8Array | null>;
     };
+    /** Its code reads stdin synchronously (RuntimeRunOpts.stdinReadsSync). */
+    stdinReadsSync?: boolean;
     captureOutput?: boolean;
     /** Display label for the long-running spawn. Defaults to the
      *  command + filename. Surfaced in the [started (long-running)]

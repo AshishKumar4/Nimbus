@@ -15,19 +15,29 @@
  * function was reached (`fs.readFileSync`, a destructured or imported
  * `readFileSync`, esbuild's `(0, import_fs.readFileSync)`):
  * `readFileSync(0)`, `readFileSync(process.stdin.fd)`,
- * `readFileSync('/dev/stdin')` (or `/proc/self/fd/0`), and `readSync` of
- * fd 0 or `process.stdin.fd`. They are looked for anywhere in the entry and
- * in the program's own modules it loads directly (server-launch.ts,
- * resolveOwnModules), whether or not that code runs: reading a pipe whole only
- * costs waiting for its end, while a missed read fails with EAGAIN.
+ * `readFileSync('/dev/stdin')` (or `/dev/fd/0`, `/proc/self/fd/0`), and
+ * `readSync` of fd 0 or `process.stdin.fd`. They are looked for anywhere in
+ * the entry and in the program's own modules it loads directly
+ * (server-launch.ts, resolveOwnModules), whether or not that code runs: the
+ * read ahead is bounded (STDIN_SYNC_READ_BYTES), so waiting on a read that
+ * never runs costs at most that, while a missed read fails with EAGAIN.
  */
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { resolveOwnModules, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 /** How many of the entry's own modules are read, and how many bytes of source in all. */
 const MODULE_LIMIT = 24;
 const SOURCE_BYTE_BUDGET = 4 * 1024 * 1024;
-/** Paths that name the process's stdin. */
-const STDIN_DEVICES = new Set(['/dev/stdin', '/proc/self/fd/0']);
+/** Paths that name the process's stdin (node-shims.ts reads them as fd 0). */
+const STDIN_DEVICES = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']);
+/**
+ * How much of a pipe is read before a one-shot program that reads stdin
+ * synchronously starts. A pipe that ends within it is all delivered first;
+ * past it, the program starts with the pipe streaming, so an endless writer
+ * (`yes | node x.js`) costs this much at most. It is also how much of a
+ * streaming pipe a synchronous read can see (node-shims.ts,
+ * __nimbusTakeQueuedStdin).
+ */
+export const STDIN_SYNC_READ_BYTES = 1024 * 1024;
 /** Whether `program`, or one of its own modules it loads, reads stdin synchronously. */
 export async function programReadsStdinSync(program, host) {
     if (program.source.length > SERVER_LAUNCH_MODULE_BYTES)

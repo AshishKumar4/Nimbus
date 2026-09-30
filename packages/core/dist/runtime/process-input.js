@@ -36,6 +36,19 @@ export class ProcessInputStore {
             return { ok: false };
         return this.enqueue(state, { data: text, ended: false }, text.length);
     }
+    /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+    writeBytes(pid, data) {
+        if (!isValidPid(pid))
+            return { ok: false };
+        const state = this.pids.get(pid);
+        if (!state)
+            return { ok: false };
+        if (state.closed)
+            return { ok: false };
+        if (state.bytes + data.byteLength > this.maxQueuedBytes)
+            return { ok: false };
+        return this.enqueue(state, { data, ended: false }, data.byteLength);
+    }
     resize(pid, columns, rows) {
         if (!isValidPid(pid))
             return { ok: false };

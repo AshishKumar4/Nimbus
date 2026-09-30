@@ -1,6 +1,7 @@
 import type { ProcessSignalName } from './process-io-protocol.js';
 export interface ProcessInputPacket {
-    data: string;
+    /** Typed text (a terminal's keystrokes), or bytes (a pipe or redirect). */
+    data: string | Uint8Array;
     ended: boolean;
     resize?: {
         columns: number;
@@ -21,6 +22,10 @@ export declare class ProcessInputStore {
     /** Whether the process behind `pid` has started reading its input channel. */
     hasReader(pid: number): boolean;
     write(pid: number, data: string): {
+        ok: boolean;
+    };
+    /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+    writeBytes(pid: number, data: Uint8Array): {
         ok: boolean;
     };
     resize(pid: number, columns: number, rows: number): {

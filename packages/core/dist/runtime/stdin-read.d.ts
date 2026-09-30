@@ -15,13 +15,23 @@
  * function was reached (`fs.readFileSync`, a destructured or imported
  * `readFileSync`, esbuild's `(0, import_fs.readFileSync)`):
  * `readFileSync(0)`, `readFileSync(process.stdin.fd)`,
- * `readFileSync('/dev/stdin')` (or `/proc/self/fd/0`), and `readSync` of
- * fd 0 or `process.stdin.fd`. They are looked for anywhere in the entry and
- * in the program's own modules it loads directly (server-launch.ts,
- * resolveOwnModules), whether or not that code runs: reading a pipe whole only
- * costs waiting for its end, while a missed read fails with EAGAIN.
+ * `readFileSync('/dev/stdin')` (or `/dev/fd/0`, `/proc/self/fd/0`), and
+ * `readSync` of fd 0 or `process.stdin.fd`. They are looked for anywhere in
+ * the entry and in the program's own modules it loads directly
+ * (server-launch.ts, resolveOwnModules), whether or not that code runs: the
+ * read ahead is bounded (STDIN_SYNC_READ_BYTES), so waiting on a read that
+ * never runs costs at most that, while a missed read fails with EAGAIN.
  */
 import { type ServerLaunchHost } from './server-launch.js';
+/**
+ * How much of a pipe is read before a one-shot program that reads stdin
+ * synchronously starts. A pipe that ends within it is all delivered first;
+ * past it, the program starts with the pipe streaming, so an endless writer
+ * (`yes | node x.js`) costs this much at most. It is also how much of a
+ * streaming pipe a synchronous read can see (node-shims.ts,
+ * __nimbusTakeQueuedStdin).
+ */
+export declare const STDIN_SYNC_READ_BYTES: number;
 export interface StdinReadProgram {
     /** The entry's code, as it will run (after any TypeScript/ESM transform). */
     source: string;
