@@ -1277,10 +1277,6 @@ export function _reportExternalExit(self: RpcHost, pid: number, code: number, re
  * already removed it, or it never fully registered. Long-running
  * facets that hang and get GC'd fall into this category.
  */
-export function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => boolean {
-  return (pid: number) => !self.processes.get(pid);
-}
-
 export async function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>> {
     // W2.6a: de-quarantined. require-resolver.ts is now the primary
     // content-bundle source for FacetManager.exec via buildPrefetchBundle.

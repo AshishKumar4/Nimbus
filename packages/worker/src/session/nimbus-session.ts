@@ -384,11 +384,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    */
   processes: SessionProcessSupervisor = new SessionProcessSupervisor();
   portRegistry: PortRegistry;
-  /** W1: idempotency flag for the alarm-driven log-janitor bootstrap.
-   *  Replaces the pre-W1 `processLogsTimer` setTimeout handle (which
-   *  prevented hibernation per CF DO docs). The alarm itself lives in
-   *  DO storage at key `w1_next_alarm_reasons`. */
-  _w1JanitorArmed: boolean = false;
+  /** W1: the retention deadline this instance armed the log-janitor alarm
+   *  for, or null (hibernation.ts ensureLogJanitor). Replaces the pre-W1
+   *  `processLogsTimer` setTimeout handle (which prevented hibernation per
+   *  CF DO docs). The alarm itself lives in DO storage at key
+   *  `w1_next_alarm_reasons`. */
+  _w1JanitorAt: number | null = null;
   /** W1: idempotency flag for the resident keep-alive alarm cycle — the
    *  recurring event that holds this object in memory for as long as a
    *  resident process runs (hibernation.ts ensureResidentKeepalive). */
@@ -615,15 +616,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * storage map managed by `scheduleAlarm` (see ./hibernation.ts).
    * Dispatches every pending reason whose deadline has passed, then
    * re-arms `ctx.storage.setAlarm` at the earliest remaining deadline.
-   * Today's reasons: 'w9-flush' (process-log SQL drain) and
-   * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
-   * orphan-pid predicate so we close over the process supervisor here.
+   * Today's reasons: 'w9-flush' (process-log SQL drain), 'log-janitor'
+   * (retention sweep), 'resident-launch' and 'resident-keepalive'.
    */
   async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
     return _w9DoDispatchAlarm(
       this,
       this.ctx,
-      _rpc._logJanitorOrphanCheck(this as any),
       () => this._pumpResidentLaunches(),
       alarmInfo,
     );

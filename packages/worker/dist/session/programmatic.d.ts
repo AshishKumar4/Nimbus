@@ -59,6 +59,8 @@ export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
     _w1SessionDestroyed: boolean;
+    /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
+    _w1JanitorAt: number | null;
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
     shell: ProgrammaticShell | null;

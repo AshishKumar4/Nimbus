@@ -43,6 +43,10 @@
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
 
+import { ProcessLogRetention, type PersistedLogPid } from './process-log-retention.js';
+
+export type { PersistedLogPid };
+
 export type LogStream = 'stdout' | 'stderr';
 
 export interface LogChunk {
@@ -135,6 +139,9 @@ interface PidState {
  *   - pruneBeforeSeq removes chunk rows below the given seq. Called
  *     inside flush after the per-pid byte cap is exceeded; the store
  *     computes the cutoff seq from its own ring state.
+ *   - retained lists every pid that has rows, with what retention reads
+ *     (never the chunks). Called at most once per isolate-gen, the first
+ *     time retention is asked about.
  *   - Adapters MUST be synchronous from the store's POV. Real SQL
  *     calls in the DO are synchronous (storage.sql.exec is blocking
  *     against the SQLite engine); KV is not used by W9.
@@ -145,6 +152,7 @@ export interface PersistAdapter {
   persistExit(pid: number, info: ProcessExitInfo): void;
   dropPid(pid: number): void;
   pruneBeforeSeq(pid: number, seq: number): void;
+  retained(): PersistedLogPid[];
 }
 
 export interface ProcessLogStoreOptions {
@@ -229,6 +237,12 @@ export class ProcessLogStore {
    * remains in memory.
    */
   private _pruneQueue = new Map<number, number>();
+  /** When logs go, over memory and the rows only SQL holds (process-log-retention.ts). */
+  private readonly retention = new ProcessLogRetention(
+    () => this._persist?.retained().filter((row) => !this._dropQueue.has(row.pid)) ?? null,
+  );
+  /** Fires when a retention deadline may have appeared (see `setRetentionHook`). */
+  private _onRetention: (() => void) | null = null;
   /** Cumulative flushed-bytes counter (telemetry). */
   private _flushedChunks = 0;
   private _flushedBytes = 0;
@@ -256,6 +270,17 @@ export class ProcessLogStore {
    */
   setPersist(adapter: PersistAdapter): void {
     this._persist = adapter;
+    this.retention.reset();
+  }
+
+  /**
+   * Install the hook that fires when a retention deadline may have
+   * appeared: a pid's logs begin, its exit is recorded, or a reader of it
+   * leaves. Appending to a pid already held moves no deadline earlier, so
+   * it does not fire; a host asks `nextExpiry` from here, not per chunk.
+   */
+  setRetentionHook(onRetention: () => void): void {
+    this._onRetention = onRetention;
   }
 
   // ── Instance-level broadcast hooks ──────────────────────────────────
@@ -329,7 +354,10 @@ export class ProcessLogStore {
    */
   append(pid: number, stream: LogStream, data: string): void {
     if (!data) return;
+    const begins = !this.pids.has(pid);
     const state = this._getOrCreate(pid);
+    // Logs that begin may already have a deadline: an orphan's (its process is gone).
+    if (begins) this._onRetention?.();
 
     // Binary detection on the raw incoming chunk (before splitting).
     if (looksBinary(data)) {
@@ -484,6 +512,7 @@ export class ProcessLogStore {
     if (this._broadcastExit) {
       try { this._broadcastExit(pid, info); } catch { /* swallow broadcast errors */ }
     }
+    this._onRetention?.();
   }
 
   /**
@@ -495,7 +524,10 @@ export class ProcessLogStore {
   subscribe(pid: number, cb: (c: LogChunk) => void): () => void {
     const state = this._getOrCreate(pid);
     state.subscribers.add(cb);
-    return () => { state.subscribers.delete(cb); };
+    // A reader holds the pid past its deadline, so its leaving may bring one.
+    return () => {
+      if (state.subscribers.delete(cb)) this._onRetention?.();
+    };
   }
 
   /** Subscribe to the exit event. Fires once. */
@@ -506,8 +538,10 @@ export class ProcessLogStore {
   }
 
   /**
-   * Drop all state for any PID whose process exited more than `ageMs`
-   * ago. Returns the number of PIDs purged.
+   * Drop all state for any PID whose logs are due (see
+   * process-log-retention.ts), whether this instance holds it in memory or
+   * only its persisted rows do. Returns the number of PIDs purged; their
+   * rows go at the next `flush()`.
    *
    * Optional `isOrphan(pid)` callback identifies PIDs whose owning
    * process vanished without a recorded exit (e.g., a long-running
@@ -518,32 +552,24 @@ export class ProcessLogStore {
     ageMs: number = this.retainAfterExitMs,
     isOrphan?: (pid: number) => boolean,
   ): number {
-    const now = Date.now();
-    const cutoff = now - ageMs;
-    const orphanCutoff = now - ageMs * 3; // 30 min default for orphans
-    let dropped = 0;
-    for (const [pid, state] of this.pids) {
-      if (state.subscribers.size !== 0) continue;
-      if (state.exit && state.exit.at < cutoff) {
-        this.pids.delete(pid);
-        if (this._persist) this._dropQueue.add(pid);
-        dropped++;
-        continue;
-      }
-      // Orphan sweep: no exit recorded, no live subscribers, last
-      // activity older than the orphan cutoff, AND the process table
-      // confirms the process is gone.
-      if (
-        !state.exit &&
-        state.lastActivity < orphanCutoff &&
-        isOrphan?.(pid)
-      ) {
-        this.pids.delete(pid);
-        if (this._persist) this._dropQueue.add(pid);
-        dropped++;
-      }
+    const due = this.retention.due(this.pids, Date.now(), ageMs, isOrphan);
+    for (const pid of due) {
+      this.pids.delete(pid);
+      if (this._persist) this._dropQueue.add(pid);
     }
-    return dropped;
+    return due.length;
+  }
+
+  /**
+   * When `dropOlderThan(ageMs, isOrphan)` next has something to drop, or
+   * null when nothing retained will expire by itself — each pid still
+   * runs, or has a reader. Ask again when the retention hook fires.
+   */
+  nextExpiry(
+    ageMs: number = this.retainAfterExitMs,
+    isOrphan?: (pid: number) => boolean,
+  ): number | null {
+    return this.retention.next(this.pids, ageMs, isOrphan);
   }
 
   /**
@@ -805,6 +831,7 @@ export class ProcessLogStore {
       this.pids.delete(bestPid);
       this._droppedPids++;
       if (this._persist) this._dropQueue.add(bestPid);
+      this.retention.forget(bestPid);
       return;
     }
 
@@ -823,6 +850,7 @@ export class ProcessLogStore {
       this.pids.delete(bestPid);
       this._droppedPids++;
       if (this._persist) this._dropQueue.add(bestPid);
+      this.retention.forget(bestPid);
       return;
     }
 

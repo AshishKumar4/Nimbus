@@ -42,6 +42,8 @@
  *       under load doesn't write-amplify.
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
+import { type PersistedLogPid } from './process-log-retention.js';
+export type { PersistedLogPid };
 export type LogStream = 'stdout' | 'stderr';
 export interface LogChunk {
     ts: number;
@@ -95,6 +97,9 @@ export interface ProcessExitInfo {
  *   - pruneBeforeSeq removes chunk rows below the given seq. Called
  *     inside flush after the per-pid byte cap is exceeded; the store
  *     computes the cutoff seq from its own ring state.
+ *   - retained lists every pid that has rows, with what retention reads
+ *     (never the chunks). Called at most once per isolate-gen, the first
+ *     time retention is asked about.
  *   - Adapters MUST be synchronous from the store's POV. Real SQL
  *     calls in the DO are synchronous (storage.sql.exec is blocking
  *     against the SQLite engine); KV is not used by W9.
@@ -111,6 +116,7 @@ export interface PersistAdapter {
     persistExit(pid: number, info: ProcessExitInfo): void;
     dropPid(pid: number): void;
     pruneBeforeSeq(pid: number, seq: number): void;
+    retained(): PersistedLogPid[];
 }
 export interface ProcessLogStoreOptions {
     /** Per-PID ring cap in bytes. Default 64 KB. */
@@ -167,6 +173,10 @@ export declare class ProcessLogStore {
      * remains in memory.
      */
     private _pruneQueue;
+    /** When logs go, over memory and the rows only SQL holds (process-log-retention.ts). */
+    private readonly retention;
+    /** Fires when a retention deadline may have appeared (see `setRetentionHook`). */
+    private _onRetention;
     /** Cumulative flushed-bytes counter (telemetry). */
     private _flushedChunks;
     private _flushedBytes;
@@ -186,6 +196,13 @@ export declare class ProcessLogStore {
      * adapter in the constructor, before any append happens.
      */
     setPersist(adapter: PersistAdapter): void;
+    /**
+     * Install the hook that fires when a retention deadline may have
+     * appeared: a pid's logs begin, its exit is recorded, or a reader of it
+     * leaves. Appending to a pid already held moves no deadline earlier, so
+     * it does not fire; a host asks `nextExpiry` from here, not per chunk.
+     */
+    setRetentionHook(onRetention: () => void): void;
     /**
      * Fire for EVERY appended chunk / recorded exit, across all pids, in
      * addition to the per-pid `subscribe`/`subscribeExit` callbacks.
@@ -260,8 +277,10 @@ export declare class ProcessLogStore {
     /** Subscribe to the exit event. Fires once. */
     subscribeExit(pid: number, cb: (e: ProcessExitInfo) => void): () => void;
     /**
-     * Drop all state for any PID whose process exited more than `ageMs`
-     * ago. Returns the number of PIDs purged.
+     * Drop all state for any PID whose logs are due (see
+     * process-log-retention.ts), whether this instance holds it in memory or
+     * only its persisted rows do. Returns the number of PIDs purged; their
+     * rows go at the next `flush()`.
      *
      * Optional `isOrphan(pid)` callback identifies PIDs whose owning
      * process vanished without a recorded exit (e.g., a long-running
@@ -269,6 +288,12 @@ export declare class ProcessLogStore {
      * longer grace window so leaked buffers don't accumulate forever.
      */
     dropOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number;
+    /**
+     * When `dropOlderThan(ageMs, isOrphan)` next has something to drop, or
+     * null when nothing retained will expire by itself — each pid still
+     * runs, or has a reader. Ask again when the retention hook fires.
+     */
+    nextExpiry(ageMs?: number, isOrphan?: (pid: number) => boolean): number | null;
     /**
      * W9: drain dirty buffers into the persist adapter. Synchronous from
      * the store's POV (the adapter's calls are sync; the production

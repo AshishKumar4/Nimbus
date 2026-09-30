@@ -133,7 +133,7 @@ tasks your object schedules through `lifecycle`:
 | `resident-launch` | Boots the next chunk of a resident process's launch. Each chunk needs its own CPU budget. |
 | `resident-keepalive` | No work. The invocation itself keeps the object in memory, and with it the resident processes it hosts. It re-arms while a resident runs and a client is present: a hibernatable WebSocket on `ctx`, or a runtime call within the last 60 s. |
 | `log-flush` | Persists buffered process output. |
-| `log-janitor` | Drops the logs of exited processes every 60 s while any remain. |
+| `log-janitor` | Drops the logs of processes whose retention has ended, 10 minutes after each exit, including logs an earlier instance persisted. It is scheduled only for the next such deadline: a running process holds none, so an idle object has nothing sooner. |
 
 `lifecycle.schedule(task, at)` must make `runtime.onScheduled(task)` run in
 a new invocation, a Durable Object alarm, at or after `at`. It replaces any
@@ -142,7 +142,9 @@ pending deadline for that task and rejects when it cannot arm one.
 `setTimeout` in the current invocation. That timer shares the current
 invocation's CPU budget, so paced launches run out of CPU, and it is not an
 event, so the platform evicts the object after about 10 s idle and its
-resident processes are lost: the next instance starts them again.
+resident processes are lost: the next instance starts them again. And while
+a timer is pending the object cannot hibernate, so a `log-janitor` deadline
+ten minutes out holds an otherwise idle object in memory until it fires.
 
 One alarm serves every task:
 

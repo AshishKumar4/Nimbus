@@ -19,7 +19,7 @@ import type { ServiceStub } from '@nimbus-sh/fabric/vendor/types.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
-import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -73,6 +73,7 @@ class RuntimeOwner {
   _w9PersistWired = false;
   _w9SchemaInit = false;
   _w1KeepaliveArmed = false;
+  _w1JanitorAt: number | null = null;
   _w1LastClientActivityAt = 0;
   _viteShimPid: number | null = null;
   _viteShimPort: number | null = null;
@@ -90,7 +91,6 @@ class RuntimeOwner {
   private readyPromise: Promise<void> | null = null;
   private supervisor: SessionSupervisorOps | null = null;
   private flushScheduled = false;
-  private janitorScheduled = false;
   private recoveryNotice = false;
   private legacyNotice: string | null = null;
   private readonly scheduling = new Set<Promise<void>>();
@@ -127,7 +127,7 @@ class RuntimeOwner {
       armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
     });
     options.workspace.shell.bindTerminal(this.terminal);
-    installLogPersistence(this, options.ctx, () => this.scheduleLogs());
+    installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));
     wireProcessLogSocketBroadcast(this.processes, options.ctx);
   }
 
@@ -247,13 +247,12 @@ class RuntimeOwner {
         throw error;
       }));
     }
-    if (!this.janitorScheduled) {
-      this.janitorScheduled = true;
-      this.options.lifecycle.waitUntil(this.schedule('log-janitor', Date.now() + 60_000).catch((error: unknown) => {
-        this.janitorScheduled = false;
-        throw error;
-      }));
-    }
+  }
+
+  private scheduleJanitor(at: number): Promise<boolean> {
+    const pending = this.schedule('log-janitor', at);
+    this.options.lifecycle.waitUntil(pending);
+    return pending.then(() => true, () => false);
   }
 
   async onScheduled(task: HostedRuntimeTask): Promise<void> {
@@ -267,9 +266,8 @@ class RuntimeOwner {
       this.flushScheduled = false;
       this.processes.flushLogs();
     } else {
-      this.janitorScheduled = false;
-      this.processes.dropLogsOlderThan(undefined, (pid) => !this.processes.get(pid));
-      if (this.processes.stats.running > 0 || this.processes.logStats.totalPids > 0) this.scheduleLogs();
+      const next = logJanitorFired(this);
+      if (next !== null && !(await this.scheduleJanitor(next)) && this._w1JanitorAt === next) this._w1JanitorAt = null;
     }
   }
 

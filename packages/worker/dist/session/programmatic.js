@@ -1077,6 +1077,10 @@ export async function rpcDestroy(self, options = {}) {
         // setAlarm after deleteAll and deleteAlarm, and the destroyed session
         // keeps a live alarm.
         timers(self, self.ctx).reset();
+        // The janitor deadline this instance armed goes with the alarm: kept,
+        // it would read as armed after a re-init of the same id, and the
+        // recreated session's first exit would arm nothing.
+        self._w1JanitorAt = null;
         try {
             await self.ctx.storage.deleteAll();
         }

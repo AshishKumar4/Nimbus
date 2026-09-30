@@ -79,6 +79,10 @@ export class SessionProcessSupervisor {
   private terminators = new Map<number, () => void>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
   private logActivity: (() => void) | null = null;
+  /** Fires when a log retention deadline may have appeared; see setLogPersist. */
+  private logRetention: (() => void) | null = null;
+  /** The orphan rule's "process is gone": this table no longer holds it. */
+  private readonly isLogOrphan = (pid: number): boolean => !this.table.get(pid);
   /** Fires once per pid on its first terminal transition; see setOnTerminal. */
   private onTerminalCb: ((pid: number) => void) | null = null;
   /** Ends a process by a signal's default action; see setDefaultSignalAction. */
@@ -193,9 +197,15 @@ export class SessionProcessSupervisor {
     return killed;
   }
 
-  /** Clean up exited processes older than maxAge ms. */
+  /**
+   * Clean up exited processes older than maxAge ms. A reaped pid whose logs
+   * hold no exit (a process killed around its log) is an orphan from here,
+   * which gives its logs a deadline.
+   */
   reap(maxAge?: number): number {
-    return this.table.reap(maxAge);
+    const reaped = this.table.reap(maxAge);
+    if (reaped > 0) this.logRetention?.();
+    return reaped;
   }
 
   get stats(): ProcessTable['stats'] {
@@ -380,11 +390,16 @@ export class SessionProcessSupervisor {
   /**
    * Install the SQL-backed persistence adapter. `onActivity` fires after
    * every appendOutput/markExit so the host can schedule debounced
-   * flushes without the store knowing about timers.
+   * flushes without the store knowing about timers. `onRetention` fires
+   * only when a retention deadline may have appeared — a pid's logs
+   * begin, its exit is recorded, a reader leaves, or the table reaps — so
+   * the host re-reads `nextLogExpiry` there and never per chunk.
    */
-  setLogPersist(adapter: PersistAdapter, onActivity: () => void): void {
+  setLogPersist(adapter: PersistAdapter, onActivity: () => void, onRetention?: () => void): void {
     this.logs.setPersist(adapter);
     this.logActivity = onActivity;
+    this.logRetention = onRetention ?? null;
+    this.logs.setRetentionHook(() => this.logRetention?.());
   }
 
   /**
@@ -402,8 +417,14 @@ export class SessionProcessSupervisor {
     this.logs.flush();
   }
 
-  dropLogsOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number {
-    return this.logs.dropOlderThan(ageMs, isOrphan);
+  /** Drop the logs that are due; a pid this table no longer holds counts as an orphan. */
+  dropLogsOlderThan(ageMs?: number): number {
+    return this.logs.dropOlderThan(ageMs, this.isLogOrphan);
+  }
+
+  /** When dropLogsOlderThan next has work, by the same orphan rule, or null. */
+  nextLogExpiry(): number | null {
+    return this.logs.nextExpiry(undefined, this.isLogOrphan);
   }
 
   logHibStats(): ReturnType<ProcessLogStore['hibStats']> {
@@ -418,5 +439,6 @@ export class SessionProcessSupervisor {
   resetLogStore(): void {
     this.logs = new ProcessLogStore();
     this.logActivity = null;
+    this.logRetention = null;
   }
 }

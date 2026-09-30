@@ -4,7 +4,7 @@ import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/co
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
-import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -34,6 +34,7 @@ class RuntimeOwner {
     _w9PersistWired = false;
     _w9SchemaInit = false;
     _w1KeepaliveArmed = false;
+    _w1JanitorAt = null;
     _w1LastClientActivityAt = 0;
     _viteShimPid = null;
     _viteShimPort = null;
@@ -51,7 +52,6 @@ class RuntimeOwner {
     readyPromise = null;
     supervisor = null;
     flushScheduled = false;
-    janitorScheduled = false;
     recoveryNotice = false;
     legacyNotice = null;
     scheduling = new Set();
@@ -86,7 +86,7 @@ class RuntimeOwner {
             armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
         });
         options.workspace.shell.bindTerminal(this.terminal);
-        installLogPersistence(this, options.ctx, () => this.scheduleLogs());
+        installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));
         wireProcessLogSocketBroadcast(this.processes, options.ctx);
     }
     get ctx() { return this.options.ctx; }
@@ -202,13 +202,11 @@ class RuntimeOwner {
                 throw error;
             }));
         }
-        if (!this.janitorScheduled) {
-            this.janitorScheduled = true;
-            this.options.lifecycle.waitUntil(this.schedule('log-janitor', Date.now() + 60_000).catch((error) => {
-                this.janitorScheduled = false;
-                throw error;
-            }));
-        }
+    }
+    scheduleJanitor(at) {
+        const pending = this.schedule('log-janitor', at);
+        this.options.lifecycle.waitUntil(pending);
+        return pending.then(() => true, () => false);
     }
     async onScheduled(task) {
         if (this._w1SessionDestroyed)
@@ -226,10 +224,9 @@ class RuntimeOwner {
             this.processes.flushLogs();
         }
         else {
-            this.janitorScheduled = false;
-            this.processes.dropLogsOlderThan(undefined, (pid) => !this.processes.get(pid));
-            if (this.processes.stats.running > 0 || this.processes.logStats.totalPids > 0)
-                this.scheduleLogs();
+            const next = logJanitorFired(this);
+            if (next !== null && !(await this.scheduleJanitor(next)) && this._w1JanitorAt === next)
+                this._w1JanitorAt = null;
         }
     }
     async attachTerminal(ws, resume = 'reconnect') {

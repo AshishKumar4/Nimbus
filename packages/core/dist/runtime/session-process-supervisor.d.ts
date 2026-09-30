@@ -61,6 +61,10 @@ export declare class SessionProcessSupervisor {
     private terminators;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     private logActivity;
+    /** Fires when a log retention deadline may have appeared; see setLogPersist. */
+    private logRetention;
+    /** The orphan rule's "process is gone": this table no longer holds it. */
+    private readonly isLogOrphan;
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     private onTerminalCb;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
@@ -108,7 +112,11 @@ export declare class SessionProcessSupervisor {
      * status; SIGKILL's 137 when absent.
      */
     kill(pid: number, exitCode?: number): boolean;
-    /** Clean up exited processes older than maxAge ms. */
+    /**
+     * Clean up exited processes older than maxAge ms. A reaped pid whose logs
+     * hold no exit (a process killed around its log) is an orphan from here,
+     * which gives its logs a deadline.
+     */
     reap(maxAge?: number): number;
     get stats(): ProcessTable['stats'];
     /** See ProcessTable.residentRunning — running long-running process count. */
@@ -176,16 +184,22 @@ export declare class SessionProcessSupervisor {
     /**
      * Install the SQL-backed persistence adapter. `onActivity` fires after
      * every appendOutput/markExit so the host can schedule debounced
-     * flushes without the store knowing about timers.
+     * flushes without the store knowing about timers. `onRetention` fires
+     * only when a retention deadline may have appeared — a pid's logs
+     * begin, its exit is recorded, a reader leaves, or the table reaps — so
+     * the host re-reads `nextLogExpiry` there and never per chunk.
      */
-    setLogPersist(adapter: PersistAdapter, onActivity: () => void): void;
+    setLogPersist(adapter: PersistAdapter, onActivity: () => void, onRetention?: () => void): void;
     /**
      * Install the instance-level chunk/exit broadcast (the hibernation-safe
      * process-terminal WS fan-out — see ProcessLogStore.setBroadcast).
      */
     setLogBroadcast(onChunk: (pid: number, chunk: LogChunk) => void, onExit: (pid: number, exit: ProcessExitInfo) => void): void;
     flushLogs(): void;
-    dropLogsOlderThan(ageMs?: number, isOrphan?: (pid: number) => boolean): number;
+    /** Drop the logs that are due; a pid this table no longer holds counts as an orphan. */
+    dropLogsOlderThan(ageMs?: number): number;
+    /** When dropLogsOlderThan next has work, by the same orphan rule, or null. */
+    nextLogExpiry(): number | null;
     logHibStats(): ReturnType<ProcessLogStore['hibStats']>;
     /**
      * Replace the in-memory log store with a fresh, unwired one. Test-only
