@@ -134,7 +134,7 @@ if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendin
 function __nimbusTrackOp(promise) {
   if (!promise || typeof promise.then !== "function") return promise;
   globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; };
+  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   try { __nimbusOrigThen.call(promise, settled, settled); }
   catch { settled(); }
   return promise;
@@ -143,7 +143,7 @@ function __nimbusTrackOp(promise) {
 async function __nimbusUseRpcResult(promise, use) {
   globalThis.__nimbusPendingOps++;
   try { return await __nimbusUseRpcResultUnref(promise, use); }
-  finally { globalThis.__nimbusPendingOps--; }
+  finally { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
 }
 // Facet infrastructure that long-polls the supervisor for as long as the
 // facet lives — the attached-process stdin pump — is the analogue of an
@@ -7076,6 +7076,7 @@ function __makeProcessStdin() {
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+    if (!held) globalThis.__nimbusHandleReleased?.();
   }
   __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
   __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));

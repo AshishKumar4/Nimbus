@@ -65,7 +65,7 @@ if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendin
 function __nimbusTrackOp(promise) {
   if (!promise || typeof promise.then !== "function") return promise;
   globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; };
+  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   try { __nimbusOrigThen.call(promise, settled, settled); }
   catch { settled(); }
   return promise;
@@ -74,7 +74,7 @@ function __nimbusTrackOp(promise) {
 async function __nimbusUseRpcResult(promise, use) {
   globalThis.__nimbusPendingOps++;
   try { return await __nimbusUseRpcResultUnref(promise, use); }
-  finally { globalThis.__nimbusPendingOps--; }
+  finally { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
 }
 // Facet infrastructure that long-polls the supervisor for as long as the
 // facet lives — the attached-process stdin pump — is the analogue of an
@@ -8474,6 +8474,7 @@ function __makeProcessStdin() {
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+    if (!held) globalThis.__nimbusHandleReleased?.();
   }
   __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
   __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
@@ -8938,7 +8939,7 @@ Object.defineProperty(builtins, "http", {
       const inFlight = new WeakSet();
       const end = clientProto.end, emit = clientProto.emit;
       const release = request => {
-        if (inFlight.delete(request)) globalThis.__nimbusPendingOps--;
+        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
       };
       Object.defineProperty(clientProto, clientPatch, { value: true });
       clientProto.end = function () {
@@ -8999,7 +9000,7 @@ Object.defineProperty(builtins, "http", {
           state.pending = false;
           // A cancelled allocation can settle after this server relistens.
           // Only the current owner can retire its pending-listen handle.
-          if (owners.get(this) === state) pendingListeners.delete(this);
+          if (owners.get(this) === state && pendingListeners.delete(this)) globalThis.__nimbusHandleReleased?.();
         };
         const releaseAllocation = () => {
           // An explicit relisten may have taken this same number while the
@@ -9050,6 +9051,7 @@ Object.defineProperty(builtins, "http", {
             state.pending = false;
             owners.delete(this);
             pendingListeners.delete(this);
+            globalThis.__nimbusHandleReleased?.();
             if (callback) this.once("close", callback);
             queueMicrotask(() => this.emit("close"));
             return this;
@@ -9057,12 +9059,17 @@ Object.defineProperty(builtins, "http", {
           if (state.port !== null && state.ctx.ports.get(state.port) === this) {
             state.ctx.ports.delete(state.port);
             state.ctx.pending.push(Promise.resolve(state.ctx.supervisor.unregisterPort(state.port)));
+            globalThis.__nimbusHandleReleased?.();
           }
         }
         return Reflect.apply(close, this, callback ? [callback] : []);
       };
       proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
-      proto.unref = function () { this.__nimbusUnrefed = true; return Reflect.apply(unref, this, []); };
+      proto.unref = function () {
+        this.__nimbusUnrefed = true;
+        globalThis.__nimbusHandleReleased?.();
+        return Reflect.apply(unref, this, []);
+      };
     } else http.Server.prototype[patchKey](context);
     globalThis.__nimbusServeHttp = async (request) => {
       const port = Number(request.headers.get("X-Nimbus-Port") || 0);
