@@ -1,6 +1,6 @@
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { VfsError, isVfsError } from '../../../../vfs/vfs-error.js';
+import { isVfsError, syscallError } from '../../../../vfs/vfs-error.js';
 import { lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     recursive: { type: 'boolean', short: 'r' },
@@ -118,7 +118,7 @@ async function copyTree(ctx, src, target, preserve, noClobber) {
     if (!(await ctx.vfs.exists(target)))
         await ctx.vfs.mkdir(target, { mode: stat.mode | 0o700 });
     else if ((await lstatOrThrow(ctx.vfs, target)).type !== 'directory')
-        throw new VfsError('ENOTDIR', target);
+        throw syscallError('ENOTDIR', 'cp', src, { dest: target });
     for (const entry of await ctx.vfs.readdir(src)) {
         const from = resolve(src, entry.name);
         const to = resolve(target, entry.name);
@@ -133,7 +133,7 @@ async function copyTree(ctx, src, target, preserve, noClobber) {
 }
 async function copyEntry(ctx, src, target, stat, preserve) {
     if (!(await ctx.vfs.exists(dirname(target))))
-        throw new VfsError('ENOENT', dirname(target));
+        throw syscallError('ENOENT', 'copyfile', src, { dest: target });
     if (stat.type === 'symlink') {
         const link = await ctx.vfs.readlink(src);
         if (await ctx.vfs.exists(target))

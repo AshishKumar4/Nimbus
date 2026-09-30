@@ -33,14 +33,49 @@ export const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>> = {
   ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116,
 };
 
+/** What a VfsError carries besides its cause: Node's `err.syscall` and `err.dest`. */
+export interface VfsErrorOptions extends ErrorOptions {
+  /** The call that failed (`open`, `scandir`, `rename`), as Node names it. */
+  syscall?: string;
+  /** The second path of a call that names two (rename, copyfile, symlink). */
+  dest?: string;
+}
+
 export class VfsError extends Error {
   readonly errno: number;
+  declare readonly syscall?: string;
+  declare readonly dest?: string;
 
-  constructor(readonly code: VfsErrorCode, message: string, readonly path?: string, options?: ErrorOptions) {
-    super(`${code}: ${message}${path !== undefined ? `, '${path}'` : ''}`, options);
+  /**
+   * `message` is what Node's message says before the path: the description
+   * and the syscall (`no such file or directory, open`). The path follows it
+   * as Node prints one, and a second path after an arrow:
+   * `ENOENT: no such file or directory, open 'x'`,
+   * `EXDEV: cross-device link not permitted, rename 'a' -> 'b'`.
+   */
+  constructor(readonly code: VfsErrorCode, message: string, readonly path?: string, options?: VfsErrorOptions) {
+    super(`${code}: ${message}${path !== undefined ? ` '${path}'` : ''}${options?.dest !== undefined ? ` -> '${options.dest}'` : ''}`, options);
     this.name = 'VfsError';
     this.errno = VFS_ERRNO[code];
+    if (options?.syscall !== undefined) this.syscall = options.syscall;
+    if (options?.dest !== undefined) this.dest = options.dest;
   }
+}
+
+/**
+ * Node's error for `syscall` failing on `path` with `code`, as its
+ * uvException words it: `ENOENT: no such file or directory, open 'x'`.
+ * `detail` stands in libuv's description where Nimbus knows the reason
+ * (`/m is mounted read-only, open '/m/x'`).
+ */
+export function syscallError(
+  code: VfsErrorCode,
+  syscall: string,
+  path?: string,
+  options: VfsErrorOptions & { detail?: string } = {},
+): VfsError {
+  const { detail, ...rest } = options;
+  return new VfsError(code, `${detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...rest, syscall });
 }
 
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
@@ -50,16 +85,25 @@ export function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsErr
 
 /**
  * An error from a layer that throws `{ code }` errors (the SQLite engine, a
- * process bridge), as a VfsError on `path`; anything without a known code is
- * returned as it is.
+ * process bridge, Node's own fs) as Node's error for the call that met it:
+ * `syscall` on `path`, and `dest` for a call that names two paths, each the
+ * error's own where it names one. The layer's error is the cause.
+ * A VfsError naming a call or a path is returned as it is; one naming
+ * neither (a storage quota's) keeps its words and gains this call's.
+ * Anything without a known code is returned as it is.
  */
-export function toVfsError(error: unknown, path: string): unknown {
-  if (error instanceof VfsError) return error;
+export function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown {
+  if (error instanceof VfsError) {
+    if (error.syscall !== undefined || error.path !== undefined) return error;
+    return syscallError(error.code, syscall, path, { detail: error.message.slice(error.code.length + 2), dest, cause: error });
+  }
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && code in VFS_ERRNO) {
-    // The layer's message already names what failed: keep it as it is.
-    const message = error instanceof Error ? error.message.replace(new RegExp(`^${code}: `), '') : String(error);
-    return new VfsError(code as VfsErrorCode, message, undefined, { cause: error });
+    const own = error as { syscall?: unknown; path?: unknown; dest?: unknown };
+    const call = typeof own.syscall === 'string' ? own.syscall : syscall;
+    // The caller's second path belongs to its own call, not to another the layer names.
+    const second = typeof own.dest === 'string' ? own.dest : call === syscall ? dest : undefined;
+    return syscallError(code as VfsErrorCode, call, typeof own.path === 'string' ? own.path : path, { dest: second, cause: error });
   }
   return error;
 }
@@ -74,3 +118,36 @@ export const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>> = {
   E2BIG: 'Argument list too long', ENAMETOOLONG: 'File name too long', ENOTEMPTY: 'Directory not empty', ENOTSUP: 'Operation not supported',
   ESTALE: 'Stale file handle',
 };
+
+/**
+ * libuv's description of each code: the words before the syscall in Node's
+ * message (`util.getSystemErrorMap()`). libuv has no ESTALE; strerror's
+ * words stand in.
+ */
+export const VFS_DESCRIPTION: Readonly<Record<VfsErrorCode, string>> = {
+  E2BIG: 'argument list too long', EPERM: 'operation not permitted', ENOENT: 'no such file or directory',
+  EIO: 'i/o error', ENXIO: 'no such device or address', EAGAIN: 'resource temporarily unavailable',
+  EACCES: 'permission denied', EBUSY: 'resource busy or locked', EEXIST: 'file already exists',
+  EXDEV: 'cross-device link not permitted', ENOTDIR: 'not a directory', EISDIR: 'illegal operation on a directory',
+  EINVAL: 'invalid argument', ENOSPC: 'no space left on device', EROFS: 'read-only file system',
+  ELOOP: 'too many symbolic links encountered', ENAMETOOLONG: 'name too long', ENOTEMPTY: 'directory not empty',
+  ENOTSUP: 'operation not supported on socket', ESTALE: 'stale file handle',
+};
+
+/**
+ * libuv's description of any code a filesystem call answers, the VFS's own
+ * and a descriptor's (EBADF) alike. WASI's ENOTCAPABLE has none.
+ */
+export const ERRNO_DESCRIPTION: Readonly<Record<string, string>> = {
+  ...VFS_DESCRIPTION,
+  EBADF: 'bad file descriptor', EFBIG: 'file too large', ENODATA: 'no data available', ENOSYS: 'function not implemented',
+  EMFILE: 'too many open files', ENFILE: 'file table overflow', ENOMEM: 'not enough memory', ETXTBSY: 'text file is busy',
+  EMLINK: 'too many links', ENODEV: 'no such device', ESPIPE: 'invalid seek', EPIPE: 'broken pipe',
+  EINTR: 'interrupted system call', ERANGE: 'result too large', EOVERFLOW: 'value too large for defined data type',
+  ETIMEDOUT: 'connection timed out', ECANCELED: 'operation canceled', EFAULT: 'bad address in system call argument',
+};
+
+/** {@link ERRNO_DESCRIPTION} of `code`, undefined for a code libuv does not name. */
+export function errnoDescription(code: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(ERRNO_DESCRIPTION, code) ? ERRNO_DESCRIPTION[code] : undefined;
+}

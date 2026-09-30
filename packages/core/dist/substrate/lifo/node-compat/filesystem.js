@@ -1,4 +1,4 @@
-import { VfsError } from '../../../vfs/vfs-error.js';
+import { syscallError } from '../../../vfs/vfs-error.js';
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands
  * the authority's synchronous capability. The demand is made on first use:
@@ -18,7 +18,7 @@ function bridgeFilesystem(bridge) {
     const read = (path) => {
         const data = fs.readFile(path);
         if (data === null)
-            throw new VfsError('ENOENT', path);
+            throw syscallError('ENOENT', 'open', path);
         return data;
     };
     let listener;
@@ -49,7 +49,7 @@ function bridgeFilesystem(bridge) {
         stat(path) {
             const stat = fs.stat(path);
             if (!stat)
-                throw new VfsError('ENOENT', path);
+                throw syscallError('ENOENT', 'stat', path);
             return stat;
         },
         mkdir: (path, options) => fs.mkdir(path, options),

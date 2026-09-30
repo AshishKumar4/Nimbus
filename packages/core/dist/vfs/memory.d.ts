@@ -18,7 +18,7 @@ export declare class MemoryVFS implements VFS {
     });
     private entry;
     private touch;
-    /** The entry at `path`, following symlinks except a final one when `follow` is false. */
+    /** The entry at `path`, following symlinks except a final one when `follow` is false; `call` names a failure. */
     private find;
     private parentOf;
     private stats;

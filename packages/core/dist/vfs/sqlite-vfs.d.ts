@@ -283,8 +283,8 @@ export declare class SqliteVfsTransactionTooLargeError extends Error {
     readonly code: "E2BIG";
     constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
 }
-/** The export format's version: rows naming chunks by sha256. */
-export declare const VFS_EXPORT_SCHEMA = 2;
+/** The export format's version: rows naming chunks by sha256, pages naming their snapshot. */
+export declare const VFS_EXPORT_SCHEMA = 3;
 /** One entry of an exported tree, relative to the export's root ('' is the root). */
 export interface VfsExportRow {
     path: string;
@@ -308,6 +308,12 @@ export interface VfsExportRow {
 }
 export interface VfsExportPage {
     schema: number;
+    /**
+     * The snapshot the page reads, as `<database incarnation>:<generation>`.
+     * Every page of one import comes from one: a page of another export is
+     * refused while an import is open at its destination.
+     */
+    source: string;
     root: string;
     /** Exclusive source inode high-water; also covers every pinned snapshot. */
     nextIno: number;
@@ -451,8 +457,10 @@ export declare class SqliteVFS {
     private _pinGen;
     /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
     private readonly manifestWindows;
-    /** The staging content holding each import's chunks, by destination. */
-    private readonly importStagings;
+    /** Set when a write commits while imports are open: one may no longer be where it began (sweepStaleImports). */
+    private importSweepPending;
+    /** False once a sweep has found no import open, until one begins. */
+    private importJobsExist;
     /** Page digests by (generation, root, cursor, limit): a snapshot's pages never change. */
     private readonly pageDigests;
     /** Snapshot generations by name, loaded on first use. */
@@ -1341,12 +1349,16 @@ export declare class SqliteVFS {
     importCursor(dst: string): string | null;
     /**
      * Write one exported page under `dst`. The first page of an import needs
-     * `dst` absent or an empty directory, and records a vfs_jobs row; later
-     * pages continue it, and rows at or before importCursor(dst) are skipped,
-     * so a page replayed after a reset is harmless. Every chunk given is
-     * re-hashed before anything is written; if the page names a chunk neither
-     * given nor stored, nothing is written and `want` lists what to send.
-     * Files too large for one transaction stage across several.
+     * `dst` absent or an empty directory, and records a vfs_jobs row naming
+     * its export (`page.source`); later pages of that export continue it, and
+     * rows at or before importCursor(dst) are skipped, so a page replayed
+     * after a reset is harmless. A page of another export is refused while the
+     * import is open. Removing dst, or a directory above it, abandons the
+     * import in the same transaction: its job and staging go, a new import
+     * into dst starts clean, and a later page of the old one is refused. Every
+     * chunk given is re-hashed before anything is written; if the page names a
+     * chunk neither given nor stored, nothing is written and `want` lists what
+     * to send. Files too large for one transaction stage across several.
      */
     importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>, options?: {
         lazy?: boolean;
@@ -1387,15 +1399,48 @@ export declare class SqliteVFS {
      * Store chunks for an import into `dst` ahead of its pages, a bounded
      * transaction at a time, so no page has to carry bytes and a file of any
      * size imports in frames. Each chunk is re-hashed first. They are held by
-     * a staging content the import owns until its last page; after a reset
-     * GC may take them, and importPage then names them in `want` again.
+     * a staging content the import's job names (`ahead`), until its last page
+     * or until the import ends.
      */
     importChunks(dst: string, chunks: Iterable<VfsExportChunk>): {
         stored: number;
     };
+    /** The import open at `target`: one still where it began. A stale one is nobody's to continue. */
     private importJob;
+    /** What an import beginning at `target` now records of where it stands (ImportJobArgsSchema). */
+    private importPlacement;
+    /** Whether every directory above `path` is one, from the root down: a path an import can reach. */
+    private reachable;
+    /**
+     * Whether an import is still where it began: every directory above dst is
+     * one, dst's parent path resolves to the directory it began in, and dst
+     * to the inode the import made or found there (or to nothing, before it
+     * has one). A removal of dst or of any directory above it (mid-way through
+     * a sliced restore too), a rename of either away, a directory made or
+     * renamed in its place: each leaves a path resolving elsewhere, so the
+     * removal that commits is what ends the import. A job that records no
+     * parent (one from before this was recorded) is never placed.
+     */
+    private importPlaced;
+    /**
+     * Staging contents GC must step over: those a live operation is still
+     * assembling, and those an import's job names (its pending manifest, its
+     * chunks sent ahead), read from the job rows as they stand.
+     */
+    private stagingPins;
+    /**
+     * End every import no longer where it began (importPlaced): its row goes,
+     * and what it staged (a pending manifest, chunks sent ahead) is queued for
+     * collection, in bounded transactions. Such an import is already invisible
+     * to every page, frame and cursor; this reclaims what it held, in at most
+     * `maxTransactions` transactions, the rest at the next sweep. Never inside
+     * an embedder's transaction, whose rollback brings the removal back.
+     * Returns the transactions it ran.
+     */
+    private sweepStaleImports;
     /** An import starts into an absent path or an empty directory under an existing one. */
     private assertImportTarget;
+    /** A job for a new import into `target`, recording where it stands (importPlaced). */
     private beginImport;
     private hasChildren;
     private importedEntry;

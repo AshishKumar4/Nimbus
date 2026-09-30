@@ -32,7 +32,7 @@ import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
-import { isVfsError, VfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
+import { isVfsError, syscallError, VFS_STRERROR } from '../vfs/vfs-error.js';
 import { globMatch } from '../substrate/lifo/utils/glob.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 /**
@@ -4285,7 +4285,7 @@ async function canonicalizePath(vfs, absolute, options) {
         }
         if (stat === null) {
             if (options.mode === 'e' || (options.mode === 'E' && !last))
-                throw new VfsError('ENOENT', candidate);
+                throw syscallError('ENOENT', 'realpath', candidate);
             missing = true;
             resolved.push(part);
             continue;
@@ -4294,7 +4294,7 @@ async function canonicalizePath(vfs, absolute, options) {
             if (++hops > 40) {
                 // Under -m a component that loops counts as missing (GNU).
                 if (options.mode !== 'm')
-                    throw new VfsError('ELOOP', candidate);
+                    throw syscallError('ELOOP', 'realpath', candidate);
                 missing = true;
                 resolved.push(part);
                 continue;
@@ -4306,14 +4306,14 @@ async function canonicalizePath(vfs, absolute, options) {
             continue;
         }
         if (stat.type !== 'directory' && !last && options.mode !== 'm')
-            throw new VfsError('ENOTDIR', candidate);
+            throw syscallError('ENOTDIR', 'realpath', candidate);
         resolved.push(part);
     }
     const out = `/${resolved.join('/')}`;
     if (trailingSlash && options.mode !== 'm') {
         const stat = await vfs.stat(out);
         if (stat !== null && stat.type !== 'directory')
-            throw new VfsError('ENOTDIR', out);
+            throw syscallError('ENOTDIR', 'realpath', out);
     }
     return out;
 }

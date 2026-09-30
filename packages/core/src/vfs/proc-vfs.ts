@@ -7,7 +7,7 @@
  * here is stored, so nothing here has a revision: a cache never holds it.
  */
 import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
-import { VfsError } from './vfs-error.js';
+import { syscallError } from './vfs-error.js';
 
 /** A /proc file's content, for the credential of the process reading it (null: the embedder's view). */
 export type ProcGenerator = (cred: VfsCred | null) => string;
@@ -47,9 +47,7 @@ export class ProcVFS implements VFS {
   private generate(path: string): Uint8Array {
     const k = key(path);
     const generator = this.files.get(k);
-    if (generator === undefined) {
-      throw new VfsError(this.isDir(k) ? 'EISDIR' : 'ENOENT', this.isDir(k) ? 'is a directory' : 'no such file or directory', path);
-    }
+    if (generator === undefined) throw syscallError(this.isDir(k) ? 'EISDIR' : 'ENOENT', 'open', path);
     return enc.encode(generator(this.cred));
   }
 
@@ -70,9 +68,7 @@ export class ProcVFS implements VFS {
 
   readdir(path: string): VfsDirent[] {
     const k = key(path);
-    if (!this.isDir(k)) {
-      throw new VfsError(this.files.has(k) ? 'ENOTDIR' : 'ENOENT', this.files.has(k) ? 'not a directory' : 'no such file or directory', path);
-    }
+    if (!this.isDir(k)) throw syscallError(this.files.has(k) ? 'ENOTDIR' : 'ENOENT', 'scandir', path);
     const prefix = k === '' ? '' : `${k}/`;
     const out = new Map<string, VfsDirent>();
     for (const name of this.files.keys()) {
@@ -85,13 +81,13 @@ export class ProcVFS implements VFS {
     return [...out.values()];
   }
 
-  private readOnly(path: string): never {
-    throw new VfsError('EROFS', '/proc is read-only', path);
+  private readOnly(syscall: string, path: string): never {
+    throw syscallError('EROFS', syscall, path, { detail: '/proc is read-only' });
   }
-  writeFile(path: string): void { this.readOnly(path); }
-  mkdir(path: string): void { this.readOnly(path); }
-  unlink(path: string): void { this.readOnly(path); }
-  rmdir(path: string): void { this.readOnly(path); }
+  writeFile(path: string): void { this.readOnly('open', path); }
+  mkdir(path: string): void { this.readOnly('mkdir', path); }
+  unlink(path: string): void { this.readOnly('unlink', path); }
+  rmdir(path: string): void { this.readOnly('rmdir', path); }
 
   describe() {
     return { source: 'proc', type: 'proc', options: ['ro'] as const };

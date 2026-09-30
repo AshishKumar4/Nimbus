@@ -141,6 +141,7 @@ export declare class ProcessView implements VFS {
     constructor(
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     process: RuntimeFsBridge);
+    /** `run`, a bridge failure reported as Node's error for `syscall` on `path` (and `dest`). */
     private call;
     stat(path: string, options?: {
         follow?: boolean;
