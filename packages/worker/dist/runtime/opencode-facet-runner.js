@@ -233,21 +233,22 @@ if (typeof globalThis.Bun === "undefined") {
  * no custom stdout, so bundle seam 7 defaults config.stdout to this global. It
  * is a DISTINCT object (≠ process.stdout) that forwards every write to the
  * facet's process.stdout (which streams live to the terminal RPC). The feed
- * emits Uint8Array chunks; they are decoded latin1 (byte-preserving) so the raw
- * ANSI bytes reach xterm intact. columns/rows/isTTY mirror the shim TTY so the
- * renderer reads the live terminal geometry.
+ * emits Uint8Array chunks of UTF-8 ANSI output; they are forwarded as bytes.
+ * Decoding them to a string first re-encodes every non-ASCII byte (borders,
+ * spinners, icons) on the way out. columns/rows/isTTY mirror the shim TTY so
+ * the renderer reads the live terminal geometry.
  */
-const OPENTUI_TTY_STDOUT_SRC = `
+export const OPENTUI_TTY_STDOUT_SRC = `
 globalThis.__nimbusOpenTUITtyStdout = {
   isTTY: true,
   get columns() { return __nimbusTtyColumns; },
   get rows() { return __nimbusTtyRows; },
   write(chunk, enc, cb) {
-    const s = typeof chunk === "string"
+    const out = typeof chunk === "string" || chunk instanceof Uint8Array
       ? chunk
-      : __BufferMod.from(chunk).toString("latin1");
-    __ttyC += 1; __ttyB += s.length;
-    process.stdout.write(s);
+      : new Uint8Array(chunk);
+    __ttyC += 1; __ttyB += typeof out === "string" ? out.length : out.byteLength;
+    process.stdout.write(out);
     const done = typeof enc === "function" ? enc : cb;
     if (typeof done === "function") done();
     return true;
