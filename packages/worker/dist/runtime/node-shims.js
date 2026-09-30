@@ -4791,6 +4791,18 @@ const __fsMod = (() => {
   // cached, exposed via getters to avoid a temporal-dead-zone reference.
   let __ReadStreamClass = null;
   let __WriteStreamClass = null;
+  /**
+   * An fs stream's close options, as Node reads them: autoClose (default
+   * true) is whether it is destroyed once done, emitClose (default true)
+   * whether destroying it emits 'close'.
+   */
+  function __fsStreamLifecycle(opts) {
+    const options = opts && typeof opts === "object" ? opts : {};
+    return {
+      autoDestroy: options.autoClose === undefined ? true : !!options.autoClose,
+      emitClose: options.emitClose !== false,
+    };
+  }
   function __getReadStream() {
     if (__ReadStreamClass) return __ReadStreamClass;
     /**
@@ -4810,6 +4822,7 @@ const __fsMod = (() => {
         super({
           encoding: options.encoding || null,
           highWaterMark: options.highWaterMark || READ_STREAM_CHUNK_BYTES,
+          ...__fsStreamLifecycle(options),
         });
         this.path = path;
         this.bytesRead = 0;
@@ -4841,7 +4854,7 @@ const __fsMod = (() => {
   function __getWriteStream() {
     if (__WriteStreamClass) return __WriteStreamClass;
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
-      constructor(path, opts) { super(); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
+      constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
         if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
@@ -4889,6 +4902,7 @@ const __fsMod = (() => {
       const chunks = [];
       let anyBytes = false;
       const ws = new __streamMod.Writable({
+        ...__fsStreamLifecycle(opts),
         write(chunk, enc, cb) {
           if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
           else chunks.push(typeof chunk === "string" ? chunk : String(chunk));

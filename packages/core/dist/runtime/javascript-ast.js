@@ -6,6 +6,30 @@ export function parseJavaScriptModule(source) {
         allowHashBang: true,
     });
 }
+/**
+ * A program as Node would run it: an ES module, or a CommonJS script (whose
+ * top level may `return`); null when it is neither.
+ */
+export function parseJavaScriptProgram(source) {
+    const options = {
+        ecmaVersion: 'latest',
+        allowHashBang: true,
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        allowImportExportEverywhere: true,
+    };
+    try {
+        return parse(source, { ...options, sourceType: 'module' });
+    }
+    catch {
+        try {
+            return parse(source, { ...options, sourceType: 'script' });
+        }
+        catch {
+            return null;
+        }
+    }
+}
 export function hasTopLevelModuleSyntax(source) {
     try {
         const tokens = tokenizer(source, {

@@ -75,9 +75,9 @@ export interface RuntimeRunOpts {
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
     /**
-     * The entry launches a server from one of its own modules (see
-     * entryLaunchesServer). Set only for a runtime that routes servers
-     * (RuntimeSpec.routesServers), for a script it reads.
+     * Running the program starts a server (server-launch.ts). Set only for a
+     * runtime that routes servers (RuntimeSpec.routesServers), when no .bin
+     * wrapper has decided residency already.
      */
     launchesServer?: boolean;
 }
@@ -145,9 +145,9 @@ export interface RuntimeSpec {
      */
     supportsBinSpawn?: boolean;
     /**
-     * The runner routes a server-shaped program to a resident process
-     * (node-runner.ts runFresh), so the handler reports whether a script's entry
-     * launches one from its own modules (RuntimeRunOpts.launchesServer).
+     * The runner routes a program that starts a server to a resident process
+     * (node-runner.ts runFresh), so the handler reports whether it does
+     * (RuntimeRunOpts.launchesServer).
      */
     routesServers?: boolean;
 }

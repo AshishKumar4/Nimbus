@@ -41,12 +41,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { errorText } from '../_shared/error-text.js';
-/** A relative module specifier a source names by string literal. */
-const RELATIVE_SPECIFIER_RE = /\brequire\s*\(\s*(['"])(\.{1,2}\/[^'"\n]*)\1\s*\)|\bfrom\s*(['"])(\.{1,2}\/[^'"\n]*)\3|\bimport\s*\(\s*(['"])(\.{1,2}\/[^'"\n]*)\5\s*\)|\bimport\s+(['"])(\.{1,2}\/[^'"\n]*)\7/g;
-/** A server being created: http, https, http2 and net all name it so. */
-const CREATES_SERVER_RE = /\bcreateServer\s*\(/;
-/** How many of an entry's own modules are read: a launcher names a handful. */
-const LAUNCHER_MODULE_LIMIT = 8;
+import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -57,46 +52,6 @@ async function nearestPackageDir(fs, dir) {
             return at;
     }
     return null;
-}
-/**
- * Whether the entry at `entryPath` is a launcher for a server: a module its
- * source names by relative path, inside its own package (its own directory
- * when it has none), creates one.
- *
- * A server's port is reachable only from a resident process, which has to be
- * chosen before the program runs, so the runner judges a program by its
- * source (node-runner.ts looksLikeServer). The entry alone misses the usual
- * bin: a few lines that parse argv and hand off to the package's server
- * module (static-server's bin requires ../server.js, sirv-cli's ./index). One
- * hop is where that module sits. Following further, or taking `.listen(` as
- * a bind, also reaches the serve subcommands and event listeners of CLIs that
- * finish (degit, concurrently, nx, vitest, measured against 40 packages), and
- * a program that finishes in a resident process is never reported ended.
- */
-async function entryLaunchesServer(fs, entryPath, source) {
-    const slash = entryPath.lastIndexOf('/');
-    const dir = slash > 0 ? entryPath.slice(0, slash) : '';
-    const root = (await nearestPackageDir(fs, dir)) ?? dir;
-    let read = 0;
-    for (const match of source.matchAll(RELATIVE_SPECIFIER_RE)) {
-        if (read >= LAUNCHER_MODULE_LIMIT)
-            break;
-        const specifier = match[2] ?? match[4] ?? match[6] ?? match[8];
-        if (!specifier || specifier.endsWith('.json'))
-            continue;
-        const target = await resolveRuntimeScriptPath(fs, dir, specifier);
-        if (target === null || target === entryPath)
-            continue;
-        if (root !== '' && !target.startsWith(`${root}/`))
-            continue;
-        read++;
-        try {
-            if (CREATES_SERVER_RE.test(await fs.readFileString(target)))
-                return true;
-        }
-        catch { /* unreadable: not a server module we can see */ }
-    }
-    return false;
 }
 /** Extensions probed when a target names no exact file, in Node's order. */
 const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
@@ -170,6 +125,33 @@ export function buildRuntimeHandler(spec, ctx0) {
             forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
         } : {};
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
+        // Whether the program starts a server, so the runner can give it a
+        // resident process; a .bin wrapper has already decided that by its own rule.
+        const launches = async (code, path, dir, programArgs) => {
+            if (spec.routesServers !== true || binSpawn !== undefined)
+                return false;
+            const key = normalizeVfsPath(dir);
+            return programLaunchesServer({
+                source: code,
+                path,
+                dir: key,
+                packageRoot: (await nearestPackageDir(fs, key)) ?? key,
+                argv: [name, ...programArgs],
+            }, {
+                resolve: (from, specifier) => resolveRuntimeScriptPath(fs, from, specifier),
+                read: async (path) => {
+                    try {
+                        // Past the bound it is not walked, so it is not read either.
+                        if (((await fs.stat(path))?.size ?? 0) > SERVER_LAUNCH_MODULE_BYTES)
+                            return null;
+                        return await fs.readFileString(path);
+                    }
+                    catch {
+                        return null;
+                    }
+                },
+            });
+        };
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -210,6 +192,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(`${name}: -e requires an argument\n`);
                 return 1;
             }
+            const launchesServer = await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2));
             const result = await spec.run(code, {
                 cred: ctx.cred,
                 signal: ctx.signal,
@@ -222,6 +205,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
+                ...(launchesServer ? { launchesServer: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -244,6 +228,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // program's own stdin is what is left after the read: nothing.
         if (scriptPath === '-') {
             const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+            const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
             const result = await spec.run(code, {
                 cred: ctx.cred,
                 signal: ctx.signal,
@@ -256,6 +241,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
+                ...(launchesServer ? { launchesServer: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -315,10 +301,6 @@ export function buildRuntimeHandler(spec, ctx0) {
             const nl = code.indexOf('\n');
             code = nl >= 0 ? code.substring(nl + 1) : '';
         }
-        // Read before the ESM rewrite: the entry's own specifiers, as written. A
-        // .bin wrapper has already decided residency by its own rule.
-        const launchesServer = spec.routesServers === true && binSpawn === undefined
-            && await entryLaunchesServer(fs, resolvedPath, code);
         // ── ESM-source detection (primitive: type:module entry scripts) ──
         //
         // A node facet runs every entry script as a CommonJS module body
@@ -408,6 +390,8 @@ export function buildRuntimeHandler(spec, ctx0) {
         const dirname = filename.includes('/')
             ? filename.substring(0, filename.lastIndexOf('/'))
             : '/';
+        // Judged on the code as it will run, after any TypeScript/ESM transform.
+        const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
         const leadingFlags = args.slice(0, scriptIdx);
         const result = await spec.run(code, {
             cred: ctx.cred,
