@@ -12,18 +12,24 @@ published independently in the `@nimbus-sh` npm scope.
   into that path was taken for a replay and refused with `EINVAL: replay
   metadata differs`. An import now records where it stands: the inode dst's
   parent directory resolved to when it began, and dst's own once dst
-  exists. At every page, chunk frame and cursor, those paths must still
-  resolve to those inodes, so the removal that commits is what ends the
-  import: `unlink`, `rmdir`, `removeRecursive`, a restore, a rename away or
-  over dst, of dst or any directory above it, a directory made again or
-  renamed into its place. No page, frame or cursor sees an ended import, and
-  a new import into dst starts clean. A sweep after the removal commits
-  (never inside an embedder's `withTransaction`, whose rollback keeps the
-  import whole) deletes its row and queues the staging it held (a manifest
-  cut off mid-import, chunks sent ahead of their pages) for collection, in
-  bounded transactions that only free storage, so a full store never
-  refuses them; a crash before the sweep leaves the import ended, and the
-  next open sweeps it. Every export page also names its snapshot
+  exists. At every page, chunk frame and cursor, every directory above dst
+  must still be one and those paths must still resolve to those inodes, so
+  the removal that commits is what ends the import: `unlink`, `rmdir`,
+  `removeRecursive`, a rename away or over dst, of dst or any directory
+  above it (a sliced restore's too, part-way), a directory made again or
+  renamed into its place. A restore whose subtree holds dst, or lies inside
+  it, ends the import as it begins, since it rewinds what the import wrote.
+  A job that records no parent (from an earlier build) is never taken for
+  an import. No page, frame or cursor sees an ended import, and a new import
+  into dst starts clean. A sweep after the removal commits (never inside an
+  embedder's `withTransaction`, whose rollback keeps the import whole)
+  deletes its row and queues the staging it held (a manifest cut off
+  mid-import, chunks sent ahead of their pages) for collection, within the
+  maintenance pass's transaction allowance, in bounded transactions that
+  only free storage, so a full store never refuses them; a crash before the
+  sweep leaves the import ended, and the next open sweeps it. The job rows
+  name that staging, and GC reads its pins from them, so no in-memory state
+  outlives a rolled-back transaction. Every export page also names its snapshot
   (`VfsExportPage.source`, export schema 3), and an import takes pages only
   from the export its first page came from, so a late page of an abandoned
   import is refused even when a new import of another export is open at
@@ -42,8 +48,8 @@ published independently in the `@nimbus-sh` npm scope.
   new `syscallError(code, syscall, path, { dest, detail })` makes one.
   `toVfsError(error, syscall, path, dest?)` takes the call it converts for,
   and keeps an error's own syscall, path and `dest` where it names them.
-  Hosted node's `fs.promises.rename` and `copyFile` errors carry `dest` as
-  Node's do.
+  Hosted node's `fs.promises.rename`, `symlink` and `copyFile` errors carry
+  `dest` as Node's do; `symlink`'s `path` is the target and `dest` the link.
 
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. A guest stream emitted `'end'` and never `'close'`:

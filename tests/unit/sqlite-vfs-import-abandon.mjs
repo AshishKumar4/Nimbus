@@ -37,6 +37,7 @@ function random(length, seed) {
 }
 
 const text = (side, path) => new TextDecoder().decode(side.vfs.readFile(path));
+const exportCursor = (path, offset = -1) => JSON.stringify([path, offset]);
 const imports = (side) => side.raw.jobs().filter((job) => job.kind === 'import');
 const stagingContents = (side) => side.harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_contents WHERE state = 0')[0].n;
 const names = (side, path) => side.vfs.readdir(path).map((entry) => entry.name);
@@ -242,16 +243,33 @@ function target(dir = 'home') {
   dst.raw.snapshot('mid');
   dst.raw.restore('before');
   assert.equal(dst.vfs.exists('home/proj'), false);
-  assert.deepEqual(imports(dst), [], 'a restore that removes the destination ends its import');
-  // A snapshot taken mid-import restores the rows, not the import.
+  assert.equal(dst.raw.importCursor('home/proj'), null, 'a restore that removes the destination ends its import');
+  // A snapshot taken mid-import restores the rows, not the import: not even
+  // before the sweep, when the restore brings back the inodes it began at.
   dst.raw.restore('mid');
   assert.equal(names(dst, 'home/proj').length, 9);
-  assert.deepEqual(imports(dst), []);
+  assert.equal(imports(dst).length, 1, 'no sweep has run yet');
+  assert.equal(dst.raw.importCursor('home/proj'), exportCursor('f08.txt'), 'the cursor is the restored rows\', not the import\'s');
   const late = nextPage(src, dst, { at: 'first', root: 'proj', after: first.next });
   assert.throws(() => dst.raw.importPage('home/proj', late.page, late.chunks), /EINVAL/);
+  collect(dst);
+  assert.deepEqual(imports(dst), [], 'the sweep reclaims it');
   dst.vfs.removeRecursive('home/proj');
   assert.equal(importPages(src, dst, { at: 'second', root: 'proj', dst: 'home/proj' }).imported, 41);
   assert.equal(text(dst, 'home/proj/f05.txt'), 'v2 5\n');
+  // A restore of a subtree beneath an open import rewinds its rows: it ends the import too.
+  dst.vfs.removeRecursive('home/proj');
+  dst.vfs.mkdir('home/proj');
+  dst.vfs.mkdir('home/proj/d');
+  dst.raw.snapshot('empty');
+  dst.vfs.removeRecursive('home/proj');
+  importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', pages: 1 });
+  dst.vfs.mkdir('home/proj/d');
+  dst.raw.restore('empty', { subtree: 'home/proj/d' });
+  assert.equal(dst.raw.importCursor('home/proj'), exportCursor('f08.txt'));
+  assert.throws(() => importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', after: exportCursor('f08.txt') }), /EINVAL/);
+  dst.raw.dropSnapshot('empty');
+  dst.vfs.removeRecursive('home/proj');
   dst.raw.dropSnapshot('before');
   dst.raw.dropSnapshot('mid');
   assertClean(dst, 'restore');
@@ -350,7 +368,7 @@ function target(dir = 'home') {
   });
   dst.vfs.removeRecursive('home/anc');
   dst.harness.clearFault();
-  assert.deepEqual(imports(dst), [], 'every import under the ancestor ended');
+  for (let i = 0; i < 75; i++) assert.equal(dst.raw.importCursor(`home/anc/p${i}`), null, 'every import under the ancestor ended');
   const executed = new Map();
   for (const statement of dst.harness.statements.slice(firstStatement)) {
     if (statement.transaction !== null) executed.set(statement.transaction, (executed.get(statement.transaction) ?? 0) + 1);
@@ -400,7 +418,8 @@ function target(dir = 'home') {
     const firstStatement = dst.harness.statements.length;
     remove(dst);
     assert.equal(dst.vfs.exists('home'), false, `${label} removed home`);
-    assert.deepEqual(imports(dst), [], `${label} ended every import beneath it`);
+    for (let i = 0; i < 150; i++) assert.throws(() => dst.raw.importChunks(`home/d${i}`, [chunks[i]]), (error) => error.code === 'ENOENT');
+    assert.ok(imports(dst).length > 0, `${label}: the sweep after the removal took only its allowance`);
     const executed = new Map();
     for (const statement of dst.harness.statements.slice(firstStatement)) {
       if (statement.transaction !== null) executed.set(statement.transaction, (executed.get(statement.transaction) ?? 0) + 1);
@@ -528,6 +547,99 @@ function target(dir = 'home') {
   assert.deepEqual(names(dst, 'home/proj'), ['a.txt'], 'the tree renamed in is as it was');
   assert.equal(names(dst, 'home/kept').length, 9);
   assertClean(dst, 'a directory renamed in');
+}
+
+// ── The sweep takes the maintenance allowance, zero included ──────────────
+{
+  const src = source();
+  const dst = target();
+  const { chunks } = nextPage(src, dst, { at: 'first', root: 'proj' });
+  for (let i = 0; i < 150; i++) dst.raw.importChunks(`home/d${i}`, [chunks[i % chunks.length]]);
+  dst.harness.setFaultInjector((statement) => (/^DELETE FROM vfs_jobs/.test(statement.sql) ? new Error('no sweep yet') : null));
+  dst.vfs.removeRecursive('home');
+  dst.harness.clearFault();
+  assert.equal(imports(dst).length, 150, 'every import is stale, none swept');
+  assert.deepEqual(dst.raw.runContentMaintenance(0), { transactions: 0 });
+  assert.equal(imports(dst).length, 150, 'an allowance of zero sweeps nothing');
+  assert.deepEqual(dst.raw.runContentMaintenance(1), { transactions: 1 });
+  assert.equal(imports(dst).length, 150 - 64, 'one transaction ends one bounded group');
+  for (let pass = 0; imports(dst).length > 0; pass++) {
+    assert.ok(pass < 10);
+    assert.ok(dst.raw.runContentMaintenance(1).transactions <= 1);
+  }
+  assertClean(dst, 'a budgeted sweep');
+}
+
+// ── A job that records no parent is nobody's import ───────────────────────
+{
+  const src = source();
+  const dst = target();
+  importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', pages: 1 });
+  // The job as a build before this one recorded it: no parent, no source.
+  const [job] = imports(dst);
+  const { parentIno, dstIno, source: from, ...legacy } = job.args;
+  assert.ok(parentIno !== undefined && dstIno !== undefined && from !== undefined);
+  dst.harness.sql.exec('UPDATE vfs_jobs SET args = ? WHERE id = ?', JSON.stringify(legacy), job.id);
+  const reopened = open(createSqliteVfsTestHarness(dst.harness.db));
+  assert.deepEqual(imports(reopened), [], 'the open sweeps it');
+  reopened.vfs.removeRecursive('home/proj');
+  assert.equal(reopened.raw.importCursor('home/proj'), null);
+  assert.equal(importPages(src, reopened, { at: 'second', root: 'proj', dst: 'home/proj' }).imported, 41, 'a first page starts clean');
+  assertClean(reopened, 'a job with no parent');
+}
+
+// ── A rolled-back import leaves nothing pinned for the ids it used ────────
+{
+  const src = source();
+  const dst = target();
+  const first = nextPage(src, dst, { at: 'first', root: 'proj' });
+  dst.raw.importChunks('home/proj', first.chunks);
+  assert.equal(dst.raw.importPage('home/proj', first.page, []).imported, 10);
+  const second = nextPage(src, target(), { at: 'second', root: 'proj' });
+  assert.throws(() => dst.raw.withTransaction(() => {
+    dst.vfs.removeRecursive('home/proj');
+    // A replacement import stages chunks ahead: a job and a content that roll back.
+    dst.raw.importChunks('home/proj', second.chunks);
+    throw new Error('the embedder gives up');
+  }), /rolled back/);
+  importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/proj', after: first.page.next });
+  dst.vfs.removeRecursive('home/proj');
+  collect(dst);
+  // A large file takes the content id the rolled-back staging had; removed, it is collected whole.
+  dst.vfs.writeFile('home/big.bin', random(100_000, 9));
+  dst.vfs.unlink('home/big.bin');
+  assertClean(dst, 'a rolled-back import');
+  assert.equal(dst.harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_contents')[0].n, 0, 'no content is left pinned');
+  assert.equal(dst.harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_chunks')[0].n, 0, 'nor any chunk');
+}
+
+// ── Mid-way through a sliced restore, the removed ancestor is gone ────────
+// restoreAsync removes what changed since the snapshot in gen order, a
+// slice at a time: home goes in the first slice, home/a/proj much later.
+{
+  const src = source();
+  const dst = target();
+  dst.vfs.rmdir('home');
+  dst.raw.snapshot('empty');
+  dst.vfs.mkdir('home');
+  const fill = [];
+  for (let i = 0; i < 42_000; i++) fill.push(`fill/d${i}`);
+  dst.vfs.mkdir('fill');
+  for (let i = 0; i < fill.length; i += 100) dst.vfs.mkdirBatch(fill.slice(i, i + 100));
+  dst.vfs.mkdir('home/a');
+  const first = importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/a/proj', pages: 1 });
+  const late = nextPage(src, dst, { at: 'first', root: 'proj', after: first.next });
+  // The first slice runs in the call; the rest after it yields.
+  const restoring = dst.raw.restoreAsync('empty');
+  assert.equal(dst.vfs.exists('home'), false, 'the first slice removed home');
+  assert.ok(dst.harness.sql.exec("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path = 'home/a/proj'")[0].n === 1, 'and not yet its descendants');
+  assert.equal(dst.raw.importCursor('home/a/proj'), null, 'the import shows no progress');
+  assert.throws(() => dst.raw.importPage('home/a/proj', late.page, late.chunks), /EINVAL/);
+  await restoring;
+  assert.equal(dst.harness.sql.exec("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path LIKE 'home%'")[0].n, 0, 'nothing is left under home');
+  dst.raw.dropSnapshot('empty');
+  collect(dst);
+  assert.deepEqual(imports(dst), []);
 }
 
 console.log('sqlite-vfs-import-abandon: all assertions passed');

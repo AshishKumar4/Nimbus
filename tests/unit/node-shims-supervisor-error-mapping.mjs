@@ -100,6 +100,7 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
     lstat: crossing((p) => bridge.stat(p, { followSymlinks: false })),
     readdir: crossing((p) => bridge.readdir(p)),
     rename: crossing((from, to) => bridge.rename(from, to)),
+    symlink: crossing((target, path) => bridge.symlink(target, path)),
     fsAcquire: crossing((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
   };
   listAuthority(rawVfs);
@@ -113,6 +114,12 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
   assert.deepEqual(
     [error.message, error.code, error.errno, error.syscall, error.path, error.dest],
     ["ENOENT: no such file or directory, rename '/home/user/nope' -> '/home/user/new'", 'ENOENT', -2, 'rename', '/home/user/nope', '/home/user/new'],
+  );
+  // symlink names its target, then the link.
+  const taken = await rejection(fs.promises.symlink('relative-target', '/home/user/b.txt'));
+  assert.deepEqual(
+    [taken.message, taken.syscall, taken.path, taken.dest],
+    ["EEXIST: file already exists, symlink 'relative-target' -> '/home/user/b.txt'", 'symlink', 'relative-target', '/home/user/b.txt'],
   );
   // copyFile's refusal to replace names its source, then its destination.
   let refused;

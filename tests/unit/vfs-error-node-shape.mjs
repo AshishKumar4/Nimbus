@@ -17,6 +17,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import * as vfsErrors from '../../packages/core/src/vfs/vfs-error.ts';
 import { NimbusFlueApi } from '../../packages/sdk/src/flue.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const { VfsError, VFS_DESCRIPTION, syscallError, toVfsError } = vfsErrors;
@@ -123,6 +125,20 @@ function failureSync(run) {
   }
   // mkdir(2)'s EEXIST, which the backend decides itself.
   assert.equal(failureSync(() => files.mkdir('/home')).message, "EEXIST: file already exists, mkdir '/home'");
+}
+
+// ── symlink names its target, then the link, as Node 22 does ──────────────
+{
+  const harness = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  raw.as(CRED_KERNEL).mkdir('home', { recursive: true });
+  raw.as(CRED_KERNEL).writeFile('home/taken', 'x');
+  const view = new ProcessView(processBridge(raw, CRED_KERNEL));
+  const error = await failure(() => view.symlink('relative-target', '/home/taken'));
+  assert.deepEqual(
+    [error.message, error.code, error.syscall, error.path, error.dest],
+    ["EEXIST: file already exists, symlink 'relative-target' -> '/home/taken'", 'EEXIST', 'symlink', 'relative-target', '/home/taken'],
+  );
 }
 
 // ── A conversion: a coded error, and a VfsError that named no call ─────────
