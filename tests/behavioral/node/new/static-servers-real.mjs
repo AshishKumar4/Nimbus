@@ -19,9 +19,12 @@
 //
 // RELAUNCH RULE
 //   Code a program generates at runtime is refused in the launch that
-//   produced it (ERR_NIMBUS_CODE_NEXT_LAUNCH) and staged for the next launch
-//   of the same command. So one relaunch is allowed, and only when the first
-//   launch exited reporting exactly that. Any other exit fails.
+//   produced it and, when that launch fails, staged for the next launch of
+//   the same command (ERR_NIMBUS_CODE_NEXT_LAUNCH). A program that compiles
+//   several texts in sequence (serve's ajv validators) reaches the next one
+//   only after the previous is staged, so a relaunch is allowed while the
+//   previous launch exited reporting staged code, up to MAX_LAUNCHES. Any
+//   other exit fails.
 
 import {
   BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, fetchPort, sleep,
@@ -41,6 +44,7 @@ const SITE = '/home/user/static-site';
 const EXPRESS_APP = '/home/user/express-static';
 const CONTENT = `static-servers-real ${Date.now().toString(36)} — Grüße ✓ 静的\n`;
 const LAUNCH_BUDGET_MS = 180_000;
+const MAX_LAUNCHES = 4;
 
 const SERVERS = [
   { name: 'http-server', port: 8101, cwd: '/home/user', command: `npx http-server ${SITE} -p 8101` },
@@ -83,14 +87,22 @@ try {
   for (const server of SERVERS) {
     let started = await box.startProcess(server.command, { cwd: server.cwd });
     let result = await served(server.port, started.pid);
-    if (!result.ok && result.exit && /ERR_NIMBUS_CODE_NEXT_LAUNCH/.test(result.logs ?? '')) {
-      console.log(`  · ${server.name}: first launch refused runtime code; relaunching once`);
+    for (let launch = 2; launch <= MAX_LAUNCHES && !result.ok && result.exit && /ERR_NIMBUS_CODE_NEXT_LAUNCH/.test(result.logs ?? ''); launch++) {
+      console.log(`  · ${server.name}: launch ${launch - 1} staged runtime code; relaunching`);
       started = await box.startProcess(server.command, { cwd: server.cwd });
       result = await served(server.port, started.pid);
     }
     a.check(`${server.name} serves the file's exact bytes on port ${server.port}`, result.ok,
-      `status=${result.last.status} body=${JSON.stringify(result.last.body.slice(0, 160))}`
+      `status=${result.last.status} body=${JSON.stringify(result.last.body.slice(0, 400))}`
       + `${result.exit ? ` exit=${JSON.stringify(result.exit)}` : ''} logs=${JSON.stringify((result.logs ?? '').slice(-600))}`);
+    // A browser's conditional GET: the server's own Last-Modified sent back
+    // as If-Modified-Since (an HTTP date, with a comma) must answer 304.
+    const lastModified = result.ok ? result.last.headers.get('last-modified') : null;
+    if (lastModified) {
+      const conditional = await fetchPort(sid, server.port, 'hello.txt', { headers: { 'if-modified-since': lastModified } });
+      a.check(`${server.name} answers a conditional GET 304`, conditional.status === 304,
+        `status=${conditional.status} if-modified-since=${lastModified}`);
+    }
     await box.processes.kill(started.pid).catch(() => {});
   }
 } finally {
