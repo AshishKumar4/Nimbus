@@ -207,6 +207,29 @@ await runScenarios(import.meta.filename, {
     peer.close();
   },
 
+  // A handle whose creation throws, caught by the program, holds nothing:
+  // Node 22 prints the same five errors and exits 0.
+  async caughtCreationFailuresHoldNothing() {
+    const program = [
+      'for (const [name, make] of [',
+      '  ["ws", () => new WebSocket("wss://relay.invalid/feed", [Object.create(null)])],',
+      '  ["timer", () => setTimeout(() => {}, Symbol("delay"))],',
+      '  ["interval", () => setInterval(() => {}, Symbol("delay"))],',
+      '  ["tls", () => require("tls").connect({ host: "127.0.0.1", port: -1 })],',
+      '  ["http", () => require("http").request({ host: "127.0.0.1", port: 1, method: "BAD METHOD" })],',
+      ']) {',
+      '  try { make(); console.log(name + ":created"); } catch (error) { console.log(name + ":" + error.name); }',
+      '}',
+    ].join('\n');
+    const node = Bun.spawnSync(['node', '-e', program], { stdout: 'pipe', stderr: 'pipe', timeout: 10_000 });
+    assert.equal(node.exitCode, 0, node.stderr.toString());
+    const { log } = await launch(program, {
+      supervisorOverrides: { wsOpen: async () => ({ id: 7, protocol: '' }), wsPoll: async () => [], wsClose: async () => {} },
+    });
+    assert.equal(log.stdout, node.stdout.toString(), 'the same errors as Node');
+    assert.deepEqual(log.exit, { code: 0, reason: '' }, 'and the same exit, before its boot answered');
+  },
+
   async watchHoldsAFinishedProgram() {
     const { log } = await launch('console.log("done");', { argv: ['--watch', '/home/user/app/main.js'] });
     await sleep(300);

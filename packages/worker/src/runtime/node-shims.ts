@@ -5062,11 +5062,13 @@ const __NimbusRelayedWebSocket = (() => {
       this._listeners = new Map();
       this._id = null;
       this._done = false;
-      // Open, or opening, until its close: a handle, as Node's WebSocket is.
-      this._hold = __nimbusHoldSocket();
       this._sends = Promise.resolve();
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      // Open, or opening, until its close: a handle, as Node's WebSocket is.
+      // Taken only once the socket exists, past every throw in this
+      // constructor: a caught constructor failure holds nothing.
+      this._hold = __nimbusHoldSocket();
       this._ready = this._connect(supervisor, requested);
     }
 
@@ -6158,12 +6160,14 @@ const __tlsMod = (() => {
     return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
   }
   // A socket tls.connect opens holds the program until it closes or is
-  // unref'd, as in Node.
+  // unref'd, as in Node. Held once the socket exists: arguments tls.connect
+  // refuses (a bad port) throw first, and a caught throw holds nothing.
   const connect = (...args) => {
     const socket = real.connect(...args);
-    const hold = __nimbusHoldSocket();
     let closed = false;
-    socket.once('close', () => { closed = true; hold(false); });
+    let hold = null;
+    socket.once('close', () => { closed = true; hold?.(false); });
+    hold = __nimbusHoldSocket();
     const ref = socket.ref, unref = socket.unref;
     socket.ref = function () {
       if (!closed) hold(true);

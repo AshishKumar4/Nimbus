@@ -90,11 +90,12 @@ Object.defineProperty(builtins, "http", {
       // work: a response still streaming at boot (SSE, an HMR poll) does not
       // hold a resident's boot answer.
       const holdExchange = (response) => {
-        globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + 1;
+        if (typeof response.once !== "function") return;
         response.once("close", () => {
           globalThis.__nimbusOpenSockets--;
           globalThis.__nimbusHandleReleased?.();
         });
+        globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + 1;
       };
       proto.emit = function (event, incoming, response) {
         if (event === "request" && incoming && response) holdExchange(response);

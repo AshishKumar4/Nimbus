@@ -20,7 +20,11 @@ published independently in the `@nimbus-sh` npm scope.
   (a handler that closed the server and was still streaming its reply to an
   upload used to see the process exit under it), and so do a WebSocket
   client and a `tls.connect` socket until they close or are unref'd. A
-  request body the handler never reads does not hold it.
+  request body the handler never reads does not hold it. A handle is counted
+  only once it exists: a `setTimeout` given a delay it refuses, or a
+  `WebSocket` given a bad protocol, throws, and when the program catches the
+  throw it holds nothing (either used to leave a count behind, so the process
+  never ended, one-shot runs included).
 
 - node-static sends a file's body; after the `url` fix below it answered 200
   with an empty body. node-static pipes a file with `{ end: false }` and ends
