@@ -45,6 +45,12 @@
  *                         block in node-shims.ts; results are the host
  *                         realm's own Buffers, which the widened
  *                         __BufferMod.isBuffer recognizes.
+ *   - node:url          — full surface, including the legacy parse/format/
+ *                         resolve/resolveObject/Url API (workerd's
+ *                         node-internal:legacy_url, v1.20260926.1). The url
+ *                         block in node-shims.ts serves that API from here and
+ *                         keeps its own pathToFileURL/fileURLToPath, which
+ *                         answer against the guest's cwd.
  */
 /** Native HTTP imports shared by generated node and opencode guests. */
 export declare function getRealNodeHttpImportsCode(): string;

@@ -74,6 +74,12 @@ export interface RuntimeRunOpts {
     cred?: VfsCred;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
+    /**
+     * The entry launches a server from one of its own modules (see
+     * entryLaunchesServer). Set only for a runtime that routes servers
+     * (RuntimeSpec.routesServers), for a script it reads.
+     */
+    launchesServer?: boolean;
 }
 /** The VFS surface script resolution needs. */
 export interface ScriptResolutionFs {
@@ -138,6 +144,12 @@ export interface RuntimeSpec {
      * iff they share the runFresh contract.
      */
     supportsBinSpawn?: boolean;
+    /**
+     * The runner routes a server-shaped program to a resident process
+     * (node-runner.ts runFresh), so the handler reports whether a script's entry
+     * launches one from its own modules (RuntimeRunOpts.launchesServer).
+     */
+    routesServers?: boolean;
 }
 /**
  * Minimal registry shape we depend on. Avoids importing the full vendored

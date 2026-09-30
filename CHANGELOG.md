@@ -5,6 +5,37 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- node-static sends a file's body; after the `url` fix below it answered 200
+  with an empty body. A guest stream emitted `'end'` and never `'close'`:
+  Node destroys a finished stream (`autoDestroy`, on by default), so
+  `'close'` follows `'end'`, and node-static pipes a file with
+  `{ end: false }` and ends the response on the file stream's `'close'`. A
+  readable stream that has ended, and finished writing if it is a Duplex,
+  now closes unless it was created with `autoDestroy: false`. A writable
+  stream closes after `'finish'` by the same rule, so a copy that waits on
+  the destination's `'close'` (`src.pipe(fs.createWriteStream(f))
+  .on('close', …)`) completes; a Duplex closes once both sides are done.
+
+- `npx static-server` serves instead of holding the terminal in the
+  foreground with its port unreachable, and so do `npx sirv-cli` and
+  `npx live-server`. A port is reachable only from a resident process, chosen
+  before the program runs from its source, and only the entry file was read:
+  these bins parse argv and require the package's own server module
+  (static-server's `../server.js`). A module the entry names by relative path
+  inside its own package that creates a server (`createServer(`) now counts.
+  Only that one hop, and only a server's creation: following further, or
+  taking any `.listen(` as a bind, would also promote CLIs that finish
+  (degit, concurrently, nx, `vitest run`). A query (`--help`, `--version`)
+  or `build` of such a CLI stays one-shot, as it does for a named server bin.
+
+- node-static (`npx node-static`) serves its files; it answered 404 for every
+  one. The guest's `url` module imitated Node's legacy API over WHATWG
+  `new URL()`, which throws for the path-only URL a server receives as
+  `req.url`, so `url.parse("/hello.txt")` had no `pathname` and node-static
+  looked for `<root>/undefined`. The legacy `parse`, `format`, `resolve`,
+  `resolveObject` and `Url` are now workerd's own `node:url`; the guest keeps
+  its `pathToFileURL` and `fileURLToPath`, which resolve against its cwd.
+
 - esbuild facets are handed the host Worker's compiled esbuild module
   instead of 12 MiB of wasm bytes. The host already bundles
   `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker

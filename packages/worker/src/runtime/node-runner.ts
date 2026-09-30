@@ -81,6 +81,23 @@ export function looksLikeServer(code: string): boolean {
   return SERVER_BIND_RE.test(code);
 }
 
+/** Arguments that ask a CLI a question it answers and exits on. */
+const QUERY_ARGS = new Set(['--help', '-h', 'help', '--version', '-v', 'version']);
+
+/** Whether `arg` is a query (`--help`, `--version`, …), not a request to serve. */
+export function isQueryArg(arg: string): boolean {
+  return QUERY_ARGS.has(arg.trim().toLowerCase());
+}
+
+/**
+ * Whether a serving CLI was asked for something that ends: a query, or
+ * `build`, which means "produce an artifact and exit" in every CLI that also
+ * serves. A resident process that ends is never reaped, so these stay one-shot.
+ */
+export function endsWithoutServing(argv: readonly string[]): boolean {
+  return argv.some((arg) => isQueryArg(arg) || arg === 'build');
+}
+
 /** Result of a `runFresh` call. */
 export interface RunFreshResult {
   exitCode: number;
@@ -118,6 +135,8 @@ export interface RunFreshOpts {
   /** Shell abort (Ctrl+C): aborting this kills the run through the
    *  terminator exec registers on the pid. */
   signal?: AbortSignal;
+  /** The entry launches a server from one of its own modules (RuntimeRunOpts.launchesServer). */
+  launchesServer?: boolean;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -133,11 +152,15 @@ export async function runFresh(
   // an explicit --watch flag: it is the only path whose route stub is
   // re-resolvable across requests, so its bound port is actually reachable.
   // .bin wrapper invocations (skipSpawn) keep the one-shot fast path — those
-  // are CLIs, and their PID accounting assumes a single foreground exec.
+  // are CLIs, and their PID accounting assumes a single foreground exec. An
+  // entry that hands off to its own server module (`npx static-server`)
+  // serves too, unless it was asked for something that ends.
   const wantsLongRunning =
     opts.forceLongRunning ||
     isLongRunningInvocation(args) ||
-    (!opts.skipSpawn && looksLikeServer(entrySource));
+    (!opts.skipSpawn && (
+      looksLikeServer(entrySource) || (opts.launchesServer === true && !endsWithoutServing(args))
+    ));
 
   if (!wantsLongRunning) {
     // Short path: fresh-isolate-per-call via facetMgr.exec.

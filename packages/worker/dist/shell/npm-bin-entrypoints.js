@@ -1,6 +1,7 @@
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
+import { endsWithoutServing, isQueryArg } from '../runtime/node-runner.js';
 import { resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
@@ -244,7 +245,7 @@ function stagedArtifactWork(fm, artifact, base, disposition) {
 export function classifyStagedArtifact(artifact, argv) {
     if (artifact !== 'opencode')
         return 'oneshot';
-    if (argv.some(isNonInteractiveBinArg))
+    if (argv.some(isQueryArg))
         return 'oneshot';
     if (argv.includes(OPENCODE_TREE_SITTER_DIAG_ARG))
         return 'oneshot';
@@ -315,14 +316,6 @@ const LONG_RUNNING_BIN_NAMES = new Set([
     'wrangler', 'nodemon', 'tsx', 'ts-node-dev', 'webpack-dev-server',
     'parcel', 'rollup', 'esbuild', 'turbo',
 ]);
-const NON_INTERACTIVE_BIN_FLAGS = new Set([
-    '--help',
-    '-h',
-    'help',
-    '--version',
-    '-v',
-    'version',
-]);
 const ATTACHED_TTY_KEYWORDS = new Set([
     'tui',
     'terminal',
@@ -366,19 +359,12 @@ const ATTACHED_TTY_DEPENDENCY_PREFIXES = [
  * certainly terminate belong here.
  */
 export function looksLongRunningNpmBin(binName, argv) {
-    if (LONG_RUNNING_BIN_NAMES.has(binName)) {
-        for (const arg of argv) {
-            if (isNonInteractiveBinArg(arg))
-                return false;
-            if (arg === 'build')
-                return false;
-        }
-        return true;
-    }
+    if (LONG_RUNNING_BIN_NAMES.has(binName))
+        return !endsWithoutServing(argv);
     return argv.some((arg) => arg === '--watch' || arg === '-w' || arg === '--serve' || arg === '--dev');
 }
 function looksAttachedTtyNpmBin(metadata, argv, env) {
-    if (argv.some(isNonInteractiveBinArg))
+    if (argv.some(isQueryArg))
         return false;
     if (env?.NIMBUS_ATTACHED_TTY === '1')
         return true;
@@ -390,9 +376,6 @@ function looksAttachedTtyNpmBin(metadata, argv, env) {
     if (!metadata)
         return false;
     return hasAttachedTtyKeyword(metadata) || hasAttachedTtyDependency(metadata);
-}
-function isNonInteractiveBinArg(arg) {
-    return NON_INTERACTIVE_BIN_FLAGS.has(arg.trim().toLowerCase());
 }
 async function readNpmBinPackageMetadata(vfs, packagePath) {
     try {
