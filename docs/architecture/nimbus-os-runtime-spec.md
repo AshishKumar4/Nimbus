@@ -225,6 +225,22 @@ AST filesystem-path analysis and remain Loader-compiled, never runtime-compiled.
 `fs.watch` compares inode metadata rather than a namespace listing cursor;
 relisting after unrelated writes no longer looks like a package/config edit.
 
+Vite's SSR module runner compiles each module with `new AsyncFunction` and
+imports its dependencies only while that module runs. When such a module is
+refused (it is recorded for the next launch), Nimbus runs the module's own
+hoisted import prologue (the lines Vite's SSR transform generates) through the
+runner's import function before failing. One launch therefore records the
+module's whole static SSR graph instead of one module per launch.
+
+Measured on the Preview with GraphQL `durableObjectsPeriodicGroups` (max
+memoryUsageBytes per 60 s): a real Nuxt 4.5.2 session building maps close to
+the 18 MiB bound peaked at 113-125 MiB in its own rows, and once at 141 MiB.
+Nuxt's complete learned required graph is 19.97 MB (19.04 MiB), measured by
+the walker over the installed app. The same map-size ladder
+(`verify/release/do-headroom.md`) shows 126 MB at 20 MiB. The bound therefore
+cannot be raised to fit Nuxt within the 128 MB isolate. Nuxt dev needs the
+module map built outside the session DO, which is not implemented.
+
 ## Completion Draft
 
 This is the implementation spec for completing Nimbus OS compatibility. It is
