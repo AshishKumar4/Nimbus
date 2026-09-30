@@ -74,6 +74,15 @@ export interface RuntimeRunOpts {
     cred?: VfsCred;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
+    /**
+     * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
+     * `node x.js < in.txt`); absent when stdin is the terminal. A runner reads
+     * it when it runs the program, so a launch that never delivers it (a
+     * long-running server) does not wait for the pipe's end.
+     */
+    stdin?: {
+        readAll(): Promise<string>;
+    };
 }
 /** The VFS surface script resolution needs. */
 export interface ScriptResolutionFs {
