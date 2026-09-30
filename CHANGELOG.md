@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- node-static sends a file's body; after the `url` fix below it answered 200
+  with an empty body. A guest stream emitted `'end'` and never `'close'`:
+  Node destroys a finished stream (`autoDestroy`, on by default), so
+  `'close'` follows `'end'`, and node-static pipes a file with
+  `{ end: false }` and ends the response on the file stream's `'close'`. A
+  readable stream that has ended, and finished writing if it is a Duplex,
+  now closes unless it was created with `autoDestroy: false`.
+
 - `npx static-server` serves instead of holding the terminal in the
   foreground with its port unreachable, and so do `npx sirv-cli` and
   `npx live-server`. A port is reachable only from a resident process, chosen
