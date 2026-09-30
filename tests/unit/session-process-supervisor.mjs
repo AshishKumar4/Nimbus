@@ -298,7 +298,8 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   }
   assert.equal(listings, 1, 'listed once per instance');
   assert.equal(rowReads - listedReads, 0, `appends walked the ${earlier.length} persisted pids (${rowReads - listedReads} row reads)`);
-  assert.ok(asked - perAppend <= 100, `appends asked about persisted orphans (${asked - perAppend} orphan checks for 100 appends)`);
+  // Per append: the live pid, and the oldest exitless persisted pid, which is an orphan.
+  assert.equal(asked - perAppend, 200, `orphan checks for 100 appends: ${asked - perAppend}`);
 
   // The sweep drops every persisted pid past its deadline, the exitless orphan included, and the next deadline moves on.
   const realNow = Date.now;
@@ -311,6 +312,29 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.equal(dropped.length, 2_500);
   assert.ok(dropped.includes(2_000_001), 'the orphan went with them');
   assert.equal(processes.nextLogExpiry(undefined, orphan), T + 2_499 + RETAIN);
+}
+
+// ── Persisted orphan deadlines follow the predicate asked with ──────────────
+// What is kept between appends must not remember one caller's orphan answer
+// for another: a deadline reported under one predicate and swept under
+// another would re-arm the janitor at a moment that drops nothing.
+{
+  const RETAIN = 10 * 60 * 1000;
+  const processes = new SessionProcessSupervisor();
+  processes.setLogPersist({
+    load() { return null; }, persistChunks() {}, persistExit() {}, dropPid() {}, pruneBeforeSeq() {},
+    retained() {
+      return [
+        { pid: 7, exitAt: null, lastActivity: 1_000 },
+        { pid: 8, exitAt: null, lastActivity: 2_000 },
+      ];
+    },
+  }, () => {});
+  assert.equal(processes.nextLogExpiry(undefined), null, 'no predicate: exitless pids are not orphans');
+  assert.equal(processes.nextLogExpiry(undefined, () => true), 1_000 + 3 * RETAIN, 'every one an orphan: the oldest');
+  assert.equal(processes.nextLogExpiry(undefined, (pid) => pid === 8), 2_000 + 3 * RETAIN, 'only the newer one');
+  assert.equal(processes.nextLogExpiry(undefined, () => false), null, 'none');
+  assert.equal(processes.nextLogExpiry(60_000, () => true), 1_000 + 180_000, 'and the age asked with');
 }
 
 console.log('session-process-supervisor: ok');
