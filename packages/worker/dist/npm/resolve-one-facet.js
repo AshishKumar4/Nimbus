@@ -225,6 +225,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         if (__fail)
             emitAdvisory(__fail);
     }
+    // A package whose binding Nimbus stages runs only at the staged version, so
+    // when the range admits that version it is the one installed, not the
+    // newest the registry has: rolldown ~1.2.9 installs the staged 1.2.11 even
+    // after 1.2.12 is published. A range that excludes it keeps its own pick,
+    // and the install says why it will not load.
+    const stagedBindingVersion = () => {
+        const staged = STAGED_ARTIFACT(request.registryName);
+        if (staged?.kind !== 'binding')
+            return null;
+        const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
+        return open || RESOLVE_VERSION([staged.version], request.range) === staged.version ? staged.version : null;
+    };
     // 2. cachedHit fast-path. The pick over the cached versions is the same
     //    RESOLVE_VERSION the packument path uses — a range is never reduced
     //    to its base version. It used to be: `^3.0.0` was stripped to `3.0.0`
@@ -239,7 +251,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const candidates = entries.filter((e) => e.name === request.installName);
         if (candidates.length === 0)
             return null;
-        const picked = RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
+        // A staged version the cache lacks is fetched, never answered by another.
+        const picked = stagedBindingVersion() ?? RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
         if (!picked)
             return null;
         return candidates.find((e) => e.version === picked) || null;
@@ -408,7 +421,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     let packument = await loadPackument(effName);
     if ('failed' in packument)
         return packument.failed;
-    let version = pickVersion(packument.data);
+    const stagedVersion = stagedBindingVersion();
+    let version = stagedVersion !== null && packument.data.versions[stagedVersion] !== undefined
+        ? stagedVersion
+        : pickVersion(packument.data);
     if (__swap && __swap.since) {
         const own = version;
         let covered = false;
