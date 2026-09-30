@@ -397,11 +397,19 @@ export declare class SqliteVFS {
     private _totalDirs;
     private _usedBytes;
     private _revision;
-    private _pathRevisions;
-    private _pathRevisionBytes;
-    private _revisionFloor;
-    private readonly pathRevisionBudget;
+    private readonly pathRevisions;
     private static readonly PATH_REVISIONS_MAX_BYTES;
+    /**
+     * What each transaction committed since the last publication wrote at each
+     * path: its row's generation or its tombstone's, and whether the row is a
+     * file's. An operation of several transactions (rename, an embedder's
+     * withTransaction) publishes once, at its last generation, but a path it
+     * wrote in an earlier one holds that earlier generation in SQLite, and
+     * that is what the path reports. bumpRevision logs each path at its
+     * report, so the log, the delta from SQLite, list(), stat and readRange's
+     * expectedRevision name one number for it.
+     */
+    private readonly committedRows;
     private transactionPublication;
     private _epoch;
     /** invalidatedSince answers from SQL only above this: the newest pruned tombstone. */
@@ -767,28 +775,24 @@ export declare class SqliteVFS {
      */
     revision(path?: string, cred?: VfsCred): number;
     /**
-     * A storage key's revision: its stamp; else, for a file or symlink, its
-     * row's generation, which its last mutation wrote and which survives
-     * restarts, so an untouched file keeps its revision across incarnations;
-     * else (a directory, or no row) the floor or the generation of its row or
-     * tombstone, whichever is later. Never more than the global clock, so a
-     * row written by a transaction not yet published reports the clock.
-     * `inode` is the row at `key`, null for none; omitted, it is looked up.
+     * A storage key's revision (PathRevisions.report), from what SQLite holds
+     * at it: `inode`, its row (null for none), or else its tombstone.
      */
     private pathRevision;
     /**
      * Advance the clock to the committed generation, stamp the directories
-     * above every path, and record the mutation in the invalidation log. Every
-     * mutation commits at least one generation before it gets here, so the
-     * clock is strictly monotonic and equals `vfs_state.gen` after each
-     * publication; an operation of several transactions ticks it once, to its
-     * last generation.
+     * above every path (PathRevisions.stamp), and record the mutation in the
+     * invalidation log. Every mutation commits at least one generation before
+     * it gets here, so the clock is strictly monotonic and equals
+     * `vfs_state.gen` after each publication; an operation of several
+     * transactions ticks it once, to its last generation.
      *
-     * A mutated path is stamped only if it holds a stamp already (it was a
-     * directory something was written under): the transaction that mutated it
-     * wrote its row's or its tombstone's generation, which is what
-     * pathRevision reports for it without one. Stamping it too would hold a
-     * revision in memory for every file ever written or removed.
+     * Each path is logged at what it now reports, which for a path without a
+     * stamp is what its last transaction wrote to SQLite (committedRows): in
+     * an operation of several transactions, that can be below the clock. So
+     * a reader that dates what it holds by the log and fetches with that as
+     * its expected revision fetches at the path's revision, and the delta
+     * from SQLite, which reads those same generations, names the same number.
      *
      * This is the single mutation chokepoint for coherence purposes. `rename`
      * bypasses the `_writeBatchOnce` funnel but reaches here, so a hook sited
@@ -805,23 +809,6 @@ export declare class SqliteVFS {
     private bumpRevision;
     /** Commit a generation that writes nothing, so a publication has a tick of its own. */
     private advanceGeneration;
-    /**
-     * Drop every per-path revision at or below the oldest quarter's newest,
-     * and raise the floor to it. A quarter at a time, so the sort is paid once
-     * per quarter of the budget, not once per mutation.
-     *
-     * Everything at or below one revision goes together, and a directory is
-     * stamped whenever anything under it is mutated, so it is never older than
-     * what it holds: a dropped directory takes every stamp under it along, and
-     * revision(dir) stays at or above the revision of every path under it.
-     */
-    private dropOldestPathRevisions;
-    /**
-     * Raise the floor to `cutoff`, dropping every stamp at or below it: a stamp
-     * under the floor would report its directory below a missing path under
-     * it, which reports the floor.
-     */
-    private dropPathRevisionsThrough;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     private static entryBytes;
     private _record;
@@ -1648,7 +1635,14 @@ export declare class SqliteVFS {
     };
     /** Tombstones held, counted once and then kept by the writers (an overcount only prunes early). */
     private tombstoneRows;
-    /** Drop the oldest page of tombstones and raise the floor to the newest dropped. */
+    /**
+     * Drop the oldest page of published tombstones and raise the floors to the
+     * newest dropped. A path whose tombstone went reports the revision floor
+     * (PathRevisions.report), which must then cover its removal; a floor above
+     * the clock would be one no report may reach yet. So a tombstone an
+     * operation wrote and has not published (the public runContentMaintenance
+     * inside withTransaction; a commit that threw after it was durable) stays.
+     */
     private pruneTombstones;
     /**
      * The next page of queued ids of `kind` past the cursor, pinned ones
