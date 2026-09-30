@@ -33,7 +33,7 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import {
   bundleTypescriptLoader,
   isBundleModuleCandidate,
-} from '../../packages/worker/src/facets/manager.ts';
+} from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }

@@ -15,7 +15,11 @@
 
 import assert from 'node:assert/strict';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
-import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import {
+  EsbuildService,
+  TRANSFORM_SLICE_FILES,
+  TRANSFORM_SLICE_SOURCE_BYTES,
+} from '../../packages/core/src/runtime/esbuild-service.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 
 
@@ -89,8 +93,9 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
 // transformed in-session carried it into the next step: `node -e 1` in the
 // seed project cost the session 39 MiB it never got back, `npx nuxi init`
 // took it from 36 to 151 MiB, and npm install then died of exceededMemory.
-// With a transform host, everything esbuild must see goes in ONE round trip,
-// and a large bundled cell whose shape allows it never reaches esbuild.
+// With a transform host, everything esbuild must see goes to it a transform
+// slice per call (transformSlices) — so a paced launch can yield between
+// them — and a large bundled cell whose shape allows it never reaches esbuild.
 {
   const root = 'home/user/node_modules/large-esm';
   const entry = `${root}/cli.js`;
@@ -120,8 +125,15 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   const state = await buildPrefetchBundle(
     launchFs(largeFiles).fs, `/${entry}`, 'home/user', largeFiles[entry], hosted,
   );
-  assert.equal(calls.length, 1, 'the whole launch is one round trip to the host');
-  assert.equal(calls[0].length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
+  const sent = calls.flat();
+  assert.equal(sent.length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
+  for (const slice of calls) {
+    assert.ok(slice.length <= TRANSFORM_SLICE_FILES, 'no call carries more files than a slice');
+    assert.ok(slice.length === 1 || slice.reduce((n, code) => n + code.length, 0) <= TRANSFORM_SLICE_SOURCE_BYTES,
+      'a call carries one slice: under the byte bound, or a single larger cell alone');
+  }
+  assert.ok(calls.some((slice) => slice.length === 1 && slice[0].length > TRANSFORM_SLICE_SOURCE_BYTES),
+    'the unsupported large cell travels alone');
   const compiled = { exports: {} };
   new Function('exports', 'require', 'module', state.bundle[large])(compiled.exports, null, compiled);
   assert.equal(compiled.exports.payload, 'x'.repeat(600_000), 'the bounded module exports its original value');

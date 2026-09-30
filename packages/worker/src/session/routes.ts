@@ -1349,8 +1349,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     }
     if (url.pathname === '/api/_diag/cache' && request.method === 'GET') {
       const { snapshot } = await import('@nimbus-sh/core/_shared/cache-stats.js');
-      const snap = snapshot();
-      return Response.json(snap);
+      const { transformStoreStats } = await import('../facets/transform-store.js');
+      // The launch transform results the session keeps in its database.
+      return Response.json({ ...snapshot(), transforms: transformStoreStats(self.ctx.storage.sql) });
     }
     if (url.pathname === '/api/_diag/cache/reset' && request.method === 'POST') {
       if (!self.nimbusDebug) return new Response('not found', { status: 404 });

@@ -209,8 +209,8 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-en
 //
 // The room SUPERVISOR_HEAP_CEILING_BYTES (64 MiB) leaves after the ~9 MiB
 // static baseline and the 40 MiB transient allocation budget is about
-// 15 MiB, and it is shared by everything that persists across execs: this
-// cache and the transform cache below. This one takes 10 MiB: enough for the
+// 15 MiB, and it is shared by everything that persists across execs in the
+// heap. This cache takes 10 MiB: enough for the
 // working set of an ordinary project's repeated execs. A bundle larger than
 // this is used for the invocation it was built for and then dropped rather
 // than retained: admitting it evicted every other entry and still left the
@@ -224,23 +224,21 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-en
 // nothing retained at all, three launches completed (throwaway, 2026-09-21).
 export const PREFETCH_CACHE_MAX_BYTES = 10 * 1024 * 1024;
 
-// Bytes the ESM→CJS transform cache (facets/manager.ts) may retain across
-// bundle builds. It caches every transformed cell by content so a rebuild
-// after the prefetch entry is invalidated does not pay esbuild again.
+// Bytes of launch transform results a session keeps in its SQLite database
+// (worker facets/transform-store.ts), charged as each result's UTF-8 bytes
+// plus a ledger row for every row it occupies.
 //
-// It was unbounded. A tool whose bundle is a few large chunks (pi: 14 MB of
-// ESM in 22 files) filled it with a second copy of everything the prefetch
-// entry already retained, and the next build of that tool — which every
-// distinct shell command triggers, since the global revision moves — ran
-// with both copies resident plus its own transient peak, and reset the
-// Durable Object. Measured on a throwaway 2026-09-21: with nothing retained
-// between builds the same three launches complete in 13.6 s, 12.3 s, 11.4 s.
-//
-// The rest of the retained room after PREFETCH_CACHE_MAX_BYTES (the budget
-// arithmetic is above it). A transformed cell that fits is reused; one that
-// does not is transformed again on the next build, which costs seconds
-// rather than the object.
-export const ESM_TRANSFORM_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+// They used to be kept in the isolate's heap, 4 MiB of them under a 32-bit
+// key: less than a third of pi's transforms, a key two sources could share,
+// and gone with every reset, eviction and re-drive. Session
+// zealous-pangolin-6268 was torn down five times in 4.4 h and each re-drive
+// paid 33-45 s of esbuild CPU for the same transforms again. On disk the
+// bound is not the heap's: it holds several tools' launches at well under 1%
+// of the session's 10 GB. The least recently used results leave first, and a
+// result larger than TRANSFORM_STORE_MAX_ENTRY_BYTES is used for the launch
+// that produced it and not kept.
+export const TRANSFORM_STORE_MAX_BYTES = 64 * 1024 * 1024;
+export const TRANSFORM_STORE_MAX_ENTRY_BYTES = TRANSFORM_STORE_MAX_BYTES / 8;
 
 // Per-file ceiling for the blind working-tree sweep (worker facets/manager.ts
 // addCwdProjectFiles). That pass names no file the program asked for — it

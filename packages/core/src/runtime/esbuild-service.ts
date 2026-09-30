@@ -25,6 +25,7 @@ import {
   parseJavaScriptModule,
 } from './javascript-ast.js';
 import { scanJsSource } from './comment-strip.js';
+import type { BundleCellResultStore } from './bundle-cell-transform.js';
 import {
   VITE_ASSET_QUERY_SUFFIXES,
   splitImportQuery,
@@ -1382,6 +1383,13 @@ export interface EsbuildServiceOptions {
   transformHost?: EsbuildTransformHost;
   /** Where build() runs. Absent: this isolate. */
   buildHost?: EsbuildBuildHost;
+  /**
+   * Where the launch pipeline keeps this service's transform results across
+   * launches (bundle-cell-transform.ts). A store is bound to the transform
+   * host whose results it holds, so it is given with that host, never apart
+   * from it. Absent: nothing is kept, and every launch transforms every cell.
+   */
+  results?: BundleCellResultStore;
 }
 
 /**
@@ -1441,11 +1449,48 @@ function withProvidedModuleRewrite(code: string, options?: EsbuildTransformOptio
     : code;
 }
 
+/**
+ * Source bytes and files one transform host call carries. Bounds CPU work as
+ * well as source retention per invocation: in live pi launch profiles the
+ * 1 MiB/256-file slice beginning at export-html/index.js exceeded the guest
+ * CPU budget even though its first 4 MiB rewrite-only chunk had completed.
+ * Smaller independent calls preserve every input and result, while preventing
+ * many small full transforms sharing one budget. It is also the unit a paced
+ * launch spends its turns in, so no one turn waits on more than a slice.
+ */
+export const TRANSFORM_SLICE_SOURCE_BYTES = 256 * 1024;
+export const TRANSFORM_SLICE_FILES = 32;
+
+/**
+ * `items` in order, cut into transform slices: each at most
+ * TRANSFORM_SLICE_FILES items and TRANSFORM_SLICE_SOURCE_BYTES of source,
+ * except that an item larger than the byte bound travels alone.
+ */
+export function transformSlices<T>(items: readonly T[], sourceBytes: (item: T) => number): T[][] {
+  const slices: T[][] = [];
+  let slice: T[] = [];
+  let bytes = 0;
+  for (const item of items) {
+    const size = sourceBytes(item);
+    if (slice.length > 0 && (bytes + size > TRANSFORM_SLICE_SOURCE_BYTES || slice.length >= TRANSFORM_SLICE_FILES)) {
+      slices.push(slice);
+      slice = [];
+      bytes = 0;
+    }
+    slice.push(item);
+    bytes += size;
+  }
+  if (slice.length > 0) slices.push(slice);
+  return slices;
+}
+
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
   private vfs: EsbuildReadFs | null;
   private readonly transformHost: EsbuildTransformHost | null;
   private readonly buildHost: EsbuildBuildHost | null;
+  /** See EsbuildServiceOptions.results. */
+  readonly results: BundleCellResultStore | null;
   private initialized = false;
   private initPromise: Promise<void> | null = null;
   /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
@@ -1456,6 +1501,7 @@ export class EsbuildService {
     this.vfs = vfs ?? null;
     this.transformHost = options.transformHost ?? null;
     this.buildHost = options.buildHost ?? null;
+    this.results = options.results ?? null;
   }
 
   /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
