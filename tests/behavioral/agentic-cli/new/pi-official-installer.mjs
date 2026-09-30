@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // agentic-cli/new/pi-official-installer — Pi's public curl|sh installer
 // should run through Nimbus sh, clean up progress jobs, link prefix bins,
-// and leave `pi` runnable as a normal short command.
+// answer its closing "Start pi now?" offer on the controlling terminal, and
+// leave `pi` runnable as a normal short command.
 
 import {
   connectProcessTerminal,
@@ -53,7 +54,6 @@ try {
       !/starting npm install/.test(afterPrompt),
       JSON.stringify(afterPrompt.slice(-1000)));
     t.send('y\r');
-    await t.waitFor((b) => /Then run: pi|user@nimbus:/.test(b), 60_000, 'PATH prompt completion');
   } else {
     const runLine = installText.lastIndexOf('Run it with: pi');
     await sleep(1500);
@@ -61,6 +61,31 @@ try {
     a.check('progress renderer stopped before final install message',
       !/starting npm install/.test(afterRunLine),
       JSON.stringify(afterRunLine.slice(-1000)));
+  }
+
+  // The installer ends by offering to start pi (`prompt_start_pi` in
+  // install.sh). It prints the offer on /dev/tty and reads the answer from
+  // /dev/tty, so it holds the terminal until a person answers: a command
+  // typed here instead is read as the answer, is not `n`, and starts pi (the
+  // shell then shows `[bin started (long-running)…]` in place of the command's
+  // output). Answer as someone who wants the shell back would, and check the
+  // installer, not the shell, consumed the answer.
+  let offered = true;
+  try {
+    await t.waitFor((b) => /Start pi now\? \[Y\/n\]/.test(b), 30_000, 'Pi start offer');
+  } catch (e) {
+    offered = false;
+    a.check('installer offers to start pi on the terminal', false, String(e.message ?? e));
+  }
+  if (offered) {
+    a.check('installer offers to start pi on the terminal', true, '');
+    const offerAt = stripAnsi(t.buf).lastIndexOf('Start pi now?');
+    t.send('n\r');
+    await t.waitForNewPrompt(30_000);
+    const afterAnswer = stripAnsi(t.buf).slice(offerAt);
+    a.check('declining the offer returns the shell without starting pi',
+      !/\[bin started|command not found/.test(afterAnswer),
+      JSON.stringify(afterAnswer.slice(-600)));
   }
 
   const check = await t.run('command -v pi; which pi; pi --version', 120_000);
