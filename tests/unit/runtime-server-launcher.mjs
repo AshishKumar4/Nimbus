@@ -286,4 +286,37 @@ assert.equal(await invoke({
   'home/user/node_modules/other/server.js': 'require("http").createServer().listen(1);\n',
 }, ['/home/user/node_modules/cli/bin.js']), 'one-shot', 'another package\'s module is not the program\'s own');
 
+// ── a parser configured in one module, exported, and parsed in another ──────
+// Commander runs the exported program's action when the importer parses it.
+for (const [format, files] of [
+  ['CommonJS', {
+    'package.json': '{"name":"cli"}',
+    'entry.js': "require('./program.js').parse(process.argv);\n",
+    'program.js': [
+      "const { Command } = require('commander');",
+      'const program = new Command();',
+      "program.command('serve').action(() => require('http').createServer().listen(3000));",
+      "program.command('build').action(() => console.log('built'));",
+      'module.exports = program;',
+    ].join('\n'),
+  }],
+  ['an ES module', {
+    'package.json': '{"name":"cli","type":"module"}',
+    'entry.js': "import program from './program.js';\nprogram.parse(process.argv);\n",
+    'program.js': [
+      "import { Command } from 'commander';",
+      'const program = new Command();',
+      "program.command('serve').action(() => require('http').createServer().listen(3000));",
+      "program.command('build').action(() => console.log('built'));",
+      'export default program;',
+    ].join('\n'),
+  }],
+]) {
+  const cli = (args) => invoke(Object.fromEntries(Object.entries(files).map(([name, text]) => [`home/user/cli/${name}`, text])),
+    ['/home/user/cli/entry.js', ...args]);
+  assert.equal(await cli(['serve']), 'resident', `${format}: the exported program's serve action runs when the entry parses`);
+  assert.equal(await cli(['build']), 'one-shot', `${format}: its build action does not serve`);
+  assert.equal(await cli(['serve', '--help']), 'one-shot', `${format}: serve --help runs no action`);
+}
+
 console.log('runtime-server-launcher: ok');

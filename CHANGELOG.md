@@ -42,7 +42,8 @@ published independently in the `@nimbus-sh` npm scope.
   whose actions run only when it parses: none for `--help`/`--version`,
   which it answers (`dev --help` too), and a command's only when argv names
   it. An ES module entry decides as its CommonJS form does (a parser is
-  known through the transform's `__toESM(require(...))`). A server that does
+  known through the transform's `__toESM(require(...))`), and a parser one
+  module configures and exports dispatches where another parses it. A server that does
   not read `--help` or `build` still binds. `.listen`
   binds unless it is the program's own `listen` method or its first
   argument is provably not a port (a callback, `this`, a socket path;
