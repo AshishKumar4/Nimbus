@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Node HTTP guests see full request header values again. workerd's native
+  server keeps only the text before the first unquoted comma of Host,
+  Content-Type, User-Agent, Referer, Authorization, Proxy-Authorization,
+  If-Modified-Since, If-Unmodified-Since, From, Location and Max-Forwards
+  (`If-Modified-Since: Tue`, a Chrome User-Agent ending at "(KHTML", a
+  Digest Authorization cut after its first parameter), so conditional GETs
+  never answered 304. Nimbus restores those fields, in `req.headers` and
+  `req.rawHeaders`, from the request it hands the native server.
+
 - `npx sirv-cli` starts. `require` of a package without `exports` reads
   `main`, as Node does; the bundlers' `module` field is honoured only under
   the `module` condition (browser/bundle resolution). tinydate@1's `module`
