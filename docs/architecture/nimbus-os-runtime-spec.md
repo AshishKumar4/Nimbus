@@ -979,9 +979,13 @@ The port registry is already the right primitive for HTTP preview:
 - A process owns a port.
 - `/port/<n>/...` forwards a real `Request`.
 - The runtime returns a real `Response`.
-- PortRegistry avoids JSON body serialization. Current Node and virtual-socket
-  adapters still buffer internally in places; completion means streaming through
-  the adapter layer too.
+- PortRegistry avoids JSON body serialization and relays a body as a stream,
+  keeping a declared `Content-Length` (through a `FixedLengthStream`; any other
+  stream goes out chunked). Node's native `node:http` path streams end to end:
+  a 210 MiB file served by a Node static server downloads whole and by range
+  while the session isolate's per-minute memory peak stays at 67-96 MiB
+  (measured 2026-09-30, `tests/behavioral/preview/new/port-range-large-file.mjs`). The
+  virtual-socket adapters are not yet probed at that size.
 
 Language web servers should plug into this model:
 
