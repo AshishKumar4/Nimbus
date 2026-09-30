@@ -1073,9 +1073,12 @@
         try {
           result = await fsRequest({ type: 'fs-read', path }, 'fs-read-result');
         } catch (e) {
+          // A newer open owns the editor and its status line now.
+          if (request !== openRequests) return;
           setStatusFlash('open failed: ' + (e?.message || e));
           return;
         }
+        if (request !== openRequests) return;
         if (result.error) {
           if (result.binary) {
             setStatusFlash('binary file refused: ' + path);
@@ -1084,7 +1087,6 @@
           }
           return;
         }
-        if (request !== openRequests) return;
         const content = result.content || '';
         openPath = path;
         originalContent = content;
