@@ -43,7 +43,7 @@
  * and how large; a source past it, or one the parser cannot read, starts
  * nothing.
  */
-import { parseJavaScriptProgram } from './javascript-ast.js';
+import { forEachChild, forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 /** Calls that create a server, as a member (`http.createServer`) or a bare name. */
 const CREATORS = new Set(['createServer', 'createSecureServer', 'serve']);
 /** Argument parsers that answer a query themselves and exit, and dispatch commands. */
@@ -61,7 +61,6 @@ export const SERVER_LAUNCH_MODULE_BYTES = 2 * 1024 * 1024;
 const HOP_LIMIT = 3;
 /** Extensions of modules that carry no code to walk. */
 const DATA_MODULE_RE = /\.(json|node|wasm|css|txt)$/i;
-const SKIPPED_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
 /** Whether running `program` starts a server. */
 export async function programLaunchesServer(program, host) {
     const graph = new ModuleGraph(program, host);
@@ -153,26 +152,33 @@ function requiredSpecifier(node) {
 function isRelative(specifier) {
     return specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..';
 }
-/** Each child node of `node`. */
-function forEachChild(node, visit) {
-    for (const key in node) {
-        if (SKIPPED_KEYS.has(key))
+/**
+ * The modules a parsed module (`path`, relative ones resolving from `dir`)
+ * loads by a static specifier (require, import, export ... from, import()):
+ * each relative specifier to its VFS key when it is the program's own code
+ * (inside `packageRoot`, not a data file), else to null.
+ */
+export async function resolveOwnModules(ast, path, dir, packageRoot, host) {
+    const specifiers = new Set();
+    forEachNode(ast, (n) => {
+        const required = requiredSpecifier(n);
+        if (required !== null)
+            specifiers.add(required);
+        if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration')
+            && n.source && typeof n.source.value === 'string') {
+            specifiers.add(n.source.value);
+        }
+    });
+    const deps = new Map();
+    for (const specifier of specifiers) {
+        if (!isRelative(specifier) || DATA_MODULE_RE.test(specifier))
             continue;
-        const child = node[key];
-        if (Array.isArray(child)) {
-            for (const c of child)
-                if (isNode(c))
-                    visit(c);
-        }
-        else if (isNode(child)) {
-            visit(child);
-        }
+        const target = await host.resolve(dir, specifier);
+        const own = target !== null && target !== path && (packageRoot === '' || target.startsWith(`${packageRoot}/`))
+            && !DATA_MODULE_RE.test(target);
+        deps.set(specifier, own ? target : null);
     }
-}
-/** Every node below `node`, functions included, in source order. */
-function forEachNode(node, visit) {
-    visit(node);
-    forEachChild(node, (child) => forEachNode(child, visit));
+    return deps;
 }
 /** `exports` or `module.exports`: the object exports are assigned on. */
 function isExportsObject(node) {
@@ -204,25 +210,7 @@ class ModuleGraph {
     async resolveDeps(record) {
         if (record.ast === null)
             return;
-        const specifiers = new Set();
-        forEachNode(record.ast, (n) => {
-            const required = requiredSpecifier(n);
-            if (required !== null)
-                specifiers.add(required);
-            if ((n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'ExportNamedDeclaration')
-                && n.source && typeof n.source.value === 'string') {
-                specifiers.add(n.source.value);
-            }
-        });
-        const root = this.program.packageRoot;
-        for (const specifier of specifiers) {
-            if (!isRelative(specifier) || DATA_MODULE_RE.test(specifier))
-                continue;
-            const target = await this.host.resolve(record.dir, specifier);
-            const own = target !== null && target !== record.path && (root === '' || target.startsWith(`${root}/`))
-                && !DATA_MODULE_RE.test(target);
-            record.deps.set(specifier, own ? target : null);
-        }
+        record.deps = await resolveOwnModules(record.ast, record.path, record.dir, this.program.packageRoot, this.host);
     }
     /** Read the modules the last walk reached; false when there were none left to read. */
     async loadMissing() {

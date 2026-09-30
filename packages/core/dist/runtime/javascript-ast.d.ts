@@ -15,4 +15,12 @@ export declare function booleanField(node: AstNode, key: string): boolean;
 export declare function literalStringValue(node: AstNode | undefined): string | undefined;
 export declare function literalBooleanValue(node: AstNode | undefined): boolean | undefined;
 export declare function isAstNode(value: unknown): value is AstNode;
+/** Each child node of `node`. */
+export declare function forEachChild<N extends {
+    type: string;
+}>(node: N, visit: (child: N) => void): void;
+/** Every node below `node`, functions included, in source order. */
+export declare function forEachNode<N extends {
+    type: string;
+}>(node: N, visit: (n: N) => void): void;
 //# sourceMappingURL=javascript-ast.d.ts.map

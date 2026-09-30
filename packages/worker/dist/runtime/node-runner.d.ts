@@ -62,8 +62,8 @@ export interface RunFreshOpts {
     cwd?: string;
     filename?: string;
     dirname?: string;
-    /** A pipe or redirect (runtime-registry's RuntimeRunOpts.stdin). */
-    stdin?: {
+    /** A pipe or redirect: streamed, or all of it (runtime-registry's RuntimeRunOpts.stdin). */
+    stdin?: string | {
         read(): Promise<string | null>;
     };
     captureOutput?: boolean;

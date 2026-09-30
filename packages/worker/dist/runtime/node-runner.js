@@ -75,9 +75,12 @@ export async function runFresh(facetMgr, code, opts) {
         // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
         // invocation gets a fresh isolate; warm slots are reused only
         // for byte-identical re-invocations.
-        // A pipe or redirect streams to the program as it arrives (facetMgr.exec).
-        const { stdin: stdinPipe, ...execOpts } = opts;
-        const r = await facetMgr.exec(code, { ...execOpts, stdinPipe });
+        // A pipe or redirect streams to the program as it arrives
+        // (facetMgr.exec); read whole already, it is the launch's stdin text.
+        const { stdin, ...execOpts } = opts;
+        const r = await facetMgr.exec(code, typeof stdin === 'string'
+            ? { ...execOpts, stdin }
+            : { ...execOpts, ...(stdin ? { stdinPipe: stdin } : {}) });
         return {
             exitCode: r.exitCode,
             stdout: r.stdout,

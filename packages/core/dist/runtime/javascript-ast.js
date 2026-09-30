@@ -117,3 +117,26 @@ export function literalBooleanValue(node) {
 export function isAstNode(value) {
     return !!value && typeof value === 'object' && typeof value.type === 'string';
 }
+const NON_CHILD_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
+/** Each child node of `node`. */
+export function forEachChild(node, visit) {
+    const fields = node;
+    for (const key in fields) {
+        if (NON_CHILD_KEYS.has(key))
+            continue;
+        const child = fields[key];
+        if (Array.isArray(child)) {
+            for (const c of child)
+                if (isAstNode(c))
+                    visit(c);
+        }
+        else if (isAstNode(child)) {
+            visit(child);
+        }
+    }
+}
+/** Every node below `node`, functions included, in source order. */
+export function forEachNode(node, visit) {
+    visit(node);
+    forEachChild(node, (child) => forEachNode(child, visit));
+}
