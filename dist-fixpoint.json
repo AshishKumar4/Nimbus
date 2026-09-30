@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "cff6d08b9d53c94117bdbbf3827f4af77a3e05e566154d6dfa6b4f621c070cc3",
+  "fingerprint": "a72320e0751154d5dba1c7d400f728e77b29de0bb937c985729a17c2128d907d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -219,9 +219,9 @@
     "packages/core/dist/runtime/javascript-ast.d.ts": "1bd84cc2d05ccc144ab344ae3f0047cacb3ab8758675ce8afe961b4cc1edc157",
     "packages/core/dist/runtime/javascript-ast.d.ts.map": "3e58b0b2747294c73bd1fcf23f8e9360bbd0a7efa48c45e53a38a9fa44f61943",
     "packages/core/dist/runtime/javascript-ast.js": "bb1ee7697730f78c7842e2ccaabcefb9459d4fb34d85b045d784e6340460f9fc",
-    "packages/core/dist/runtime/keep-esbuild.d.ts": "ed731497109d68f05c7a3a8ff93efa96a80dd53220aa0aa64ecfbfb15443cca2",
-    "packages/core/dist/runtime/keep-esbuild.d.ts.map": "910b2f9641f46d68287ef98e76d77f63f65cbf6e0dbbd2a59c33c5849cacc324",
-    "packages/core/dist/runtime/keep-esbuild.js": "f9174570b0816201137d195532f20f40605fc3fdc2ec0a4b852a15f34d3fd328",
+    "packages/core/dist/runtime/keep-esbuild.d.ts": "e7725a4fdce78a42074c146767bd252fb32a66c22a3ca876a6436bb32358e407",
+    "packages/core/dist/runtime/keep-esbuild.d.ts.map": "c62ad393b1054e6238d8291df593ff9958dde42f0c9ed774c6ba539327615812",
+    "packages/core/dist/runtime/keep-esbuild.js": "f0d0d6afc46c113a617d1847d65850ed6af3e9795ba7dd6dece88f9744c5d2fe",
     "packages/core/dist/runtime/local-facet-host.d.ts": "424e6d36c15be28b63a0282ad6bac8c7295efe1be5e3706c4f124cd797b73685",
     "packages/core/dist/runtime/local-facet-host.d.ts.map": "daaa09c1329a27b32da0ae62aa544771e855fd3bd0892fb523cd30e818db372b",
     "packages/core/dist/runtime/local-facet-host.js": "ea973fec80d9d24e72e08984e59169208aaae1947748fe25295fdca369d59bd0",
@@ -973,7 +973,7 @@
     "packages/core/src/runtime/import-meta-transform.ts": "5ad9deb6247f9a852afcbf99af568c4c5c39636f41d1d54c4678028bee7889ca",
     "packages/core/src/runtime/installed-runtimes.ts": "c39f2173cb54c114a0e3c21dc2d7772a3d7778c39d99736f30780f0f2f0401fd",
     "packages/core/src/runtime/javascript-ast.ts": "3211685b6e65f666216499785e649455ea7067dc22a1669b2f26045e96e9c034",
-    "packages/core/src/runtime/keep-esbuild.ts": "98874cafbf2f6b98a1c282d5610d42b1a92e09c25a0af9ac4b0f897584af3270",
+    "packages/core/src/runtime/keep-esbuild.ts": "017051aba27861abf58906236938a9142bb18e35af2537b4a2c8f89597dd53fc",
     "packages/core/src/runtime/local-facet-host.ts": "3484854d7df63132cfa2ab89ba2a762267d33ac8cca7506daceb98cf2bb19219",
     "packages/core/src/runtime/long-running-handle.ts": "5307b713bf30244c4564257338c232f781bd1db43db8c930b260ef2eddb9aa51",
     "packages/core/src/runtime/module-lexer.ts": "1e63ab4bd87a6d7b699e154c45a8b19018d0ce97a9e70c48ddea57fa0b88d6f3",

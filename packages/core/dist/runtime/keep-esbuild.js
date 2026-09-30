@@ -72,9 +72,11 @@ export function keepEsbuild(start, highWaterBytes) {
  * esbuild's adapter itself keeps every call's promise, and so its result,
  * reachable while the instance lives (each call subscribes to its
  * `rejectAllPromise`): 120 transforms of a 190 KiB module left 19.2 of their
- * 23.1 MiB of output on V8's heap. So the caller gets a copy of the result,
- * and the result esbuild keeps is emptied of its code and map; the heap then
- * ends 4 MiB smaller than it started (keep-esbuild-heap.mjs).
+ * 23.1 MiB of output on V8's heap, and 200 that failed on a 195 KiB module
+ * left their inputs (73.2 MiB when the module was one line, which esbuild's
+ * messages quote). So the caller gets a copy of a result, and a fresh error
+ * for a failure, and what esbuild keeps is emptied: a result's code and map,
+ * an error's stack and messages (keep-esbuild-heap.mjs).
  */
 export async function startObservedEsbuild(newEsbuild, wasmModule) {
     let memory = null;
@@ -131,9 +133,22 @@ export async function startObservedEsbuild(newEsbuild, wasmModule) {
                     pending.delete(reject);
                     if (error instanceof WebAssembly.RuntimeError)
                         closed = true;
-                    if (closed && error instanceof Error)
-                        Reflect.set(error, 'transient', true);
-                    reject(error);
+                    if (!(error instanceof Error)) {
+                        reject(error);
+                        return;
+                    }
+                    // The kept promise holds its error too, and an error's unformatted
+                    // stack holds the frames that made it: the transform, and its input.
+                    const failure = Object.assign(new Error(error.message), {
+                        errors: Reflect.get(error, 'errors'),
+                        warnings: Reflect.get(error, 'warnings'),
+                    });
+                    if (closed)
+                        Reflect.set(failure, 'transient', true);
+                    error.stack = '';
+                    Reflect.set(error, 'errors', []);
+                    Reflect.set(error, 'warnings', []);
+                    reject(failure);
                 });
             }),
             stop: () => esbuild.stop(),

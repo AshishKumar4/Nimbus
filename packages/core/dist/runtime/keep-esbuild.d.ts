@@ -58,9 +58,11 @@ export declare function keepEsbuild<T extends {
  * esbuild's adapter itself keeps every call's promise, and so its result,
  * reachable while the instance lives (each call subscribes to its
  * `rejectAllPromise`): 120 transforms of a 190 KiB module left 19.2 of their
- * 23.1 MiB of output on V8's heap. So the caller gets a copy of the result,
- * and the result esbuild keeps is emptied of its code and map; the heap then
- * ends 4 MiB smaller than it started (keep-esbuild-heap.mjs).
+ * 23.1 MiB of output on V8's heap, and 200 that failed on a 195 KiB module
+ * left their inputs (73.2 MiB when the module was one line, which esbuild's
+ * messages quote). So the caller gets a copy of a result, and a fresh error
+ * for a failure, and what esbuild keeps is emptied: a result's code and map,
+ * an error's stack and messages (keep-esbuild-heap.mjs).
  */
 export declare function startObservedEsbuild(newEsbuild: (webAssembly: typeof WebAssembly) => StartableEsbuild, wasmModule: WebAssembly.Module): Promise<KeptEsbuild<TransformEsbuild>>;
 //# sourceMappingURL=keep-esbuild.d.ts.map
