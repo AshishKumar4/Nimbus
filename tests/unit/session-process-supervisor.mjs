@@ -299,6 +299,34 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.ok(processes.hasLogs(live), 'the running process keeps its logs');
 }
 
+// ── Retention: a failed hydrate does not lose a persisted pid ──────────────
+// Reading a pid only SQL holds hydrates it; a load that fails comes back
+// empty, the store lets the pid go again, and its rows must still be swept.
+{
+  const RETAIN = 10 * 60 * 1000;
+  const processes = new SessionProcessSupervisor();
+  processes.setPidBase(3_000_000);
+  const dropped = [];
+  processes.setLogPersist({
+    load() { return null; },
+    persistChunks() {}, persistExit() {},
+    dropPid(pid) { dropped.push(pid); },
+    pruneBeforeSeq() {},
+    retained() { return [{ pid: 1_000_001, exitAt: 5_000, lastActivity: 5_000 }]; },
+  }, () => {});
+  assert.equal(processes.nextLogExpiry(), 5_000 + RETAIN, 'listed');
+  assert.deepEqual(processes.readLogs(1_000_001).chunks, [], 'the load failed: nothing to read');
+  assert.equal(processes.nextLogExpiry(), 5_000 + RETAIN, 'still retained after the failed read');
+  const realNow = Date.now;
+  Date.now = () => 5_000 + RETAIN;
+  try {
+    assert.equal(processes.dropLogsOlderThan(), 1);
+  } finally { Date.now = realNow; }
+  processes.flushLogs();
+  assert.deepEqual(dropped, [1_000_001], 'its rows are dropped at the deadline');
+  assert.equal(processes.nextLogExpiry(), null);
+}
+
 // ── Retention: the hook fires only where a deadline may appear ──────────────
 // Logs that begin, an exit, a reader leaving, a reap. Not further output, so
 // a host re-reads the deadline there and never per chunk.

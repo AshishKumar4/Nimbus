@@ -722,7 +722,6 @@ export class ProcessLogStore {
         flushedHighSeq: -1,
       };
       this.pids.set(pid, s);
-      this.retention.held(pid);
       // W9: lazy hydrate the freshly-created state from persistent
       // storage. If we have an adapter and rows exist for this pid
       // (e.g., DO was hibernated and now woke), pull them into the
@@ -832,6 +831,7 @@ export class ProcessLogStore {
       this.pids.delete(bestPid);
       this._droppedPids++;
       if (this._persist) this._dropQueue.add(bestPid);
+      this.retention.forget(bestPid);
       return;
     }
 
@@ -850,6 +850,7 @@ export class ProcessLogStore {
       this.pids.delete(bestPid);
       this._droppedPids++;
       if (this._persist) this._dropQueue.add(bestPid);
+      this.retention.forget(bestPid);
       return;
     }
 

@@ -38,11 +38,14 @@ function deadline(pid: number, exitAt: number | null, lastActivity: number, ageM
 
 export class ProcessLogRetention {
   /**
-   * The pids only persisted rows hold: what an earlier instance flushed and
-   * this one has not touched. Listed from `list` on the first question (null
-   * until then); it only shrinks, as a pid is held or dropped.
+   * The pids persisted rows hold: what an earlier instance flushed. Listed
+   * from `list` on the first question (null until then); it only shrinks, as
+   * a pid's logs are dropped. A pid the store also holds in memory answers
+   * for itself and its row is skipped, but kept: the store lets go of a pid
+   * whose hydrate came back empty (a load that failed), and its rows still
+   * have to go.
    */
-  private persistedOnly: Map<number, PersistedLogPid> | null = null;
+  private persisted: Map<number, PersistedLogPid> | null = null;
 
   /**
    * @param list The persisted pids, minus any already queued for deletion;
@@ -51,8 +54,8 @@ export class ProcessLogRetention {
   constructor(private readonly list: () => PersistedLogPid[] | null) {}
 
   /**
-   * The earliest deadline over `held` and the persisted-only pids, or null
-   * when nothing retained will expire by itself.
+   * The earliest deadline over `held` and the persisted pids it does not
+   * hold, or null when nothing retained will expire by itself.
    */
   next(held: ReadonlyMap<number, HeldLog>, ageMs: number, isOrphan?: (pid: number) => boolean): number | null {
     let next: number | null = null;
@@ -61,7 +64,8 @@ export class ProcessLogRetention {
       const at = deadline(pid, log.exit?.at ?? null, log.lastActivity, ageMs, isOrphan);
       if (at !== null && (next === null || at < next)) next = at;
     }
-    for (const [pid, row] of this.listed(held)) {
+    for (const [pid, row] of this.listed()) {
+      if (held.has(pid)) continue;
       const at = deadline(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
       if (at !== null && (next === null || at < next)) next = at;
     }
@@ -70,8 +74,8 @@ export class ProcessLogRetention {
 
   /**
    * Every pid due at `now`: held ones for the store to drop from memory, and
-   * persisted-only ones, which leave this set here. The store drops the rows
-   * of both.
+   * persisted ones it does not hold. All of them leave this set here; the
+   * store drops their rows.
    */
   due(held: ReadonlyMap<number, HeldLog>, now: number, ageMs: number, isOrphan?: (pid: number) => boolean): number[] {
     const due: number[] = [];
@@ -80,28 +84,28 @@ export class ProcessLogRetention {
       const at = deadline(pid, log.exit?.at ?? null, log.lastActivity, ageMs, isOrphan);
       if (at !== null && at <= now) due.push(pid);
     }
-    const persistedOnly = this.listed(held);
-    for (const [pid, row] of persistedOnly) {
+    const persisted = this.listed();
+    for (const [pid, row] of persisted) {
+      if (held.has(pid)) continue;
       const at = deadline(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
-      if (at === null || at > now) continue;
-      persistedOnly.delete(pid);
-      due.push(pid);
+      if (at !== null && at <= now) due.push(pid);
     }
+    for (const pid of due) persisted.delete(pid);
     return due;
   }
 
-  /** The store holds `pid` now (created or hydrated): its memory state answers for it. */
-  held(pid: number): void {
-    this.persistedOnly?.delete(pid);
+  /** The store dropped `pid`'s logs for another reason (the pid cap): its rows are going. */
+  forget(pid: number): void {
+    this.persisted?.delete(pid);
   }
 
   /** The persisted rows changed owner (a new adapter): list them again. */
   reset(): void {
-    this.persistedOnly = null;
+    this.persisted = null;
   }
 
-  private listed(held: ReadonlyMap<number, HeldLog>): Map<number, PersistedLogPid> {
-    if (this.persistedOnly) return this.persistedOnly;
+  private listed(): Map<number, PersistedLogPid> {
+    if (this.persisted) return this.persisted;
     let rows: PersistedLogPid[] | null;
     try {
       rows = this.list();
@@ -111,7 +115,7 @@ export class ProcessLogRetention {
       rows = [];
     }
     if (rows === null) return new Map();
-    this.persistedOnly = new Map(rows.filter((row) => !held.has(row.pid)).map((row) => [row.pid, row]));
-    return this.persistedOnly;
+    this.persisted = new Map(rows.map((row) => [row.pid, row]));
+    return this.persisted;
   }
 }

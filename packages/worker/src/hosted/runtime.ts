@@ -267,7 +267,7 @@ class RuntimeOwner {
       this.processes.flushLogs();
     } else {
       const next = logJanitorFired(this);
-      if (next !== null && !(await this.scheduleJanitor(next))) this._w1JanitorAt = null;
+      if (next !== null && !(await this.scheduleJanitor(next)) && this._w1JanitorAt === next) this._w1JanitorAt = null;
     }
   }
 
