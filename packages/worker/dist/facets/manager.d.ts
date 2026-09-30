@@ -1341,8 +1341,20 @@ export declare class FacetManager {
          * starts; the program is never held for the pipe to end.
          */
         stdinPipe?: StdinBytes;
-        /** All of a pipe or redirect that ended before the program starts, byte-exact. */
-        stdinBytes?: Uint8Array;
+        /**
+         * The pipe ends within what was read ahead of it: the program takes all
+         * of it before it starts, for its synchronous reads of stdin.
+         */
+        stdinWhole?: boolean;
+        /**
+         * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
+         * program reads stdin synchronously, so it reads the file first.
+         */
+        stdinFile?: {
+            path: string;
+            offset: number;
+            syncRead: boolean;
+        };
     }): Promise<FacetExecResult>;
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:

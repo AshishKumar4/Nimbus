@@ -25,6 +25,16 @@ export interface CommandInputStream {
      * EOF with nothing returned.
      */
     readBytes?(maxLength: number): Promise<Uint8Array | null>;
+    /**
+     * The regular file a `< file` redirect opened, and how far into it this
+     * stream has read: a command may read the file itself from there (at a
+     * position, as a descriptor to a regular file allows) instead of reading
+     * this stream.
+     */
+    readonly file?: {
+        readonly path: string;
+        readonly offset: number;
+    };
 }
 export interface TerminalInputStream extends CommandInputStream {
     rawMode: boolean;

@@ -87,10 +87,20 @@ export interface RuntimeRunOpts {
     /**
      * The program's code reads stdin synchronously (stdin-read.ts), which
      * cannot wait for bytes arriving after it runs: a one-shot runner reads up
-     * to STDIN_SYNC_READ_BYTES of the pipe before starting it. Never set for a
-     * program that starts a server.
+     * to STDIN_SYNC_READ_BYTES of a pipe before starting it, or has the program
+     * read its `< file` whole first. Never set for a program that starts a
+     * server.
      */
     stdinReadsSync?: boolean;
+    /**
+     * The regular file a `< file` redirect opened, and the offset its stream is
+     * at: the program's fd 0 is that file (read at a position, streamed as it
+     * is read), in place of `stdin`.
+     */
+    stdinFile?: {
+        path: string;
+        offset: number;
+    };
     /**
      * Running the program starts a server (server-launch.ts). Set only for a
      * runtime that routes servers (RuntimeSpec.routesServers), when no .bin

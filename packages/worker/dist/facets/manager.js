@@ -19,7 +19,6 @@ import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModule
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
-import { bytesToBase64 } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
@@ -583,8 +582,10 @@ export default {
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
     const __nimbusLiveInputPid = Number(args.stdinPid || 0);
-    // Or all of it, byte-exact, when it ended before the program started.
-    const __nimbusStdinBase64 = typeof args.stdinBase64 === "string" ? args.stdinBase64 : null;
+    // It ends within what was read ahead: taken whole before the entry runs.
+    const __nimbusStdinWhole = args.stdinWhole === true;
+    // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
+    const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -685,7 +686,7 @@ ${RESIDENCY_MISS_REPORT}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
-      if (__nimbusLiveInputPid) await __nimbusTakeQueuedStdin();
+      await __nimbusPrepareStdin();
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
@@ -4849,10 +4850,11 @@ export class FacetManager {
                 catch { }
             }
         }
-        // Started with the launch, so a writer that has finished (echo, a file
-        // redirect, head) has delivered all of it, and its end, by the time the
-        // program starts: the guest takes what is queued then (node-shims.ts,
-        // __nimbusTakeQueuedStdin) for a synchronous read of fd 0.
+        // Started with the launch, so a writer that has finished (echo, head) has
+        // delivered all of it, and its end, by the time the program starts: the
+        // guest takes what is queued then, or all of it when the pipe ended
+        // within the read ahead (stdinWhole), for a synchronous read of fd 0
+        // (node-shims.ts, __nimbusPrepareStdin).
         const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
@@ -5066,10 +5068,11 @@ export class FacetManager {
             filename: opts.filename || '<eval>',
             dirname: opts.dirname || '/home/user',
             stdin: opts.stdin || '',
-            // A pipe or redirect: bytes that ended before the start, or the input
-            // channel it streams through (_pumpStdinPipe).
-            ...(opts.stdinBytes ? { stdinBase64: bytesToBase64(opts.stdinBytes) } : {}),
+            // A pipe: the input channel it streams through (_pumpStdinPipe), whole
+            // or not. A `< file`: the file fd 0 is.
             stdinPid: opts.stdinPipe ? entry.pid : 0,
+            ...(opts.stdinWhole ? { stdinWhole: true } : {}),
+            ...(opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
             vfsCursor: vfsState.cursor,

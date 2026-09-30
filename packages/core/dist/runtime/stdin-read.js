@@ -32,12 +32,21 @@ const STDIN_DEVICES = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']);
 /**
  * How much of a pipe is read before a one-shot program that reads stdin
  * synchronously starts. A pipe that ends within it is all delivered first;
- * past it, the program starts with the pipe streaming, so an endless writer
- * (`yes | node x.js`) costs this much at most. It is also how much of a
- * streaming pipe a synchronous read can see (node-shims.ts,
- * __nimbusTakeQueuedStdin).
+ * past it, the program starts with the pipe streaming and a synchronous read
+ * fails naming this bound (node-shims.ts, __nimbusStdinWouldBlock), so an
+ * endless writer (`yes | node x.js`) costs this much at most. A `< file`
+ * redirect is not bounded by it: fd 0 is the file.
+ *
+ * The read ahead is held in the session Durable Object until the program
+ * takes it. Measured on a throwaway (2026-09-30; GraphQL
+ * durableObjectsPeriodicGroups, max memoryUsageBytes of the session object
+ * per minute; `yes | head -c N | node -e "fs.readFileSync(0)"`, 16 MiB run
+ * six times over three sessions): peaks of 59.5-82.0 MB of the 128 MB
+ * isolate, no exceededMemoryErrors, and no higher than the same session's
+ * ordinary `echo x | node` launch (71.8-82.0 MB). 16 MiB is the largest size
+ * measured, and holds a large package-lock.json.
  */
-export const STDIN_SYNC_READ_BYTES = 1024 * 1024;
+export const STDIN_SYNC_READ_BYTES = 16 * 1024 * 1024;
 /** Whether `program`, or one of its own modules it loads, reads stdin synchronously. */
 export async function programReadsStdinSync(program, host) {
     if (program.source.length > SERVER_LAUNCH_MODULE_BYTES)

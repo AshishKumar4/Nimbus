@@ -69,6 +69,11 @@ export interface RunFreshOpts {
     };
     /** Its code reads stdin synchronously (RuntimeRunOpts.stdinReadsSync). */
     stdinReadsSync?: boolean;
+    /** A `< file` redirect: fd 0 is this file (RuntimeRunOpts.stdinFile). */
+    stdinFile?: {
+        path: string;
+        offset: number;
+    };
     captureOutput?: boolean;
     /** Display label for the long-running spawn. Defaults to the
      *  command + filename. Surfaced in the [started (long-running)]

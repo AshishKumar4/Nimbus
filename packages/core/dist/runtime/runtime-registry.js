@@ -166,8 +166,12 @@ export function buildRuntimeHandler(spec, ctx0) {
         const programStdin = async (code, path, dir, launchesServer) => {
             if (pipedStdin === undefined)
                 return {};
+            // A `< file` is the file itself; nothing is read from its stream here.
+            const source = pipedStdin.file
+                ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+                : { stdin: pipedStdin };
             if (launchesServer || binSpawn?.forceLongRunning === true)
-                return { stdin: pipedStdin };
+                return source;
             const key = normalizeVfsPath(dir);
             const readsSync = await programReadsStdinSync({
                 source: code,
@@ -175,7 +179,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 dir: key,
                 packageRoot: (await nearestPackageDir(fs, key)) ?? key,
             }, programHost);
-            return readsSync ? { stdin: pipedStdin, stdinReadsSync: true } : { stdin: pipedStdin };
+            return readsSync ? { ...source, stdinReadsSync: true } : source;
         };
         // ── Flag-span computation (primitive #1) ──
         //
