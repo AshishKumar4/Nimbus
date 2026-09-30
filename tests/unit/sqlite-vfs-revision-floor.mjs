@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-// Per-path revisions are held under a byte budget. A file whose stamp was
-// dropped reports its row's generation; any other path the floor, the newest
-// revision dropped. Neither is ever less than the path's own last mutation: every consumer compares a revision it holds against
-// the one reported now, and a smaller report would call a stale copy current.
+// Directory revision stamps are held under a byte budget; a file holds none.
+// A file reports its row's generation; a directory or a missing path without
+// a stamp the later of the floor (the newest revision dropped) and its row's
+// or tombstone's generation. None is ever less than the path's own last
+// mutation: every consumer compares a revision it holds against the one
+// reported now, and a smaller report would call a stale copy current.
 
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -30,8 +32,8 @@ function ancestors(path) {
   const lastWrite = new Map();
   const reported = new Map();
   for (let i = 0; i < 400; i++) {
-    const path = `pkg/d${i % 20}/file-${i}.js`;
-    if (i < 20) vfs.mkdir(`pkg/d${i}`);
+    const path = `pkg/d${i % 100}/file-${i}.js`;
+    if (i < 100) vfs.mkdir(`pkg/d${i}`);
     vfs.writeFile(path, `v${i}`);
     lastWrite.set(path, vfs.revision());
     // Every path seen so far: its report never falls, and never below its write.
@@ -45,11 +47,10 @@ function ancestors(path) {
   const stats = rawVfs.getStats().pathRevisions;
   assert.ok(stats.bytes <= BUDGET, `${stats.bytes} B of revisions held against a ${BUDGET} B budget`);
   assert.ok(stats.floor > 0, 'the scenario is vacuous unless revisions were dropped');
-  assert.ok(stats.paths < lastWrite.size, 'every path still holds a revision');
+  assert.ok(stats.paths <= 101, `${stats.paths} stamps for 101 directories: a written file holds one`);
 
-  // The earliest file's stamp was dropped: it reports its row's generation,
-  // exactly its last write, and a directory stays at or above everything
-  // under it.
+  // A file reports its row's generation, exactly its last write, whatever
+  // the floor, and a directory stays at or above everything under it.
   assert.equal(vfs.revision('pkg/d0/file-0.js'), lastWrite.get('pkg/d0/file-0.js'));
   for (const path of lastWrite.keys()) {
     for (const dir of ancestors(path)) {
@@ -58,7 +59,7 @@ function ancestors(path) {
   }
   assert.equal(vfs.revision(''), vfs.revision(), 'the root is the global clock');
 
-  // Writing a dropped path moves its report past everything it reported.
+  // Writing a file moves its report past everything it reported.
   const before = vfs.revision('pkg/d0/file-0.js');
   vfs.writeFile('pkg/d0/file-0.js', 'rewritten');
   assert.ok(vfs.revision('pkg/d0/file-0.js') > before);
@@ -78,7 +79,10 @@ function ancestors(path) {
   rawVfs.confinePrincipal(guest.uid, 'run/private-2001');
   const confined = rawVfs.as(guest);
   confined.writeFile('/tmp/mine.txt', 'private');
-  for (let i = 0; i < 200; i++) vfs.writeFile(`churn-${i}`, 'x');
+  for (let i = 0; i < 200; i++) {
+    vfs.mkdir(`churn-${i}`);
+    vfs.writeFile(`churn-${i}/x`, 'x');
+  }
   confined.writeFile('/tmp/fresh.txt', 'private too');
 
   const listed = new Map();
@@ -88,7 +92,7 @@ function ancestors(path) {
     for (const entry of page.entries) listed.set(entry.path, entry);
     after = page.next;
   } while (after !== null);
-  for (const name of ['tmp/mine.txt', 'tmp/fresh.txt', 'churn-0', 'churn-199']) {
+  for (const name of ['tmp/mine.txt', 'tmp/fresh.txt', 'churn-0', 'churn-0/x', 'churn-199', 'churn-199/x']) {
     const entry = listed.get(name);
     assert.ok(entry, `${name} was not listed`);
     assert.equal(entry.rev, confined.revision(name), `${name} listed at a revision revision() does not report`);
@@ -98,10 +102,46 @@ function ancestors(path) {
   assert.ok(rawVfs.getStats().pathRevisions.floor > 0, 'the scenario is vacuous unless revisions were dropped');
 }
 
-// ── The default budget is 16 MiB; a negative one is refused ───────────────
+// ── A removed path reports at least its removal ───────────────────────────
+// From its tombstone while one is kept, and from the floor once it is pruned:
+// either way at or below every directory above it.
+{
+  const { rawVfs, vfs } = openVfs({ pathRevisionBytes: BUDGET, tombstoneRows: 16 });
+  const removedAt = new Map();
+  for (let i = 0; i < 120; i++) {
+    const dir = `gone/d${i % 60}`;
+    if (i < 60) vfs.mkdir(dir, { recursive: true });
+    vfs.writeFile(`${dir}/f${i}`, `v${i}`);
+    vfs.unlink(`${dir}/f${i}`);
+    removedAt.set(`${dir}/f${i}`, vfs.revision());
+    for (const [path, at] of removedAt) {
+      const now = vfs.revision(path);
+      assert.ok(now >= at, `${path} reports ${now}, below its removal at ${at}`);
+      for (const dir of ancestors(path)) assert.ok(vfs.revision(dir) >= now, `${dir} reports below ${path}`);
+    }
+  }
+  assert.equal(vfs.revision('gone/d59/f119'), removedAt.get('gone/d59/f119'), 'a kept tombstone is exact');
+  assert.ok(rawVfs.getStats().pathRevisions.floor >= removedAt.get('gone/d0/f0'), 'pruning raised the floor');
+  assert.ok(rawVfs.getStats().pathRevisions.paths <= 61, 'a removed file holds no stamp');
+
+  // A path that is a directory now and was a file keeps rising, as does one
+  // whose stamp it held as a directory when it becomes a file.
+  const before = vfs.revision('gone/d0/f0');
+  vfs.mkdir('gone/d0/f0');
+  assert.ok(vfs.revision('gone/d0/f0') > before);
+  vfs.writeFile('gone/d0/f0/x', 'x');
+  const stamped = vfs.revision('gone/d0/f0');
+  vfs.unlink('gone/d0/f0/x');
+  vfs.rmdir('gone/d0/f0');
+  vfs.writeFile('gone/d0/f0', 'a file again');
+  assert.ok(vfs.revision('gone/d0/f0') > stamped);
+  assert.equal(vfs.revision('gone/d0/f0'), vfs.revision());
+}
+
+// ── The default budget is 1 MiB; a negative one is refused ────────────────
 {
   const { rawVfs } = openVfs({});
-  assert.equal(rawVfs.getStats().pathRevisions.maxBytes, 16 * 1024 * 1024);
+  assert.equal(rawVfs.getStats().pathRevisions.maxBytes, 1024 * 1024);
   assert.throws(() => openVfs({ pathRevisionBytes: -1 }), /EINVAL/);
 }
 

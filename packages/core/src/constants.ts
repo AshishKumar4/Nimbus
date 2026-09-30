@@ -88,9 +88,13 @@ export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
 
 // Inode metadata held in memory. SQLite holds every inode and indexes it by
 // path and by parent, so this is a cache, not the tree: at ~214 B per inode in
-// V8, a whole 1M-file tree would need ~214 MB of a 128 MB isolate. 64k entries
-// is ~14 MB.
-export const INODE_CACHE_MAX_ENTRIES = 65_536;
+// V8 and 260-330 B in JSC, a whole 1M-file tree would need ~214 MB of a 128 MB
+// isolate. It is a per-workspace cost, so it is sized for the directories a
+// path walk crosses and the files in use, not for a tree: 8k entries is
+// ~2.4 MiB, and a working set of up to half of it stays in the young
+// generation. 64k was 14-21 MB, which one full read of a large tree filled
+// and kept.
+export const INODE_CACHE_MAX_ENTRIES = 8_192;
 
 // ── Batched filesystem reads ────────────────────────────────────────────
 // A round trip costs an order of magnitude more than the SQLite lookup

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Refinement bridge for Nimbus.Vfs.RevisionFloor (lean/traceability.yaml
 // VFS-REV-001). Each case in lean/fixtures/revision-floor.json is a sequence of
-// mkdir/writeFile steps and the revision the Lean model reports for every path
+// mkdir/writeFile/unlink steps and the revision the Lean model reports for every path
 // after each step; the deployed SqliteVFS, under the same per-path budget,
 // must report the same numbers. The fixture is the model's own output
 // (lean/RefinementFixtures.lean), so the proofs cannot outlive this code.
@@ -23,6 +23,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
   const vfs = raw.as(CRED_KERNEL);
   for (const [at, step] of testCase.steps.entries()) {
     if (step.op === 'mkdir') vfs.mkdir(step.path);
+    else if (step.op === 'rm') vfs.unlink(step.path);
     else vfs.writeFile(step.path, `case ${index} step ${at}`);
     const where = `case ${index} step ${at} (${step.op} ${step.path})`;
     assert.equal(vfs.revision(), step.clock, `${where}: clock`);

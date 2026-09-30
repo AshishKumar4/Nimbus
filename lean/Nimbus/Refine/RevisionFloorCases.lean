@@ -1,13 +1,14 @@
 /-
   Nimbus.Refine.RevisionFloorCases — `lean/fixtures/revision-floor.json`:
-  sequences of `mkdir` and `writeFile` against a small per-path revision
+  sequences of `mkdir`, `writeFile` and `unlink` against a small revision
   budget, with the revision the model's `revision` reports for every path seen
   after each step. `execBump` is the model's `bump` followed by the code's own
   cutoff rule (`dropOldestPathRevisions`: drop at the stamp a quarter of the
   way up the sorted stamps, while over budget), which is one `Step.drop` per
   pass. `tests/unit/revision-floor-refinement.mjs` replays each case through
-  `SqliteVFS` and compares every report (with P5, a written file whose stamp
-  was dropped reports its row's generation).
+  `SqliteVFS` and compares every report (a file reports its row's generation,
+  a removed one its tombstone's or the floor, and only directories hold
+  stamps). No case prunes a tombstone: the code keeps 65,536.
 -/
 
 import Nimbus.Vfs.RevisionFloor
@@ -45,9 +46,11 @@ def dropWhileOver (budget : Nat) : Nat → Exec → Exec
   | 0, e => e
   | n + 1, e => if heldBytes e > budget then dropWhileOver budget n (dropOnce e) else e
 
+/-- A bump inserts a stamp for each directory strictly above a path; one it
+    moves to a mutated path was held already. -/
 def execBump (budget : Nat) (e : Exec) (paths fs : List Path) : Exec :=
   let st := bump e.st paths fs
-  let keys := (paths.flatMap prefixes).foldl
+  let keys := (paths.flatMap fun p => prefixes p.dropLast).foldl
     (fun ks q => if ks.contains q then ks else ks ++ [q]) e.keys
   dropWhileOver budget (keys.length + 1) { st, keys }
 
@@ -76,12 +79,15 @@ theorem execBump_reach (budget : Nat) (e : Exec) (paths fs : List Path) (h : Rea
 inductive Op where
   | mkdir (p : Path)
   | write (p : Path)
+  | rm (p : Path)
 
 def Op.path : Op → Path
   | .mkdir p => p
   | .write p => p
+  | .rm p => p
 
-def budget : Nat := 700
+/-- Below the five directories' stamps together, so every case drops some. -/
+def budget : Nat := 160
 
 def dirs : List Path := [["pkg"], ["pkg", "a"], ["pkg", "b"], ["pkg", "a", "c"], ["src"]]
 
@@ -90,11 +96,21 @@ def files : List Path :=
    ["src", "main.ts"], ["src", "util.ts"], ["top.txt"]]
 
 /-- Directories first, in an order that creates parents before children; then
-    writes drawn at random, so rewrites of dropped paths are common. -/
+    writes and removals drawn at random, so rewrites of dropped paths and
+    removals of written ones are common. A removal names a file written and
+    not removed since. -/
 def genOps : Gen (List Op) := do
   let n := (← below 40) + 10
   let mut ops := dirs.map Op.mkdir
-  for _ in [0:n] do ops := ops ++ [Op.write (← pick files)]
+  let mut live : List Path := []
+  for _ in [0:n] do
+    let f ← pick files
+    if live.contains f && (← chance 1 3) then
+      ops := ops ++ [Op.rm f]
+      live := live.erase f
+    else
+      ops := ops ++ [Op.write f]
+      if !live.contains f then live := live ++ [f]
   return ops
 
 def stepJson (e : Exec) (seen : List Path) : Op → Json
@@ -102,6 +118,7 @@ def stepJson (e : Exec) (seen : List Path) : Op → Json
     let (name, p) := match op with
       | .mkdir p => ("mkdir", p)
       | .write p => ("write", p)
+      | .rm p => ("rm", p)
     .obj [("op", .str name), ("path", .str (keyOf p)),
       ("clock", .ofNat e.st.clock), ("floor", .ofNat e.st.floor),
       ("revisions", .obj (seen.map fun q => (keyOf q, Json.ofNat (revision e.st q))))]
@@ -111,7 +128,7 @@ def caseOf (ops : List Op) : Json := Id.run do
   let mut seen : List Path := []
   let mut out : Array Json := #[]
   for op in ops do
-    e := execBump budget e [op.path] (match op with | .mkdir _ => [] | .write p => [p])
+    e := execBump budget e [op.path] (match op with | .write p => [p] | _ => [])
     if !seen.contains op.path then seen := seen ++ [op.path]
     out := out.push (stepJson e seen op)
   return .obj [("steps", .arr out.toList)]

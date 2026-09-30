@@ -190,15 +190,20 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 
   const oldRev = vfs.revision('proj');
   const destRev = vfs.revision('dest');
+  const movedRev = vfs.revision('dest/src/index.js');
+  const sourceRev = vfs.revision('proj/src/index.js');
   vfs.rename('proj/src', 'dest/src');
   assert.ok(vfs.revision('proj') > oldRev, 'rename bumps the source subtree');
   assert.ok(vfs.revision('dest') > destRev, 'rename bumps the destination subtree');
-  assert.ok(vfs.revision('dest/src/index.js') > 0, 'moved children are stamped at their new path');
-  assert.equal(vfs.revision('proj/src/index.js'), vfs.revision('dest/src/index.js'),
-    'moved children are stamped at their old path too');
+  // A moved child reports the transaction that wrote it at its new path, at
+  // or below the rename's revision; its old path, its tombstone: the rename's.
+  assert.ok(vfs.revision('dest/src/index.js') > movedRev, 'moved children report past what stood at their new path');
+  assert.ok(vfs.revision('dest/src/index.js') <= vfs.revision('dest'));
+  assert.ok(vfs.revision('proj/src/index.js') > sourceRev, 'moved children report past their old path');
+  assert.equal(vfs.revision('proj/src/index.js'), vfs.revision(), 'the old path reports its removal');
 }
 
-// ── per-path revisions: writeBatch stamps every touched path, one tick ──
+// ── per-path revisions: writeBatch advances every touched path, one tick ──
 {
   const { vfs } = makeVfs();
   vfs.mkdir('keep', { recursive: true });

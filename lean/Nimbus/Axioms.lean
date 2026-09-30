@@ -781,9 +781,13 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.RevisionFloor.under_length
 #print axioms Nimbus.Vfs.RevisionFloor.walk_eq
 #print axioms Nimbus.Vfs.RevisionFloor.walked_closed
+#print axioms Nimbus.Vfs.RevisionFloor.not_under_dropLast
+#print axioms Nimbus.Vfs.RevisionFloor.stampOne_eq
+#print axioms Nimbus.Vfs.RevisionFloor.stampOne_closed
 #print axioms Nimbus.Vfs.RevisionFloor.walkAll_eq
 #print axioms Nimbus.Vfs.RevisionFloor.bump_inv
 #print axioms Nimbus.Vfs.RevisionFloor.drop_inv
+#print axioms Nimbus.Vfs.RevisionFloor.forget_inv
 #print axioms Nimbus.Vfs.RevisionFloor.step_inv
 #print axioms Nimbus.Vfs.RevisionFloor.reachable_inv
 #print axioms Nimbus.Vfs.RevisionFloor.revision_ge_last
