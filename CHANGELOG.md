@@ -12,12 +12,16 @@ published independently in the `@nimbus-sh` npm scope.
   runtime handler used to drop it, so every read saw an empty stdin and
   `readFileSync(0)` threw ENOENT on a file named "0". The pipe streams
   through the process's input channel as it arrives, never held for its end:
-  a program that ignores `yes` or `tail -f` exits at once. A synchronous
-  read of fd 0 answers what the channel held when the program started (up
-  to 1 MiB), all of it once the writer has finished (echo, a file
-  redirect, head); for a pipe still open it answers EAGAIN, since
-  synchronous I/O cannot block for the rest. `process.stdin.listeners('data')`
-  lists a `once` listener as the program's function, as in Node.
+  a program that ignores `yes` or `tail -f` exits at once. A program whose
+  code (the entry or its own modules it loads directly) reads stdin
+  synchronously — `readFileSync(0)`, `readFileSync('/dev/stdin')`,
+  `readFileSync(process.stdin.fd)`, `readSync` of fd 0 — gets all of it
+  read before it starts instead, as Node's blocking read would, however
+  slow its writer. A synchronous read the analysis could not see answers
+  what the channel held at the start (up to 1 MiB), all of it once the
+  writer has finished, and EAGAIN for a pipe still open.
+  `process.stdin.listeners('data')` lists a `once` listener as the
+  program's function, as in Node.
 
 - http-server serves text files. `stream.Readable.from` is Node's: object
   mode by default, and a string or Buffer is emitted whole instead of being

@@ -74,8 +74,8 @@ export interface RunFreshOpts {
   cwd?: string;
   filename?: string;
   dirname?: string;
-  /** A pipe or redirect (runtime-registry's RuntimeRunOpts.stdin). */
-  stdin?: { read(): Promise<string | null> };
+  /** A pipe or redirect: streamed, or all of it (runtime-registry's RuntimeRunOpts.stdin). */
+  stdin?: string | { read(): Promise<string | null> };
   captureOutput?: boolean;
   /** Display label for the long-running spawn. Defaults to the
    *  command + filename. Surfaced in the [started (long-running)]
@@ -126,9 +126,12 @@ export async function runFresh(
     // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every
     // invocation gets a fresh isolate; warm slots are reused only
     // for byte-identical re-invocations.
-    // A pipe or redirect streams to the program as it arrives (facetMgr.exec).
-    const { stdin: stdinPipe, ...execOpts } = opts;
-    const r: FacetExecResult = await facetMgr.exec(code, { ...execOpts, stdinPipe });
+    // A pipe or redirect streams to the program as it arrives
+    // (facetMgr.exec); read whole already, it is the launch's stdin text.
+    const { stdin, ...execOpts } = opts;
+    const r: FacetExecResult = await facetMgr.exec(code, typeof stdin === 'string'
+      ? { ...execOpts, stdin }
+      : { ...execOpts, ...(stdin ? { stdinPipe: stdin } : {}) });
     return {
       exitCode: r.exitCode,
       stdout: r.stdout,

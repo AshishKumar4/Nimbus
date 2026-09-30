@@ -317,6 +317,11 @@ try {
     const endless = await terminal.run(`yes | node -e 'console.log("IGNORED 1")'`, 30_000);
     assert.equal(endless.status, 0, endless.stdout);
     assert.match(endless.stdout, /^IGNORED 1$/m, endless.stdout);
+    // A program that reads stdin synchronously gets all of it, however slow
+    // its writer: that read cannot wait once the program runs.
+    const slow = await terminal.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 30_000);
+    assert.equal(slow.status, 0, slow.stdout);
+    assert.match(slow.stdout, /^SLOW 1$/m, slow.stdout);
     const lines = await terminal.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 30_000);
     assert.match(lines.stdout, /^LINES "y\\ny\\ny\\n"$/m, lines.stdout);
 

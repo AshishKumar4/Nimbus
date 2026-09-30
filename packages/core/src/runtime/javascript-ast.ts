@@ -118,3 +118,25 @@ export function literalBooleanValue(node: AstNode | undefined): boolean | undefi
 export function isAstNode(value: unknown): value is AstNode {
   return !!value && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string';
 }
+
+const NON_CHILD_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
+
+/** Each child node of `node`. */
+export function forEachChild<N extends { type: string }>(node: N, visit: (child: N) => void): void {
+  const fields = node as unknown as Record<string, unknown>;
+  for (const key in fields) {
+    if (NON_CHILD_KEYS.has(key)) continue;
+    const child = fields[key];
+    if (Array.isArray(child)) {
+      for (const c of child) if (isAstNode(c)) visit(c as unknown as N);
+    } else if (isAstNode(child)) {
+      visit(child as unknown as N);
+    }
+  }
+}
+
+/** Every node below `node`, functions included, in source order. */
+export function forEachNode<N extends { type: string }>(node: N, visit: (n: N) => void): void {
+  visit(node);
+  forEachChild(node, (child) => forEachNode(child, visit));
+}

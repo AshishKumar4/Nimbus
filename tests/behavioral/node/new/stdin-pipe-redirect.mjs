@@ -9,7 +9,9 @@
 //   reads text), and to `node -e`. The shell's pipe used to be dropped, so
 //   every read saw empty stdin and readFileSync(0) threw ENOENT for a file
 //   named "0". It streams: a program that ignores a pipe that never ends
-//   (`yes`, `tail -f`) exits at once instead of waiting for its end.
+//   (`yes`, `tail -f`) exits at once instead of waiting for its end, while
+//   a program whose code reads stdin synchronously gets all of it first,
+//   however slow its writer.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell } from '../../_driver.mjs';
 
@@ -56,6 +58,10 @@ try {
     }
     a.check(`${label} into a program that ignores stdin exits`, line(out, 'IGNORED') === 'IGNORED 1', out.slice(-400));
   }
+  // A program that reads stdin synchronously gets all of it before it starts,
+  // however slow its writer (stdin-read.ts).
+  const slow = (await t.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 90_000)).output;
+  a.check('a slow writer into a synchronous readFileSync(0)', line(slow, 'SLOW') === 'SLOW 1', slow.slice(-400));
   const lines = (await t.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 90_000)).output;
   a.check('yes | head -3 streams three lines to for-await', line(lines, 'LINES') === 'LINES "y\\ny\\ny\\n"', lines.slice(-400));
 } finally {
