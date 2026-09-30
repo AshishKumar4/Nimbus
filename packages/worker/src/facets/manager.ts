@@ -1145,11 +1145,20 @@ let __nimbusAttachedLifecycle = null;
 // dispatch (__nimbusServeHttp), exactly once.
 const __nimbusPlatformSetTimeout = setTimeout;
 
+// A failed report of generated code or misses costs the next launch what this
+// one learned, and nothing else: the program's own writes and responses do not
+// wait on it. The failure is told to the guest's stderr, where the next-launch
+// guidance it would otherwise contradict is printed.
+async function __nimbusReportLearningFailure(supervisor, error) {
+  try {
+    if (supervisor) await supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+  } catch {}
+}
+
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    await __nimbusFlushRuntimeCode(rt.supervisor);
     const __vfsTasks = [];
     if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
       for (const path of Object.keys(rt.vfsWrites)) {
@@ -1177,6 +1186,10 @@ async function __nimbusFlushRuntime() {
       rt.pendingIO.length = 0;
       rt.settledIO = 0;
     }
+    // After the drain, so the program's writes are durable whatever happens
+    // to the report; unacknowledged entries are sent again by the next flush.
+    const [__learning] = await Promise.allSettled([__nimbusFlushRuntimeCode(rt.supervisor)]);
+    if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
     const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
     if (__vfsFailure) throw __vfsFailure.reason;
   });
@@ -1200,9 +1213,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     const __supervisor = workerEnv?.SUPERVISOR || null;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
-        // Report failure to the guest's stderr, not only the platform log:
-        // its next-launch guidance would otherwise conceal a failed write.
-        if (__supervisor) await __supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+        await __nimbusReportLearningFailure(__supervisor, error);
         throw error;
       });
       // Code may be produced by a timer after boot has returned, not by an
