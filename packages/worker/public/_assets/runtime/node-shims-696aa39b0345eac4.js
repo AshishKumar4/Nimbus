@@ -5394,10 +5394,7 @@ const __streamMod = (() => {
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
 
-  /**
-   * Destroy either side of a stream, and both of a Duplex, once: 'error' if
-   * given, then 'close' unless the stream was created with emitClose: false.
-   */
+  /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
   function _destroyedError(method) {
     return Object.assign(new Error('Cannot call ' + method + ' after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
   }
@@ -5423,6 +5420,10 @@ const __streamMod = (() => {
     else stream.emit('error', err);
   }
 
+  /**
+   * Destroy either side of a stream, and both of a Duplex, once: 'error' if
+   * given, then 'close' unless the stream was created with emitClose: false.
+   */
   function _destroyStream(stream, err) {
     const r = stream._readableState, w = stream._writableState;
     if ((r && r.destroyed) || (w && w.destroyed)) return stream;
