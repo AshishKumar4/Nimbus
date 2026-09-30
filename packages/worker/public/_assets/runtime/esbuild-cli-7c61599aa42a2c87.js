@@ -8607,6 +8607,136 @@ return globalThis.Go;
     return parse3;
   }
 
+  var IMPORT_SYNTAX = /\bimport\s*(?:[(.]|\/[/*])/;
+  var IMPORT_SYNTAX_ALL = new RegExp(IMPORT_SYNTAX.source, "g");
+  var LINE_END = /[\n\r\u2028\u2029]/g;
+  function lineEnd(text, at2) {
+    LINE_END.lastIndex = at2;
+    return LINE_END.exec(text)?.index ?? text.length;
+  }
+  function firstAtOrAfter(positions, at2) {
+    let low = 0;
+    let high = positions.length;
+    while (low < high) {
+      const middle = low + high >>> 1;
+      if (positions[middle] < at2) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+  var Lines = class {
+    constructor(source) {
+      this.source = source;
+      this.breaks = Array.from(source.matchAll(/[\n\r\u2028\u2029]/g), (found) => found.index);
+    }
+    source;
+    breaks;
+    endOf(at2) {
+      return this.breaks[firstAtOrAfter(this.breaks, at2)] ?? this.source.length;
+    }
+    startOf(at2) {
+      const before = firstAtOrAfter(this.breaks, at2) - 1;
+      return before < 0 ? 0 : this.breaks[before] + 1;
+    }
+  };
+  function skipTrivia(source, at2) {
+    let newline = false;
+    for (; ; ) {
+      const ch = source[at2];
+      if (ch === "/" && source[at2 + 1] === "/") {
+        at2 = lineEnd(source, at2);
+        continue;
+      }
+      if (ch === "/" && source[at2 + 1] === "*") {
+        const close = source.indexOf("*/", at2 + 2);
+        if (close < 0) return { at: source.length, newline };
+        if (/[\n\r\u2028\u2029]/.test(source.slice(at2, close))) newline = true;
+        at2 = close + 2;
+        continue;
+      }
+      if (ch !== void 0 && /\s/.test(ch)) {
+        if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") newline = true;
+        at2++;
+        continue;
+      }
+      return { at: at2, newline };
+    }
+  }
+  function parenthesisEnd(source, open) {
+    for (let window = 1024; ; window *= 2) {
+      try {
+        const tokens = tokenizer2(source.slice(open, open + window), { ecmaVersion: "latest" });
+        let depth = 0;
+        for (let token = tokens.getToken(); token.type !== types$1.eof; token = tokens.getToken()) {
+          if (token.type === types$1.parenL) depth++;
+          else if (token.type === types$1.parenR && --depth === 0) return open + token.end;
+        }
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+      if (open + window >= source.length) return null;
+    }
+  }
+  var BEFORE_AMBIGUOUS_SLASH = /(?:\}|\+\+|--|(?<![\w$.\\])(?:extends|of|default|yield|await))(?=[\s/])|\.(?=\s|\/[/*])/g;
+  var MEMBER_KEYWORD = /^(?:case|debugger|delete|do|else|in|instanceof|new|return|throw|typeof|void|yield|await)(?![\w$])/;
+  var PARENTHESIZED_HEAD = /(?<![\w$.\\])(?:with|for\s+await)\s*\(/g;
+  function ambiguousSlashes(source, lines) {
+    let imports = null;
+    const matters = (slash) => {
+      if (source[slash] !== "/" || source[slash + 1] === "/" || source[slash + 1] === "*") return false;
+      const body = regexBody(source, slash);
+      if (IMPORT_SYNTAX.test(body)) return true;
+      if (!/['"`]/.test(body)) return false;
+      imports ??= Array.from(source.matchAll(IMPORT_SYNTAX_ALL), (found) => found.index);
+      const next = imports[firstAtOrAfter(imports, slash)];
+      return next !== void 0 && next < lines.endOf(slash);
+    };
+    const slashes = [];
+    for (const match of source.matchAll(BEFORE_AMBIGUOUS_SLASH)) {
+      let after = match.index + match[0].length;
+      if (match[0] === ".") {
+        const name = skipTrivia(source, after).at;
+        const keyword = MEMBER_KEYWORD.exec(source.slice(name, name + 11));
+        if (keyword === null) continue;
+        after = name + keyword[0].length;
+      }
+      const slash = skipTrivia(source, after).at;
+      if (matters(slash)) slashes.push(slash);
+    }
+    for (const match of source.matchAll(PARENTHESIZED_HEAD)) {
+      const end = parenthesisEnd(source, match.index + match[0].length - 1);
+      if (end === null) continue;
+      const slash = skipTrivia(source, end).at;
+      if (matters(slash)) slashes.push(slash);
+    }
+    return slashes.sort((a, b) => a - b);
+  }
+  function regexBody(source, slash) {
+    let inClass = false;
+    for (let at2 = slash + 1; at2 < source.length; at2++) {
+      const ch = source[at2];
+      if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") return source.slice(slash + 1, at2);
+      if (ch === "\\") at2++;
+      else if (ch === "[") inClass = true;
+      else if (ch === "]") inClass = false;
+      else if (ch === "/" && !inClass) return source.slice(slash + 1, at2);
+    }
+    return source.slice(slash + 1);
+  }
+  function htmlComments(source, lines) {
+    const spots = [];
+    for (const match of source.matchAll(/<!--|-->/g)) {
+      const at2 = match.index;
+      if (match[0] === "-->") {
+        let before = at2;
+        while (before > 0 && (source[before - 1] === " " || source[before - 1] === "	")) before--;
+        if (before !== lines.startOf(at2)) continue;
+      }
+      spots.push(at2);
+    }
+    return spots;
+  }
+
   var DYNAMIC_IMPORT_HELPER = "__nimbusDynamicImport";
   function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
@@ -8614,7 +8744,6 @@ return globalThis.Go;
   var DYNAMIC_IMPORT = 2;
   var IMPORT_META = 3;
   var METADATA_BINDING = "__nimbusMetadataModule";
-  var IMPORT_SYNTAX = /\bimport\s*(?:[(.]|\/[/*])/;
   var IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
   var RETAINED_LEXER_CHARS = 256 * 1024;
   var moduleLexer = null;
@@ -8643,7 +8772,7 @@ return globalThis.Go;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
     const imports = lexImports(source);
     const lines = new Lines(source);
-    const passed = passedOver(source, lines, imports, ambiguousSlashes(source, lines));
+    const passed = passedOver(source, imports, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
     if (passed === null) return null;
     const calls = [];
     const metas = [];
@@ -8652,9 +8781,10 @@ return globalThis.Go;
       else if (metadata && entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
     }
     for (const at2 of passed) {
-      const site = callAt(source, at2);
-      if (site === null) return null;
-      calls.push(site);
+      const open = skipTrivia(source, at2 + "import".length).at;
+      const end = source[open] === "(" ? parenthesisEnd(source, open) : null;
+      if (end === null) return null;
+      calls.push({ ss: at2, se: end, d: open, lexed: false });
     }
     calls.sort((a, b) => a.ss - b.ss);
     const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
@@ -8674,88 +8804,13 @@ return globalThis.Go;
     if (!metas.length) return applyEdits(code, edits, metas, null, 0);
     return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
   }
-  var LINE_END = /[\n\r\u2028\u2029]/g;
-  function lineEnd(text, at2) {
-    LINE_END.lastIndex = at2;
-    return LINE_END.exec(text)?.index ?? text.length;
-  }
-  var BEFORE_AMBIGUOUS_SLASH = /(?:\}|\+\+|--|(?<![\w$.\\])(?:extends|of|default|yield|await))(?=[\s/])|\.(?=\s|\/[/*])/g;
-  var MEMBER_KEYWORD = /^(?:case|debugger|delete|do|else|in|instanceof|new|return|throw|typeof|void|yield|await)(?![\w$])/;
-  function ambiguousSlashes(source, lines) {
-    const slashes = [];
-    let imports = null;
-    for (const match of source.matchAll(BEFORE_AMBIGUOUS_SLASH)) {
-      let after = match.index + match[0].length;
-      if (match[0] === ".") {
-        const name = skipTrivia(source, after).at;
-        const keyword = MEMBER_KEYWORD.exec(source.slice(name, name + 11));
-        if (keyword === null) continue;
-        after = name + keyword[0].length;
-      }
-      const slash = skipTrivia(source, after).at;
-      if (source[slash] !== "/" || source[slash + 1] === "/" || source[slash + 1] === "*") continue;
-      const body = regexBody(source, slash);
-      if (!IMPORT_SYNTAX.test(body)) {
-        if (!/['"`]/.test(body)) continue;
-        imports ??= Array.from(source.matchAll(IMPORT_SYNTAX_ALL), (found) => found.index);
-        const next = imports[firstAtOrAfter(imports, slash)];
-        if (next === void 0 || next >= lines.endOf(slash)) continue;
-      }
-      slashes.push(slash);
-    }
-    return slashes;
-  }
-  var IMPORT_SYNTAX_ALL = new RegExp(IMPORT_SYNTAX.source, "g");
-  function firstAtOrAfter(positions, at2) {
-    let low = 0;
-    let high = positions.length;
-    while (low < high) {
-      const middle = low + high >>> 1;
-      if (positions[middle] < at2) low = middle + 1;
-      else high = middle;
-    }
-    return low;
-  }
-  var Lines = class {
-    constructor(source) {
-      this.source = source;
-      this.breaks = Array.from(source.matchAll(/[\n\r\u2028\u2029]/g), (found) => found.index);
-    }
-    source;
-    breaks;
-    endOf(at2) {
-      return this.breaks[firstAtOrAfter(this.breaks, at2)] ?? this.source.length;
-    }
-    startOf(at2) {
-      const before = firstAtOrAfter(this.breaks, at2) - 1;
-      return before < 0 ? 0 : this.breaks[before] + 1;
-    }
-  };
-  function regexBody(source, slash) {
-    let inClass = false;
-    for (let at2 = slash + 1; at2 < source.length; at2++) {
-      const ch = source[at2];
-      if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") return source.slice(slash + 1, at2);
-      if (ch === "\\") at2++;
-      else if (ch === "[") inClass = true;
-      else if (ch === "]") inClass = false;
-      else if (ch === "/" && !inClass) return source.slice(slash + 1, at2);
-    }
-    return source.slice(slash + 1);
-  }
   var CODE_MARK = " import.meta ";
-  function passedOver(source, lines, imports, slashes) {
+  function passedOver(source, imports, hazards) {
     const reported =   new Set();
     for (const entry of imports) if (entry.t === DYNAMIC_IMPORT) reported.add(entry.ss);
-    const marks = slashes.map((at2) => ({ at: at2, call: false }));
-    for (const match of source.matchAll(/\bimport\s*(?:\(|\/[/*])|<!--|-->/g)) {
-      const at2 = match.index;
-      if (match[0] === "<!--") marks.push({ at: at2, call: false });
-      else if (match[0] === "-->") {
-        let before = at2;
-        while (before > 0 && (source[before - 1] === " " || source[before - 1] === "	")) before--;
-        if (before === lines.startOf(at2)) marks.push({ at: at2, call: false });
-      } else if (!reported.has(at2) && !isMemberName(source, at2)) marks.push({ at: at2, call: true });
+    const marks = hazards.map((at2) => ({ at: at2, call: false }));
+    for (const match of source.matchAll(/\bimport\s*(?:\(|\/[/*])/g)) {
+      if (!reported.has(match.index) && !isMemberName(source, match.index)) marks.push({ at: match.index, call: true });
     }
     if (!marks.length) return [];
     marks.sort((a, b) => a.at - b.at);
@@ -8781,47 +8836,6 @@ return globalThis.Go;
     while (before > 0 && /\s/.test(source[before - 1])) before--;
     return source[before - 1] === "." && source[before - 2] !== ".";
   }
-  function callAt(source, at2) {
-    const open = skipTrivia(source, at2 + "import".length).at;
-    if (source[open] !== "(") return null;
-    for (let window = 1024; ; window *= 2) {
-      const text = source.slice(open, open + window);
-      try {
-        const tokens = tokenizer2(text, { ecmaVersion: "latest" });
-        let depth = 0;
-        for (let token = tokens.getToken(); token.type !== types$1.eof; token = tokens.getToken()) {
-          if (token.type === types$1.parenL) depth++;
-          else if (token.type === types$1.parenR && --depth === 0) return { ss: at2, se: open + token.end, d: open, lexed: false };
-        }
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-      }
-      if (open + window >= source.length) return null;
-    }
-  }
-  function skipTrivia(source, at2) {
-    let newline = false;
-    for (; ; ) {
-      const ch = source[at2];
-      if (ch === "/" && source[at2 + 1] === "/") {
-        at2 = lineEnd(source, at2);
-        continue;
-      }
-      if (ch === "/" && source[at2 + 1] === "*") {
-        const close = source.indexOf("*/", at2 + 2);
-        if (close < 0) return { at: source.length, newline };
-        if (/[\n\r\u2028\u2029]/.test(source.slice(at2, close))) newline = true;
-        at2 = close + 2;
-        continue;
-      }
-      if (ch !== void 0 && /\s/.test(ch)) {
-        if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") newline = true;
-        at2++;
-        continue;
-      }
-      return { at: at2, newline };
-    }
-  }
   function afterNew(source, at2) {
     return /(?:^|[^\w$.\\])new(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*$/.test(source.slice(Math.max(0, at2 - 256), at2));
   }
@@ -8835,29 +8849,37 @@ return globalThis.Go;
     if (!member) return "call";
     return closes("(function(){", rest, "BlockStatement") || closes("(async function*(){", rest, "BlockStatement") ? null : "method";
   }
+  var PARSE_STATEMENT = Reflect.get(Parser.prototype, "parseStatement");
+  var PARSE_DYNAMIC_IMPORT = Reflect.get(Parser.prototype, "parseDynamicImport");
+  var PARSE_IMPORT_META = Reflect.get(Parser.prototype, "parseImportMeta");
+  var PARSE_IDENT = Reflect.get(Parser.prototype, "parseIdent");
+  var FINISH_NODE = Reflect.get(Parser.prototype, "finishNode");
   var ContainerClosed = class extends Error {
   };
+  var ContainerParser = class extends Parser {
+    constructor(options, input, containerType, containerStart) {
+      super(options, input);
+      this.containerType = containerType;
+      this.containerStart = containerStart;
+    }
+    containerType;
+    containerStart;
+    finishNode(node, type) {
+      const finished = Reflect.apply(FINISH_NODE, this, [node, type]);
+      if (type === this.containerType && node.start === this.containerStart) throw new ContainerClosed();
+      return finished;
+    }
+  };
   function closes(prefix, rest, type) {
-    const start = prefix.length - 1;
-    const ContainerParser = Parser.extend((Base) => {
-      const finishNode = Reflect.get(Base.prototype, "finishNode");
-      return class extends Base {
-        finishNode(node, nodeType) {
-          const finished = Reflect.apply(finishNode, this, [node, nodeType]);
-          if (nodeType === type && node.start === start) throw new ContainerClosed();
-          return finished;
-        }
-      };
-    });
     for (const sourceType of ["script", "module"]) {
       try {
-        ContainerParser.parse(prefix + rest, {
+        new ContainerParser({
           ecmaVersion: "latest",
           sourceType,
           allowAwaitOutsideFunction: true,
           allowSuperOutsideMethod: true,
           checkPrivateFields: false
-        });
+        }, prefix + rest, type, prefix.length - 1).parse();
       } catch (error) {
         if (error instanceof ContainerClosed) return true;
         if (!(error instanceof SyntaxError)) throw error;
@@ -8930,71 +8952,71 @@ return globalThis.Go;
     }
     return insertion;
   }
+  var ImportCollector = class extends Parser {
+    constructor(options, input, collected) {
+      super(options, input);
+      this.collected = collected;
+    }
+    collected;
+    parseDynamicImport(node) {
+      const end = Reflect.get(this, "end");
+      const parsed = Reflect.apply(PARSE_DYNAMIC_IMPORT, this, [node]);
+      this.collected.edits.push({ start: node.start, end, text: this.collected.call });
+      return parsed;
+    }
+    parseStatement(context, topLevel, exports) {
+      const node = Reflect.apply(PARSE_STATEMENT, this, [context, topLevel, exports]);
+      if (!topLevel) return node;
+      if (node.type === "ExpressionStatement") {
+        const expression = Reflect.get(node, "expression");
+        if (expression?.type === "Literal" && typeof expression.value === "string") return node;
+      }
+      return { type: "EmptyStatement", start: node.start, end: node.end };
+    }
+  };
+  var MetadataCollector = class extends ImportCollector {
+    parseImportMeta(node) {
+      const parsed = Reflect.apply(PARSE_IMPORT_META, this, [node]);
+      this.collected.metas.push({ start: node.start, end: node.end });
+      return parsed;
+    }
+    parseIdent(liberal) {
+      const node = Reflect.apply(PARSE_IDENT, this, [liberal]);
+      this.collected.names.add(Reflect.get(node, "name"));
+      return node;
+    }
+  };
   function rewriteWithGrammar(code, parentUrl, metadata) {
-    const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
-    const edits = [];
-    const metas = [];
-    const names = metadata ?   new Set() : null;
-    let StreamingParser = Parser.extend((Base) => {
-      const parseStatement = Reflect.get(Base.prototype, "parseStatement");
-      const parseDynamicImport = Reflect.get(Base.prototype, "parseDynamicImport");
-      return class extends Base {
-        parseDynamicImport(node) {
-          const end = Reflect.get(this, "end");
-          const parsed = Reflect.apply(parseDynamicImport, this, [node]);
-          edits.push({ start: node.start, end, text: call });
-          return parsed;
-        }
-        parseStatement(context, topLevel, exports) {
-          const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
-          if (!topLevel) return node;
-          if (node.type === "ExpressionStatement") {
-            const expression = Reflect.get(node, "expression");
-            if (expression?.type === "Literal" && typeof expression.value === "string") return node;
-          }
-          return { type: "EmptyStatement", start: node.start, end: node.end };
-        }
-      };
-    });
-    if (metadata) StreamingParser = StreamingParser.extend((Base) => {
-      const parseIdent = Reflect.get(Base.prototype, "parseIdent");
-      const parseImportMeta = Reflect.get(Base.prototype, "parseImportMeta");
-      return class extends Base {
-        parseImportMeta(node) {
-          const parsed = Reflect.apply(parseImportMeta, this, [node]);
-          metas.push({ start: node.start, end: node.end });
-          return parsed;
-        }
-        parseIdent(liberal) {
-          const node = Reflect.apply(parseIdent, this, [liberal]);
-          names.add(Reflect.get(node, "name"));
-          return node;
-        }
-      };
-    });
+    const collected = {
+      call: DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ",
+      edits: [],
+      metas: [],
+      names: metadata ?   new Set() : null
+    };
+    const Collector = metadata ? MetadataCollector : ImportCollector;
     for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
-      edits.length = 0;
-      metas.length = 0;
-      names?.clear();
+      collected.edits.length = 0;
+      collected.metas.length = 0;
+      collected.names?.clear();
       let program;
       try {
-        program = StreamingParser.parse(code, {
+        program = new Collector({
           ecmaVersion: "latest",
           sourceType,
           allowReturnOutsideFunction: true,
           allowAwaitOutsideFunction: true,
           allowHashBang: true
-        });
+        }, code, collected).parse();
       } catch {
         continue;
       }
-      if (!edits.length && !metas.length) return code;
+      if (!collected.edits.length && !collected.metas.length) return code;
       let insertion = program.body[0]?.start ?? code.length;
       for (const statement of program.body) {
         if (typeof Reflect.get(statement, "directive") !== "string") break;
         insertion = statement.end;
       }
-      return applyEdits(code, edits, metas, names, insertion);
+      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
     }
     return code;
   }

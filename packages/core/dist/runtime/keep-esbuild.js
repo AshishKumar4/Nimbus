@@ -66,15 +66,27 @@ export function keepEsbuild(start, highWaterBytes) {
  * one; after a wasm trap esbuild fails every call itself. Such failures carry
  * `transient: true`: they are no verdict on the source. Nothing global is
  * replaced.
+ *
+ * The instance outlives many calls, so no call may stay reachable from it.
+ * A pending call is held (to be failed if Go exits) only until it settles.
+ * esbuild's adapter itself keeps every call's promise, and so its result,
+ * reachable while the instance lives (each call subscribes to its
+ * `rejectAllPromise`): 120 transforms of a 190 KiB module left 19.2 of their
+ * 23.1 MiB of output on V8's heap. So the caller gets a copy of the result,
+ * and the result esbuild keeps is emptied of its code and map; the heap then
+ * ends 4 MiB smaller than it started (keep-esbuild-heap.mjs).
  */
 export async function startObservedEsbuild(newEsbuild, wasmModule) {
     let memory = null;
     let closed = false;
-    let exit = () => { };
-    const exited = new Promise((_, reject) => {
-        exit = () => reject(new Error('esbuild stopped: its Go program exited'));
-    });
-    exited.catch(() => { });
+    const pending = new Set();
+    const stopped = () => Object.assign(new Error('esbuild stopped: its Go program exited'), { transient: true });
+    const exit = () => {
+        closed = true;
+        for (const fail of pending)
+            fail(stopped());
+        pending.clear();
+    };
     const observed = Object.create(WebAssembly, {
         instantiate: {
             value: async (module, imports) => {
@@ -83,7 +95,6 @@ export async function startObservedEsbuild(newEsbuild, wasmModule) {
                 let watched = imports;
                 if (typeof wasmExit === 'function') {
                     const onExit = (sp) => {
-                        closed = true;
                         exit();
                         return Reflect.apply(wasmExit, undefined, [sp]);
                     };
@@ -104,18 +115,27 @@ export async function startObservedEsbuild(newEsbuild, wasmModule) {
     const linear = memory;
     return {
         esbuild: {
-            transform: async (input, options) => {
-                try {
-                    return await Promise.race([esbuild.transform(input, options), exited]);
+            transform: (input, options) => new Promise((resolve, reject) => {
+                if (closed) {
+                    reject(stopped());
+                    return;
                 }
-                catch (error) {
+                pending.add(reject);
+                esbuild.transform(input, options).then((result) => {
+                    pending.delete(reject);
+                    const output = { ...result };
+                    result.code = '';
+                    result.map = '';
+                    resolve(output);
+                }, (error) => {
+                    pending.delete(reject);
                     if (error instanceof WebAssembly.RuntimeError)
                         closed = true;
                     if (closed && error instanceof Error)
                         Reflect.set(error, 'transient', true);
-                    throw error;
-                }
-            },
+                    reject(error);
+                });
+            }),
             stop: () => esbuild.stop(),
         },
         memoryBytes: () => linear.buffer.byteLength,
