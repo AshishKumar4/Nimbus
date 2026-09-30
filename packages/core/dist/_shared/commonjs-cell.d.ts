@@ -95,7 +95,12 @@ export type RuntimeCodeEntry = {
 export declare function runtimeModuleScope(path: string): [dir: string, ext: string];
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export declare function runtimeCodeKey(entry: RuntimeCodeEntry): string;
-/** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES. */
+/**
+ * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES:
+ * everything it holds. A module keeps its path beside its text, and a data:
+ * URL's path is the whole module again, so it is charged for both. The guest
+ * ledger charges the same (__nimbusRuntimeCodeCompile).
+ */
 export declare function runtimeCodeCharge(entry: RuntimeCodeEntry): number;
 /** The module name of the runtime code with key `key`. */
 export declare function runtimeCodeModuleName(key: string): string;

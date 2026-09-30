@@ -880,11 +880,20 @@ let __nimbusAttachedLifecycle = null;
 // dispatch (__nimbusServeHttp), exactly once.
 const __nimbusPlatformSetTimeout = setTimeout;
 
+// A failed report of generated code or misses costs the next launch what this
+// one learned, and nothing else: the program's own writes and responses do not
+// wait on it. The failure is told to the guest's stderr, where the next-launch
+// guidance it would otherwise contradict is printed.
+async function __nimbusReportLearningFailure(supervisor, error) {
+  try {
+    if (supervisor) await supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+  } catch {}
+}
+
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    await __nimbusFlushRuntimeCode(rt.supervisor);
     const __vfsTasks = [];
     if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
       for (const path of Object.keys(rt.vfsWrites)) {
@@ -912,6 +921,10 @@ async function __nimbusFlushRuntime() {
       rt.pendingIO.length = 0;
       rt.settledIO = 0;
     }
+    // After the drain, so the program's writes are durable whatever happens
+    // to the report; unacknowledged entries are sent again by the next flush.
+    const [__learning] = await Promise.allSettled([__nimbusFlushRuntimeCode(rt.supervisor)]);
+    if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
     const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
     if (__vfsFailure) throw __vfsFailure.reason;
   });
@@ -926,6 +939,8 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const args = __NIMBUS_ARGS;
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
+    // Every resident process has a live input channel on its pid.
+    const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
     // Off the start payload, never out of the module text: this body is
     // content-addressed into the facet image store, and a revision that
     // advances on every spawn would give the same program a new image each
@@ -935,9 +950,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     const __supervisor = workerEnv?.SUPERVISOR || null;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
-        // Report failure to the guest's stderr, not only the platform log:
-        // its next-launch guidance would otherwise conceal a failed write.
-        if (__supervisor) await __supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
+        await __nimbusReportLearningFailure(__supervisor, error);
         throw error;
       });
       // Code may be produced by a timer after boot has returned, not by an
@@ -6122,10 +6135,13 @@ export class FacetManager {
         // application was given follows the reservation, not the recipe.
         const spawnEnv = launchEnv === undefined ? opts.env : { ...(opts.env || {}), ...launchEnv };
         // Every long-running process has an input channel on its pid, and its
-        // stdin reads that channel (NIMBUS_CP_CHILD_PID) once the program
-        // consumes stdin. A backgrounded server started from the terminal sees
-        // its stdin stay open, as a job's terminal stdin does, instead of an
-        // immediate EOF; only an attached one is a TTY.
+        // stdin reads that channel once the program consumes stdin. A
+        // backgrounded server started from the terminal sees its stdin stay open,
+        // as a job's terminal stdin does, instead of an immediate EOF; only an
+        // attached one is a TTY. The pid travels in the start payload (startArgs),
+        // not the env: the env is part of the generated worker, which is
+        // content-addressed into the image store, so a pid there gave every
+        // restart of the same server a new image.
         const processEnv = opts.attachedTty
             ? {
                 ...(spawnEnv || {}),
@@ -6137,7 +6153,7 @@ export class FacetManager {
                 LINES: opts.env?.LINES || '24',
                 FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
             }
-            : { ...(spawnEnv || {}), NIMBUS_CP_CHILD_PID: String(entry.pid) };
+            : spawnEnv;
         // Answered by _buildProcessBundle while the raw cells were still in hand.
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
         const [sqliteModules, sources] = await Promise.all([
@@ -6206,7 +6222,7 @@ export class FacetManager {
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
                 startArgs: {
-                    vfsCursor, dataPlan,
+                    pid: entry.pid, vfsCursor, dataPlan,
                     ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
                     ...(this.debugEnabled ? { diag: true } : {}),
                 },

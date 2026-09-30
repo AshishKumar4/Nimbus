@@ -35,7 +35,7 @@ import { packageLockMismatches, parsePackageLock, stringList, stringRecord } fro
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { applySwaps, findRejects, lookupSwap, lookupReject, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
+import { applySwaps, findRejects, lookupSwap, lookupReject, swapCoversVersion, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '@nimbus-sh/platform/w7-frame.js';
 import { Fanout } from '@nimbus-sh/fabric/fanout.js';
@@ -1540,7 +1540,8 @@ export class NpmInstaller {
             // Policy follows the registry identity (`name`), placement the folder the lock
             // names: an aliased entry (`node_modules/build`, name `esbuild`) resolves as
             // the alias `build@npm:esbuild@<locked>`, so the swap target lands in build.
-            if (lookupSwap(name)) {
+            const swap = lookupSwap(name);
+            if (swap && swapCoversVersion(swap, version)) {
                 swapPlacements.push({ placement, folderName, spec: folderName === name ? version : `npm:${name}@${version}` });
                 continue;
             }
