@@ -2,15 +2,13 @@
 // WASI Stage 1: chmod(1) mode-spec parsing — octal and symbolic forms.
 
 import assert from 'node:assert/strict';
-import {
-  parseModeSpec,
-  applyModeSpec,
-} from '../../packages/core/src/substrate/lifo/commands/fs/chmod.ts';
+import { adjustMode, compileMode } from '../../packages/core/src/substrate/lifo/utils/mode-change.ts';
 
+// chmod applies a mode with no umask: a clause without a who applies to everyone.
 function apply(spec, current, isDir = false) {
-  const parsed = parseModeSpec(spec);
+  const parsed = compileMode(spec);
   assert.ok(parsed, `spec '${spec}' must parse`);
-  return applyModeSpec(parsed, current, isDir);
+  return adjustMode(current, isDir, 0, parsed);
 }
 
 // ── octal ────────────────────────────────────────────────────────────────
@@ -44,11 +42,21 @@ assert.equal(apply('a+rX', 0o700, false), 0o755, 'X grants x when a file already
 assert.equal(apply('a+rX', 0o600, false), 0o644, 'X skips non-exec files');
 assert.equal(apply('a-X', 0o755, false), 0o644, '-X removes exec from exec files');
 
+// ── gnulib's wider grammar: copies, set-id, sticky, octal clauses ────────
+assert.equal(apply('u=g', 0o640), 0o440, 'u=g copies the group bits');
+assert.equal(apply('+t', 0o755, true), 0o1755);
+assert.equal(apply('g+s', 0o755), 0o2755);
+assert.equal(apply('00644', 0o755), 0o644, 'five octal digits');
+assert.equal(apply('+111', 0o644), 0o755, 'an octal clause');
+assert.equal(apply('u+rw-x', 0o755), 0o655, 'two operations in one clause');
+assert.equal(compileMode('u+111'), null, 'an octal clause takes no who');
+assert.equal(compileMode('10000'), null, 'beyond 07777');
+
 // ── invalid specs ────────────────────────────────────────────────────────
-assert.equal(parseModeSpec('banana'), null);
-assert.equal(parseModeSpec('u~x'), null);
-assert.equal(parseModeSpec('88'), null, 'non-octal digits rejected');
-assert.equal(parseModeSpec(''), null);
-assert.equal(parseModeSpec('u+x,'), null, 'trailing empty clause rejected');
+assert.equal(compileMode('banana'), null);
+assert.equal(compileMode('u~x'), null);
+assert.equal(compileMode('88'), null, 'non-octal digits rejected');
+assert.equal(compileMode(''), null);
+assert.equal(compileMode('u+x,'), null, 'trailing empty clause rejected');
 
 console.log('chmod-mode-spec: all assertions passed');
