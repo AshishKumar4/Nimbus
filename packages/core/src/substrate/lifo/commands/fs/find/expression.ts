@@ -235,20 +235,28 @@ class Parser {
     return relativeTimestamp(argument, origin, unitSeconds);
   }
 
-  /** stat as the walk will (links per -P/-H/-L, the command line counting as depth 0), failing the command as GNU does. */
+  /**
+   * stat as the walk will (links per -P/-H/-L, the command line counting as
+   * depth 0), failing the command as GNU does. A trailing slash names the
+   * directory a link leads to, and nothing else, as path resolution does.
+   */
   async statReference(path: string): Promise<ProcessStat> {
     const absolute = resolve(this.environment.cwd, path);
     const vfs = this.environment.vfs;
+    const directoryOnly = path.length > 1 && path.endsWith('/');
     try {
       let stat: ProcessStat | null = null;
-      if (this.symlinks !== 'P') {
+      if (directoryOnly) {
+        stat = await vfs.stat(absolute);
+        if (stat !== null && stat.type !== 'directory') throw new FindUsageError(`${quote(path)}: ${VFS_STRERROR.ENOTDIR}`);
+      } else if (this.symlinks !== 'P') {
         // A dangling link is examined itself (findutils' fallback_stat).
         stat = await vfs.stat(absolute).catch((error: unknown) => {
           if (isVfsError(error, 'ENOTDIR')) return null;
           throw error;
         });
       }
-      stat ??= await vfs.stat(absolute, { follow: false });
+      if (!directoryOnly) stat ??= await vfs.stat(absolute, { follow: false });
       if (stat !== null) return stat;
       throw new FindUsageError(`${quote(path)}: ${VFS_STRERROR.ENOENT}`);
     } catch (error) {
@@ -277,9 +285,10 @@ function relativeTimestamp(argument: string, origin: number, unitSeconds: number
   const sign = argument[0];
   const cmp: Comparison = sign === '+' ? 'lt' : sign === '-' ? 'gt' : 'eq';
   const text = sign === '+' || sign === '-' ? argument.slice(1) : argument;
-  // strtod's decimal form, which takes a sign of its own (`+-1` is accepted).
+  // strtod's decimal form, which takes a sign of its own (`+-1` is accepted); out of range is refused as strtod refuses it.
   if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) return null;
-  return { cmp, reference: origin - Number(text) * unitSeconds * 1000 };
+  const reference = origin - Number(text) * unitSeconds * 1000;
+  return Number.isFinite(reference) ? { cmp, reference } : null;
 }
 
 /** findutils' get_num: an optional +/- and a decimal integer. */
@@ -753,8 +762,12 @@ function hasAction(items: readonly Item[]): boolean {
   return items.some((item) => item.type === 'primary' && item.action);
 }
 
-/** findutils' process_optimisation_option: the level only reorders side-effect-free tests, which changes no result. */
-function checkOptimisationLevel(level: string): void {
+/**
+ * findutils' process_optimisation_option. The level decides which tests
+ * promoteCheapTests moves; levels 2 and 3 reorder by estimated cost as well,
+ * which this find does not, and runs as level 1.
+ */
+function optimisationLevel(level: string): number {
   if (level === '') throw new FindUsageError('The -O option must be immediately followed by a decimal integer');
   if (!(level[0] >= '0' && level[0] <= '9')) throw new FindUsageError('Please specify a decimal number immediately after -O');
   if (!/^\d+$/.test(level)) throw new FindUsageError(`Invalid optimisation level ${level}`);
@@ -763,11 +776,73 @@ function checkOptimisationLevel(level: string): void {
   if (value > 65535n) {
     throw new FindUsageError(`Optimisation level ${value} is too high.  If you want to find files very quickly, consider using GNU locate.`);
   }
+  return Number(value);
+}
+
+/** Whether evaluating the expression can do anything but answer (findutils' side_effects). */
+function hasSideEffects(expression: Expression): boolean {
+  switch (expression.kind) {
+    case 'and': case 'or': case 'comma': return hasSideEffects(expression.left) || hasSideEffects(expression.right);
+    case 'not': return hasSideEffects(expression.operand);
+    case 'primary': {
+      const kind = expression.primary.kind;
+      return kind === 'print' || kind === 'printf' || kind === 'exec' || kind === 'delete' || kind === 'prune' || kind === 'quit';
+    }
+  }
+}
+
+/** Tests that read nothing, and so cannot fail (findutils' predicate_is_cost_free). */
+function costFree(expression: Expression, level: number): boolean {
+  if (expression.kind !== 'primary') return false;
+  const kind = expression.primary.kind;
+  return kind === 'name' || kind === 'path' || (level > 0 && (kind === 'true' || kind === 'false'));
+}
+
+/**
+ * findutils' opt_expr, as far as it shows: in each run of -a (or of -o),
+ * between the parts that do something, the tests that read nothing are
+ * moved ahead of the rest. `-empty -name x` never reads a directory whose
+ * name is not x, so it never reports one it cannot read.
+ */
+function promoteCheapTests(expression: Expression, level: number): Expression {
+  switch (expression.kind) {
+    case 'primary': return expression;
+    case 'not': return { kind: 'not', operand: promoteCheapTests(expression.operand, level) };
+    // A comma's operands are never reordered.
+    case 'comma': return { kind: 'comma', left: promoteCheapTests(expression.left, level), right: promoteCheapTests(expression.right, level) };
+    case 'and': case 'or': {
+      const op = expression.kind;
+      const run: Expression[] = [];
+      let at: Expression = expression;
+      while (at.kind === op) {
+        run.unshift(at.right);
+        at = at.left;
+      }
+      run.unshift(at);
+      const ordered: Expression[] = [];
+      let cheap: Expression[] = [];
+      let rest: Expression[] = [];
+      for (const part of run.map((item) => promoteCheapTests(item, level))) {
+        if (hasSideEffects(part)) {
+          ordered.push(...cheap, ...rest, part);
+          cheap = [];
+          rest = [];
+        } else if (costFree(part, level)) {
+          cheap.push(part);
+        } else {
+          rest.push(part);
+        }
+      }
+      ordered.push(...cheap, ...rest);
+      return ordered.reduce((left, right) => ({ kind: op, left, right }));
+    }
+  }
 }
 
 /** Parse find's arguments into what to walk and what to evaluate at each file. */
 export async function parseFindCommand(args: readonly string[], environment: ParseEnvironment): Promise<FindCommand> {
   let symlinks: SymlinkMode = 'P';
+  let level = 1;
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
@@ -776,7 +851,7 @@ export async function parseFindCommand(args: readonly string[], environment: Par
     else if (arg === '-D') {
       if (i + 1 >= args.length) throw new FindUsageError('Missing argument after the -D option.', ["Try 'find --help' for more information."]);
       throw new FindUsageError('the -D debug option is not supported here');
-    } else if (arg.startsWith('-O')) checkOptimisationLevel(arg.slice(2));
+    } else if (arg.startsWith('-O')) level = optimisationLevel(arg.slice(2));
     else break;
   }
   const startIndex = i;
@@ -845,5 +920,5 @@ export async function parseFindCommand(args: readonly string[], environment: Par
     if (leftover.type === 'close') throw new FindUsageError("you have too many ')'");
     throw new FindUsageError(`unexpected extra predicate '${leftover.name}'`);
   }
-  return parser.plan(expression);
+  return parser.plan(promoteCheapTests(expression, level));
 }

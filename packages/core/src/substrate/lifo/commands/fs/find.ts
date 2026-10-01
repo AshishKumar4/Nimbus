@@ -139,8 +139,12 @@ class FindRun {
   }
 
   async run(): Promise<number> {
-    await this.walker.run(this.plan.startPoints);
-    await this.walker.settled();
+    try {
+      await this.walker.run(this.plan.startPoints);
+    } finally {
+      // However the walk ends (a closed pipe throws out of a write), nothing it started outlives it.
+      await this.walker.settled();
+    }
     // findutils' cleanup: what -exec … + and -execdir … + still hold runs, -quit or not.
     for (const batch of this.batches.values()) await this.flush(batch);
     if (this.ctx.signal.aborted) return 130;
@@ -202,8 +206,9 @@ class FindRun {
         return stat !== null && timeWindow(timeOf(stat, primary.field), primary.cmp, primary.reference, primary.window);
       }
       case 'used': {
+        // How long after its last change the file was last read; never, when it was not read since (findutils' pred_used).
         const stat = await entry.statForTest();
-        return stat !== null && timeWindow(stat.atimeMs - stat.ctimeMs, primary.cmp, primary.reference, 86400);
+        return stat !== null && stat.atimeMs >= stat.ctimeMs && timeWindow(stat.ctimeMs - stat.atimeMs, primary.cmp, primary.reference, 86400);
       }
       case 'newer': {
         const stat = await entry.statForTest();
@@ -379,7 +384,8 @@ class FindRun {
   }
 
   private async exec(primary: Extract<Primary, { kind: 'exec' }>, entry: FindEntry): Promise<boolean> {
-    const place = primary.inDirectory ? entry.execDirectory : { directory: this.ctx.cwd, argument: entry.path };
+    const place = primary.inDirectory ? await this.execDirectory(entry) : { directory: this.ctx.cwd, argument: entry.path };
+    if (place === null) return false;
     if (primary.batch) {
       const batch = this.batches.get(primary);
       if (batch === undefined) throw new Error('find: an -exec … + site without its batch');
@@ -392,6 +398,23 @@ class FindRun {
     }
     const argv = primary.argv.map((arg) => arg.split('{}').join(place.argument));
     return (await this.launch(argv, place.directory)) === 0;
+  }
+
+  /**
+   * Where -execdir runs a command for this file: the directory holding it,
+   * as the directory itself (findutils changes to it by descriptor), so a
+   * path the command resolves from there is not read through a link the
+   * walk followed to get there.
+   */
+  private async execDirectory(entry: FindEntry): Promise<{ directory: string; argument: string } | null> {
+    const place = entry.execDirectory;
+    try {
+      return { directory: await this.ctx.vfs.realpath(place.directory), argument: place.argument };
+    } catch (error) {
+      if (!isVfsError(error)) throw error;
+      await this.walker.report(`Failed to save working directory in order to run a command on ${quote(entry.path)}: ${VFS_STRERROR[error.code]}`);
+      return null;
+    }
   }
 
   /** Run what a batch holds as one command line; a failure is find's exit status, not the test's. */

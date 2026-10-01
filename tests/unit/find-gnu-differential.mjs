@@ -357,6 +357,9 @@ const CASES = [
   // A MemoryVFS keeps no ctime (it reports its mtime), so the mount point stays out of this one.
   ['.', '-ctime', '-1', '-maxdepth', '1', '!', '-name', 'mnt'],
   ['.', '-cmin', '+100000'],
+  // The MemoryVFS mounted at mnt keeps no atime or ctime of its own, so its files stay out of these.
+  ['.', '-type', 'f', '-used', '-1', '!', '-path', './mnt/*'],
+  ['.', '-type', 'f', '-used', '+1', '!', '-path', './mnt/*'],
   ['.', '-newer', 'Makefile'],
   ['.', '-newer', 'a/f.js'],
   ['.', '-newer', 'link-to-f', '-maxdepth', '1'],
@@ -398,6 +401,9 @@ const CASES = [
   ['.', '-type', 'f', '-links', '1', '-maxdepth', '1'],
   ['.', '-type', 'f', '-links', '+1'],
   ['.', '-samefile', 'a/f.js'],
+  ['.', '-samefile', 'link-to-a/'],
+  ['.', '-samefile', 'a/f.js/'],
+  ['.', '-newer', 'dangling/'],
   ['-L', 'a', 'link-to-f', '-samefile', 'a/f.js'],
   ['.', '-maxdepth', '1', '-executable'],
   ['.', '-maxdepth', '1', '!', '-readable'],
@@ -440,6 +446,8 @@ const CASES = [
   ['a', '-execdir', 'echo', '{}', ';'],
   ['a', '-execdir', 'echo', '{}', '+'],
   ['a/b', '-execdir', 'pwd', ';'],
+  ['-L', 'link-to-a', '-name', 'f.js', '-execdir', 'pwd', ';'],
+  ['-H', 'link-to-a/', '-maxdepth', '1', '-name', 'g.ts', '-execdir', 'pwd', ';'],
   ['.', '-maxdepth', '0', '-execdir', 'echo', '{}', ';'],
   ['a', 'node_modules', '-name', '*.js*', '-execdir', 'echo', '{}', '+'],
   ['a', '-print', '-execdir', 'echo', 'dir', '{}', '+'],
@@ -459,7 +467,7 @@ const CASES = [
   ['.', '-maxdepth', '1', '-printf', '%-12f|%12f|%.3f|%-5.2p|\\n'],
   ['.', '-type', 'f', '-printf', '%t | %a\\n'],
   ['.', '-printf', '%TY-%Tm-%Td %TH:%TM %Tz %TZ %Ta %TA %Tb %TB %Tj %Tu %Tw %TU %TW %TV %TG %Tg %TC %Ty %Te %Tk %Tl %TI %Tp\\n'],
-  ['.', '-printf', '%Tc|%TD|%Tx|%TX|%Tr|%TR|%TT|%TS|%Ts|%TF|%Th\\n'],
+  ['.', '-printf', '%Tc|%TD|%Tx|%TX|%Tr|%TR|%TT|%TS|%Ts|%TF|%Th|%TP\\n'],
   ['.', '-type', 'f', '-printf', '%T@ %T+ %A@ %AT\\n'],
   ['.', '-maxdepth', '1', '-printf', '%5d|%-5d|%05d|%+d|% d|%.3d\\n'],
   ['.', '-maxdepth', '1', '-printf', '%#m|%05m|%-6m|%.4m|%#o\\n'],
@@ -496,6 +504,16 @@ const CASES = [
   ['.', '-xdev', '-printf', '%p %y %m\\n'],
   ['.', '-xdev', '-depth', '-name', 'mnt'],
   ['-L', 'a', 'mnt', '-xdev'],
+
+  // What GNU tests first: the tests that read nothing come before those that read a stat or a directory
+  ['.', '-maxdepth', '1', '-empty', '-name', 'nope'],
+  ['.', '-size', '+0', '-name', 'nope'],
+  ['.', '(', '-type', 'f', '-size', '+0', ')', '-o', '-name', 'inside'],
+  ['.', '-empty', '-print', '-name', 'nope'],
+  ['.', '!', '-empty', '-name', 'nope'],
+  ['-O0', '.', '-size', '+0', '-false'],
+  ['-O1', '.', '-size', '+0', '-false'],
+  ['.', '-type', 'f', '-size', '+0', '-name', 'nope', ',', '-false'],
 
   // Unreadable directories
   ['.', '-name', 'secret*'],
@@ -549,6 +567,8 @@ const CASES = [
   ['.', '-size', '+k'],
   ['.', '-mtime', 'abc'],
   ['.', '-mmin', ''],
+  ['.', '-mtime', '1e999'],
+  ['.', '-mmin', '-1e999'],
   ['.', '-maxdepth', '-1'],
   ['.', '-maxdepth', '1a'],
   ['.', '-mindepth'],

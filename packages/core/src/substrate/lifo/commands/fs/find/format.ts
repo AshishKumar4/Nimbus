@@ -360,6 +360,7 @@ function strftime(letter: string, date: Date): string {
     case 'M': return pad(date.getUTCMinutes(), 2);
     case 'n': return '\n';
     case 'p': return hours < 12 ? 'AM' : 'PM';
+    case 'P': return hours < 12 ? 'am' : 'pm';
     case 'r': return `${strftime('I', date)}:${strftime('M', date)}:${strftime('S', date)} ${strftime('p', date)}`;
     case 'R': return `${strftime('H', date)}:${strftime('M', date)}`;
     case 's': return String(Math.floor(date.getTime() / 1000));

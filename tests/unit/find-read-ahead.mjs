@@ -109,6 +109,17 @@ assert.equal((await find('/slow -maxdepth 1')).readdirs.length, 1, '-maxdepth 1 
   assert.ok(quit.readdirs.length < directories, `-quit stops reading ahead: ${quit.readdirs.length} of ${directories} listings`);
 }
 
+// ── A closed pipe ends the walk, and with it everything read ahead ─────────
+{
+  calls.length = 0;
+  const result = await ws.exec('find /slow | head -n 1');
+  assert.equal(result.stdout, '/slow\n');
+  assert.equal(inFlight, 0, 'no call is left in flight when the pipeline returns');
+  const made = calls.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls.length, made, 'and none is started after it');
+}
+
 // ── -xdev: the mount point is listed, and nothing on the mount is read but its stat ──
 {
   const stay = await find('/ -xdev -maxdepth 2 -name slow');
