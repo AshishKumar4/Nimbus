@@ -3,7 +3,8 @@
  * scripts/bundle-node-shims.mjs. DO NOT EDIT.
  *
  * Pins the staged sources of the node-compat layer, promoted out of the worker
- * bundle: the shims, the VFS write ledger and the resident store. Each
+ * bundle: the shims, the VFS write ledger, the resident store, and the
+ * runtime-code interpreter with its host module. Each
  * <NAME>_BUILD_ID is a content-hash prefix so cache layers never serve stale
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
@@ -19,4 +20,12 @@ export declare const VFS_WRITE_LEDGER_SHA256: string;
 export declare const RESIDENT_STORE_ENTRY: string;
 export declare const RESIDENT_STORE_BUILD_ID: string;
 export declare const RESIDENT_STORE_SHA256: string;
+/** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
+export declare const JS_INTERPRETER_ENTRY: string;
+export declare const JS_INTERPRETER_BUILD_ID: string;
+export declare const JS_INTERPRETER_SHA256: string;
+/** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
+export declare const JS_INTERPRETER_OPS_ENTRY: string;
+export declare const JS_INTERPRETER_OPS_BUILD_ID: string;
+export declare const JS_INTERPRETER_OPS_SHA256: string;
 //# sourceMappingURL=node-shims-artifact.generated.d.ts.map

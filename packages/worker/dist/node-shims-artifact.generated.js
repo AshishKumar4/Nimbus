@@ -3,14 +3,15 @@
  * scripts/bundle-node-shims.mjs. DO NOT EDIT.
  *
  * Pins the staged sources of the node-compat layer, promoted out of the worker
- * bundle: the shims, the VFS write ledger and the resident store. Each
+ * bundle: the shims, the VFS write ledger, the resident store, and the
+ * runtime-code interpreter with its host module. Each
  * <NAME>_BUILD_ID is a content-hash prefix so cache layers never serve stale
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-f92f16c7d7c532e9.js";
-export const NODE_SHIMS_BUILD_ID = "f92f16c7d7c532e9";
-export const NODE_SHIMS_SHA256 = "f92f16c7d7c532e9b3c3cf8f5eaebbf531cdaf3b7bb5cd86db4e7608d162eba5";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-a4cf902d075b1e58.js";
+export const NODE_SHIMS_BUILD_ID = "a4cf902d075b1e58";
+export const NODE_SHIMS_SHA256 = "a4cf902d075b1e5816c399b6dc7e86065ecf4ee0e257c32551fef1ca202846c2";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-d33ee0034446c3e0.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "d33ee0034446c3e0";
@@ -19,3 +20,11 @@ export const VFS_WRITE_LEDGER_SHA256 = "d33ee0034446c3e087350fff3067664d97a95cdc
 export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-92386265e8b306dc.js";
 export const RESIDENT_STORE_BUILD_ID = "92386265e8b306dc";
 export const RESIDENT_STORE_SHA256 = "92386265e8b306dcf276dc525ae9f7e025f4c0b7cad5b470ab674e836c8cb33c";
+/** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
+export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-9822bc84020891fe.js";
+export const JS_INTERPRETER_BUILD_ID = "9822bc84020891fe";
+export const JS_INTERPRETER_SHA256 = "9822bc84020891feac0bc7a5e54ce0e1dd20abdb953efd7dcb7f567ef78e5128";
+/** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
+export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-754cb28cf64e7256.js";
+export const JS_INTERPRETER_OPS_BUILD_ID = "754cb28cf64e7256";
+export const JS_INTERPRETER_OPS_SHA256 = "754cb28cf64e725638206232b8ca2855102dbb7c99326f28e50824d8ce0ae39f";

@@ -1,0 +1,10 @@
+/**
+ * The error code of code the interpreter will not run (UnsupportedSyntax),
+ * which the guest answers with its next-launch refusal instead.
+ */
+export declare const INTERPRETER_UNSUPPORTED = "ERR_NIMBUS_INTERPRETER_UNSUPPORTED";
+/** Code the interpreter does not run, refused before any of it runs. */
+export declare class UnsupportedSyntax extends Error {
+    readonly code = "ERR_NIMBUS_INTERPRETER_UNSUPPORTED";
+}
+//# sourceMappingURL=unsupported.d.ts.map
