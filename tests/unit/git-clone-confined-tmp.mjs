@@ -21,6 +21,9 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
@@ -172,6 +175,21 @@ try {
   const lease = raw.acquireExclusiveMutation('home/user/copy', { includeMissingAncestors: true });
   await assert.rejects(copying, { code: 'EBUSY' }, 'the copy stops at the lease');
   raw.releaseExclusiveMutation(lease.owner);
+}
+
+// The clone's facet asks whether a legacy symlink sits under its root, by
+// the caller's name. The registry is keyed by storage key, so the question
+// is about the caller's own /tmp: a legacy link under the shared tmp/spoon
+// is not under A's, and one under A's private root is.
+{
+  const processes = new SessionProcessSupervisor();
+  const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
+  const { pid } = processes.spawn('git', ['git'], '/', { cred: A });
+  const asked = (path) => host.supervisorOp({ op: 'hasLegacySymlinkUnder', args: [path], pid });
+  getSymlinkRegistry(raw).set('tmp/shared-clone/link', 'elsewhere');
+  assert.equal(await asked('tmp/shared-clone'), false, 'the shared tree is not the caller\'s /tmp');
+  getSymlinkRegistry(raw).set(`${PRIVATE_ROOT}/own-clone/link`, 'elsewhere');
+  assert.equal(await asked('tmp/own-clone'), true, 'its own private tree is');
 }
 
 console.log('git clone into a confined /tmp: ok');
