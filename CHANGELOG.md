@@ -10,6 +10,9 @@ published independently in the `@nimbus-sh` npm scope.
   installed ~456 packages (sass, less, stylus, terser, tsx, Babel and their
   trees) where npm installs 70. A project that uses one of those tools
   lists it, as it would on a real machine (`npm i -D sass`).
+- `npm install` removes packages the project no longer needs, as npm does:
+  a dependency dropped from package.json, what only it needed, and its
+  bins. This also clears the optional peers earlier installs added.
 
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's

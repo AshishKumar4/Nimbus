@@ -116,6 +116,7 @@ import {
   npmBinManifestPath,
   packageBinEntries,
   type NpmBinEntry,
+  type NpmBinManifest,
 } from './bin-links.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -352,7 +353,7 @@ export class NpmInstaller {
       phases['lock-check'] = Date.now() - phaseStart;
     } else if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs)) {
       log(`Lockfile valid (${lockfile.size} packages). Skipping resolution.`);
-      ({ resolved, nested } = this.lockfileToResolved(lockfile));
+      ({ resolved, nested } = this.lockfileToResolved(this.reachableFromSpecs(lockfile, specs)));
       usedLockfile = true;
       phases['lock-check'] = Date.now() - phaseStart;
     } else {
@@ -410,6 +411,15 @@ export class NpmInstaller {
     setInstallPhase('hoist');
     const hoistPlan = computeHoistPlan(resolved, nested);
     phases['hoist'] = Date.now() - phaseStart;
+
+    // ── Prune ────────────────────────────────────────────────────────
+    // What an earlier install placed that this tree no longer holds is
+    // extraneous (a dependency the project dropped), and npm removes it on
+    // install. `npm install <pkg>` resolves only what it adds, so it prunes
+    // nothing.
+    const pruned = lockfile && !opts?.packages
+      ? await this.pruneExtraneous(lockfile, hoistPlan, nmDir, project, log)
+      : 0;
 
     // ── Phase 3: Diff (cache check) ─────────────────────────────────
     // Per placement: a nested copy is checked at its own directory.
@@ -493,7 +503,7 @@ export class NpmInstaller {
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
-    if (!usedLockfile || opts?.packages) {
+    if (!usedLockfile || opts?.packages || pruned > 0) {
       this.writeLockfile(projDir, hoistPlan, nmDir);
     }
 
@@ -1628,6 +1638,78 @@ export class NpmInstaller {
       }
     }
     return true;
+  }
+
+  /**
+   * The placements of `lockfile` the project's specs reach through Node's
+   * walk: dependencies, optionalDependencies and required peers, each met
+   * by the placement nearest its dependent. A valid lockfile has every
+   * entry's registry record (isLockfileValid).
+   */
+  private reachableFromSpecs(lockfile: Map<string, LockfileEntry>, specs: Record<string, string>): Map<string, LockfileEntry> {
+    const reached = new Map<string, LockfileEntry>();
+    const pending = Object.keys(specs).filter((name) => lockfile.has(name));
+    for (let i = 0; i < pending.length; i++) {
+      const placement = pending[i];
+      const entry = lockfile.get(placement);
+      if (entry === undefined || reached.has(placement)) continue;
+      reached.set(placement, entry);
+      const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+      const edges = new Set([
+        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.depsJson ?? entry.depsJson, {})),
+        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.optionalDepsJson || '{}', {})),
+        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.peerDepsJson || '{}', {})),
+      ]);
+      for (const name of edges) {
+        const found = visiblePlacements(placement, name).find((candidate) => lockfile.has(candidate));
+        if (found !== undefined) pending.push(found);
+      }
+    }
+    return reached;
+  }
+
+  /**
+   * Remove the placements `previous` (the last install's lockfile) holds and
+   * `plan` does not, with the bins they linked, as the invoking principal.
+   * A placement inside another removed one goes with it. Answers how many
+   * were removed.
+   */
+  private async pruneExtraneous(
+    previous: Map<string, LockfileEntry>,
+    plan: HoistPlan,
+    nmDir: string,
+    project: ProjectFs,
+    log: (msg: string) => void,
+  ): Promise<number> {
+    const kept = new Set(hoistPlacements(plan).map(({ placement }) => placement));
+    const extraneous = [...previous.keys()].filter((placement) => !kept.has(placement)).sort();
+    if (extraneous.length === 0) return 0;
+    const removed: string[] = [];
+    for (const placement of extraneous) {
+      const key = `${nmDir}/${placement}`;
+      const inRemoved = removed.some((parent) => placement.startsWith(parent + '/node_modules/'));
+      if (!inRemoved && await project.exists(key)) await project.removeRecursive(key);
+      removed.push(placement);
+    }
+    // Their bins, unless a package that stays links the same name.
+    const manifestPath = npmBinManifestPath(nmDir);
+    if (await project.exists(manifestPath)) {
+      const manifest = safeJsonParse<NpmBinManifest | null>(await project.readFileString(manifestPath), null);
+      const keptBins = new Set([...plan.root.values()].flatMap((pkg) => Object.keys(pkg.bin ?? {})));
+      if (manifest !== null) {
+        let changed = false;
+        for (const [name, bin] of Object.entries(manifest.bins)) {
+          if (!removed.includes(bin.packageName) || keptBins.has(name)) continue;
+          const shim = `${nmDir}/.bin/${name}`;
+          if (await project.exists(shim)) await project.unlink(shim);
+          delete manifest.bins[name];
+          changed = true;
+        }
+        if (changed) await project.writeFile(manifestPath, enc.encode(JSON.stringify(manifest, null, 2) + '\n'), { mode: 0o644 });
+      }
+    }
+    log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
+    return removed.length;
   }
 
   /**
