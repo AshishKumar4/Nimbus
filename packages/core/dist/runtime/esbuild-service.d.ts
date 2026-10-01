@@ -129,14 +129,9 @@ export interface BuildOutputFile {
 }
 export interface BuildResult {
     outputFiles: BuildOutputFile[];
-    errors: {
-        text: string;
-        location?: esbuild.Location | null;
-    }[];
-    warnings: {
-        text: string;
-        location?: esbuild.Location | null;
-    }[];
+    /** esbuild's diagnostics, with their notes; never \`detail\` (serializableMessage). */
+    errors: esbuild.Message[];
+    warnings: esbuild.Message[];
     /** esbuild metafile — populated because build() always enables it so
      *  callers can identify entry-point outputs (`entryPoint`, `cssBundle`)
      *  instead of guessing from output ordering. */

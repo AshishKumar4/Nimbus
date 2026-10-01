@@ -792,6 +792,18 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
  * wherever that plugin runs. Self-contained: it is serialized into the
  * esbuild facet as well as called here.
  */
+/**
+ * An esbuild diagnostic as RPC can carry it: everything but \`detail\`, which
+ * is whatever a plugin threw and may not clone. Notes keep their own text and
+ * location (a duplicate declaration's note points at the original).
+ */
+function serializableMessage({ id, pluginName, text, location, notes }) {
+    return { id, pluginName, text, location, notes: notes.map((note) => ({ text: note.text, location: note.location })), detail: undefined };
+}
+/** esbuild's rejection of a build that failed: an Error carrying its diagnostics. */
+function isBuildFailure(value) {
+    return value instanceof Error && Array.isArray(Reflect.get(value, 'errors')) && Array.isArray(Reflect.get(value, 'warnings'));
+}
 async function buildWithEsbuild(esbuildApi, options, plugin) {
     let result;
     try {
@@ -821,21 +833,19 @@ async function buildWithEsbuild(esbuildApi, options, plugin) {
     }
     catch (failure) {
         // esbuild rejects a failed build with its diagnostics on the error, which RPC drops: they return as data.
-        const diagnostics = failure;
-        if (!Array.isArray(diagnostics.errors))
+        if (!isBuildFailure(failure))
             throw failure;
-        const plain = (messages) => messages.map(({ text, location }) => ({ text, location }));
         return {
             outputFiles: [],
-            errors: plain(diagnostics.errors),
-            warnings: plain(diagnostics.warnings ?? []),
-            failure: String(diagnostics.message),
+            errors: failure.errors.map(serializableMessage),
+            warnings: failure.warnings.map(serializableMessage),
+            failure: failure.message,
         };
     }
     return {
         outputFiles: (result.outputFiles || []).map((file) => ({ path: file.path, contents: file.contents })),
-        errors: result.errors.map((message) => ({ text: message.text, location: message.location })),
-        warnings: result.warnings.map((message) => ({ text: message.text, location: message.location })),
+        errors: result.errors.map(serializableMessage),
+        warnings: result.warnings.map(serializableMessage),
         metafile: result.metafile,
     };
 }
@@ -847,6 +857,8 @@ export function generateEsbuildFacetRuntimeSource() {
     return [
         transformWithEsbuild.toString(),
         runTransformRequest.toString(),
+        isBuildFailure.toString(),
+        serializableMessage.toString(),
         buildWithEsbuild.toString(),
         keepEsbuild.toString(),
         startObservedEsbuild.toString(),
