@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Real Nuxt 4/Vite 8 SSR. --no-fork is Nuxt's supported in-process dev mode;
-// no native subprocess, VM or rendering stub is substituted. Nimbus's staged
-// runtime-code contract may require an explicit relaunch before code can run.
+// no native subprocess, VM or rendering stub is substituted. The dev server
+// runs once, as a user starts it.
 import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE} from '../_driver.mjs';
 import {launchFrameworkDev} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
@@ -22,9 +22,9 @@ try{
   a.check('npm install succeeds',installed.code===0,tail(installed.output));
   if(installed.code!==0)throw new Error('install failed');
   await t.run(heredocCommand(APP+'/app/app.vue',`<script setup>\nconst message = '${MARKER}';\n</script>\n<template><h1>{{ message }}</h1></template>\n`),10000);
-  const result=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/nuxt dev --no-fork --host 0.0.0.0 --port ${PORT}`,port:PORT,maxLaunches:24,accepts:r=>r.status===200&&r.body.includes(MARKER)&&r.body.includes('__nuxt')});
+  const result=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/nuxt dev --no-fork --host 0.0.0.0 --port ${PORT}`,port:PORT,accepts:r=>r.status===200&&r.body.includes(MARKER)&&r.body.includes('__nuxt')});
   proc=result.process;
-  a.check('nuxt dev SSR serves the Vue app through the port route',result.ok,`launches=${result.attempt}; ${result.last}\n${tail(result.output,35)}`);
+  a.check('nuxt dev SSR serves the Vue app through the port route on its first run',result.ok,`${result.last}\n${tail(result.output,35)}`);
 }finally{
   if(proc){try{proc.signal('SIGKILL');proc.ws.close();}catch{}}
   await t.close();const d=await deleteSession(sid);a.check('probe session deleted',d.ok,`status=${d.status}`);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Vinext 1.0's real Next.js App Router/Vite server. The app and vite.config
 // match the files `vinext init` creates; no Next/RSC/SSR implementation is
-// replaced. Relaunches occur only on Nimbus's explicit staged-code boundary.
+// replaced. The dev server runs once, as a user starts it.
 import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE} from '../_driver.mjs';
 import {launchFrameworkDev} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
@@ -24,9 +24,9 @@ try{
   const ok=/___EXIT=0___/.test(installed.output);
   a.check('the Vinext 1.0 app installs',ok,tail(installed.output));
   if(!ok)throw new Error('install failed');
-  const result=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/vinext dev --port ${PORT}`,port:PORT,maxLaunches:24,accepts:r=>r.status===200&&r.body.includes(MARKER)});
+  const result=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/vinext dev --port ${PORT}`,port:PORT,accepts:r=>r.status===200&&r.body.includes(MARKER)});
   proc=result.process;
-  a.check('vinext dev serves the App Router page through the port route',result.ok,`launches=${result.attempt}; ${result.last}\n${tail(result.output,35)}`);
+  a.check('vinext dev serves the App Router page through the port route on its first run',result.ok,`${result.last}\n${tail(result.output,35)}`);
 }finally{
   if(proc){try{proc.signal('SIGKILL');proc.ws.close();}catch{}}
   await t.close();const d=await deleteSession(sid);a.check('probe session deleted',d.ok,`status=${d.status}`);

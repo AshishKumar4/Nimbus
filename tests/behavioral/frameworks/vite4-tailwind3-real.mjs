@@ -6,8 +6,9 @@
 //     here: Vite 4's CLI builds `new Function('file', 'return import(file)')`
 //     at load, and the plain Function constructor stays native (refused).
 //   - Tailwind v3 reads the content files it scans with readFileSync. Those
-//     reads are data for the next launch, never modules to execute: rooting
-//     them walked App.jsx's imports (react) into the required graph. A Vite + Tailwind v3 app is launched twice and serves both times.
+//     reads are data, never modules to execute: rooting them walked
+//     App.jsx's imports (react) into the required graph. A Vite + Tailwind
+//     v3 app is started twice, and each start serves on its first run.
 import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, heredocCommand, BASE, requestHeaders, sleep } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -53,11 +54,11 @@ try {
   if (installed.code !== 0) throw new Error('install failed');
   for (const launch of [1, 2]) {
     const dev = await launchFrameworkDev({
-      terminal: t, sid, cwd: TW, command: `./node_modules/.bin/vite --host 0.0.0.0 --port ${PORT}`, port: PORT, maxLaunches: 16,
+      terminal: t, sid, cwd: TW, command: `./node_modules/.bin/vite --host 0.0.0.0 --port ${PORT}`, port: PORT,
       accepts: (r) => r.status === 200 && r.body.includes('<div id="root">') && r.body.includes('/@vite/client'),
     });
     proc = dev.process;
-    a.check(`launch ${launch}: serves index.html through the port route`, dev.ok, `launches=${dev.attempt}; ${dev.last}\n${tail(dev.output, 30)}`);
+    a.check(`launch ${launch}: serves index.html through the port route on its first run`, dev.ok, `${dev.last}\n${tail(dev.output, 30)}`);
     if (!dev.ok) break;
     const css = await get(sid, 'src/index.css');
     a.check(`launch ${launch}: Tailwind v3 generated the utility the scanned content uses`,

@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 // A real create-vite React/TS project, using its installed Vite 8 CLI (not
 // Nimbus's bare `vite` command and not a configFile:false API wrapper).
-// Generated config code can require a later launch; only that explicit
-// next-launch boundary is retried. Assertions cover production output and
+// Each command runs once, as a user types it: a build or a dev server that
+// only works on a second run fails. Assertions cover production output and
 // actual HTML/TSX served through the public port route.
 // HMR uses Nimbus's built-in vite path: inbound WebSocket upgrade to a Node
 // guest server is not implemented in Nimbus, before or after native HTTP.
 // That implementation gap is not a prohibition on a Workers adapter.
 import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,requestHeaders} from '../_driver.mjs';
-import {launchFrameworkDev,NEXT_FRAMEWORK_LAUNCH} from '../_framework-dev.mjs';
+import {launchFrameworkDev} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
 const a=makeAsserter('vite8-real');
-const ROOT='/home/user/vite8-probe',APP=ROOT+'/app',PORT=5173,MAX=16;
+const ROOT='/home/user/vite8-probe',APP=ROOT+'/app',PORT=5173;
 const MARKER='vite8-real-'+Date.now();
 function tail(s,n=20){return stripAnsi(s).split(/\r?\n/).filter(Boolean).slice(-n).join('\n');}
 async function run(t,cmd,timeout){const r=await t.run(cmd+'; echo "___EXIT=$?___"',timeout);return {code:Number(r.output.match(/___EXIT=(\d+)___/)?.[1]??-1),output:stripAnsi(r.output)};}
@@ -31,13 +31,8 @@ try{
   a.check('the installed bundler is Vite 8',/"version":\s*"8\./.test(versions.output),tail(versions.output));
   // Authored input in a real scaffold: production output must carry this edit.
   await t.run(heredocCommand(APP+'/src/App.tsx',`import { useState } from 'react';\nimport './App.css';\nexport default function App(){const [count,setCount]=useState(0);return <main><h1>${MARKER}</h1><button onClick={()=>setCount(count+1)}>{count}</button></main>;}\n`),15000);
-  let built,launches=0;
-  for(let n=1;n<=MAX;n++){
-    launches=n;built=await run(t,`cd ${APP} && ./node_modules/.bin/vite build 2>&1`,300000);
-    console.log(`[vite8-real] build launch ${n}: exit ${built.code}`);
-    if(built.code===0||!NEXT_FRAMEWORK_LAUNCH.test(built.output))break;
-  }
-  a.check('vite build exits 0 after bounded explicit staging relaunches',built.code===0,`launches=${launches}\n${tail(built.output,30)}`);
+  const built=await run(t,`cd ${APP} && ./node_modules/.bin/vite build 2>&1`,300000);
+  a.check('vite build exits 0 on its first run',built.code===0,tail(built.output,30));
   const inspect=[
     "import fs from 'node:fs';",
     "const html=fs.readFileSync('dist/index.html','utf8');",
@@ -52,9 +47,9 @@ try{
   const again=await run(t,`cd ${APP} && ./node_modules/.bin/vite build 2>&1`,300000);
   a.check('a subsequent build succeeds at once',again.code===0,tail(again.output));
 
-  const dev=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/vite --host 0.0.0.0 --port ${PORT}`,port:PORT,maxLaunches:MAX,accepts:r=>r.status===200&&r.body.includes('<div id="root">')&&r.body.includes('/@vite/client')});
+  const dev=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/vite --host 0.0.0.0 --port ${PORT}`,port:PORT,accepts:r=>r.status===200&&r.body.includes('<div id="root">')&&r.body.includes('/@vite/client')});
   proc=dev.process;
-  a.check('the project CLI serves index.html with the Vite client through the port route',dev.ok,`launches=${dev.attempt}; ${dev.last}\n${tail(dev.output,30)}`);
+  a.check('the project CLI serves index.html with the Vite client through the port route on its first run',dev.ok,`${dev.last}\n${tail(dev.output,30)}`);
   if(dev.ok){
     const entry=await readPort(sid,'src/main.tsx');
     a.check('the served entry is transformed JavaScript, not raw TSX',entry.status===200&&entry.body.includes('jsxDEV')&&!entry.body.includes('<StrictMode>'),entry.body.slice(0,400));
