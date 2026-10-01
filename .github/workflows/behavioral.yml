@@ -160,7 +160,7 @@ jobs:
     # signal, and the probes add theirs. Only a cancelled workflow skips
     # them.
     if: ${{ !cancelled() }}
-    # ~400 probes at --jobs 4, plus a build and a deploy.
+    # ~430 probes, 16 at a time, plus a build and a deploy.
     timeout-minutes: 120
     steps:
       - name: Checkout
@@ -230,11 +230,11 @@ jobs:
         # Explicit `shell: bash` runs with `-o pipefail`, so the runner's
         # exit code survives the `| tee` pipeline. `| tee` preserves the CI
         # live-log AND saves a file, uploaded below on both PASS and FAIL.
-        # `--jobs 4` is the runner's parallel pool (each probe mints its
-        # own session); the @serial-marked browser probes run after the
-        # pool drains.
+        # The runner's default pool (16 probes at once): each probe mints
+        # its own session and owns its own browsers, and most of its time
+        # is spent waiting on the target.
         run: |
-          bun tests/behavioral/run-all.mjs --jobs 4 \
+          bun tests/behavioral/run-all.mjs \
             ${{ github.event_name == 'push' && ' ' || '--no-retry' }} | tee behavioral.log
 
       - name: Upload run log

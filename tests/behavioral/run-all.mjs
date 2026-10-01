@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// behavioral/run-all — run every behavioral probe sequentially, report
-// pass/fail summary.
+// behavioral/run-all — run every behavioral probe in a pool of workers,
+// report a pass/fail summary.
 //
 // Usage:
 //   BASE=http://127.0.0.1:8792 bun tests/behavioral/run-all.mjs
@@ -13,12 +13,10 @@
 //   --allow-concurrent
 //                  Run even though another suite already holds this
 //                  machine's run lock. See "Serialization" below.
-//   --jobs N       Run N probes concurrently (default 4,
+//   --jobs N       Run N probes concurrently (default 16,
 //                  NIMBUS_PROBE_JOBS overrides). Each probe mints its own
-//                  session, so probes are independent — except probes
-//                  whose first line is `// @serial`, which run after the
-//                  pool drains, one at a time. `--jobs 1` is the
-//                  historical sequential behavior.
+//                  session and owns its own browsers, so probes are
+//                  independent. `--jobs 1` runs them one at a time.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -84,6 +82,7 @@
 //   holder is gone is stale and taken over. `--allow-concurrent` runs
 //   anyway, for the deliberate case.
 
+import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -124,16 +123,16 @@ function positiveInt(raw, what) {
   return n;
 }
 
-// Each probe mints its own session, so the pool is the default. The
-// browser-fixture probes opt out with `// @serial` (see below); `--jobs
-// 1` restores the historical one-at-a-time behavior exactly.
+// Each probe mints its own session and owns its own browsers, so every
+// probe runs in the pool. Most of a probe's time is spent waiting on the
+// target, so the pool is wide: past 16 the longest single probe (~7 min,
+// measured 2026-09-30) is what bounds a run, not the pool.
 const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
   ? positiveInt(flagValue('--jobs', 'NIMBUS_PROBE_JOBS'), 'probe worker count')
-  : 4;
+  : 16;
 
-// Probes inherit the runner's environment, so exporting the run id is
-// what makes every browser they launch identifiable as this run's.
-process.env.NIMBUS_PROBE_RUN_ID = RUN_ID;
+// Each probe gets a browser scope inside this run's (runProbeOnce), so
+// every browser it launches is identifiable as this run's and as its own.
 
 // _driver.mjs appends each session a probe mints, and each DELETE of it, here.
 const LEDGER_PATH = join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}.jsonl`);
@@ -142,7 +141,17 @@ process.env.NIMBUS_PROBE_LEDGER = LEDGER_PATH;
 
 // ── Run lock ─────────────────────────────────────────────────────────
 
+// The lock is an exclusive SQLite lock on HOLD_PATH, held for the run's
+// life: the kernel drops it when the run ends, however it ends. LOCK_PATH
+// only describes the holder. A pid cannot say whether a holder lives:
+// run-bounded starts each job in its own PID namespace, where the pid a
+// killed run recorded names some other process (a run killed at its
+// timeout on 2026-09-30 left "pid 12", which blocked every later suite).
 const LOCK_PATH = join(tmpdir(), 'nimbus-behavioral-run.lock');
+const HOLD_PATH = `${LOCK_PATH}.sqlite`;
+
+/** The open database whose transaction is the lock, while this run holds it. */
+let held = null;
 
 function readLock() {
   try {
@@ -152,22 +161,50 @@ function readLock() {
   }
 }
 
-function holderIsAlive(pid) {
+/** Take the lock, or null when another process holds it. */
+function tryHold() {
+  const db = new Database(HOLD_PATH, { create: true });
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === 'EPERM';
+    db.exec('BEGIN EXCLUSIVE');
+    return db;
+  } catch (error) {
+    db.close();
+    if (/database is locked/i.test(String(error?.message))) return null;
+    throw error;
   }
 }
 
+/** Whether another suite holds the lock now. Takes and drops it to find out. */
+function heldElsewhere() {
+  const db = tryHold();
+  if (db === null) return true;
+  db.close();
+  return false;
+}
+
 /**
- * Take the machine-wide run lock, or explain who has it and stop. The
- * lock is created exclusively (`wx`), so two runners racing for a free
- * lock cannot both win; a lock whose holder has exited is stale and is
- * removed before the single retry.
+ * Take the machine-wide run lock, or explain who has it and stop. A run
+ * killed before it could release it leaves only its description behind,
+ * which the next run overwrites.
  */
 function acquireRunLock() {
+  held = tryHold();
+  if (held === null) {
+    const holder = readLock();
+    const heldFor = holder ? Math.round((Date.now() - Date.parse(holder.startedAt)) / 1000) : null;
+    console.error(
+      `FATAL: another behavioral suite is already running on this machine.\n`
+      + (holder
+        ? `  pid ${holder.pid} — started ${holder.startedAt} (${heldFor}s ago)\n`
+          + `  BASE ${holder.base}\n`
+          + `  cwd  ${holder.cwd}\n`
+        : `  (its description at ${LOCK_PATH} is missing)\n`)
+      + `Two concurrent suites contend for this host's CPU and memory, and a\n`
+      + `redeploy in one rotates the other's credential out from under it.\n`
+      + `Wait for it to finish, or pass --allow-concurrent to run anyway.`,
+    );
+    process.exit(3);
+  }
   const mine = {
     pid: process.pid,
     runId: RUN_ID,
@@ -175,43 +212,22 @@ function acquireRunLock() {
     cwd: process.cwd(),
     startedAt: new Date().toISOString(),
   };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(LOCK_PATH, `${JSON.stringify(mine, null, 2)}\n`, { flag: 'wx' });
-      process.on('exit', releaseRunLock);
-      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-        process.on(signal, () => process.exit(130));
-      }
-      return;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-    }
-    const holder = readLock();
-    if (holder && holderIsAlive(holder.pid)) {
-      const heldFor = Math.round((Date.now() - Date.parse(holder.startedAt)) / 1000);
-      console.error(
-        `FATAL: another behavioral suite is already running on this machine.\n`
-        + `  pid ${holder.pid} — started ${holder.startedAt} (${heldFor}s ago)\n`
-        + `  BASE ${holder.base}\n`
-        + `  cwd  ${holder.cwd}\n`
-        + `Two concurrent suites contend for this host's CPU and memory, and a\n`
-        + `redeploy in one rotates the other's credential out from under it.\n`
-        + `Wait for it to finish, or pass --allow-concurrent to run anyway.`,
-      );
-      process.exit(3);
-    }
-    rmSync(LOCK_PATH, { force: true });
+  writeFileSync(LOCK_PATH, `${JSON.stringify(mine, null, 2)}\n`);
+  process.on('exit', releaseRunLock);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => process.exit(130));
   }
-  throw new Error(`could not take the run lock at ${LOCK_PATH}`);
 }
 
 function releaseRunLock() {
-  if (readLock()?.pid === process.pid) rmSync(LOCK_PATH, { force: true });
+  rmSync(LOCK_PATH, { force: true });
+  held?.close();
+  held = null;
 }
 
 if (ALLOW_CONCURRENT) {
-  const holder = readLock();
-  if (holder && holderIsAlive(holder.pid)) {
+  const holder = heldElsewhere() ? readLock() : null;
+  if (holder) {
     console.log(`[--allow-concurrent] running alongside pid ${holder.pid} (BASE=${holder.base})`);
   }
 } else {
@@ -275,25 +291,7 @@ const targets = PROBES.filter((p) => {
   return true;
 });
 
-// A probe whose first line is `// @serial` opted out of the pool: it
-// drives something the other probes share — the run's browser fixture
-// (one Chrome profile root and one orphan-reaping scope per run) or the
-// deploy target itself. It still runs — after the pool drains, one at a
-// time, so the marker never silences a probe; it only moves it. Only
-// line 1 counts, so the marker is always visible at the top of the file.
-// The marker takes line 1 itself, ahead of any shebang: a shebang
-// anywhere but line 1 is a syntax error, and probe files carry no
-// executable bit — every invocation goes through `bun <file>` — so the
-// vestigial shebang is dropped when the marker is added.
-const SERIAL_RE = /^\/\/\s*@serial\b/;
-function isSerialMarked(relPath) {
-  const firstLine = readFileSync(join(__dirname, relPath), 'utf8').split('\n', 1)[0];
-  return SERIAL_RE.test(firstLine);
-}
-const serialProbes = JOBS > 1 ? targets.filter(isSerialMarked) : [];
-const pooledProbes = JOBS > 1 ? targets.filter((p) => !serialProbes.includes(p)) : targets;
-
-console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive) (jobs ${JOBS}${serialProbes.length > 0 ? `, ${serialProbes.length} marked @serial` : ''})`);
+console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive) (jobs ${JOBS})`);
 console.log(`BASE=${process.env.BASE}${NO_RETRY ? '  [--no-retry]' : ''}`);
 console.log('');
 
@@ -338,64 +336,57 @@ function isRetryableCrash(stderr, exitCode) {
 }
 
 /**
- * Kill any browser THIS run leaked — a crashed probe skips its own
- * teardown. Scoped by profile directory, so a sibling suite's Chrome is
- * never a candidate. Loud: logs when it reaps anything so an operator
- * sees that a crash leaked a browser.
+ * Kill the browsers a probe leaked: a crashed probe skips its own
+ * teardown. Each probe owns a browser scope of its own inside this run's
+ * (see runProbeOnce), so reaping it once the probe has exited can never
+ * touch a sibling still in flight, nor another suite's Chrome. Loud: logs
+ * when it reaps anything so an operator sees that a crash leaked a
+ * browser.
  */
-function reapLeakedBrowsers() {
-  const reaped = reapRunBrowsers();
+function reapLeakedBrowsers(scope) {
+  const reaped = reapRunBrowsers(scope);
   if (reaped > 0) {
     console.log(`    reaped ${reaped} orphaned probe browser process${reaped === 1 ? '' : 'es'} (crashed probe leaked Chrome)`);
   }
   return reaped;
 }
 
+let attempts = 0;
+
 /**
- * Spawn one probe; collect stdout/stderr/exit. Returns {ok, code,
- * stdout, stderr, elapsedMs}. Pure I/O — no decision making.
+ * Spawn one probe attempt in a browser scope of its own; collect
+ * stdout/stderr/exit, then reap whatever browser it left. Returns {ok,
+ * code, stdout, stderr, elapsedMs}.
  */
 function runProbeOnce(probePath) {
+  const scope = `${RUN_ID}/${++attempts}`;
   return new Promise((resolve) => {
     const subT0 = Date.now();
     const child = spawn(process.execPath, [probePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
+      env: { ...process.env, NIMBUS_PROBE_RUN_ID: scope },
     });
     let stdout = '';
     let stderr = '';
+    const done = (r) => {
+      reapLeakedBrowsers(scope);
+      resolve({ ...r, elapsedMs: Date.now() - subT0 });
+    };
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
-    child.on('close', (code) => {
-      const elapsedMs = Date.now() - subT0;
-      resolve({ ok: code === 0, code, stdout, stderr, elapsedMs });
-    });
-    child.on('error', (e) => {
-      const elapsedMs = Date.now() - subT0;
-      resolve({ ok: false, code: 1, stdout: '', stderr: String(e?.message || e), elapsedMs });
-    });
+    child.on('close', (code) => done({ ok: code === 0, code, stdout, stderr }));
+    child.on('error', (e) => done({ ok: false, code: 1, stdout: '', stderr: String(e?.message || e) }));
   });
 }
 
 /**
  * Run one probe to a verdict, retrying once on a runtime crash banner
- * when retries are enabled. `reapBetween` selects the pre-retry reap:
- * safe only with nothing else in flight (the sequential path and the
- * serial tail), where the crashed probe's leaked browser is the only
- * candidate. Inside the pool it stays false — siblings are in flight
- * and their browsers share this run's profile root, so a reap cannot
- * tell the crashed probe's Chrome from a live one. The drain-point reap
- * below collects whatever the pool leaked instead.
+ * when retries are enabled.
  */
-async function runProbeToVerdict(probePath, reapBetween) {
+async function runProbeToVerdict(probePath) {
   let r = await runProbeOnce(probePath);
   let retried = false;
   if (!r.ok && !NO_RETRY && isRetryableCrash(r.stderr, r.code)) {
-    // First attempt crashed on a known runtime banner. The crash may
-    // have leaked a browser (no `finally` on a hard crash).
-    if (reapBetween) {
-      reapLeakedBrowsers();
-    }
     retried = true;
     r = await runProbeOnce(probePath);
   }
@@ -434,39 +425,17 @@ function reportProbe(probe, r) {
 const results = [];
 const t0 = Date.now();
 
-if (JOBS === 1) {
-  // The historical behavior: discovery order, one at a time, reaping
-  // between probes. The @serial marker is a parallelism concept and
-  // does not apply — every probe already runs alone.
-  for (const probe of targets) {
-    results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe), true)));
-    // Reap any browser the probe leaked (a hard crash bypasses the probe's
-    // own teardown). Probes run sequentially, so nothing is in flight here.
-    reapLeakedBrowsers();
-  }
-} else {
-  // Worker pool: `queue.shift()` is atomic between awaits, so each probe
-  // is claimed by exactly one worker. No reaping inside the pool (see
-  // runProbeToVerdict): siblings are in flight.
-  const queue = [...pooledProbes];
-  await Promise.all(
-    Array.from({ length: Math.min(JOBS, queue.length) }, async () => {
-      while (queue.length > 0) {
-        const probe = queue.shift();
-        results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe), false)));
-      }
-    }),
-  );
-  // The pool is drained: nothing of this run is in flight, so reaping is
-  // scoped correctly again — the same point the old runner reaped at.
-  reapLeakedBrowsers();
-  // The @serial tail: browser-fixture and target-redeploy probes, one at
-  // a time, with nothing else of this suite in flight.
-  for (const probe of serialProbes) {
-    results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe), true)));
-    reapLeakedBrowsers();
-  }
-}
+// Worker pool: `queue.shift()` is atomic between awaits, so each probe is
+// claimed by exactly one worker.
+const queue = [...targets];
+await Promise.all(
+  Array.from({ length: Math.min(JOBS, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const probe = queue.shift();
+      results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe))));
+    }
+  }),
+);
 
 cleanupRunProfiles();
 

@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // agent/new/session-agent-panel — the Agent surface is embedded inside the
 // editor workspace and backed by session-scoped API routes. This probe drives
 // the browser surface and safe API endpoints; it does not call Workers AI.

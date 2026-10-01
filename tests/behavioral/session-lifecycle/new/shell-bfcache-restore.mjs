@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // session-lifecycle/new/shell-bfcache-restore — a shell restored from the
 // back/forward cache has a working terminal.
 //

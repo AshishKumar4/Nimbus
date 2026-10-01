@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // monaco-polish/new/vertical-resize-editor-terminal — V1 handle
 // (editor TOP ↔ terminal BOTTOM, inside the editor-stack column).
 // Visible only in editor mode.

@@ -131,6 +131,24 @@ async function settle(ms = 400) {
   console.log('  [5] profiles are allocated under the owning run, one per browser');
 }
 
+// [6] Inside one run, each probe has a scope of its own (\`<run>/<n>\`, as
+// run-all spawns them), so the runner can reap a finished probe's leaked
+// browser while a sibling probe's browser is still in use; the run's own
+// scope still covers both, for the end-of-run cleanup.
+{
+  const first = launchFakeBrowser(`${RUN_A}/1`);
+  const second = launchFakeBrowser(`${RUN_A}/2`);
+  await settle();
+  assert.deepEqual(findRunBrowsers(RUN_A).map((p) => p.pid).sort(), [first.pid, second.pid].sort(), "the run's scope sees both probes' browsers");
+  assert.equal(reapRunBrowsers(`${RUN_A}/1`), 1, 'reaping one probe takes its browser only');
+  await settle();
+  assert.equal(alive(first.pid), false, "the finished probe's browser is killed");
+  assert.equal(alive(second.pid), true, "the sibling probe's browser survives");
+  assert.equal(existsSync(second.profileDir), true, "and keeps its profile");
+  assert.equal(findRunBrowsers(`${RUN_A}/10`).length, 0, 'probe 1 is not a prefix of probe 10');
+  console.log('  [6] one probe\'s reap leaves a sibling probe\'s browser in the same run alive');
+}
+
 for (const child of spawned) {
   try { child.kill('SIGKILL'); } catch { /* already reaped */ }
 }

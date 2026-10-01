@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // frameworks/markflow-real — runtime-behavioral probe of the REAL
 // Markflow repo on prod.
 //

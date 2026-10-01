@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // preview/new/coi-default-shell-third-party-frame — an app that does not ask
 // for cross-origin isolation previews exactly as it always has.
 //

@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // preview/new/coi-host-preview-rules — the host-based preview door
 // (`<port>--<sid>.<suffix>`), cross-origin to the shell, against the
 // browser's own isolation rules. Local: the real router and the real shell's
