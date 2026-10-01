@@ -144,6 +144,18 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): VfsMutationReceipt {
     this.guard(); return this.target.writeRange(path, offset, bytes, options);
   }
+  writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number> {
+    this.guard();
+    // A released process stops writing at the next piece, as a stream it
+    // wrote would stop committing.
+    const guard = () => this.guard();
+    return this.target.writeFileFrom(path, size, (async function* () {
+      for await (const piece of source) {
+        guard();
+        yield piece;
+      }
+    })());
+  }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt { this.guard(); return this.target.truncate(path, size, options); }
   utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.utimes(path, atimeMs, mtimeMs, options);
@@ -735,6 +747,21 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return this.receipt();
     });
   }
+  async writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number> {
+    // The bridge refuses a path on an asynchronous mount before reading the source.
+    return this.either([path], () => this.bridge.writeFileFrom(path, size, source), async () => {
+      const p = await this.path(path);
+      await this.namespace.writeFile(p, new Uint8Array(0));
+      let offset = 0;
+      for await (const piece of source) {
+        if (offset + piece.byteLength > size) throw syscallError('EINVAL', 'write', p);
+        await this.namespace.writeRange(p, offset, piece);
+        offset += piece.byteLength;
+      }
+      if (offset !== size) throw syscallError('EINVAL', 'write', p);
+      return this.clock();
+    });
+  }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
       await this.namespace.truncate((await this.path(path)), size);
@@ -1111,6 +1138,10 @@ export class ProcessView implements VFS {
   }
   async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void> {
     await this.call('open', path, () => this.process.writeRange(path, offset, bytes));
+  }
+  /** writeFile of `size` bytes that arrive over time, published whole once they have (RuntimeFsBridge.writeFileFrom). */
+  async writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Promise<void> {
+    await this.call('open', path, () => this.process.writeFileFrom(path, size, source));
   }
   async truncate(path: string, size: number): Promise<void> { await this.call('open', path, () => this.process.truncate(path, size)); }
   /**

@@ -212,18 +212,23 @@ function streamedPackage(sizes, { failAt = null, meter, bytes = false }) {
 
 const newMeter = () => ({ pulled: 0, written: 0, peakRetained: 0, open: 0, peakOpen: 0, cancelled: 0 });
 
-/** The kernel view of `vfs`, counting what each ranged write takes. */
-function meteredFs(vfs, meter, { failAfterWrites = Infinity } = {}) {
+/**
+ * The kernel view of `vfs`, counting the bytes the filesystem takes from each
+ * streamed write, and failing as a full disk does once it has taken
+ * `failAfterBytes`.
+ */
+function meteredFs(vfs, meter, { failAfterBytes = Infinity } = {}) {
   const fs = vfs.as(KERNEL);
-  let writes = 0;
   return new Proxy(fs, {
     get(target, key) {
-      if (key !== 'writeRange') return target[key];
-      return (path, offset, bytes) => {
-        if (++writes > failAfterWrites) throw new Error('ENOSPC: disk full');
-        target.writeRange(path, offset, bytes);
-        meter.written += bytes.length;
-      };
+      if (key !== 'writeFileFrom') return target[key];
+      return (path, size, source) => target.writeFileFrom(path, size, (async function* () {
+        for await (const piece of source) {
+          meter.written += piece.length;
+          if (meter.written > failAfterBytes) throw new Error('ENOSPC: disk full');
+          yield piece;
+        }
+      })());
     },
   });
 }
@@ -254,6 +259,32 @@ for (const bytes of [false, true]) {
   console.log(`  ok  a ${(total / MiB).toFixed(1)} MiB ${bytes ? 'byte ' : ''}stream installs holding at most ${(meter.peakRetained / MiB).toFixed(2)} MiB at once`);
 }
 
+// ── A blob is cut and committed once, not once per piece ────────────────────
+// Appending a blob a piece at a time re-cut the file's tail at every piece,
+// and once a piece plus that tail passed half a transaction's blob bound it
+// copied the manifest of everything before it into a new content: the
+// transactions and dead manifest rows grew with the square of the blob. On
+// this 16 MiB blob that was 189 transactions and 4,608 manifest rows for a
+// file of ~430; on clang's 50.6 MiB it was most of `nimbus install clang`.
+{
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const size = 16 * MiB;
+  const pkg = streamedPackage([size], { meter: newMeter(), bytes: true });
+  const before = harness.transactionCount;
+  const seeded = await seedRuntimePackage(vfs.as(KERNEL), HOME, pkg);
+  const transactions = harness.transactionCount - before;
+  const count = (sql, ...params) => Number(harness.db.query(sql).get(...params).n);
+  const live = count(
+    'SELECT COUNT(*) AS n FROM vfs_content_chunks WHERE content_id = (SELECT content_id FROM vfs_inodes WHERE path = ?)',
+    `${seeded.root}/share/toy/blob-0.bin`,
+  );
+  const stored = count('SELECT COUNT(*) AS n FROM vfs_content_chunks');
+  assert.equal(stored, live, `${stored - live} manifest rows outlive the ${live} of the file installed`);
+  assert.ok(transactions <= 2 * (size / MiB), `${transactions} transactions to install ${size / MiB} MiB`);
+  console.log(`  ok  a ${size / MiB} MiB blob installs in ${transactions} transactions, leaving only its own ${live} manifest rows`);
+}
+
 // ── A streamed blob that fails its digest never reaches its path ────────────
 {
   const meter = newMeter();
@@ -270,11 +301,33 @@ for (const bytes of [false, true]) {
   console.log('  ok  a streamed blob that fails its digest is refused and leaves nothing at its path');
 }
 
+// ── A blob longer than its manifest says is refused, digest or no ───────────
+// The digest covers what the source produced; the manifest's size is part of
+// the claim too. Bytes past it were once cut off and the rest published under
+// a digest that matched the longer blob.
+{
+  const pkg = fakePackage({ 'bin/toy': 'abc' });
+  pkg.manifest.files[0].size = 2;
+  const fs = openVfs().as(KERNEL);
+  await assert.rejects(() => seedRuntimePackage(fs, HOME, pkg), /sha256 mismatch for bin\/toy — manifest expects 2 bytes/);
+  assert.equal(fs.exists('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy'), false);
+  console.log('  ok  a blob longer than its manifest declares is refused even when its digest matches');
+}
+
+// ── A home spelled noncanonically installs where the canonical one does ─────
+{
+  const pkg = fakePackage({ 'bin/toy': '# marker\n' });
+  const fs = openVfs().as(KERNEL);
+  await seedRuntimePackage(fs, '/home//user/', pkg);
+  assert.equal(fs.readFileString('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy'), '# marker\n');
+  console.log('  ok  a noncanonical home installs at the canonical root');
+}
+
 // ── A source or a write failing partway leaves nothing installed ────────────
 for (const [label, failure, bytes] of [
   ['the source fails', { failAt: 2 * MiB }, false],
-  ['a write fails', { failAfterWrites: 9 }, false],
-  ['a write fails', { failAfterWrites: 9 }, true],
+  ['a write fails', { failAfterBytes: 4.5 * MiB }, false],
+  ['a write fails', { failAfterBytes: 4.5 * MiB }, true],
 ]) {
   const meter = newMeter();
   const pkg = streamedPackage([MiB, 4 * MiB], { meter, failAt: failure.failAt ?? null, bytes });
@@ -285,7 +338,7 @@ for (const [label, failure, bytes] of [
     pkg.readBlob = (file) => (calls++ === 0 ? streamedPackage([MiB], { meter }).readBlob(file) : readBlob(file));
   }
   const vfs = openVfs();
-  const fs = meteredFs(vfs, meter, { failAfterWrites: failure.failAfterWrites });
+  const fs = meteredFs(vfs, meter, { failAfterBytes: failure.failAfterBytes });
   const root = 'home/user/.nimbus/runtimes/toy/1.0.0';
 
   await assert.rejects(() => seedRuntimePackage(fs, HOME, pkg), /source dropped the connection|ENOSPC/);

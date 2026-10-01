@@ -146,12 +146,11 @@ class FakeVfs {
     if (parent) this.mkdir(parent);
     this.files.set(path, content);
   }
-  writeRange(path, offset, bytes) {
-    const prior = this.files.get(path) ?? new Uint8Array(0);
-    const next = new Uint8Array(Math.max(prior.length, offset + bytes.length));
-    next.set(prior);
-    next.set(bytes, offset);
-    this.files.set(path, next);
+  async writeFileFrom(path, size, source) {
+    const data = new Uint8Array(size);
+    let at = 0;
+    for await (const piece of source) { data.set(piece, at); at += piece.length; }
+    this.files.set(path, data);
   }
   rename(from, to) {
     this.files.set(to, this.files.get(from));
