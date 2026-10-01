@@ -18,12 +18,14 @@ published independently in the `@nimbus-sh` npm scope.
   Commands now resolve from the cwd of the shell that runs them.
 - Fixed: in the shell, `exec 3>file` or `exec 3>&-` inside a subshell
   closed the parent's fd 3, so the parent's next write through it failed
-  with `EBADF`. A background job lost an inherited descriptor when the
-  parent closed its own, and a file a subshell opened with `exec` was never
-  closed. A child shell now holds its descriptors as `fork` dups them: a
-  file closes when the last shell holding it closes it or ends. A
-  programmatic call's shell ends with the call, so a file an `exec` left
-  open in it is closed too.
+  with `EBADF`. A background job lost an inherited descriptor, or the file
+  its enclosing redirection opened, when the parent let go of it first. A
+  file a subshell opened with `exec`, or one opened before a redirection
+  that failed, was never closed. Every file a redirection opens is now
+  counted the way the kernel counts an open file: by the command, by each
+  descriptor `exec` keeps on it, and by each child shell that inherited it.
+  It closes when the last of them lets go. A programmatic call's shell ends
+  with the call, so a file an `exec` left open in it is closed too.
 
 ## 2026-10-01
 
