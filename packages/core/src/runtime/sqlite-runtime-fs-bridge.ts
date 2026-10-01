@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import type { SyncVFS, VfsStat } from '../vfs/vfs.js';
+import { readDeclaredSource, type SyncVFS, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
@@ -250,17 +250,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   async writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number> {
     const located = this.locateMutation(path, true, 'write');
     if (!located.mount) return await this.vfs.writeFileFrom(located.path, size, source);
-    // A mounted filesystem takes the bytes through its own ranged writes.
-    const mount = located.mount;
-    if (!mount.writeRange) throw fsError('ENOTSUP', 'write', path);
-    mount.writeFile(located.path, new Uint8Array(0));
-    let offset = 0;
-    for await (const piece of source) {
-      if (offset + piece.byteLength > size) throw fsError('EINVAL', 'write', path);
-      mount.writeRange(located.path, offset, piece);
-      offset += piece.byteLength;
-    }
-    if (offset !== size) throw fsError('EINVAL', 'write', path);
+    // A mounted filesystem has no staging to publish from, so it takes the
+    // whole file in one write: nothing reaches it until the source is read,
+    // and a source that fails changes nothing.
+    const data = await readDeclaredSource(source, size, () => fsError('EINVAL', 'write', path));
+    located.mount.writeFile(located.path, data);
     return this.rawVfs.revision();
   }
 

@@ -41,4 +41,23 @@ assert.equal(code(() => kernel.writeFile('home/k2', distinct(RESERVE))), 'ENOSPC
 // A facet fill is never the kernel's.
 assert.equal(code(() => vfs.ledger.fill('proc-slot-0', 100_000)), 'ENOSPC');
 
+// A streamed write awaits its source, and still runs its transactions with
+// uid 0's privilege after it: the same fill, then the kernel's 1.5 MB
+// streamed into the reserve.
+{
+  const fresh = createSqliteVfsTestHarness();
+  const base = new SqliteVFS(fresh.sql, fresh.ctx);
+  base.as(CRED_KERNEL).mkdir('home');
+  base.as(CRED_KERNEL).chown('home', 1000, 1000);
+  const bounded = new SqliteVFS(fresh.sql, fresh.ctx, undefined, {
+    storageLimit: base.databaseBytes() + 3_000_000 + RESERVE,
+    storageKernelReserve: RESERVE,
+  });
+  assert.equal(code(() => bounded.as(USER).writeFile('home/a', distinct(2_500_000))), 'ok');
+  const stream = (cred) => bounded.as(cred).writeFileFrom('home/s', 1_500_000, (async function* () { yield distinct(1_500_000); })())
+    .then(() => 'ok', (error) => error.code);
+  assert.equal(await stream(USER), 'ENOSPC', 'a user streaming into the reserve is refused');
+  assert.equal(await stream(CRED_KERNEL), 'ok', 'the kernel streams into it');
+}
+
 console.log('n18-kernel-reserve: ok');

@@ -114,4 +114,56 @@ for (const [label, size, source, expected] of [
   console.log('  ok  a program reaching its host over RPC is refused (it writes a W7 stream instead)');
 }
 
+// ── A mount takes the file whole, after the source is read ──────────────────
+// A mounted filesystem has no staging, so writing it piece by piece showed
+// each prefix to readers and left one behind when the source failed.
+{
+  const { MemoryVFS } = await import('../../packages/core/src/vfs/memory.ts');
+  const { ProcessFiles } = await import('../../packages/core/src/runtime/process-files.ts');
+  const encode = (text) => new TextEncoder().encode(text);
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  for (const asynchronous of [false, true]) {
+    const harness = createSqliteVfsTestHarness();
+    const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+    const memory = new MemoryVFS({ uid: 1000, gid: 1000 });
+    // Without `sync`, the mount is an asynchronous one.
+    files.vfs.mount('/mnt/m', asynchronous ? new Proxy(memory, {
+      get: (target, key) => key === 'sync' ? undefined : (typeof target[key] === 'function' ? target[key].bind(target) : target[key]),
+      has: (target, key) => key !== 'sync' && key in target,
+    }) : memory);
+    const writer = files.view({ pid: 10, cred: KERNEL });
+    const reader = files.view({ pid: 11, cred: KERNEL });
+    await writer.writeFile('/mnt/m/f', encode('original'));
+    let seen;
+    const failing = (async function* () {
+      yield encode('new');
+      seen = decode(await reader.readFile('/mnt/m/f'));
+      throw new Error('network reset');
+    })();
+    await assert.rejects(() => writer.writeFileFrom('/mnt/m/f', 10, failing), /network reset/);
+    assert.equal(seen, 'original', `a reader sees the old file while it streams (asynchronous: ${asynchronous})`);
+    assert.equal(decode(await reader.readFile('/mnt/m/f')), 'original', 'and after the source fails');
+    await writer.writeFileFrom('/mnt/m/f', 6, (async function* () { yield encode('new'); yield encode('ish'); })());
+    assert.equal(decode(await reader.readFile('/mnt/m/f')), 'newish', 'a complete source replaces it');
+  }
+  console.log('  ok  a mounted file is replaced whole, or not at all');
+}
+
+// ── A process released mid-stream publishes nothing ─────────────────────────
+// Released after its last piece and before the source ended, it still
+// published: the scope's guard ran only per piece.
+{
+  const { ProcessFiles } = await import('../../packages/core/src/runtime/process-files.ts');
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const process = files.view({ pid: 12, cred: KERNEL });
+  const source = (async function* () {
+    yield bytesOf(2 * MiB);
+    files.killProcess(12);
+  })();
+  await assert.rejects(() => process.writeFileFrom('/late.bin', 2 * MiB, source), /EBADF/);
+  assert.equal(await files.view({ pid: 13, cred: KERNEL }).readFile('/late.bin').then(() => 'published', (error) => error.code), 'ENOENT', 'nothing was published');
+  console.log('  ok  a process released after its last piece publishes nothing');
+}
+
 console.log('sqlite-vfs-write-file-from: ok');
