@@ -505,7 +505,11 @@ export class NpmInstaller {
     // ── Phase 6: Link bins ──────────────────────────────────────────
     phaseStart = Date.now();
     setInstallPhase('link-bins');
-    await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` });
+    // `npm install <pkg>` adds bins; the ones already linked stay in the manifest.
+    const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
+      ? Object.values(safeJsonParse<NpmBinManifest | null>(await project.readFileString(npmBinManifestPath(nmDir)), null)?.bins ?? {})
+      : [];
+    await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
@@ -1694,31 +1698,45 @@ export class NpmInstaller {
     const extraneous = [...previous.keys()].filter((placement) => !kept.has(placement)).sort();
     if (extraneous.length === 0) return 0;
     const removed: string[] = [];
+    // The bins a removed package links: what its own package.json names
+    // (read before it goes) and what the bin manifest credits to it.
+    const unlinked = new Set<string>();
     for (const placement of extraneous) {
       const key = `${nmDir}/${placement}`;
       const inRemoved = removed.some((parent) => placement.startsWith(parent + '/node_modules/'));
-      if (!inRemoved && await project.exists(key)) await project.removeRecursive(key);
+      if (!inRemoved && await project.exists(key)) {
+        if (!placement.includes('/node_modules/')) for (const name of await this.declaredBins(project, key)) unlinked.add(name);
+        await project.removeRecursive(key);
+      }
       removed.push(placement);
     }
-    // Their bins, unless a package that stays links the same name.
     const manifestPath = npmBinManifestPath(nmDir);
-    if (await project.exists(manifestPath)) {
-      const manifest = safeJsonParse<NpmBinManifest | null>(await project.readFileString(manifestPath), null);
-      const keptBins = new Set([...plan.root.values()].flatMap((pkg) => Object.keys(pkg.bin ?? {})));
-      if (manifest !== null) {
-        let changed = false;
-        for (const [name, bin] of Object.entries(manifest.bins)) {
-          if (!removed.includes(bin.packageName) || keptBins.has(name)) continue;
-          const shim = `${nmDir}/.bin/${name}`;
-          if (await project.exists(shim)) await project.unlink(shim);
-          delete manifest.bins[name];
-          changed = true;
-        }
-        if (changed) await project.writeFile(manifestPath, enc.encode(JSON.stringify(manifest, null, 2) + '\n'), { mode: 0o644 });
-      }
+    const manifest = await project.exists(manifestPath)
+      ? safeJsonParse<NpmBinManifest | null>(await project.readFileString(manifestPath), null)
+      : null;
+    for (const [name, bin] of Object.entries(manifest?.bins ?? {})) if (removed.includes(bin.packageName)) unlinked.add(name);
+    // Unless a package that stays links the same name.
+    for (const pkg of plan.root.values()) for (const entry of packageBinEntries(pkg, nmDir)) unlinked.delete(entry.name);
+    for (const name of unlinked) {
+      const shim = `${nmDir}/.bin/${name}`;
+      if (await project.exists(shim)) await project.unlink(shim);
+    }
+    if (manifest !== null && [...unlinked].some((name) => name in manifest.bins)) {
+      for (const name of unlinked) delete manifest.bins[name];
+      await project.writeFile(manifestPath, enc.encode(JSON.stringify(manifest, null, 2) + '\n'), { mode: 0o644 });
     }
     log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
     return removed.length;
+  }
+
+  /** The bin names the package at `dir` declares in its package.json. */
+  private async declaredBins(project: ProjectFs, dir: string): Promise<string[]> {
+    let manifest: Record<string, unknown> | null = null;
+    try { manifest = safeJsonParse<Record<string, unknown> | null>(await project.readFileString(`${dir}/package.json`), null); } catch { return []; }
+    if (manifest === null) return [];
+    const bin = manifest.bin;
+    if (typeof bin === 'string') return typeof manifest.name === 'string' ? [manifest.name.split('/').pop() ?? manifest.name] : [];
+    return bin !== null && typeof bin === 'object' ? Object.keys(bin) : [];
   }
 
   /**
@@ -1921,6 +1939,7 @@ export class NpmInstaller {
   private async linkBins(
     resolved: Map<string, ResolvedPackage>,
     target: { nmDir: string } & ({ engine: CredentialedVfs } | { fs: ProjectFs }),
+    kept: readonly NpmBinEntry[] = [],
   ): Promise<void> {
     const { nmDir } = target;
     const binDir = nmDir + '/.bin';
@@ -1934,8 +1953,10 @@ export class NpmInstaller {
 
     if (manifestEntries.length === 0) return;
 
-    const manifest = createNpmBinManifest(manifestEntries);
-    const files = Object.values(manifest.bins).map((binEntry) => ({
+    // `kept`: bins already linked that this install does not relink; the
+    // manifest still lists them, and their shims stay as they are.
+    const manifest = createNpmBinManifest([...kept, ...manifestEntries]);
+    const files = Object.values(createNpmBinManifest(manifestEntries).bins).map((binEntry) => ({
       path: binDir + '/' + binEntry.name,
       data: enc.encode(createNpmBinShim(binEntry, binDir)),
       mode: 0o755,

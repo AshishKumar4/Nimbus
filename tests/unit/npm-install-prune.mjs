@@ -126,9 +126,12 @@ assert.ok(root.exists(`${NM}/.bin/c-cli`), 'c links its bin');
   await install();
   await install({ packages: ['e@^1.0.0'] });
   assert.ok(placements().includes('c') && placements().includes('e'), 'the lockfile holds the old tree and the addition');
+  assert.deepEqual(bins(), ['c-cli', 'e-cli'], 'and the bin manifest the old bins and the added one');
   declare({ a: '^1.0.0', e: '^1.0.0' });
   await install();
   assert.equal(present('c'), false, 'a dependency dropped after an explicit add is still pruned');
+  assert.equal(root.exists(`${NM}/.bin/c-cli`), false, 'with its bin');
+  assert.deepEqual(bins(), ['e-cli']);
   assert.deepEqual(placements(), ['a', 'b', 'd', 'e']);
 }
 
