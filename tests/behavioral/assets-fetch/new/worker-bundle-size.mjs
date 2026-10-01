@@ -48,6 +48,12 @@ function wrangler(args) {
   return spawnSync(wranglerBin, args, { cwd: hostedDemoDir, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
 }
 
+// The Worker's assets directory is built, not tracked: a checkout that has
+// not deployed has none, and wrangler refuses the config without it.
+const assets = spawnSync('bun', ['run', 'build:assets'], { cwd: hostedDemoDir, encoding: 'utf8' });
+a.check('the hosted demo\'s assets build', assets.status === 0, `exit=${assets.status} stderr-tail=${assets.stderr?.slice(-300) || '<empty>'}`);
+if (assets.status !== 0) finish();
+
 // ── size ─────────────────────────────────────────────────────────────
 const dryRun = wrangler(['deploy', '--dry-run', '--outdir', join(outDir, 'bundle'), '-e', 'production']);
 a.check('wrangler deploy --dry-run succeeds', dryRun.status === 0,
