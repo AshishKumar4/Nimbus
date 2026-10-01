@@ -131,6 +131,8 @@ class Scheduler {
   private held = 0;
   private position: Key = [];
   private stopped = false;
+  /** Resolves once nothing is in flight, after stop(). */
+  private idle: (() => void) | null = null;
 
   constructor(private readonly calls: number) {}
 
@@ -155,6 +157,7 @@ class Scheduler {
 
   settled(): void {
     this.inFlight--;
+    if (this.inFlight === 0) this.idle?.();
     this.pump();
   }
 
@@ -177,6 +180,12 @@ class Scheduler {
 
   stop(): void {
     this.stopped = true;
+  }
+
+  /** Once the calls already started have answered: find's reads do not outlive it. */
+  async drained(): Promise<void> {
+    if (this.inFlight === 0) return;
+    await new Promise<void>((resolve) => { this.idle = resolve; });
   }
 
   private pump(): void {
@@ -207,6 +216,12 @@ export interface WalkOptions {
   readonly readAhead: number;
   /** Whether the expression reads stats, so entries' stats are worth reading ahead. */
   readonly prefetchStats: boolean;
+  /**
+   * Whether only what the walk already knows (-maxdepth, -xdev, a loop) can
+   * keep it out of a subtree, so whole subtrees are read ahead. When the
+   * expression can -prune, only the level below where the walk is.
+   */
+  readonly readAheadSubtrees: boolean;
   readonly signal: AbortSignal;
   /** A diagnostic, after `find: `. Every diagnostic also makes the exit status 1. */
   report(message: string): Promise<void>;
@@ -228,6 +243,7 @@ export class FindEntry {
   private lstatTask: Task<ProcessStat | null> | null = null;
   private followTask: Task<ProcessStat | null> | null = null;
   private listingTask: Task<VfsDirent[]> | null = null;
+  private childEntries: FindEntry[] | null = null;
   private statReported = false;
 
   constructor(
@@ -340,6 +356,18 @@ export class FindEntry {
     return this.listingWork.result();
   }
 
+  /** The entries of this directory's listing, made once for the walk and its read-ahead alike. */
+  children(listing: readonly VfsDirent[]): FindEntry[] {
+    if (this.childEntries !== null) return this.childEntries;
+    const prefix = this.path.endsWith('/') ? this.path.slice(0, -1) : this.path;
+    this.childEntries = listing.map((dirent, index) => new FindEntry(
+      this.walker, [...this.key, index], `${prefix}/${dirent.name}`,
+      this.absolute === '/' ? `/${dirent.name}` : `${this.absolute}/${dirent.name}`,
+      dirent.name, this.depth + 1, this.start, dirent.type, this,
+    ));
+    return this.childEntries;
+  }
+
   /** The listing, taken by the walk to descend: it no longer holds a place in the read-ahead window. */
   async takeListing(): Promise<Outcome<VfsDirent[]>> {
     const outcome = await this.listing();
@@ -378,6 +406,7 @@ export class FindEntry {
 
 export class Walker {
   readonly scheduler: Scheduler;
+  private readonly readAheadDone = new WeakSet<FindEntry>();
   private failed = false;
   private quit = false;
   private newStart = false;
@@ -390,6 +419,12 @@ export class Walker {
     const newStart = this.newStart;
     this.newStart = false;
     await this.visitor.event(depth, newStart);
+  }
+
+  /** Once every call the walk started, read ahead or not, has answered. */
+  async settled(): Promise<void> {
+    this.scheduler.stop();
+    await this.scheduler.drained();
   }
 
   /** 0, or 1 once anything has gone wrong. */
@@ -412,7 +447,12 @@ export class Walker {
   }
 
   listingTask(entry: FindEntry): Task<VfsDirent[]> {
-    return this.scheduler.task(entry.key, true, () => this.options.vfs.readdir(entry.absolute));
+    return this.scheduler.task(entry.key, true, async () => {
+      const listing = await this.options.vfs.readdir(entry.absolute);
+      // A listing read for -empty is not one the walk enters; only the walk's own are read below.
+      if (this.options.readAheadSubtrees && (await this.descends(entry))) this.readAhead(entry, entry.children(listing));
+      return listing;
+    });
   }
 
   /** Whether the walk descends into `entry`, by everything but -prune (which only the visit decides). */
@@ -512,13 +552,8 @@ export class Walker {
       if (!listing.ok) {
         await this.report(`${quote(entry.path)}: ${VFS_STRERROR[listing.error.code]}`);
       } else {
-        const prefix = entry.path.endsWith('/') ? entry.path.slice(0, -1) : entry.path;
-        const children = listing.value.map((dirent, index) => new FindEntry(
-          this, [...entry.key, index], `${prefix}/${dirent.name}`,
-          entry.absolute === '/' ? `/${dirent.name}` : `${entry.absolute}/${dirent.name}`,
-          dirent.name, entry.depth + 1, entry.start, dirent.type, entry,
-        ));
-        if (this.scheduler.enabled) this.readAhead(children);
+        const children = entry.children(listing.value);
+        if (this.scheduler.enabled) this.readAhead(entry, children);
         for (const child of children) {
           await this.walk(child);
           if (this.quit) return;
@@ -539,7 +574,9 @@ export class Walker {
    * a directory is on this device, so a probe queued in its place reads the
    * stat first and never lists a directory on another one.
    */
-  private readAhead(children: readonly FindEntry[]): void {
+  private readAhead(parent: FindEntry, children: readonly FindEntry[]): void {
+    if (this.readAheadDone.has(parent)) return;
+    this.readAheadDone.add(parent);
     const { options, scheduler } = this;
     for (const child of children) {
       if (options.prefetchStats || child.statedByWalk) child.prefetchStat();

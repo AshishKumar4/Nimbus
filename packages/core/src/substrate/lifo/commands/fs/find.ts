@@ -38,18 +38,28 @@ function onlyLooks(expression: Expression): boolean {
   }
 }
 
-/** Whether the expression reads files' stats, so reading them ahead pays. */
-function readsStats(expression: Expression): boolean {
+/**
+ * Whether evaluating the expression reads every file's stat before anything
+ * can cut it short, so reading stats ahead costs nothing the walk would not
+ * spend: `-size +1M -name x` does, `-name x -size +1M` stats only the x's.
+ */
+function readsStatsFirst(expression: Expression): boolean {
   switch (expression.kind) {
-    case 'and': case 'or': case 'comma': return readsStats(expression.left) || readsStats(expression.right);
-    case 'not': return readsStats(expression.operand);
+    case 'and': case 'or': return readsStatsFirst(expression.left);
+    case 'comma': return readsStatsFirst(expression.left) || readsStatsFirst(expression.right);
+    case 'not': return readsStatsFirst(expression.operand);
     case 'primary': {
       const primary = expression.primary;
       switch (primary.kind) {
         case 'true': case 'false': case 'name': case 'path': case 'print': case 'prune': case 'quit':
         case 'delete': case 'exec': case 'access':
           return false;
-        case 'type': return primary.target || Object.keys(primary.types).some((letter) => letter !== 'd' && letter !== 'l');
+        // A regular file and a device are told apart by a stat; a test that wants both, or neither, needs none.
+        case 'type': {
+          if (primary.target) return true;
+          const others = [primary.types.f, primary.types.b, primary.types.c, primary.types.p, primary.types.s];
+          return others.some((wanted) => wanted === true) && others.some((wanted) => wanted !== true);
+        }
         case 'printf': return primary.format.needs === 'stat';
         default: return true;
       }
@@ -114,7 +124,8 @@ class FindRun {
       sameDevice: plan.sameDevice,
       ignoreVanished: plan.ignoreVanished,
       readAhead: onlyLooks(plan.expression) ? READ_AHEAD_CALLS : 0,
-      prefetchStats: readsStats(plan.expression),
+      prefetchStats: readsStatsFirst(plan.expression),
+      readAheadSubtrees: !primaries(plan.expression).some((primary) => primary.kind === 'prune'),
       signal: ctx.signal,
       report: (message) => this.diagnose(message),
     }, {
@@ -129,6 +140,7 @@ class FindRun {
 
   async run(): Promise<number> {
     await this.walker.run(this.plan.startPoints);
+    await this.walker.settled();
     // findutils' cleanup: what -exec … + and -execdir … + still hold runs, -quit or not.
     for (const batch of this.batches.values()) await this.flush(batch);
     if (this.ctx.signal.aborted) return 130;
