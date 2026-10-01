@@ -184,6 +184,17 @@ try {
     assert.equal(opens.length, 8);
     assert.deepEqual(closes.sort(), opens.sort(), 'the file opened before the failing redirection closed');
 
+    // So does a redirection whose word fails to expand, on a simple command
+    // and on a compound one (`${X:?}` ends the script).
+    const simple = await shell.execute(': >/work/k <${UNSET_X:?boom}');
+    assert.match(simple.stderr, /boom/);
+    assert.equal(opens.length, 9);
+    assert.deepEqual(closes.sort(), opens.sort(), 'the simple command closed the file it opened');
+    const compound = await shell.execute('( : ) >/work/l <${UNSET_X:?boom}');
+    assert.match(compound.stderr, /boom/);
+    assert.equal(opens.length, 10);
+    assert.deepEqual(closes.sort(), opens.sort(), 'the compound command closed the file it opened');
+
     // A background job inside a redirected group writes to the group's file
     // after the group ends, and the file closes with the job.
     arm();
@@ -191,7 +202,7 @@ try {
     assert.equal(grouped.exitCode, 0, `grouped background script: ${grouped.stderr}`);
     assert.equal(grouped.stderr, '');
     assert.equal(root.readFileString('/work/i'), 'late\n');
-    assert.equal(opens.length, 9);
+    assert.equal(opens.length, 11);
     assert.deepEqual(closes.sort(), opens.sort(), 'the group\'s file closed with the job');
 
     // `exec 3>&1` keeps the subshell's redirected stdout as fd 3, and a
@@ -202,7 +213,7 @@ try {
     const promoted = await shell.execute('( exec 3>&1; { gate; echo late >&3; } & ) >/work/j; release');
     assert.equal(promoted.exitCode, 0, `promoted fd script: ${promoted.stderr}`);
     assert.equal(promoted.stderr, '');
-    assert.equal(opens.length, 10);
+    assert.equal(opens.length, 12);
     for (let turn = 0; turn < 100 && closes.length < opens.length; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(closes.sort(), opens.sort(), 'the redirected stdout closed with the last shell holding it');
     assert.equal(root.readFileString('/work/j'), 'late\n', 'after the job wrote through it');

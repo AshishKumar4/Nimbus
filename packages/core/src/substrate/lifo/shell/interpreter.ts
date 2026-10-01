@@ -1553,18 +1553,20 @@ export class Interpreter {
     const stdout = io.stdout ?? this.terminalSink(io);
     const stderr = io.stderr ?? this.terminalSink(io);
     const fds = this.createCommandFds(stdout, stderr, io.stdin, io);
-    try {
-      await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
-    } catch (error) {
-      if (!(error instanceof RedirectionOpenError)) throw error;
-      const redirStderr = fds.outputFds.get(2) ?? stderr;
-      (await redirStderr.write(redirectionDiagnostic(error)));
-      await this.flushFds(fds);
-      this.lastExitCode = 1;
-      return 1;
-    }
-
-    return (await this.withFdFlush(fds, async () => (await execute(this.createIoFromFds(io, fds)))));
+    // The flush owns every file the redirections open, including those opened
+    // before one that fails to open or to expand.
+    return (await this.withFdFlush(fds, async () => {
+      try {
+        await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
+      } catch (error) {
+        if (!(error instanceof RedirectionOpenError)) throw error;
+        const redirStderr = fds.outputFds.get(2) ?? stderr;
+        (await redirStderr.write(redirectionDiagnostic(error)));
+        this.lastExitCode = 1;
+        return 1;
+      }
+      return (await execute(this.createIoFromFds(io, fds)));
+    }));
   }
 
   private async applyRedirections(

@@ -28,7 +28,8 @@ message shape, VFS export schema 3 (its pages carry `source`), and the
   with `EBADF`. A background job lost an inherited descriptor, or the file
   its enclosing redirection opened, when the parent let go of it first. A
   file a subshell opened with `exec`, or one opened before a redirection
-  that failed, was never closed. Every file a redirection opens is now
+  that failed to open or to expand (`( : ) >out <${X:?}`), was never
+  closed. Every file a redirection opens is now
   counted the way the kernel counts an open file: by the command, by each
   descriptor `exec` keeps on it, and by each child shell that inherited it.
   It closes when the last of them lets go. A programmatic call's shell ends
