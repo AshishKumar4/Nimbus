@@ -34,6 +34,11 @@ export const PROBE_TARGET_SKIPS = [
   // that unit assertion is ever removed, this skip becomes a blind spot
   // again.
   'auth/new/hosted-demo-anon-launch',
+  // Host-form previews (`<port>--<sid>.<suffix>`) need a zone route with
+  // NIMBUS_PREVIEW_HOST_SUFFIX, which only production has; a probe target
+  // serves path-form previews only. The promotion runs it on production, and
+  // coi-isolated-preview covers the same isolation in the path form here.
+  'preview/new/coi-host-preview-live',
 ];
 
 if (import.meta.main) process.stdout.write(PROBE_TARGET_SKIPS.join(','));
