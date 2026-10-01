@@ -29,6 +29,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const ROOT = '/home/user/dio';
 const files = {
@@ -215,5 +216,18 @@ for (let i = 0; i < expected.length; i++) {
   assert.deepEqual(actual[i], expected[i], `${expected[i][0]}`);
 }
 assert.equal(actual.length, expected.length);
+
+// A module at the filesystem root: its dirname is "/", as path.dirname gives
+// for it under Node (no real root to write to here). It was "/.".
+rawVfs.as(CRED_KERNEL).writeFile('meta-root.mjs', 'export const paths = [import.meta.dirname, import.meta.filename];\n');
+const ROOT_SCRIPT = "import('/meta-root.mjs?q#f').then((m) => console.log(JSON.stringify(m.paths)));";
+kfs.writeFile(`${ROOT.slice(1)}/app/root-script.js`, ROOT_SCRIPT);
+out = '';
+const rooted = await manager.exec(ROOT_SCRIPT, { filename: `${ROOT}/app/root-script.js`, dirname: `${ROOT}/app`, cwd: `${ROOT}/app`, captureOutput: true });
+globalThis.console = real.console;
+globalThis.process = real.process;
+globalThis.Buffer = real.Buffer;
+assert.equal(rooted.exitCode, 0, `the root-module run failed: ${rooted.stderr}${out}`);
+assert.deepEqual(JSON.parse((out + rooted.stdout).trim().split('\n').at(-1)), ['/', '/meta-root.mjs'], 'a root-level module\'s dirname and filename');
 
 console.log(`one-shot-dynamic-import-matches-node: ${expected.length} dynamic imports load and fail as node's do`);
