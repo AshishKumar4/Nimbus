@@ -201,7 +201,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -235,6 +235,17 @@ export interface RuntimeFsBridge {
         createParents?: boolean;
         expectedRevision?: number;
     }): Awaitable<number>;
+    /**
+     * Whole-file write of `size` bytes that arrive over time from `source`:
+     * the file is published whole once they have, and not at all if the
+     * source ends short, runs long or throws. The bytes are never held
+     * together, which is the point: a large file read from the network is
+     * written without holding it, and in one pass rather than a ranged write
+     * per piece. Returns the revision the write produced, as writeFile does.
+     * A host operation: an iterable does not cross RPC, so a program's
+     * filesystem refuses it (ENOTSUP) and a program streams W7 instead.
+     */
+    writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number>;
     /** Stateless ranged read: clamped at EOF; null when the path is absent. */
     readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Awaitable<Uint8Array | null>;
     /**

@@ -111,6 +111,14 @@ export interface CredentialedVfs {
     writeFile(path: string, content: string | Uint8Array, options?: {
         mode?: number;
     }): void;
+    /**
+     * writeFile of a file whose `size` bytes arrive over time from `source`,
+     * published whole once they have (see SqliteVFS.writeFileFrom). Answers
+     * the revision the publication produced.
+     */
+    writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>, options?: {
+        mode?: number;
+    }): Promise<number>;
     symlink(target: string, path: string): void;
     readlink(path: string): string;
     resolveSymlink(path: string): string | null;
@@ -889,6 +897,12 @@ export declare class SqliteVFS {
     private assertMutationsAllowed;
     private mkdir;
     private _mkdirSingle;
+    /**
+     * The inode `writeFile` publishes for `size` bytes at `path`, once it is
+     * allowed to: the file the name resolves to, or a new one in a directory
+     * the caller may write.
+     */
+    private fileWriteInode;
     private writeFile;
     private symlink;
     private readlink;
@@ -1518,6 +1532,19 @@ export declare class SqliteVFS {
      */
     private fileEntry;
     private publishStagedFile;
+    /**
+     * `writeFile` of a file whose bytes arrive over time, without holding it:
+     * each byte is cut and hashed once as it arrives, staged in bounded
+     * transactions, and the file published whole by the last one, as
+     * replaceFileWithStagedContent does for a file too large for one
+     * transaction. `size` is what `source` must yield; a source that ends
+     * short, runs long or throws publishes nothing.
+     *
+     * Appending the same bytes a piece at a time (writeRange) re-cuts the
+     * file's tail on every piece, and a piece past half a transaction's blob
+     * bound copies the manifest of everything before it again.
+     */
+    private writeFileFrom;
     /**
      * Incremental W7 v3 consumer. Chunk payload is admitted through one
      * per-VFS weighted credit pool and committed in bounded synchronous

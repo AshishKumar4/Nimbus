@@ -78,9 +78,10 @@ export declare function listInstalledManifestsView(fs: CredentialedVfs, homeDir:
     manifest: RuntimeManifest;
 }>>;
 /**
- * Runtime blobs are read and written in whole 64 KiB VFS chunks, eight at a
- * time: an append then touches no chunk it does not replace, and stays inside
- * one SQLite transaction's 1 MiB blob bound.
+ * Runtime blobs are read eight 64 KiB chunks at a time: a source's body is
+ * coalesced into pieces this size, and an installed blob is re-verified a
+ * ranged read this size at a time. Writing is not piecewise: each blob
+ * streams into the filesystem as one file (runtime-package.ts).
  */
 export declare const RUNTIME_BLOB_PIECE_BYTES: number;
 /**

@@ -179,6 +179,8 @@ export declare class ProcessView implements VFS {
     /** A ranged read that neither consults nor fills the session's content cache. */
     readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array>;
     writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void>;
+    /** writeFile of `size` bytes that arrive over time, published whole once they have (RuntimeFsBridge.writeFileFrom). */
+    writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Promise<void>;
     truncate(path: string, size: number): Promise<void>;
     /**
      * rm -r: what went, by the roots removed, what is still there, and why.

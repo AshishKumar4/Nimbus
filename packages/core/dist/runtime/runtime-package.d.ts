@@ -31,7 +31,8 @@ export interface RuntimePackageFs {
     /** Clamped at EOF; never pins the bytes in a content cache. */
     readRangeUncached(path: string, offset: number, length: number): Awaitable<Uint8Array>;
     writeFile(path: string, data: string | Uint8Array): Awaitable<void>;
-    writeRange(path: string, offset: number, bytes: Uint8Array): Awaitable<unknown>;
+    /** writeFile of `size` bytes that arrive over time, published whole once they have: how each blob is written. */
+    writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Awaitable<unknown>;
     rename(from: string, to: string): Awaitable<void>;
     mkdir(path: string, options?: {
         recursive?: boolean;
