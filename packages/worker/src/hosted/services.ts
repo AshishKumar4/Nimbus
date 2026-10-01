@@ -299,7 +299,10 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       ): Promise<number> => {
         const registry = self._cpRegistry;
         if (!registry) { hooks.onStderr(textBytes('cp: registry unavailable\n')); return 127; }
-        const commandName = normalizeCpCommandName(name);
+        // A command named by a relative path is found from the directory it runs in, as execvp
+        // finds it; the registry's path resolver would take the session shell's directory.
+        const named = name.includes('/') && !name.startsWith('/') ? `${cwd.replace(/\/+$/, '')}/${name}` : name;
+        const commandName = normalizeCpCommandName(named);
         const cmd = await registry.resolve(commandName);
         if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
         const cred = self.processes.cred(pid);
