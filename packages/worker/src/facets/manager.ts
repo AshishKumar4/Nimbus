@@ -3756,6 +3756,37 @@ export interface PrefetchBundleOptions {
   transformStore?: BundleCellResultStore;
 }
 
+/** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
+const TOOL_CONFIG = /^(.+)\.config\.(?:c|m)?(?:j|t)s$/;
+
+/**
+ * The working dir's config files of the tool a launch runs. The tool
+ * executes them (Vite bundles vite.config.ts and imports the result), so
+ * what they import is required code that nothing in the program's own graph
+ * names, and a first run would miss it. A config is the tool's when it is
+ * named for the launched package or a package that one depends on (Astro
+ * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
+ * (eslint.config.js beside Vite) is not.
+ */
+export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]> {
+  const root = scriptPath === undefined ? null : packageRootOf(scriptPath.replace(/^\/+/, ''));
+  if (root === null) return [];
+  let manifest: Record<string, unknown>;
+  try { manifest = JSON.parse(await filesOf(vfs).readFileString(root + '/package.json')) as Record<string, unknown>; } catch { return []; }
+  const tools = new Set<string>(typeof manifest.name === 'string' ? [manifest.name] : []);
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies'] as const) {
+    const named = manifest[field];
+    if (named && typeof named === 'object') for (const name of Object.keys(named)) tools.add(name);
+  }
+  let entries: RuntimeVfsDirEntry[];
+  try { entries = await vfs.readdir(cwd); } catch { return []; }
+  const dir = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
+  return entries.flatMap((entry) => {
+    const tool = entry.type === 'file' ? TOOL_CONFIG.exec(entry.name)?.[1] : undefined;
+    return tool !== undefined && tools.has(tool) ? [{ path: (dir ? dir + '/' : '') + entry.name }] : [];
+  });
+}
+
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -3817,8 +3848,9 @@ async function _buildPrefetchBundle(
   // temporary config after loading it) is walked from that text. Files runs
   // only READ are observed reads below: data, never roots, whatever their
   // extension (Tailwind scans .js/.ts content files as text).
+  const requiredRoots = [...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer), undefined, executedModules && executedModules.length > 0 ? executedModules : undefined));
+    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
