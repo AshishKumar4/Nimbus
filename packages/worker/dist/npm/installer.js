@@ -169,11 +169,17 @@ export class NpmInstaller {
         const packageLock = opts?.fromLockfile
             ? await this.treeFromPackageLock(projDir, project, principal, opts.production === true, log, registry)
             : null;
+        const lockfile = this.cache.readLockfile(projDir);
         if (packageLock === null && Object.keys(specs).length === 0) {
+            // The project needs nothing, so whatever an earlier install placed is extraneous.
+            if (lockfile && !opts?.packages) {
+                const empty = { root: new Map(), nested: new Map() };
+                if (await this.pruneExtraneous(lockfile, empty, nmDir, project, log) > 0)
+                    this.writeLockfile(projDir, empty, nmDir);
+            }
             log('No dependencies to install.');
             return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases: {} };
         }
-        const lockfile = this.cache.readLockfile(projDir);
         let resolved;
         let nested;
         let usedLockfile = false;
@@ -247,8 +253,9 @@ export class NpmInstaller {
         // What an earlier install placed that this tree no longer holds is
         // extraneous (a dependency the project dropped), and npm removes it on
         // install. `npm install <pkg>` resolves only what it adds, so it prunes
-        // nothing.
-        const pruned = lockfile && !opts?.packages
+        // nothing; and a tree the resolver could not finish is no evidence that
+        // what it lacks is unwanted (a declared package it failed to resolve).
+        const pruned = lockfile && !opts?.packages && failed.length === 0
             ? await this.pruneExtraneous(lockfile, hoistPlan, nmDir, project, log)
             : 0;
         // ── Phase 3: Diff (cache check) ─────────────────────────────────
@@ -329,7 +336,10 @@ export class NpmInstaller {
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         if (!usedLockfile || opts?.packages || pruned > 0) {
-            this.writeLockfile(projDir, hoistPlan, nmDir);
+            // The lockfile is the inventory pruning reads, so it keeps what is
+            // still on disk: `npm install <pkg>` adds to the installed tree, and a
+            // failed install removed nothing.
+            this.writeLockfile(projDir, hoistPlan, nmDir, opts?.packages || failed.length > 0 ? lockfile : null);
         }
         // ── Update package.json if explicit packages were added ─────────
         if (opts?.packages && opts.packages.length > 0) {
@@ -1682,8 +1692,8 @@ export class NpmInstaller {
     /**
      * Write lockfile to SQLite.
      */
-    writeLockfile(projDir, hoistPlan, nmDir) {
-        const entries = new Map();
+    writeLockfile(projDir, hoistPlan, nmDir, base = null) {
+        const entries = new Map(base ?? []);
         for (const { placement, pkg } of hoistPlacements(hoistPlan)) {
             entries.set(placement, {
                 name: pkg.name,
