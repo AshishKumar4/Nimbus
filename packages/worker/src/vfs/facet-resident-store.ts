@@ -1745,20 +1745,26 @@ function __nsNoteOwnFile(k, size, rev) {
  * so any row as new is kept, and the next delta naming the path replaces it
  * with the authority's own dating. \`stat\` null: the authority said it is not
  * there, and a row older than the cursor goes.
+ *
+ * \`written\`: the revision of this process's own accepted write the stat was
+ * taken after. The row __nsNoteOwnFile approximated for that write is dated
+ * there, so the authority's stat replaces it (the owner of a file the process
+ * overwrote without having listed it is the authority's, not the process's),
+ * and only a row newer than the write is kept.
  */
-function __nsNoteLiveStat(k, stat) {
+function __nsNoteLiveStat(k, stat, written) {
   if (!__nsReady()) return;
   const cursor = __residentCursor();
   if (cursor === null) return;
   const t = __residentT;
   const held = __nsRowAt(t, k);
-  if (held !== undefined && Number(held.rev) >= cursor.rev) return;
+  if (held !== undefined && (written === undefined ? Number(held.rev) >= cursor.rev : Number(held.rev) > written)) return;
   if (stat === null) {
     if (held !== undefined) { const [parent, name] = __nsSplit(k); t.nsDelete(parent, name); __nsLinks.delete(k); __nsUnlisted.delete(k); }
     return;
   }
   if (!__nsDescribes(stat)) return;
-  __nsTryPut(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target ?? null);
+  __nsTryPut(t, k, stat, written === undefined ? cursor.rev : Math.max(written, cursor.rev), stat.linkTarget ?? stat.target ?? null);
 }
 
 /**

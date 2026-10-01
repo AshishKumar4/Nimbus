@@ -1222,11 +1222,12 @@ const __fsMod = (() => {
   // some of which stayed pending and never reached the session
   // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
   // the learns cost a round trip per batch, as the reads before them do.
-  async function _learnLive(absPath, supervisor) {
+  /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
+  async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
     let stat;
     try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
-    __nsNoteLiveStat(_strip(absPath), stat ?? null);
+    __nsNoteLiveStat(_strip(absPath), stat ?? null, written);
   }
 
   /**
@@ -3023,22 +3024,26 @@ const __fsMod = (() => {
       // The authority's stat comes back with the write where it can, and is
       // what the sync view keeps for the path.
       let learned;
+      let written;
       await __nimbusFlushVfsWrite(absPath, async (content) => {
         if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
           try {
             const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
             learned = answer.stat;
+            written = answer.revision;
             return answer.revision;
           } catch (error) {
             if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
             _served.writeFileStat = false;
           }
         }
-        return _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
+        written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
+        return written;
       });
       _markVfsStale();
-      if (learned !== undefined) __nsNoteLiveStat(_strip(absPath), learned);
-      else await _learnLive(absPath, supervisor);
+      const revision = typeof written === "number" ? written : undefined;
+      if (learned !== undefined) __nsNoteLiveStat(_strip(absPath), learned, revision);
+      else await _learnLive(absPath, supervisor, revision);
     }
   }
 

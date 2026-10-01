@@ -9,6 +9,7 @@
 // for the write and the stat separately.
 
 import assert from 'node:assert/strict';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
@@ -51,6 +52,20 @@ await runScenarios(import.meta.path, {
     assert.equal(stat.size, 5, 'the sync view stats the new file');
     assert.equal(stat.uid, 1000, 'owned as the authority made it');
     assert.equal(authority.read('home/user/app/new.txt'), 'fresh');
+  },
+
+  async 'a file the process overwrote without having listed it keeps its owner'() {
+    // Created by root after the launch, so the process's namespace has never
+    // named it, and its write took it for a new file of its own.
+    const { authority, probe } = await boot();
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.writeFile('home/user/app/shared.txt', 'root');
+    root.chmod('home/user/app/shared.txt', 0o666);
+    await probe.fs.promises.writeFile('/home/user/app/shared.txt', 'ours');
+    const stat = probe.fs.statSync('/home/user/app/shared.txt');
+    assert.equal(stat.uid, 0, 'the authority kept root as the owner');
+    assert.equal(stat.mode & 0o777, 0o666, 'and its mode');
+    assert.equal(stat.size, 4);
   },
 
   async 'a session deployed before writeFileStat is asked for the write and the stat separately'() {
