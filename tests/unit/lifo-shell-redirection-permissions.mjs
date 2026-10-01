@@ -163,6 +163,15 @@ try {
     assert.equal(root.readFileString('/work/f'), 'late\n', 'the child wrote after the parent closed fd 3');
     assert.equal(opens.length, 6);
     assert.deepEqual(closes.sort(), opens.sort(), 'and the file closed with the child');
+
+    // A subshell whose redirection fails never runs its body, and still lets
+    // go of what it inherited.
+    root.writeFile('work/g', 'g\n');
+    const unopened = await shell.execute('exec 3</work/g; ( : ) </work/missing; exec 3<&-');
+    assert.equal(unopened.exitCode, 0, `failed-redirection script: ${unopened.stderr}`);
+    assert.match(unopened.stderr, /missing/);
+    assert.equal(opens.length, 7);
+    assert.deepEqual(closes.sort(), opens.sort(), 'the parent closed the file the failed subshell inherited');
     await authority.releaseProcess(91);
   } finally {
     asyncBox.destroy();
