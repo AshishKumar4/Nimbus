@@ -210,6 +210,20 @@ export declare class NpmInstaller {
      */
     private isLockfileValid;
     /**
+     * The placements of `lockfile` the project's specs reach through Node's
+     * walk: dependencies, optionalDependencies and required peers, each met
+     * by the placement nearest its dependent. A valid lockfile has every
+     * entry's registry record (isLockfileValid).
+     */
+    private reachableFromSpecs;
+    /**
+     * Remove the placements `previous` (the last install's lockfile) holds and
+     * `plan` does not, with the bins they linked, as the invoking principal.
+     * A placement inside another removed one goes with it. Answers how many
+     * were removed.
+     */
+    private pruneExtraneous;
+    /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
      * records, checked against package.json first. The ABI policy the resolver
      * applies still holds: platform-native optional shards are skipped, a
