@@ -3,7 +3,14 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
-## Unreleased
+## 2026-10-01
+
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
+message shape, VFS export schema 3 (its pages carry `source`), and the
+`enhanced_error_serialization` requirement; each is described below.
 
 - Fixed: `git clone <url> /tmp/x` by a principal with a private `/tmp`
   failed with `EPERM: … is outside exclusive mutation root tmp/x`. The
@@ -21,7 +28,6 @@ published independently in the `@nimbus-sh` npm scope.
 - `npm install` removes packages the project no longer needs, as npm does:
   a dependency dropped from package.json, what only it needed, and its
   bins. This also clears the optional peers earlier installs added.
-
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session
@@ -44,16 +50,6 @@ published independently in the `@nimbus-sh` npm scope.
   link is `EEXIST`.
 - Fixed: a symlink a node process renamed was a regular file to `lstat`
   under its new name until the rename was reported back.
-
-## 2026-10-01
-
-Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
-sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
-are minor-strict, so every range on core, worker, fabric, platform and sdk
-moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
-message shape, VFS export schema 3 (its pages carry `source`), and the
-`enhanced_error_serialization` requirement; each is described below.
-
 - An async `fs.promises.readFile`, `stat` or `lstat` in a node process is one
   call to the session where it was two or three: the read takes its
   consistency barrier with it (`fsAcquired`), and a file's stat for the
