@@ -654,7 +654,15 @@ export class Interpreter {
         const child = this.fork();
         const subshellIo = this.createCommandIo(io);
         subshellIo.positionals = this.forkPositionals(io);
-        const exitCode = await child.executeWithRedirections(node.redirections, subshellIo, async (redirIo) => (await child.finishChild(async () => (await child.executeCompoundList(node.body, redirIo)), redirIo)));
+        let exitCode;
+        try {
+            exitCode = await child.executeWithRedirections(node.redirections, subshellIo, async (redirIo) => (await child.finishChild(async () => (await child.executeCompoundList(node.body, redirIo)), redirIo)));
+        }
+        finally {
+            // A redirection that fails ends the child before its body, and so
+            // before finishChild, runs.
+            await child.closeDescriptors();
+        }
         this.lastExitCode = exitCode;
         return exitCode;
     }
