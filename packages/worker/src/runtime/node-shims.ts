@@ -5972,7 +5972,6 @@ const __urlMod = {
     url.pathname = resolved.replace(/%/g, "%25").replace(/\\n/g, "%0A").replace(/\\r/g, "%0D").replace(/\\t/g, "%09");
     return url;
   },
-  fileURLToPath: (u) => (typeof u === "string" ? u : u.pathname).replace(/^file:\\/\\//, ""),
 };
 __urlMod.URL = globalThis.URL;
 
