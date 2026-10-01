@@ -262,10 +262,15 @@ await runScenarios(import.meta.path, {
     assert.equal(authority.read('home/user/app/target.txt'), 'old', 'the write is still parked');
   },
 
-  async 'a link renamed and not yet reported resolves to its target'() {
+  async 'a link renamed and not yet reported is still the link'() {
     const { probe } = await boot();
-    probe.fs.renameSync(LINK, `${APP}/moved-link.txt`);
-    assert.equal(probe.fs.realpathSync(`${APP}/moved-link.txt`), TARGET);
+    const moved = `${APP}/moved-link.txt`;
+    probe.fs.renameSync(LINK, moved);
+    assert.equal(probe.fs.lstatSync(moved).isSymbolicLink(), true, 'lstat sees the link that moved');
+    assert.equal(probe.fs.statSync(moved).isFile(), true);
+    assert.equal(probe.fs.realpathSync(moved), TARGET);
+    assert.equal(probe.read(moved), 'old');
+    assert.equal(probe.fs.existsSync(LINK), false);
   },
 
   async 'a mode change through a link waits for the write parked under the target'() {
