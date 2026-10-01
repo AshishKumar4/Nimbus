@@ -150,11 +150,16 @@ try {
     assert.equal(opens.length, 5);
     assert.deepEqual(closes.sort(), opens.sort(), 'the subshell closed its file, the parent closed its own');
 
-    // A background child keeps the file open after the parent closes its fd.
+    // `gate` returns once `release` has run: a background child waits in it
+    // while its parent goes on and ends what it opened.
     let release = () => {};
-    const gate = new Promise((resolve) => { release = resolve; });
+    let gate = Promise.resolve();
+    const arm = () => { gate = new Promise((resolve) => { release = resolve; }); };
     asyncBox.commands.registry.register('gate', async () => { await gate; return 0; });
     asyncBox.commands.registry.register('release', async () => { release(); return 0; });
+
+    // A background child keeps the file open after the parent closes its fd.
+    arm();
     const background = await shell.execute(
       'exec 3>/work/f; { gate; echo late >&3; } & exec 3>&-; release; wait',
     );
@@ -172,6 +177,35 @@ try {
     assert.match(unopened.stderr, /missing/);
     assert.equal(opens.length, 7);
     assert.deepEqual(closes.sort(), opens.sort(), 'the parent closed the file the failed subshell inherited');
+
+    // A redirection that fails closes what the ones before it opened.
+    const partly = await shell.execute(': >/work/h </work/missing; echo "rc=$?"');
+    assert.equal(partly.stdout, 'rc=1\n');
+    assert.equal(opens.length, 8);
+    assert.deepEqual(closes.sort(), opens.sort(), 'the file opened before the failing redirection closed');
+
+    // A background job inside a redirected group writes to the group's file
+    // after the group ends, and the file closes with the job.
+    arm();
+    const grouped = await shell.execute('{ { gate; echo late; } & } >/work/i; release; wait');
+    assert.equal(grouped.exitCode, 0, `grouped background script: ${grouped.stderr}`);
+    assert.equal(grouped.stderr, '');
+    assert.equal(root.readFileString('/work/i'), 'late\n');
+    assert.equal(opens.length, 9);
+    assert.deepEqual(closes.sort(), opens.sort(), 'the group\'s file closed with the job');
+
+    // `exec 3>&1` keeps the subshell's redirected stdout as fd 3, and a
+    // background job writing through it after the subshell ends still can.
+    // The job is the subshell's, so the parent's `wait` does not wait for it:
+    // the file closing is what says it ended.
+    arm();
+    const promoted = await shell.execute('( exec 3>&1; { gate; echo late >&3; } & ) >/work/j; release');
+    assert.equal(promoted.exitCode, 0, `promoted fd script: ${promoted.stderr}`);
+    assert.equal(promoted.stderr, '');
+    assert.equal(opens.length, 10);
+    for (let turn = 0; turn < 100 && closes.length < opens.length; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(closes.sort(), opens.sort(), 'the redirected stdout closed with the last shell holding it');
+    assert.equal(root.readFileString('/work/j'), 'late\n', 'after the job wrote through it');
     await authority.releaseProcess(91);
   } finally {
     asyncBox.destroy();
