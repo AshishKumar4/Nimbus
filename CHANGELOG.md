@@ -26,7 +26,8 @@ published independently in the `@nimbus-sh` npm scope.
   link creates the file it names, a loop is `ELOOP`, and `wx` on a dangling
   link is `EEXIST`.
 - Fixed: a symlink a node process renamed was a regular file to `lstat`
-  under its new name until the rename was reported back.
+  under its new name until the rename was reported back, and a relative
+  one was followed from the directory it had left.
 
 ## 2026-10-01
 

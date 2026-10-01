@@ -273,6 +273,25 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.fs.existsSync(LINK), false);
   },
 
+  async 'a moved link is followed from its new place, among the names there now'() {
+    const { authority, probe } = await boot((seeded) => {
+      seeded.kfs.mkdir('home/user/app/sub', { mode: 0o755 });
+      seeded.kfs.writeFile('home/user/app/sub/target.txt', 'in sub');
+      seeded.kfs.symlink('self.txt', 'home/user/app/self.txt');
+    });
+    probe.fs.renameSync(LINK, `${APP}/sub/moved.txt`);
+    assert.equal(probe.read(`${APP}/sub/moved.txt`), 'in sub', 'a relative target names a file beside the link\'s new place');
+    assert.equal(probe.fs.realpathSync(`${APP}/sub/moved.txt`), `${APP}/sub/target.txt`);
+    probe.fs.writeFileSync(`${APP}/sub/moved.txt`, 'written');
+    assert.equal(probe.fs.lstatSync(`${APP}/sub/moved.txt`).isSymbolicLink(), true, 'a write through it keeps it a link');
+    assert.equal(probe.read(`${APP}/sub/target.txt`), 'written');
+    probe.fs.renameSync(`${APP}/self.txt`, `${APP}/moved-self.txt`);
+    assert.equal(probe.fs.lstatSync(`${APP}/moved-self.txt`).isSymbolicLink(), true);
+    assert.throws(() => probe.fs.realpathSync(`${APP}/moved-self.txt`), { code: 'ENOENT' }, 'its target went with the move');
+    await probe.fs.promises.writeFile(`${APP}/sub/moved.txt`, 'landed');
+    assert.equal(authority.read('home/user/app/sub/target.txt'), 'landed', 'the authority wrote the file it names from there');
+  },
+
   async 'a mode change through a link waits for the write parked under the target'() {
     const { authority, probe } = await boot();
     probe.fs.writeFileSync(LINK, 'new');
