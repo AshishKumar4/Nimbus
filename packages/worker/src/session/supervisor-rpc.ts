@@ -64,7 +64,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeVfsStat, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
@@ -326,6 +326,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // and corrupting binary content. RPC structured-clone handles
     // Uint8Array transparently; downstream _rpcWriteFile also accepts
     return this._call(this._fsMutation('writeFile', [path, content]));
+  }
+
+  /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
+  async writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<{ revision: number; stat: RuntimeVfsStat | null }> {
+    return this._call(this._fsMutation('writeFileStat', [path, content]));
   }
 
   async stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>> {

@@ -211,7 +211,7 @@ export interface SupervisorOpHost {
  * wrapper around one of these, which the handler unwraps.
  */
 export const SUPERVISOR_OPS = [
-  'readFile', 'readFileBytes', 'writeFile', 'stat', 'lstat',
+  'readFile', 'readFileBytes', 'writeFile', 'writeFileStat', 'stat', 'lstat',
   'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
   'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink',
   'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
@@ -378,6 +378,15 @@ const NATIVE_OPS = {
   fsRevision: (e, t) => fsFor(e, t).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
   hasLegacySymlinkUnder: (e, t) => getSymlinkRegistry(t.vfs).hasAtOrBelow(stringArg(e, 0)),
   writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1)),
+  // writeFile, answering with the path's own stat as the write left it: a
+  // process keeps that stat for its sync view, and asked for it in a second
+  // call before (node-shims _writeFileAsync).
+  writeFileStat: async (e, t) => {
+    const fs = fsFor(e, t);
+    const path = FsPath.parse(e.args?.[0]);
+    const revision = await fs.writeFile(path, contentArg(e, 1));
+    return { revision, stat: (await fs.stat(path, { followSymlinks: false })) ?? null };
+  },
   mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
   unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),

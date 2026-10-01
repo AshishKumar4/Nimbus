@@ -169,6 +169,14 @@ export function facetSupervisor(authority, overrides = {}) {
       }
     };
   }
+  // An async writeFile's stat comes back with it as writeFileStat; a test
+  // that overrides writeFile overrides it there too, the stat read after it.
+  if (!overridden('writeFileStat') && overridden('writeFile')) {
+    own.writeFileStat = own.writeFile === undefined ? undefined : async (path, content) => ({
+      revision: await own.writeFile(path, content),
+      stat: await forward('lstat', [path]),
+    });
+  }
   const supervisor = new Proxy({}, {
     get(_target, name) {
       if (typeof name !== 'string' || name === 'then') return undefined;

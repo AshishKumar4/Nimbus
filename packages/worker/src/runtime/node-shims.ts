@@ -2852,6 +2852,22 @@ const __fsMod = (() => {
   }
 
   /**
+   * The ops a session deployed before them does not serve, and whether this
+   * one does: a refusal that says so switches the process to the calls those
+   * ops replaced, from then on. An RPC stub answers \`typeof "function"\` for
+   * any method, so only the refusal can tell.
+   */
+  const _served = { fsAcquired: true, writeFileStat: true };
+  /** The refusal of \`op\` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
+  function _unserved(error, op) {
+    const message = error && typeof error.message === "string" ? error.message : "";
+    return message.includes('does not implement the method "' + op + '"')
+      || message.includes("'" + op + "' is not served by this host")
+      || message.includes("'" + op + "' is not a read")
+      || message.includes("'deliverOnce' names no mutation it can deliver once");
+  }
+
+  /**
    * The barrier and the read an async call makes after it, in one round
    * trip (session/rpc.ts _rpcFsAcquired): the authority answers the barrier
    * before it reads, and the barrier is applied before the value is used,
@@ -2869,9 +2885,8 @@ const __fsMod = (() => {
    * A session that does not serve fsAcquired (one deployed before it) is
    * asked for the barrier and the read separately, from then on.
    */
-  let _fsAcquiredServed = true;
   function _servesFsAcquired(supervisor) {
-    return _fsAcquiredServed && typeof supervisor.fsAcquired === "function";
+    return _served.fsAcquired && typeof supervisor.fsAcquired === "function";
   }
   async function _acquiredRead(supervisor, op, args, rpc, syscall, p, fill) {
     const acquire = _acquireArgs();
@@ -2879,11 +2894,8 @@ const __fsMod = (() => {
     try {
       answer = await __nimbusUseRpcResult(supervisor.fsAcquired(acquire, op, args), (result) => result);
     } catch (error) {
-      const message = error && typeof error.message === "string" ? error.message : "";
-      // An entrypoint without the method, a host without the op, or one that
-      // refuses it as a read id's carrier: each a session deployed before it.
-      if (!/does not implement the method|'fsAcquired' is not (served by this host|a read)/.test(message)) throw _mapSupervisorError(error, syscall, p);
-      _fsAcquiredServed = false;
+      if (!_unserved(error, "fsAcquired")) throw _mapSupervisorError(error, syscall, p);
+      _served.fsAcquired = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
       return rpc(supervisor[op](...args));
@@ -3008,12 +3020,25 @@ const __fsMod = (() => {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
-      await __nimbusFlushVfsWrite(absPath, (content) =>
-        _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result)
-      );
+      // The authority's stat comes back with the write where it can, and is
+      // what the sync view keeps for the path.
+      let learned;
+      await __nimbusFlushVfsWrite(absPath, async (content) => {
+        if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
+          try {
+            const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
+            learned = answer.stat;
+            return answer.revision;
+          } catch (error) {
+            if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
+            _served.writeFileStat = false;
+          }
+        }
+        return _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
+      });
       _markVfsStale();
-      // Accepted: the authority's stat is what the sync view keeps for it.
-      await _learnLive(absPath, supervisor);
+      if (learned !== undefined) __nsNoteLiveStat(_strip(absPath), learned);
+      else await _learnLive(absPath, supervisor);
     }
   }
 
