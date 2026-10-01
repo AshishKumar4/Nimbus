@@ -3,7 +3,14 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
-## Unreleased
+## 2026-10-01
+
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
+message shape, VFS export schema 3 (its pages carry `source`), and the
+`enhanced_error_serialization` requirement; each is described below.
 
 - Fixed: a programmatic exec without a `shellId` ran on the session's one
   shared shell, so an `export`, function, alias or `set` option in one call
@@ -26,16 +33,6 @@ published independently in the `@nimbus-sh` npm scope.
   descriptor `exec` keeps on it, and by each child shell that inherited it.
   It closes when the last of them lets go. A programmatic call's shell ends
   with the call, so a file an `exec` left open in it is closed too.
-
-## 2026-10-01
-
-Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
-sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
-are minor-strict, so every range on core, worker, fabric, platform and sdk
-moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
-message shape, VFS export schema 3 (its pages carry `source`), and the
-`enhanced_error_serialization` requirement; each is described below.
-
 - Fixed: `git clone <url> /tmp/x` by a principal with a private `/tmp`
   failed with `EPERM: … is outside exclusive mutation root tmp/x`. The
   clone held the shared name while its writes landed in the private `/tmp`.
