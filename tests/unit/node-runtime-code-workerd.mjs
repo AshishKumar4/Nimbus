@@ -196,6 +196,10 @@ const FILES = {
     'const url = require("url");',
     'const pick = (u) => ({ protocol: u.protocol, auth: u.auth, host: u.host, port: u.port, hostname: u.hostname, hash: u.hash, search: u.search, query: u.query, pathname: u.pathname, path: u.path, href: u.href });',
     'console.log("URL " + JSON.stringify([pick(url.parse("/hello.txt?x=1#h")), pick(url.parse("http://u:p@host:8080/a/b?q=1", true)), url.resolve("/a/b/c", "../d"), url.format({ pathname: "/x", query: { a: 1 } })]));',
+    // A file URL's path is percent-decoded; one naming a host, another
+    // scheme or an encoded "/" is refused with Node's code.
+    'const tryPath = (u) => { try { return url.fileURLToPath(u); } catch (e) { return e.code; } };',
+    'console.log("FILEURL " + JSON.stringify([tryPath("file:///tmp/a%20b"), tryPath(new URL("file:///tmp/%C3%A9t%C3%A9")), tryPath("file://localhost/etc/x"), tryPath("file://host/x"), tryPath("http://x/y"), tryPath("file:///a%2Fb"), url.pathToFileURL("/tmp/a b#c%").href]));',
   ].join('\n'),
   'bad.js': 'const x = ;\n',
   // es-module-lexer copies each source into wasm memory with a UTF-16 write
@@ -425,6 +429,7 @@ try {
     const hostUrl = spawnSync('node', ['-e', FILES['url.js']], { encoding: 'utf8' });
     assert.equal(hostUrl.status, 0, hostUrl.stderr);
     assert.equal(/^URL .*$/m.exec(urlRun.stdout)?.[0], /^URL .*$/m.exec(hostUrl.stdout)?.[0], 'url.parse/resolve/format answer as node does');
+    assert.equal(/^FILEURL .*$/m.exec(urlRun.stdout)?.[0], /^FILEURL .*$/m.exec(hostUrl.stdout)?.[0], 'fileURLToPath and pathToFileURL answer as node does');
 
     const fromRun = await terminal.run(`cd ${W} && node from.js`);
     const hostFrom = spawnSync('node', ['-e', FILES['from.js']], { encoding: 'utf8' });
