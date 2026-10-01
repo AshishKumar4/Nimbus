@@ -163,6 +163,17 @@ for (const [label, size, source, expected] of [
   })();
   await assert.rejects(() => process.writeFileFrom('/late.bin', 2 * MiB, source), /EBADF/);
   assert.equal(await files.view({ pid: 13, cred: KERNEL }).readFile('/late.bin').then(() => 'published', (error) => error.code), 'ENOENT', 'nothing was published');
+  // The same on an asynchronous mount, which the awaiting bridge writes.
+  const { MemoryVFS } = await import('../../packages/core/src/vfs/memory.ts');
+  const memory = new MemoryVFS({ uid: 0, gid: 0 });
+  files.vfs.mount('/mnt/late', new Proxy(memory, {
+    get: (target, key) => key === 'sync' ? undefined : (typeof target[key] === 'function' ? target[key].bind(target) : target[key]),
+    has: (target, key) => key !== 'sync' && key in target,
+  }));
+  const mounted = files.view({ pid: 14, cred: KERNEL });
+  const killed = (async function* () { yield bytesOf(1024); files.killProcess(14); })();
+  await assert.rejects(() => mounted.writeFileFrom('/mnt/late/f.bin', 1024, killed), /EBADF/);
+  assert.equal(memory.stat('/f.bin'), null, 'nothing was published on the mount');
   console.log('  ok  a process released after its last piece publishes nothing');
 }
 

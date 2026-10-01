@@ -754,8 +754,11 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.writeFileFrom(path, size, source), async () => {
       const p = await this.path(path);
       // An asynchronous mount takes the whole file in one write, as a
-      // synchronous one does (SqliteRuntimeFsBridge.writeFileFrom).
-      await this.namespace.writeFile(p, await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p)));
+      // synchronous one does (SqliteRuntimeFsBridge.writeFileFrom), and not
+      // for a process released while its source was read.
+      const data = await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p));
+      this.live();
+      await this.namespace.writeFile(p, data);
       return this.clock();
     });
   }
