@@ -287,7 +287,7 @@ const CASES = [
   ['a', '-mindepth', '1', '-maxdepth', '0'],
   ['a', '.', 'a/b', '-maxdepth', '1', '-name', 'b'],
   ['-P', 'a', '-maxdepth', '1'],
-  ['-O3', 'a', '-maxdepth', '1'],
+  ['-O0', 'a', '-maxdepth', '1'],
 
   // Names and paths
   ['.', '-name', '*.js'],
@@ -569,6 +569,12 @@ const CASES = [
   ['.', '-mmin', ''],
   ['.', '-mtime', '1e999'],
   ['.', '-mmin', '-1e999'],
+  ['.', '-maxdepth', '0', '-mtime', '--1e100'],
+  ['.', '-maxdepth', '0', '-mtime', '1e100'],
+  ['.', '-maxdepth', '0', '-mtime', '+1e100'],
+  ['.', '-maxdepth', '0', '-mtime', '-1e100'],
+  ['.', '-maxdepth', '0', '-mmin', '--1e300'],
+  ['.', '-maxdepth', '0', '-used', '--1e100'],
   ['.', '-maxdepth', '-1'],
   ['.', '-maxdepth', '1a'],
   ['.', '-mindepth'],
@@ -597,7 +603,7 @@ const CASES = [
   ['-Ox', '.'],
   ['-O', '.'],
   ['-O99999999', '.'],
-  ['-O0099', '.', '-maxdepth', '0'],
+  ['-O0001', '.', '-maxdepth', '0'],
   ['-O99999999999999999999', '.'],
   ['.', '-delete', '-prune'],
   ['.', '-context', 'x'],
@@ -666,6 +672,9 @@ const REFUSED = [
   [['.', '-ok', 'echo', '{}', ';'], "find: invalid predicate `-ok': there is no prompt to confirm on\n"],
   [['.', '-okdir', 'echo', '{}', ';'], "find: invalid predicate `-okdir': there is no prompt to confirm on\n"],
   [['-D', 'stat', '.'], 'find: the -D debug option is not supported here\n'],
+  // From -O2 GNU reorders by estimated cost, which decides which unreadable files it reports.
+  [['-O2', '.'], 'find: optimisation level 2 is not supported here; use -O0 or -O1\n'],
+  [['-O3', '.'], 'find: optimisation level 3 is not supported here; use -O0 or -O1\n'],
   // GNU means to refuse this too (findutils' insert_exec_ok), but its check compares the wrong index and never fires.
   [['.', '-execdir', '{}', ';'], 'find: You may not use {} within the utility name for -execdir and -okdir, because this is a potential security problem.\n'],
   [['.', '-printf', '%k'], "find: error: the format directive `%k' is not supported here\n"],
