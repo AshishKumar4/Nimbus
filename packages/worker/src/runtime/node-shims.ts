@@ -2880,7 +2880,9 @@ const __fsMod = (() => {
       answer = await __nimbusUseRpcResult(supervisor.fsAcquired(acquire, op, args), (result) => result);
     } catch (error) {
       const message = error && typeof error.message === "string" ? error.message : "";
-      if (!/does not implement the method|is not served by this host/.test(message)) throw _mapSupervisorError(error, syscall, p);
+      // An entrypoint without the method, a host without the op, or one that
+      // refuses it as a read id's carrier: each a session deployed before it.
+      if (!/does not implement the method|'fsAcquired' is not (served by this host|a read)/.test(message)) throw _mapSupervisorError(error, syscall, p);
       _fsAcquiredServed = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
