@@ -11,7 +11,8 @@ export class CommandRegistry {
         this.commands.delete(name);
         this.lazy.delete(name);
     }
-    async resolve(name) {
+    /** `from`: the calling shell, for resolvers installed over this one (exec-dispatch, npm bins). */
+    async resolve(name, _from) {
         const cmd = this.commands.get(name);
         if (cmd)
             return cmd;

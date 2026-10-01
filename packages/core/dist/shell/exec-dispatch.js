@@ -97,14 +97,14 @@ async function inspect(fs, path) {
 }
 export function installPathExecResolver(registry, fs, getCwd) {
     const originalResolve = registry.resolve.bind(registry);
-    registry.resolve = async (name) => {
-        const found = await originalResolve(name);
+    registry.resolve = async (name, from) => {
+        const found = await originalResolve(name, from);
         if (found)
             return found;
         if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
             return undefined;
         }
-        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(getCwd()));
+        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(from?.cwd ?? getCwd()));
         let inspected;
         try {
             inspected = await inspect(fs, resolved);
@@ -179,9 +179,9 @@ export function installPathExecResolver(registry, fs, getCwd) {
                         (await ctx.stderr.write(`${name}: too many levels of interpreters\n`));
                         return 126;
                     }
-                    let interpCmd = await registry.resolve(interp);
+                    let interpCmd = await registry.resolve(interp, { cwd: ctx.cwd });
                     if (!interpCmd && interp.includes('/')) {
-                        interpCmd = await registry.resolve(basename(interp));
+                        interpCmd = await registry.resolve(basename(interp), { cwd: ctx.cwd });
                     }
                     if (!interpCmd) {
                         (await ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`));

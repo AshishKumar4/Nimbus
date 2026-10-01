@@ -26,6 +26,7 @@ export interface ProgrammaticShell {
     execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{
         exitCode: number;
     }>;
+    closeDescriptors(): Promise<void>;
 }
 interface ProgrammaticShellExecuteOptions {
     cwd?: string;

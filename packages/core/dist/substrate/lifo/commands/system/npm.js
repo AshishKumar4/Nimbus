@@ -608,7 +608,7 @@ async function npmRun(ctx, shellExecute, registry, kernel) {
             const parts = trimmed.split(/\s+/);
             const cmdName = parts[0];
             const cmdArgs = parts.slice(1);
-            const cmd = await registry.resolve(cmdName);
+            const cmd = await registry.resolve(cmdName, { cwd: ctx.cwd });
             if (cmd) {
                 return (await cmd({ ...ctx, args: cmdArgs }));
             }

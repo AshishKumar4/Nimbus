@@ -167,6 +167,8 @@ export class Interpreter {
         child.persistentTerminalInputFds = new Set(this.persistentTerminalInputFds);
         child.persistentOutputHandles = new Map(this.persistentOutputHandles);
         child.persistentInputHandles = new Map(this.persistentInputHandles);
+        for (const handle of child.persistentHandles())
+            handle.refs++;
         child.localFrames = this.localFrames.map((frame) => new Map(frame));
         child.errexitSuppressionDepth = this.errexitSuppressionDepth;
         return child;
@@ -798,7 +800,7 @@ export class Interpreter {
                     }
                     else {
                         // Check registry
-                        const command = await this.config.registry.resolve(name);
+                        const command = await this.config.registry.resolve(name, { cwd: this.config.getCwd() });
                         if (!command) {
                             (await stderr.write(`${name}: command not found\n`));
                             exitCode = 127;
@@ -1070,18 +1072,26 @@ export class Interpreter {
         const script = parse(tokens);
         return (await this.executeScriptWithIo(script, io));
     }
-    /** A child shell's end: its EXIT trap runs, and an `exit` inside it ends only it. */
+    /**
+     * A child shell's end: its EXIT trap runs, an `exit` inside it ends only it,
+     * and its descriptors close.
+     */
     async finishChild(run, io) {
-        let exitCode;
         try {
-            exitCode = await run();
+            let exitCode;
+            try {
+                exitCode = await run();
+            }
+            catch (e) {
+                if (!(e instanceof ExitSignal))
+                    throw e;
+                exitCode = e.exitCode;
+            }
+            return (await this.runExitTrap(exitCode, io, true));
         }
-        catch (e) {
-            if (!(e instanceof ExitSignal))
-                throw e;
-            exitCode = e.exitCode;
+        finally {
+            await this.closeDescriptors();
         }
-        return (await this.runExitTrap(exitCode, io, true));
     }
     async runExitTrap(exitCode, io, enabled) {
         if (!enabled || this.exitTrapDepth > 0)
@@ -1306,7 +1316,7 @@ export class Interpreter {
         }
     }
     async persistFdState(fds) {
-        const retired = [];
+        const retired = new Set();
         for (const fd of fds.changedOutputFds) {
             const stream = fds.outputFds.get(fd);
             if (stream)
@@ -1334,15 +1344,36 @@ export class Interpreter {
             else
                 this.persistentTerminalInputFds.delete(fd);
         }
-        // A handle two descriptors share (`exec 4>&3`) closes with the last of them.
-        const held = new Set([
-            ...this.persistentOutputHandles.values(),
-            ...this.persistentInputHandles.values(),
-        ].map((handle) => handle.stream));
+        // A handle another descriptor still names (`exec 4>&3`, or the parent of
+        // a subshell) stays open.
         for (const handle of retired) {
-            if (!held.has(handle.stream))
+            if (handle.refs === 0)
                 await handle.close();
         }
+    }
+    /**
+     * The shell's end: its descriptors close, as a process's do at exit(2). A
+     * file closes with them unless another shell still holds it.
+     */
+    async closeDescriptors() {
+        const handles = this.persistentHandles();
+        this.persistentOutputFds.clear();
+        this.persistentInputFds.clear();
+        this.persistentTerminalOutputFds.clear();
+        this.persistentTerminalInputFds.clear();
+        this.persistentOutputHandles.clear();
+        this.persistentInputHandles.clear();
+        for (const handle of handles)
+            handle.refs--;
+        const closing = new Set(handles.filter((handle) => handle.refs === 0));
+        const results = await Promise.allSettled([...closing].map((handle) => handle.close()));
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure)
+            throw failure.reason;
+    }
+    /** One entry per descriptor, so a handle `exec 4>&3` shares appears twice. */
+    persistentHandles() {
+        return [...this.persistentOutputHandles.values(), ...this.persistentInputHandles.values()];
     }
     /**
      * `exec N>file` keeps a descriptor past the command that opened it, so its
@@ -1356,25 +1387,20 @@ export class Interpreter {
             return;
         if (held) {
             handles.delete(fd);
-            retired.push(held);
+            held.refs--;
+            retired.add(held);
         }
         if (stream === undefined)
             return;
-        // `exec 4>&3` opens nothing: fd 4 takes over the handle fd 3 already holds.
-        const close = fds.opened.get(stream) ?? this.trackedClose(stream);
-        if (close)
-            handles.set(fd, { stream, close });
-    }
-    trackedClose(stream) {
-        for (const handle of this.persistentOutputHandles.values()) {
-            if (handle.stream === stream)
-                return handle.close;
-        }
-        for (const handle of this.persistentInputHandles.values()) {
-            if (handle.stream === stream)
-                return handle.close;
-        }
-        return undefined;
+        // `exec 4>&3` opens nothing: fd 4 takes over the handle fd 3 holds, or
+        // held until a moment ago in this same `exec` (`exec 4>&3 3>&-`).
+        const tracked = [...this.persistentHandles(), ...retired].find((handle) => handle.stream === stream);
+        const opened = fds.opened.get(stream);
+        const handle = tracked ?? (opened ? { stream, close: opened, refs: 0 } : undefined);
+        if (!handle)
+            return;
+        handle.refs++;
+        handles.set(fd, handle);
     }
     setOutputFd(fds, fd, target) {
         fds.outputFds.set(fd, target.stream);

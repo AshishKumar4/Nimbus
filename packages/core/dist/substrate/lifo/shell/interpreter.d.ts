@@ -225,7 +225,10 @@ export declare class Interpreter {
     executeCapture(input: string, io?: ExecutionIo): Promise<CapturedCommand>;
     private executeInline;
     private executeLineWithIo;
-    /** A child shell's end: its EXIT trap runs, and an `exit` inside it ends only it. */
+    /**
+     * A child shell's end: its EXIT trap runs, an `exit` inside it ends only it,
+     * and its descriptors close.
+     */
     private finishChild;
     private runExitTrap;
     private createTerminalIo;
@@ -244,13 +247,19 @@ export declare class Interpreter {
     private applyRedirections;
     private persistFdState;
     /**
+     * The shell's end: its descriptors close, as a process's do at exit(2). A
+     * file closes with them unless another shell still holds it.
+     */
+    closeDescriptors(): Promise<void>;
+    /** One entry per descriptor, so a handle `exec 4>&3` shares appears twice. */
+    private persistentHandles;
+    /**
      * `exec N>file` keeps a descriptor past the command that opened it, so its
      * bridge handle outlives the per-command flush and nothing there may close
      * it. The close travels with the descriptor instead and runs when that
      * descriptor is closed (`exec N>&-`) or repointed at another target.
      */
     private repointPersistentHandle;
-    private trackedClose;
     private setOutputFd;
     private setInputFd;
     private dupOutputFd;

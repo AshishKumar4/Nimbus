@@ -184,6 +184,7 @@ function startShellJob(self, command, options, job, scoped) {
     // cwd and environment, and what it changes goes nowhere: the session shell
     // is shared by every unnamed call (and the terminal), and two calls running
     // on it at once would read and overwrite each other's variables mid-run.
+    // The shell ends with the call, closing the descriptors an `exec` left open.
     const shell = scoped?.create(entry.pid)
         ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
     const pid = entry.pid;
@@ -230,7 +231,7 @@ function startShellJob(self, command, options, job, scoped) {
                 }
                 : {}),
         },
-    });
+    }).finally(() => shell.closeDescriptors());
     return { pid, entry, run, abort: () => { try {
             controller.abort();
         }

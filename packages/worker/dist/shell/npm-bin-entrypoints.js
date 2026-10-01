@@ -34,20 +34,19 @@ export function installNpmBinFallbackResolver(registry, deps) {
             return null;
         }
     };
-    registry.resolve = async function resolveWithNpmBins(name) {
+    registry.resolve = async function resolveWithNpmBins(name, from) {
+        const cwd = from?.cwd || deps.getCwd() || '/home/user';
         // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
         // same program as the bare name: same runtime choice, TTY and lifecycle.
         if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
-            const cwd = deps.getCwd() || '/home/user';
             const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
             if (!bin)
-                return await upstreamResolve(name);
+                return await upstreamResolve(name, from);
             return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
         }
-        const upstream = await upstreamResolve(name);
+        const upstream = await upstreamResolve(name, from);
         if (upstream)
             return upstream;
-        const cwd = deps.getCwd() || '/home/user';
         if (!await probe(() => resolveNpmBinForInvocation(inspector, cwd, DEFAULT_PATH, name))) {
             let hint = null;
             try {
