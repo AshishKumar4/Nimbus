@@ -43,7 +43,7 @@ function resolveFromRegistry(name, spec) {
   const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
   if (!version) {
     return {
-      pkg: null, deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+      pkg: null, deps: {}, peerDeps: {}, optionalDeps: {},
       cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
       error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` },
     };
@@ -56,7 +56,7 @@ function resolveFromRegistry(name, spec) {
     dependencies, peerDependencies, exports: null, main: 'index.js', module: '', bin: {},
   };
   return {
-    pkg, deps: pkg.dependencies, peerDeps: peerDependencies ?? {}, optionalDeps: {}, allPeerDependencies: peerDependencies ?? {},
+    pkg, deps: pkg.dependencies, peerDeps: peerDependencies ?? {}, optionalDeps: {},
     // The registry cache is what the next install's lock-check reads edges from.
     cacheWrites: [cacheRowForPackage(pkg)],
     messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],

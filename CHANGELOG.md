@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npm install` no longer installs optional peer dependencies the project
+  does not list, as npm, pnpm and bun do not. A fresh Vite 8 react-ts app
+  installed ~456 packages (sass, less, stylus, terser, tsx, Babel and their
+  trees) where npm installs 70. A project that uses one of those tools
+  lists it, as it would on a real machine (`npm i -D sass`).
+
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session
