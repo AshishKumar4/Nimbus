@@ -3589,6 +3589,21 @@ const __fsMod = (() => {
       }
       _forgetSyncTree(oldK);
     }
+    // Writes parked beneath a moved directory move with it, whoever made the
+    // directory: bound for the old name, their write-back would reach the
+    // authority behind the move and be refused ENOENT, and the new name would
+    // not read them back. Vite's optimizer writes deps_temp_<hash>/ and then
+    // renames it to deps/. The fence below orders their write-back behind it.
+    for (const k of Object.keys(__vfsWrites)) {
+      if (!k.startsWith(oldPrefix)) continue;
+      const moved = newK + k.slice(oldK.length);
+      const writtenAt = _ownWriteTimes[k];
+      _parkWrite(moved, __vfsWrites[k]);
+      if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
+      if (__vfsBundle) delete __vfsBundle[k];
+      delete __vfsWrites[k];
+      _forgetSyncPath(k);
+    }
     _forgetCreation(oldK);
     _forgetCreation(newK);
     for (const key of createdMoved) _createdHere.add(key);

@@ -148,6 +148,28 @@ const rejectsWith = async (promise, code) => {
   await rejectsWith(fs.promises.stat(`${home}/r`), 'ENOENT');
 }
 
+// 7. Files written synchronously into a directory that is then renamed move
+// with it, as Vite's optimizer does: it writes deps_temp_<hash>/ and renames
+// it to deps/. Their write-back was still bound for the old name, ordered
+// behind the move, and was refused ENOENT for a directory that was gone.
+for (const rename of [
+  (from, to) => fs.renameSync(from, to),
+  (from, to) => fs.promises.rename(from, to),
+]) {
+  const from = `${home}/deps_temp_${calls.length}`;
+  const to = `${home}/deps_${calls.length}`;
+  fs.mkdirSync(`${from}/chunks`, { recursive: true });
+  fs.writeFileSync(`${from}/package.json`, '{"type":"module"}');
+  fs.writeFileSync(`${from}/chunks/react.js`, 'export default 1;');
+  await rename(from, to);
+  assert.equal(fs.readFileSync(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'the moved file reads back under its new name');
+  assert.equal(fs.existsSync(`${from}/package.json`), false, 'and is gone under the old one');
+  await drain();
+  assert.equal(dec.decode(bridge.readFile(`${to}/package.json`)), '{"type":"module"}', 'the authority holds the file under the new name');
+  assert.equal(dec.decode(bridge.readFile(`${to}/chunks/react.js`)), 'export default 1;', 'and the nested one');
+  assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
+}
+
 // 6. A program that only mkdirSync's and returns: the exit drain lands it.
 {
   fs.mkdirSync(`${home}/only`);
