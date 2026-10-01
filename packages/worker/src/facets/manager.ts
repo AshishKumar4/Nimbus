@@ -3769,7 +3769,11 @@ const TOOL_CONFIG = /^(.+)\.config\.(?:c|m)?(?:j|t)s$/;
  * (eslint.config.js beside Vite) is not.
  */
 export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]> {
-  const root = scriptPath === undefined ? null : packageRootOf(scriptPath.replace(/^\/+/, ''));
+  if (scriptPath === undefined) return [];
+  // A bin is usually launched by its node_modules/.bin link.
+  let script: string;
+  try { script = await vfs.realpath(scriptPath); } catch { return []; }
+  const root = packageRootOf(script.replace(/^\/+/, ''));
   if (root === null) return [];
   let manifest: Record<string, unknown>;
   try { manifest = JSON.parse(await filesOf(vfs).readFileString(root + '/package.json')) as Record<string, unknown>; } catch { return []; }

@@ -46,6 +46,17 @@ for (const path of [`${APP}/vite.config.ts`, `${NM}/@vitejs/plugin-react/index.j
 assert.ok(state.bundle[`${NM}/autoprefixer/index.js`] !== undefined, 'the config of a tool vite depends on (PostCSS) is too');
 assert.equal(state.bundle[`${NM}/eslint-plugin-big/index.js`], undefined, 'a config of a tool this launch does not run is not');
 
+// Launched by its node_modules/.bin link, as `./node_modules/.bin/vite` is.
+{
+  const linked = launchFs(files);
+  await linked.fs.mkdir(`/${NM}/.bin`, { recursive: true });
+  await linked.fs.symlink('../vite/bin/vite.js', `/${NM}/.bin/vite`);
+  const viaBin = await buildPrefetchBundle(linked.fs, {
+    scriptPath: `/${NM}/.bin/vite`, cwd: `/${APP}`, entryCode: files[`${VITE}/bin/vite.js`],
+  });
+  assert.ok(viaBin.bundle[`${NM}/ms/index.js`] !== undefined, 'a bin launched by its .bin link roots its config');
+}
+
 // A program that is not a package's bin roots no config.
 const script = await buildPrefetchBundle(launchFs(files).fs, {
   scriptPath: `/${APP}/index.js`, cwd: `/${APP}`, entryCode: 'console.log(1)\n',
