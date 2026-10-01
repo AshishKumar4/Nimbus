@@ -90,6 +90,18 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.settle(probe.fs.promises.readFile('/home/user/app/missing.txt', 'utf8')), 'ERR:ENOENT');
   },
 
+  async 'a session deployed before fsAcquired is asked for the barrier and the read separately'() {
+    const { authority, probe, log } = await boot({
+      fsAcquired: async () => { throw new Error('The RPC receiver does not implement the method "fsAcquired".'); },
+    });
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    assert.equal(await probe.fs.promises.readFile(F, 'utf8'), 'v2', 'readFile still reads');
+    assert.equal((await probe.fs.promises.stat(F)).size, 2, 'stat still stats');
+    const later = await callsOf(log, () => probe.fs.promises.stat(F));
+    assert.equal(later.made.fsAcquired, undefined, 'and fsAcquired is not asked again');
+    assert.equal(later.made.fsAcquire, 1, 'the barrier is asked on its own');
+  },
+
   async 'a session that answers no barrier with the read is asked for one'() {
     let forward;
     const { authority, probe, log, forward: f } = await boot({
