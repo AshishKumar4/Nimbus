@@ -1225,14 +1225,17 @@ const __fsMod = (() => {
    * Keep a stat the authority answered while \`ticket\` (_beginFill) was
    * open, unless a barrier reported the path, meanwhile, above what the stat
    * is known to cover: the cursor the ticket was dated at, or the own write
-   * it was read after (\`written\`). That barrier's own entry carried the
-   * newer state. A deletion among them leaves no row the stat could be
-   * judged against, and keeping the stat would bring back a name nothing
-   * will report gone again.
+   * it was read after (\`written\`). A deletion among those reports leaves
+   * no row the stat could be judged against, and keeping the stat would
+   * bring back a name nothing will report gone again. False when the stat
+   * was not kept, so the caller can ask for a fresh one (_learnLive): a
+   * ticket that cannot date its read at all (_acquiredRead, _spoilFills)
+   * says nothing of whether the path changed.
    */
   function _noteLearnedStat(absPath, stat, ticket, written) {
-    if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return;
+    if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
     __nsNoteLiveStat(_strip(absPath), stat, written);
+    return true;
   }
 
   /**
@@ -2798,8 +2801,8 @@ const __fsMod = (() => {
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
         _installResident(absPath, bytes, fill);
-        if (first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES) _noteLearnedStat(absPath, first.stat, fill);
-        else await _learnLive(absPath, supervisor);
+        const kept = first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES && _noteLearnedStat(absPath, first.stat, fill);
+        if (!kept) await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
 
@@ -3031,6 +3034,7 @@ const __fsMod = (() => {
       // barriers report of the path while the write is out.
       let learned;
       let written;
+      let kept = false;
       const ticket = _beginFill(_strip(absPath));
       try {
         await __nimbusFlushVfsWrite(absPath, async (content) => {
@@ -3050,11 +3054,11 @@ const __fsMod = (() => {
         });
         _markVfsStale();
         if (typeof written !== "number") written = undefined;
-        if (learned !== undefined) _noteLearnedStat(absPath, learned, ticket, written);
+        if (learned !== undefined) kept = _noteLearnedStat(absPath, learned, ticket, written);
       } finally {
         _endFill(ticket);
       }
-      if (learned === undefined) await _learnLive(absPath, supervisor, written);
+      if (!kept) await _learnLive(absPath, supervisor, written);
     }
   }
 
