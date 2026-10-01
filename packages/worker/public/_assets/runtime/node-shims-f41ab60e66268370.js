@@ -11099,7 +11099,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   // file:///bundle/, never at the file's own path.
   // dirname and filename name the file, without the URL's query or fragment.
   const importMeta = Object.assign(Object.create(null), {
-    dirname: "/" + modDir,
+    dirname: __pathMod.dirname("/" + resolvedPath),
     filename: "/" + resolvedPath,
     url: moduleUrl,
     resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl),

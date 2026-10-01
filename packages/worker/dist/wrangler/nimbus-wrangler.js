@@ -20,7 +20,6 @@ import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
-import { DO_NAMESPACE_SHIM_MODULE, DO_NAMESPACE_SHIM_SOURCE, doNamespaceWrapperSource } from './do-namespace-shim.js';
 // ── Proxy helpers ──────────────────────────────────────────────────────
 /**
  * Rewrite a Location header emitted by the inner Worker so that, when
@@ -420,25 +419,15 @@ export class NimbusWrangler {
             if (rawFlags.length !== wrangCompatFlags.length) {
                 this.onLog(`  \x1b[2mnote: stripped 'experimental' from inner compat_flags (not propagatable via LOADER.load)\x1b[0m\n`);
             }
-            // A Worker that binds Durable Objects gets the namespace API Cloudflare
-            // has, synchronous ids and stubs, in front of its bundle
-            // (do-namespace-shim.ts).
-            const doBindings = this.config.durable_objects?.bindings || [];
-            const modules = doBindings.length === 0
-                ? { 'worker.js': bundledCode }
-                : {
-                    'worker.js': doNamespaceWrapperSource(doBindings.map((b) => b.name), doBindings.map((b) => b.class_name)),
-                    'user.js': bundledCode,
-                    [DO_NAMESPACE_SHIM_MODULE]: DO_NAMESPACE_SHIM_SOURCE,
-                };
             const baseWorkerCode = {
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
                 mainModule: 'worker.js',
-                modules,
+                modules: { 'worker.js': bundledCode },
             };
             // Pass 1: class extraction (no env, no DO shims).
             this.doClassMap.clear();
+            const doBindings = this.config.durable_objects?.bindings || [];
             if (doBindings.length > 0) {
                 let probeWorker;
                 try {
@@ -595,8 +584,7 @@ export class NimbusWrangler {
             }
         }
         // ── durable_objects ──
-        // Inner worker: env[binding].get(env[binding].idFromName(name)).fetch(req),
-        // through the namespace do-namespace-shim.ts makes over this binding.
+        // Inner worker: env[binding].idFromName(name) + env[binding].get(id).fetch(req).
         // The class list was resolved and stored in this.doClassMap during
         // buildAndLoad(); register each class into the module-level
         // registry consulted by _rpcInnerDoFetch, then synthesize the

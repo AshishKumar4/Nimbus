@@ -334,7 +334,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;
-    _rpcInnerDoCall(req: Parameters<typeof _rpc._rpcInnerDoCall>[1]): Promise<unknown>;
     _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
     _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
