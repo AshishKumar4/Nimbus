@@ -142,7 +142,7 @@ class Parser {
         // `-n` days counts to the end of today.
         if (days && argument.startsWith('-'))
             origin += (DAY_SECONDS - 1) * 1000;
-        return relativeTimestamp(argument, origin, unitSeconds);
+        return relativeTimestamp(argument, origin, unitSeconds, days ? 'days' : 'minutes');
     }
     /**
      * stat as the walk will (links per -P/-H/-L, the command line counting as
@@ -194,16 +194,31 @@ class Parser {
         };
     }
 }
-/** findutils' get_relative_timestamp: the comparison is inverted, as a larger age is an earlier time. */
-function relativeTimestamp(argument, origin, unitSeconds) {
+/** time_t's range: a reference outside it is what GNU's conversion makes INT64_MIN of. */
+const TIME_T_MIN = -(2 ** 63);
+const TIME_T_LIMIT = 2 ** 63;
+/**
+ * findutils' get_relative_timestamp: the comparison is inverted, as a larger
+ * age is an earlier time. A reference past time_t's range is GNU's overflow
+ * error when it lies in the future, and the earliest time when in the past.
+ */
+function relativeTimestamp(argument, origin, unitSeconds, unit) {
     const sign = argument[0];
     const cmp = sign === '+' ? 'lt' : sign === '-' ? 'gt' : 'eq';
     const text = sign === '+' || sign === '-' ? argument.slice(1) : argument;
     // strtod's decimal form, which takes a sign of its own (`+-1` is accepted); out of range is refused as strtod refuses it.
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(text))
         return null;
-    const reference = origin - Number(text) * unitSeconds * 1000;
-    return Number.isFinite(reference) ? { cmp, reference } : null;
+    const offset = Number(text) * unitSeconds;
+    if (!Number.isFinite(offset))
+        return null;
+    const seconds = Math.trunc(offset);
+    const referenceSeconds = Math.floor(origin / 1000) - seconds;
+    if (referenceSeconds >= TIME_T_MIN && referenceSeconds < TIME_T_LIMIT)
+        return { cmp, reference: origin - offset * 1000 };
+    if (seconds < 0)
+        throw new FindUsageError(`arithmetic overflow while converting ${text} ${unit} to a number of seconds`);
+    return { cmp, reference: TIME_T_MIN * 1000 };
 }
 /** findutils' get_num: an optional +/- and a decimal integer. */
 function parseNumber(argument) {
@@ -507,7 +522,7 @@ const TABLE = {
         const value = parser.next();
         if (value === undefined)
             return MALFORMED;
-        const time = relativeTimestamp(value, 0, DAY_SECONDS);
+        const time = relativeTimestamp(value, 0, DAY_SECONDS, 'days');
         if (time === null)
             throw new FindUsageError(`Invalid argument ${value} to -used`);
         parser.addPrimary(name, { kind: 'used', cmp: time.cmp, reference: time.reference });
@@ -696,8 +711,9 @@ function hasAction(items) {
 }
 /**
  * findutils' process_optimisation_option. The level decides which tests
- * promoteCheapTests moves; levels 2 and 3 reorder by estimated cost as well,
- * which this find does not, and runs as level 1.
+ * promoteCheapTests moves. From level 2 GNU also reorders by estimated cost,
+ * which decides which files it reports it cannot read; this find does not,
+ * so it refuses those levels rather than answer as level 1 would.
  */
 function optimisationLevel(level) {
     if (level === '')
@@ -712,6 +728,8 @@ function optimisationLevel(level) {
     if (value > 65535n) {
         throw new FindUsageError(`Optimisation level ${value} is too high.  If you want to find files very quickly, consider using GNU locate.`);
     }
+    if (value > 1n)
+        throw new FindUsageError(`optimisation level ${value} is not supported here; use -O0 or -O1`);
     return Number(value);
 }
 /** Whether evaluating the expression can do anything but answer (findutils' side_effects). */
