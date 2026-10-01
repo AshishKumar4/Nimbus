@@ -80,7 +80,7 @@ export const SUPERVISOR_DELIVER_OP = 'deliverOnce';
  */
 export const SUPERVISOR_JOINED_READ_OPS = [
   'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'readFile', 'readFileBytes',
-  'fsRealpath', 'fsRevision', 'fsList', 'fsAcquire', 'fsFstat', 'fsReaddirHandle',
+  'fsRealpath', 'fsRevision', 'fsList', 'fsAcquire', 'fsAcquired', 'fsFstat', 'fsReaddirHandle',
   'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'hasLegacySymlinkUnder',
 ] as const satisfies readonly SupervisorOpName[];
 

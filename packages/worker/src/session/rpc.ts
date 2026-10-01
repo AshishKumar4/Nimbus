@@ -563,6 +563,45 @@ export async function _rpcFsAcquire(
   return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
 }
 
+/** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
+export const FS_ACQUIRED_READ_OPS = ['stat', 'lstat', 'fsReadBatch'] as const;
+const FsAcquiredReadOpSchema = z.enum(FS_ACQUIRED_READ_OPS);
+
+/**
+ * A process's ACQUIRE and the read it was about to make, in one call.
+ *
+ * An async read applies a barrier and then reads, and each was its own round
+ * trip to this host: measured on a throwaway (2026-10-01), 7-8 ms each, with
+ * the host's own work under a millisecond. The answer to the barrier is the
+ * one fsAcquire gives (_acquireOnDelivery, as a delivery carries it), computed
+ * before the read, so the read sees everything the barrier reports, and the
+ * process applies the barrier before it uses the value.
+ */
+export async function _rpcFsAcquired(
+  self: RpcHost,
+  acquire: unknown,
+  op: unknown,
+  args: unknown,
+  pid?: number,
+): Promise<FsAcquiredAnswer> {
+  const read = FsAcquiredReadOpSchema.parse(op);
+  const readArgs = z.array(z.unknown()).parse(args);
+  const acquired = await _acquireOnDelivery(self, acquire, pid);
+  // A refused read is answered as data, so the process still applies the
+  // barrier before it throws, as it did when the barrier was its own call.
+  try {
+    return { acquired, value: await self.supervisorOp({ op: read, args: readArgs, pid }) };
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+    return { acquired, failure: { code, message: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
+/** _rpcFsAcquired's answer: the barrier's, and the read's value or its refusal. */
+export type FsAcquiredAnswer =
+  | { acquired: VfsDeliveredAcquire | undefined; value: unknown; failure?: undefined }
+  | { acquired: VfsDeliveredAcquire | undefined; value?: undefined; failure: { code: string | undefined; message: string } };
+
 const FsStorageGrantArgsSchema = z.object({
   facet: z.string().min(1),
   bytes: z.number().int().min(0),

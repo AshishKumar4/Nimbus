@@ -214,7 +214,7 @@ export const SUPERVISOR_OPS = [
   'readFile', 'readFileBytes', 'writeFile', 'stat', 'lstat',
   'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
   'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink',
-  'symlink', 'fsAcquire', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
+  'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
   'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
   'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
   'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream',
@@ -270,6 +270,7 @@ export async function readHydrating<T>(hydrated: (path: string) => Promise<void>
 export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, NativeOpName>, SupervisorOpRoute>> = {
   setUmask: { method: '_rpcSetUmask', args: [0,'pid'] },
   fsAcquire: { method: '_rpcFsAcquire', args: [0,1,2,'pid'] },
+  fsAcquired: { method: '_rpcFsAcquired', args: [0,1,2,'pid'] },
   fsList: { method: '_rpcFsList', args: [0,1,'pid'] },
   fsStorageGrant: { method: '_rpcFsStorageGrant', args: [0,1,2,'pid'] },
   wsOpen: { method: '_rpcWsOpen', args: [0,1,'pid'] },

@@ -66,7 +66,7 @@ import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
+import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 // cache metrics support: per-tier hit/miss counters.
 //
@@ -411,6 +411,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async fsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Promise<VfsAcquireResult> {
     return this._call(this._fsRead('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]));
+  }
+
+  /** fsAcquire and one read in a single call (session/rpc.ts _rpcFsAcquired). */
+  async fsAcquired(acquire: unknown, op: string, args: unknown[]): Promise<FsAcquiredAnswer> {
+    return this._call(this._fsRead('fsAcquired', [acquire, op, args]));
   }
 
   async fsRevision(path?: string): Promise<number> {

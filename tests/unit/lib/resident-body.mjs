@@ -149,6 +149,26 @@ export function facetSupervisor(authority, overrides = {}) {
     ? { op: name, args, pid, writerId: WRITER_ID }
     : { op: name, args, pid });
   const forward = (name, args) => host.supervisorOp(envelope(name, args));
+  // An async read's barrier and read travel as one fsAcquired. A test that
+  // overrides fsAcquire, or the read it carries, overrides it there too: the
+  // call is composed as the session composes it (session/rpc.ts
+  // _rpcFsAcquired), the barrier answered first and a refused read answered
+  // as data. A test that removes fsAcquire has a session without either.
+  const overridden = (name) => Object.hasOwn(own, name);
+  if (!overridden('fsAcquired') && overridden('fsAcquire') && own.fsAcquire === undefined) own.fsAcquired = undefined;
+  if (!overridden('fsAcquired')) {
+    own.fsAcquired = async (acquire, op, args) => {
+      if (!overridden('fsAcquire') && !overridden(op)) return forward('fsAcquired', [acquire, op, args]);
+      const acquireArgs = acquire.options === undefined ? [acquire.epoch, acquire.cursor] : [acquire.epoch, acquire.cursor, acquire.options];
+      const answer = overridden('fsAcquire') ? await own.fsAcquire(...acquireArgs) : await forward('fsAcquire', acquireArgs);
+      const acquired = { args: acquire, answer };
+      try {
+        return { acquired, value: overridden(op) ? await own[op](...args) : await forward(op, args) };
+      } catch (error) {
+        return { acquired, failure: { code: typeof error?.code === 'string' ? error.code : undefined, message: String(error?.message ?? error) } };
+      }
+    };
+  }
   const supervisor = new Proxy({}, {
     get(_target, name) {
       if (typeof name !== 'string' || name === 'then') return undefined;

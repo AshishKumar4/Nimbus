@@ -125,6 +125,7 @@ const INPUTS = {
   readlink: [linkPath],
   symlink: [target, symlinkPath],
   fsAcquire: [epoch, cursor, { namespace: true }],
+  fsAcquired: [{ epoch, cursor }, 'stat', ['/home/user']],
   fsRevision: [path],
   fsList: [after, limit],
   fsStorageGrant: ['proc-slot-0', 4096, 8192],

@@ -2735,8 +2735,34 @@ const __fsMod = (() => {
     // holds the fill ticket issued under it, so re-acquiring here would be a
     // redundant round trip that always returns "still R". Every other caller
     // acquires, and its fill ticket is its own.
-    if (!refetch) await _acquireBarrier(supervisor);
-    const fill = refetch || _beginFill(_strip(absPath));
+    // The barrier, the first chunk and the authority's stat of the file, in
+    // one round trip where the supervisor takes them together: three before.
+    // Its fill is begun before the call, so a barrier applied while the call
+    // is out reports against it, and dated when the answer comes back
+    // (_acquiredRead).
+    let fill = refetch || null;
+    let first = null;
+    if (!refetch && typeof supervisor.fsAcquired === "function" && typeof supervisor.fsReadRange === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      fill = _beginFill(_strip(absPath));
+      try {
+        const entries = await _acquiredRead(
+          supervisor, "fsReadBatch",
+          [[{ path: absPath, offset: 0, length: READ_STREAM_CHUNK_BYTES }, { path: absPath, lstat: true }]],
+          (promise) => _fsReadRpc(promise, "read", p, (result) => result), "read", p, fill,
+        );
+        const [read, learned] = Array.isArray(entries) ? entries : [];
+        if (!read || read.error) throw _mapSupervisorError(read ? read.error : null, "read", p);
+        if (read.bytes === null || read.bytes === undefined) throw _fsErr("ENOENT", "open", p);
+        first = { chunk: read.bytes.byteLength === 0 ? null : read.bytes, stat: learned && !learned.error ? learned.stat ?? null : undefined };
+      } catch (error) {
+        _endFill(fill);
+        throw error;
+      }
+    } else if (!refetch) {
+      await _acquireBarrier(supervisor);
+    }
+    fill ??= _beginFill(_strip(absPath));
     try {
       if (typeof supervisor.fsReadRange === "function") {
         // Chunked: the caller wants the whole file, but nothing upstream has
@@ -2752,7 +2778,7 @@ const __fsMod = (() => {
         const parts = [];
         let total = 0;
         for (;;) {
-          const chunk = await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
+          const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
           if (chunk === null) break;
           parts.push(chunk);
           total += chunk.byteLength;
@@ -2766,7 +2792,8 @@ const __fsMod = (() => {
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
         _installResident(absPath, bytes, fill);
-        await _learnLive(absPath, supervisor);
+        if (first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES) __nsNoteLiveStat(_strip(absPath), first.stat);
+        else await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
 
@@ -2824,30 +2851,50 @@ const __fsMod = (() => {
     return readFileSync(p, opts);
   }
 
-  async function _statAsync(p) {
-    const absPath = _resolve(p);
-    const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.stat === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
-      await _acquireBarrier(supervisor);
-      const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
-      if (meta) return _statObject(meta);
-      throw _fsErr("ENOENT", "stat", p);
+  /**
+   * The barrier and the read an async call makes after it, in one round
+   * trip (session/rpc.ts _rpcFsAcquired): the authority answers the barrier
+   * before it reads, and the barrier is applied before the value is used,
+   * as when they were two calls. A refused read is answered as data, so the
+   * barrier is applied before it throws. \`rpc\` wraps the call as the read's
+   * own call was wrapped (_fsRpc or _fsReadRpc, with its syscall).
+   */
+  async function _acquiredRead(supervisor, op, args, rpc, syscall, p, fill) {
+    const acquire = _acquireArgs();
+    const answer = await rpc(supervisor.fsAcquired(acquire, op, args));
+    const acquired = answer ? answer.acquired : undefined;
+    await _acquireBarrier(supervisor, acquired);
+    // The read was served after its barrier was answered, so its bytes hold
+    // every mutation at or below that answer's revision: a fill for it is
+    // dated there, not at the older cursor it was begun under, or the
+    // barrier's own report of the path would refuse what it was read to fill.
+    const dated = acquired && acquired.answer;
+    if (fill && dated && dated.poison !== true && typeof dated.rev === "number" && dated.epoch === _cursor.epoch && dated.rev > fill.rev) {
+      fill.rev = dated.rev;
     }
-    return statSync(p);
+    if (answer && answer.failure) throw _mapSupervisorError(answer.failure, syscall, p);
+    return answer ? answer.value : null;
   }
 
-  async function _lstatAsync(p) {
+  async function _statAsync(p) { return _statAsyncAs("stat", p); }
+  async function _lstatAsync(p) { return _statAsyncAs("lstat", p); }
+  async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.lstat === "function") {
+    if (supervisor && typeof supervisor[syscall] === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      await _acquireBarrier(supervisor);
-      const meta = await _fsRpc(supervisor.lstat(absPath), "lstat", p, (result) => result);
+      const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
+      let meta;
+      if (typeof supervisor.fsAcquired === "function") {
+        meta = await _acquiredRead(supervisor, syscall, [absPath], rpc, syscall, p);
+      } else {
+        await _acquireBarrier(supervisor);
+        meta = await rpc(syscall === "stat" ? supervisor.stat(absPath) : supervisor.lstat(absPath));
+      }
       if (meta) return _statObject(meta);
-      throw _fsErr("ENOENT", "lstat", p);
+      throw _fsErr("ENOENT", syscall, p);
     }
-    return lstatSync(p);
+    return syscall === "stat" ? statSync(p) : lstatSync(p);
   }
 
   async function _readdirAsync(p, opts) {
