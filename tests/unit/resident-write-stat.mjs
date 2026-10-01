@@ -10,21 +10,26 @@
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan } from './lib/resident-body.mjs';
+import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
 
+// \`resume\`: a timer, whose resumption takes a barrier before it runs.
 const PROGRAM = `
 const fs = require("fs");
-globalThis.__probe = { fs };
+globalThis.__probe = { fs, resume: () => new Promise((resolve) => setTimeout(resolve, 0)) };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot(overrides = {}) {
+/** \`overrides\` may be a function of the session's own answer to an op (facetSupervisor's \`forward\`). */
+async function boot(overrides = {}, seed = () => {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
-  const handle = facetSupervisor(authority, overrides);
+  seed(authority);
+  let forward;
+  const handle = facetSupervisor(authority, typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides);
+  forward = handle.forward;
   await launchResident({
     authority,
     program: PROGRAM,
@@ -82,6 +87,60 @@ await runScenarios(import.meta.path, {
       assert.equal(made.writeFileStat, undefined, 'writeFileStat is not asked again');
       assert.equal(made.writeFile, 1, 'the write is its own call');
     }
+  },
+
+  async 'a write answered without a stat asks for the stat separately'() {
+    // A mount whose metadata read failed after the write committed.
+    const { probe, log } = await boot((forward) => ({
+      writeFileStat: async (path, content) => ({ revision: await forward('writeFile', [path, content]) }),
+    }));
+    const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
+    assert.equal(made.writeFileStat, 1, 'the write is answered');
+    assert.equal(made.fsReadBatch, 1, 'and its stat asked for');
+    assert.equal(probe.fs.statSync('/home/user/app/new.txt').size, 5);
+  },
+
+  async 'a write answered after a barrier reported its name gone does not bring the name back'() {
+    // The session wrote and answered, and the answer is held while a peer
+    // deletes the file and a barrier applies the deletion: the stat in the
+    // answer predates it.
+    const served = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const { authority, probe } = await boot((forward) => ({
+      writeFileStat: async (path, content) => {
+        const answer = await forward('writeFileStat', [path, content]);
+        served.resolve();
+        await release.promise;
+        return answer;
+      },
+    }));
+    const writing = probe.fs.promises.writeFile(F, 'mine');
+    await served.promise;
+    authority.kfs.unlink('home/user/app/f.txt');
+    const deleted = authority.rawVfs.revision();
+    const resumed = probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= deleted, 'the barrier applied the deletion');
+    release.resolve();
+    await writing;
+    await resumed;
+    assert.equal(probe.fs.existsSync(F), false, 'the sync view has the name gone');
+    await probe.resume();
+    assert.equal(probe.fs.existsSync(F), false, 'after another barrier too');
+    assert.equal(authority.kfs.exists('home/user/app/f.txt'), false);
+  },
+
+  async 'a write through a symlink leaves the link resolving to the file it names'() {
+    const { authority, probe } = await boot({}, (seeded) => {
+      seeded.kfs.writeFile('home/user/app/target.txt', 'old');
+      seeded.kfs.symlink('target.txt', 'home/user/app/link.txt');
+    });
+    const link = '/home/user/app/link.txt';
+    await probe.fs.promises.writeFile(link, 'fresh');
+    assert.equal(probe.fs.statSync(link).isFile(), true, 'the link stats as a file');
+    assert.equal(probe.fs.readFileSync(link, 'utf8'), 'fresh');
+    await probe.resume();
+    assert.equal(probe.fs.statSync(link).isFile(), true, 'after a barrier too');
+    assert.equal(authority.read('home/user/app/target.txt'), 'fresh', 'the authority wrote the file the link names');
   },
 
   async 'a refused write is the write\'s error'() {

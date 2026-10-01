@@ -1744,13 +1744,19 @@ function __nsNoteOwnFile(k, size, rev) {
  * as it would after the delta that reports it. Dated at the store's cursor,
  * so any row as new is kept, and the next delta naming the path replaces it
  * with the authority's own dating. \`stat\` null: the authority said it is not
- * there, and a row older than the cursor goes.
+ * there, and a row older than the cursor goes. The caller has checked that no
+ * barrier reported the path while the stat was out (node-shims
+ * _noteLearnedStat).
  *
  * \`written\`: the revision of this process's own accepted write the stat was
- * taken after. The row __nsNoteOwnFile approximated for that write is dated
- * there, so the authority's stat replaces it (the owner of a file the process
- * overwrote without having listed it is the authority's, not the process's),
- * and only a row newer than the write is kept.
+ * taken after, and the row's date. The row __nsNoteOwnFile approximated for
+ * that write is dated there too, so the authority's stat replaces it (the
+ * owner of a file the process overwrote without having listed it is the
+ * authority's, not the process's), and only a row newer than the write is
+ * kept.
+ *
+ * A symlink's stat does not say where the link points, so it is not kept:
+ * a row without its target would resolve the link to its own directory.
  */
 function __nsNoteLiveStat(k, stat, written) {
   if (!__nsReady()) return;
@@ -1764,7 +1770,9 @@ function __nsNoteLiveStat(k, stat, written) {
     return;
   }
   if (!__nsDescribes(stat)) return;
-  __nsTryPut(t, k, stat, written === undefined ? cursor.rev : Math.max(written, cursor.rev), stat.linkTarget ?? stat.target ?? null);
+  const target = stat.linkTarget ?? stat.target ?? null;
+  if (stat.type === "symlink" && target === null) return;
+  __nsTryPut(t, k, stat, written ?? cursor.rev, target);
 }
 
 /**

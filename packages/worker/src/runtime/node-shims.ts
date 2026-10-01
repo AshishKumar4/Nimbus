@@ -1225,9 +1225,28 @@ const __fsMod = (() => {
   /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
   async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
-    let stat;
-    try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
-    __nsNoteLiveStat(_strip(absPath), stat ?? null, written);
+    const ticket = _beginFill(_strip(absPath));
+    try {
+      let stat;
+      try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
+      _noteLearnedStat(absPath, stat ?? null, ticket, written);
+    } finally {
+      _endFill(ticket);
+    }
+  }
+
+  /**
+   * Keep a stat the authority answered while \`ticket\` (_beginFill) was
+   * open, unless a barrier reported the path, meanwhile, above what the stat
+   * is known to cover: the cursor the ticket was dated at, or the own write
+   * it was read after (\`written\`). That barrier's own entry carried the
+   * newer state. A deletion among them leaves no row the stat could be
+   * judged against, and keeping the stat would bring back a name nothing
+   * will report gone again.
+   */
+  function _noteLearnedStat(absPath, stat, ticket, written) {
+    if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return;
+    __nsNoteLiveStat(_strip(absPath), stat, written);
   }
 
   /**
@@ -2793,7 +2812,7 @@ const __fsMod = (() => {
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
         _installResident(absPath, bytes, fill);
-        if (first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES) __nsNoteLiveStat(_strip(absPath), first.stat);
+        if (first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES) _noteLearnedStat(absPath, first.stat, fill);
         else await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
@@ -3022,28 +3041,34 @@ const __fsMod = (() => {
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
       // The authority's stat comes back with the write where it can, and is
-      // what the sync view keeps for the path.
+      // what the sync view keeps for the path. The ticket hears what the
+      // barriers report of the path while the write is out.
       let learned;
       let written;
-      await __nimbusFlushVfsWrite(absPath, async (content) => {
-        if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
-          try {
-            const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
-            learned = answer.stat;
-            written = answer.revision;
-            return answer.revision;
-          } catch (error) {
-            if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
-            _served.writeFileStat = false;
+      const ticket = _beginFill(_strip(absPath));
+      try {
+        await __nimbusFlushVfsWrite(absPath, async (content) => {
+          if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
+            try {
+              const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
+              learned = answer.stat;
+              written = answer.revision;
+              return answer.revision;
+            } catch (error) {
+              if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
+              _served.writeFileStat = false;
+            }
           }
-        }
-        written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
-        return written;
-      });
-      _markVfsStale();
-      const revision = typeof written === "number" ? written : undefined;
-      if (learned !== undefined) __nsNoteLiveStat(_strip(absPath), learned, revision);
-      else await _learnLive(absPath, supervisor, revision);
+          written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
+          return written;
+        });
+        _markVfsStale();
+        if (typeof written !== "number") written = undefined;
+        if (learned !== undefined) _noteLearnedStat(absPath, learned, ticket, written);
+      } finally {
+        _endFill(ticket);
+      }
+      if (learned === undefined) await _learnLive(absPath, supervisor, written);
     }
   }
 
