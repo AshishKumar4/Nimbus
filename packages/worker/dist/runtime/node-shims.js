@@ -1059,10 +1059,7 @@ const __fsMod = (() => {
         + (_supervisor() ? " (" + asyncForm + ")" : "");
       return full;
     }
-    // Under the file the links name, so the fault-in reads, and holds, that
-    // file by its own name.
-    const landing = _nsLandingKey(_strip(absPath));
-    _recordResidencyMiss(landing === null ? absPath : "/" + landing);
+    _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
       "resident in this facet, and synchronous I/O cannot block to fetch it" +
@@ -1143,10 +1140,12 @@ const __fsMod = (() => {
    */
   const _observedAbsent = new Set();
 
+  // The miss is the access the program made; the fault-in reads, and so
+  // holds, the file the links on it name by that file's own name.
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
     _recordMiss(k);
-    _faultIn(k);
+    _faultIn(_nsLandingKey(k) ?? k);
   }
 
   function _residencySatisfied(absPath) {
@@ -1715,17 +1714,19 @@ const __fsMod = (() => {
    * The parent's manifest entry gains the name too, so the existence view
    * cannot go on denying a file whose bytes this process is holding.
    */
-  function _installResident(absPath, bytes, fill) {
+  function _installResident(absPath, bytes, fill, reached) {
     if (!__vfsBundle) return;
-    const k = _strip(absPath);
-    if (k === "") return;
-    // Bytes the authority read through a symlink belong to the file it
-    // resolved the link to, which this view cannot name: a peer may have
-    // retargeted the link before the read. Kept under the link's name, a
-    // later write to the target would never be reported against them. They
-    // are held when read by the file's own name (a miss through the link
-    // faults in that name, _notResidentError).
-    if (_nsLandingKey(k) !== k) return;
+    // Bytes read through a symlink are held under the file the read reached,
+    // which a later write to it is reported under; kept under the link's own
+    // name, nothing would ever replace them. \`reached\` names it, as the
+    // authority resolved it (_rpcFsReadBatch). Without one (a session
+    // deployed before it, a read in several chunks through a link: null),
+    // only a name with no link on it is known to be the file read: this
+    // view's own resolution can be older than the read's.
+    const asked = _strip(absPath);
+    const k = typeof reached === "string" ? _strip(reached)
+      : reached === undefined && _nsLandingKey(asked) === asked ? asked : null;
+    if (k === null || k === "") return;
     if (fill.reported > fill.rev) return;
     // Never over a cell this facet owns.
     //
@@ -2837,7 +2838,11 @@ const __fsMod = (() => {
         const [read, learned] = Array.isArray(entries) ? entries : [];
         if (!read || read.error) throw _mapSupervisorError(read ? read.error : null, "read", p);
         if (read.bytes === null || read.bytes === undefined) throw _fsErr("ENOENT", "open", p);
-        first = { chunk: read.bytes.byteLength === 0 ? null : read.bytes, stat: learned && !learned.error ? learned.stat ?? null : undefined };
+        first = {
+          chunk: read.bytes.byteLength === 0 ? null : read.bytes,
+          stat: learned && !learned.error ? learned.stat ?? null : undefined,
+          path: typeof read.path === "string" ? read.path : undefined,
+        };
       } catch (error) {
         _endFill(fill);
         throw error;
@@ -2874,7 +2879,16 @@ const __fsMod = (() => {
           break;
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
-        _installResident(absPath, bytes, fill);
+        // The file the first chunk reached. A later chunk read through a link
+        // may reach another, so a read through one in several chunks names none.
+        const asked = _strip(absPath);
+        const reached = first === null || first.path === undefined ? undefined
+          : _strip(first.path) === asked || total <= READ_STREAM_CHUNK_BYTES ? first.path : null;
+        _installResident(absPath, bytes, fill, reached);
+        // The read resolved a link differently from this view, which a peer
+        // changed after the read's barrier: catch the view up, so a sync read
+        // through the link is not older than what this one returned.
+        if (typeof reached === "string" && _nsLandingKey(asked) !== _strip(reached)) await _acquireBarrier(supervisor);
         const kept = first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES && _noteLearnedStat(absPath, first.stat, fill);
         if (!kept) await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);

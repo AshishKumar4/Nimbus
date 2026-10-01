@@ -578,9 +578,25 @@ export async function _rpcFsReadBatch(self, requests, pid) {
                 }
                 // N17: bytes still being imported are waited for, not failed.
                 const hydrated = (path) => (typeof self.getFilesystemAuthority === 'function' ? self.getFilesystemAuthority().hydrated(path) : Promise.resolve());
-                entries.push({ bytes: await readHydrating(hydrated, async () => fs.readRange(request.path, request.offset, request.length, {
+                // The file the read reached, named right after a synchronous read
+                // resolved it, so a link a peer retargets cannot come between them;
+                // the process holds the bytes under that name. An asynchronous
+                // mount's read is awaited first, and its name is then the mount's
+                // answer after it.
+                entries.push(await readHydrating(hydrated, async () => {
+                    const read = fs.readRange(request.path, request.offset, request.length, {
                         expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
-                    })) });
+                    });
+                    const bytes = read instanceof Promise ? await read : read;
+                    if (bytes === null)
+                        return { bytes };
+                    try {
+                        return { bytes, path: await fs.realpath(request.path) };
+                    }
+                    catch {
+                        return { bytes };
+                    }
+                }));
             }
             catch (error) {
                 entries.push({ error: error instanceof Error ? error : new Error(String(error)) });
