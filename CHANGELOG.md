@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `git clone <url> /tmp/x` by a principal with a private `/tmp`
+  failed with `EPERM: … is outside exclusive mutation root tmp/x`. The
+  clone held the shared name while its writes landed in the private `/tmp`.
+  An exclusive lease taken through a credential now holds where that
+  credential's writes land, and every write is checked against leases at
+  the path it reaches: a write to a private `/tmp/x` is no longer refused by
+  a lease on the shared `tmp/x`, and a `cp -r` through a symlink into a held
+  tree is refused.
+
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session

@@ -690,7 +690,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const p = this.sqlitePath(path, false, 'acquireExclusiveMutation');
     const parent = parentVfsPath(p);
     if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent))) this.vfs.access(parent, 0o3);
-    return this.rawVfs.acquireExclusiveMutation(p, options);
+    return this.vfs.acquireExclusiveMutation(p, options);
   }
 
   releaseExclusiveMutation(owner: string): void { this.rawVfs.releaseExclusiveMutation(owner); }
