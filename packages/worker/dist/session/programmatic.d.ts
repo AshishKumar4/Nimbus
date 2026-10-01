@@ -35,7 +35,6 @@ interface ProgrammaticShellExecuteOptions {
     onStderr?: (data: Uint8Array) => void | Promise<void>;
     signal?: AbortSignal;
     stdin?: string;
-    isolateShellState?: boolean;
     commandContext?: Record<string, unknown>;
 }
 type ProgrammaticContext = DurableObjectState;
