@@ -733,8 +733,9 @@ export interface BuildOutputFile {
 
 export interface BuildResult {
   outputFiles: BuildOutputFile[];
-  errors: { text: string; location?: esbuild.Location | null }[];
-  warnings: { text: string; location?: esbuild.Location | null }[];
+  /** esbuild's diagnostics, with their notes; never \`detail\` (serializableMessage). */
+  errors: esbuild.Message[];
+  warnings: esbuild.Message[];
   /** esbuild metafile — populated because build() always enables it so
    *  callers can identify entry-point outputs (`entryPoint`, `cssBundle`)
    *  instead of guessing from output ordering. */
@@ -890,6 +891,20 @@ async function runTransformRequest(
  * wherever that plugin runs. Self-contained: it is serialized into the
  * esbuild facet as well as called here.
  */
+/**
+ * An esbuild diagnostic as RPC can carry it: everything but \`detail\`, which
+ * is whatever a plugin threw and may not clone. Notes keep their own text and
+ * location (a duplicate declaration's note points at the original).
+ */
+function serializableMessage({ id, pluginName, text, location, notes }: esbuild.Message): esbuild.Message {
+  return { id, pluginName, text, location, notes: notes.map((note) => ({ text: note.text, location: note.location })), detail: undefined };
+}
+
+/** esbuild's rejection of a build that failed: an Error carrying its diagnostics. */
+function isBuildFailure(value: unknown): value is esbuild.BuildFailure {
+  return value instanceof Error && Array.isArray(Reflect.get(value, 'errors')) && Array.isArray(Reflect.get(value, 'warnings'));
+}
+
 async function buildWithEsbuild(
   esbuildApi: EsbuildBuildApi,
   options: EsbuildHostBuildOptions,
@@ -922,20 +937,18 @@ async function buildWithEsbuild(
     });
   } catch (failure) {
     // esbuild rejects a failed build with its diagnostics on the error, which RPC drops: they return as data.
-    const diagnostics = failure as Partial<Pick<BuildResult, 'errors' | 'warnings'>> & { message?: unknown };
-    if (!Array.isArray(diagnostics.errors)) throw failure;
-    const plain = (messages: BuildResult['errors']) => messages.map(({ text, location }) => ({ text, location })) as BuildResult['errors'];
+    if (!isBuildFailure(failure)) throw failure;
     return {
       outputFiles: [],
-      errors: plain(diagnostics.errors),
-      warnings: plain(diagnostics.warnings ?? []),
-      failure: String(diagnostics.message),
+      errors: failure.errors.map(serializableMessage),
+      warnings: failure.warnings.map(serializableMessage),
+      failure: failure.message,
     };
   }
   return {
     outputFiles: (result.outputFiles || []).map((file) => ({ path: file.path, contents: file.contents })),
-    errors: result.errors.map((message) => ({ text: message.text, location: message.location })),
-    warnings: result.warnings.map((message) => ({ text: message.text, location: message.location })),
+    errors: result.errors.map(serializableMessage),
+    warnings: result.warnings.map(serializableMessage),
     metafile: result.metafile,
   };
 }
@@ -948,6 +961,8 @@ export function generateEsbuildFacetRuntimeSource(): string {
   return [
     transformWithEsbuild.toString(),
     runTransformRequest.toString(),
+    isBuildFailure.toString(),
+    serializableMessage.toString(),
     buildWithEsbuild.toString(),
     keepEsbuild.toString(),
     startObservedEsbuild.toString(),

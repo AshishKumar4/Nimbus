@@ -118,5 +118,21 @@ author.writeFile('home/user/app/src/leak.ts', 'export { default } from "/private
   console.log('  ok  an unresolvable import fails the build with esbuild\'s message and diagnostics');
 }
 
+// ── A diagnostic keeps its notes and its plugin across RPC ──────────────────
+// A duplicate declaration's error carries a note pointing at the original;
+// a local build used to throw esbuild's own failure with it.
+{
+  author.writeFile('home/user/app/src/twice.ts', 'let x = 1;\nlet x = 2;\nexport default x;\n');
+  const service = new EsbuildService(author, { buildHost });
+  const failure = await service.build(['/home/user/app/src/twice.ts']).then(() => null, (error) => error);
+  const duplicate = failure?.errors?.find(({ text }) => /already been declared/.test(text));
+  assert.ok(duplicate, `the duplicate declaration is reported: ${failure?.message}`);
+  assert.equal(duplicate.notes.length, 1, 'with its note');
+  assert.equal(duplicate.notes[0].location?.line, 1, 'which points at the original declaration');
+  assert.equal(typeof duplicate.id, 'string');
+  assert.equal(duplicate.detail, undefined, 'and no detail, which may not clone');
+  console.log('  ok  a diagnostic keeps its notes across RPC');
+}
+
 harness.db.close();
 console.log('esbuild-build-host OK');
