@@ -1,4 +1,4 @@
-import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -19,7 +19,7 @@ type ShellCommandContext = {
   pid: number;
   cred: VfsCred;
   setUmask(mask: number): void;
-  runAs(cred: VfsCred, argv: string[]): Promise<number>;
+  runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<number>;
   vfs: VFS;
 };
 
@@ -128,7 +128,8 @@ function makeShellEntrypoint(
         cred: ctx.cred,
         setUmask: ctx.setUmask,
       },
-      runAs: async (_parent, cred, argv) => (await ctx.runAs(cred, argv)),
+      // A child starts where the script's command runs, which a `cd` in the script may have moved.
+      runAs: async (parent, cred, argv) => (await ctx.runAs(cred, argv, { cwd: parent.cwd })),
     });
     return result.exitCode;
   };

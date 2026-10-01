@@ -4,6 +4,7 @@ import { FacetProcessManager, textBytes, type OutputHooks } from "../facets/proc
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
+import type { RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import type { NpmInstaller } from "../npm/installer.js";
@@ -219,12 +220,13 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           // For commands that need stdin we pass a tiny adapter.
           stdin: staticStdinReader(payload.stdin || ''),
           setUmask: (mask: number) => { self.processes.setUmask(payload.processPid, mask); },
-          runAs: async (targetCred: VfsCred, argv: string[]) => {
+          runAs: async (targetCred: VfsCred, argv: string[], options?: RunAsOptions) => {
             if (argv.length === 0) return 0;
+            const childCwd = options?.cwd ?? payload.cwd;
             const child = self.processes.spawn(
               argv.join(' '),
               argv,
-              payload.cwd,
+              childCwd,
               { parentPid: payload.processPid, cred: targetCred },
             );
             let exitCode = 1;
@@ -234,7 +236,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
                 argv[0],
                 argv.slice(1),
                 payload.env,
-                payload.cwd,
+                childCwd,
                 payload.stdin,
                 hooks,
               );
@@ -312,12 +314,13 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           signal: ac.signal,
           stdin: staticStdinReader(stdin),
           setUmask: (mask: number) => { self.processes.setUmask(pid, mask); },
-          runAs: async (targetCred: VfsCred, argv: string[]) => {
+          runAs: async (targetCred: VfsCred, argv: string[], options?: RunAsOptions) => {
             if (argv.length === 0) return 0;
+            const childCwd = options?.cwd ?? cwd;
             const child = self.processes.spawn(
               argv.join(' '),
               argv,
-              cwd,
+              childCwd,
               { parentPid: pid, cred: targetCred },
             );
             let exitCode = 1;
@@ -327,7 +330,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
                 argv[0],
                 argv.slice(1),
                 env,
-                cwd,
+                childCwd,
                 stdin,
                 hooks,
               );
@@ -378,15 +381,16 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           const cred = self.processes.cred(pid);
           const setUmask = (mask: number) => { self.processes.setUmask(pid, mask); };
           const runAs = async (
-            _parent: import('@nimbus-sh/core/substrate/lifo/commands/types.js').CommandContext,
+            parent: import('@nimbus-sh/core/substrate/lifo/commands/types.js').CommandContext,
             targetCred: VfsCred,
             argv: string[],
           ): Promise<number> => {
             if (argv.length === 0) return 0;
+            // Where the command line's own command runs, which a `cd` in it may have moved.
             const child = self.processes.spawn(
               argv.join(' '),
               argv,
-              cwd,
+              parent.cwd,
               { parentPid: pid, cred: targetCred },
             );
             let exitCode = 1;
@@ -396,7 +400,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
                 argv[0],
                 argv.slice(1),
                 env,
-                cwd,
+                parent.cwd,
                 stdin,
                 hooks,
               );
