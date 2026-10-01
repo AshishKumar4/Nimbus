@@ -2825,6 +2825,7 @@ const __fsMod = (() => {
     // is out reports against it, and dated when the answer comes back
     // (_acquiredRead).
     let fill = refetch || null;
+    let reachedFill = null;
     let first = null;
     if (!refetch && _servesFsAcquired(supervisor) && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
@@ -2843,8 +2844,18 @@ const __fsMod = (() => {
           stat: learned && !learned.error ? learned.stat ?? null : undefined,
           path: typeof read.path === "string" ? read.path : undefined,
         };
+        // Reached through a link: the barriers report the file by its own
+        // name, so that is the name whose reports date the fill from here.
+        // Anything applied since the read's own barrier may already have
+        // reported it unheard, so a cursor that moved spoils it.
+        if (first.path !== undefined && _strip(first.path) !== _strip(absPath)) {
+          reachedFill = _beginFill(_strip(first.path));
+          reachedFill.rev = fill.rev;
+          if (fill.reported > fill.rev || _cursor.rev !== fill.rev) reachedFill.reported = Infinity;
+        }
       } catch (error) {
         _endFill(fill);
+        if (reachedFill) _endFill(reachedFill);
         throw error;
       }
     } else if (!refetch) {
@@ -2884,7 +2895,7 @@ const __fsMod = (() => {
         const asked = _strip(absPath);
         const reached = first === null || first.path === undefined ? undefined
           : _strip(first.path) === asked || total <= READ_STREAM_CHUNK_BYTES ? first.path : null;
-        _installResident(absPath, bytes, fill, reached);
+        _installResident(absPath, bytes, reachedFill ?? fill, reached);
         // The read resolved a link differently from this view, which a peer
         // changed after the read's barrier: catch the view up, so a sync read
         // through the link is not older than what this one returned.
@@ -2905,6 +2916,7 @@ const __fsMod = (() => {
       }
     } finally {
       if (!refetch) _endFill(fill);
+      if (reachedFill) _endFill(reachedFill);
     }
 
     throw _fsErr("ENOENT", "open", p);
