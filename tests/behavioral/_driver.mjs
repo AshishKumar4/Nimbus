@@ -225,8 +225,10 @@ export async function mintSession() {
     // Live binding: importers that read AUTH_TOKEN after this call see the
     // sid-pinned bearer, so requestHeaders()/wsHeaders() pick it up too.
     AUTH_TOKEN = token;
-    const wsPath = new URL(body.wsUrl, BASE).pathname + new URL(body.wsUrl, BASE).search;
-    sessionAttachPaths.set(body.sessionId, wsPath);
+    // The shell page, as POST /new's Location names it: a browser exchanges
+    // its token there for the session cookie. wsUrl is the WebSocket, which
+    // answers a page load 426 and sets nothing.
+    sessionAttachPaths.set(body.sessionId, `/s/${encodeURIComponent(body.sessionId)}/?nimbus_token=${encodeURIComponent(token)}`);
     noteMinted(body.sessionId, created.status, { reap: 'ttl' });
     return body.sessionId;
   }
