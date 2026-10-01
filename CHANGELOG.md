@@ -28,6 +28,11 @@ message shape, VFS export schema 3 (its pages carry `source`), and the
 - `npm install` removes packages the project no longer needs, as npm does:
   a dependency dropped from package.json, what only it needed, and its
   bins. This also clears the optional peers earlier installs added.
+- A package's `bin` names and targets are normalized as npm normalizes
+  them: a key links under its last path component (`../../x` links `x`) and
+  a target stays inside its package. Linking and pruning read installed
+  `package.json` files and the bin manifest only through that rule, so no
+  bin map can write or remove a file outside `node_modules/.bin`.
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session

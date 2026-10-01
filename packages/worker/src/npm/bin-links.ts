@@ -17,6 +17,56 @@ export function stagedArtifactId(target: string): string {
   return target.slice(STAGED_ARTIFACT_BIN_PREFIX.length);
 }
 
+/**
+ * The name a `bin` key links in `.bin`, as npm normalizes it
+ * (npm-normalize-package-bin): its last path component, with `\` and `:`
+ * read as separators. Null for a key that names no file there ('', '.',
+ * '..'). Every name a shim is written, listed or removed under passes
+ * through here, so no bin map can reach a file outside `.bin`.
+ */
+export function npmBinName(key: string): string | null {
+  const base = key.replace(/[\\:]/g, '/').split('/').filter(Boolean).pop() ?? '';
+  return base === '.' || base === '..' || base === '' ? null : base;
+}
+
+/**
+ * A package's `bin` field as npm installs it: a string links under the
+ * package's own name, each key under {@link npmBinName}, and each target is
+ * a path inside the package, `..` stopping at its root (staged-artifact
+ * sentinels pass through). Name -> target relative to the package.
+ */
+export function npmBinMap(packageName: string, bin: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  const fields: [string, unknown][] = typeof bin === 'string' ? [[packageName, bin]]
+    : bin !== null && typeof bin === 'object' ? Object.entries(bin) : [];
+  for (const [key, target] of fields) {
+    const name = npmBinName(key);
+    if (name === null || typeof target !== 'string') continue;
+    const inside = isStagedArtifactTarget(target) ? target : withinPackage(target);
+    if (inside !== null) out.set(name, inside);
+  }
+  return out;
+}
+
+function withinPackage(target: string): string | null {
+  const out: string[] = [];
+  for (const segment of target.replace(/\\/g, '/').split('/')) {
+    if (segment === '..') out.pop();
+    else if (segment !== '.' && segment !== '') out.push(segment);
+  }
+  return out.length === 0 ? null : out.join('/');
+}
+
+/** The bin manifest a `.nimbus-bin-map.json` holds; null when it is not one, or names a file outside `.bin`. */
+export function parseNpmBinManifest(text: string): NpmBinManifest | null {
+  try {
+    const parsed = NpmBinManifestSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 export const NPM_BIN_MANIFEST_VERSION = 1;
 export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
 
@@ -52,7 +102,7 @@ interface PackageJsonLike {
 }
 
 const NpmBinEntrySchema: z.ZodType<NpmBinEntry> = z.object({
-  name: z.string().min(1),
+  name: z.string().refine((name) => npmBinName(name) === name),
   packageName: z.string().min(1),
   packageVersion: z.string(),
   packagePath: z.string().min(1),
@@ -62,7 +112,7 @@ const NpmBinEntrySchema: z.ZodType<NpmBinEntry> = z.object({
 const NpmBinManifestSchema: z.ZodType<NpmBinManifest> = z.object({
   version: z.literal(NPM_BIN_MANIFEST_VERSION),
   bins: z.record(z.string(), NpmBinEntrySchema),
-});
+}).refine((manifest) => Object.entries(manifest.bins).every(([key, entry]) => key === entry.name));
 
 const PackageJsonSchema: z.ZodType<PackageJsonLike> = z.object({
   name: z.string().min(1),
@@ -110,25 +160,16 @@ function relativeRequest(fromDir: string, target: string): string {
 
 export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[] {
   const packagePath = normalizeVfsPath(`${nodeModulesPath}/${pkg.name}`);
-  const entries: NpmBinEntry[] = [];
   const packageVersion = String(pkg.version || '');
-
-  if (!pkg.bin || typeof pkg.bin !== 'object') return entries;
-  for (const [name, rawTarget] of Object.entries(pkg.bin)) {
-    if (typeof rawTarget !== 'string' || !name) continue;
-    entries.push({
-      name,
-      packageName: pkg.name,
-      packageVersion,
-      packagePath,
-      // Staged-artifact sentinels pass through verbatim; everything else
-      // resolves to a concrete VFS path under the package dir.
-      targetPath: isStagedArtifactTarget(rawTarget)
-        ? rawTarget
-        : resolveVfsPath(rawTarget, packagePath),
-    });
-  }
-  return entries;
+  return [...npmBinMap(pkg.name, pkg.bin)].map(([name, target]) => ({
+    name,
+    packageName: pkg.name,
+    packageVersion,
+    packagePath,
+    // Staged-artifact sentinels pass through verbatim; everything else is a
+    // VFS path under the package dir.
+    targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
+  }));
 }
 
 export async function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null> {
@@ -369,32 +410,15 @@ async function packageJsonBinEntry(
 ): Promise<NpmBinEntry[]> {
   const packageName = pkg.name;
   const packageVersion = pkg.version || '';
-  const bin = pkg.bin;
-
-  if (typeof bin === 'string') {
-    const name = defaultBinName(packageName);
-    if (requestedName && requestedName !== name) return [];
-    const entry = await validateEntry(vfs, {
-      name,
-      packageName,
-      packageVersion,
-      packagePath,
-      targetPath: resolveVfsPath(bin, packagePath),
-    });
-    return entry ? [entry] : [];
-  }
-
-  if (!bin || typeof bin !== 'object') return [];
   const entries: NpmBinEntry[] = [];
-  for (const [name, rawTarget] of Object.entries(bin)) {
+  for (const [name, target] of npmBinMap(packageName, pkg.bin)) {
     if (requestedName && requestedName !== name) continue;
-    if (typeof rawTarget !== 'string') continue;
     const entry = await validateEntry(vfs, {
       name,
       packageName,
       packageVersion,
       packagePath,
-      targetPath: resolveVfsPath(rawTarget, packagePath),
+      targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
     });
     if (entry) entries.push(entry);
   }
@@ -451,8 +475,7 @@ async function readPackageJson(vfs: VfsLike, path: string): Promise<PackageJsonL
 async function readNpmBinManifest(vfs: VfsLike, manifestPath: string): Promise<NpmBinManifest | null> {
   if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath)) return null;
   try {
-    const parsed = NpmBinManifestSchema.safeParse(JSON.parse(await vfs.readFileString(manifestPath)));
-    return parsed.success ? parsed.data : null;
+    return parseNpmBinManifest(await vfs.readFileString(manifestPath));
   } catch {
     return null;
   }
@@ -462,7 +485,3 @@ async function safeIsDirectory(vfs: VfsLike, path: string): Promise<boolean> {
   try { return await vfs.isDirectory(path); } catch { return false; }
 }
 
-function defaultBinName(packageName: string): string {
-  const slash = packageName.lastIndexOf('/');
-  return slash >= 0 ? packageName.slice(slash + 1) : packageName;
-}

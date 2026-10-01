@@ -114,9 +114,10 @@ import {
   createNpmBinManifest,
   createNpmBinShim,
   npmBinManifestPath,
+  npmBinMap,
   packageBinEntries,
+  parseNpmBinManifest,
   type NpmBinEntry,
-  type NpmBinManifest,
 } from './bin-links.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -507,7 +508,7 @@ export class NpmInstaller {
     setInstallPhase('link-bins');
     // `npm install <pkg>` adds bins; the ones already linked stay in the manifest.
     const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
-      ? Object.values(safeJsonParse<NpmBinManifest | null>(await project.readFileString(npmBinManifestPath(nmDir)), null)?.bins ?? {})
+      ? Object.values(parseNpmBinManifest(await project.readFileString(npmBinManifestPath(nmDir)))?.bins ?? {})
       : [];
     await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
     phases['link-bins'] = Date.now() - phaseStart;
@@ -1712,7 +1713,7 @@ export class NpmInstaller {
     }
     const manifestPath = npmBinManifestPath(nmDir);
     const manifest = await project.exists(manifestPath)
-      ? safeJsonParse<NpmBinManifest | null>(await project.readFileString(manifestPath), null)
+      ? parseNpmBinManifest(await project.readFileString(manifestPath))
       : null;
     for (const [name, bin] of Object.entries(manifest?.bins ?? {})) if (removed.includes(bin.packageName)) unlinked.add(name);
     // Unless a package that stays links the same name.
@@ -1729,14 +1730,12 @@ export class NpmInstaller {
     return removed.length;
   }
 
-  /** The bin names the package at `dir` declares in its package.json. */
+  /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
   private async declaredBins(project: ProjectFs, dir: string): Promise<string[]> {
     let manifest: Record<string, unknown> | null = null;
     try { manifest = safeJsonParse<Record<string, unknown> | null>(await project.readFileString(`${dir}/package.json`), null); } catch { return []; }
-    if (manifest === null) return [];
-    const bin = manifest.bin;
-    if (typeof bin === 'string') return typeof manifest.name === 'string' ? [manifest.name.split('/').pop() ?? manifest.name] : [];
-    return bin !== null && typeof bin === 'object' ? Object.keys(bin) : [];
+    if (manifest === null || typeof manifest.name !== 'string') return [];
+    return [...npmBinMap(manifest.name, manifest.bin).keys()];
   }
 
   /**

@@ -28,6 +28,8 @@ const REGISTRY = {
   c: { '1.0.0': { dependencies: { d: '^2.0.0' }, bin: { 'c-cli': 'cli.js' } } },
   d: { '1.0.0': {}, '2.0.0': {} },
   e: { '1.0.0': { bin: { 'e-cli': 'cli.js' } } },
+  // Bin keys and targets that try to leave .bin and the package.
+  evil: { '1.0.0': { bin: { '../../keep.txt': 'cli.js', 'x\\..\\..\\y': 'cli.js', '..': 'cli.js', up: '../../../outside.js' } } },
 };
 
 function resolveFromRegistry(name, spec) {
@@ -151,6 +153,44 @@ assert.ok(root.exists(`${NM}/.bin/c-cli`), 'c links its bin');
   assert.deepEqual(placements(), [], 'the lockfile is empty');
   for (const name of ['a', 'b', 'd', 'e']) assert.equal(present(name), false, `${name} is removed`);
   assert.equal(root.exists(`${NM}/.bin/e-cli`), false, 'and its bin');
+}
+
+// ── no bin name reaches outside .bin, pruning or linking ─────────────────
+// npm links a `bin` key under its last path component and a target inside
+// its package (npm-normalize-package-bin). Pruning read the bin names of an
+// installed package.json, a file anyone may edit, raw: a key ../../keep.txt
+// unlinked the project's keep.txt.
+{
+  root.writeFile(`${PROJ}/keep.txt`, 'user data');
+  root.writeFile(`${PROJ}/y`, 'user data');
+  declare({ a: '^1.0.0', e: '^1.0.0' });
+  await install();
+  root.writeFile(`${NM}/e/package.json`, JSON.stringify({ name: 'e', version: '1.0.0', bin: { '../../keep.txt': 'cli.js', '../../../app/y': 'cli.js', 'e-cli': 'cli.js' } }));
+  // The bin manifest is such a file too.
+  const manifest = JSON.parse(root.readFileString(`${NM}/.bin/.nimbus-bin-map.json`));
+  manifest.bins['../../y'] = { ...manifest.bins['e-cli'], name: '../../y' };
+  root.writeFile(`${NM}/.bin/.nimbus-bin-map.json`, JSON.stringify(manifest));
+  declare({ a: '^1.0.0' });
+  await install();
+  assert.equal(present('e'), false, 'e is pruned');
+  assert.equal(root.readFileString(`${PROJ}/keep.txt`), 'user data', 'pruning removed nothing outside .bin');
+  assert.equal(root.readFileString(`${PROJ}/y`), 'user data');
+  assert.equal(root.exists(`${NM}/.bin/e-cli`), false, 'its own shim is gone');
+}
+
+// Linking: such a key was refused as a noncanonical path and failed the
+// install; npm installs it, under its last component.
+{
+  declare({ a: '^1.0.0', evil: '^1.0.0' });
+  await install();
+  assert.equal(root.readFileString(`${PROJ}/keep.txt`), 'user data', 'install wrote nothing outside .bin');
+  assert.equal(root.readFileString(`${PROJ}/y`), 'user data');
+  assert.deepEqual(bins(), ['keep.txt', 'up', 'y'], 'each key links under its last component');
+  assert.match(root.readFileString(`${NM}/.bin/up`), /"\.\.\/evil\/outside\.js"/, 'and a target stays inside its package');
+  declare({ a: '^1.0.0' });
+  await install();
+  assert.equal(root.readFileString(`${PROJ}/keep.txt`), 'user data');
+  assert.equal(root.exists(`${NM}/.bin/keep.txt`), false, 'its shims go with it');
 }
 
 console.log('npm-install-prune: ok');
