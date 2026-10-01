@@ -5,6 +5,31 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `find` behaves as GNU findutils 4.10 does for the expression language
+  scripts and agents use, checked line for line against the host's GNU find
+  over the same tree (318 command lines: same stdout, stderr and exit
+  status, in readdir order). It parses GNU's grammar (`( )`, `!`, `-a`, `-o`,
+  `,`, the implicit `-print`) with GNU's messages; implements -H/-L/-P with
+  loop detection, -maxdepth, -mindepth, -depth, -xdev/-mount, the name,
+  path, type, size, time (-newerXY with dates), permission, owner and link
+  tests, -printf, -prune, -quit, -delete, and -exec/-execdir with `;` and
+  `{} +` as child processes; and reports unreadable directories and goes
+  on. What it does not implement it refuses by name, exit 1: -regex,
+  -fstype, -ls, -fprint*, -files0-from, -ok, -okdir, and the -printf
+  directives Nimbus has no facts for (%b %k %S %F %Z). Before, an unknown
+  flag's value became the search path, `-xdev` was refused, and every
+  unreadable directory was skipped in silence.
+- `find -xdev` stays on the start point's file system, so `find / -xdev`
+  never lists a mounted container file system such as Kinu's /sandbox.
+  Without it, find reads directories (16 calls at once) ahead of what it
+  prints, in walk order, when the expression only looks: on a mount
+  answering each call in 10 ms, `find` over 156 directories took 990 ms
+  where it took 7.7 s.
+- `chmod` takes gnulib's whole mode grammar (`u=g`, `+t`, `g+s`,
+  `u+rw-x`, `+111`, five-digit octal), as find -perm does.
+- Fixed: after `cd` in a `bash` script, a command started for it by `sudo`
+  or `find -exec` ran in the directory the script started in.
+
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session
