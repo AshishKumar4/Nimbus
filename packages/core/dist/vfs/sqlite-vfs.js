@@ -40,6 +40,7 @@ import { decodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
+import { readDeclaredSource } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
 import { CRED_KERNEL, } from '../runtime/os-contracts.js';
@@ -6615,22 +6616,26 @@ export class SqliteVFS {
     async writeFileFrom(path, size, source, options, cred, mutationOwner) {
         if (!Number.isSafeInteger(size) || size < 0)
             throw vfsError('EINVAL', `${path}: invalid size ${size}`);
+        // uid 0 may use the ledger's kernel reserve (privilegedView), but that view
+        // only covers a call's synchronous part, and this one awaits its source:
+        // each transaction below is run with the caller's own privilege.
+        const asCaller = (fn) => {
+            const prior = this.privileged;
+            this.privileged = cred.uid === 0;
+            try {
+                return this.withMutationOwner(mutationOwner, fn);
+            }
+            finally {
+                this.privileged = prior;
+            }
+        };
         // Refused before a byte is read, as writeFile would refuse it.
-        const target = this.withMutationOwner(mutationOwner, () => this.fileWriteInode(path, size, options, cred)).path;
+        const target = asCaller(() => this.fileWriteInode(path, size, options, cred)).path;
         const sourceMismatch = (received) => vfsError('EINVAL', `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes declared`);
         if (size <= CHUNK_SIZE) {
             // One chunk, named from its inode: no cut to stream into.
-            const data = new Uint8Array(size);
-            let received = 0;
-            for await (const piece of source) {
-                if (received + piece.byteLength > size)
-                    throw sourceMismatch(received + piece.byteLength);
-                data.set(piece, received);
-                received += piece.byteLength;
-            }
-            if (received !== size)
-                throw sourceMismatch(received);
-            this.withMutationOwner(mutationOwner, () => this.writeFile(path, data, options, cred));
+            const data = await readDeclaredSource(source, size, sourceMismatch);
+            asCaller(() => this.writeFile(path, data, options, cred));
             return this._revision;
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
@@ -6641,7 +6646,7 @@ export class SqliteVFS {
             const plan = builder.build();
             builder = this.newPlan();
             this.assertTransactionFits(plan.metrics);
-            this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+            asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
         };
         const stage = (data) => {
             if (builder.wouldExceedPieces(data.byteLength, 1) !== null)
@@ -6665,7 +6670,7 @@ export class SqliteVFS {
             for (const data of cutter.finish())
                 stage(data);
             flush();
-            this.withMutationOwner(mutationOwner, () => this.publishStagedFile(this.fileWriteInode(path, size, options, cred), staging));
+            asCaller(() => this.publishStagedFile(this.fileWriteInode(path, size, options, cred), staging));
             // Read in the turn that published it: after an await it could be a peer's.
             return this._revision;
         }

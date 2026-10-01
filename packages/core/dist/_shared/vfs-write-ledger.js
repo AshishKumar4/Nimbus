@@ -677,7 +677,13 @@ function __nimbusEvictLeasedCell(key) {
 /** \`unseen\`: no caller awaits this flush, so a refusal must be retained to be heard. */
 function __nimbusFlushVfsWrite(path, mutation, retainFailure = true, unseen = false) {
   const snapshot = __nimbusCaptureVfsWrite(path);
-  if (!snapshot) return Promise.resolve(undefined);
+  if (!snapshot) {
+    // Nothing parked: what was is already in flight (a directory rename
+    // sends its descendants' writes ahead of it), and flushing the path
+    // means waiting for that write to land.
+    const inFlight = __vfsWriteClaims.get(__nimbusVfsPathKey(path));
+    return inFlight ? inFlight.promise : Promise.resolve(undefined);
+  }
   const existing = __vfsWriteClaims.get(snapshot.key);
   if (existing && existing.generation === snapshot.generation) {
     return existing.promise;

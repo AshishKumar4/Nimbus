@@ -203,6 +203,12 @@ export interface SyncVFS {
 export declare function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
 /** The file as UTF-8 text. */
 export declare function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string>;
+/**
+ * Exactly `size` bytes from `source`, in one array. `mismatch` is the error
+ * for a source that runs past the size or ends short, given how many bytes it
+ * had produced.
+ */
+export declare function readDeclaredSource(source: AsyncIterable<Uint8Array>, size: number, mismatch: (received: number) => Error): Promise<Uint8Array>;
 /** Write `text` as UTF-8. */
 export declare function writeText(vfs: VFS, path: string, text: string, options?: {
     mode?: number;

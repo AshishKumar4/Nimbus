@@ -39,6 +39,24 @@ export async function exists(vfs, path) {
 export async function readText(vfs, path) {
     return decoder.decode(await vfs.readFile(path));
 }
+/**
+ * Exactly `size` bytes from `source`, in one array. `mismatch` is the error
+ * for a source that runs past the size or ends short, given how many bytes it
+ * had produced.
+ */
+export async function readDeclaredSource(source, size, mismatch) {
+    const data = new Uint8Array(size);
+    let received = 0;
+    for await (const piece of source) {
+        if (received + piece.byteLength > size)
+            throw mismatch(received + piece.byteLength);
+        data.set(piece, received);
+        received += piece.byteLength;
+    }
+    if (received !== size)
+        throw mismatch(received);
+    return data;
+}
 /** Write `text` as UTF-8. */
 export async function writeText(vfs, path, text, options) {
     await vfs.writeFile(path, encoder.encode(text), options);

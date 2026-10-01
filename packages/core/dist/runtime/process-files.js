@@ -23,7 +23,7 @@ import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { readText } from '../vfs/vfs.js';
+import { readDeclaredSource, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { createSqliteDescriptorScope, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
@@ -128,6 +128,8 @@ class GuardedProcessBridge {
                 guard();
                 yield piece;
             }
+            // Released after its last piece, before the file is published.
+            guard();
         })());
     }
     truncate(path, size, options) { this.guard(); return this.target.truncate(path, size, options); }
@@ -712,16 +714,9 @@ class AwaitingProcessBridge {
         // The bridge refuses a path on an asynchronous mount before reading the source.
         return this.either([path], () => this.bridge.writeFileFrom(path, size, source), async () => {
             const p = await this.path(path);
-            await this.namespace.writeFile(p, new Uint8Array(0));
-            let offset = 0;
-            for await (const piece of source) {
-                if (offset + piece.byteLength > size)
-                    throw syscallError('EINVAL', 'write', p);
-                await this.namespace.writeRange(p, offset, piece);
-                offset += piece.byteLength;
-            }
-            if (offset !== size)
-                throw syscallError('EINVAL', 'write', p);
+            // An asynchronous mount takes the whole file in one write, as a
+            // synchronous one does (SqliteRuntimeFsBridge.writeFileFrom).
+            await this.namespace.writeFile(p, await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p)));
             return this.clock();
         });
     }

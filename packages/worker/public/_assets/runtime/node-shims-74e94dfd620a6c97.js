@@ -796,8 +796,9 @@ const __fsMod = (() => {
         return { type: "file", size, mode: 0o100666 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
       }
       // A rewrite of a file that was there: its owner and mode stay what the
-      // authority says they are.
-      const found = __nsResolve(k, follow);
+      // authority says they are, under the name it had before a rename.
+      const renamed = _nsOwnView(k);
+      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -3526,21 +3527,36 @@ const __fsMod = (() => {
     // the directory, or leaves them where they were if it refuses the move.
     // Left parked under the old names, they reached the authority behind the
     // move and were refused ENOENT (Vite's optimizer writes deps_temp_<hash>/
-    // and renames it to deps/); moved to the new names, they would be written
-    // into the destination even when the move was refused, and an append's
-    // cell (only the appended bytes) would replace the file it extends. The
-    // sync view reads them under the new name once they land, through the
-    // rename's alias.
+    // and renames it to deps/). Sent under the new names, they would be
+    // written into the destination even when the move was refused, and an
+    // append's cell (only the appended bytes) would replace the file it
+    // extends.
+    //
+    // The sync view shows a whole file under its new name at once: the cell
+    // moves there, and its write-back is that old-name write followed by the
+    // move, never a write of its own. An append's cell cannot stand for the
+    // file, and its new name reads from the authority once the move lands.
     // With no authority the process's own tables are the filesystem, and the
     // cells move with the name.
     const supervisor = _supervisor();
+    const movedWrites = [];
     for (const k of Object.keys(__vfsWrites)) {
       if (!k.startsWith(oldPrefix)) continue;
-      if (supervisor) _detachStructuralMutation(_flushParkedWrite("/" + k, supervisor));
-      else _parkWrite(newK + k.slice(oldK.length), __vfsWrites[k]);
+      const moved = newK + k.slice(oldK.length);
+      const content = __vfsWrites[k];
+      const writtenAt = _ownWriteTimes[k];
+      const append = !!supervisor && __nimbusCapturePendingVfsAppend(k) !== null;
+      const landed = supervisor ? _flushParkedWrite("/" + k, supervisor) : null;
       if (__vfsBundle) delete __vfsBundle[k];
       delete __vfsWrites[k];
       _forgetSyncPath(k);
+      if (append) {
+        _detachStructuralMutation(landed);
+        continue;
+      }
+      _parkWrite(moved, content);
+      if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
+      if (landed) movedWrites.push([moved, landed]);
     }
     _forgetCreation(oldK);
     _forgetCreation(newK);
@@ -3563,6 +3579,16 @@ const __fsMod = (() => {
       newP,
     );
     _fenceVfsMutation(newAbs, queued);
+    // A move the authority refuses was the program's error to see, and the
+    // cell then stands for nothing at the new name: it retires as written.
+    // A failed write under the old name is the cell's own failure.
+    for (const [moved, landed] of movedWrites) {
+      _detachStructuralMutation(__nimbusFlushVfsWrite(
+        "/" + moved,
+        () => landed.then((revision) => queued.then(() => revision, () => undefined)),
+        false,
+      ));
+    }
     return queued;
   }
   function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP)); }
