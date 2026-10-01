@@ -488,7 +488,11 @@ function isWasmImage(bytes) {
 export function findInlineWasmImages(bundle) {
     const found = new Map();
     const keep = (bytes) => {
-        if (!isWasmImage(bytes))
+        // A staged image is compiled with the map when the launch loads, so one
+        // this runtime cannot compile fails the whole launch, where the program
+        // meets it only if it compiles it: wasm-feature-detect inlines a module
+        // per proposal it probes and catches each CompileError.
+        if (!isWasmImage(bytes) || !WebAssembly.validate(bytes))
             return;
         const digest = wasmImageDigest(bytes);
         if (!found.has(digest))
