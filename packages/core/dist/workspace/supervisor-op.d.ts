@@ -1,6 +1,6 @@
 import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '../runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { SUPERVISOR_DELIVER_OP, type SupervisorDeliveries, type SupervisorDelivery } from './supervisor-delivery.js';
 /**
@@ -33,6 +33,15 @@ export interface SupervisorOpEnvelope {
      * predates it ignores it and serves each attempt, which a read allows.
      */
     readonly readId?: string;
+}
+/**
+ * `writeFileStat`'s answer: the write's revision, and the path's lstat after
+ * it (null: nothing there). No `stat` when it could not be read; the write
+ * is committed either way.
+ */
+export interface WriteFileStatAnswer {
+    revision: number;
+    stat?: RuntimeVfsStat | null;
 }
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
 export interface SupervisorOpDeps {
@@ -109,7 +118,7 @@ export interface SupervisorOpHost {
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
  * wrapper around one of these, which the handler unwraps.
  */
-export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent"];
+export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent"];
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -151,7 +160,7 @@ declare const NATIVE_OPS: {
     fsRead: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike>>;
     fsWrite: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsClose: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    fsFstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat>;
+    fsFstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat>;
     fsDup: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
     fsSeek: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsSetStatus: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
@@ -171,8 +180,8 @@ declare const NATIVE_OPS: {
     }>;
     fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
-    stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
-    lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
+    stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;
+    lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;
     exists: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<boolean>;
     readdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
     readlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string | null>;
@@ -181,6 +190,7 @@ declare const NATIVE_OPS: {
     fsRevision: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     hasLegacySymlinkUnder: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => boolean;
     writeFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
+    writeFileStat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<WriteFileStatAnswer>;
     mkdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     rmdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     unlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;

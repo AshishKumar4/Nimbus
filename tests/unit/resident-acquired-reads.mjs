@@ -17,25 +17,32 @@ import {
   launchResident,
   runScenarios,
   residentDataPlan,
+  until,
 } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
 
+// \`resume\`: a timer, whose resumption takes a barrier before it runs.
 const PROGRAM = `
 const fs = require("fs");
 const read = (p) => { try { return fs.readFileSync(p, "utf8"); } catch (e) { return "ERR:" + e.code; } };
 const settle = (promise) => promise.then((value) => value, (error) => "ERR:" + error.code);
-globalThis.__probe = { fs, read, settle };
+const resume = () => new Promise((resolve) => setTimeout(resolve, 0));
+globalThis.__probe = { fs, read, settle, resume };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot(overrides = {}) {
+/** \`overrides\` may be a function of the session's own answer to an op (facetSupervisor's \`forward\`). */
+async function boot(overrides = {}, seed = () => {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+  seed(authority);
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
   authority.kfs.writeFile('home/user/app/g.txt', 'g1');
-  const handle = facetSupervisor(authority, overrides);
+  let forward;
+  const handle = facetSupervisor(authority, typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides);
+  forward = handle.forward;
   await launchResident({
     authority,
     program: PROGRAM,
@@ -118,5 +125,82 @@ await runScenarios(import.meta.path, {
     const stat = await callsOf(log, () => probe.fs.promises.stat(F));
     assert.equal(stat.made.fsAcquire, 1, 'the barrier is asked on its own');
     assert.notEqual(probe.read(G), 'g1', 'and applied');
+  },
+
+  async 'a read answered after a barrier reported its file gone does not bring the name back'() {
+    // The session read the file and its stat, and the answer is held while a
+    // peer deletes the file and a barrier applies the deletion.
+    const served = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let armed = false;
+    const { authority, probe } = await boot((forward) => ({
+      fsReadBatch: async (...args) => {
+        const answer = await forward('fsReadBatch', args);
+        if (!armed) return answer;
+        armed = false;
+        served.resolve();
+        await release.promise;
+        return answer;
+      },
+    }));
+    armed = true;
+    const reading = probe.fs.promises.readFile(G, 'utf8');
+    await served.promise;
+    authority.kfs.unlink('home/user/app/g.txt');
+    const deleted = authority.rawVfs.revision();
+    const resumed = probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= deleted, 'the barrier applied the deletion');
+    release.resolve();
+    assert.equal(await reading, 'g1', 'the read is what was there when it was served');
+    await resumed;
+    assert.equal(probe.fs.existsSync(G), false, 'the sync view has the name gone');
+    await probe.resume();
+    assert.equal(probe.fs.existsSync(G), false, 'after another barrier too');
+  },
+
+  async 'a read whose barrier the cursor passed still teaches the sync view its file'() {
+    // The read's barrier is answered, then an unrelated write moves the
+    // cursor past it, and only then is the file made and read: the read
+    // cannot date its stat, and asks for a fresh one.
+    const acquired = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let armed = false;
+    const { authority, probe } = await boot((forward) => ({
+      fsReadBatch: async (...args) => {
+        if (armed) {
+          armed = false;
+          acquired.resolve();
+          await release.promise;
+        }
+        return forward('fsReadBatch', args);
+      },
+    }));
+    armed = true;
+    const late = '/home/user/app/late.txt';
+    const reading = probe.fs.promises.readFile(late, 'utf8');
+    await acquired.promise;
+    authority.kfs.writeFile('home/user/app/g.txt', 'g2');
+    const unrelated = authority.rawVfs.revision();
+    const resumed = probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= unrelated, 'the barrier applied the unrelated write');
+    authority.kfs.writeFile('home/user/app/late.txt', 'late');
+    release.resolve();
+    assert.equal(await reading, 'late');
+    await resumed;
+    assert.equal(probe.fs.existsSync(late), true, 'the sync view has the file the read found');
+  },
+
+  async 'an async read through a symlink leaves the link resolving to the file it names'() {
+    // f.txt and g.txt are written after the link, so its row is older than
+    // the cursor the process starts at.
+    const { probe } = await boot({}, (seeded) => {
+      seeded.kfs.writeFile('home/user/app/target.txt', 'old');
+      seeded.kfs.symlink('target.txt', 'home/user/app/link.txt');
+    });
+    const link = '/home/user/app/link.txt';
+    assert.equal(await probe.fs.promises.readFile(link, 'utf8'), 'old');
+    assert.equal(probe.fs.lstatSync(link).isSymbolicLink(), true, 'the link is still a link');
+    assert.equal(probe.fs.statSync(link).isFile(), true, 'and stats as the file it names');
+    assert.equal(probe.read(link), 'old');
   },
 });

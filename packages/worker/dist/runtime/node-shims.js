@@ -1230,11 +1230,34 @@ const __fsMod = (() => {
   // some of which stayed pending and never reached the session
   // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
   // the learns cost a round trip per batch, as the reads before them do.
-  async function _learnLive(absPath, supervisor) {
+  /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
+  async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
-    let stat;
-    try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
-    __nsNoteLiveStat(_strip(absPath), stat ?? null);
+    const ticket = _beginFill(_strip(absPath));
+    try {
+      let stat;
+      try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
+      _noteLearnedStat(absPath, stat ?? null, ticket, written);
+    } finally {
+      _endFill(ticket);
+    }
+  }
+
+  /**
+   * Keep a stat the authority answered while \`ticket\` (_beginFill) was
+   * open, unless a barrier reported the path, meanwhile, above what the stat
+   * is known to cover: the cursor the ticket was dated at, or the own write
+   * it was read after (\`written\`). A deletion among those reports leaves
+   * no row the stat could be judged against, and keeping the stat would
+   * bring back a name nothing will report gone again. False when the stat
+   * was not kept, so the caller can ask for a fresh one (_learnLive): a
+   * ticket that cannot date its read at all (_acquiredRead, _spoilFills)
+   * says nothing of whether the path changed.
+   */
+  function _noteLearnedStat(absPath, stat, ticket, written) {
+    if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
+    __nsNoteLiveStat(_strip(absPath), stat, written);
+    return true;
   }
 
   /**
@@ -2800,8 +2823,8 @@ const __fsMod = (() => {
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
         _installResident(absPath, bytes, fill);
-        if (first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES) __nsNoteLiveStat(_strip(absPath), first.stat);
-        else await _learnLive(absPath, supervisor);
+        const kept = first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES && _noteLearnedStat(absPath, first.stat, fill);
+        if (!kept) await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
 
@@ -2860,6 +2883,22 @@ const __fsMod = (() => {
   }
 
   /**
+   * The ops a session deployed before them does not serve, and whether this
+   * one does: a refusal that says so switches the process to the calls those
+   * ops replaced, from then on. An RPC stub answers \`typeof "function"\` for
+   * any method, so only the refusal can tell.
+   */
+  const _served = { fsAcquired: true, writeFileStat: true };
+  /** The refusal of \`op\` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
+  function _unserved(error, op) {
+    const message = error && typeof error.message === "string" ? error.message : "";
+    return message.includes('does not implement the method "' + op + '"')
+      || message.includes("'" + op + "' is not served by this host")
+      || message.includes("'" + op + "' is not a read")
+      || message.includes("'deliverOnce' names no mutation it can deliver once");
+  }
+
+  /**
    * The barrier and the read an async call makes after it, in one round
    * trip (session/rpc.ts _rpcFsAcquired): the authority answers the barrier
    * before it reads, and the barrier is applied before the value is used,
@@ -2877,9 +2916,8 @@ const __fsMod = (() => {
    * A session that does not serve fsAcquired (one deployed before it) is
    * asked for the barrier and the read separately, from then on.
    */
-  let _fsAcquiredServed = true;
   function _servesFsAcquired(supervisor) {
-    return _fsAcquiredServed && typeof supervisor.fsAcquired === "function";
+    return _served.fsAcquired && typeof supervisor.fsAcquired === "function";
   }
   async function _acquiredRead(supervisor, op, args, rpc, syscall, p, fill) {
     const acquire = _acquireArgs();
@@ -2887,11 +2925,8 @@ const __fsMod = (() => {
     try {
       answer = await __nimbusUseRpcResult(supervisor.fsAcquired(acquire, op, args), (result) => result);
     } catch (error) {
-      const message = error && typeof error.message === "string" ? error.message : "";
-      // An entrypoint without the method, a host without the op, or one that
-      // refuses it as a read id's carrier: each a session deployed before it.
-      if (!/does not implement the method|'fsAcquired' is not (served by this host|a read)/.test(message)) throw _mapSupervisorError(error, syscall, p);
-      _fsAcquiredServed = false;
+      if (!_unserved(error, "fsAcquired")) throw _mapSupervisorError(error, syscall, p);
+      _served.fsAcquired = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
       return rpc(supervisor[op](...args));
@@ -3016,12 +3051,36 @@ const __fsMod = (() => {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
-      await __nimbusFlushVfsWrite(absPath, (content) =>
-        _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result)
-      );
-      _markVfsStale();
-      // Accepted: the authority's stat is what the sync view keeps for it.
-      await _learnLive(absPath, supervisor);
+      // The authority's stat comes back with the write where it can, and is
+      // what the sync view keeps for the path. The ticket hears what the
+      // barriers report of the path while the write is out.
+      let learned;
+      let written;
+      let kept = false;
+      const ticket = _beginFill(_strip(absPath));
+      try {
+        await __nimbusFlushVfsWrite(absPath, async (content) => {
+          if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
+            try {
+              const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
+              learned = answer.stat;
+              written = answer.revision;
+              return answer.revision;
+            } catch (error) {
+              if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
+              _served.writeFileStat = false;
+            }
+          }
+          written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
+          return written;
+        });
+        _markVfsStale();
+        if (typeof written !== "number") written = undefined;
+        if (learned !== undefined) kept = _noteLearnedStat(absPath, learned, ticket, written);
+      } finally {
+        _endFill(ticket);
+      }
+      if (!kept) await _learnLive(absPath, supervisor, written);
     }
   }
 
