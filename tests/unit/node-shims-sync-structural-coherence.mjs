@@ -185,9 +185,11 @@ for (const rename of [
   fs.writeFileSync(`${from}/package.json`, '{"type":"module"}');
   fs.writeFileSync(`${from}/chunks/react.js`, 'export default 1;');
   await rename(from, to);
+  assert.equal(fs.readFileSync(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'the moved file reads back under its new name at once');
+  assert.equal(fs.statSync(`${to}/chunks/react.js`).size, 'export default 1;'.length, 'and stats at its size');
   assert.equal(fs.existsSync(`${from}/package.json`), false, 'the file is gone under the old name');
   assert.throws(() => fs.readFileSync(`${from}/package.json`), { code: 'ENOENT' }, 'and does not read there');
-  assert.equal(await fs.promises.readFile(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'it reads back under its new name');
+  assert.equal(await fs.promises.readFile(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'it reads back from the authority');
   await drain();
   assert.throws(() => fs.readFileSync(`${from}/package.json`), { code: 'ENOENT' }, 'the old name stays gone once its write lands');
   assert.equal(dec.decode(bridge.readFile(`${to}/package.json`)), '{"type":"module"}', 'the authority holds the file under the new name');
@@ -252,6 +254,22 @@ for (const inFlight of [false, true]) {
   assert.equal(dec.decode(bridge.readFile(`${dir}/full/keep.txt`)), 'keep', 'which keeps its own file');
   assert.equal(bridge.stat(`${dir}/theirs/f.txt`), null, 'nothing was written into the authority\'s destination');
   assert.equal(dec.decode(bridge.readFile(`${dir}/theirs/keep.txt`)), 'theirs', 'which keeps its own file');
+}
+
+// 10. An asynchronous write still in progress when its directory is renamed
+// resolves only once the bytes are at the authority, under the new name once
+// the move lands. It resolved while they were still in flight.
+{
+  const from = `${home}/inflight_${calls.length}`;
+  const to = `${from}_moved`;
+  fs.mkdirSync(from);
+  const writing = fs.promises.writeFile(`${from}/f.txt`, 'streamed in');
+  fs.renameSync(from, to);
+  await writing;
+  assert.equal(dec.decode(bridge.readFile(`${from}/f.txt`) ?? bridge.readFile(`${to}/f.txt`) ?? new Uint8Array()), 'streamed in', 'the awaited write is at the authority');
+  await drain();
+  assert.equal(dec.decode(bridge.readFile(`${to}/f.txt`)), 'streamed in', 'and moves with the directory');
+  assert.equal(fs.statSync(`${to}/f.txt`).size, 'streamed in'.length, 'the sync view stats it at its size');
 }
 
 // 6. A program that only mkdirSync's and returns: the exit drain lands it.
