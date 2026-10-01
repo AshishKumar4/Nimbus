@@ -151,10 +151,64 @@ await runScenarios(import.meta.path, {
       authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
     };
     assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other', 'the read is the authority\'s');
+    assert.equal(probe.read(LINK), 'other', 'the sync view through the link is as new as the read');
     assert.equal(probe.read(TARGET), 'old', 'the old target still holds its own bytes');
     await probe.resume();
     assert.equal(await probe.fs.promises.readFile(TARGET, 'utf8'), 'old');
     assert.equal(probe.read(TARGET), 'old');
+  },
+
+  async 'a session that does not name the file a read reached installs nothing read through a link'() {
+    let retarget = null;
+    const { authority, probe } = await boot((seeded) => seeded.kfs.writeFile('home/user/app/other.txt', 'other'), (forward) => ({
+      fsReadBatch: async (...args) => {
+        retarget?.();
+        retarget = null;
+        return (await forward('fsReadBatch', args)).map(({ path, ...entry }) => entry);
+      },
+    }));
+    assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
+    retarget = () => {
+      authority.kfs.unlink('home/user/app/link.txt');
+      authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
+    };
+    assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other');
+    assert.equal(probe.read(TARGET), 'old', 'the old target keeps its own bytes');
+  },
+
+  async 'a target written between a read\'s barrier and the read is what the link reads after it'() {
+    let write = null;
+    const { authority, probe } = await boot(undefined, (forward) => ({
+      fsReadBatch: async (...args) => {
+        write?.();
+        write = null;
+        return forward('fsReadBatch', args);
+      },
+    }));
+    assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
+    write = () => authority.kfs.writeFile('home/user/app/target.txt', 'new');
+    assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'new');
+    assert.equal(probe.read(LINK), 'new', 'the sync view does not go back to the older bytes');
+    assert.equal(probe.read(TARGET), 'new');
+  },
+
+  async 'a miss through a link is answered by a read of the link after the link changed'() {
+    const { authority, probe } = await boot();
+    authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
+    authority.kfs.writeFile('home/user/elsewhere/a.txt', 'a');
+    authority.kfs.writeFile('home/user/elsewhere/b.txt', 'b');
+    authority.kfs.symlink('../elsewhere/a.txt', 'home/user/app/moving.txt');
+    let made = authority.rawVfs.revision();
+    await probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier listed the link');
+    assert.equal(probe.read(`${APP}/moving.txt`), 'ERR:EAGAIN', 'a.txt is not resident');
+    authority.kfs.unlink('home/user/app/moving.txt');
+    authority.kfs.symlink('../elsewhere/b.txt', 'home/user/app/moving.txt');
+    made = authority.rawVfs.revision();
+    await probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier reported the new link');
+    assert.equal(await probe.fs.promises.readFile(`${APP}/moving.txt`, 'utf8'), 'b');
+    assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'the access that missed was answered');
   },
 
   async 'a pending mode through a link reaches the authority before a stat of it'() {
