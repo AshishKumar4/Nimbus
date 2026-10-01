@@ -26,7 +26,7 @@ import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import { createDefaultRegistry } from '../substrate/lifo/commands/registry.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
-import type { CommandRunAsHost } from '../substrate/lifo/commands/types.js';
+import type { Command, CommandRunAsHost } from '../substrate/lifo/commands/types.js';
 import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
 import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
@@ -340,7 +340,7 @@ export class NimbusWorkspace {
       });
 
       if (options.facets) {
-        await registerWasmRuntimes({
+        registerWasmRuntimes({
           facets: options.facets,
           vfs,
           filesystem,
@@ -631,34 +631,22 @@ function quoteShellArgument(value: string): string {
  * otherwise silently retarget the first one's bash. `rehydrate` on the
  * manager is what binds them to the bins the filesystem already holds.
  *
- * Imported on demand: the runners carry the WASI shim and the bash scheduler as
- * source strings, and a workspace with no facet host must not pay to parse
- * them.
+ * Each runner's module is imported by the first command that needs it, not at
+ * boot: the runners carry the WASI shim and the bash scheduler as source
+ * strings, and a workspace pays to parse only the ones its commands run.
+ * Importing all five at create cost every workspace isolate 0.65 MB whether
+ * or not a runner ever ran (measured by Kinu, 2026-09-30). The runner table
+ * is still complete at create, so a package naming a runner outside it is
+ * refused by name as before.
  */
-async function registerWasmRuntimes(deps: {
+function registerWasmRuntimes(deps: {
   facets: FacetHost;
   vfs: SqliteVFS;
   filesystem: ProcessFiles;
   registry: CommandRegistry;
   processes: SessionProcessSupervisor;
   runtimes: RuntimeManager;
-}): Promise<void> {
-  const [
-    { makeBashRunnerFactory },
-    { makeCPythonRunnerFactory },
-    { makeRubyRunnerFactory },
-    { makeClangRunnerFactory },
-    { wasmRunnerSpec },
-    { buildRuntimeHandler },
-  ] = await Promise.all([
-    import('../runtime/bash-runner.js'),
-    import('../runtime/cpython-runner.js'),
-    import('../runtime/ruby-runner.js'),
-    import('../runtime/clang-runner.js'),
-    import('../runtime/wasm-runner.js'),
-    import('../runtime/runtime-registry.js'),
-  ]);
-
+}): void {
   // wasm-runner allocates pids for what it runs, off the SAME supervisor the
   // shell identity uses — the host's own when it supplied one.
   const processes = deps.processes;
@@ -669,33 +657,62 @@ async function registerWasmRuntimes(deps: {
   // imports — so a host outside Cloudflare must be able to run a shell, bash
   // and python without that module ever entering its graph.
   let esbuild: Promise<EsbuildService> | null = null;
-  deps.registry.register('wasm-runner', buildRuntimeHandler(
-    wasmRunnerSpec({ filesystem: deps.filesystem, facets: deps.facets, processes }),
-    {
-      getEsbuild: () => {
-        if (!esbuild) {
-          esbuild = import('../runtime/esbuild-service.js')
-            .then((module) => new module.EsbuildService(deps.filesystem.namespaceFs(CRED_KERNEL)));
-        }
-        return esbuild;
+  const wasmRunner = once(async (): Promise<Command> => {
+    const [{ wasmRunnerSpec }, { buildRuntimeHandler }] = await Promise.all([
+      import('../runtime/wasm-runner.js'),
+      import('../runtime/runtime-registry.js'),
+    ]);
+    return buildRuntimeHandler(
+      wasmRunnerSpec({ filesystem: deps.filesystem, facets: deps.facets, processes }),
+      {
+        getEsbuild: () => {
+          if (!esbuild) {
+            esbuild = import('../runtime/esbuild-service.js')
+              .then((module) => new module.EsbuildService(deps.filesystem.namespaceFs(CRED_KERNEL)));
+          }
+          return esbuild;
+        },
+        registry: deps.registry,
       },
-      registry: deps.registry,
-    },
-  ));
+    );
+  });
+  deps.registry.register('wasm-runner', async (ctx) => (await wasmRunner())(ctx));
 
+  // Each factory is made once, on the first install or rehydrate that binds
+  // its runner, and every later bin reuses it.
+  const lazy = (make: () => Promise<RunnerFactory>): RunnerFactory => {
+    const factory = once(make);
+    return async (...args) => (await factory())(...args);
+  };
   const runners: Record<string, RunnerFactory> = {
-    [BASH_RUNNER]: makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem }),
+    [BASH_RUNNER]: lazy(async () => (await import('../runtime/bash-runner.js'))
+      .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
     // No `startResident`: a workspace owns no actor that could outlive the
     // call, so a program that keeps serving is refused by name rather than
     // run as a one-shot that dies with it. Same for ruby, where a script is
     // the shape that may bind a port.
-    'cpython-runner': makeCPythonRunnerFactory({ facets: deps.facets }),
-    'ruby-runner': makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry }),
-    'clang-runner': makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem }),
+    'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
+      .makeCPythonRunnerFactory({ facets: deps.facets })),
+    'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
+      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry })),
+    'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
+      .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
   };
   for (const [key, factory] of Object.entries(runners)) {
     deps.runtimes.registerRunner(key, factory);
   }
+}
+
+/** `make`, run on the first call; every call gets its one promise. A rejection is not kept. */
+function once<T>(make: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => {
+    pending ??= make().catch((error: unknown) => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  };
 }
 
 /**
