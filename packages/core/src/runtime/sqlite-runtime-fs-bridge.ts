@@ -800,10 +800,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
-    this.rawVfs.assertMutationAllowed(normalizeVfsPath(this.pathArgument(path)));
+    // Leases are held on storage keys: a confined caller's /tmp/x is its
+    // private file, not the shared tmp/x.
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(this.pathArgument(path))));
     const located = this.locate(path, followSymlinks);
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
-    if (!located.mount) this.rawVfs.assertMutationAllowed(located.path);
+    if (!located.mount) this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.path));
     return located;
   }
 

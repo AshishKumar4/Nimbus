@@ -20,6 +20,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
@@ -133,7 +134,13 @@ try {
   const shared = raw.acquireExclusiveMutation('tmp/x', { includeMissingAncestors: true });
   raw.as(A).writeFile('/tmp/x', 'mine');
   assert.equal(kernel.readFileString(`${PRIVATE_ROOT}/x`), 'mine', 'the caller\'s own /tmp/x is not the held shared one');
+  // A process writes through the runtime bridge, which checks leases itself first.
+  new SqliteRuntimeFsBridge(raw.as(A), raw).writeFile('/tmp/x', 'mine, from a process');
+  assert.equal(kernel.readFileString(`${PRIVATE_ROOT}/x`), 'mine, from a process');
   raw.releaseExclusiveMutation(shared.owner);
+  const held = raw.acquireExclusiveMutation(`${PRIVATE_ROOT}/x`);
+  assert.throws(() => new SqliteRuntimeFsBridge(raw.as(A), raw).writeFile('/tmp/x', 'held'), { code: 'EBUSY' }, 'while its own private file is held');
+  raw.releaseExclusiveMutation(held.owner);
 }
 {
   kernel.mkdir('home/user', { recursive: true, mode: 0o777 });
