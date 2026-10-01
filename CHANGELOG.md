@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-01
+
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
+message shape, VFS export schema 3 (its pages carry `source`), and the
+`enhanced_error_serialization` requirement; each is described below.
+
 - An async `fs.promises.readFile`, `stat` or `lstat` in a node process is one
   call to the session where it was two or three: the read takes its
   consistency barrier with it (`fsAcquired`), and a file's stat for the
@@ -16,7 +25,9 @@ published independently in the `@nimbus-sh` npm scope.
 - `@nimbus-sh/worker/facet-host` exports `supervisorEsbuildService`, so a host
   that bundles in its own Durable Object runs esbuild in the object's esbuild
   facet instead of its own isolate. A failed build keeps esbuild's `errors`
-  and `warnings` wherever esbuild ran; across RPC they were lost.
+  and `warnings` wherever esbuild ran; across RPC they were lost. Every
+  diagnostic is esbuild's `Message` with its `id`, `pluginName` and `notes`,
+  less `detail`, which a plugin sets to anything and may not clone.
 - Installing a runtime writes each blob in one pass (`writeFileFrom`) instead
   of appending it piece by piece, which re-copied the file's manifest on
   most appends: about 234 SQLite transactions of re-copying for clang.
@@ -34,15 +45,6 @@ published independently in the `@nimbus-sh` npm scope.
 - `node` no longer dies at launch when an installed package inlines a
   WebAssembly module this runtime cannot compile. wasm-feature-detect inlines
   one per proposal it probes.
-
-## 2026-09-30
-
-Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
-sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
-are minor-strict, so every range on core, worker, fabric, platform and sdk
-moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
-message shape, VFS export schema 3 (its pages carry `source`), and the
-`enhanced_error_serialization` requirement; each is described below.
 
 - A workspace no longer holds memory for every file it writes or removes.
   `SqliteVFS` kept each written file's inode in its cache and a revision

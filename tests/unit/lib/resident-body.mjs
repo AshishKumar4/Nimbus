@@ -26,6 +26,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+// The test's own process object. A launched program installs its own
+// \`process\` global in this realm, so a cleanup registered on the global after
+// the first launch would never run.
+const testProcess = globalThis.process;
+
 import { generateLongRunningNodeCode } from '../../../packages/worker/src/facets/manager.ts';
 import { planFacetData } from '../../../packages/worker/src/facets/data-plan.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
@@ -245,7 +250,7 @@ export async function launchResident({
   );
   const dir = mkdtempSync(join(tmpdir(), 'resident-body-'));
   // The generated worker is imported from here: removed when the test process ends, however it ends.
-  process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+  testProcess.on('exit', () => rmSync(dir, { recursive: true, force: true }));
   const mod = await import(pathToFileURL(writeModuleSet(dir, generatedModuleSet(generated, 'worker.mjs'), 'worker.mjs')).href);
   const ctx = { storage: { sql }, waitUntil() {}, id: { toString: () => 'resident-body-test' } };
   const proc = new mod.NimbusProcess(ctx, env);
