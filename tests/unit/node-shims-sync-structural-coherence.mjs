@@ -254,7 +254,8 @@ for (const inFlight of [false, true]) {
   // A destination listed empty that only the authority has filled since:
   // the move it refuses leaves nothing of the source's under its name.
   vfs.writeFile(`${home}/listed_dest/f.txt`, new TextEncoder().encode('theirs'));
-  fs.writeFileSync(`${home}/listed_src/f.txt`, 'new parked source');
+  // Bytes, which a resident store holds as a copy of the parked cell.
+  fs.writeFileSync(`${home}/listed_src/f.txt`, new TextEncoder().encode('new parked source'));
   await assert.rejects(fs.promises.rename(`${home}/listed_src`, `${home}/listed_dest`), { code: 'ENOTEMPTY' }, 'the authority refuses a move onto a directory it filled');
   await drain();
   assert.equal(dec.decode(bridge.readFile(`${home}/listed_dest/f.txt`)), 'theirs', 'the destination keeps its file');

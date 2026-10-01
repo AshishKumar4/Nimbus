@@ -3695,7 +3695,7 @@ const __fsMod = (() => {
       }
       _parkWrite(moved, content);
       if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
-      if (landed) movedWrites.push([moved, landed, content]);
+      if (landed) movedWrites.push([moved, landed, __vfsWriteGenerations[moved]]);
     }
     _forgetCreation(oldK);
     _forgetCreation(newK);
@@ -3722,9 +3722,11 @@ const __fsMod = (() => {
     // cell then stands for nothing at the new name: its bytes leave the sync
     // view there (unless a later write replaced them) and it retires without
     // a write. A failed write under the old name is the cell's own failure.
-    for (const [moved, landed, content] of movedWrites) {
+    for (const [moved, landed, generation] of movedWrites) {
       const refused = () => {
-        if (__vfsBundle && __vfsBundle[moved] === content) delete __vfsBundle[moved];
+        // By the parked generation, not the bytes: a resident store holds a
+        // copy of them, and a later write to the name is its own.
+        if (__vfsBundle && __vfsWriteGenerations[moved] === generation) delete __vfsBundle[moved];
         globalThis.__nimbusVfsWriteRefused("/" + moved);
         return undefined;
       };
