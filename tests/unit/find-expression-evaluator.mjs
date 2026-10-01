@@ -162,7 +162,8 @@ await check(
   {
     stdout: '',
     exitCode: 1,
-    stderr: "find: Expected a positive decimal integer argument to -maxdepth, but got `abc'\n",
+    // findutils quotes the argument with quotearg ('abc'), unlike its predicate messages (`-x').
+    stderr: "find: Expected a positive decimal integer argument to -maxdepth, but got 'abc'\n",
   },
 );
 
@@ -295,6 +296,16 @@ await check('-exec + passes every match in one invocation',
 await check('an action anywhere suppresses the implicit -print',
   'cd /home/user\nfind extract -name a.ts -o -name cli -exec echo GOT {} +\n',
   { stdout: 'GOT extract/proteus/bin/cli\n' });
+
+// A command -exec starts is a child process of find, in find's directory:
+// the one the script moved to, not the shell's it was started from.
+await check('-exec runs where the script has cd\'d to',
+  'cd /home/user/extract/proteus\nfind . -name a.ts -exec pwd \\;\n',
+  { stdout: '/home/user/extract/proteus\n' });
+
+await check('-execdir runs in the matched file\'s directory',
+  'cd /home/user\nfind extract -name a.ts -execdir pwd \\;\n',
+  { stdout: '/home/user/extract/proteus/src\n' });
 
 await check('-print0 terminates with NUL and no newline',
   'cd /home/user\nfind extract -name a.ts -print0\n',
