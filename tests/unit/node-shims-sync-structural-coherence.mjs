@@ -172,8 +172,9 @@ const rejectsWith = async (promise, code) => {
 
 // 7. Files written synchronously into a directory that is then renamed move
 // with it, as Vite's optimizer does: it writes deps_temp_<hash>/ and renames
-// it to deps/. Their write-back was still bound for the old name, ordered
-// behind the move, and was refused ENOENT for a directory that was gone.
+// it to deps/. Their write-back was bound for the old name and ordered behind
+// the move, which refused it ENOENT for a directory that was gone. They are
+// written back under the old name ahead of the move now, which carries them.
 for (const rename of [
   (from, to) => fs.renameSync(from, to),
   (from, to) => fs.promises.rename(from, to),
@@ -184,9 +185,11 @@ for (const rename of [
   fs.writeFileSync(`${from}/package.json`, '{"type":"module"}');
   fs.writeFileSync(`${from}/chunks/react.js`, 'export default 1;');
   await rename(from, to);
-  assert.equal(fs.readFileSync(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'the moved file reads back under its new name');
-  assert.equal(fs.existsSync(`${from}/package.json`), false, 'and is gone under the old one');
+  assert.equal(fs.existsSync(`${from}/package.json`), false, 'the file is gone under the old name');
+  assert.throws(() => fs.readFileSync(`${from}/package.json`), { code: 'ENOENT' }, 'and does not read there');
+  assert.equal(await fs.promises.readFile(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'it reads back under its new name');
   await drain();
+  assert.throws(() => fs.readFileSync(`${from}/package.json`), { code: 'ENOENT' }, 'the old name stays gone once its write lands');
   assert.equal(dec.decode(bridge.readFile(`${to}/package.json`)), '{"type":"module"}', 'the authority holds the file under the new name');
   assert.equal(dec.decode(bridge.readFile(`${to}/chunks/react.js`)), 'export default 1;', 'and the nested one');
   assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
@@ -217,6 +220,38 @@ for (const inFlight of [false, true]) {
   const expected = inFlight ? 'prefix\nfirst\nsecond\n' : 'prefix\nfirst\n';
   assert.equal(dec.decode(bridge.readFile(`${to}/app.log`)), expected, `the authority keeps the prefix and every append (in flight: ${inFlight})`);
   assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
+}
+
+// 9. A rename rename(2) refuses changes nothing, and the writes parked
+// beneath its source land under the source: a directory renamed to itself,
+// into its own subtree, or onto a directory that is not empty, whether this
+// process lists the destination or only the authority does.
+{
+  const dir = `${home}/refused_${calls.length}`;
+  const parked = (name) => { fs.mkdirSync(`${dir}/${name}`, { recursive: true }); fs.writeFileSync(`${dir}/${name}/f.txt`, name); };
+  parked('self');
+  fs.renameSync(`${dir}/self`, `${dir}/self`);
+  parked('sub');
+  assert.throws(() => fs.renameSync(`${dir}/sub`, `${dir}/sub/inner`), { code: 'EINVAL' }, 'into its own subtree is EINVAL');
+  fs.mkdirSync(`${dir}/full`);
+  fs.writeFileSync(`${dir}/full/keep.txt`, 'keep');
+  parked('known');
+  assert.throws(() => fs.renameSync(`${dir}/known`, `${dir}/full`), { code: 'ENOTEMPTY' }, 'onto a listed non-empty directory is ENOTEMPTY');
+  await drain();
+  // A destination only the authority holds: the authority refuses the move.
+  vfs.mkdir(`${dir}/theirs`);
+  vfs.writeFile(`${dir}/theirs/keep.txt`, new TextEncoder().encode('theirs'));
+  parked('unknown');
+  await assert.rejects(fs.promises.rename(`${dir}/unknown`, `${dir}/theirs`), { code: 'ENOTEMPTY' }, 'the authority refuses a move onto its non-empty directory');
+  await drain();
+  for (const name of ['self', 'sub', 'known', 'unknown']) {
+    assert.equal(dec.decode(bridge.readFile(`${dir}/${name}/f.txt`)), name, `a refused rename's source keeps its parked write (${name})`);
+  }
+  assert.equal(bridge.stat(`${dir}/sub/inner`), null, 'nothing was moved into the subtree');
+  assert.equal(bridge.stat(`${dir}/full/f.txt`), null, 'nothing was written into the listed destination');
+  assert.equal(dec.decode(bridge.readFile(`${dir}/full/keep.txt`)), 'keep', 'which keeps its own file');
+  assert.equal(bridge.stat(`${dir}/theirs/f.txt`), null, 'nothing was written into the authority\'s destination');
+  assert.equal(dec.decode(bridge.readFile(`${dir}/theirs/keep.txt`)), 'theirs', 'which keeps its own file');
 }
 
 // 6. A program that only mkdirSync's and returns: the exit drain lands it.
