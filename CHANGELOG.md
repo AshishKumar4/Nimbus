@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- An async `fs.promises.writeFile` in a node process is one call to the
+  session where it was two: the session answers the write with the file's
+  stat (`writeFileStat`), which the synchronous view keeps. A session
+  deployed before it is asked for the write and the stat separately.
+- Fixed: after a node process overwrote a file it had never listed (one
+  created by another user after it started), `fs.statSync` reported the
+  process as the file's owner until the next barrier.
+- Fixed: an async read or write whose answer came back after a barrier had
+  reported the file deleted brought the name back into the synchronous
+  view, permanently. A stat a barrier overtook is now dropped.
+- Fixed: an async `fs.promises.readFile` through a symlink made
+  `fs.statSync` of the link a directory.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
