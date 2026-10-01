@@ -145,6 +145,14 @@ representations:
 - If a dependency cannot expose the needed structure, introduce a typed Nimbus
   substrate at the correct boundary rather than stacking more preprocessors.
 
+A swap between a Nimbus implementation and a workerd built-in (`node:http`,
+`Buffer`, `node:events`, `node:path`, `node:url`, and the like), in either
+direction, needs two results. The first is a differential test: the same
+program runs under real Node and in a Nimbus process, with equal output
+(`tests/unit/node-runtime-code-workerd.mjs`). The second is a benchmark of both
+implementations on a throwaway target. Keep the one that is correct and
+faster, and record the numbers in the commit message.
+
 For noisy exploration, use sub-agents where available to inspect large dependency
 trees, transcript history, generated bundles, or broad code-quality scans. Keep
 mainline implementation decisions grounded in the resulting source evidence and
