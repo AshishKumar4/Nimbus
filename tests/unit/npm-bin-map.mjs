@@ -25,6 +25,13 @@ const NPM = [
   ["p", ["bin/one.js", "./two.js", "../three.js"], {"one.js": "bin/one.js", "two.js": "two.js", "three.js": "three.js"}],
   ["p", {"n": 5, "s": "x.js"}, {"s": "x.js"}],
   ["p", {"staged": "nimbus-staged:opencode"}, {"staged": "nimbus-staged:opencode"}],
+  ["p", ["bin/tool/"], {"tool": "bin/tool/"}],
+  ["p", {"t": "bin/tool/"}, {"t": "bin/tool/"}],
+  ["p", {"t": "a//b/./c.js"}, {"t": "a/b/c.js"}],
+  ["p", {"t": "/"}, {}],
+  ["p", ["a\\b.js", "x:y.js"], {"b.js": "a/b.js", "y.js": "x:y.js"}],
+  ["p", {"a\\b": "c\\d.js"}, {"b": "c/d.js"}],
+  ["p", {"t": "../"}, {}]
 ];
 
 for (const [name, bin, expected] of NPM) {
