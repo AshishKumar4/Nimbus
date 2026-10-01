@@ -173,6 +173,14 @@ export declare class Compiler {
      * SHORT as soon as an optional link meets null or undefined.
      */
     private chainGen;
+    /**
+     * The slot of `node` when it is a plain read of a binding in the current
+     * environment (no TDZ check, no `with`, not an import): one closure can
+     * then read it and use it.
+     */
+    private localSlot;
+    /** The value of `node` when it is a literal or the global `undefined`, known when compiling. */
+    private constant;
     /** Whether a node continues an optional chain (contains an optional link below the chain root). */
     private inChain;
     /**
@@ -200,6 +208,8 @@ export declare class Compiler {
     /** ClassDefinitionEvaluation, with the class's name given when it runs. */
     private classMaker;
     private classDefinition;
+    /** The offset after a class member's `static` keyword (and the whitespace after it). */
+    private afterStatic;
     /** Compile with `fs` as the current function (field initializers, static blocks). */
     private withFunctionScope;
     /** The frame layout of a class's field initializer scope. */

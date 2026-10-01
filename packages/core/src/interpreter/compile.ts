@@ -744,6 +744,15 @@ export class Compiler {
         continue;
       }
       const value = d.id.type === 'Identifier' ? this.named(d.init, d.id.name) : this.expr(d.init);
+      // `let x = v` in this environment: the value written to its slot by one closure.
+      const target = d.id.type === 'Identifier' ? this.analysis.ref(d.id) : null;
+      if (target && target.binding && target.withs.length === 0 && value.g === null && this.hops(target.binding.scope) === 0
+        && (node.kind !== 'var' || target.binding.kind === 'var')) {
+        const slot = target.binding.slot;
+        const vs = value.s;
+        parts.push(syncCode((env) => { env[slot] = vs(env); return undefined; }));
+        continue;
+      }
       if (this.suspends(d.id)) {
         const bindGen = this.patternBinderGen(d.id, node.kind !== 'var');
         const vg = asGen(value);
@@ -1402,6 +1411,10 @@ export class Compiler {
   }
 
   private globalRead(name: string, forTypeof: boolean): Sync {
+    // The global object's undefined, NaN and Infinity are read-only and cannot be deleted.
+    if (name === 'undefined') return () => undefined;
+    if (name === 'NaN') return () => NaN;
+    if (name === 'Infinity') return () => Infinity;
     const ops = operators();
     const get = ops.globalReader(name) ?? (() => ops.get(G, name));
     if (forTypeof) return get;
@@ -2190,6 +2203,18 @@ export class Compiler {
     if (l.g === null && r.g === null) {
       const ls = l.s;
       const rs = r.s;
+      // Against a constant: one closure for the comparison.
+      const c = this.constant(node.right);
+      if (c !== null) {
+        const v = c.value;
+        switch (node.operator) {
+          case '===': return syncCode((env) => ls(env) === v);
+          case '!==': return syncCode((env) => ls(env) !== v);
+          case '==': return syncCode((env) => ls(env) == v);
+          case '!=': return syncCode((env) => ls(env) != v);
+          default: break;
+        }
+      }
       switch (node.operator) {
         case '===': return syncCode((env) => ls(env) === rs(env));
         case '!==': return syncCode((env) => ls(env) !== rs(env));
@@ -2314,6 +2339,8 @@ export class Compiler {
       if (og) return genCode(function* (env) { return ops.get(yield* og(env), name); });
       // A string's length is a keyed load V8 resolves slowly once megamorphic.
       if (name === 'length') return syncCode((env) => { const o = os(env); return typeof o === 'string' ? o.length : ops.get(o, 'length'); });
+      const slot = this.localSlot(node.object);
+      if (slot !== null) return syncCode((env) => ops.get(env[slot], name));
       return syncCode((env) => ops.get(os(env), name));
     }
     const key = this.expr(node.property);
@@ -2379,6 +2406,28 @@ export class Compiler {
       };
     }
     return asGen(this.expr(node));
+  }
+
+  /**
+   * The slot of `node` when it is a plain read of a binding in the current
+   * environment (no TDZ check, no `with`, not an import): one closure can
+   * then read it and use it.
+   */
+  private localSlot(node: Expression | Super): number | null {
+    if (node.type !== 'Identifier') return null;
+    const ref = this.analysis.ref(node);
+    const b = ref.binding;
+    if (!b || ref.tdz || ref.withs.length > 0 || this.imports.has(b) || this.hops(b.scope) !== 0) return null;
+    return b.slot;
+  }
+
+  /** The value of `node` when it is a literal or the global `undefined`, known when compiling. */
+  private constant(node: Expression): { readonly value: unknown } | null {
+    if (node.type === 'Literal' && !node.regex && node.bigint === undefined) return { value: node.value };
+    if (node.type === 'Identifier' && node.name === 'undefined' && this.analysis.ref(node).binding === null && this.analysis.ref(node).withs.length === 0) {
+      return { value: undefined };
+    }
+    return null;
   }
 
   /** Whether a node continues an optional chain (contains an optional link below the chain root). */
@@ -2726,7 +2775,8 @@ export class Compiler {
       if (p.kind !== 'init' || p.method) {
         if (p.value.type !== 'FunctionExpression') throw new Error('interpreter: method without a function');
         const name = 'static' in key ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
-        return { kind: p.kind === 'init' ? 'method' : p.kind, key, fi: this.functionInfo(p.value, name) };
+        // A method's source text is its whole definition, key included.
+        return { kind: p.kind === 'init' ? 'method' : p.kind, key, fi: this.functionInfo(p.value, name, undefined, this.source.slice(p.start, p.value.end)) };
       }
       if ('static' in key) return { kind: 'data', key, value: this.named(p.value, functionName(key.static)), named: null };
       if (isAnonymousFunctionDefinition(p.value)) return { kind: 'data', key, value: null, named: this.namedAtRuntime(p.value) };
@@ -2745,6 +2795,17 @@ export class Compiler {
           seen.add(p.key.static);
           createDataProperty(template, p.key.static, undefined);
         }
+      }
+      // Data properties only (most literals): the values written in order.
+      if (parts.every((p) => p.kind === 'data')) {
+        if (parts.length === 0) return syncCode(() => ({}));
+        const keys = parts.map((p) => (p.kind === 'data' && 'static' in p.key ? p.key.static : ''));
+        const values = parts.map((p) => (p.kind === 'data' && p.value !== null ? p.value.s : suspendedSync));
+        return syncCode((env) => {
+          const o: Record<PropertyKey, unknown> = { ...template };
+          for (let i = 0; i < keys.length; i++) o[keys[i]] = values[i](env);
+          return o;
+        });
       }
       const fills = parts.map((p) => {
         if (p.kind === 'proto') return { proto: p.value.s, key: '' as PropertyKey, value: null, fi: null };
@@ -3225,7 +3286,9 @@ export class Compiler {
       if (member.type === 'MethodDefinition') {
         const accessor = member.kind === 'get' || member.kind === 'set' ? member.kind : null;
         const fname = staticName === null ? '' : accessor ? `${accessor} ${staticName}` : staticName;
-        elements.push({ kind: 'method', isStatic: member.static, key, fi: this.functionInfo(member.value, fname), accessor });
+        // A method's source text is its definition without `static`.
+        const source = this.source.slice(member.static ? this.afterStatic(member.start) : member.start, member.value.end);
+        elements.push({ kind: 'method', isStatic: member.static, key, fi: this.functionInfo(member.value, fname, undefined, source), accessor });
         continue;
       }
       const fieldScope = member.static ? staticFields : instanceFields;
@@ -3323,6 +3386,13 @@ export class Compiler {
       return C;
     };
     return { define, keys: computedKeys, privateNames };
+  }
+
+  /** The offset after a class member's `static` keyword (and the whitespace after it). */
+  private afterStatic(start: number): number {
+    let i = start + 'static'.length;
+    while (i < this.source.length && /\s/.test(this.source[i])) i++;
+    return i;
   }
 
   /** Compile with `fs` as the current function (field initializers, static blocks). */

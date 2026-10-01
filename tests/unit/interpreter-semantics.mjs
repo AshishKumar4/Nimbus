@@ -166,6 +166,8 @@ async function runCases(interpreterFile, opsFile) {
   const fn = F('return 1', 'a');
   check('Function.prototype.toString', String(fn), 'function anonymous(a\n) {\nreturn 1\n}');
   check('toString of an inner function', String(F('return function inner(x) { return x }')()), 'function inner(x) { return x }');
+  check('toString of methods', F('const o = { validate(input) { return 1 }, get g() { return 1 }, async *ag() {}, ["c" + 1]() {} }; class A { static m(a) {} static get s() { return 1 } #p() {} q() { return this.#p } } return [o.validate, Object.getOwnPropertyDescriptor(o, "g").get, o.ag, o.c1, A.m, Object.getOwnPropertyDescriptor(A, "s").get, new A().q()].map(String)')(),
+    ['validate(input) { return 1 }', 'get g() { return 1 }', 'async *ag() {}', '["c" + 1]() {}', 'm(a) {}', 'get s() { return 1 }', '#p() {}']);
   check('toString keeps a trailing source map', String(F('return 2\n//# sourceMappingURL=data:application/json;base64,e30=\n')), 'function anonymous(\n) {\nreturn 2\n//# sourceMappingURL=data:application/json;base64,e30=\n\n}');
   check('a trailing comment that is not one', F('return `\n//# x`')(), '\n//# x');
   check('native functions still answer natively', Function.prototype.toString.call(Math.max), 'function max() { [native code] }');
