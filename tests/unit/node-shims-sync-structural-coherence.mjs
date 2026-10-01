@@ -85,6 +85,10 @@ function ownTree(path = 'home') {
   if (vfs.lstat(path).type !== 'directory') return;
   for (const entry of vfs.readdir(path)) ownTree(`${path}/${entry.name}`);
 }
+// Case 9's source with a file and an empty destination, both listed.
+vfs.mkdir(`${home}/listed_src`);
+vfs.writeFile(`${home}/listed_src/f.txt`, new TextEncoder().encode('old source'));
+vfs.mkdir(`${home}/listed_dest`);
 // Case 8's existing log files, which the process lists but never holds.
 for (const name of ['logs_parked', 'logs_in_flight']) {
   vfs.mkdir(`${home}/${name}`);
@@ -246,6 +250,17 @@ for (const inFlight of [false, true]) {
   parked('unknown');
   await assert.rejects(fs.promises.rename(`${dir}/unknown`, `${dir}/theirs`), { code: 'ENOTEMPTY' }, 'the authority refuses a move onto its non-empty directory');
   await drain();
+  // A destination listed empty that only the authority has filled since:
+  // the move it refuses leaves nothing of the source's under its name.
+  vfs.writeFile(`${home}/listed_dest/f.txt`, new TextEncoder().encode('theirs'));
+  fs.writeFileSync(`${home}/listed_src/f.txt`, 'new parked source');
+  await assert.rejects(fs.promises.rename(`${home}/listed_src`, `${home}/listed_dest`), { code: 'ENOTEMPTY' }, 'the authority refuses a move onto a directory it filled');
+  await drain();
+  assert.equal(dec.decode(bridge.readFile(`${home}/listed_dest/f.txt`)), 'theirs', 'the destination keeps its file');
+  assert.equal(dec.decode(bridge.readFile(`${home}/listed_src/f.txt`)), 'new parked source', 'the source gets its parked write');
+  let destRead;
+  try { destRead = fs.readFileSync(`${home}/listed_dest/f.txt`, 'utf8'); } catch (error) { destRead = error.code; }
+  assert.notEqual(destRead, 'new parked source', 'the sync view does not show the source under the destination');
   for (const name of ['self', 'sub', 'known', 'unknown']) {
     assert.equal(dec.decode(bridge.readFile(`${dir}/${name}/f.txt`)), name, `a refused rename's source keeps its parked write (${name})`);
   }

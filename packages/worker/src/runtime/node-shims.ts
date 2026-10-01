@@ -3642,7 +3642,7 @@ const __fsMod = (() => {
       }
       _parkWrite(moved, content);
       if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
-      if (landed) movedWrites.push([moved, landed]);
+      if (landed) movedWrites.push([moved, landed, content]);
     }
     _forgetCreation(oldK);
     _forgetCreation(newK);
@@ -3666,12 +3666,18 @@ const __fsMod = (() => {
     );
     _fenceVfsMutation(newAbs, queued);
     // A move the authority refuses was the program's error to see, and the
-    // cell then stands for nothing at the new name: it retires as written.
-    // A failed write under the old name is the cell's own failure.
-    for (const [moved, landed] of movedWrites) {
+    // cell then stands for nothing at the new name: its bytes leave the sync
+    // view there (unless a later write replaced them) and it retires without
+    // a write. A failed write under the old name is the cell's own failure.
+    for (const [moved, landed, content] of movedWrites) {
+      const refused = () => {
+        if (__vfsBundle && __vfsBundle[moved] === content) delete __vfsBundle[moved];
+        globalThis.__nimbusVfsWriteRefused("/" + moved);
+        return undefined;
+      };
       _detachStructuralMutation(__nimbusFlushVfsWrite(
         "/" + moved,
-        () => landed.then((revision) => queued.then(() => revision, () => undefined)),
+        () => landed.then((revision) => queued.then(() => revision, refused)),
         false,
       ));
     }
