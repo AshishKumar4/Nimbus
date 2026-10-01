@@ -11062,7 +11062,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   // even when import.meta.resolve is extracted and called later. The
   // registry's own import.meta cannot serve: its module URLs all live under
   // file:///bundle/, never at the file's own path.
+  // dirname and filename name the file, without the URL's query or fragment.
   const importMeta = Object.assign(Object.create(null), {
+    dirname: "/" + modDir,
+    filename: "/" + resolvedPath,
     url: moduleUrl,
     resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl),
   });
