@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a node process reading or writing a file through a symlink held
+  the bytes under the link's own name. After a write landed, `lstat` saw a
+  regular file where the link is and `realpath` named the link, and a later
+  write to the file the link names, by anyone, never reached what the
+  process read through the link. Reads, writes, appends, truncates and
+  descriptors now follow every link on the path as open(2) does, a dangling
+  link creates the file it names, a loop is `ELOOP`, and `wx` on a dangling
+  link is `EEXIST`.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,

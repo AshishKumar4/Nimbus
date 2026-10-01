@@ -850,6 +850,28 @@ const __fsMod = (() => {
     return null;
   }
 
+  /**
+   * \`p\` with every symlink on it followed, the last one too, as open(2)
+   * follows them: the name a read or write of its bytes reaches, and the one
+   * a barrier reports when they change. The sync view holds bytes only under
+   * such a name. Held under a link's own name, a write became a regular file
+   * where the link is, and neither it nor a read through the link was ever
+   * replaced by a later write to the file the link names.
+   *
+   * The namespace resolves it, as the authority will. \`p\` as given when the
+   * namespace cannot say: it is not active, or this process's own unsettled
+   * rename, unlink or mkdir is on the path, which the table does not show.
+   */
+  function _resolveFollow(p, syscall) {
+    const absPath = _resolve(p);
+    if (!_nsActive()) return absPath;
+    const k = _strip(absPath);
+    if (_nsOwnView(k) !== null) return absPath;
+    const found = __nsLookup(k, true);
+    if (found === "ELOOP") throw _fsErr("ELOOP", syscall, p);
+    return found.path === k ? absPath : "/" + found.path;
+  }
+
   /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
   function _nsRealKey(k) {
     const own = _nsOwnView(k);
@@ -2727,7 +2749,7 @@ const __fsMod = (() => {
   }
 
   async function _liveReadFile(p, opts, refetch) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
@@ -3001,7 +3023,7 @@ const __fsMod = (() => {
   }
 
   async function _writeFileAsync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     writeFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.writeFile === "function") {
@@ -3018,7 +3040,7 @@ const __fsMod = (() => {
   }
 
   async function _appendFileAsync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
@@ -3044,7 +3066,7 @@ const __fsMod = (() => {
   async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP, true); }
 
   async function _truncateAsync(p, len) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     const size = Math.max(0, Math.trunc(Number(len) || 0));
     const supervisor = _supervisor();
     const localCell = _bundleLookup(absPath);
@@ -3399,7 +3421,7 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     let cell;
@@ -3414,7 +3436,7 @@ const __fsMod = (() => {
   // combined cell is bytes (lossless for both). When both are strings,
   // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const previousAppend = __nimbusCapturePendingVfsAppend(k);
@@ -3919,7 +3941,7 @@ const __fsMod = (() => {
   // The resident-view rule of ftruncateSync applied to a path: trim the
   // resident cell and park it, refuse EAGAIN when the bytes are not here.
   function truncateSync(p, len) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     const st = statSync(p, { throwIfNoEntry: false });
     if (st === undefined) throw _fsErr("ENOENT", "truncate", p);
     if (st.isDirectory()) throw _fsErr("EISDIR", "truncate", p);
@@ -4058,7 +4080,7 @@ const __fsMod = (() => {
   class __FileHandle {
     constructor(path, flagInfo, size) {
       this._path = path;
-      this._abs = _resolve(path);
+      this._abs = _resolveFollow(path, "open");
       this._flags = flagInfo;
       this._position = 0;
       this._size = size;
@@ -4285,7 +4307,7 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const absPath = _resolve(path);
+    const absPath = _resolveFollow(path, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
     if (supervisor && typeof supervisor.stat === "function") {
@@ -4322,14 +4344,15 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const absPath = _resolve(path);
+    const absPath = _resolveFollow(path, "open");
     _ensureAncestorsTraversable(absPath, "open", path);
     const st = statSync(path, { throwIfNoEntry: false });
     if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
     const exists = st !== undefined;
     if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
-    if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
+    // O_EXCL does not follow a final symlink: a dangling link is there.
+    if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath));
     let size = exists ? st.size : 0;
