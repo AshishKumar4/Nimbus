@@ -586,55 +586,14 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     }
 }
 /**
- * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.
- *
- * Usage from inner Worker:
- *   const id   = await env.MY_DO.idFromName('x');   // AWAIT required
- *   const stub = env.MY_DO.get(id);
- *   await stub.fetch(request);
- *
- * IMPORTANT: unlike the real DurableObjectNamespace, idFromName /
- * newUniqueId / idFromString here return **Promises**, because they're
- * RPC-backed WorkerEntrypoint methods. The inner caller MUST `await`
- * them before passing the result to `.get()`. Workers RPC pipelining
- * does not currently allow passing an RpcPromise as a method argument
- * — the no-await form fails with:
- *     "Could not serialize object of type \"RpcPromise\"."
- *
- * Typical real-Worker code written for Cloudflare's synchronous
- * DurableObjectNamespace needs a one-word change (add `await`).
- *
- * idFromName produces prefix `name:` (deterministic FNV-style hash);
- * newUniqueId uses `uniq:` (random). The prefixes keep the two id
- * spaces distinct so a name-derived id can't collide with a random
- * one.
+ * The loopback behind `env.MY_DO` in a Worker under `wrangler dev`. The
+ * Worker never calls it directly: the namespace it sees is made in its own
+ * isolate (packages/worker/src/wrangler/do-namespace-shim.ts), with
+ * Cloudflare's synchronous ids and stubs, and a stub's `fetch` and RPC
+ * methods reach the object through `get(id)` here. An id is the 64-hex string
+ * the shim made.
  */
 export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
-    /** Stable string id derived from a name. Hash is deterministic. */
-    idFromName(name) {
-        // Simple 64-bit-ish FNV-style hash → hex. Stable across runs;
-        // distinct names → distinct strings; same name → same string.
-        let h1 = 0xdeadbeef ^ name.length;
-        let h2 = 0x41c6ce57 ^ name.length;
-        for (let i = 0; i < name.length; i++) {
-            const ch = name.charCodeAt(i);
-            h1 = Math.imul(h1 ^ ch, 2654435761);
-            h2 = Math.imul(h2 ^ ch, 1597334677);
-        }
-        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-        const high = (h1 >>> 0).toString(16).padStart(8, '0');
-        const low = (h2 >>> 0).toString(16).padStart(8, '0');
-        return 'name:' + high + low;
-    }
-    /** Fresh random id (matches DurableObjectNamespace.newUniqueId()). */
-    newUniqueId() {
-        return 'uniq:' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    }
-    /** Accept-through for an already-formatted id. */
-    idFromString(s) {
-        return s;
-    }
     /** Return a stub bound to the given id. */
     get(id) {
         const ctxExports = shimCtxExports(this.ctx);
@@ -650,6 +609,13 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
             },
         });
     }
+}
+function isInnerDoResponse(value) {
+    if (value === null || typeof value !== 'object')
+        return false;
+    const body = Reflect.get(value, 'body');
+    return typeof Reflect.get(value, 'status') === 'number' && typeof Reflect.get(value, 'statusText') === 'string'
+        && Array.isArray(Reflect.get(value, 'headers')) && (body === null || body instanceof ArrayBuffer);
 }
 /**
  * A Durable-Object-namespace-stub for a specific id. Exposes fetch()
@@ -704,7 +670,7 @@ export class NimbusDOStub extends WorkerEntrypoint {
                         body,
                     }],
             }), (res) => {
-                if (!(res instanceof Response)) {
+                if (!isInnerDoResponse(res)) {
                     return new Response('Nimbus: innerDoFetch returned an invalid result', { status: 502 });
                 }
                 return new Response(res.body, {
@@ -712,6 +678,28 @@ export class NimbusDOStub extends WorkerEntrypoint {
                     statusText: res.statusText,
                     headers: res.headers,
                 });
+            });
+        }
+        finally {
+            disposeRpcResource(stub);
+        }
+    }
+    /**
+     * A Durable Object RPC method, `stub.<method>(...args)`: the session calls
+     * it on the object's facet and answers with what it returned.
+     */
+    async invoke(method, args) {
+        const props = this.ctx.props || {};
+        const supervisorDoId = String(props.supervisorDoId || '');
+        if (!supervisorDoId)
+            throw new Error('Nimbus: supervisorDoId missing');
+        const ns = hostNamespaceBinding(this.env ?? {}, 'NimbusDOStub', props.route);
+        const stub = ns.get(ns.idFromString(supervisorDoId));
+        try {
+            const dispatch = hostOpDispatch(stub, 'NimbusDOStub', props.route);
+            return await dispatch({
+                op: 'innerDoCall',
+                args: [{ bindingName: String(props.bindingName || ''), id: String(props.id || ''), method, args }],
             });
         }
         finally {

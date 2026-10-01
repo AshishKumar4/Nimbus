@@ -226,36 +226,14 @@ interface NimbusDoNamespaceProps {
     route?: HostRoute;
 }
 /**
- * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.
- *
- * Usage from inner Worker:
- *   const id   = await env.MY_DO.idFromName('x');   // AWAIT required
- *   const stub = env.MY_DO.get(id);
- *   await stub.fetch(request);
- *
- * IMPORTANT: unlike the real DurableObjectNamespace, idFromName /
- * newUniqueId / idFromString here return **Promises**, because they're
- * RPC-backed WorkerEntrypoint methods. The inner caller MUST `await`
- * them before passing the result to `.get()`. Workers RPC pipelining
- * does not currently allow passing an RpcPromise as a method argument
- * — the no-await form fails with:
- *     "Could not serialize object of type \"RpcPromise\"."
- *
- * Typical real-Worker code written for Cloudflare's synchronous
- * DurableObjectNamespace needs a one-word change (add `await`).
- *
- * idFromName produces prefix `name:` (deterministic FNV-style hash);
- * newUniqueId uses `uniq:` (random). The prefixes keep the two id
- * spaces distinct so a name-derived id can't collide with a random
- * one.
+ * The loopback behind `env.MY_DO` in a Worker under `wrangler dev`. The
+ * Worker never calls it directly: the namespace it sees is made in its own
+ * isolate (packages/worker/src/wrangler/do-namespace-shim.ts), with
+ * Cloudflare's synchronous ids and stubs, and a stub's `fetch` and RPC
+ * methods reach the object through `get(id)` here. An id is the 64-hex string
+ * the shim made.
  */
 export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<unknown, NimbusDoNamespaceProps> {
-    /** Stable string id derived from a name. Hash is deterministic. */
-    idFromName(name: string): string;
-    /** Fresh random id (matches DurableObjectNamespace.newUniqueId()). */
-    newUniqueId(): string;
-    /** Accept-through for an already-formatted id. */
-    idFromString(s: string): string;
     /** Return a stub bound to the given id. */
     get(id: string): unknown;
 }
@@ -278,6 +256,11 @@ export declare class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubP
      * a host forwards envelopes, not private _rpc* methods.
      */
     fetch(request: Request): Promise<Response>;
+    /**
+     * A Durable Object RPC method, `stub.<method>(...args)`: the session calls
+     * it on the object's facet and answers with what it returned.
+     */
+    invoke(method: string, args: unknown[]): Promise<unknown>;
 }
 export {};
 //# sourceMappingURL=bindings.d.ts.map

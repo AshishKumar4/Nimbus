@@ -72,6 +72,17 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     headers: [string, string][];
     body: ArrayBuffer | null;
 }>;
+/**
+ * An inner object's RPC method, `stub.<method>(...args)` in the inner Worker
+ * (do-namespace-shim.ts): called on the object's facet in this request's
+ * context, answering what it returned.
+ */
+export declare function _rpcInnerDoCall(self: RpcHost, req: {
+    bindingName: string;
+    id: string;
+    method: string;
+    args: unknown[];
+}): Promise<unknown>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
 /**
  * Write one host-governed file at a session root and let ordinary Unix

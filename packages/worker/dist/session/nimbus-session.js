@@ -690,6 +690,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReadFile(path, pid, cred) { return _rpc._rpcReadFile(this, path, pid, cred); }
     async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
+    async _rpcInnerDoCall(req) { return _rpc._rpcInnerDoCall(this, req); }
     async _rpcWriteFile(path, content, pid, cred) { return _rpc._rpcWriteFile(this, path, content, pid, cred); }
     async _rpcWriteProtectedRootFile(rootPath, path, content) {
         return _rpc._rpcWriteProtectedRootFile(this, rootPath, path, content);
