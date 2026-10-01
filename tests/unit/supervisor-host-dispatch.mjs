@@ -184,7 +184,6 @@ const INPUTS = {
   cpWait: [childPid, waitMs, { epoch, cursor }],
   cpDispatchInline: [req, kind],
   innerDoFetch: [{ bindingName: 'NimbusDO', id: 'inner-id', method: 'GET', url: 'https://inner.test/', headers: [] }],
-  innerDoCall: [{ bindingName: 'NimbusDO', id: 'inner-id', method: 'increment', args: [2] }],
   fanoutExecute: ['fn-source', [1, 2], { tag: 'probe' }],
   processHostProbe: [],
   hostProcess: [{ entry: 'boot.js' }, { workerKey: 'wk' }],

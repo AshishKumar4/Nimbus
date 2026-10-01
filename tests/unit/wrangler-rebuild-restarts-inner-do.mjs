@@ -37,9 +37,7 @@ function platformFacets() {
 // The Worker Loader: the class it hands back serves the VERSION its bundle declares.
 const loader = {
   load({ modules }) {
-    // A Worker binding Durable Objects is loaded as its bundle (user.js)
-    // behind the namespace wrapper (worker.js).
-    const version = /VERSION = "(\w+)"/.exec(modules['user.js'])[1];
+    const version = /VERSION = "(\w+)"/.exec(modules['worker.js'])[1];
     return {
       getDurableObjectClass: () => class {
         constructor(state) {
