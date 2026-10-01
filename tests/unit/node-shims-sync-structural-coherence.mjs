@@ -41,6 +41,9 @@ async function digestOf(bytes) {
 // An append the test can hold in flight: while \`appendGate\` is set, each
 // fsAppend waits on it before reaching the authority.
 let appendGate = null;
+// A write-back the test holds in flight: a writeFile of \`writeGate.path\`
+// waits on it before reaching the authority.
+let writeGate = null;
 
 // Every authority call, in the order the authority received it.
 const calls = [];
@@ -51,7 +54,10 @@ const record = (op, path, fn) => (...args) => {
 const first = (...args) => args[0];
 const supervisor = {
   readFile: record('readFile', first, async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; }),
-  writeFile: record('writeFile', first, (p, c) => bridge.writeFile(p, c)),
+  writeFile: record('writeFile', first, async (p, c) => {
+    if (writeGate && writeGate.path === p) await writeGate.promise;
+    return bridge.writeFile(p, c);
+  }),
   stat: record('stat', first, (p) => bridge.stat(p)),
   lstat: record('lstat', first, (p) => bridge.stat(p, { followSymlinks: false })),
   readdir: record('readdir', first, (p) => bridge.readdir(p)),
@@ -89,6 +95,8 @@ function ownTree(path = 'home') {
 vfs.mkdir(`${home}/listed_src`);
 vfs.writeFile(`${home}/listed_src/f.txt`, new TextEncoder().encode('old source'));
 vfs.mkdir(`${home}/listed_dest`);
+vfs.mkdir(`${home}/later_src`);
+vfs.mkdir(`${home}/later_dest`);
 // Case 8's existing log files, which the process lists but never holds.
 for (const name of ['logs_parked', 'logs_in_flight']) {
   vfs.mkdir(`${home}/${name}`);
@@ -263,6 +271,21 @@ for (const inFlight of [false, true]) {
   let destRead;
   try { destRead = fs.readFileSync(`${home}/listed_dest/f.txt`, 'utf8'); } catch (error) { destRead = error.code; }
   assert.notEqual(destRead, 'new parked source', 'the sync view does not show the source under the destination');
+  // A write to the moved name while the refused move is in flight is its
+  // own: the refusal leaves its bytes and its record alone.
+  vfs.writeFile(`${home}/later_dest/f.txt`, new TextEncoder().encode('theirs'));
+  fs.writeFileSync(`${home}/later_src/f.txt`, 'source');
+  appendGate = null;
+  writeGate = { path: `${home}/later_dest/f.txt`, ...Promise.withResolvers() };
+  const refusedLater = fs.promises.rename(`${home}/later_src`, `${home}/later_dest`).then(() => 'moved', (error) => error.code);
+  fs.writeFileSync(`${home}/later_dest/f.txt`, new TextEncoder().encode('later'));
+  assert.equal(await refusedLater, 'ENOTEMPTY');
+  assert.equal(fs.readFileSync(`${home}/later_dest/f.txt`, 'utf8'), 'later', 'the later write reads back while it is held');
+  assert.equal(fs.statSync(`${home}/later_dest/f.txt`).size, 'later'.length, 'and stats');
+  writeGate.resolve();
+  writeGate = null;
+  await drain();
+  assert.equal(dec.decode(bridge.readFile(`${home}/later_dest/f.txt`)), 'later', 'and lands');
   for (const name of ['self', 'sub', 'known', 'unknown']) {
     assert.equal(dec.decode(bridge.readFile(`${dir}/${name}/f.txt`)), name, `a refused rename's source keeps its parked write (${name})`);
   }

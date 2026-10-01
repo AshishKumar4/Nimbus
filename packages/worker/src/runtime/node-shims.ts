@@ -3726,8 +3726,10 @@ const __fsMod = (() => {
       const refused = () => {
         // By the parked generation, not the bytes: a resident store holds a
         // copy of them, and a later write to the name is its own.
-        if (__vfsBundle && __vfsWriteGenerations[moved] === generation) delete __vfsBundle[moved];
-        globalThis.__nimbusVfsWriteRefused("/" + moved);
+        if (__vfsWriteGenerations[moved] === generation) {
+          if (__vfsBundle) delete __vfsBundle[moved];
+          globalThis.__nimbusVfsWriteRefused("/" + moved);
+        }
         return undefined;
       };
       _detachStructuralMutation(__nimbusFlushVfsWrite(
