@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
-import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath } from '../runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
@@ -63,6 +63,16 @@ export interface SupervisorOpEnvelope {
    * predates it ignores it and serves each attempt, which a read allows.
    */
   readonly readId?: string;
+}
+
+/**
+ * `writeFileStat`'s answer: the write's revision, and the path's lstat after
+ * it (null: nothing there). No `stat` when it could not be read; the write
+ * is committed either way.
+ */
+export interface WriteFileStatAnswer {
+  revision: number;
+  stat?: RuntimeVfsStat | null;
 }
 
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
@@ -380,12 +390,18 @@ const NATIVE_OPS = {
   writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1)),
   // writeFile, answering with the path's own stat as the write left it: a
   // process keeps that stat for its sync view, and asked for it in a second
-  // call before (node-shims _writeFileAsync).
-  writeFileStat: async (e, t) => {
+  // call before (node-shims _writeFileAsync). The write is committed before
+  // the stat is read, so a stat that fails (a mount's metadata read) leaves
+  // the answer without one, never the write failed.
+  writeFileStat: async (e, t): Promise<WriteFileStatAnswer> => {
     const fs = fsFor(e, t);
     const path = FsPath.parse(e.args?.[0]);
     const revision = await fs.writeFile(path, contentArg(e, 1));
-    return { revision, stat: (await fs.stat(path, { followSymlinks: false })) ?? null };
+    try {
+      return { revision, stat: (await fs.stat(path, { followSymlinks: false })) ?? null };
+    } catch {
+      return { revision };
+    }
   },
   mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),

@@ -57,6 +57,26 @@ assert.match(await run('stat -c %s /shared/x'), /^8\n$/);
 const op = createSupervisorOpHandler({ vfs: ws.vfs, filesystem: ws.filesystem });
 assert.equal(new TextDecoder().decode(await op({ op: 'readFileBytes', args: ['/shared/c'], pid: ws.shell.pid ?? 1 })), 'from shared\n');
 
+// writeFileStat commits the write before it reads the stat, so a mount whose
+// metadata read fails once the bytes are in answers the write without a stat.
+{
+  const flaky = new MemoryVFS({ uid: 1000, gid: 1000 });
+  let written = false;
+  const failingStat = new Proxy(asyncOnly(flaky), {
+    get(target, key) {
+      const value = Reflect.get(target, key);
+      if (key === 'writeFile') return async (...args) => { const done = await value(...args); written = true; return done; };
+      if ((key === 'stat' || key === 'lstat') && written) return async () => { throw Object.assign(new Error('EIO: metadata read failed'), { code: 'EIO' }); };
+      return value;
+    },
+  });
+  ws.filesystem.vfs.mount('/flaky', failingStat);
+  const answer = await op({ op: 'writeFileStat', args: ['/flaky/f.txt', 'saved'], pid: ws.shell.pid ?? 1 });
+  assert.equal(typeof answer.revision, 'number', 'the write is answered');
+  assert.equal('stat' in answer, false, 'without the stat it could not read');
+  assert.equal(new TextDecoder().decode(await flaky.readFile('/f.txt')), 'saved');
+}
+
 // A caller that cannot wait still gets the named refusal.
 const sync = ws.filesystem.bind({ pid: 4321, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }).synchronous;
 assert.throws(() => sync.readFile('/shared/c'), (error) => error.code === 'EAGAIN' && /\/shared is an asynchronous mount/.test(error.message));

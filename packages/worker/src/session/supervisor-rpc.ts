@@ -49,7 +49,7 @@ import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent, type DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
-import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import {
   SUPERVISOR_DELIVER_OP,
   type SupervisorDeliveredOpName,
@@ -64,7 +64,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeVfsStat, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
@@ -329,7 +329,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
-  async writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<{ revision: number; stat: RuntimeVfsStat | null }> {
+  async writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<WriteFileStatAnswer> {
     return this._call(this._fsMutation('writeFileStat', [path, content]));
   }
 
