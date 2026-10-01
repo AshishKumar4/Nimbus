@@ -132,12 +132,20 @@ assert.deepEqual(imports, [
 {
   const image = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 4, 1, 2, 0, 11]);
   assert.ok(WebAssembly.validate(image), 'fixture is a valid module');
-  const padded = new Uint8Array(64);
-  padded.set(image);
+  // Another valid module, long enough for the base64 scan: the same function
+  // exported as "f", then a 40-byte custom section named "p".
+  const exported = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 5, 1, 1, 102, 0, 0, 10, 4, 1, 2, 0, 11, 0, 40, 1, 112, ...new Array(38).fill(0)]);
+  assert.ok(WebAssembly.validate(exported), 'fixture is a valid module');
+  // A module this runtime cannot compile, as wasm-feature-detect inlines one
+  // per proposal it probes and catches the CompileError: the function body
+  // holds opcode 0xff, which no runtime defines.
+  const unsupported = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 5, 1, 3, 0, 255, 11]);
+  assert.equal(WebAssembly.validate(unsupported), false, 'fixture does not validate');
   const found = findInlineWasmImages({
     'home/user/app/node_modules/xxhash-wasm/cjs/xxhash-wasm.cjs': `"use strict";const t=new Uint8Array([${[...image].join(',')}]);WebAssembly.instantiate(t,{});`,
     'home/user/app/node_modules/spaced/index.js': `const w = new Uint8Array([ ${[...image].join(', ')} ]);`,
-    'home/user/app/node_modules/lexer/index.js': `const C=()=>Uint8Array.from(atob("${btoa(String.fromCharCode(...padded))}"),c=>c.charCodeAt(0));`,
+    'home/user/app/node_modules/lexer/index.js': `const C=()=>Uint8Array.from(atob("${btoa(String.fromCharCode(...exported))}"),c=>c.charCodeAt(0));`,
+    'home/user/app/node_modules/wasm-feature-detect/dist/esm/index.js': `const wideArithmetic=async()=>{try{return new WebAssembly.Module(new Uint8Array([${[...unsupported].join(',')}])),!0}catch(e){return!1}};`,
     'home/user/app/node_modules/not-wasm/index.js': 'const version = [0, 97, 115, 109, 2, 0, 0, 0, 5];',
     'home/user/app/node_modules/out-of-range/index.js': 'const x = [0,97,115,109,1,0,0,0,300];',
     'home/user/app/data.json': `[${[...image].join(',')}]`,
@@ -145,8 +153,11 @@ assert.deepEqual(imports, [
   const digests = new Set(found.map((bytes) => wasmImageDigest(bytes)));
   assert.equal(found.length, 2, `the array image (once, however spaced) and the base64 image; nothing else (found ${found.length})`);
   assert.ok(digests.has(wasmImageDigest(image)), 'the numeric array literal is found with the exact bytes');
-  assert.ok(digests.has(wasmImageDigest(padded)), 'the base64 literal is found');
-  console.log('  inlined wasm is found by content in both shapes; version-2, out-of-range and non-JS cells are not');
+  assert.ok(digests.has(wasmImageDigest(exported)), 'the base64 literal is found');
+  // Staged, it would be compiled with the map and fail the whole launch,
+  // where the program itself only meets it if it compiles it.
+  assert.ok(!digests.has(wasmImageDigest(unsupported)), 'an image the runtime cannot compile is not staged');
+  console.log('  inlined wasm is found by content in both shapes; version-2, out-of-range, invalid and non-JS cells are not');
 }
 
 console.log('closure-wasm-registry OK');

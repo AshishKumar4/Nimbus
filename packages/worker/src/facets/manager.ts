@@ -719,7 +719,11 @@ function isWasmImage(bytes: Uint8Array): boolean {
 export function findInlineWasmImages(bundle: FacetVfsBundle): Uint8Array[] {
   const found = new Map<string, Uint8Array>();
   const keep = (bytes: Uint8Array) => {
-    if (!isWasmImage(bytes)) return;
+    // A staged image is compiled with the map when the launch loads, so one
+    // this runtime cannot compile fails the whole launch, where the program
+    // meets it only if it compiles it: wasm-feature-detect inlines a module
+    // per proposal it probes and catches each CompileError.
+    if (!isWasmImage(bytes) || !WebAssembly.validate(bytes)) return;
     const digest = wasmImageDigest(bytes);
     if (!found.has(digest)) found.set(digest, bytes);
   };
