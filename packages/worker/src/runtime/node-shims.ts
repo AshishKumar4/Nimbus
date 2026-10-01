@@ -802,7 +802,7 @@ const __fsMod = (() => {
   let _barrierBegins = 0;
   function _nsOwnSet(k, state, extra) {
     const before = _nsOwn.get(k);
-    const entry = { state, from: extra?.from, hide: !!extra?.hide, settled: null };
+    const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, settled: null };
     try { __residentNamespaceOverlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
       // The view is sealed by the store. Let the already-projected structural
@@ -814,7 +814,7 @@ const __fsMod = (() => {
     _nsOwn.set(k, entry);
     _nsFresh.push(entry);
   }
-  function _nsOwnCost(k, entry) { return __namespaceRowBytes("", k, entry.from); }
+  function _nsOwnCost(k, entry) { return __namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "")); }
   /** Hand the overlay entries made since the last mutation to the one being queued. */
   function _nsTakeFresh() {
     const mine = _nsFresh;
@@ -833,27 +833,23 @@ const __fsMod = (() => {
    * this key instead), { dir } (own directory), { hide } (the table knows
    * nothing under an own fresh directory), or null (ask the table).
    *
-   * An alias that is a symlink this process moved also carries \`link\`, the
-   * link's target. Followed, it names a path from the link's new place, in
-   * the view as it is now (_nsFollowMoved): the table's resolution is from
-   * where the link was, among names the move may have taken away.
+   * An alias's \`link\`: the moved name is a symlink, whose own entry (what
+   * lstat sees) is the table's row at that key. \`alias\` is what following
+   * it reaches, absent when that is nothing (a dangling link, a loop).
    */
   function _nsOwnView(k) {
     if (_nsOwn.size === 0) return null;
     const own = _nsOwn.get(k);
     if (own) {
       if (own.state === "absent" || own.state === "absentTree") return "absent";
-      if (own.state === "alias") {
-        const row = __nsRowAt(__residentRequire(), own.from);
-        return row !== undefined && Number(row.kind) === __NS_LINK ? { alias: own.from, link: String(row.target) } : { alias: own.from };
-      }
+      if (own.state === "alias") return { alias: own.from, link: own.link };
       return { dir: true };
     }
     for (let i = k.lastIndexOf("/"); i > 0; i = k.lastIndexOf("/", i - 1)) {
       const above = _nsOwn.get(k.slice(0, i));
       if (!above) continue;
       if (above.state === "absent" || above.state === "absentTree") return "absent";
-      if (above.state === "alias") return { alias: above.from + k.slice(i) };
+      if (above.state === "alias") return above.from === undefined ? "absent" : { alias: above.from + k.slice(i) };
       if (above.hide) return { hide: true };
     }
     return null;
@@ -872,22 +868,10 @@ const __fsMod = (() => {
    * namespace cannot say: it is not active, or this process's own unsettled
    * rename, unlink or mkdir is on the path, which the table does not show.
    */
-  function _nsLandingKey(k, hops = 0) {
-    if (!_nsActive()) return k;
-    const own = _nsOwnView(k);
-    if (own !== null && own.link !== undefined) return _nsFollowMoved(k, own, hops, _nsLandingKey, null);
-    if (own !== null) return k;
+  function _nsLandingKey(k) {
+    if (!_nsActive() || _nsOwnView(k) !== null) return k;
     const found = __nsLookup(k, true);
     return found === "ELOOP" ? null : found.path;
-  }
-
-  /**
-   * Follow a symlink this process moved (_nsOwnView's \`link\`): \`resolve\`
-   * the path its target names from the link's new place, or \`loop\` past
-   * the hops Linux allows.
-   */
-  function _nsFollowMoved(k, own, hops, resolve, loop) {
-    return hops < __NS_MAX_HOPS ? resolve(__nsJoinTarget(k, own.link), hops + 1) : loop;
   }
 
   /** \`p\` resolved to the path an operation that follows symlinks lands on (_nsLandingKey). */
@@ -905,10 +889,9 @@ const __fsMod = (() => {
    * landed. A name the table does not list yet is held too (a file this
    * process made through a link). Null when nothing can be there.
    */
-  function _nsHeldKey(k, hops = 0) {
+  function _nsHeldKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    if (own && own.link !== undefined) return _nsFollowMoved(k, own, hops, _nsHeldKey, null);
     const found = __nsLookup(own && own.alias !== undefined ? own.alias : k, true);
     return found === "ELOOP" ? null : found.path;
   }
@@ -917,8 +900,14 @@ const __fsMod = (() => {
   function _nsEntryKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, false);
+    const found = __nsResolve(own && own.link !== undefined ? own.link : own && own.alias !== undefined ? own.alias : k, false);
     return found && found !== "ELOOP" ? found.path : null;
+  }
+
+  /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
+  function _nsRealKey(k) {
+    const held = _nsHeldKey(k);
+    return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
   }
 
   function _nsRowMeta(row) {
@@ -937,7 +926,7 @@ const __fsMod = (() => {
    * then the table, then content this process wrote that the table has not
    * caught up with.
    */
-  function _nsMeta(k, follow, hops = 0) {
+  function _nsMeta(k, follow) {
     if (k === "") return _nsRowMeta(__nsResolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
@@ -953,10 +942,14 @@ const __fsMod = (() => {
     const own = _nsOwnView(k);
     if (own === "absent") return "absent";
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+    // A symlink this process moved is still a link to lstat.
+    if (!follow && own && own.link !== undefined) {
+      const row = __nsRowAt(__residentRequire(), own.link);
+      if (row !== undefined) return _nsRowMeta(row);
+    }
     // A directory this process made hides what the namespace held under its
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
-    if (follow && own && own.link !== undefined) return _nsFollowMoved(k, own, hops, (to, next) => _nsMeta(to, true, next), "ELOOP");
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
       const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
@@ -3845,10 +3838,11 @@ const __fsMod = (() => {
       throw _fsErr("EISDIR", "rename", oldP, newP);
     }
     // The table still holds the old name until the rename is reported, so the
-    // new name reads through to it and the old one reads as gone. It is the
-    // entry itself that moves (rename(2) does not follow the last name), so a
-    // link moved is still a link, and a read through it follows it.
-    const nsFrom = _nsEntryKey(oldK);
+    // new name reads through to it and the old one reads as gone. rename(2)
+    // moves a symlink itself, so a moved link keeps its own entry for lstat.
+    const nsFrom = _nsRealKey(oldK);
+    const nsEntry = _nsEntryKey(oldK);
+    const movedLink = nsEntry !== null && Number(__nsRowAt(__residentRequire(), nsEntry).kind) === __NS_LINK ? nsEntry : undefined;
     // What this process created travels with the name; what it did not stays
     // the authority's, whatever the move does to the local tables.
     const oldPrefix = oldK + "/";
@@ -3921,7 +3915,7 @@ const __fsMod = (() => {
         _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide });
       }
     }
-    if (nsFrom !== null && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom });
+    if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom ?? undefined, link: movedLink });
     _nsOwnSet(oldK, "absentTree");
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
