@@ -792,22 +792,21 @@ export async function _rpcFsReadBatch(
           }
           // N17: bytes still being imported are waited for, not failed.
           const hydrated = (path: string) => (typeof self.getFilesystemAuthority === 'function' ? self.getFilesystemAuthority().hydrated(path) : Promise.resolve());
-          // The file the read reached, named right after a synchronous read
-          // resolved it, so a link a peer retargets cannot come between them;
-          // the process holds the bytes under that name. An asynchronous
-          // mount's read is awaited first, and its name is then the mount's
-          // answer after it.
+          // The file a synchronous read reached, named in the same step that
+          // read it, so a link a peer retargets cannot come between them: the
+          // process holds the bytes under that name. An asynchronous mount's
+          // read awaits, and a name looked up after it is no receipt for it.
           entries.push(await readHydrating(hydrated, async () => {
             const read = fs.readRange(request.path, request.offset, request.length, {
               expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
             });
-            const bytes = read instanceof Promise ? await read : read;
-            if (bytes === null) return { bytes };
+            if (read instanceof Promise || read === null) return { bytes: await read };
+            let path: string | undefined;
             try {
-              return { bytes, path: await fs.realpath(request.path) };
-            } catch {
-              return { bytes };
-            }
+              const real = fs.realpath(request.path);
+              if (typeof real === 'string') path = real;
+            } catch { /* the bytes, named by no path */ }
+            return path === undefined ? { bytes: read } : { bytes: read, path };
           }));
         } catch (error) {
           entries.push({ error: error instanceof Error ? error : new Error(String(error)) });

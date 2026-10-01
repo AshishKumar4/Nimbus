@@ -176,6 +176,41 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.read(TARGET), 'old', 'the old target keeps its own bytes');
   },
 
+  async 'a target a barrier reported during a read through a link is not filled with the older bytes'() {
+    // Outside the process's tree, so the barrier brings no bytes with its
+    // report, and exactly one chunk long, so the read asks for the size
+    // before it ends: that ask is held while the target is rewritten and a
+    // barrier reports it.
+    const held = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let armed = false;
+    const { authority, probe } = await boot(undefined, (forward) => ({
+      stat: async (...args) => {
+        if (armed) {
+          armed = false;
+          held.resolve();
+          await release.promise;
+        }
+        return forward('stat', args);
+      },
+    }));
+    const BIG = '/home/user/elsewhere/big.txt';
+    authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
+    authority.kfs.writeFile('home/user/elsewhere/big.txt', 'a'.repeat(65536));
+    authority.kfs.symlink('../elsewhere/big.txt', 'home/user/app/big-link.txt');
+    assert.equal((await probe.fs.promises.readFile(BIG, 'utf8')).length, 65536, 'the target is resident');
+    armed = true;
+    const reading = probe.fs.promises.readFile(`${APP}/big-link.txt`, 'utf8');
+    await held.promise;
+    authority.kfs.writeFile('home/user/elsewhere/big.txt', 'b'.repeat(65536));
+    const rewritten = authority.rawVfs.revision();
+    await probe.fs.promises.stat(`${APP}/f.txt`);
+    await until(() => globalThis.__nimbusVfsCursor.rev >= rewritten, 'a barrier reported the rewrite');
+    release.resolve();
+    assert.equal(await reading, 'a'.repeat(65536), 'the read is what it found');
+    assert.notEqual(probe.read(BIG), 'a'.repeat(65536), 'the sync view does not hold the older bytes');
+  },
+
   async 'a target written between a read\'s barrier and the read is what the link reads after it'() {
     let write = null;
     const { authority, probe } = await boot(undefined, (forward) => ({
