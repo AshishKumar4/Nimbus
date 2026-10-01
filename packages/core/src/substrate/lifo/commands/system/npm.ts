@@ -5,6 +5,7 @@ import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
+import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import {
 	RegistryPackumentSchema,
 	RegistrySearchResponseSchema,
@@ -291,13 +292,9 @@ async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson):
 	(await vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n'));
 }
 
+/** A package's bins, name -> target inside the package, as npm installs them (npmBinMap). */
 export function getBinEntries(pkg: PackageJson): Record<string, string> {
-	if (!pkg.bin) return {};
-	if (typeof pkg.bin === 'string') {
-		// npm names a lone bin after the package, without its scope.
-		return { [(pkg.name || 'unknown').replace(/^@[^/]+\//, '')]: pkg.bin };
-	}
-	return pkg.bin;
+	return Object.fromEntries(npmBinMap(pkg.name ?? '', pkg.bin));
 }
 
 export function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void {

@@ -35,6 +35,7 @@ import type {
 } from '@nimbus-sh/platform/w7-frame.js';
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -114,7 +115,6 @@ import {
   createNpmBinManifest,
   createNpmBinShim,
   npmBinManifestPath,
-  npmBinMap,
   packageBinEntries,
   parseNpmBinManifest,
   type NpmBinEntry,
