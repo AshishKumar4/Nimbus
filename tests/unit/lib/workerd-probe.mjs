@@ -133,27 +133,41 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     await Bun.write(catalogPath, JSON.stringify(catalog, null, 2));
     await putObjects([...staged.flatMap((s) => s.puts), { key: 'catalog/v1.json', file: catalogPath, contentType: 'application/json' }], persist, work);
 
-    const port = await freePort();
-    console.log('workerd-probe: starting wrangler dev');
     const secret = randomBytes(24).toString('hex');
-    child = spawn(WRANGLER, [
-      'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
-      '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
-    ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
-    let log = '';
-    child.stdout.on('data', (d) => { log += d; });
-    child.stderr.on('data', (d) => { log += d; });
-    const base = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + bootTimeoutMs;
-    for (;;) {
-      if (child.exitCode !== null) throw new Error(`wrangler dev exited ${child.exitCode}:\n${log.slice(-2000)}`);
-      try {
-        const response = await fetch(`${base}/`, { signal: AbortSignal.timeout(2000) });
-        await response.arrayBuffer();
-        break;
-      } catch { /* not listening yet */ }
-      if (Date.now() > deadline) throw new Error(`wrangler dev did not answer within ${bootTimeoutMs} ms:\n${log.slice(-2000)}`);
-      await Bun.sleep(500);
+    let log = '';
+    let base = null;
+    // The free port can be taken by another test's server before wrangler
+    // binds it. That server would answer a probe of the port, and wrangler
+    // exits on the bind: so the address is the one wrangler says it is ready
+    // on, and a lost bind is retried on another port.
+    for (let attempt = 1; base === null; attempt++) {
+      const port = await freePort();
+      console.log('workerd-probe: starting wrangler dev');
+      log = '';
+      child = spawn(WRANGLER, [
+        'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
+        '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
+      ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
+      child.stdout.on('data', (d) => { log += d; });
+      child.stderr.on('data', (d) => { log += d; });
+      for (;;) {
+        if (child.exitCode !== null) {
+          if (attempt < 3 && /Address already in use/.test(log)) break;
+          throw new Error(`wrangler dev exited ${child.exitCode}:\n${log.slice(-2000)}`);
+        }
+        const ready = /Ready on (http:\/\/127\.0\.0\.1:\d+)/.exec(log);
+        if (ready) {
+          try {
+            const response = await fetch(`${ready[1]}/`, { signal: AbortSignal.timeout(2000) });
+            await response.arrayBuffer();
+            base = ready[1];
+            break;
+          } catch { /* not answering yet */ }
+        }
+        if (Date.now() > deadline) throw new Error(`wrangler dev did not answer within ${bootTimeoutMs} ms:\n${log.slice(-2000)}`);
+        await Bun.sleep(250);
+      }
     }
     const token = await mintProbeToken(secret, 3_600_000);
     // pid: the wrangler dev process group, whose members serve the probe.
