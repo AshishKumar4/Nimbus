@@ -746,13 +746,21 @@ const __fsMod = (() => {
    * The overlay's word on `k`: "absent", { alias } (look the table up at
    * this key instead), { dir } (own directory), { hide } (the table knows
    * nothing under an own fresh directory), or null (ask the table).
+   *
+   * An alias that is a symlink this process moved also carries `link`, the
+   * link's target. Followed, it names a path from the link's new place, in
+   * the view as it is now (_nsFollowMoved): the table's resolution is from
+   * where the link was, among names the move may have taken away.
    */
   function _nsOwnView(k) {
     if (_nsOwn.size === 0) return null;
     const own = _nsOwn.get(k);
     if (own) {
       if (own.state === "absent" || own.state === "absentTree") return "absent";
-      if (own.state === "alias") return { alias: own.from };
+      if (own.state === "alias") {
+        const row = __nsRowAt(__residentRequire(), own.from);
+        return row !== undefined && Number(row.kind) === __NS_LINK ? { alias: own.from, link: String(row.target) } : { alias: own.from };
+      }
       return { dir: true };
     }
     for (let i = k.lastIndexOf("/"); i > 0; i = k.lastIndexOf("/", i - 1)) {
@@ -778,10 +786,22 @@ const __fsMod = (() => {
    * namespace cannot say: it is not active, or this process's own unsettled
    * rename, unlink or mkdir is on the path, which the table does not show.
    */
-  function _nsLandingKey(k) {
-    if (!_nsActive() || _nsOwnView(k) !== null) return k;
+  function _nsLandingKey(k, hops = 0) {
+    if (!_nsActive()) return k;
+    const own = _nsOwnView(k);
+    if (own !== null && own.link !== undefined) return _nsFollowMoved(k, own, hops, _nsLandingKey, null);
+    if (own !== null) return k;
     const found = __nsLookup(k, true);
     return found === "ELOOP" ? null : found.path;
+  }
+
+  /**
+   * Follow a symlink this process moved (_nsOwnView's `link`): `resolve`
+   * the path its target names from the link's new place, or `loop` past
+   * the hops Linux allows.
+   */
+  function _nsFollowMoved(k, own, hops, resolve, loop) {
+    return hops < __NS_MAX_HOPS ? resolve(__nsJoinTarget(k, own.link), hops + 1) : loop;
   }
 
   /** `p` resolved to the path an operation that follows symlinks lands on (_nsLandingKey). */
@@ -799,9 +819,10 @@ const __fsMod = (() => {
    * landed. A name the table does not list yet is held too (a file this
    * process made through a link). Null when nothing can be there.
    */
-  function _nsHeldKey(k) {
+  function _nsHeldKey(k, hops = 0) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
+    if (own && own.link !== undefined) return _nsFollowMoved(k, own, hops, _nsHeldKey, null);
     const found = __nsLookup(own && own.alias !== undefined ? own.alias : k, true);
     return found === "ELOOP" ? null : found.path;
   }
@@ -830,7 +851,7 @@ const __fsMod = (() => {
    * then the table, then content this process wrote that the table has not
    * caught up with.
    */
-  function _nsMeta(k, follow) {
+  function _nsMeta(k, follow, hops = 0) {
     if (k === "") return _nsRowMeta(__nsResolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
@@ -849,6 +870,7 @@ const __fsMod = (() => {
     // A directory this process made hides what the namespace held under its
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
+    if (follow && own && own.link !== undefined) return _nsFollowMoved(k, own, hops, (to, next) => _nsMeta(to, true, next), "ELOOP");
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
       const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
