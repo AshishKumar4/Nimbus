@@ -47,6 +47,8 @@ const files = {
   // must also come from the evaluation, not from source transformation.
   'app/large-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nconst url = import.meta.url; export { url };\n',
   'app/large-shadow-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nimport { kind } from "./esm.mjs"; const module = "local-module"; const require = "local-require"; const exports = "local-exports"; const nested = (function(module, require, exports) { return [module, require, exports]; })(1,2,3); const value = [module,require,exports,kind,nested]; const url = import.meta.url; export { url, value };\n',
+  // Vinext resolves its empty module with path.join(import.meta.dirname, ...).
+  'app/meta-paths.mjs': 'export const paths = [import.meta.dirname, import.meta.filename];\n',
   'app/data.json': '{"k":1}\n',
   'app/dir/index.js': 'module.exports = "idx";\n',
   'app/rel.js': 'module.exports = "rel";\n',
@@ -117,6 +119,7 @@ const attempt = async (label, load) => {
   out.push(['typed actual metadata and user property remain distinct', [typedMetadata.value, typedMetadata.url]]);
   const forms = await import('./meta-forms.mjs?forms#fragment');
   out.push(['metadata computed destructured identity mutation', [forms.values, forms.mutation]]);
+  out.push(['import.meta.dirname and filename name the file, not its query', (await import('./meta-paths.mjs?paths#fragment')).paths]);
   console.log(JSON.stringify(out));
 })();
 `;
