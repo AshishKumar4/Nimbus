@@ -5,6 +5,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A Worker run with `wrangler dev` uses its Durable Objects through
+  Cloudflare's own namespace API. `idFromName`, `newUniqueId`,
+  `idFromString`, `get` and `getByName` return at once, a stub's RPC
+  methods work beside `fetch`, and ids are 64 hex digits. Before, every
+  namespace method was an RPC call, so `env.NS.get(env.NS.idFromName(n))`
+  failed with "Could not serialize object of type RpcPromise", and a stub's
+  `fetch` answered 502. An object's storage from an earlier build, kept under
+  a `name:` id, is not reachable under the new ids.
+- Files a program writes synchronously into a directory and then renames
+  move with the directory. Vite's dependency optimizer does this, and the
+  first request to a new Vite dev server answered 502
+  `ENOENT … deps_temp_<hash>`. An append to an existing file in the moved
+  directory stays an append.
+- ES modules have `import.meta.dirname` and `import.meta.filename`, as in
+  Node 20.11 and later. Vinext's dev server needs them.
+- `node` no longer dies at launch when an installed package inlines a
+  WebAssembly module this runtime cannot compile. wasm-feature-detect
+  inlines one per proposal it probes.
+
 ## 2026-09-30
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
