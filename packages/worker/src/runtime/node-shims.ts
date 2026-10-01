@@ -722,9 +722,10 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
     // The same bytes under the name they are held by: through a symlink, or
     // under the old name of a rename this process has not seen land yet.
+    // A parked write is in the bundle too (_parkWrite).
     if (__vfsBundle && _nsActive()) {
-      const real = _nsRealKey(k);
-      if (real !== null && real !== k && real in __vfsBundle) return __vfsBundle[real];
+      const held = _nsHeldKey(k);
+      if (held !== null && held !== k && held in __vfsBundle) return __vfsBundle[held];
     }
     return undefined;
   }
@@ -851,33 +852,50 @@ const __fsMod = (() => {
   }
 
   /**
-   * \`p\` with every symlink on it followed, the last one too, as open(2)
-   * follows them: the name a read or write of its bytes reaches, and the one
-   * a barrier reports when they change. The sync view holds bytes only under
-   * such a name. Held under a link's own name, a write became a regular file
-   * where the link is, and neither it nor a read through the link was ever
-   * replaced by a later write to the file the link names.
+   * The key an operation that follows symlinks lands on: every link on \`k\`
+   * followed, the last one too, as open(2) and chmod(2) follow them; null on
+   * a loop. It is the name a barrier reports when that file changes, so
+   * this process's own state for it (parked bytes, a pending mode or times,
+   * a creation, a resident fill) is kept there. Kept under a link's own
+   * name, a write became a regular file where the link is, and nothing a
+   * later write to the target reported ever replaced it.
    *
-   * The namespace resolves it, as the authority will. \`p\` as given when the
+   * The namespace resolves it, as the authority will. \`k\` as given when the
    * namespace cannot say: it is not active, or this process's own unsettled
    * rename, unlink or mkdir is on the path, which the table does not show.
    */
+  function _nsLandingKey(k) {
+    if (!_nsActive() || _nsOwnView(k) !== null) return k;
+    const found = __nsLookup(k, true);
+    return found === "ELOOP" ? null : found.path;
+  }
+
+  /** \`p\` resolved to the path an operation that follows symlinks lands on (_nsLandingKey). */
   function _resolveFollow(p, syscall) {
     const absPath = _resolve(p);
-    if (!_nsActive()) return absPath;
     const k = _strip(absPath);
-    if (_nsOwnView(k) !== null) return absPath;
-    const found = __nsLookup(k, true);
-    if (found === "ELOOP") throw _fsErr("ELOOP", syscall, p);
-    return found.path === k ? absPath : "/" + found.path;
+    const landing = _nsLandingKey(k);
+    if (landing === null) throw _fsErr("ELOOP", syscall, p);
+    return landing === k ? absPath : "/" + landing;
+  }
+
+  /**
+   * Where the bytes \`k\` denotes are held, if they are anywhere: symlinks
+   * followed, and the old name of this process's own rename that has not
+   * landed. A name the table does not list yet is held too (a file this
+   * process made through a link). Null when nothing can be there.
+   */
+  function _nsHeldKey(k) {
+    const own = _nsOwnView(k);
+    if (own === "absent" || (own && (own.dir || own.hide))) return null;
+    const found = __nsLookup(own && own.alias !== undefined ? own.alias : k, true);
+    return found === "ELOOP" ? null : found.path;
   }
 
   /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
   function _nsRealKey(k) {
-    const own = _nsOwnView(k);
-    if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
-    return found && found !== "ELOOP" ? found.path : null;
+    const held = _nsHeldKey(k);
+    return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
   }
 
   function _nsRowMeta(row) {
@@ -919,6 +937,12 @@ const __fsMod = (() => {
       const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
+      // Followed to a name the table does not list yet: a file this process
+      // made through the link, which its own write holds.
+      if (follow) {
+        const held = _nsHeldKey(k);
+        if (held !== null && held !== k && __vfsWrites && held in __vfsWrites) return _nsMeta(held, false);
+      }
     }
     // The namespace is exact, so a name it lacks is not there, whatever bytes
     // the module map carries under it (a file removed since the map was
@@ -1138,7 +1162,11 @@ const __fsMod = (() => {
 
   function _residencySatisfied(absPath) {
     if (_residencyMisses.size === 0) return;
-    _residencyMisses.delete(_strip(absPath));
+    const k = _strip(absPath);
+    _residencyMisses.delete(k);
+    // A descriptor opened through a link misses under the file it names.
+    const held = _nsActive() ? _nsHeldKey(k) : null;
+    if (held !== null) _residencyMisses.delete(held);
   }
 
   /**
@@ -1700,8 +1728,11 @@ const __fsMod = (() => {
    */
   function _installResident(absPath, bytes, fill) {
     if (!__vfsBundle) return;
-    const k = _strip(absPath);
-    if (k === "") return;
+    // Bytes read through a symlink are the file's it names, held under that
+    // name, which is the one a later write to it is reported under. The
+    // barrier the read applied first has brought the links up to the read.
+    const k = _nsLandingKey(_strip(absPath));
+    if (k === null || k === "") return;
     if (fill.reported > fill.rev) return;
     // Never over a cell this facet owns.
     //
@@ -2501,6 +2532,13 @@ const __fsMod = (() => {
       await _flushParkedWrite(absPath, supervisor);
       _markVfsStale();
     }
+    // A write through a symlink is parked under the file it names
+    // (_nsLandingKey): what is asked of the link must not overtake it.
+    const landing = _nsLandingKey(k);
+    if (landing !== null && landing !== k && __vfsWrites && landing in __vfsWrites && typeof supervisor.writeFile === "function") {
+      await _flushParkedWrite("/" + landing, supervisor);
+      _markVfsStale();
+    }
     // A pending sync chmod rides along with the next flush of the same path.
     if (_pendingModes.has(k) && typeof supervisor.chmod === "function") {
       _pendingModes.delete(k);
@@ -2772,7 +2810,7 @@ const __fsMod = (() => {
   }
 
   async function _liveReadFile(p, opts, refetch) {
-    const absPath = _resolveFollow(p, "open");
+    const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
@@ -3182,7 +3220,7 @@ const __fsMod = (() => {
 
   function utimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "utimes", p, "fs.promises.utimes");
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "utimes");
     _recordLocalTimes(absPath, atime, mtime, "utimes", p);
   }
 
@@ -3195,7 +3233,7 @@ const __fsMod = (() => {
   async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
     const followSymlinks = !(opts && opts.followSymlinks === false);
     const syscall = syscallOverride || (followSymlinks ? "utimes" : "lutimes");
-    const absPath = _resolve(p);
+    const absPath = followSymlinks ? _resolveFollow(p, syscall) : _resolve(p);
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
@@ -3236,16 +3274,17 @@ const __fsMod = (() => {
 
   function chmodSync(p, mode) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
-    _ensureModeOwner(_resolve(p), "chmod", p);
+    const absPath = _resolveFollow(p, "chmod");
+    _ensureModeOwner(absPath, "chmod", p);
     // Local-visible immediately (statSync overlay); the live write-through
     // rides the next flush of the same path — same fidelity as utimesSync.
-    const k = _strip(_resolve(p));
+    const k = _strip(absPath);
     _localModes[k] = _coerceMode(mode, "chmod", p);
     _pendingModes.add(k);
   }
 
   async function _chmodAsync(p, mode) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "chmod");
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
@@ -3583,9 +3622,12 @@ const __fsMod = (() => {
     _nsRequire("stat", absPath, "fs.promises.stat");
     const meta = _nsMeta(k, !noFollow);
     if (meta === "absent" || meta === "ELOOP") return undefined;
+    // A followed stat describes the file the links name, and this process's
+    // own mode and times for it are kept under that name.
+    const key = noFollow ? k : (_nsLandingKey(k) ?? k);
     return meta.own
-      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
-      : _statObject(meta, k);
+      ? _localStatObject(key, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
+      : _statObject(meta, key);
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
@@ -4029,8 +4071,8 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, true);
     if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
     if (meta === "absent") throw _absentErr(absPath, "realpath", p, "fs.promises.realpath");
-    const real = _nsRealKey(k);
-    return real === null ? absPath : "/" + real;
+    const real = _nsLandingKey(k);
+    return real === null || real === k ? absPath : "/" + real;
   }
   realpathSync.native = realpathSync;
 

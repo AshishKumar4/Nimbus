@@ -124,6 +124,64 @@ await runScenarios(import.meta.path, {
     assert.throws(() => probe.fs.openSync(`${APP}/dangling.txt`, 'wx'), { code: 'EEXIST' }, 'O_EXCL does not follow a dangling link');
   },
 
+  async 'an async read through a link a peer retargeted reads the new target'() {
+    const { authority, probe } = await boot((seeded) => seeded.kfs.writeFile('home/user/app/other.txt', 'other'));
+    authority.kfs.unlink('home/user/app/link.txt');
+    authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
+    assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other', 'the authority resolves the link as it is now');
+    assert.equal(probe.read(LINK), 'other');
+    assert.equal(probe.read(TARGET), 'old', 'the old target keeps its own bytes');
+  },
+
+  async 'a mode change through a link waits for the write parked under the target'() {
+    const { authority, probe } = await boot();
+    probe.fs.writeFileSync(LINK, 'new');
+    await probe.fs.promises.chmod(LINK, 0o444);
+    assert.equal(authority.read('home/user/app/target.txt'), 'new', 'the write landed before the mode that forbids it');
+    assert.equal(authority.kfs.stat('home/user/app/target.txt').mode & 0o777, 0o444);
+    assert.equal(probe.fs.statSync(LINK).mode & 0o777, 0o444, 'the link stats with the target\'s mode');
+    assertLink(probe, 'after the chmod');
+  },
+
+  async 'a stream through a link reads the write parked under the target'() {
+    const { probe } = await boot();
+    probe.fs.writeFileSync(LINK, 'streamed');
+    const chunks = [];
+    for await (const chunk of probe.fs.createReadStream(LINK)) chunks.push(Buffer.from(chunk));
+    assert.equal(Buffer.concat(chunks).toString(), 'streamed');
+  },
+
+  async 'a file made through a dangling link is there through the link at once'() {
+    const { probe } = await boot((seeded) => {
+      seeded.kfs.symlink('missing.txt', 'home/user/app/dangling.txt');
+      seeded.kfs.symlink('missing2.txt', 'home/user/app/dangling2.txt');
+    });
+    probe.fs.writeFileSync(`${APP}/dangling.txt`, 'made');
+    assert.equal(probe.read(`${APP}/dangling.txt`), 'made', 'read through the link');
+    assert.equal(probe.fs.existsSync(`${APP}/dangling.txt`), true);
+    assert.equal(probe.fs.statSync(`${APP}/dangling.txt`).size, 4);
+    assert.equal(probe.fs.realpathSync(`${APP}/dangling.txt`), `${APP}/missing.txt`);
+    const fd = probe.fs.openSync(`${APP}/dangling2.txt`, 'w', 0o600);
+    probe.fs.closeSync(fd);
+    assert.equal(probe.fs.statSync(`${APP}/dangling2.txt`).mode & 0o777, 0o600, 'open applies its mode through the link');
+  },
+
+  async 'a descriptor\'s miss through a link is answered by a read of the link'() {
+    // The target is outside the process's tree, whose files a barrier brings.
+    const { authority, probe } = await boot();
+    authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
+    authority.kfs.writeFile('home/user/elsewhere/late.txt', 'late');
+    authority.kfs.symlink('../elsewhere/late.txt', 'home/user/app/late-link.txt');
+    const made = authority.rawVfs.revision();
+    await probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier listed the late file and link');
+    const fd = probe.fs.openSync(`${APP}/late-link.txt`, 'r');
+    assert.throws(() => probe.fs.readSync(fd, Buffer.alloc(4), 0, 4, 0), { code: 'EAGAIN' }, 'the late file is not resident');
+    probe.fs.closeSync(fd);
+    assert.equal(await probe.fs.promises.readFile(`${APP}/late-link.txt`, 'utf8'), 'late');
+    assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'no miss is left to fail the run');
+  },
+
   async 'a write through a symlink loop is ELOOP'() {
     const { probe } = await boot((seeded) => {
       seeded.kfs.symlink('loop-b', 'home/user/app/loop-a');
