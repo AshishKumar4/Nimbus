@@ -278,6 +278,28 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.fs.existsSync(`${APP}/moved-self.txt`), false);
   },
 
+  async 'a moved link reported before its rename is answered is the link the table holds'() {
+    const renamed = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const { authority, probe } = await boot((seeded) => seeded.kfs.symlink('self.txt', 'home/user/app/self.txt'), (forward) => ({
+      rename: async (...args) => {
+        const answer = await forward('rename', args);
+        renamed.resolve();
+        await release.promise;
+        return answer;
+      },
+    }));
+    const moved = `${APP}/moved-self.txt`;
+    probe.fs.renameSync(`${APP}/self.txt`, moved);
+    await renamed.promise;
+    const committed = authority.rawVfs.revision();
+    await probe.fs.promises.stat(`${APP}/f.txt`);
+    await until(() => globalThis.__nimbusVfsCursor.rev >= committed, 'a barrier reported the rename');
+    assert.equal(probe.fs.lstatSync(moved).isSymbolicLink(), true, 'the table\'s row for the new name');
+    assert.throws(() => probe.fs.realpathSync(moved), { code: 'ENOENT' });
+    release.resolve();
+  },
+
   async 'a mode change through a link waits for the write parked under the target'() {
     const { authority, probe } = await boot();
     probe.fs.writeFileSync(LINK, 'new');
