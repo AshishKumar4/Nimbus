@@ -7,6 +7,23 @@ import type { ResolvedPackage } from './resolver.js';
  */
 export declare function isStagedArtifactTarget(target: string): boolean;
 export declare function stagedArtifactId(target: string): string;
+/**
+ * The name a `bin` key links in `.bin`, as npm normalizes it
+ * (npm-normalize-package-bin): its last path component, with `\` and `:`
+ * read as separators. Null for a key that names no file there ('', '.',
+ * '..'). Every name a shim is written, listed or removed under passes
+ * through here, so no bin map can reach a file outside `.bin`.
+ */
+export declare function npmBinName(key: string): string | null;
+/**
+ * A package's `bin` field as npm installs it: a string links under the
+ * package's own name, each key under {@link npmBinName}, and each target is
+ * a path inside the package, `..` stopping at its root (staged-artifact
+ * sentinels pass through). Name -> target relative to the package.
+ */
+export declare function npmBinMap(packageName: string, bin: unknown): Map<string, string>;
+/** The bin manifest a `.nimbus-bin-map.json` holds; null when it is not one, or names a file outside `.bin`. */
+export declare function parseNpmBinManifest(text: string): NpmBinManifest | null;
 export declare const NPM_BIN_MANIFEST_VERSION = 1;
 export declare const NPM_BIN_MANIFEST_NAME = ".nimbus-bin-map.json";
 export interface NpmBinEntry {

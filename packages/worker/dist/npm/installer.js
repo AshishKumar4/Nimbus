@@ -53,7 +53,7 @@ import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coo
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
-import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, } from './bin-links.js';
+import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, npmBinMap, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */
@@ -334,7 +334,7 @@ export class NpmInstaller {
         setInstallPhase('link-bins');
         // `npm install <pkg>` adds bins; the ones already linked stay in the manifest.
         const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
-            ? Object.values(safeJsonParse(await project.readFileString(npmBinManifestPath(nmDir)), null)?.bins ?? {})
+            ? Object.values(parseNpmBinManifest(await project.readFileString(npmBinManifestPath(nmDir)))?.bins ?? {})
             : [];
         await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
         phases['link-bins'] = Date.now() - phaseStart;
@@ -1514,7 +1514,7 @@ export class NpmInstaller {
         }
         const manifestPath = npmBinManifestPath(nmDir);
         const manifest = await project.exists(manifestPath)
-            ? safeJsonParse(await project.readFileString(manifestPath), null)
+            ? parseNpmBinManifest(await project.readFileString(manifestPath))
             : null;
         for (const [name, bin] of Object.entries(manifest?.bins ?? {}))
             if (removed.includes(bin.packageName))
@@ -1536,7 +1536,7 @@ export class NpmInstaller {
         log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
         return removed.length;
     }
-    /** The bin names the package at `dir` declares in its package.json. */
+    /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
     async declaredBins(project, dir) {
         let manifest = null;
         try {
@@ -1545,12 +1545,9 @@ export class NpmInstaller {
         catch {
             return [];
         }
-        if (manifest === null)
+        if (manifest === null || typeof manifest.name !== 'string')
             return [];
-        const bin = manifest.bin;
-        if (typeof bin === 'string')
-            return typeof manifest.name === 'string' ? [manifest.name.split('/').pop() ?? manifest.name] : [];
-        return bin !== null && typeof bin === 'object' ? Object.keys(bin) : [];
+        return [...npmBinMap(manifest.name, manifest.bin).keys()];
     }
     /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
