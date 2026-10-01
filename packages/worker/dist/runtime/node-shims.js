@@ -878,10 +878,12 @@ const __fsMod = (() => {
     return found === "ELOOP" ? null : found.path;
   }
 
-  /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
-  function _nsRealKey(k) {
-    const held = _nsHeldKey(k);
-    return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
+  /** The table key of the entry \`k\` names itself, a link not followed (overlay and the links above it applied), or null. */
+  function _nsEntryKey(k) {
+    const own = _nsOwnView(k);
+    if (own === "absent" || (own && (own.dir || own.hide))) return null;
+    const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, false);
+    return found && found !== "ELOOP" ? found.path : null;
   }
 
   function _nsRowMeta(row) {
@@ -3807,8 +3809,10 @@ const __fsMod = (() => {
       throw _fsErr("EISDIR", "rename", oldP, newP);
     }
     // The table still holds the old name until the rename is reported, so the
-    // new name reads through to it and the old one reads as gone.
-    const nsFrom = _nsRealKey(oldK);
+    // new name reads through to it and the old one reads as gone. It is the
+    // entry itself that moves (rename(2) does not follow the last name), so a
+    // link moved is still a link, and a read through it follows it.
+    const nsFrom = _nsEntryKey(oldK);
     // What this process created travels with the name; what it did not stays
     // the authority's, whatever the move does to the local tables.
     const oldPrefix = oldK + "/";
