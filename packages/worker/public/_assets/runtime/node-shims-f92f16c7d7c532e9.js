@@ -754,9 +754,7 @@ const __fsMod = (() => {
   function _nsOwnView(k) {
     if (_nsOwn.size === 0) return null;
     const own = _nsOwn.get(k);
-    // A moved link whose own row the table no longer holds has been reported
-    // under its new name, where the table now answers for it.
-    if (own && !(own.link !== undefined && __nsRowAt(__residentRequire(), own.link) === undefined)) {
+    if (own) {
       if (own.state === "absent" || own.state === "absentTree") return "absent";
       if (own.state === "alias") return { alias: own.from, link: own.link };
       return { dir: true };
@@ -816,8 +814,19 @@ const __fsMod = (() => {
   function _nsEntryKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __nsResolve(own && own.link !== undefined ? own.link : own && own.alias !== undefined ? own.alias : k, false);
+    const found = __nsResolve(own && own.link !== undefined ? _nsMovedEntry(k, own) : own && own.alias !== undefined ? own.alias : k, false);
     return found && found !== "ELOOP" ? found.path : null;
+  }
+
+  /**
+   * The table key of a symlink this process moved to `k` (_nsOwnView's
+   * `link`): its row under the old name, or under `k` once the move is
+   * reported and the old row gone. Only the link's own entry reads this; the
+   * overlay still stands between `k` and everything that follows it, until
+   * the rename's own answer retires it.
+   */
+  function _nsMovedEntry(k, own) {
+    return __nsRowAt(__residentRequire(), own.link) !== undefined ? own.link : k;
   }
 
   /** The table key `k` denotes (overlay and symlinks applied), or null. */
@@ -859,7 +868,11 @@ const __fsMod = (() => {
     if (own === "absent") return "absent";
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
-    if (!follow && own && own.link !== undefined) return _nsRowMeta(__nsRowAt(__residentRequire(), own.link));
+    if (!follow && own && own.link !== undefined) {
+      const found = __nsResolve(_nsMovedEntry(k, own), false);
+      if (found === "ELOOP") return "ELOOP";
+      return found ? _nsRowMeta(found.row) : "absent";
+    }
     // A directory this process made hides what the namespace held under its
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
