@@ -38,6 +38,12 @@ const GIT_ENV = {
   HOME: '/nonexistent',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_NOSYSTEM: '1',
+  // No background maintenance: git 2.55 (the CI runner's) starts it after a
+  // commit, and its objects/maintenance.lock came and went while the tree
+  // was being copied, so the copy's lstat of it failed ENOENT.
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0',
   GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@example.com', GIT_AUTHOR_DATE: '1700000000 +0000',
   GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@example.com', GIT_COMMITTER_DATE: '1700000000 +0000',
   LC_ALL: 'C',

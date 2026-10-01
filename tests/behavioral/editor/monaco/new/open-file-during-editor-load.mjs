@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // editor/monaco/new/open-file-during-editor-load — a file the user opens
 // while the editor is still loading stays open, and what they type goes
 // into it.

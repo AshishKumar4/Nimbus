@@ -110,6 +110,22 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # tests/unit/lean-proofs.mjs builds the Lean corpus (lean/) with the
+      # toolchain lean/lean-toolchain pins; the runner has no Lean.
+      - name: Cache the Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: elan-${{ hashFiles('lean/lean-toolchain') }}
+
+      - name: Install Lean
+        run: |
+          if [ ! -x "$HOME/.elan/bin/lake" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+              | sh -s -- -y --no-modify-path --default-toolchain "$(cat lean/lean-toolchain)"
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
       # tests/unit/run-all.mjs runs every file in a worker pool and exits
       # non-zero when any file fails, so this job IS the unit gate — no
       # record-and-fail-later step needed. Its red status never decides
@@ -160,7 +176,7 @@ jobs:
     # signal, and the probes add theirs. Only a cancelled workflow skips
     # them.
     if: ${{ !cancelled() }}
-    # ~400 probes at --jobs 4, plus a build and a deploy.
+    # ~430 probes, 16 at a time, plus a build and a deploy.
     timeout-minutes: 120
     steps:
       - name: Checkout
@@ -230,11 +246,11 @@ jobs:
         # Explicit `shell: bash` runs with `-o pipefail`, so the runner's
         # exit code survives the `| tee` pipeline. `| tee` preserves the CI
         # live-log AND saves a file, uploaded below on both PASS and FAIL.
-        # `--jobs 4` is the runner's parallel pool (each probe mints its
-        # own session); the @serial-marked browser probes run after the
-        # pool drains.
+        # The runner's default pool (16 probes at once): each probe mints
+        # its own session and owns its own browsers, and most of its time
+        # is spent waiting on the target.
         run: |
-          bun tests/behavioral/run-all.mjs --jobs 4 \
+          bun tests/behavioral/run-all.mjs \
             ${{ github.event_name == 'push' && ' ' || '--no-retry' }} | tee behavioral.log
 
       - name: Upload run log

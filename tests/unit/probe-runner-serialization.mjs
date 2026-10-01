@@ -13,7 +13,8 @@
 // directory so the lock under test is never the machine's real one.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { Database } from 'bun:sqlite';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -40,7 +41,18 @@ function runRunner(args = []) {
   return { status: r.status, out: `${r.stdout}${r.stderr}` };
 }
 
+const HOLD = `${LOCK}.sqlite`;
+
+/** Hold the lock as a running suite does (run-all.mjs tryHold), described as \`holder\`. */
 function holdLock(holder) {
+  const db = new Database(HOLD, { create: true });
+  db.exec('BEGIN EXCLUSIVE');
+  describe(holder);
+  return db;
+}
+
+/** Only a description: what a run killed before it could release the lock leaves. */
+function describe(holder) {
   writeFileSync(LOCK, `${JSON.stringify(holder, null, 2)}\n`);
 }
 
@@ -56,14 +68,14 @@ function holdLock(holder) {
 // holder — pid, target and directory — so the operator can decide
 // whether to wait or to kill it. Silence here is what let two suites
 // collide and then blame each other's failures.
-{
-  holdLock({
+const holding = holdLock({
     pid: process.pid,
     runId: 'unit-holder',
     base: 'https://nimbus-tw-holder.example.workers.dev',
     cwd: '/home/agent/Nimbus-wt/other',
     startedAt: new Date(Date.now() - 90_000).toISOString(),
   });
+{
   const r = runRunner();
   assert.equal(r.status, 3, r.out);
   assert.match(r.out, /another behavioral suite is already running/);
@@ -87,11 +99,12 @@ function holdLock(holder) {
   assert.equal(JSON.parse(readFileSync(LOCK, 'utf8')).pid, process.pid, 'the holder keeps its lock');
   console.log('  [3] --allow-concurrent runs anyway, and leaves the holder alone');
 }
+holding.close();
 
 // [4] A lock left by a killed run is not a permanent outage: a holder
 // that no longer exists is stale and gets taken over.
 {
-  holdLock({
+  describe({
     pid: 2_147_483_600,       // above pid_max: no process can hold it
     runId: 'unit-dead',
     base: 'https://gone.example.workers.dev',
@@ -102,6 +115,41 @@ function holdLock(holder) {
   assert.equal(r.status, 0, r.out);
   assert.equal(existsSync(LOCK), false, 'the stale lock was taken over and then released');
   console.log('  [4] a stale lock is taken over rather than blocking forever');
+}
+
+// [5] A description naming a live pid is not a holder. A run killed inside
+// run-bounded recorded its pid in its own PID namespace, where a later
+// run's same pid is some unrelated process: "pid 12" blocked every suite.
+{
+  describe({
+    pid: process.pid,
+    runId: 'unit-other-namespace',
+    base: 'https://gone.example.workers.dev',
+    cwd: '/tmp',
+    startedAt: new Date().toISOString(),
+  });
+  const r = runRunner();
+  assert.equal(r.status, 0, r.out);
+  assert.equal(existsSync(LOCK), false, 'the description was replaced and then released');
+  console.log('  [5] a recorded pid that is alive but holds nothing does not block');
+}
+
+// [6] A holder killed outright releases the lock with its process.
+{
+  const holder = spawn('bun', ['-e', `
+    const { Database } = require('bun:sqlite');
+    globalThis.held = new Database(${JSON.stringify(HOLD)}, { create: true });
+    globalThis.held.exec('BEGIN EXCLUSIVE');
+    console.log('held');
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise((resolve) => holder.stdout.once('data', resolve));
+  assert.equal(runRunner().status, 3, 'a live holder blocks');
+  holder.kill('SIGKILL');
+  await new Promise((resolve) => holder.once('exit', resolve));
+  const r = runRunner();
+  assert.equal(r.status, 0, r.out);
+  console.log('  [6] a SIGKILLed holder leaves nothing that blocks');
 }
 
 rmSync(SCRATCH, { recursive: true, force: true });

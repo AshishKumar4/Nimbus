@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // agentic-cli/new/attached-process-tab-browser — attached npm-bin process
 // tabs open an xterm, focus it, and preserve TTY output.
 //

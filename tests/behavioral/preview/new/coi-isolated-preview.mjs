@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // preview/new/coi-isolated-preview — an app that asks for cross-origin
 // isolation gets it, in the preview pane and in a tab of its own.
 //

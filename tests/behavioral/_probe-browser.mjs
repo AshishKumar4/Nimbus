@@ -28,9 +28,11 @@ import { join } from 'node:path';
 export const PROBE_BROWSER_ROOT = join(tmpdir(), 'nimbus-probe-chrome');
 
 /**
- * Identity of the suite run this process belongs to. `run-all` mints one
- * and exports it, so every probe it spawns inherits the same id; a probe
- * run on its own is its own run.
+ * The browser scope this process owns. `run-all` mints a run id and gives
+ * each probe it spawns a scope of its own inside it (`<run>/<n>`), so it
+ * can reap one probe's leaked browser while its siblings' are still in
+ * use, and drop the whole run's profiles at the end; a probe run on its own
+ * is its own scope.
  */
 export const RUN_ID = process.env.NIMBUS_PROBE_RUN_ID || `run-${process.pid}`;
 

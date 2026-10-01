@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // behavioral/end-to-end-workflow — fresh session → cd example-app → npm install →
 // npm run dev → real Chrome navigates to /preview/?id=<sid> and asserts
 // the seeded Nimbus Starter React app actually mounts.

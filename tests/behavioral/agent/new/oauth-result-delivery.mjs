@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // agent/new/oauth-result-delivery — the Cloudflare OAuth popup's result
 // reaches the agent chat exactly once, in both shell modes.
 //

@@ -1,4 +1,3 @@
-// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // session-lifecycle/new/ws-close-handshake-answered — the session answers a
 // browser's close frame on every socket it accepts.
 //
