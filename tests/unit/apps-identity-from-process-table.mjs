@@ -46,6 +46,7 @@ import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts
 import { buildPublicPreviewHost } from '../../packages/worker/src/_shared/preview-host.ts';
 import { PUBLIC_BEARER_HEADER, PREVIEW_CAPABILITY_HEADER } from '../../packages/worker/src/_shared/session-router.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -335,19 +336,19 @@ async function serve(t, { command, argv, cwd, port, tag }) {
 {
   const t = setup();
   const { self, processes, portRegistry, ctx } = t;
-  // The shell the SDK drives: `npx vite` resolves to the builtin, which
-  // adopts the wrapper pid the job allocated (the bin-spawn contract) and
-  // registers the dev server's port under it, then the shell line returns 0.
-  self.shell = {
-    getEnv: () => ({ HOME: '/home/user' }),
-    getCwd: () => '/home/user',
-    async execute(line, options) {
-      const adopted = options.commandContext.__nimbusBinSpawn.callerPid;
-      portRegistry.bindFacetStub(adopted, stub('vite'));
-      await t.fm.registerPort(adopted, 5173);
-      return { exitCode: 0 };
-    },
-  };
+  // The shell the SDK drives is a real session shell, where `npx` stands in
+  // for the builtin: it adopts the wrapper pid the job allocated (the
+  // bin-spawn contract) and registers the dev server's port under it, then
+  // the shell line returns 0.
+  const harness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
+  ws.registry.register('npx', async (cmd) => {
+    const adopted = cmd.__nimbusBinSpawn.callerPid;
+    portRegistry.bindFacetStub(adopted, stub('vite'));
+    await t.fm.registerPort(adopted, 5173);
+    return 0;
+  });
+  self.shell = ws.shell;
   self._w1SessionDestroyed = false;
   self.shellProcessPid = null;
   self.terminal = null;
