@@ -158,6 +158,38 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.fs.existsSync(G), false, 'after another barrier too');
   },
 
+  async 'a read whose barrier the cursor passed still teaches the sync view its file'() {
+    // The read's barrier is answered, then an unrelated write moves the
+    // cursor past it, and only then is the file made and read: the read
+    // cannot date its stat, and asks for a fresh one.
+    const acquired = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let armed = false;
+    const { authority, probe } = await boot((forward) => ({
+      fsReadBatch: async (...args) => {
+        if (armed) {
+          armed = false;
+          acquired.resolve();
+          await release.promise;
+        }
+        return forward('fsReadBatch', args);
+      },
+    }));
+    armed = true;
+    const late = '/home/user/app/late.txt';
+    const reading = probe.fs.promises.readFile(late, 'utf8');
+    await acquired.promise;
+    authority.kfs.writeFile('home/user/app/g.txt', 'g2');
+    const unrelated = authority.rawVfs.revision();
+    const resumed = probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= unrelated, 'the barrier applied the unrelated write');
+    authority.kfs.writeFile('home/user/app/late.txt', 'late');
+    release.resolve();
+    assert.equal(await reading, 'late');
+    await resumed;
+    assert.equal(probe.fs.existsSync(late), true, 'the sync view has the file the read found');
+  },
+
   async 'an async read through a symlink leaves the link resolving to the file it names'() {
     // f.txt and g.txt are written after the link, so its row is older than
     // the cursor the process starts at.
