@@ -1073,7 +1073,10 @@ const __fsMod = (() => {
         + (_supervisor() ? " (" + asyncForm + ")" : "");
       return full;
     }
-    _recordResidencyMiss(absPath);
+    // Under the file the links name, so the fault-in reads, and holds, that
+    // file by its own name.
+    const landing = _nsLandingKey(_strip(absPath));
+    _recordResidencyMiss(landing === null ? absPath : "/" + landing);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
       "resident in this facet, and synchronous I/O cannot block to fetch it" +
@@ -1728,11 +1731,15 @@ const __fsMod = (() => {
    */
   function _installResident(absPath, bytes, fill) {
     if (!__vfsBundle) return;
-    // Bytes read through a symlink are the file's it names, held under that
-    // name, which is the one a later write to it is reported under. The
-    // barrier the read applied first has brought the links up to the read.
-    const k = _nsLandingKey(_strip(absPath));
-    if (k === null || k === "") return;
+    const k = _strip(absPath);
+    if (k === "") return;
+    // Bytes the authority read through a symlink belong to the file it
+    // resolved the link to, which this view cannot name: a peer may have
+    // retargeted the link before the read. Kept under the link's name, a
+    // later write to the target would never be reported against them. They
+    // are held when read by the file's own name (a miss through the link
+    // faults in that name, _notResidentError).
+    if (_nsLandingKey(k) !== k) return;
     if (fill.reported > fill.rev) return;
     // Never over a cell this facet owns.
     //
@@ -2525,18 +2532,25 @@ const __fsMod = (() => {
     );
   }
 
-  async function _flushLocalPathToSupervisor(absPath, supervisor) {
+  /**
+   * Send what this process holds for \`absPath\` ahead of a request about
+   * it. \`follow\`: the request follows symlinks, so what is parked under the
+   * file they name (_nsLandingKey: its bytes, its mode) goes first too; a
+   * request about the link itself (lstat, lchown, lutimes) leaves that be.
+   */
+  async function _flushLocalPathToSupervisor(absPath, supervisor, follow = true) {
+    await _flushHeld(absPath, supervisor);
+    if (!follow) return;
+    const k = _strip(absPath);
+    const landing = _nsLandingKey(k);
+    if (landing !== null && landing !== k) await _flushHeld("/" + landing, supervisor);
+  }
+
+  async function _flushHeld(absPath, supervisor) {
     const k = _strip(absPath);
     await _announceLocalDirs(absPath, supervisor);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
       await _flushParkedWrite(absPath, supervisor);
-      _markVfsStale();
-    }
-    // A write through a symlink is parked under the file it names
-    // (_nsLandingKey): what is asked of the link must not overtake it.
-    const landing = _nsLandingKey(k);
-    if (landing !== null && landing !== k && __vfsWrites && landing in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await _flushParkedWrite("/" + landing, supervisor);
       _markVfsStale();
     }
     // A pending sync chmod rides along with the next flush of the same path.
@@ -3004,7 +3018,7 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor[syscall] === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
       let meta;
       if (_servesFsAcquired(supervisor)) {
@@ -3242,7 +3256,7 @@ const __fsMod = (() => {
     }
     const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
     if (supervisor && typeof supervisor.utimes === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
@@ -3320,7 +3334,7 @@ const __fsMod = (() => {
     }
     const nextUid = _coerceId(uid, syscall, p);
     const nextGid = _coerceId(gid, syscall, p);
-    await _flushLocalPathToSupervisor(absPath, supervisor);
+    await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
     await _ownMutation(
       absPath,
       () => _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result),
@@ -4071,7 +4085,7 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, true);
     if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
     if (meta === "absent") throw _absentErr(absPath, "realpath", p, "fs.promises.realpath");
-    const real = _nsLandingKey(k);
+    const real = _nsHeldKey(k);
     return real === null || real === k ? absPath : "/" + real;
   }
   realpathSync.native = realpathSync;

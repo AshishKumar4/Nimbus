@@ -23,14 +23,17 @@ globalThis.__probe = { fs, read, resume };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot(seed) {
+/** \`overrides\` may be a function of the session's own answer to an op (facetSupervisor's \`forward\`). */
+async function boot(seed, overrides = {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/target.txt', 'old');
   authority.kfs.symlink('target.txt', 'home/user/app/link.txt');
   seed?.(authority);
   authority.kfs.writeFile('home/user/app/f.txt', 'f');
-  const handle = facetSupervisor(authority);
+  let forward;
+  const handle = facetSupervisor(authority, typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides);
+  forward = handle.forward;
   await launchResident({
     authority,
     program: PROGRAM,
@@ -131,6 +134,49 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other', 'the authority resolves the link as it is now');
     assert.equal(probe.read(LINK), 'other');
     assert.equal(probe.read(TARGET), 'old', 'the old target keeps its own bytes');
+  },
+
+  async 'a link retargeted between a read\'s barrier and the read leaves the old target\'s bytes alone'() {
+    let retarget = null;
+    const { authority, probe } = await boot((seeded) => seeded.kfs.writeFile('home/user/app/other.txt', 'other'), (forward) => ({
+      fsReadBatch: async (...args) => {
+        retarget?.();
+        retarget = null;
+        return forward('fsReadBatch', args);
+      },
+    }));
+    assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
+    retarget = () => {
+      authority.kfs.unlink('home/user/app/link.txt');
+      authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
+    };
+    assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other', 'the read is the authority\'s');
+    assert.equal(probe.read(TARGET), 'old', 'the old target still holds its own bytes');
+    await probe.resume();
+    assert.equal(await probe.fs.promises.readFile(TARGET, 'utf8'), 'old');
+    assert.equal(probe.read(TARGET), 'old');
+  },
+
+  async 'a pending mode through a link reaches the authority before a stat of it'() {
+    const { authority, probe } = await boot();
+    probe.fs.chmodSync(LINK, 0o444);
+    assert.equal(probe.fs.statSync(LINK).mode & 0o777, 0o444, 'the sync view has it at once');
+    assert.equal((await probe.fs.promises.stat(LINK)).mode & 0o777, 0o444, 'the authority has it before it answers');
+    assert.equal(authority.kfs.stat('home/user/app/target.txt').mode & 0o777, 0o444);
+  },
+
+  async 'an lstat of a link does not send the write parked under its target'() {
+    const { authority, probe } = await boot();
+    probe.fs.writeFileSync(LINK, 'parked');
+    authority.kfs.chmod('home/user/app/target.txt', 0o444);
+    assert.equal((await probe.fs.promises.lstat(LINK)).isSymbolicLink(), true);
+    assert.equal(authority.read('home/user/app/target.txt'), 'old', 'the write is still parked');
+  },
+
+  async 'a link renamed and not yet reported resolves to its target'() {
+    const { probe } = await boot();
+    probe.fs.renameSync(LINK, `${APP}/moved-link.txt`);
+    assert.equal(probe.fs.realpathSync(`${APP}/moved-link.txt`), TARGET);
   },
 
   async 'a mode change through a link waits for the write parked under the target'() {
