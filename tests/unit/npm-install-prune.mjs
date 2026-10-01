@@ -67,7 +67,7 @@ const install = async (options) => {
   const result = await installer.install(PROJ, { pid: 1, ...options });
   assert.deepEqual(result.failed, [], `nothing fails: ${log.join('\n')}`);
 };
-const placements = () => [...installer.npmCache.readLockfile(PROJ).keys()].sort();
+const placements = () => [...(installer.npmCache.readLockfile(PROJ)?.keys() ?? [])].sort();
 const present = (placement) => root.exists(`${NM}/${placement}/package.json`);
 const bins = () => Object.keys(JSON.parse(root.readFileString(`${NM}/.bin/.nimbus-bin-map.json`)).bins).sort();
 
@@ -118,6 +118,36 @@ assert.ok(root.exists(`${NM}/.bin/c-cli`), 'c links its bin');
   await install();
   assert.ok(!log.some((line) => line.startsWith('removed')), log.join('\n'));
   assert.deepEqual(placements(), ['a', 'a/node_modules/d', 'b', 'd', 'e']);
+}
+
+// ── `npm install <pkg>` keeps the inventory a later prune reads ──────────
+{
+  declare({ a: '^1.0.0', c: '^1.0.0' });
+  await install();
+  await install({ packages: ['e@^1.0.0'] });
+  assert.ok(placements().includes('c') && placements().includes('e'), 'the lockfile holds the old tree and the addition');
+  declare({ a: '^1.0.0', e: '^1.0.0' });
+  await install();
+  assert.equal(present('c'), false, 'a dependency dropped after an explicit add is still pruned');
+  assert.deepEqual(placements(), ['a', 'b', 'd', 'e']);
+}
+
+// ── a declared package the resolver could not resolve is not pruned ────────
+{
+  declare({ a: '^1.0.0', e: '^9.0.0' });
+  const result = await installer.install(PROJ, { pid: 1 });
+  assert.deepEqual(result.failed, ['e'], 'the install fails for e');
+  assert.ok(present('e'), 'and leaves the installed e where it was');
+  assert.ok(root.exists(`${NM}/.bin/e-cli`), 'with its bin');
+}
+
+// ── a project that needs nothing any more removes everything ──────────────
+{
+  declare({});
+  await install();
+  assert.deepEqual(placements(), [], 'the lockfile is empty');
+  for (const name of ['a', 'b', 'd', 'e']) assert.equal(present(name), false, `${name} is removed`);
+  assert.equal(root.exists(`${NM}/.bin/e-cli`), false, 'and its bin');
 }
 
 console.log('npm-install-prune: ok');
