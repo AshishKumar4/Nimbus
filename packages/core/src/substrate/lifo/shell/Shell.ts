@@ -369,6 +369,14 @@ export class Shell {
   }
 
   /**
+   * End a shell that is done: the descriptors an `exec` left open close, as a
+   * process's do when it exits. A shell built for one call ends with it.
+   */
+  closeDescriptors(): Promise<void> {
+    return this.interpreter.closeDescriptors();
+  }
+
+  /**
    * Programmatic command execution. Each stream goes to its sink when one is
    * given, and is otherwise captured into the result; never both, so a
    * streaming caller's output is not also held for the length of the command.

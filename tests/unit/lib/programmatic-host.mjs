@@ -60,6 +60,8 @@ export async function programmaticHost(options = {}) {
     rows,
     /** Work the session was asked to keep alive (ctx.waitUntil). */
     held,
+    /** The workspace database, to read what the VFS stored. */
+    sql: harness.sql,
     close() {
       db.close();
       rmSync(dir, { recursive: true, force: true });

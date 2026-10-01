@@ -45,6 +45,7 @@ export interface ProgrammaticShell {
   getEnv(): Record<string, string>;
   getCwd(): string;
   execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{ exitCode: number }>;
+  closeDescriptors(): Promise<void>;
 }
 
 /**
@@ -423,6 +424,7 @@ function startShellJob(
   // cwd and environment, and what it changes goes nowhere: the session shell
   // is shared by every unnamed call (and the terminal), and two calls running
   // on it at once would read and overwrite each other's variables mid-run.
+  // The shell ends with the call, closing the descriptors an `exec` left open.
   const shell = scoped?.create(entry.pid)
     ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
   const pid = entry.pid;
@@ -465,7 +467,7 @@ function startShellJob(
         }
         : {}),
     },
-  });
+  }).finally(() => shell.closeDescriptors());
 
   return { pid, entry, run, abort: () => { try { controller.abort(); } catch {} } };
 }

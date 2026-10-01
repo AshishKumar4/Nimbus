@@ -48,7 +48,7 @@ const box = await programmaticHost({
     },
   },
 });
-const { ws, host, rows } = box;
+const { ws, host, rows, sql } = box;
 
 try {
   await ws.exec('mkdir -p /home/user/build');
@@ -107,6 +107,26 @@ try {
   await rpcExec(host, 'cd /home/user/build', { shellId: 'agent-5' });
   assert.equal((await rpcExec(host, './task.sh', { shellId: 'agent-5' })).stdout, 'build task\n', 'a named shell from its own cwd');
   assert.equal((await rpcExec(host, 'command -v ./task.sh', { cwd: '/home/user/build' })).stdout.trim() !== '', true, 'command -v resolves it there too');
+
+  // ── A call's descriptors close when the call ends ─────────────────────────
+  // Its shell ends with it, so what an `exec` opened must close then: an open
+  // description pins the file's content, and nothing would ever close it.
+  const chunks = () => sql.exec('SELECT COUNT(*) AS n FROM vfs_chunks')[0].n;
+  const collect = () => {
+    for (let pass = 0; pass < 100; pass++) if (ws.vfs.runContentMaintenance(64).transactions === 0) return;
+    throw new Error('maintenance did not reach a fixpoint');
+  };
+  collect();
+  const stored = chunks();
+  await ws.exec("printf 'held by a descriptor\\n' > /home/user/held.txt");
+  assert.equal(chunks(), stored + 1, 'the file is one chunk');
+  assert.equal((await rpcExec(host, 'exec 3</home/user/held.txt 5>>/home/user/held.txt; echo more >&5; head -n 1 <&3')).stdout, 'held by a descriptor\n');
+  assert.equal((await rpcExec(host, 'exec 3</home/user/held.txt')).exitCode, 0);
+  assert.equal((await rpcExec(host, 'exec 4</home/user/held.txt', { shellId: 'agent-5' })).exitCode, 0);
+  assert.equal((await rpcExec(host, 'cat /home/user/held.txt')).stdout, 'held by a descriptor\nmore\n', 'a write through the descriptor landed');
+  await rpcExec(host, 'rm /home/user/held.txt');
+  collect();
+  assert.equal(chunks(), stored, 'no descriptor outlived its call to pin the removed file');
 
   // ── shellRoot seeds a NEW shell only ──────────────────────────────────────
   const seeded = await rpcExec(host, 'pwd', { shellId: 'agent-3', shellRoot: '/home/user/build' });

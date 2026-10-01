@@ -136,6 +136,33 @@ try {
     assert.equal(root.readFileString('/work/c'), 'via4\n');
     assert.equal(opens.length, 3, 'a dup opens no second descriptor');
     assert.deepEqual(closes.sort(), opens.sort(), 'the shared handle closes once, with the last descriptor');
+
+    // A subshell's descriptors are its own, as fork(2) dups them: repointing
+    // fd 3 in it leaves the parent's fd 3 open, and what it opened closes when
+    // it ends.
+    const forked = await shell.execute(
+      'exec 3>/work/d; ( exec 3>/work/e; echo child >&3 ); echo parent >&3; exec 3>&-',
+    );
+    assert.equal(forked.exitCode, 0, `subshell fd script: ${forked.stderr}`);
+    assert.equal(forked.stderr, '');
+    assert.equal(root.readFileString('/work/d'), 'parent\n');
+    assert.equal(root.readFileString('/work/e'), 'child\n');
+    assert.equal(opens.length, 5);
+    assert.deepEqual(closes.sort(), opens.sort(), 'the subshell closed its file, the parent closed its own');
+
+    // A background child keeps the file open after the parent closes its fd.
+    let release = () => {};
+    const gate = new Promise((resolve) => { release = resolve; });
+    asyncBox.commands.registry.register('gate', async () => { await gate; return 0; });
+    asyncBox.commands.registry.register('release', async () => { release(); return 0; });
+    const background = await shell.execute(
+      'exec 3>/work/f; { gate; echo late >&3; } & exec 3>&-; release; wait',
+    );
+    assert.equal(background.exitCode, 0, `background fd script: ${background.stderr}`);
+    assert.equal(background.stderr, '');
+    assert.equal(root.readFileString('/work/f'), 'late\n', 'the child wrote after the parent closed fd 3');
+    assert.equal(opens.length, 6);
+    assert.deepEqual(closes.sort(), opens.sort(), 'and the file closed with the child');
     await authority.releaseProcess(91);
   } finally {
     asyncBox.destroy();

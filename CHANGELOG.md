@@ -16,6 +16,14 @@ published independently in the `@nimbus-sh` npm scope.
   and `command -v` resolved from the session shell's directory, not the
   named shell's, so `cd build` then `./task.sh` ran the wrong file or none.
   Commands now resolve from the cwd of the shell that runs them.
+- Fixed: in the shell, `exec 3>file` or `exec 3>&-` inside a subshell
+  closed the parent's fd 3, so the parent's next write through it failed
+  with `EBADF`. A background job lost an inherited descriptor when the
+  parent closed its own, and a file a subshell opened with `exec` was never
+  closed. A child shell now holds its descriptors as `fork` dups them: a
+  file closes when the last shell holding it closes it or ends. A
+  programmatic call's shell ends with the call, so a file an `exec` left
+  open in it is closed too.
 
 ## 2026-10-01
 
