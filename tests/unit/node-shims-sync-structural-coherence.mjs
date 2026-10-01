@@ -30,6 +30,18 @@ const dec = new TextDecoder();
 const home = '/home/user';
 vfs.mkdir(home, { recursive: true });
 
+// The append protocol is identity-bound: one live writer per pid.
+const APPEND_PID = 7;
+const writerId = crypto.randomUUID();
+rawVfs.activateAppendWriter(APPEND_PID, writerId);
+async function digestOf(bytes) {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+// An append the test can hold in flight: while \`appendGate\` is set, each
+// fsAppend waits on it before reaching the authority.
+let appendGate = null;
+
 // Every authority call, in the order the authority received it.
 const calls = [];
 const record = (op, path, fn) => (...args) => {
@@ -52,6 +64,11 @@ const supervisor = {
   fsReadRange: record('fsReadRange', first, (p, o, l) => bridge.readRange(p, o, l)),
   fsWriteRange: record('fsWriteRange', first, (p, o, b) => bridge.writeRange(p, o, b)),
   fsTruncate: record('fsTruncate', first, (p, s) => bridge.truncate(p, s)),
+  fsAppend: record('fsAppend', first, async (p, moduleId, opId, bytes) => {
+    if (appendGate) await appendGate.promise;
+    return bridge.appendOnce(p, APPEND_PID, writerId, moduleId, Number(opId), await digestOf(bytes), bytes);
+  }),
+  fsAppendAck: (moduleId, opId) => bridge.acknowledgeAppend(APPEND_PID, writerId, moduleId, Number(opId)),
   fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
@@ -67,6 +84,11 @@ function ownTree(path = 'home') {
   vfs.chown(path, 1000, 1000);
   if (vfs.lstat(path).type !== 'directory') return;
   for (const entry of vfs.readdir(path)) ownTree(`${path}/${entry.name}`);
+}
+// Case 8's existing log files, which the process lists but never holds.
+for (const name of ['logs_parked', 'logs_in_flight']) {
+  vfs.mkdir(`${home}/${name}`);
+  vfs.writeFile(`${home}/${name}/app.log`, new TextEncoder().encode('prefix\n'));
 }
 ownTree();
 listAuthority(rawVfs);
@@ -167,6 +189,33 @@ for (const rename of [
   await drain();
   assert.equal(dec.decode(bridge.readFile(`${to}/package.json`)), '{"type":"module"}', 'the authority holds the file under the new name');
   assert.equal(dec.decode(bridge.readFile(`${to}/chunks/react.js`)), 'export default 1;', 'and the nested one');
+  assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
+}
+
+// 8. An append to a file inside a renamed directory stays an append. The
+// process never held the file, so its cell is only the appended bytes:
+// moved as a whole write, it replaced the file with them. Once with the
+// append parked, and once with its write-back already in flight when the
+// directory moves.
+for (const inFlight of [false, true]) {
+  const from = `${home}/${inFlight ? 'logs_in_flight' : 'logs_parked'}`;
+  const to = `${from}_moved`;
+  fs.appendFileSync(`${from}/app.log`, 'first\n');
+  if (inFlight) {
+    appendGate = Promise.withResolvers();
+    const issued = calls.length;
+    // The debounced write-back issues the append, which the gate holds.
+    for (let i = 0; i < 50 && !calls.slice(issued).some((c) => c.op === 'fsAppend'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(calls.slice(issued).some((c) => c.op === 'fsAppend'), 'the append is in flight');
+    fs.appendFileSync(`${from}/app.log`, 'second\n');
+  }
+  fs.renameSync(from, to);
+  if (appendGate) { appendGate.resolve(); appendGate = null; }
+  await drain();
+  const expected = inFlight ? 'prefix\nfirst\nsecond\n' : 'prefix\nfirst\n';
+  assert.equal(dec.decode(bridge.readFile(`${to}/app.log`)), expected, `the authority keeps the prefix and every append (in flight: ${inFlight})`);
   assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
 }
 

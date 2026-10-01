@@ -3594,8 +3594,23 @@ const __fsMod = (() => {
     // authority behind the move and be refused ENOENT, and the new name would
     // not read them back. Vite's optimizer writes deps_temp_<hash>/ and then
     // renames it to deps/. The fence below orders their write-back behind it.
+    //
+    // Except an append. Its cell may hold only the appended bytes of a file
+    // whose prefix only the authority has, and its write-back is an append
+    // keyed to its journal, not a replacement: moved as a whole write, it
+    // replaced the file with the suffix. It is written back under the name it
+    // was appended under, registered now so the move's wait for its subtree
+    // covers it, and the process stops serving the cell under either name.
+    const supervisor = _supervisor();
     for (const k of Object.keys(__vfsWrites)) {
       if (!k.startsWith(oldPrefix)) continue;
+      if (supervisor && __nimbusCapturePendingVfsAppend(k) !== null) {
+        _detachStructuralMutation(_flushParkedWrite("/" + k, supervisor));
+        if (__vfsBundle) delete __vfsBundle[k];
+        delete __vfsWrites[k];
+        _forgetSyncPath(k);
+        continue;
+      }
       const moved = newK + k.slice(oldK.length);
       const writtenAt = _ownWriteTimes[k];
       _parkWrite(moved, __vfsWrites[k]);
