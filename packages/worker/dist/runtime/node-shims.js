@@ -3541,10 +3541,27 @@ const __fsMod = (() => {
     // there): both are removals by POSIX's rule.
     // Each refusal names the call's two paths, whichever side it judged.
     _ensureRemovable(oldAbs, "rename", oldP, newP);
-    if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", oldP, newP);
+    const target = _statLadder(newAbs, true);
+    if (target !== undefined) _ensureRemovable(newAbs, "rename", oldP, newP);
     else _ensureWritable(newAbs, "rename", oldP, live, newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
+    // A name renamed to itself is left as it is, as rename(2) leaves it.
+    if (oldK === newK) return null;
+    // What rename(2) refuses before it moves anything, refused here before
+    // the local tables move: the sync view applies a rename at once and the
+    // authority only later, so a move it refuses would otherwise have been
+    // shown, and its descendants' writes sent, under the wrong names.
+    // A refusal only the authority can judge (a destination this view does
+    // not list) still arrives from it.
+    const source = _statLadder(oldAbs, true);
+    if (source !== undefined && source.isDirectory()) {
+      if (newK.startsWith(oldK + "/")) throw _fsErr("EINVAL", "rename", oldP, newP);
+      if (target !== undefined && !target.isDirectory()) throw _fsErr("ENOTDIR", "rename", oldP, newP);
+      if (target !== undefined && _nsList(newK).size > 0) throw _fsErr("ENOTEMPTY", "rename", oldP, newP);
+    } else if (source !== undefined && target !== undefined && target.isDirectory()) {
+      throw _fsErr("EISDIR", "rename", oldP, newP);
+    }
     // The table still holds the old name until the rename is reported, so the
     // new name reads through to it and the old one reads as gone.
     const nsFrom = _nsRealKey(oldK);
@@ -3575,32 +3592,24 @@ const __fsMod = (() => {
       }
       _forgetSyncTree(oldK);
     }
-    // Writes parked beneath a moved directory move with it, whoever made the
-    // directory: bound for the old name, their write-back would reach the
-    // authority behind the move and be refused ENOENT, and the new name would
-    // not read them back. Vite's optimizer writes deps_temp_<hash>/ and then
-    // renames it to deps/. The fence below orders their write-back behind it.
-    //
-    // Except an append. Its cell may hold only the appended bytes of a file
-    // whose prefix only the authority has, and its write-back is an append
-    // keyed to its journal, not a replacement: moved as a whole write, it
-    // replaced the file with the suffix. It is written back under the name it
-    // was appended under, registered now so the move's wait for its subtree
-    // covers it, and the process stops serving the cell under either name.
+    // Writes parked beneath a moved directory are written back under the
+    // names they were written under, registered now so the move's wait for
+    // its subtree orders them ahead of it: the authority then moves them with
+    // the directory, or leaves them where they were if it refuses the move.
+    // Left parked under the old names, they reached the authority behind the
+    // move and were refused ENOENT (Vite's optimizer writes deps_temp_<hash>/
+    // and renames it to deps/); moved to the new names, they would be written
+    // into the destination even when the move was refused, and an append's
+    // cell (only the appended bytes) would replace the file it extends. The
+    // sync view reads them under the new name once they land, through the
+    // rename's alias.
+    // With no authority the process's own tables are the filesystem, and the
+    // cells move with the name.
     const supervisor = _supervisor();
     for (const k of Object.keys(__vfsWrites)) {
       if (!k.startsWith(oldPrefix)) continue;
-      if (supervisor && __nimbusCapturePendingVfsAppend(k) !== null) {
-        _detachStructuralMutation(_flushParkedWrite("/" + k, supervisor));
-        if (__vfsBundle) delete __vfsBundle[k];
-        delete __vfsWrites[k];
-        _forgetSyncPath(k);
-        continue;
-      }
-      const moved = newK + k.slice(oldK.length);
-      const writtenAt = _ownWriteTimes[k];
-      _parkWrite(moved, __vfsWrites[k]);
-      if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
+      if (supervisor) _detachStructuralMutation(_flushParkedWrite("/" + k, supervisor));
+      else _parkWrite(newK + k.slice(oldK.length), __vfsWrites[k]);
       if (__vfsBundle) delete __vfsBundle[k];
       delete __vfsWrites[k];
       _forgetSyncPath(k);
