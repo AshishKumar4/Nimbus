@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "bd807029c5e49e87242647a7641ff10d34ebc1b29bd4c31343a70597481fafdf",
+  "fingerprint": "e07583d44a291c1e3f8a78167f81e2117abfd3355a39245b3dc967f37502297c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -451,8 +451,8 @@
     "packages/core/dist/substrate/lifo/commands/fs/find/errors.d.ts.map": "bd60be10600436bd69f8f01991fe834e58820d494b334194c93c228a37cb9943",
     "packages/core/dist/substrate/lifo/commands/fs/find/errors.js": "61a3580d381aa682f8b6ad049541826ae5e63ab2033de69312f9700e9711e0e4",
     "packages/core/dist/substrate/lifo/commands/fs/find/expression.d.ts": "00f909eb1d752985d57ead3cdd074b76fde83c1b7b14dde9b5abda304bf2ffbf",
-    "packages/core/dist/substrate/lifo/commands/fs/find/expression.d.ts.map": "74bb25f8f4c0675013c27bd1f41a9a1c8968747f433d0e3dfdcd6e5972c44580",
-    "packages/core/dist/substrate/lifo/commands/fs/find/expression.js": "e2f4007228a1b876e96b8a775254d184d62dba2612b99e2be8c066aa22bc183c",
+    "packages/core/dist/substrate/lifo/commands/fs/find/expression.d.ts.map": "2acba4aa5461db506bdb55636d8d237b0ca9d65662d18ec045067c34664eb058",
+    "packages/core/dist/substrate/lifo/commands/fs/find/expression.js": "ccbcf5493272c4d72f31211ea735d0e05be5e59fbac82fe75ceeb6b081f4b715",
     "packages/core/dist/substrate/lifo/commands/fs/find/format.d.ts": "e4d243cc49d867e6e373dc28135aec56e257f3871ab41e70a70aabed3bcb8777",
     "packages/core/dist/substrate/lifo/commands/fs/find/format.d.ts.map": "8ae625d8d0f27d05d51b685d680431768a9cfb60a568d0ab612630c290da69e0",
     "packages/core/dist/substrate/lifo/commands/fs/find/format.js": "e04fdd275cceaa15ef327741ee6a9546efb00626f64032ac0484c44e6294571d",
@@ -1094,7 +1094,7 @@
     "packages/core/src/substrate/lifo/commands/fs/file.ts": "acb19d598cb3732bc49f1b9d428e00866aac49220be18f4cc9a57bbcb05977ee",
     "packages/core/src/substrate/lifo/commands/fs/find.ts": "966192f75a6b8c793678aaf6cbfbee4cae934d26b628ca27f030c504ea4ff863",
     "packages/core/src/substrate/lifo/commands/fs/find/errors.ts": "a7790bafba7832064f764b054b3964b65d1491d97db8a039edb33ba2a23fe270",
-    "packages/core/src/substrate/lifo/commands/fs/find/expression.ts": "7e888ca4bd9da127ef55680708372eafd9185e733160cd99cd275fb37713aa64",
+    "packages/core/src/substrate/lifo/commands/fs/find/expression.ts": "492a95e62ebd4992182be634c3f1ad23dbc854d64dca91b9bfa9e29dc0d48a00",
     "packages/core/src/substrate/lifo/commands/fs/find/format.ts": "cd42933af7fc7a6d54f58763a2fd6f142b7ec30a6ec78f135a53bec9b9643607",
     "packages/core/src/substrate/lifo/commands/fs/find/walk.ts": "8356b99fb3d2f1f640dcd620eb9efa93a4054a457cd53d830fa8c0232e17e42f",
     "packages/core/src/substrate/lifo/commands/fs/ln.ts": "f365f3a6a08eb7a3fb80d10f7eeca06826b5c78c11b0df0caa7aacdbcda2136d",
