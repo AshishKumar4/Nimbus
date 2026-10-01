@@ -130,18 +130,20 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     // The command is found in the child's own PATH, in either mode: a
     // spawn's lookup falls back to a default search path when PATH is empty,
     // so the portable mode ran \`sh\` that the isolated mode refused.
+    // A directory passes X_OK too, so only an executable regular file counts.
+    const isExecutableFile = (path) => {
+      try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; }
+    };
     let executable = command;
     if (!command.includes('/')) {
-      executable = (env.PATH ?? '/usr/bin:/bin').split(':').map((dir) => resolvePath(cwd ?? process.cwd(), dir, command)).find((path) => {
-        try { accessSync(path, constants.X_OK); return true; } catch { return false; }
-      });
+      executable = (env.PATH ?? '/usr/bin:/bin').split(':').map((dir) => resolvePath(cwd ?? process.cwd(), dir, command)).find(isExecutableFile);
       if (!executable) {
         resolveResultMissing();
         return;
       }
     }
     executable = resolvePath(cwd ?? process.cwd(), executable);
-    try { accessSync(executable, constants.X_OK); } catch { resolveResultMissing(); return; }
+    if (!isExecutableFile(executable)) { resolveResultMissing(); return; }
     function resolveResultMissing() {
       resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
     }

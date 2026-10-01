@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,18 +37,18 @@ try {
   assert.match(timed.reason, /timeout 100ms/);
   console.log('bounded-process-safety: overflow and deadline enforced');
 
-  // The detached child acquires an exclusive lock, acknowledges over fd3,
+  // The detached child acquires an exclusive lock, reports its pid over fd3,
   // then stops itself. It cannot voluntarily release the lock. Requiring the
   // lock busy before parent exit and free afterward proves actual teardown,
   // not merely a closed output pipe or a marker that might never appear.
   const lock = join(root, 'detached.lock');
   const ready = join(root, 'detached.ready');
   const release = join(root, 'parent.release');
-  const grandchild = `require('node:fs').writeSync(3,'ready'); process.kill(process.pid,'SIGSTOP');`;
+  const grandchild = `require('node:fs').writeSync(3,String(process.pid)); process.kill(process.pid,'SIGSTOP');`;
   const parent = `
     const fs=require('node:fs');
     const child=require('node:child_process').spawn('/usr/bin/flock', ['-F','-x',${JSON.stringify(lock)},process.execPath,'-e',${JSON.stringify(grandchild)}],{detached:true,stdio:['ignore',1,2,'pipe']});
-    child.stdio[3].once('data',()=>fs.writeFileSync(${JSON.stringify(ready)},'ready'));
+    child.stdio[3].once('data',(pid)=>fs.writeFileSync(${JSON.stringify(ready)},pid));
     setInterval(()=>{ if(fs.existsSync(${JSON.stringify(release)})) process.exit(0); },10);
   `;
   const escaped = runBoundedProcess(process.execPath, ['-e', parent], { timeoutMs: 10_000 });
@@ -57,13 +57,30 @@ try {
     await readyFile(ready);
     assert.equal(await lockStatus(lock), 1, 'detached child holds its lock before parent exit');
   } finally { writeFileSync(release, 'release'); escapedResult = await escaped; }
-  assert.equal(escapedResult.ok, true, escapedResult.reason);
+  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1' || escapedResult.ok) {
+    assert.equal(escapedResult.ok, true, escapedResult.reason);
+  } else {
+    // Without isolation, descendants are found by a /proc census every 25 ms.
+    // A setsid one whose parent exits within a period is reparented before it
+    // is seen (bounded-process.mjs): the run must then end at the cleanup
+    // deadline and say so, not hang. The descendant it could not reach is
+    // this test's to stop.
+    assert.match(escapedResult.reason, /cleanup deadline exceeded/);
+    const pid = Number(readFileSync(ready, 'utf8'));
+    process.kill(pid, 'SIGKILL');
+    for (let i = 0; i < 500 && existsSync(`/proc/${pid}`); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   assert.equal(await lockStatus(lock), 0, 'stopped detached descendant was actually terminated');
   const missing = await runBoundedProcess(join(root, 'no-command'));
   assert.equal(missing.ok, false);
   assert.match(missing.reason, /spawn failed/);
   const emptyPath = await runBoundedProcess('sh', ['-c', 'exit 0'], { env: { ...process.env, PATH: '' } });
   assert.match(emptyPath.reason, /spawn failed/);
+  // A directory named like the command, earlier in PATH, is not the command.
+  mkdirSync(join(root, 'shadow', 'sh'), { recursive: true });
+  const shadowed = await runBoundedProcess('sh', ['-c', 'echo found'], { env: { ...process.env, PATH: `${join(root, 'shadow')}:/usr/bin:/bin` } });
+  assert.equal(shadowed.ok, true, shadowed.reason);
+  assert.equal(shadowed.stdout.trim(), 'found');
   const narrowEnv = await runBoundedProcess(process.execPath, ['-e', 'console.log(JSON.stringify(process.env))'], { env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
   assert.equal(narrowEnv.ok, true, narrowEnv.reason);
   assert.deepEqual(JSON.parse(narrowEnv.stdout), { PATH: '/usr/bin:/bin', LANG: 'C' });
