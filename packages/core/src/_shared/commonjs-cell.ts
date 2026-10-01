@@ -95,6 +95,11 @@
  */
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
+import {
+  RUNTIME_FUNCTION_HEADS, isRuntimeFunctionKind, runtimeFunctionSource, runtimeFunctionSyntaxError, type RuntimeFunctionKind,
+} from './runtime-function-source.js';
+
+export { runtimeFunctionSyntaxError, type RuntimeFunctionKind } from './runtime-function-source.js';
 
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -303,15 +308,6 @@ export const RUNTIME_CODE_MAX_ENTRIES = 1024;
  */
 export const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
 
-/** The constructors whose text a program can hand in at runtime. */
-const RUNTIME_FUNCTION_HEADS = {
-  function: 'function',
-  async: 'async function',
-  generator: 'function*',
-  asyncGenerator: 'async function*',
-} as const;
-export type RuntimeFunctionKind = keyof typeof RUNTIME_FUNCTION_HEADS;
-
 /** Code a launch could not compile, as its ledger reports it. */
 export type RuntimeCodeEntry =
   | { kind: RuntimeFunctionKind; params: string[]; body: string }
@@ -382,47 +378,6 @@ export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
   return { kind: v.kind, params: [...v.params], body: v.body };
 }
 
-function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
-  return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
-}
-
-/**
- * Why V8's constructor would refuse these arguments, or null when it would
- * build the function. V8 parses the parameters alone and requires them to end
- * where the list ends ("Arg string terminates parameters early"), the body
- * alone, and then the whole source, which must be exactly one function
- * literal ("Single function literal required"). Splicing unchecked text into
- * `(<head> anonymous(<params>\n) {\n<body>\n})` would otherwise let a body
- * such as `}, globalThis.x = 1, function () {` run code at module
- * evaluation that the constructor never would.
- */
-export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null {
-  const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
-  const paramText = params.join(',');
-  const checks: Array<[text: string, bodyStart: number, emptyBody: boolean]> = [
-    [`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true],
-    [`${head}\n) {\n${body}\n})`, `${head}\n) `.length, false],
-    [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
-  ];
-  for (const [text, bodyStart, emptyBody] of checks) {
-    let program: Program | undefined;
-    try {
-      program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
-    } catch (e) {
-      return e instanceof Error ? e.message : String(e);
-    }
-    const [statement] = program.body;
-    const fn = program.body.length === 1 && statement.type === 'ExpressionStatement' ? statement.expression : null;
-    if (
-      !fn || fn.type !== 'FunctionExpression' || fn.start !== 1 || fn.end !== text.length - 1
-      || fn.body.start !== bodyStart || (emptyBody && fn.body.body.length !== 0)
-    ) {
-      return emptyBody ? 'Arg string terminates parameters early' : 'Single function literal required';
-    }
-  }
-  return null;
-}
-
 /**
  * The `{ cjs }` module text for a Function-constructor call: it exports the
  * function V8 builds for `new <Kind>Function(...params, body)` — named
@@ -439,7 +394,7 @@ export function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonl
   const refused = runtimeFunctionSyntaxError(kind, params, body);
   if (refused !== null) return `throw new SyntaxError(${JSON.stringify(refused)});`;
   return 'module.exports = (function (require, module, exports, __filename, __dirname) { return ('
-    + `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${params.join(',')}\n) {\n${body}\n}); })`
+    + `${runtimeFunctionSource(kind, params, body)}); })`
     + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname);';
 }
 

@@ -45,3 +45,6 @@ HYPOTHESIS-*.md
 
 # Raw benchmark dumps are diagnostics, not source. bench/tti.mjs writes here.
 packages/computesdk-nimbus/bench-results/
+
+# Fetched test inputs (test262), pinned and reused by the tests that fetch them.
+.cache/
