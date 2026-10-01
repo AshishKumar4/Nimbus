@@ -22,7 +22,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
+import { getSymlinkRegistry, LEGACY_SYMLINK_REGISTRY_PATH } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -163,6 +163,18 @@ try {
   }
   assert.equal(kernel.exists('home/held/tree'), false, 'and copied nothing in');
   raw.releaseExclusiveMutation(lease.owner);
+}
+
+// The legacy symlink registry is frozen while any lease is held, by its
+// name: a write to the name is refused even where the name is a link that
+// resolves outside every held tree.
+{
+  kernel.writeFile('home/user/outside.json', '{}');
+  kernel.symlink('/home/user/outside.json', LEGACY_SYMLINK_REGISTRY_PATH);
+  const lease = raw.acquireExclusiveMutation('home/user/frozen', { includeMissingAncestors: true });
+  assert.throws(() => kernel.writeFile(LEGACY_SYMLINK_REGISTRY_PATH, '{"repo/injected":"target"}'), { code: 'EBUSY' });
+  raw.releaseExclusiveMutation(lease.owner);
+  kernel.unlink(LEGACY_SYMLINK_REGISTRY_PATH);
 }
 
 // A copy in slices is checked again on each one: a lease taken over its

@@ -3213,7 +3213,7 @@ export class SqliteVFS {
   ): BatchInodeEntry {
     const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
     const effectivePath = resolved.path;
-    this.assertMutationsAllowed([effectivePath]);
+    this.assertMutationsAllowed([this.storageKey(path, cred), effectivePath]);
     if (resolved.inode) {
       if (resolved.inode.kind === 'directory') throw vfsError('EISDIR', effectivePath);
       if (resolved.inode.kind !== 'file') throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
@@ -3277,7 +3277,7 @@ export class SqliteVFS {
     const prior = this.checkAccess(normalized, 0, cred, { followLeaf: false, allowMissingLeaf: true });
     if (prior.inode) throw vfsError('EEXIST', normalized);
     const placed = prior.path;
-    this.assertMutationsAllowed([placed]);
+    this.assertMutationsAllowed([normalized, placed]);
     this.checkParentAccess(placed, cred);
     const data = enc.encode(target);
     const now = this.now();
@@ -3622,7 +3622,7 @@ export class SqliteVFS {
   ): void {
     const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
     const effectivePath = resolved.path;
-    this.assertMutationsAllowed([effectivePath]);
+    this.assertMutationsAllowed([this.storageKey(path, cred), effectivePath]);
     const prior = resolved.inode;
     if (prior?.kind === 'directory') throw vfsError('EISDIR', effectivePath);
     if (prior && prior.kind !== 'file') throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
@@ -3766,7 +3766,7 @@ export class SqliteVFS {
 
     const resolved = this.checkAccess(normalized, 0, cred, { allowMissingLeaf: true });
     const effectivePath = resolved.path;
-    this.assertMutationsAllowed([effectivePath]);
+    this.assertMutationsAllowed([this.storageKey(normalized, cred), effectivePath]);
     const inode = resolved.inode;
     if (inode?.kind === 'directory') throw vfsError('EISDIR', effectivePath);
     if (inode && inode.kind !== 'file') {
@@ -4201,7 +4201,7 @@ export class SqliteVFS {
    */
   private truncate(path: string, size: number, cred: VfsCred): void {
     const resolved = this.checkAccess(path, 0o2, cred);
-    this.assertMutationsAllowed([resolved.path]);
+    this.assertMutationsAllowed([this.storageKey(path, cred), resolved.path]);
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     if (inode.kind === 'directory') throw vfsError('EISDIR', resolved.path);
@@ -4898,7 +4898,7 @@ export class SqliteVFS {
 
   private unlink(path: string, cred: VfsCred): void {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
-    this.assertMutationsAllowed([resolved.path]);
+    this.assertMutationsAllowed([this.storageKey(path, cred), resolved.path]);
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     this.checkParentAccess(resolved.path, cred);
@@ -4912,7 +4912,7 @@ export class SqliteVFS {
     // Everything below acts on the directory the name resolves to, the one
     // whose permissions are checked.
     const resolved = this.checkAccess(np, 0, cred, { followLeaf: false });
-    this.assertMutationsAllowed([resolved.path]);
+    this.assertMutationsAllowed([np, resolved.path]);
     this.checkParentAccess(resolved.path, cred);
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
@@ -4944,7 +4944,7 @@ export class SqliteVFS {
    */
   private removeRecursive(path: string, cred: VfsCred): number {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
-    this.assertMutationsAllowed([resolved.path]);
+    this.assertMutationsAllowed([this.storageKey(path, cred), resolved.path]);
     if (!resolved.inode) throw vfsError('ENOENT', normalizeVfsPath(path));
     this.checkParentAccess(resolved.path, cred);
     this.checkStickyParentMutation(resolved.path, resolved.inode, cred);
@@ -5020,7 +5020,7 @@ export class SqliteVFS {
     const inode = source.inode;
     if (!inode) throw vfsError('ENOENT', oldPath);
     const target = this.checkAccess(newPath, 0, cred, { followLeaf: false, allowMissingLeaf: true });
-    this.assertMutationsAllowed([source.path, target.path]);
+    this.assertMutationsAllowed([this.storageKey(oldPath, cred), this.storageKey(newPath, cred), source.path, target.path]);
     oldPath = source.path;
     newPath = target.path;
     // Linux order (do_renameat2, vfs_rename): the same entry is a no-op before
@@ -5270,7 +5270,7 @@ export class SqliteVFS {
     if (inode.kind === 'directory') throw vfsError('EISDIR', source.path);
     if (inode.kind !== 'file') throw vfsError('EINVAL', `${source.path} is not a regular file`);
     const target = this.checkAccess(dest, 0, cred, { allowMissingLeaf: true });
-    this.assertMutationsAllowed([target.path]);
+    this.assertMutationsAllowed([this.storageKey(dest, cred), target.path]);
     const prior = target.inode;
     if (prior?.kind === 'directory') throw vfsError('EISDIR', target.path);
     if (prior && prior.kind !== 'file') throw vfsError('EINVAL', `${target.path} is not a regular file`);
@@ -5322,7 +5322,7 @@ export class SqliteVFS {
     const source = this.checkAccess(src, 0o4, cred, { followLeaf: false, tree });
     const root = source.inode!;
     const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
-    this.assertMutationsAllowed([target.path]);
+    this.assertMutationsAllowed([this.storageKey(dst, cred), target.path]);
     if (target.inode) throw vfsError('EEXIST', target.path);
     this.checkParentAccess(target.path, cred);
     const sharing = this.sharedDirectory(target.path);
