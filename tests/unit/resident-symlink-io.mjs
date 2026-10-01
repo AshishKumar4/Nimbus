@@ -297,7 +297,15 @@ await runScenarios(import.meta.path, {
     await until(() => globalThis.__nimbusVfsCursor.rev >= committed, 'a barrier reported the rename');
     assert.equal(probe.fs.lstatSync(moved).isSymbolicLink(), true, 'the table\'s row for the new name');
     assert.throws(() => probe.fs.realpathSync(moved), { code: 'ENOENT' });
+    // The rename is still unanswered: a write through the new name waits for
+    // it and goes as that name, so the authority follows the link as it is.
+    authority.kfs.writeFile('home/user/app/b.txt', 'b');
+    authority.kfs.unlink('home/user/app/moved-self.txt');
+    authority.kfs.symlink('b.txt', 'home/user/app/moved-self.txt');
+    const writing = probe.fs.promises.writeFile(moved, 'through');
     release.resolve();
+    await writing;
+    assert.equal(authority.read('home/user/app/b.txt'), 'through');
   },
 
   async 'a mode change through a link waits for the write parked under the target'() {
