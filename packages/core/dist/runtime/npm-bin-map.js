@@ -25,7 +25,7 @@ export function npmBinMap(packageName, bin) {
     const out = new Map();
     // An array names each target under its own last component.
     const fields = typeof bin === 'string' ? [[packageName, bin]]
-        : Array.isArray(bin) ? bin.map((target) => [typeof target === 'string' ? target.split('/').pop() ?? '' : '', target])
+        : Array.isArray(bin) ? bin.map((target) => [typeof target === 'string' ? target : '', target])
             : bin !== null && typeof bin === 'object' ? Object.entries(bin) : [];
     for (const [key, target] of fields) {
         const name = npmBinName(key);
@@ -37,17 +37,17 @@ export function npmBinMap(packageName, bin) {
     }
     return out;
 }
+/** `path.posix.join('/', target)` without its leading slash, as npm takes a target; null for the package root itself. */
 function withinPackage(target) {
     const slashed = target.replace(/\\/g, '/');
-    const segments = slashed.split('/');
-    if (segments.every((segment) => segment !== '..' && segment !== '.' && segment !== ''))
-        return slashed;
     const out = [];
-    for (const segment of segments) {
+    for (const segment of slashed.split('/')) {
         if (segment === '..')
             out.pop();
         else if (segment !== '.' && segment !== '')
             out.push(segment);
     }
-    return out.length === 0 ? null : out.join('/');
+    if (out.length === 0)
+        return null;
+    return out.join('/') + (slashed.endsWith('/') ? '/' : '');
 }
