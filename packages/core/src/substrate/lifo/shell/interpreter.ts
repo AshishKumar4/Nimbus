@@ -1044,7 +1044,7 @@ export class Interpreter {
             });
           } else {
             // Check registry
-            const command = await this.config.registry.resolve(name);
+            const command = await this.config.registry.resolve(name, { cwd: this.config.getCwd() });
             if (!command) {
               (await stderr.write(`${name}: command not found\n`));
               exitCode = 127;

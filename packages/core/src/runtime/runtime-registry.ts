@@ -44,6 +44,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
+import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
 import { exists } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
@@ -235,7 +236,7 @@ export interface RuntimeSpec {
  * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
-  resolve(name: string): Promise<Command | null | undefined> | Command | null | undefined;
+  resolve(name: string, from?: ResolveContext): Promise<Command | null | undefined> | Command | null | undefined;
 }
 
 /**

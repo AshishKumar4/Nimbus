@@ -12,6 +12,10 @@ published independently in the `@nimbus-sh` npm scope.
   unnamed call now runs in a shell of its own, built from the session
   shell's cwd and environment and discarded when it ends, as the SDK
   documents. Named shells are unchanged.
+- Fixed: in a named shell, `./task.sh`, a relative script path, an npm bin
+  and `command -v` resolved from the session shell's directory, not the
+  named shell's, so `cd build` then `./task.sh` ran the wrong file or none.
+  Commands now resolve from the cwd of the shell that runs them.
 
 ## 2026-10-01
 

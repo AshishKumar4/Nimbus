@@ -1,5 +1,15 @@
 import type { Command } from './types.js';
 
+/**
+ * Where a command name is being resolved from. A name that is a path (./x,
+ * ../x) or one found under the caller's node_modules/.bin depends on the
+ * calling shell's cwd, and the registry is shared by every shell of a
+ * workspace: the session's, each named shell, each exec.
+ */
+export interface ResolveContext {
+  cwd: string;
+}
+
 export class CommandRegistry {
   private commands = new Map<string, Command>();
   private lazy = new Map<string, () => Promise<{ default: Command }>>();
@@ -17,7 +27,8 @@ export class CommandRegistry {
     this.lazy.delete(name);
   }
 
-  async resolve(name: string): Promise<Command | undefined> {
+  /** `from`: the calling shell, for resolvers installed over this one (exec-dispatch, npm bins). */
+  async resolve(name: string, _from?: ResolveContext): Promise<Command | undefined> {
     const cmd = this.commands.get(name);
     if (cmd) return cmd;
 

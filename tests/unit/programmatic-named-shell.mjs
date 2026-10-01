@@ -24,8 +24,14 @@ let enterHold = () => {};
 const holdEntered = new Promise((resolve) => { enterHold = resolve; });
 let releaseHold = () => {};
 const holdReleased = new Promise((resolve) => { releaseHold = resolve; });
+// `marker` is a script interpreter (#!/bin/marker) that prints the script's
+// second line, so a test can tell which of two scripts of one name ran.
 const box = await programmaticHost({
   commands: {
+    async marker(ctx) {
+      await ctx.stdout.write(`${(await ctx.vfs.readFileString(ctx.args[0])).split('\n')[1]}\n`);
+      return 0;
+    },
     async hold() { enterHold(); await holdReleased; return 0; },
     async held() { await holdEntered; return 0; },
     async release() { releaseHold(); return 0; },
@@ -89,6 +95,18 @@ try {
   delete ws.shell.getEnv().SESSION_VAR;
   const together = await Promise.all([rpcExec(host, 'barrier'), rpcExec(host, 'barrier')]);
   assert.deepEqual(together.map((r) => r.exitCode), [0, 0], 'two unnamed calls run at once');
+
+  // A path or an npm bin is found from the call's own cwd, not the session
+  // shell's: the registry is shared by every shell, and its resolvers read
+  // the cwd of the shell that asks.
+  await ws.exec("printf '#!/bin/marker\\nbuild task\\n' > /home/user/build/task.sh && chmod +x /home/user/build/task.sh");
+  await ws.exec("printf '#!/bin/marker\\nhome task\\n' > /home/user/task.sh && chmod +x /home/user/task.sh");
+  assert.equal(ws.shell.getCwd(), '/home/user', 'the session shell stays at home');
+  assert.equal((await rpcExec(host, 'cd /home/user/build; ./task.sh')).stdout, 'build task\n', 'an unnamed call runs ./task.sh from its own cwd');
+  assert.equal((await rpcExec(host, './task.sh', { cwd: '/home/user/build' })).stdout, 'build task\n', 'and from the cwd it was given');
+  await rpcExec(host, 'cd /home/user/build', { shellId: 'agent-5' });
+  assert.equal((await rpcExec(host, './task.sh', { shellId: 'agent-5' })).stdout, 'build task\n', 'a named shell from its own cwd');
+  assert.equal((await rpcExec(host, 'command -v ./task.sh', { cwd: '/home/user/build' })).stdout.trim() !== '', true, 'command -v resolves it there too');
 
   // ── shellRoot seeds a NEW shell only ──────────────────────────────────────
   const seeded = await rpcExec(host, 'pwd', { shellId: 'agent-3', shellRoot: '/home/user/build' });

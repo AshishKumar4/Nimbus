@@ -1357,7 +1357,7 @@ export class Shell {
         exitCode = 2;
         continue;
       }
-      const command = await this.registry.resolve(arg);
+      const command = await this.registry.resolve(arg, { cwd: this.getCwd() });
       if (!command) {
         (await stderr.write(`hash: ${arg}: not found\n`));
         exitCode = 1;
