@@ -5,6 +5,36 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- An async `fs.promises.readFile`, `stat` or `lstat` in a node process is one
+  call to the session where it was two or three: the read takes its
+  consistency barrier with it (`fsAcquired`), and a file's stat for the
+  synchronous view rides in the same read batch. Each call cost 7-8 ms on
+  Cloudflare, nearly all of it the hop to the session.
+- A workspace loads its bash, Python, Ruby, clang and wasm runners when the
+  first command needs one, not at create. Loading all of them cost every
+  workspace isolate 0.65 MB (measured by Kinu).
+- `@nimbus-sh/worker/facet-host` exports `supervisorEsbuildService`, so a host
+  that bundles in its own Durable Object runs esbuild in the object's esbuild
+  facet instead of its own isolate. A failed build keeps esbuild's `errors`
+  and `warnings` wherever esbuild ran; across RPC they were lost.
+- Installing a runtime writes each blob in one pass (`writeFileFrom`) instead
+  of appending it piece by piece, which re-copied the file's manifest on
+  most appends: about 234 SQLite transactions of re-copying for clang.
+  A mounted target takes the file whole, and a failed source changes nothing.
+- A directory renamed by a node process takes the files it wrote into it
+  along. Vite's dependency optimizer writes `deps_temp_<hash>/` and renames
+  it to `deps/`, and the first request to a new Vite dev server answered 502
+  `ENOENT … deps_temp_<hash>`. The moved files read and stat under the new
+  name at once; a rename Node refuses (into its own subtree, onto a non-empty
+  directory, a file onto a directory) is refused before anything moves, and
+  one the session refuses writes nothing under the destination. The old name
+  no longer reads a file's unsaved bytes after the rename.
+- ES modules have `import.meta.dirname` and `import.meta.filename`, as in
+  Node 20.11 and later. Vinext's dev server needs them.
+- `node` no longer dies at launch when an installed package inlines a
+  WebAssembly module this runtime cannot compile. wasm-feature-detect inlines
+  one per proposal it probes.
+
 ## 2026-09-30
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
