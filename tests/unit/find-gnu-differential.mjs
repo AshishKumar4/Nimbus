@@ -364,6 +364,13 @@ const CASES = [
   ['.', '-maxdepth', '1', '-newermm', 'README.md'],
   ['.', '-type', 'f', '-newerma', 'Makefile'],
   ['.', '-type', 'f', '-anewer', 'Makefile'],
+  ['.', '-type', 'f', '-newermt', '2020-01-01'],
+  ['.', '-type', 'f', '-newermt', new Date(NOW - 50 * DAY).toISOString().slice(0, 10)],
+  ['.', '-newermt', '3 days ago', '-type', 'f'],
+  ['.', '-type', 'f', '!', '-newermt', 'yesterday'],
+  ['.', '-newermt', `@${(NOW - 3 * DAY) / SECOND}`],
+  ['.', '-type', 'f', '-newerat', '1 week ago'],
+  ['.', '-newermt', `${new Date(NOW - 2 * DAY).toISOString().slice(0, 10)} 12:00`],
   ['.', '-maxdepth', '1', '-cnewer', 'README.md'],
 
   // Permissions and ownership
@@ -579,6 +586,8 @@ const CASES = [
   ['.', '-newerXY', 'a'],
   ['.', '-newermm'],
   ['.', '-newertm', 'a'],
+  ['.', '-newermt', 'garbage'],
+  ['.', '-newermt'],
   ['.', '-used'],
 ];
 

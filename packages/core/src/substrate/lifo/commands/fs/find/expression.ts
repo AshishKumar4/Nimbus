@@ -16,6 +16,7 @@ import { findUnixGroup, findUnixUser } from '../../../../../shell/unix-accounts.
 import { globMatch } from '../../../utils/glob.js';
 import { resolve } from '../../../utils/path.js';
 import { adjustMode, compileMode } from '../../../utils/mode-change.js';
+import { parseDateTime } from '../../../utils/parse-datetime.js';
 import { compileFormat, type CompiledFormat, type FileTypeLetter } from './format.js';
 import { FindUsageError, quote } from './errors.js';
 
@@ -650,7 +651,7 @@ const TABLE: Readonly<Record<string, Entry>> = {
   execdir: exec(true),
 };
 
-/** -newerXY: X and Y from a, c, m (B, the birth time, is not recorded); Y may be t, a date. */
+/** -newerXY: X and Y from a, c, m (B, the birth time, is not recorded); Y may be t, a date as touch -d reads one. */
 async function parseNewerXY(parser: Parser, name: string): Promise<boolean> {
   const x = name[6];
   const y = name[7];
@@ -664,7 +665,10 @@ async function parseNewerXY(parser: Parser, name: string): Promise<boolean> {
   const reference = parser.next();
   if (reference === undefined) throw new FindUsageError(`The ${quote(name)} test needs an argument`);
   if (y === 't') {
-    throw new FindUsageError(`invalid predicate \`${name}': dates are not supported here; use -newer${x}m with a reference file`);
+    const at = parseDateTime(reference, parser.environment.now);
+    if (at === null) throw new FindUsageError(`I cannot figure out how to interpret ${quote(reference)} as a date or time`);
+    parser.addPrimary(name, { kind: 'newer', field, reference: at });
+    return true;
   }
   const stat = await parser.statReference(reference);
   const time = y === 'a' ? stat.atimeMs : y === 'c' ? stat.ctimeMs : stat.mtimeMs;
