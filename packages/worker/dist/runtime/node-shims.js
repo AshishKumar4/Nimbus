@@ -2728,7 +2728,7 @@ const __fsMod = (() => {
     // (_acquiredRead).
     let fill = refetch || null;
     let first = null;
-    if (!refetch && typeof supervisor.fsAcquired === "function" && typeof supervisor.fsReadRange === "function") {
+    if (!refetch && _servesFsAcquired(supervisor) && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       fill = _beginFill(_strip(absPath));
       try {
@@ -2844,19 +2844,44 @@ const __fsMod = (() => {
    * as when they were two calls. A refused read is answered as data, so the
    * barrier is applied before it throws. \`rpc\` wraps the call as the read's
    * own call was wrapped (_fsRpc or _fsReadRpc, with its syscall).
+   *
+   * \`fill\`, when the read is to fill the sync view, was begun before the
+   * call. Its bytes were served after the barrier's answer was computed, so
+   * they are dated at that answer's revision, but only when applying it
+   * left the cursor exactly there: a cursor moved further by anything else
+   * (a repair already in flight, a barrier asked separately) has passed
+   * changes this fill was never told of, and it installs nothing.
+   *
+   * A session that does not serve fsAcquired (one deployed before it) is
+   * asked for the barrier and the read separately, from then on.
    */
+  let _fsAcquiredServed = true;
+  function _servesFsAcquired(supervisor) {
+    return _fsAcquiredServed && typeof supervisor.fsAcquired === "function";
+  }
   async function _acquiredRead(supervisor, op, args, rpc, syscall, p, fill) {
     const acquire = _acquireArgs();
-    const answer = await rpc(supervisor.fsAcquired(acquire, op, args));
+    let answer;
+    try {
+      answer = await __nimbusUseRpcResult(supervisor.fsAcquired(acquire, op, args), (result) => result);
+    } catch (error) {
+      const message = error && typeof error.message === "string" ? error.message : "";
+      if (!/does not implement the method|is not served by this host/.test(message)) throw _mapSupervisorError(error, syscall, p);
+      _fsAcquiredServed = false;
+      await _acquireBarrier(supervisor);
+      if (fill) fill.reported = Infinity;
+      return rpc(supervisor[op](...args));
+    }
     const acquired = answer ? answer.acquired : undefined;
     await _acquireBarrier(supervisor, acquired);
-    // The read was served after its barrier was answered, so its bytes hold
-    // every mutation at or below that answer's revision: a fill for it is
-    // dated there, not at the older cursor it was begun under, or the
-    // barrier's own report of the path would refuse what it was read to fill.
-    const dated = acquired && acquired.answer;
-    if (fill && dated && dated.poison !== true && typeof dated.rev === "number" && dated.epoch === _cursor.epoch && dated.rev > fill.rev) {
-      fill.rev = dated.rev;
+    if (fill) {
+      const dated = acquired && acquired.answer;
+      if (dated && dated.poison !== true && typeof dated.rev === "number"
+          && dated.epoch === _cursor.epoch && dated.rev === _cursor.rev) {
+        if (dated.rev > fill.rev) fill.rev = dated.rev;
+      } else {
+        fill.reported = Infinity;
+      }
     }
     if (answer && answer.failure) throw _mapSupervisorError(answer.failure, syscall, p);
     return answer ? answer.value : null;
@@ -2871,7 +2896,7 @@ const __fsMod = (() => {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
       let meta;
-      if (typeof supervisor.fsAcquired === "function") {
+      if (_servesFsAcquired(supervisor)) {
         meta = await _acquiredRead(supervisor, syscall, [absPath], rpc, syscall, p);
       } else {
         await _acquireBarrier(supervisor);
@@ -3681,7 +3706,7 @@ const __fsMod = (() => {
       }
       _parkWrite(moved, content);
       if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
-      if (landed) movedWrites.push([moved, landed, content]);
+      if (landed) movedWrites.push([moved, landed, __vfsWriteGenerations[moved]]);
     }
     _forgetCreation(oldK);
     _forgetCreation(newK);
@@ -3708,10 +3733,14 @@ const __fsMod = (() => {
     // cell then stands for nothing at the new name: its bytes leave the sync
     // view there (unless a later write replaced them) and it retires without
     // a write. A failed write under the old name is the cell's own failure.
-    for (const [moved, landed, content] of movedWrites) {
+    for (const [moved, landed, generation] of movedWrites) {
       const refused = () => {
-        if (__vfsBundle && __vfsBundle[moved] === content) delete __vfsBundle[moved];
-        globalThis.__nimbusVfsWriteRefused("/" + moved);
+        // By the parked generation, not the bytes: a resident store holds a
+        // copy of them, and a later write to the name is its own.
+        if (__vfsWriteGenerations[moved] === generation) {
+          if (__vfsBundle) delete __vfsBundle[moved];
+          globalThis.__nimbusVfsWriteRefused("/" + moved);
+        }
         return undefined;
       };
       _detachStructuralMutation(__nimbusFlushVfsWrite(
