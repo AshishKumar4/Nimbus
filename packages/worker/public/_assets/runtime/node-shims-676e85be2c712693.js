@@ -1,76 +1,4 @@
-/**
- * node-shims.ts — Nimbus v2.0 Node.js runtime shims for dynamic workers.
- *
- * Generates a raw JS string embedded in facet code. Provides:
- *   - fs: full sync/async/promises/streams VFS-backed filesystem
- *   - path: complete POSIX path operations
- *   - os/process: Linux edge environment simulation
- *   - Buffer: Uint8Array wrapper with encoding support
- *   - events: workerd's native node:events
- *   - stream: real Readable/Writable/Transform/Duplex with backpressure
- *   - crypto: createHash (FNV-1a sync, SubtleCrypto async), randomBytes/UUID
- *   - zlib: forward to workerd's native node:zlib when the facet real-import
- *     block materialised (full sync/brotli/stream surface; results are the
- *     host realm's own Buffers, recognized by the widened isBuffer);
- *     CompressionStream fallback with honest sync refusal
- *   - dns: real DNS resolution via Cloudflare DNS-over-HTTPS
- *   - http: virtual server with port registry for supervisor routing
- *   - https: fetch()-backed request/get
- *   - net: Socket/Server with connect/write/end
- *   - child_process: ChildProcess objects (execution requires supervisor RPC)
- *   - assert, util, url, querystring, string_decoder, readline, tty, timers
- *
- * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
- * async reads use the supervisor bridge as their source of truth whenever it
- * is available. Sync writes stay in __vfsWrites until an async observation or
- * process completion flushes them to the supervisor.
- */
-/**
- * Generate the shared shim block that goes inside both the DO-facet and
- * entrypoint runner code.  The returned string is raw JS (no wrapping).
- *
- * At runtime the following variables must exist in scope:
- *   - __vfsBundle: Record<string, string>  (path→utf8 content)
- *   - __vfsWrites: Record<string, string | Uint8Array> (sync writes / failed async writes)
- *   - __vfsDirs:   Record<string, boolean> (dirs created)
- *   - the shared VFS write ledger source evaluated in the same scope
- *   - cwd: string
- *   - argv, env, filename, dirname: from args
- *   - stdout, stderr, exitCode: capture variables
- */
-import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
-import { generateSqliteShimCode } from './sqlite-shim.js';
-import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
-import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
-import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
-import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
-import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
-import { NATIVE_HTTP_SOURCE } from './native-http.js';
-const STREAMS_CODE = generateStreamsCode();
-const SQLITE_SHIM_CODE = generateSqliteShimCode();
-const UNDICI_SHIM_CODE = generateUndiciShimCode();
-const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
-const EXPORTS_RESOLVER_JS = getExportsResolverJS();
-const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
-// Node version fingerprint. Single source of truth in constants.ts.
-// Interpolated as JS literals into the emitted process shim. See
-// constants.ts for the rationale (create-astro preflight, etc.).
-const NODE_VERSION_LITERAL = JSON.stringify(NODE_VERSION);
-const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
-// AI-egress mediation policy, interpolated for the same reason: the emitted
-// shim is a string and cannot import, so the constants it decides with come
-// from _shared/ai-egress.ts at build time rather than being written twice.
-const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
-const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
-const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map((r) => [r.from, r.suggest ? `${r.reason} … try: ${r.suggest}` : r.reason]));
-export function generateShimsCode() {
-    return `
+
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Format helper ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -93,7 +21,7 @@ function __fmtError(e, seen) {
   }
   if (Object.prototype.hasOwnProperty.call(e, "cause")) fields.push("[cause]: " + __fmtField(e.cause, seen));
   if (fields.length === 0) return text;
-  return text + " {\\n" + fields.map((f) => "  " + f.split("\\n").join("\\n  ")).join(",\\n") + "\\n}";
+  return text + " {\n" + fields.map((f) => "  " + f.split("\n").join("\n  ")).join(",\n") + "\n}";
 }
 function __fmtField(v, seen) {
   if (typeof v === "string") return JSON.stringify(v);
@@ -121,10 +49,10 @@ function __nimbusDisposeRpcResult(value) {
 // ═══════════════════════════════════════════════════════════════════════
 // Node keeps a process alive for its ACTIVE REQUESTS — a pending fetch, a
 // pending fs call, a running child — not for pending promises. The facet's
-// entry drain cannot learn that by watching promises: \`await\` resolves
+// entry drain cannot learn that by watching promises: `await` resolves
 // through PerformPromiseThen, which never calls the patched
-// Promise.prototype.then, so a floating \`(async () => { await fetch(u);
-// console.log(x); })()\` looks finished the instant its synchronous part
+// Promise.prototype.then, so a floating `(async () => { await fetch(u);
+// console.log(x); })()` looks finished the instant its synchronous part
 // returns and the rest of the program is dropped on the floor.
 //
 // Every external operation a facet can start crosses one of two seams:
@@ -179,12 +107,12 @@ async function __nimbusUseRpcResultUnref(promise, use) {
  * from outside it: a response or body from the network, a relayed socket
  * frame, a request routed to one of its ports, a stdin packet or signal, a
  * child's output or exit. Each of those can be the second half of a causal
- * chain that began with a write somewhere else — \`echo v2 > f; curl :3000\`,
+ * chain that began with a write somewhere else — `echo v2 > f; curl :3000`,
  * a child that writes a file and then exits — and the handler's synchronous
  * reads must see that write. Nothing but this barrier carries it.
  *
  * What the supervisor delivers — a request, a stdin packet, a child's output
- * or exit — carries the answer to this barrier with it (\`delivered\`,
+ * or exit — carries the answer to this barrier with it (`delivered`,
  * session/rpc.ts _acquireOnDelivery), computed after the thing delivered was
  * queued, so the barrier applies that answer instead of asking, and the
  * program resumes with no round trip of its own. It asks when there is none
@@ -315,11 +243,11 @@ function __nimbusWasmDigest(bytes) {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  fetch default User-Agent ───────────────────────────────────────
 // workerd's global fetch sends no User-Agent by default, but Node's
-// undici fetch adds \`User-Agent: node\`. Servers that require a UA
+// undici fetch adds `User-Agent: node`. Servers that require a UA
 // (notably GitHub's API, used by giget/create-* template downloaders)
 // answer 403 to a UA-less request. Match Node by injecting the default
 // UA only when the caller supplied none, preserving any explicit value.
-// This also covers the http/https \`request\`/\`get\` shims, which route
+// This also covers the http/https `request`/`get` shims, which route
 // through this same global fetch.
 (() => {
   if (typeof globalThis.fetch !== "function" || globalThis.__nimbusFetchUaInstalled) return;
@@ -340,9 +268,9 @@ function __nimbusWasmDigest(bytes) {
     } catch { return null; }
   };
   // Read one header off whatever the caller passed without constructing a
-  // Request: \`new Request(existing)\` marks the original's body disturbed, and a
+  // Request: `new Request(existing)` marks the original's body disturbed, and a
   // request we inspect but do not claim must still be sendable by real fetch.
-  // \`init.headers\` replaces a Request's own headers, so it is consulted first.
+  // `init.headers` replaces a Request's own headers, so it is consulted first.
   const __headerOf = (input, init, name) => {
     const h = (init && init.headers) || (typeof Request !== "undefined" && input instanceof Request ? input.headers : null);
     if (!h) return null;
@@ -379,24 +307,24 @@ function __nimbusWasmDigest(bytes) {
   // AI-egress mediation: a request addressed anywhere on the network that
   // presents this session's AI capability token is inference the session owns,
   // so it is served by the session's own gateway (supervisor loopback port
-  // ${NIMBUS_AI_GATEWAY_PORT}) instead of being sent out. That is how a tool holding a baked-in
+  // 8790) instead of being sent out. That is how a tool holding a baked-in
   // vendor base URL — one that never reads OPENAI_BASE_URL — still reaches the
   // session's models with no configuration of its own.
   //
   // The match is on the credential, never on the destination: a request
   // carrying anything else (the user's own real provider key) is not ours, is
   // left alone, and goes to that provider. See _shared/ai-egress.ts.
-  const __aiCredentialHeaders = ${AI_CREDENTIAL_HEADERS_LITERAL};
+  const __aiCredentialHeaders = ["authorization","x-api-key"];
   const __maybeRouteAiEgress = (url, input, init) => {
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     let token = "";
-    try { token = (env && env[${AI_TOKEN_ENV_LITERAL}]) || ""; } catch { return null; }
+    try { token = (env && env["NIMBUS_AI_TOKEN"]) || ""; } catch { return null; }
     if (!token) return null;
     for (const name of __aiCredentialHeaders) {
       const raw = __headerOf(input, init, name);
       if (!raw) continue;
-      if (String(raw).trim().replace(/^bearer\\s+/i, "") !== token) continue;
-      return Promise.resolve(__supervisor.routeLoopback(${NIMBUS_AI_GATEWAY_PORT}, __supervisorRequest(url, input, init)));
+      if (String(raw).trim().replace(/^bearer\s+/i, "") !== token) continue;
+      return Promise.resolve(__supervisor.routeLoopback(8790, __supervisorRequest(url, input, init)));
     }
     return null;
   };
@@ -454,8 +382,8 @@ function __nimbusWasmDigest(bytes) {
     return __nimbusTrackOp(__barriered(input, init));
   };
   // A fetch settles once the headers arrive; reading the body is a SECOND
-  // in-flight operation on the same connection, and \`const r = await
-  // fetch(u); const j = await r.json()\` is the shape most programs use.
+  // in-flight operation on the same connection, and `const r = await
+  // fetch(u); const j = await r.json()` is the shape most programs use.
   // It is also a second resumption from the network, so it takes the same
   // ACQUIRE: a program that reads a file after parsing a response body is no
   // less entitled to current bytes than one that reads after the headers.
@@ -504,7 +432,7 @@ function __vfsNormalizePath(p) {
 // Userland's path is workerd's node:path, Node's own lib/path.js
 // (https://developers.cloudflare.com/workers/runtime-apis/nodejs/path/).
 // A hand-rolled join kept empty segments, so totalist's
-// \`join("", "hello.txt")\` was "/hello.txt" and sirv mapped every file under
+// `join("", "hello.txt")` was "/hello.txt" and sirv mapped every file under
 // "//name" and answered 404. Only resolution is the process's: resolve and
 // relative start from its cwd, not the Worker's.
 const __pathMod = (() => {
@@ -541,13 +469,13 @@ const __BufferMod = __bufferModule.Buffer;
 // A process's stdout and stderr are byte streams: esbuild's service protocol
 // is binary packets, and so is any program piping an image or an archive.
 // The relay to the supervisor carries Uint8Array; a text producer encodes
-// at its own edge, and the facet's REPORTED result — the \`stdout\`/\`stderr\`
+// at its own edge, and the facet's REPORTED result — the `stdout`/`stderr`
 // strings the wrapper declares — decodes at its edge with one streaming
 // decoder per stream, so a multibyte character split across two writes
 // still reads as one character.
 const __nimbusOutEnc = new TextEncoder();
 const __nimbusOutDec = { stdout: new TextDecoder("utf-8"), stderr: new TextDecoder("utf-8") };
-/** \`process.stdout.write(d, enc)\` payload as bytes. */
+/** `process.stdout.write(d, enc)` payload as bytes. */
 function __nimbusOutBytes(d, enc) {
   if (d instanceof Uint8Array) return d;
   if (typeof d === "string") {
@@ -569,8 +497,8 @@ function __nimbusOutText(streamName, bytes) {
  * The resident set is two things: a plain object on the heap, where the only
  * way to ask is to walk every key, and a table in the facet's own SQLite, where
  * the paths ARE a PRIMARY KEY index and the answer is a range scan. Asking the
- * object way against the table is what made a single \`existsSync\` of a
- * directory cost the whole filesystem — a \`for..in\` over the Proxy pulls every
+ * object way against the table is what made a single `existsSync` of a
+ * directory cost the whole filesystem — a `for..in` over the Proxy pulls every
  * key AND, through the descriptor trap, every file's bytes. Measured at pi
  * scale (19,470 files / 95 MiB): 222 ms, 17,821 chunk queries and 87 MiB of
  * content read and thrown away, PER CALL, against 1 ms and no content read for
@@ -641,7 +569,7 @@ const __fsMod = (() => {
   const _dec = new TextDecoder();
 
   // ── byte-shape helpers (binary-fs wave) ──
-  // __vfsWrites + __vfsBundle now carry \`Uint8Array | string\`. Strings
+  // __vfsWrites + __vfsBundle now carry `Uint8Array | string`. Strings
   // are the hot path (module source, package.json, user JS); bytes are
   // the binary-fs path (wasm modules, images, binary protocol payloads).
   // Pre-fix the Uint8Array branch UTF-8-decoded the bytes to a string,
@@ -664,7 +592,7 @@ const __fsMod = (() => {
   }
   // Coerce to string for text-read paths. Bytes are UTF-8-decoded
   // (lossy for invalid sequences — same caveat as Node's
-  // \`Buffer.toString('utf8')\`); strings pass through.
+  // `Buffer.toString('utf8')`); strings pass through.
   function _asString(v) {
     if (typeof v === "string") return v;
     if (_isBytes(v)) return _dec.decode(v);
@@ -672,7 +600,7 @@ const __fsMod = (() => {
   }
 
   // ── helpers ──
-  function _strip(p) { return String(p).replace(/^\\/+/, ""); }
+  function _strip(p) { return String(p).replace(/^\/+/, ""); }
   function _resolve(p) {
     // X.5-O: WHATWG-URL → POSIX path coercion. Pre-fix String(p) on
     // a URL instance or 'file://' string produced 'file:///package.json';
@@ -735,7 +663,7 @@ const __fsMod = (() => {
   // What the table cannot know is this process's own structural effects that
   // the authority has not reported back yet, so those sit in an overlay, one
   // entry per path: "absent" / "absentTree" (unlink, rmdir, rm), "dir"
-  // (mkdir; \`hide\` when nothing was there, so no stale child shows through)
+  // (mkdir; `hide` when nothing was there, so no stale child shows through)
   // and "alias" (a rename: the new name denotes what the old one did). An
   // entry retires once its mutation has settled AND a barrier begun after
   // that has applied, because such a barrier's delta is answered after the
@@ -757,9 +685,9 @@ const __fsMod = (() => {
     throw err;
   }
   /**
-   * The mount point when the namespace cannot say whether \`absPath\` is there:
+   * The mount point when the namespace cannot say whether `absPath` is there:
    * it is on a mount, in a directory the launch did not list (not named by
-   * it, or past its bound). With \`listing\`, also when \`absPath\` is such a
+   * it, or past its bound). With `listing`, also when `absPath` is such a
    * directory, whose entries are not known. Null when the namespace knows.
    */
   function _nsUnlisted(absPath, follow, listing) {
@@ -815,7 +743,7 @@ const __fsMod = (() => {
   }
 
   /**
-   * The overlay's word on \`k\`: "absent", { alias } (look the table up at
+   * The overlay's word on `k`: "absent", { alias } (look the table up at
    * this key instead), { dir } (own directory), { hide } (the table knows
    * nothing under an own fresh directory), or null (ask the table).
    */
@@ -838,7 +766,7 @@ const __fsMod = (() => {
   }
 
   /**
-   * The key an operation that follows symlinks lands on: every link on \`k\`
+   * The key an operation that follows symlinks lands on: every link on `k`
    * followed, the last one too, as open(2) and chmod(2) follow them; null on
    * a loop. It is the name a barrier reports when that file changes, so
    * this process's own state for it (parked bytes, a pending mode or times,
@@ -846,7 +774,7 @@ const __fsMod = (() => {
    * name, a write became a regular file where the link is, and nothing a
    * later write to the target reported ever replaced it.
    *
-   * The namespace resolves it, as the authority will. \`k\` as given when the
+   * The namespace resolves it, as the authority will. `k` as given when the
    * namespace cannot say: it is not active, or this process's own unsettled
    * rename, unlink or mkdir is on the path, which the table does not show.
    */
@@ -856,7 +784,7 @@ const __fsMod = (() => {
     return found === "ELOOP" ? null : found.path;
   }
 
-  /** \`p\` resolved to the path an operation that follows symlinks lands on (_nsLandingKey). */
+  /** `p` resolved to the path an operation that follows symlinks lands on (_nsLandingKey). */
   function _resolveFollow(p, syscall) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
@@ -866,7 +794,7 @@ const __fsMod = (() => {
   }
 
   /**
-   * Where the bytes \`k\` denotes are held, if they are anywhere: symlinks
+   * Where the bytes `k` denotes are held, if they are anywhere: symlinks
    * followed, and the old name of this process's own rename that has not
    * landed. A name the table does not list yet is held too (a file this
    * process made through a link). Null when nothing can be there.
@@ -878,7 +806,7 @@ const __fsMod = (() => {
     return found === "ELOOP" ? null : found.path;
   }
 
-  /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
+  /** The table key `k` denotes (overlay and symlinks applied), or null. */
   function _nsRealKey(k) {
     const held = _nsHeldKey(k);
     return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
@@ -895,7 +823,7 @@ const __fsMod = (() => {
   }
 
   /**
-   * Everything the namespace says about \`k\`: a stat record, "absent", or
+   * Everything the namespace says about `k`: a stat record, "absent", or
    * "ELOOP". Own pending writes and directories first, then the overlay,
    * then the table, then content this process wrote that the table has not
    * caught up with.
@@ -936,7 +864,7 @@ const __fsMod = (() => {
     return "absent";
   }
 
-  /** Names directly under directory \`k\`: Map name → type. */
+  /** Names directly under directory `k`: Map name → type. */
   function _nsList(k) {
     const names = new Map();
     const own = _nsOwnView(k);
@@ -1258,7 +1186,7 @@ const __fsMod = (() => {
   // some of which stayed pending and never reached the session
   // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
   // the learns cost a round trip per batch, as the reads before them do.
-  /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
+  /** `written`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
   async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
     const ticket = _beginFill(_strip(absPath));
@@ -1272,10 +1200,10 @@ const __fsMod = (() => {
   }
 
   /**
-   * Keep a stat the authority answered while \`ticket\` (_beginFill) was
+   * Keep a stat the authority answered while `ticket` (_beginFill) was
    * open, unless a barrier reported the path, meanwhile, above what the stat
    * is known to cover: the cursor the ticket was dated at, or the own write
-   * it was read after (\`written\`). A deletion among those reports leaves
+   * it was read after (`written`). A deletion among those reports leaves
    * no row the stat could be judged against, and keeping the stat would
    * bring back a name nothing will report gone again. False when the stat
    * was not kept, so the caller can ask for a fresh one (_learnLive): a
@@ -1305,7 +1233,7 @@ const __fsMod = (() => {
 
   // libuv's words for each code: Node's message is "ENOENT: no such file or
   // directory, open 'x'", and "rename 'a' -> 'b'" for a call naming two paths.
-  const _errnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
+  const _errnoDescription = {"E2BIG":"argument list too long","EPERM":"operation not permitted","ENOENT":"no such file or directory","EIO":"i/o error","ENXIO":"no such device or address","EAGAIN":"resource temporarily unavailable","EACCES":"permission denied","EBUSY":"resource busy or locked","EEXIST":"file already exists","EXDEV":"cross-device link not permitted","ENOTDIR":"not a directory","EISDIR":"illegal operation on a directory","EINVAL":"invalid argument","ENOSPC":"no space left on device","EROFS":"read-only file system","ELOOP":"too many symbolic links encountered","ENAMETOOLONG":"name too long","ENOTEMPTY":"directory not empty","ENOTSUP":"operation not supported on socket","ESTALE":"stale file handle","EBADF":"bad file descriptor","EFBIG":"file too large","ENODATA":"no data available","ENOSYS":"function not implemented","EMFILE":"too many open files","ENFILE":"file table overflow","ENOMEM":"not enough memory","ETXTBSY":"text file is busy","EMLINK":"too many links","ENODEV":"no such device","ESPIPE":"invalid seek","EPIPE":"broken pipe","EINTR":"interrupted system call","ERANGE":"result too large","EOVERFLOW":"value too large for defined data type","ETIMEDOUT":"connection timed out","ECANCELED":"operation canceled","EFAULT":"bad address in system call argument"};
   function _fsErr(code, syscall, p, dest) {
     const described = Object.prototype.hasOwnProperty.call(_errnoDescription, code) ? _errnoDescription[code] + ", " : "";
     const second = dest === undefined ? "" : " -> '" + dest + "'";
@@ -1323,10 +1251,10 @@ const __fsMod = (() => {
    * Turn a failed supervisor call into a filesystem error the caller can
    * branch on. Every exit from here carries a code, a syscall, a path and an
    * errno, because that is the shape everything written against node:fs
-   * expects — \`err.code === 'ENOENT'\` is how programs make decisions.
+   * expects — `err.code === 'ENOENT'` is how programs make decisions.
    *
    * The code arrives as the error's own property. Both ends of the RPC run
-   * with workerd's \`enhanced_error_serialization\`, which carries an error's
+   * with workerd's `enhanced_error_serialization`, which carries an error's
    * own properties across (the host refuses to compose without it), so the
    * code the authority set (_fsErr here, fsError in the runtime-fs bridge,
    * vfsError and VfsError in the VFS) is the code seen here.
@@ -1348,7 +1276,7 @@ const __fsMod = (() => {
     return mapped;
   }
 
-  /** \`dest\`: the second path of a call that names two (rename), as Node reports it. */
+  /** `dest`: the second path of a call that names two (rename), as Node reports it. */
   async function _fsRpc(promise, syscall, p, use, dest) {
     try { return await __nimbusUseRpcResult(promise, use); }
     catch (error) { throw _mapSupervisorError(error, syscall, p, dest); }
@@ -1407,7 +1335,7 @@ const __fsMod = (() => {
     return time;
   }
 
-  // \`own\`: the path is this process's own (the namespace's overlay of its
+  // `own`: the path is this process's own (the namespace's overlay of its
   // effects), so a first stat fixes its time once. Any other path's times
   // come from its metadata (_statObject), and recording one per stat grew a
   // map entry for every file a program ever stats.
@@ -1621,7 +1549,7 @@ const __fsMod = (() => {
   const _fillReports = new Map();
 
   /**
-   * Begin a live read of \`k\`: the cursor it is issued under — every mutation
+   * Begin a live read of `k`: the cursor it is issued under — every mutation
    * at or below it is already in the bytes it returns — and what has been
    * reported against it since, nothing yet. Called after the read's barrier
    * and before its RPC.
@@ -1644,7 +1572,7 @@ const __fsMod = (() => {
     if (live.size === 0) _fillReports.delete(fill.k);
   }
 
-  /** A barrier reported \`k\` at \`rev\`: remember it on every read of it in flight. */
+  /** A barrier reported `k` at `rev`: remember it on every read of it in flight. */
   function _noteFillReport(k, rev) {
     const live = _fillReports.get(k);
     if (live) for (const fill of live) if (rev > fill.reported) fill.reported = rev;
@@ -1703,7 +1631,7 @@ const __fsMod = (() => {
    * returned, so it has nothing to invalidate. The bytes are already paid
    * for; caching them costs one map insert.
    *
-   * \`fill\` (_beginFill) dates them, and it is also the reason an install can
+   * `fill` (_beginFill) dates them, and it is also the reason an install can
    * be declined: a barrier that reported the path above the read's cursor
    * while the read was in flight may describe a mutation the bytes predate,
    * and that report is gone once consumed. Declining costs the next sync
@@ -1807,7 +1735,7 @@ const __fsMod = (() => {
   }
 
   /**
-   * \`result\` is the ACQUIRE answer that asked for the repair: a poison, a
+   * `result` is the ACQUIRE answer that asked for the repair: a poison, a
    * delta arriving while a repair is owed, or null for a barrier that got no
    * answer at all.
    */
@@ -1860,7 +1788,7 @@ const __fsMod = (() => {
    * current by its listed revision and needs nothing more. A row of this
    * facet's own bytes is kept whatever the listing says — and its report is
    * exactly what the write or mutation that owns it needs, to judge its own
-   * acknowledgement against. The pass hands those back (\`own\`), and they are
+   * acknowledgement against. The pass hands those back (`own`), and they are
    * noted here as a delta's would have been; one acknowledged since the pass
    * looked was dated by a receipt that could not see the report, so it is
    * judged here directly.
@@ -1936,7 +1864,7 @@ const __fsMod = (() => {
    * everything since. Only the barrier that started a repair resumes on it
    * alone.
    *
-   * \`delivered\` is an answer the supervisor delivered with the resumption
+   * `delivered` is an answer the supervisor delivered with the resumption
    * this barrier is taken for; it stands in for the first ACQUIRE when it can
    * (_deliveredAnswer). Everything after is the same for an answer delivered
    * and one asked for, so a repair, a join or a poison follows exactly the
@@ -2056,7 +1984,7 @@ const __fsMod = (() => {
   /**
    * What this facet asks its ACQUIRE with: its cursor. Built in one place, so
    * what a delivery is answered from (a long poll sends these,
-   * \`__nimbusVfsAcquireArgs\`) is exactly what fsAcquire would be asked.
+   * `__nimbusVfsAcquireArgs`) is exactly what fsAcquire would be asked.
    */
   function _acquireArgs() {
     // Every build is the start of an answer the overlay may retire against.
@@ -2216,17 +2144,17 @@ const __fsMod = (() => {
   const _refetching = new Map();
 
   /**
-   * Read \`k\` live and install it, behind the barrier just taken. Settles
+   * Read `k` live and install it, behind the barrier just taken. Settles
    * either way: a refetch that fails leaves the path missing, which the next
    * read of it answers.
    *
-   * \`read\` settles once this read has landed and its install was made or
-   * declined. \`done\`, which the resumptions wait on, may wait once more. An
+   * `read` settles once this read has landed and its install was made or
+   * declined. `done`, which the resumptions wait on, may wait once more. An
    * install is declined when a barrier reported the path above this read's
    * cursor, or a poison spoiled it, and settling there would release every
    * waiter onto the miss it left while something else is already filling
    * the path: the newer refetch a barrier issued to replace this one, or the
-   * repair that poison started. So \`done\` waits on what is in flight at the
+   * repair that poison started. So `done` waits on what is in flight at the
    * moment this read settles, that refetch's own read and install and that
    * repair, and then settles whether or not the path is held. It never
    * follows a refetch issued after that. A peer that rewrites the path
@@ -2256,13 +2184,13 @@ const __fsMod = (() => {
    * resolved at call time.
    *
    * Late resolution is load-bearing, not defensive. The opencode runner
-   * evaluates this module with \`__supervisor\` still null and assigns it in
+   * evaluates this module with `__supervisor` still null and assigns it in
    * its fetch handler; binding the supervisor when the wrappers are
    * installed would silently leave every resident-TUI timer unbarriered.
    *
    * Published on globalThis because the other resumptions — an outbound
    * fetch response, a relayed socket frame, and everything the supervisor
-   * delivers (\`__nimbusInboundBarrier\`, with the answer it delivered) — are
+   * delivers (`__nimbusInboundBarrier`, with the answer it delivered) — are
    * handed to the program by code outside this closure.
    */
   async function _resumptionAcquire(delivered) {
@@ -2345,7 +2273,7 @@ const __fsMod = (() => {
   // mkdir tree failed ENOENT on its own parent and never reached authority.
   const _announcedDirs = new Set();
 
-  // Announce every directory on \`absPath\` the authority may not know about.
+  // Announce every directory on `absPath` the authority may not know about.
   // supervisor.mkdir is recursive, so the deepest unannounced one creates all
   // of them in a single round trip; a path whose directories are already live
   // (the common case) costs none at all.
@@ -2392,9 +2320,9 @@ const __fsMod = (() => {
    * mkdirSync, rmdirSync, unlinkSync and renameSync used to edit the local
    * tables and stop: a sync syscall cannot make an RPC, and unlike a sync
    * write they parked nothing the write-back could later flush. Measured
-   * live: node-tar's \`mkdirSync(dir)\` then \`fs.promises.open(dir/file,
-   * "w")\` — once per extracted entry — was answered ENOENT by an authority
-   * that had never heard of \`dir\`; that is create-astro's template copy.
+   * live: node-tar's `mkdirSync(dir)` then `fs.promises.open(dir/file,
+   * "w")` — once per extracted entry — was answered ENOENT by an authority
+   * that had never heard of `dir`; that is create-astro's template copy.
    *
    * The sync effect stays exactly as it was. What is added is the same RPC
    * the asynchronous form of the call issues, queued through the write
@@ -2403,12 +2331,12 @@ const __fsMod = (() => {
    * mutation), and — for the two that act on a subtree — behind pending
    * mutations beneath it. The async forms are that same queued call, awaited.
    *
-   * \`null\` when there is no authority to tell: standalone and unit contexts
+   * `null` when there is no authority to tell: standalone and unit contexts
    * keep today's local-only behaviour. Without a ledger the RPC is issued
    * directly, which is what the async forms did before they were queued.
    */
-  // \`method\` names the supervisor RPC when it differs from the syscall the
-  // caller reports (lchown rides \`chown\`, rm rides \`fsRemove\`).
+  // `method` names the supervisor RPC when it differs from the syscall the
+  // caller reports (lchown rides `chown`, rm rides `fsRemove`).
   function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
@@ -2441,7 +2369,7 @@ const __fsMod = (() => {
    * See __nimbusBeginOwnMutation: the barrier KEEPS the cell while the RPC
    * is in flight — a barrier issued after this mutation can be answered
    * ahead of it, and an eviction there loses bytes no later stamp can
-   * recover — and the receipt decides at the end. \`apply\` lands the local
+   * recover — and the receipt decides at the end. `apply` lands the local
    * effect while the lease still holds the cell, so the stamp the end
    * settles describes a cell that already carries the mutation.
    *
@@ -2491,7 +2419,7 @@ const __fsMod = (() => {
     __nimbusQueueVfsMutation(absPath, () => mutation.then(() => undefined, () => undefined), false);
   }
 
-  // Queue the parked write for \`absPath\`, if any, on the path's mutation
+  // Queue the parked write for `absPath`, if any, on the path's mutation
   // tail. Registration is synchronous: a caller that queues its own mutation
   // on the same tail right after this call is ordered behind the flush.
   function _flushParkedWrite(absPath, supervisor) {
@@ -2541,7 +2469,7 @@ const __fsMod = (() => {
     }
   }
 
-  // Resize the local sync-view cell (bundle + pending write) to \`size\`
+  // Resize the local sync-view cell (bundle + pending write) to `size`
   // bytes, zero-extending when growing. No-op when there is no cell.
   function _truncateLocalCell(absPath, size) {
     const k = _strip(absPath);
@@ -2560,8 +2488,8 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
-  // Positional write into a local cell: return \`base\` with \`bytes\` placed at
-  // \`pos\`. The single implementation behind every fd-style write (async
+  // Positional write into a local cell: return `base` with `bytes` placed at
+  // `pos`. The single implementation behind every fd-style write (async
   // FileHandle.write, sync writeSync, and the post-RPC local overlay).
   //
   // A descriptor write loop appends at the current end, so that case grows the
@@ -2582,7 +2510,7 @@ const __fsMod = (() => {
   // steps, and stops entirely rather than push a cell past the RPC ceiling —
   // a file that would fit exactly must never be made not to fit.
   const _CELL_RESERVE_CAP = 2 * 1024 * 1024;
-  const _CELL_PAYLOAD_CAP = ${MAX_RPC_SAFE_PAYLOAD_BYTES};
+  const _CELL_PAYLOAD_CAP = 29360128;
   function _spliceCell(base, pos, bytes) {
     const size = Math.max(base.byteLength, pos + bytes.byteLength);
     const capacity = base.buffer.byteLength - base.byteOffset;
@@ -2605,7 +2533,7 @@ const __fsMod = (() => {
     return next;
   }
 
-  // Overlay \`bytes\` at \`pos\` into the local sync-view cell so sync reads
+  // Overlay `bytes` at `pos` into the local sync-view cell so sync reads
   // stay coherent after a live ranged write. No-op when there is no cell.
   function _overlayLocalCell(absPath, pos, bytes) {
     const k = _strip(absPath);
@@ -2642,7 +2570,7 @@ const __fsMod = (() => {
   }
 
   // The one Dirent shape: readdir({ withFileTypes }) sync and async, and
-  // every Dir.read(). \`parentPath\` is Node's field; \`path\` its deprecated
+  // every Dir.read(). `parentPath` is Node's field; `path` its deprecated
   // alias that older callers still read.
   class __Dirent {
     constructor(name, type, parentPath) {
@@ -2678,15 +2606,15 @@ const __fsMod = (() => {
   // turn. The gather window is one microtask, so it can only capture
   // requests the program had already issued concurrently — a sequential
   // loop batches nothing because it has issued nothing else to batch.
-  const READ_BATCH_PATH_LIMIT = ${FS_READ_BATCH_PATH_LIMIT};
-  const READ_BATCH_REQUEST_BYTES = ${FS_READ_BATCH_REQUEST_BYTES};
+  const READ_BATCH_PATH_LIMIT = 1024;
+  const READ_BATCH_REQUEST_BYTES = 4194304;
   let _openReadBatch = null;
 
   function _queueRangeRead(supervisor, absPath, pos, want) {
     return _queueBatchRequest(supervisor, { path: absPath, offset: pos, length: want }, want);
   }
 
-  // \`request\` in the open batch, \`bytes\` of file content counted against the
+  // `request` in the open batch, `bytes` of file content counted against the
   // batch's bound. Settles with the entry's bytes for a range, its stat for
   // an lstat.
   function _queueBatchRequest(supervisor, request, bytes) {
@@ -2741,7 +2669,7 @@ const __fsMod = (() => {
   }
 
   /**
-   * Read \`want\` bytes at \`pos\`. Async reads always consult the live VFS.
+   * Read `want` bytes at `pos`. Async reads always consult the live VFS.
    * A pending sync write is flushed first, so the supervisor remains the
    * authority without losing this facet's newer local bytes.
    * Returns null at EOF, throws ENOENT when the path does not exist.
@@ -2773,7 +2701,7 @@ const __fsMod = (() => {
     throw _fsErr("ENOENT", "open", displayPath);
   }
 
-  // Every chunk of \`absPath\` from \`from\` to EOF, issued in ONE turn so the
+  // Every chunk of `absPath` from `from` to EOF, issued in ONE turn so the
   // read batch carries them together. A stat bounds the walk; a chunk that
   // comes back short or missing still ends the file, exactly as taking them
   // one at a time did, so a file that shrank under the reader is read short
@@ -2887,14 +2815,14 @@ const __fsMod = (() => {
   /** Paths whose write-back this process issued and the authority accepted. */
   const _acceptedHere = new Set();
   globalThis.__nimbusVfsWriteLanded = (key) => {
-    const k = String(key).replace(/^\\/+/, "");
+    const k = String(key).replace(/^\/+/, "");
     _acceptedHere.add(k);
   };
 
   // The authority refused a parked write (vfs-write-ledger): the record may
   // be that write's, so it is forgotten and the next access asks the authority.
   globalThis.__nimbusVfsWriteRefused = (key) => {
-    const k = String(key).replace(/^\\/+/, "");
+    const k = String(key).replace(/^\/+/, "");
     _createdHere.delete(k);
     _acceptedHere.delete(k);
   };
@@ -2923,11 +2851,11 @@ const __fsMod = (() => {
   /**
    * The ops a session deployed before them does not serve, and whether this
    * one does: a refusal that says so switches the process to the calls those
-   * ops replaced, from then on. An RPC stub answers \`typeof "function"\` for
+   * ops replaced, from then on. An RPC stub answers `typeof "function"` for
    * any method, so only the refusal can tell.
    */
   const _served = { fsAcquired: true, writeFileStat: true };
-  /** The refusal of \`op\` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
+  /** The refusal of `op` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
   function _unserved(error, op) {
     const message = error && typeof error.message === "string" ? error.message : "";
     return message.includes('does not implement the method "' + op + '"')
@@ -2941,10 +2869,10 @@ const __fsMod = (() => {
    * trip (session/rpc.ts _rpcFsAcquired): the authority answers the barrier
    * before it reads, and the barrier is applied before the value is used,
    * as when they were two calls. A refused read is answered as data, so the
-   * barrier is applied before it throws. \`rpc\` wraps the call as the read's
+   * barrier is applied before it throws. `rpc` wraps the call as the read's
    * own call was wrapped (_fsRpc or _fsReadRpc, with its syscall).
    *
-   * \`fill\`, when the read is to fill the sync view, was begun before the
+   * `fill`, when the read is to fill the sync view, was begun before the
    * call. Its bytes were served after the barrier's answer was computed, so
    * they are dated at that answer's revision, but only when applying it
    * left the cursor exactly there: a cursor moved further by anything else
@@ -3381,7 +3309,7 @@ const __fsMod = (() => {
     return (((bits >> shift) & 7) & want) === want;
   }
 
-  /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
+  /** `p` and `dest`: what a refusal names, the call's own paths, whichever of them `absPath` is. */
   function _ensureAncestorsTraversable(absPath, syscall, p, dest) {
     const parts = _strip(absPath).split("/").filter(Boolean);
     for (let index = 1; index < parts.length; index++) {
@@ -3390,7 +3318,7 @@ const __fsMod = (() => {
     }
   }
 
-  /** \`live\`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
+  /** `live`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const cell = _bundleLookup(absPath);
@@ -3731,7 +3659,7 @@ const __fsMod = (() => {
   function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p)); }
 
   // ── renameSync ──
-  /** \`live\`: the async form, which the authority answers for a destination the namespace cannot judge. */
+  /** `live`: the async form, which the authority answers for a destination the namespace cannot judge. */
   function _renameQueued(oldP, newP, live) {
     const oldAbs = _resolve(oldP);
     const newAbs = _resolve(newP);
@@ -3907,7 +3835,7 @@ const __fsMod = (() => {
   // rmdirSync perform, over the whole subtree when recursive) and ONE
   // authority RPC — fsRemove, which the bridge serves as unlink or a bounded
   // recursive removal — is queued behind every pending mutation beneath the
-  // path. ENOENT under \`force\` is the authority's to swallow; locally an
+  // path. ENOENT under `force` is the authority's to swallow; locally an
   // unknown path may still exist live, so it is asked rather than answered.
   function _rmQueued(p, opts, sync) {
     const o = opts || {};
@@ -3929,7 +3857,7 @@ const __fsMod = (() => {
       // A path the sync view cannot map may still exist live (born after
       // boot). The async form asks the authority, whose ENOENT is the real
       // one; the sync form has no frame to receive that answer, so it gives
-      // statSync's own provisional not-found unless \`force\` makes the
+      // statSync's own provisional not-found unless `force` makes the
       // verdict irrelevant.
       if (sync && !o.force) throw _fsErr("ENOENT", "rm", p);
     }
@@ -4818,10 +4746,10 @@ const __fsMod = (() => {
   // page size, and blocks is the configured VFS capacity in those blocks.
   // The supervisor surface exposes no usage counter, so bfree/bavail report
   // the whole capacity; the VFS has no inode table, so files/ffree are 0
-  // (unknown, not "none"). \`type\` is 0: this is no kernel filesystem and
+  // (unknown, not "none"). `type` is 0: this is no kernel filesystem and
   // no magic number would be true of it.
   const _STATFS_BSIZE = 4096;
-  const _STATFS_BLOCKS = Math.floor(${VFS_CAPACITY} / 4096);
+  const _STATFS_BLOCKS = Math.floor(10737418240 / 4096);
   function _statfsObject(opts) {
     const wrap = opts && opts.bigint ? BigInt : Number;
     return {
@@ -4965,7 +4893,7 @@ const __fsMod = (() => {
     statfs: async (p, opts) => _statfsAsync(p, opts),
     watch: async function* (filename, opts) {
       // Minimal async iter — polls _bundleLookup every 500ms and yields
-      // a single \`change\` event when content differs. Adequate for
+      // a single `change` event when content differs. Adequate for
       // "wait for file to change" patterns; not a complete fsevents.
       const absPath = _resolve(filename);
       let last = _bundleLookup(absPath);
@@ -4985,14 +4913,14 @@ const __fsMod = (() => {
       const re = (() => {
         // Convert simple glob to regex: ** -> .*, * -> [^/]*, ? -> .
         let r = '^' + (root ? root + '/' : '');
-        let g = pattern.replace(/\\\\/g, '/');
+        let g = pattern.replace(/\\/g, '/');
         for (let i = 0; i < g.length; i++) {
           const c = g[i];
           if (c === '*') {
             if (g[i+1] === '*') { r += '.*'; i++; if (g[i+1] === '/') i++; }
             else r += '[^/]*';
           } else if (c === '?') r += '.';
-          else if (/[.+^$(){}|[\\]\\\\]/.test(c)) r += '\\\\' + c;
+          else if (/[.+^$(){}|[\]\\]/.test(c)) r += '\\' + c;
           else r += c;
         }
         r += '$';
@@ -5035,12 +4963,12 @@ const __fsMod = (() => {
   function __getReadStream() {
     if (__ReadStreamClass) return __ReadStreamClass;
     /**
-     * ONE read-stream implementation, behind both \`fs.createReadStream\`
-     * and the exported \`fs.ReadStream\` class.
+     * ONE read-stream implementation, behind both `fs.createReadStream`
+     * and the exported `fs.ReadStream` class.
      *
-     * Each \`_read()\` pulls exactly one bounded chunk, so a multi-MB asset
+     * Each `_read()` pulls exactly one bounded chunk, so a multi-MB asset
      * streams to the consumer without the facet — or the supervisor — ever
-     * materialising the whole file, and \`.pipe()\` backpressure actually
+     * materialising the whole file, and `.pipe()` backpressure actually
      * throttles the source. A file the prefetch bundle does not carry is
      * read live from the VFS via the same stateless ranged RPC that
      * FileHandle.read uses: the bundle is a cache, the VFS is the truth.
@@ -5057,7 +4985,7 @@ const __fsMod = (() => {
         this.bytesRead = 0;
         this._abs = _resolve(path);
         this._pos = Number.isFinite(options.start) ? Math.max(0, Math.trunc(options.start)) : 0;
-        // Node's \`end\` option is INCLUSIVE.
+        // Node's `end` option is INCLUSIVE.
         this._last = Number.isFinite(options.end) ? Math.trunc(options.end) : Infinity;
       }
       _read() {
@@ -5073,7 +5001,7 @@ const __fsMod = (() => {
         this._pos += chunk.byteLength;
         this.bytesRead += chunk.byteLength;
         // A Buffer, as Node's read streams yield (a view, not a copy):
-        // \`s += chunk\` reads text, where a bare Uint8Array reads "97,98".
+        // `s += chunk` reads text, where a bare Uint8Array reads "97,98".
         this.push(__BufferMod.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
         if (chunk.byteLength < want) this.push(null);
       }
@@ -5248,7 +5176,7 @@ const __fsMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 //
 // The last resumption that reached a facet without a supervisor message.
-// A directly-connected socket delivers \`onmessage\` as a bare resumption:
+// A directly-connected socket delivers `onmessage` as a bare resumption:
 // an arbitrary third party wakes the facet at a time of its own choosing,
 // and a synchronous read in that handler serves whatever the facet was
 // holding when it last heard from the authority. Two facets connected to
@@ -5260,12 +5188,12 @@ const __fsMod = (() => {
 // supervisor reply, so the supervisor terminates the socket and this class
 // receives frames as replies to a poll it is already blocked on. Then the
 // frame handler takes the same ACQUIRE the timer and fetch boundaries take,
-// and \`_UNBARRIERED_RESUMPTIONS\` is empty.
+// and `_UNBARRIERED_RESUMPTIONS` is empty.
 //
 // This is a listener registry rather than an EventTarget subclass on
 // purpose: it dispatches plain event-shaped objects, which is what a
-// relayed frame can carry across RPC, and it keeps \`onmessage\` and
-// \`addEventListener\` served by one path instead of two.
+// relayed frame can carry across RPC, and it keeps `onmessage` and
+// `addEventListener` served by one path instead of two.
 const __NimbusRelayedWebSocket = (() => {
   const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
   class NimbusWebSocket {
@@ -5610,7 +5538,7 @@ const __osMod = {
   totalmem: () => 128 * 1024 * 1024, freemem: () => 64 * 1024 * 1024,
   loadavg: () => [0, 0, 0], uptime: () => 3600,
   networkInterfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true }] }),
-  EOL: "\\n", endianness: () => "LE",
+  EOL: "\n", endianness: () => "LE",
   // os.constants — signals + errno + priority. Used by human-signals,
   // signal-exit, cross-spawn, exit-hook, and a long tail of "graceful
   // shutdown" / "child-process plumbing" libraries that real Node ships.
@@ -5621,14 +5549,14 @@ const __osMod = {
   //   const findSignalByNumber = (number, signals) =>
   //     signals.find(({ name }) => constants.signals[name] === number)
   //
-  // Pre-fix, __osMod had no \`constants\` field → \`constants.signals\`
-  // was undefined → \`signals[name]\` throws TypeError → caller's
-  // \`getSignalsByName\` blows up at module init time. Surfaced by
+  // Pre-fix, __osMod had no `constants` field → `constants.signals`
+  // was undefined → `signals[name]` throws TypeError → caller's
+  // `getSignalsByName` blows up at module init time. Surfaced by
   // create-react-router (transitively depends on human-signals via
   // execa / cross-spawn).
   //
-  // Values mirror real Node v20+ on Linux (verified against \`node -e
-  // "console.log(require('os').constants)"\`). The shape is stable;
+  // Values mirror real Node v20+ on Linux (verified against `node -e
+  // "console.log(require('os').constants)"`). The shape is stable;
   // pinning POSIX signal numbers per the LSB / glibc table.
   constants: {
     // ── Signals ──────────────────────────────────────────────────
@@ -5691,30 +5619,1510 @@ const __osMod = {
 // ──  events module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 // workerd's own node:events (nodejs_compat). Its EventEmitter is Node's
-// function constructor, so \`EventEmitter.call(this)\` + util.inherits,
+// function constructor, so `EventEmitter.call(this)` + util.inherits,
 // mixin-copies of EventEmitter.prototype (express's createApplication) and
 // the static once/on/captureRejections helpers behave as in Node, and native
 // node:http servers are instances of the same class userland requires.
 // https://developers.cloudflare.com/workers/runtime-apis/nodejs/events/ and
-// workerd v1.20260926.1 src/node/internal/events.ts (\`export function
-// EventEmitter\`; http servers extend it in internal_http_server.ts).
+// workerd v1.20260926.1 src/node/internal/events.ts (`export function
+// EventEmitter`; http servers extend it in internal_http_server.ts).
 const __eventsMod = typeof __real_events !== "undefined"
   ? (__real_events.default ?? __real_events.EventEmitter) : globalThis.process.getBuiltinModule("events");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  stream module (real, with backpressure) ────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-${STREAMS_CODE}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Node-compatible Streams (Nimbus v2.0) ───────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+
+const __streamMod = (() => {
+  const _enc = new TextEncoder();
+  const _dec = new TextDecoder();
+  const _Decoder = TextDecoder;
+
+  /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
+  function _destroyedError(method) {
+    return Object.assign(new Error('Cannot call ' + method + ' after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+  }
+
+  /**
+   * Node's errorBuffer: once destroyed, queued writes and end() callbacks
+   * are answered, never left waiting on a stream that will not write them.
+   */
+  function _errorBuffer(state, err) {
+    for (const { chunk, callback } of state.buffer.splice(0)) {
+      state.bufferedLength -= (chunk?.length || 0);
+      state.pending--;
+      if (callback) callback(err ?? _destroyedError('write'));
+    }
+    for (const cb of state.finishCallbacks.splice(0)) cb(err ?? _destroyedError('end'));
+  }
+
+  /** Node's errorOrDestroy for the writable side: autoDestroy closes it. */
+  function _errorOrDestroy(stream, err) {
+    const state = stream._writableState;
+    if (state.destroyed) return;
+    if (state.autoDestroy) stream.destroy(err);
+    else stream.emit('error', err);
+  }
+
+  /**
+   * Destroy either side of a stream, and both of a Duplex, once: 'error' if
+   * given, then 'close' unless the stream was created with emitClose: false.
+   */
+  function _destroyStream(stream, err) {
+    const r = stream._readableState, w = stream._writableState;
+    if ((r && r.destroyed) || (w && w.destroyed)) return stream;
+    if (r) { r.destroyed = true; stream.readable = false; }
+    if (w) {
+      w.destroyed = true;
+      // A write in flight answers the queue when it calls back.
+      if (!w.writing) queueMicrotask(() => _errorBuffer(w));
+    }
+    if (err) stream.emit('error', err);
+    if ((r || w).emitClose) stream.emit('close');
+    return stream;
+  }
+
+  // ── Readable ────────────────────────────────────────────────────────
+  //
+  // Node's read machinery is a PULL: the consumer's demand is what causes
+  // `_read()` to be called. Two consumer idioms create demand implicitly —
+  // attaching a 'data' listener and `.pipe()` — and both put the stream in
+  // flowing mode. Honouring that is not cosmetic: a source whose `_read()`
+  // is never called produces nothing at all, so
+  // `fs.createReadStream(f).on('data', …)` and `.pipe(res)` hang forever
+  // (every static file server, and the doom-web asset serve, are exactly
+  // this shape). `_flow` below is the single pump used by flowing mode,
+  // `read()`, and the async iterator, so a source that pushes
+  // ASYNCHRONOUSLY (a live VFS range read) works through all three.
+  class Readable extends __eventsMod {
+    constructor(opts) {
+      super();
+      this._readableState = {
+        buffer: [],
+        ended: false,
+        endEmitted: false,
+        flowing: null,
+        // reading — a _read() call is outstanding: no push() and no EOF has
+        // landed since. Keeps the pump from stacking redundant _read calls
+        // while an async source is in flight.
+        reading: false,
+        pumping: false,
+        highWaterMark: opts?.highWaterMark ?? 16384,
+        encoding: opts?.encoding || null,
+        objectMode: opts?.objectMode ?? false,
+        autoDestroy: opts?.autoDestroy !== false,
+        emitClose: opts?.emitClose !== false,
+        destroyed: false,
+        readableLength: 0,
+      };
+      this.readable = true;
+      if (opts?.read) this._read = opts.read.bind(this);
+    }
+
+    _read(size) { /* override in subclass */ }
+
+    /** Ask the source for more, unless it already owes us a push or is done. */
+    _maybeRead() {
+      const state = this._readableState;
+      if (state.reading || state.ended || state.destroyed) return;
+      state.reading = true;
+      try { this._read(state.highWaterMark); }
+      catch (err) { state.reading = false; this.destroy(err); }
+    }
+
+    _shift() {
+      const state = this._readableState;
+      const chunk = state.buffer.shift();
+      state.readableLength -= (chunk?.length || 0);
+      return this._decode(chunk);
+    }
+
+    _decode(chunk) {
+      const enc = this._readableState.encoding;
+      if (!enc || enc === 'buffer' || !(chunk instanceof Uint8Array)) return chunk;
+      try { return new _Decoder(enc === 'binary' ? 'latin1' : enc).decode(chunk); }
+      catch { return chunk; }
+    }
+
+    _maybeEmitEnd() {
+      const state = this._readableState;
+      if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
+        state.endEmitted = true;
+        this.readable = false;
+        this._emitEnd();
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * 'end', then Node's autoDestroy (on unless the stream opts out): a
+     * stream done reading, and done writing if it is a Duplex, is destroyed,
+     * so 'close' follows 'end'. Consumers wait on it: node-static ends the
+     * response on its file stream's 'close'.
+     */
+    _emitEnd() {
+      this.emit('end');
+      const ws = this._writableState;
+      if (this._readableState.autoDestroy && (!ws || (ws.autoDestroy && ws.finished))) {
+        queueMicrotask(() => this.destroy());
+      }
+    }
+
+    /**
+     * Drain buffered chunks to 'data' listeners while flowing, then ask the
+     * source for more. Deferred to a microtask so a synchronous `push()`
+     * from inside `_read()` cannot recurse into the stack.
+     */
+    _flow() {
+      const state = this._readableState;
+      if (state.pumping) return;
+      state.pumping = true;
+      queueMicrotask(() => {
+        state.pumping = false;
+        while (state.flowing && state.buffer.length > 0 && !state.destroyed) {
+          this.emit('data', this._shift());
+        }
+        if (this._maybeEmitEnd()) return;
+        if (state.flowing && !state.destroyed) this._maybeRead();
+      });
+    }
+
+    read(size) {
+      const state = this._readableState;
+      if (state.buffer.length === 0) {
+        if (state.ended) return null;
+        this._maybeRead();
+        if (state.buffer.length === 0) return null;
+      }
+      const chunk = this._shift();
+      if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
+        state.endEmitted = true;
+        this.readable = false;
+        queueMicrotask(() => this._emitEnd());
+      }
+      return chunk;
+    }
+
+    push(chunk, encoding) {
+      const state = this._readableState;
+      state.reading = false;
+      if (chunk === null) {
+        state.ended = true;
+        if (state.flowing) this._flow();
+        else if (state.buffer.length === 0 && !state.endEmitted) {
+          state.endEmitted = true;
+          this.readable = false;
+          queueMicrotask(() => this._emitEnd());
+        }
+        return false;
+      }
+      if (typeof chunk === 'string' && !state.objectMode) {
+        chunk = _enc.encode(chunk);
+      }
+      state.buffer.push(chunk);
+      state.readableLength += (chunk?.length || 0);
+      if (state.flowing) this._flow();
+      return state.readableLength < state.highWaterMark;
+    }
+
+    // Node switches to flowing mode when a 'data' listener is attached,
+    // unless the consumer explicitly called pause().
+    on(event, listener) {
+      const result = super.on(event, listener);
+      if (event === 'data' && this._readableState.flowing !== false) this.resume();
+      return result;
+    }
+    addListener(event, listener) { return this.on(event, listener); }
+
+    pipe(dest, opts) {
+      this.on('data', (chunk) => {
+        const canContinue = dest.write(chunk);
+        if (!canContinue) {
+          this.pause();
+          dest.once('drain', () => this.resume());
+        }
+      });
+      this.on('end', () => {
+        if (opts?.end !== false) dest.end();
+      });
+      this.resume();
+      return dest;
+    }
+
+    unpipe(dest) {
+      this.removeAllListeners('data');
+      return this;
+    }
+
+    resume() {
+      const state = this._readableState;
+      if (state.flowing !== true) {
+        state.flowing = true;
+        this._flow();
+      }
+      return this;
+    }
+
+    pause() {
+      this._readableState.flowing = false;
+      return this;
+    }
+
+    setEncoding(enc) {
+      this._readableState.encoding = enc;
+      return this;
+    }
+
+    destroy(err) { return _destroyStream(this, err); }
+
+    get readableEnded() { return this._readableState.endEmitted; }
+    get readableLength() { return this._readableState.readableLength; }
+    get readableFlowing() { return this._readableState.flowing; }
+
+    // One chunk per tick: resume, take the next 'data', pause again. Uses
+    // the same pump as flowing mode, so an asynchronous source works here
+    // too (the old implementation called read() once and then waited for a
+    // 'data' event that nothing would ever emit in paused mode).
+    [Symbol.asyncIterator]() {
+      const self = this;
+      const state = self._readableState;
+      const iterator = {
+        next() {
+          return new Promise((resolve, reject) => {
+            if (state.buffer.length > 0) {
+              const chunk = self._shift();
+              self._maybeEmitEnd();
+              return resolve({ value: chunk, done: false });
+            }
+            if (state.ended || state.destroyed) return resolve({ value: undefined, done: true });
+            const cleanup = () => {
+              self.off('data', onData);
+              self.off('end', onEnd);
+              self.off('error', onError);
+            };
+            const onData = (c) => { cleanup(); self.pause(); resolve({ value: c, done: false }); };
+            const onEnd = () => { cleanup(); resolve({ value: undefined, done: true }); };
+            const onError = (e) => { cleanup(); reject(e); };
+            self.once('data', onData);
+            self.once('end', onEnd);
+            self.once('error', onError);
+            self.resume();
+          });
+        },
+        return() {
+          self.destroy();
+          return Promise.resolve({ value: undefined, done: true });
+        },
+        [Symbol.asyncIterator]() { return iterator; },
+      };
+      return iterator;
+    }
+  }
+
+  // ── Readable.from / Readable.fromWeb ────────────────────────────────
+  // Node exposes these statics; libraries that stream a fetch
+  // `response.body` (a web ReadableStream) into a Node pipeline rely on
+  // `Readable.fromWeb` (giget's template download:
+  // `pipeline(response.body, createWriteStream(...))`). A web
+  // ReadableStream has no `.pipe`, so it must be adapted first.
+  Readable.from = function from(iterable, opts) {
+    // Node (lib/internal/streams/from.js): object mode unless the caller says
+    // otherwise, so values arrive as yielded; and a string or Buffer is
+    // emitted whole rather than iterated. http-server streams
+    // `Readable.from(bytes)` of each text file into the response, which
+    // refuses a byte-number chunk.
+    const r = new Readable({ ...opts, objectMode: opts?.objectMode ?? true });
+    if (typeof iterable === 'string' || iterable instanceof Uint8Array) {
+      r._read = function () { this.push(iterable); this.push(null); };
+      return r;
+    }
+    r._read = () => {};
+    (async () => {
+      try {
+        for await (const chunk of iterable) r.push(chunk);
+        r.push(null);
+      } catch (err) { r.destroy(err); }
+    })();
+    return r;
+  };
+  Readable.fromWeb = function fromWeb(webStream, opts) {
+    const r = new Readable({ ...opts });
+    const reader = webStream.getReader();
+    r._read = () => {};
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) { r.push(null); break; }
+          r.push(value);
+        }
+      } catch (err) { r.destroy(err); }
+    })();
+    return r;
+  };
+
+  // ── Writable ────────────────────────────────────────────────────────
+  //
+  // Node's order (lib/internal/streams/writable.js): one _write at a time,
+  // the rest queued; end() waits for every write to call back before
+  // _final, 'finish' follows _final's callback, and autoDestroy then closes
+  // the stream (a Duplex once its readable side has ended too). An
+  // asynchronous _write or _transform is therefore complete, and a
+  // Transform's output delivered, before 'finish' and 'close'.
+  function _writableState(opts, highWaterMark) {
+    return {
+      buffer: [],
+      writing: false,
+      // Writes and _final not yet called back.
+      pending: 0,
+      ending: false,
+      finalCalled: false,
+      finished: false,
+      finishCallbacks: [],
+      highWaterMark,
+      needDrain: false,
+      autoDestroy: opts?.autoDestroy !== false,
+      emitClose: opts?.emitClose !== false,
+      destroyed: false,
+      corked: 0,
+      bufferedLength: 0,
+    };
+  }
+
+  function _write(stream, chunk, encoding, callback) {
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    const state = stream._writableState;
+    if (state.ending || state.destroyed) {
+      // A destroyed stream reports nothing further; the write's callback is
+      // still answered.
+      const err = state.ending
+        ? Object.assign(new Error('write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' })
+        : _destroyedError('write');
+      if (state.destroyed) { if (callback) queueMicrotask(() => callback(err)); return false; }
+      if (callback) callback(err);
+      _errorOrDestroy(stream, err);
+      return false;
+    }
+    if (typeof chunk === 'string') chunk = _enc.encode(chunk);
+    state.bufferedLength += (chunk?.length || 0);
+    state.pending++;
+    const request = { chunk, encoding, callback };
+    if (state.writing || state.corked > 0) state.buffer.push(request);
+    else _doWrite(stream, request);
+    if (state.bufferedLength >= state.highWaterMark) {
+      state.needDrain = true;
+      return false;
+    }
+    return true;
+  }
+
+  function _doWrite(stream, { chunk, encoding, callback }) {
+    const state = stream._writableState;
+    state.writing = true;
+    let called = false;
+    stream._write(chunk, encoding, (err) => {
+      if (called) return;
+      called = true;
+      state.writing = false;
+      state.bufferedLength -= (chunk?.length || 0);
+      state.pending--;
+      if (err) {
+        // Node's onwriteError: this callback, then the queue, then 'error'
+        // unless the stream was destroyed.
+        if (callback) callback(err);
+        _errorBuffer(state, err);
+        _errorOrDestroy(stream, err);
+        return;
+      }
+      // The next queued write starts before this one's callback, then
+      // 'drain', as Node's onwrite/afterWrite order them.
+      if (state.buffer.length > 0 && state.corked === 0 && !state.destroyed) _doWrite(stream, state.buffer.shift());
+      if (state.needDrain && state.bufferedLength === 0 && !state.ending) {
+        state.needDrain = false;
+        stream.emit('drain');
+      }
+      if (callback) callback();
+      if (state.destroyed) _errorBuffer(state);
+      else _finishMaybe(stream);
+    });
+  }
+
+  function _end(stream, chunk, encoding, callback) {
+    if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    const state = stream._writableState;
+    if (chunk !== undefined && chunk !== null) _write(stream, chunk, encoding);
+    if (state.corked > 0) { state.corked = 1; _uncork(stream); }
+    if (callback) {
+      if (state.finished) queueMicrotask(() => callback());
+      else state.finishCallbacks.push(callback);
+    }
+    if (!state.ending) {
+      state.ending = true;
+      // A stream ended with nothing in flight finishes on a later tick.
+      queueMicrotask(() => _finishMaybe(stream));
+    }
+    return stream;
+  }
+
+  function _uncork(stream) {
+    const state = stream._writableState;
+    if (state.corked > 0) state.corked--;
+    if (state.corked === 0 && !state.writing && state.buffer.length > 0) _doWrite(stream, state.buffer.shift());
+  }
+
+  /** _final, then 'finish', once end() was called and every write called back. */
+  function _finishMaybe(stream) {
+    const state = stream._writableState;
+    if (!state.ending || state.finished || state.writing || state.buffer.length > 0 || state.pending > 0 || state.destroyed) return;
+    if (!state.finalCalled && typeof stream._final === 'function') {
+      state.finalCalled = true;
+      state.pending++;
+      let called = false;
+      const onFinal = (err) => {
+        if (called) return;
+        called = true;
+        state.pending--;
+        if (err) {
+          for (const cb of state.finishCallbacks.splice(0)) cb(err);
+          _errorOrDestroy(stream, err);
+          return;
+        }
+        queueMicrotask(() => _finish(stream));
+      };
+      try { stream._final(onFinal); } catch (err) { onFinal(err); }
+      return;
+    }
+    if (!state.finalCalled) {
+      state.finalCalled = true;
+      _finish(stream);
+    }
+  }
+
+  function _finish(stream) {
+    const state = stream._writableState;
+    if (state.finished || state.destroyed) return;
+    state.finished = true;
+    for (const cb of state.finishCallbacks.splice(0)) cb();
+    stream.emit('finish');
+    // autoDestroy, as Readable's _emitEnd: 'close' follows 'finish', for a
+    // Duplex once its readable side has ended too.
+    const rs = stream._readableState;
+    if (state.autoDestroy && (!rs || (rs.autoDestroy && rs.endEmitted))) queueMicrotask(() => stream.destroy());
+  }
+
+  class Writable extends __eventsMod {
+    constructor(opts) {
+      super();
+      this._writableState = _writableState(opts, opts?.highWaterMark ?? 16384);
+      this.writable = true;
+      if (opts?.write) this._write = opts.write.bind(this);
+      if (opts?.final) this._final = opts.final.bind(this);
+      if (opts?.destroy) this._destroy = opts.destroy.bind(this);
+    }
+
+    _write(chunk, encoding, callback) { callback(); }
+
+    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
+    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
+    cork() { this._writableState.corked++; }
+    uncork() { _uncork(this); }
+    destroy(err) { return _destroyStream(this, err); }
+
+    get writableEnded() { return this._writableState.ending; }
+    get writableFinished() { return this._writableState.finished; }
+    get writableLength() { return this._writableState.bufferedLength; }
+  }
+
+  // ── Duplex ──────────────────────────────────────────────────────────
+  class Duplex extends Readable {
+    constructor(opts) {
+      super(opts);
+      this._writableState = _writableState(opts, opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384);
+      this.writable = true;
+      if (opts?.write) this._write = opts.write.bind(this);
+      if (opts?.final) this._final = opts.final.bind(this);
+    }
+    _write(chunk, encoding, callback) { callback(); }
+    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
+    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
+    cork() { this._writableState.corked++; }
+    uncork() { _uncork(this); }
+    get writableEnded() { return this._writableState.ending; }
+    get writableFinished() { return this._writableState.finished; }
+    get writableLength() { return this._writableState.bufferedLength; }
+  }
+
+  // ── Transform ───────────────────────────────────────────────────────
+  class Transform extends Duplex {
+    constructor(opts) {
+      super(opts);
+      if (opts?.transform) this._transform = opts.transform.bind(this);
+      if (opts?.flush) this._flush = opts.flush.bind(this);
+    }
+
+    _transform(chunk, encoding, callback) { callback(null, chunk); }
+    _flush(callback) { callback(); }
+
+    _write(chunk, encoding, callback) {
+      this._transform(chunk, encoding, (err, data) => {
+        if (err) return callback(err);
+        if (data !== null && data !== undefined) this.push(data);
+        callback();
+      });
+    }
+
+    _final(callback) {
+      this._flush((err, data) => {
+        if (err) return callback(err);
+        if (data !== null && data !== undefined) this.push(data);
+        this.push(null);
+        callback();
+      });
+    }
+  }
+
+  // ── PassThrough ─────────────────────────────────────────────────────
+  class PassThrough extends Transform {
+    constructor(opts) { super(opts); }
+    _transform(chunk, encoding, callback) { callback(null, chunk); }
+  }
+
+  // ── pipeline ────────────────────────────────────────────────────────
+  function pipeline(...args) {
+    const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+    const streams = args;
+    if (streams.length < 2) {
+      if (callback) callback(new Error('pipeline requires at least 2 streams'));
+      return streams[0];
+    }
+    let error = null;
+    // Adapt non-Node sources (web ReadableStream from fetch, async
+    // iterables) to a Node Readable so `.pipe` exists. Node's pipeline
+    // performs the same normalization via Readable.from/fromWeb.
+    for (let i = 0; i < streams.length; i++) {
+      const s = streams[i];
+      if (s && typeof s.pipe !== 'function') {
+        if (typeof s.getReader === 'function') streams[i] = Readable.fromWeb(s);
+        else if (s[Symbol.asyncIterator] || s[Symbol.iterator]) streams[i] = Readable.from(s);
+      }
+    }
+    for (let i = 0; i < streams.length - 1; i++) {
+      const src = streams[i];
+      const dst = streams[i + 1];
+      src.pipe(dst);
+      src.on('error', (e) => { error = e; dst.destroy(e); });
+    }
+    const last = streams[streams.length - 1];
+    last.on('finish', () => { if (callback) callback(error); });
+    last.on('error', (e) => { if (!error) { error = e; } if (callback) callback(error); });
+    return last;
+  }
+
+  // ── finished ────────────────────────────────────────────────────────
+  function finished(stream, opts, callback) {
+    if (typeof opts === 'function') { callback = opts; opts = {}; }
+    const onFinish = () => { cleanup(); if (callback) callback(null); };
+    const onEnd = () => { cleanup(); if (callback) callback(null); };
+    const onError = (err) => { cleanup(); if (callback) callback(err); };
+    const onClose = () => { cleanup(); if (callback) callback(null); };
+    stream.on('finish', onFinish);
+    stream.on('end', onEnd);
+    stream.on('error', onError);
+    stream.on('close', onClose);
+    function cleanup() {
+      stream.off('finish', onFinish);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      stream.off('close', onClose);
+    }
+    return cleanup;
+  }
+
+  // Real Node's `require('stream')` IS the legacy `Stream` constructor
+  // (a function extending EventEmitter), carrying Readable/Writable/etc.
+  // as own properties. Userland relies on this in two ways:
+  //   - `class X extends require('stream')` / `util.inherits(X, stream)`
+  //     (minipass — bundled by degit/create-cloudflare — does
+  //     `class Minipass extends Stream__default['default']`).
+  //   - `require('stream').prototype` for prototype chaining
+  //     (readable-stream@2 _stream_writable.js, send/index.js).
+  // A plain namespace object satisfies neither: it is not a constructor,
+  // so `class extends` throws "Class extends value is not a constructor".
+  // Make the export the Stream constructor itself with the named exports
+  // attached, mirroring Node exactly. Like Node's (lib/internal/streams/
+  // legacy.js) it is a function, not a class: send (express.static) does
+  // `Stream.call(this)`, which a class constructor refuses.
+  function Stream(opts) { __eventsMod.call(this, opts); }
+  Object.setPrototypeOf(Stream.prototype, __eventsMod.prototype);
+  Object.setPrototypeOf(Stream, __eventsMod);
+  Stream.prototype.pipe = function pipe(dest, opts) {
+    const src = this;
+    src.on('data', (chunk) => { dest.write(chunk); });
+    src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
+    return dest;
+  };
+  // ── stream state introspection (node:stream named helpers) ─────────
+  // Modern libraries (e.g. those bundled by create-cloudflare) call these
+  // off the stream module. They read the public stream state flags.
+  const isErrored = (s) => !!(s && (s.errored || (s._readableState && s._readableState.errored) || (s._writableState && s._writableState.errored)));
+  const isReadable = (s) => !!(s && s.readable && !(s._readableState && s._readableState.endEmitted));
+  const isWritable = (s) => !!(s && s.writable && !(s._writableState && s._writableState.finished));
+  const isDisturbed = (s) => !!(s && (s.readableDidRead || (s._readableState && (s._readableState.dataEmitted || s._readableState.endEmitted))));
+  const addAbortSignal = (signal, stream) => {
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', () => { stream.destroy(new Error('AbortError')); }, { once: true });
+    }
+    return stream;
+  };
+
+  const __streamMod = Object.assign(Stream, {
+    Readable, Writable, Duplex, Transform, PassThrough,
+    Stream,
+    pipeline, finished,
+    isErrored, isReadable, isWritable, isDisturbed, addAbortSignal,
+    // Aliases for compatibility
+    _Readable: Readable, _Writable: Writable, _Transform: Transform,
+  });
+  return __streamMod;
+})();
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  node:sqlite module (sql.js-backed) ─────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-${SQLITE_SHIM_CODE}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── node:sqlite shim (sql.js-backed, Nimbus) ────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+
+const __sqliteMod = (() => {
+  function __unsupported(name) {
+    return new Error("node:sqlite: " + name + " not supported");
+  }
+
+  // Engine boot, run lazily on the FIRST DatabaseSync open — or eagerly
+  // via __nimbusInitSqlite by a caller that KNOWS it will open a DB (the
+  // opencode serve facet: it serves sessions from the DB within its first
+  // requests, and booting eagerly there keeps its long-proven boot shape —
+  // removing the eager boot live-wedged serve's handler-time chunk import
+  // of server/server, the #20 shape-sensitivity, 2026-07-21).
+  //
+  // The sql.js glue is evaluated via `new Function` at MODULE-INIT time
+  // (generateSqliteFacetPreamble, prepended to the facet) because workerd
+  // disallows code-generation-from-strings at request time; by now
+  // globalThis.__nimbusSqlJsFactory is the prepared initSqlJs factory. We
+  // only call it + instantiate the pre-compiled WebAssembly.Module (both
+  // allowed at request time). Synchronicity is structural, not lucky:
+  // sql.js uses the caller's config object AS the Emscripten Module, and
+  // with a synchronous `instantiateWasm` hook (and no `setStatus`)
+  // Emscripten runs runtime init + postRun in the same tick — so the
+  // config/Module closure carries the ready { Database } namespace before
+  // this function returns, which is exactly what node:sqlite's
+  // synchronous constructor needs. Fail loud if that structure ever
+  // changes in a sql.js upgrade.
+  function __getSQL() {
+    if (globalThis.__nimbusSQL) return globalThis.__nimbusSQL;
+    const wasmModule = globalThis.__nimbusSqliteWasmModule;
+    if (!wasmModule) {
+      throw new Error(
+        "node:sqlite: sql.js wasm module not attached to this facet " +
+        "(internal: __nimbusSqliteWasmModule missing — module-map wiring bug)"
+      );
+    }
+    const initSqlJs = globalThis.__nimbusSqlJsFactory;
+    if (typeof initSqlJs !== "function") {
+      throw new Error(
+        "node:sqlite: sql.js factory not prepared at module init " +
+        "(internal: __nimbusSqlJsFactory missing — facet-preamble wiring bug)"
+      );
+    }
+    const engine = {
+      // Feed the pre-compiled WebAssembly.Module to sql.js so it never
+      // calls WebAssembly.compile(bytes) (blocked in facets at request
+      // time). The hook gets the imports object and a callback; we
+      // instantiate synchronously and invoke it.
+      instantiateWasm(imports, successCallback) {
+        const instance = new WebAssembly.Instance(wasmModule, imports);
+        successCallback(instance, wasmModule);
+        return instance.exports;
+      },
+    };
+    let ready = false;
+    engine.postRun = [() => { ready = true; }];
+    initSqlJs(engine);
+    if (!ready || typeof engine.Database !== "function") {
+      throw new Error(
+        "node:sqlite: sql.js did not complete synchronous init " +
+        "(internal: the glue's Module/postRun structure changed — see sqlite-shim.ts __getSQL)"
+      );
+    }
+    globalThis.__nimbusSQL = engine;
+    return engine;
+  }
+
+  // Idempotent eager boot for callers that will certainly open a DB.
+  // Same engine, same failure modes as the lazy path — just earlier.
+  globalThis.__nimbusInitSqlite = async function __nimbusInitSqlite() {
+    return __getSQL();
+  };
+
+  // Strip a leading slash so __vfsBundle keys (stored slash-stripped)
+  // line up with absolute paths the user passes.
+  function __vfsKey(p) {
+    return String(p).replace(/^\/+/, "");
+  }
+
+  // Synchronously read the existing DB bytes for a file-backed database
+  // from the facet's startup VFS snapshot, if present. Returns a
+  // Uint8Array or null. Pure in-memory and :memory: databases never read.
+  function __readDbBytes(path) {
+    let bundle;
+    try { bundle = __vfsBundle; } catch { bundle = null; }
+    if (!bundle) return null;
+    const direct = bundle[path];
+    const cell = direct !== undefined ? direct : bundle[__vfsKey(path)];
+    if (cell === undefined || cell === null) return null;
+    if (cell instanceof Uint8Array) return cell.length ? cell : null;
+    if (typeof cell === "string") {
+      // A SQLite file would normally be stored as a Uint8Array cell, but
+      // an empty/zero-length placeholder may round-trip as "". Treat
+      // non-empty strings as latin1 bytes for completeness.
+      if (cell.length === 0) return null;
+      const bytes = new Uint8Array(cell.length);
+      for (let i = 0; i < cell.length; i++) bytes[i] = cell.charCodeAt(i) & 0xff;
+      return bytes;
+    }
+    return null;
+  }
+
+  class StatementSync {
+    constructor(db, sql) {
+      this.__db = db;
+      this.__sql = sql;
+      this.__readBigInts = false;
+      this.__returnArrays = false;
+    }
+
+    setReadBigInts(enabled) {
+      this.__readBigInts = !!enabled;
+      return this;
+    }
+
+    setReturnArrays(enabled) {
+      this.__returnArrays = !!enabled;
+      return this;
+    }
+
+    setAllowBareNamedParameters() {
+      throw __unsupported("StatementSync.prototype.setAllowBareNamedParameters");
+    }
+
+    // sql.js stmt API drives all reads/writes. We prepare a fresh stmt
+    // per call and free it deterministically so no wasm handle leaks.
+    __prepare(params) {
+      const handle = this.__db.__raw;
+      if (!handle) throw new Error("node:sqlite: database is closed");
+      const stmt = handle.prepare(this.__sql);
+      if (params.length > 0) {
+        stmt.bind(__bindParams(params));
+      }
+      return stmt;
+    }
+
+    all(...params) {
+      const stmt = this.__prepare(params);
+      const rows = [];
+      try {
+        const cols = stmt.getColumnNames();
+        while (stmt.step()) {
+          rows.push(this.__shapeRow(stmt, cols));
+        }
+      } finally {
+        stmt.free();
+      }
+      return rows;
+    }
+
+    get(...params) {
+      const stmt = this.__prepare(params);
+      try {
+        if (!stmt.step()) return undefined;
+        const cols = stmt.getColumnNames();
+        return this.__shapeRow(stmt, cols);
+      } finally {
+        stmt.free();
+      }
+    }
+
+    run(...params) {
+      const handle = this.__db.__raw;
+      if (!handle) throw new Error("node:sqlite: database is closed");
+      const stmt = this.__prepare(params);
+      try {
+        stmt.step();
+      } finally {
+        stmt.free();
+      }
+      this.__db.__dirty = true;
+      const changes = handle.getRowsModified();
+      const lastRowId = __lastInsertRowid(handle);
+      return {
+        changes: this.__readBigInts ? BigInt(changes) : changes,
+        lastInsertRowid: this.__readBigInts ? BigInt(lastRowId) : lastRowId,
+      };
+    }
+
+    iterate() {
+      throw __unsupported("StatementSync.prototype.iterate");
+    }
+
+    columns() {
+      throw __unsupported("StatementSync.prototype.columns");
+    }
+
+    __shapeRow(stmt, cols) {
+      const raw = stmt.get();
+      if (this.__returnArrays) {
+        return raw.map((v) => this.__coerce(v));
+      }
+      const obj = {};
+      for (let i = 0; i < cols.length; i++) {
+        obj[cols[i]] = this.__coerce(raw[i]);
+      }
+      return obj;
+    }
+
+    // sql.js returns numbers for INTEGER/REAL, strings for TEXT,
+    // Uint8Array for BLOB, null for NULL. node:sqlite returns bigint for
+    // INTEGER columns when setReadBigInts(true); otherwise number.
+    __coerce(value) {
+      if (this.__readBigInts && typeof value === "number" && Number.isInteger(value)) {
+        return BigInt(value);
+      }
+      return value;
+    }
+  }
+
+  function __bindParams(params) {
+    // node:sqlite accepts positional params (array) and named params via a
+    // single object argument. sql.js bind() takes an array (positional) or
+    // an object keyed by ":name"/"@name"/"$name".
+    if (params.length === 1 && __isNamedParamObject(params[0])) {
+      return __normalizeNamedParams(params[0]);
+    }
+    return params.map(__coerceBindValue);
+  }
+
+  function __isNamedParamObject(v) {
+    return (
+      v !== null &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      !(v instanceof Uint8Array) &&
+      !(v instanceof ArrayBuffer)
+    );
+  }
+
+  function __normalizeNamedParams(obj) {
+    const out = {};
+    for (const key of Object.keys(obj)) {
+      const prefixed = /^[:@$]/.test(key) ? key : ":" + key;
+      out[prefixed] = __coerceBindValue(obj[key]);
+    }
+    return out;
+  }
+
+  function __coerceBindValue(v) {
+    if (typeof v === "bigint") {
+      // sql.js binds JS numbers; SQLite INTEGER is 64-bit. Within the
+      // safe-integer range we pass a number; beyond it we throw rather
+      // than silently lose precision.
+      if (v >= -9007199254740991n && v <= 9007199254740991n) return Number(v);
+      throw new Error("node:sqlite: bigint parameter exceeds safe-integer range");
+    }
+    if (v instanceof ArrayBuffer) return new Uint8Array(v);
+    return v;
+  }
+
+  function __lastInsertRowid(handle) {
+    // sql.js does not expose last_insert_rowid() directly; query it.
+    const stmt = handle.prepare("SELECT last_insert_rowid()");
+    try {
+      stmt.step();
+      const row = stmt.get();
+      return row && row.length ? Number(row[0]) : 0;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  class DatabaseSync {
+    constructor(path, options) {
+      const opts = options || {};
+      this.__path = typeof path === "string" ? path : "";
+      this.__memory = !this.__path || this.__path === ":memory:";
+      this.__open = false;
+      this.__raw = null;
+      this.__dirty = false;
+      const open = opts.open === undefined ? true : !!opts.open;
+      if (open) this.__doOpen();
+    }
+
+    __doOpen() {
+      const SQL = __getSQL();
+      const bytes = this.__memory ? null : __readDbBytes(this.__path);
+      this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
+      this.__open = true;
+    }
+
+    open() {
+      if (this.__open) return;
+      this.__doOpen();
+    }
+
+    get isOpen() {
+      return this.__open;
+    }
+
+    prepare(sql) {
+      if (!this.__open) throw new Error("node:sqlite: database is not open");
+      return new StatementSync(this, String(sql));
+    }
+
+    exec(sql) {
+      if (!this.__open) throw new Error("node:sqlite: database is not open");
+      // sql.js run() executes one-or-more statements with no result rows;
+      // PRAGMAs are honored against the single in-memory connection (or
+      // no-op where not meaningful for an in-memory whole-DB snapshot).
+      this.__raw.run(String(sql));
+      this.__dirty = true;
+    }
+
+    function() {
+      throw __unsupported("DatabaseSync.prototype.function");
+    }
+
+    aggregate() {
+      throw __unsupported("DatabaseSync.prototype.aggregate");
+    }
+
+    createSession() {
+      throw __unsupported("DatabaseSync.prototype.createSession");
+    }
+
+    applyChangeset() {
+      throw __unsupported("DatabaseSync.prototype.applyChangeset");
+    }
+
+    enableLoadExtension() {
+      throw __unsupported("DatabaseSync.prototype.enableLoadExtension");
+    }
+
+    loadExtension() {
+      throw __unsupported("DatabaseSync.prototype.loadExtension");
+    }
+
+    // Flush the in-memory DB image back to the live VFS via the async
+    // supervisor bridge. Used by close() and as a public checkpoint
+    // boundary. Returns a promise pushed onto __pendingIO so the facet
+    // drains it before isolate teardown.
+    __flush() {
+      if (this.__memory || !this.__open || !this.__dirty) return Promise.resolve();
+      let supervisor;
+      try { supervisor = __supervisor; } catch { supervisor = null; }
+      if (!supervisor || typeof supervisor.writeFile !== "function") {
+        return Promise.resolve();
+      }
+      const bytes = this.__raw.export();
+      this.__dirty = false;
+      const task = Promise.resolve()
+        .then(() => supervisor.writeFile(this.__path, bytes))
+        .catch(() => {});
+      try { __pendingIO.push(task); } catch {}
+      return task;
+    }
+
+    close() {
+      if (!this.__open) return;
+      // Capture the export + queue the flush BEFORE freeing the handle.
+      this.__flush();
+      try { this.__raw.close(); } catch {}
+      this.__raw = null;
+      this.__open = false;
+    }
+
+    [Symbol.dispose]() {
+      this.close();
+    }
+  }
+
+  return { DatabaseSync, StatementSync };
+})();
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  undici (npm) — mapped onto the platform HTTP stack ─────────────
 // ═══════════════════════════════════════════════════════════════════════
-${UNDICI_SHIM_CODE}
+
+const __undiciMod = (() => {
+  // The patched global fetch, captured now. Captured rather than dereferenced
+  // per call so that user code doing `globalThis.fetch = undici.fetch` — a real
+  // pattern — cannot build an infinite delegation loop. This is the binding
+  // that carries in-session loopback routing and AI-egress mediation.
+  const __fetch = globalThis.fetch;
+
+  const fail = (api, why) => new Error(
+    "Nimbus: undici." + api + " is not available in a Nimbus session — " + why +
+    ". Nimbus maps the 'undici' module onto the platform HTTP stack, so " +
+    "fetch/Request/Response and undici.request/stream work and stay routed " +
+    "through the session (in-session loopback and AI egress included).",
+  );
+
+  /** A named export that cannot work here: constructing or calling it throws. */
+  const unsupported = (api, why) => {
+    const thrower = function () { throw fail(api, why); };
+    Object.defineProperty(thrower, "name", { value: api });
+    return thrower;
+  };
+
+  /** A global the platform may not define — fail by name, not as "undefined is not a constructor". */
+  const globalOr = (name, why) => globalThis[name] || unsupported(name, why);
+
+  const dispatchWhy = "the low-level dispatch protocol needs socket-level control the platform does not expose; use undici.request(), undici.stream() or fetch()";
+  const mockWhy = "request interception needs the dispatch protocol, so mocked requests would escape to the real network";
+  const proxyWhy = "outbound proxying is unavailable, and ignoring it would send traffic straight to the origin";
+  const socketWhy = "it needs a raw TCP socket";
+  const unmappedWhy = "it is not part of Nimbus's mapping of 'undici' onto the platform HTTP stack";
+
+  // ── errors ──────────────────────────────────────────────────────────────
+  // Real classes, because consumers branch on `instanceof` and on `err.code`.
+  class UndiciError extends Error {
+    constructor(message) { super(message); this.name = "UndiciError"; this.code = "UND_ERR"; }
+  }
+  const errorCodes = {
+    AbortError: "UND_ERR_ABORT",
+    ConnectTimeoutError: "UND_ERR_CONNECT_TIMEOUT",
+    HeadersTimeoutError: "UND_ERR_HEADERS_TIMEOUT",
+    HeadersOverflowError: "UND_ERR_HEADERS_OVERFLOW",
+    BodyTimeoutError: "UND_ERR_BODY_TIMEOUT",
+    InvalidArgumentError: "UND_ERR_INVALID_ARG",
+    InvalidReturnValueError: "UND_ERR_INVALID_RETURN_VALUE",
+    RequestAbortedError: "UND_ERR_ABORTED",
+    InformationalError: "UND_ERR_INFO",
+    RequestContentLengthMismatchError: "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH",
+    ResponseContentLengthMismatchError: "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
+    ClientDestroyedError: "UND_ERR_DESTROYED",
+    ClientClosedError: "UND_ERR_CLOSED",
+    SocketError: "UND_ERR_SOCKET",
+    NotSupportedError: "UND_ERR_NOT_SUPPORTED",
+    BalancedPoolMissingUpstreamError: "UND_ERR_BPL_MISSING_UPSTREAM",
+    HTTPParserError: "UND_ERR_HTTP_PARSER",
+    ResponseExceededMaxSizeError: "UND_ERR_RES_EXCEEDED_MAX_SIZE",
+    RequestRetryError: "UND_ERR_REQ_RETRY",
+    ResponseError: "UND_ERR_RESPONSE",
+    SecureProxyConnectionError: "UND_ERR_PRX_TLS",
+    ProxyConnectionError: "UND_ERR_PRX_CONN",
+    MaxOriginsReachedError: "UND_ERR_MAX_ORIGINS_REACHED",
+    Socks5ProxyError: "UND_ERR_SOCKS5_PROXY",
+    MessageSizeExceededError: "UND_ERR_MESSAGE_SIZE_EXCEEDED",
+  };
+  const errors = { UndiciError };
+  for (const [name, code] of Object.entries(errorCodes)) {
+    const Cls = class extends UndiciError {
+      constructor(message) { super(message || name); this.name = name; this.code = code; }
+    };
+    Object.defineProperty(Cls, "name", { value: name });
+    errors[name] = Cls;
+  }
+  // Carries the response it rejected on — callers read .statusCode/.body.
+  class ResponseStatusCodeError extends UndiciError {
+    constructor(message, statusCode, headers, body) {
+      super(message || "Response status code " + statusCode);
+      this.name = "ResponseStatusCodeError";
+      this.code = "UND_ERR_RESPONSE_STATUS_CODE";
+      this.status = statusCode;
+      this.statusCode = statusCode;
+      this.headers = headers;
+      this.body = body;
+    }
+  }
+  errors.ResponseStatusCodeError = ResponseStatusCodeError;
+
+  // ── request plumbing ────────────────────────────────────────────────────
+  let globalOrigin = null;
+
+  const targetUrl = (url, opts) => {
+    let target;
+    if (typeof url === "string" || url instanceof URL) {
+      target = new URL(String(url), globalOrigin || undefined);
+    } else if (url && typeof url === "object") {
+      // The { origin, protocol, hostname, port, path } option form.
+      const origin = url.origin
+        || (url.protocol && url.hostname
+          ? url.protocol + "//" + url.hostname + (url.port ? ":" + url.port : "")
+          : null);
+      if (!origin) throw new errors.InvalidArgumentError("undici: request needs a URL or an origin");
+      target = new URL(url.path || url.pathname || "/", origin);
+    } else {
+      throw new errors.InvalidArgumentError("undici: request needs a URL");
+    }
+    if (opts && opts.query) {
+      for (const [k, v] of Object.entries(opts.query)) {
+        if (Array.isArray(v)) for (const item of v) target.searchParams.append(k, String(item));
+        else if (v !== undefined && v !== null) target.searchParams.set(k, String(v));
+      }
+    }
+    return target;
+  };
+
+  const requestHeaders = (headers) => {
+    const out = new Headers();
+    if (!headers) return out;
+    if (typeof headers.forEach === "function" && typeof headers.get === "function") {
+      headers.forEach((v, k) => out.append(k, v));
+    } else if (Array.isArray(headers)) {
+      // Both the flat [k, v, k, v] and the paired [[k, v], …] forms.
+      if (headers.length && Array.isArray(headers[0])) {
+        for (const pair of headers) out.append(String(pair[0]), String(pair[1]));
+      } else {
+        for (let i = 0; i + 1 < headers.length; i += 2) out.append(String(headers[i]), String(headers[i + 1]));
+      }
+    } else {
+      for (const [k, v] of Object.entries(headers)) {
+        if (v === undefined || v === null) continue;
+        if (Array.isArray(v)) for (const item of v) out.append(k, String(item));
+        else out.append(k, String(v));
+      }
+    }
+    return out;
+  };
+
+  /** undici hands back a plain lowercased header bag; set-cookie stays an array. */
+  const responseHeaders = (response) => {
+    const out = {};
+    response.headers.forEach((value, key) => { out[key.toLowerCase()] = value; });
+    const cookies = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
+    if (cookies.length) out["set-cookie"] = cookies;
+    return out;
+  };
+
+  const collect = async (source) => {
+    const parts = [];
+    let total = 0;
+    for await (const chunk of source) {
+      const bytes = typeof chunk === "string"
+        ? new TextEncoder().encode(chunk)
+        : new Uint8Array(chunk.buffer || chunk, chunk.byteOffset || 0, chunk.byteLength ?? chunk.length);
+      parts.push(bytes);
+      total += bytes.length;
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) { out.set(part, offset); offset += part.length; }
+    return out;
+  };
+
+  const requestBody = async (body) => {
+    if (body === undefined || body === null) return undefined;
+    if (typeof body === "string" || body instanceof Uint8Array || body instanceof ArrayBuffer) return body;
+    if (typeof Blob !== "undefined" && body instanceof Blob) return body;
+    if (typeof FormData !== "undefined" && body instanceof FormData) return body;
+    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return body;
+    if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return body;
+    // A Node Readable (or any async iterable) — drain it into the request.
+    if (typeof body[Symbol.asyncIterator] === "function") return collect(body);
+    throw new errors.InvalidArgumentError("undici: unsupported request body type");
+  };
+
+  /**
+   * undici's response body: a Node Readable that also carries the WHATWG body
+   * mixin. Both surfaces read the same stream, so consuming one marks the body
+   * used for the other — matching undici, where `body.text()` after a manual
+   * read throws.
+   */
+  const bodyStream = (response) => {
+    const stream = response.body
+      ? __streamMod.Readable.fromWeb(response.body)
+      : __streamMod.Readable.from([]);
+    const claim = () => {
+      if (stream.bodyUsed) throw new TypeError("Body is unusable: Body has already been read");
+      stream.bodyUsed = true;
+    };
+    stream.bodyUsed = false;
+    stream.bytes = async () => { claim(); return collect(stream); };
+    stream.arrayBuffer = async () => {
+      claim();
+      const bytes = await collect(stream);
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    };
+    stream.text = async () => { claim(); return new TextDecoder().decode(await collect(stream)); };
+    stream.json = async () => { claim(); return JSON.parse(new TextDecoder().decode(await collect(stream))); };
+    stream.blob = async () => {
+      claim();
+      return new Blob([await collect(stream)], { type: response.headers.get("content-type") || "" });
+    };
+    // Re-wrap through the platform Response so multipart/urlencoded parsing is
+    // the platform's, not a second implementation of it.
+    stream.formData = async () => {
+      claim();
+      const type = response.headers.get("content-type");
+      return new Response(await collect(stream), { headers: type ? { "content-type": type } : {} }).formData();
+    };
+    stream.dump = async () => {
+      if (stream.bodyUsed) return;
+      stream.bodyUsed = true;
+      try { await collect(stream); } catch { /* the point is to discard it */ }
+    };
+    return stream;
+  };
+
+  /** A dispatcher only reaches the network by being one of ours; anything else would be silently bypassed. */
+  const assertInertDispatcher = (dispatcher, api) => {
+    if (dispatcher && !(dispatcher instanceof Dispatcher)) {
+      throw fail(api, "a dispatcher Nimbus did not create cannot intercept requests here, so honouring it is impossible");
+    }
+  };
+
+  /**
+   * undici's top-level request(). Redirects are followed manually so that
+   * `maxRedirections` (default 0 — do NOT follow) is honoured exactly rather
+   * than approximated by fetch's own follow limit.
+   */
+  const request = async (url, options) => {
+    const opts = options || {};
+    assertInertDispatcher(opts.dispatcher, "request({ dispatcher })");
+    let target = targetUrl(url, opts);
+    const method = String(opts.method || "GET").toUpperCase();
+    const headers = requestHeaders(opts.headers);
+    const body = await requestBody(opts.body);
+    let budget = Number(opts.maxRedirections) || 0;
+
+    let response;
+    for (;;) {
+      response = await __fetch(target.href, {
+        method,
+        headers,
+        body,
+        signal: opts.signal || undefined,
+        redirect: "manual",
+      });
+      if (budget <= 0) break;
+      const location = response.headers.get("location");
+      if (response.status < 300 || response.status > 399 || !location) break;
+      budget -= 1;
+      target = new URL(location, target);
+    }
+
+    const resHeaders = responseHeaders(response);
+    const stream = bodyStream(response);
+    if (opts.throwOnError && response.status >= 400) {
+      throw new ResponseStatusCodeError(
+        "Response status code " + response.status, response.status, resHeaders, await stream.text(),
+      );
+    }
+    return {
+      statusCode: response.status,
+      statusText: response.statusText,
+      headers: resHeaders,
+      trailers: {},
+      body: stream,
+      opaque: opts.opaque === undefined ? null : opts.opaque,
+      context: opts.context || {},
+    };
+  };
+
+  /** undici's stream(): pipe the response body into the writable the caller builds. */
+  const stream = async (url, options, factory) => {
+    if (typeof options === "function") { factory = options; options = {}; }
+    if (typeof factory !== "function") {
+      throw new errors.InvalidArgumentError("undici: stream() needs a factory function");
+    }
+    const result = await request(url, options);
+    const writable = factory({
+      statusCode: result.statusCode,
+      headers: result.headers,
+      opaque: result.opaque,
+      context: result.context,
+    });
+    if (!writable || typeof writable.write !== "function") {
+      throw new errors.InvalidReturnValueError("undici: the stream() factory must return a writable");
+    }
+    await new Promise((resolve, reject) => {
+      __streamMod.pipeline(result.body, writable, (err) => (err ? reject(err) : resolve()));
+    });
+    return {
+      statusCode: result.statusCode,
+      headers: result.headers,
+      trailers: {},
+      opaque: result.opaque,
+      context: result.context,
+    };
+  };
+
+  // ── dispatchers ─────────────────────────────────────────────────────────
+  // A dispatcher here is a connection-management object with nothing to
+  // manage: pooling, keep-alive, pipelining and socket timeouts are the
+  // platform's, and none of them change the response a caller sees, so the
+  // options are accepted and ignored. The parts of the dispatcher contract
+  // that WOULD change the response — dispatch(), compose() — throw.
+  const kOrigin = Symbol("undici.origin");
+  class Dispatcher extends __eventsMod {
+    constructor(origin, options) {
+      super();
+      if (origin && typeof origin === "object" && !(origin instanceof URL)) { options = origin; origin = undefined; }
+      this[kOrigin] = origin ? new URL(String(origin)).origin : null;
+      this.destroyed = false;
+      this.closed = false;
+      this.options = options || {};
+    }
+    request(options) {
+      const opts = options || {};
+      return request(this[kOrigin] ? new URL(opts.path || "/", this[kOrigin]) : opts, opts);
+    }
+    stream(options, factory) {
+      const opts = options || {};
+      return stream(this[kOrigin] ? new URL(opts.path || "/", this[kOrigin]) : opts, opts, factory);
+    }
+    dispatch() { throw fail("Dispatcher.dispatch()", dispatchWhy); }
+    compose() { throw fail("Dispatcher.compose()", "interceptor composition operates on the dispatch protocol, and " + dispatchWhy); }
+    pipeline() { throw fail("Dispatcher.pipeline()", "duplex dispatch needs socket-level control; use undici.request() or undici.stream()"); }
+    connect() { throw fail("Dispatcher.connect()", "CONNECT tunnelling needs a raw TCP socket"); }
+    upgrade() { throw fail("Dispatcher.upgrade()", "protocol upgrade needs a raw TCP socket; use the WebSocket global"); }
+    close(cb) { this.closed = true; if (cb) { cb(null, null); return undefined; } return Promise.resolve(); }
+    destroy(err, cb) {
+      if (typeof err === "function") cb = err;
+      this.destroyed = true;
+      this.closed = true;
+      if (cb) { cb(null, null); return undefined; }
+      return Promise.resolve();
+    }
+  }
+  class Agent extends Dispatcher {}
+  class Pool extends Dispatcher {}
+  class Client extends Dispatcher {}
+  class BalancedPool extends Dispatcher {}
+  class RoundRobinPool extends Dispatcher {}
+  class Dispatcher1Wrapper extends Dispatcher {}
+  // Reads the proxy environment exactly as undici does. With no proxy
+  // configured it is a plain direct dispatcher, which is what it is in Node
+  // too — so tools that construct one unconditionally (pi does, at import
+  // time) work. With one configured, staying silent would send the traffic
+  // direct, so it fails instead.
+  const PROXY_ENV = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"];
+  class EnvHttpProxyAgent extends Dispatcher {
+    constructor(options) {
+      super(options);
+      let configured = "";
+      try { configured = PROXY_ENV.find((name) => env && env[name]) || ""; } catch { configured = ""; }
+      if (configured) throw fail("EnvHttpProxyAgent", "$" + configured + " is set but " + proxyWhy);
+    }
+  }
+
+  let globalDispatcher = new Agent();
+  const setGlobalDispatcher = (dispatcher) => {
+    if (!dispatcher || typeof dispatcher.dispatch !== "function") {
+      throw new errors.InvalidArgumentError("undici: setGlobalDispatcher needs a Dispatcher");
+    }
+    assertInertDispatcher(dispatcher, "setGlobalDispatcher()");
+    globalDispatcher = dispatcher;
+  };
+
+  const mod = {
+    // Backed by the patched global fetch, so in-session loopback and AI-egress
+    // mediation apply to undici's callers exactly as they do to fetch's.
+    fetch: __fetch,
+    Headers,
+    Request,
+    Response,
+    FormData,
+    Blob,
+    File: globalOr("File", unmappedWhy),
+    WebSocket: globalOr("WebSocket", socketWhy),
+    EventSource: globalOr("EventSource", socketWhy + "; use fetch() and read the streamed body"),
+    MessageEvent: globalOr("MessageEvent", unmappedWhy),
+    CloseEvent: globalOr("CloseEvent", unmappedWhy),
+    ErrorEvent: globalOr("ErrorEvent", unmappedWhy),
+
+    // In Node, install() swaps undici's WHATWG implementations onto globalThis.
+    // Here the globals ARE the platform's WHATWG implementations, already
+    // carrying Nimbus's loopback + AI-egress routing — so install() has nothing
+    // left to do, and replacing globalThis.fetch would destroy both.
+    install() {},
+
+    request,
+    stream,
+    setGlobalDispatcher,
+    getGlobalDispatcher: () => globalDispatcher,
+    setGlobalOrigin: (origin) => { globalOrigin = origin ? new URL(String(origin)).origin : null; },
+    getGlobalOrigin: () => (globalOrigin ? new URL(globalOrigin) : undefined),
+
+    Dispatcher, Agent, Pool, Client, BalancedPool, RoundRobinPool,
+    Dispatcher1Wrapper, EnvHttpProxyAgent,
+    errors,
+
+    // Raw sockets.
+    connect: unsupported("connect", "CONNECT tunnelling needs a raw TCP socket"),
+    upgrade: unsupported("upgrade", "protocol upgrade needs a raw TCP socket; use the WebSocket global"),
+    buildConnector: unsupported("buildConnector", "socket construction has no equivalent in a facet"),
+    pipeline: unsupported("pipeline", "duplex dispatch needs socket-level control; use undici.request() or undici.stream()"),
+    H2CClient: unsupported("H2CClient", "cleartext HTTP/2 with prior knowledge needs socket-level control"),
+    WebSocketStream: unsupported("WebSocketStream", socketWhy),
+    WebSocketError: unsupported("WebSocketError", unmappedWhy),
+    ping: unsupported("ping", socketWhy),
+    // Routing changes that would otherwise be silently dropped.
+    ProxyAgent: unsupported("ProxyAgent", proxyWhy),
+    Socks5ProxyAgent: unsupported("Socks5ProxyAgent", proxyWhy),
+    RetryAgent: unsupported("RetryAgent", "retry is a dispatch interceptor, and " + dispatchWhy),
+    // Interception (test doubles) — letting these through would send real
+    // requests a test believes it stubbed.
+    MockAgent: unsupported("MockAgent", mockWhy),
+    MockPool: unsupported("MockPool", mockWhy),
+    MockClient: unsupported("MockClient", mockWhy),
+    MockCallHistory: unsupported("MockCallHistory", mockWhy),
+    MockCallHistoryLog: unsupported("MockCallHistoryLog", mockWhy),
+    SnapshotAgent: unsupported("SnapshotAgent", mockWhy),
+    mockErrors: errors,
+    // Handler decorators over the dispatch protocol.
+    DecoratorHandler: unsupported("DecoratorHandler", "handler decoration operates on the dispatch protocol, and " + dispatchWhy),
+    RedirectHandler: unsupported("RedirectHandler", "handler decoration operates on the dispatch protocol; use request({ maxRedirections })"),
+    RetryHandler: unsupported("RetryHandler", "handler decoration operates on the dispatch protocol, and " + dispatchWhy),
+    interceptors: {},
+    // HTTP caching is the platform's; a second cache layer here would answer
+    // from state the platform does not know about.
+    caches: unsupported("caches", unmappedWhy),
+    cacheStores: {
+      MemoryCacheStore: unsupported("cacheStores.MemoryCacheStore", unmappedWhy),
+      SqliteCacheStore: unsupported("cacheStores.SqliteCacheStore", unmappedWhy),
+    },
+    util: {
+      parseHeaders: unsupported("util.parseHeaders", "raw header buffers only exist on the socket path"),
+      headerNameToString: (name) => String(name).toLowerCase(),
+    },
+    getCookies: unsupported("getCookies", unmappedWhy),
+    getSetCookies: unsupported("getSetCookies", unmappedWhy),
+    setCookie: unsupported("setCookie", unmappedWhy),
+    deleteCookie: unsupported("deleteCookie", unmappedWhy),
+    parseCookie: unsupported("parseCookie", unmappedWhy),
+    parseMIMEType: unsupported("parseMIMEType", unmappedWhy),
+    serializeAMimeType: unsupported("serializeAMimeType", unmappedWhy),
+  };
+  for (const name of ["redirect", "responseError", "retry", "dump", "dns", "cache", "decompress", "deduplicate"]) {
+    mod.interceptors[name] = unsupported("interceptors." + name, "interceptors operate on the dispatch protocol, and " + dispatchWhy);
+  }
+  // Interop: undici is CJS with an `export default Undici`. The ESM→CJS
+  // pre-pass reads `.default` for `import undici from 'undici'`; `.Undici`
+  // mirrors the package's own self-reference.
+  mod.default = mod;
+  mod.Undici = mod;
+  return mod;
+})();
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
@@ -5806,10 +7214,10 @@ const __utilMod = {
   // Standard CSI sequence pattern: ESC + '[' + parameter bytes + final byte.
   stripVTControlCharacters: (str) => {
     if (typeof str !== "string") return str;
-    // Covers most common ANSI sequences: CSI (\x1b[...m, \x1b[...K, etc.),
+    // Covers most common ANSI sequences: CSI ([...m, [...K, etc.),
     // OSC, simple ESC sequences. Mirrors the regex Node's lib/internal/
     // util/inspect.js uses (slightly relaxed).
-    return str.replace(/\\x1b\\[[0-9;?]*[A-Za-z]|\\x1b[\\(\\)\\*\\+][AB012]|\\x1b\\][^\\x07\\x1b]*[\\x07\\x1b]|\\x1b[=>]/g, "");
+    return str.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[\(\)\*\+][AB012]|\x1b\][^\x07\x1b]*[\x07\x1b]|\x1b[=>]/g, "");
   },
   // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
   // wrapped in ANSI escape sequences for terminal styling. Used by
@@ -5858,8 +7266,8 @@ const __utilMod = {
     for (const f of formats) {
       const c = codes[f];
       if (c) {
-        opens += "\\x1b[" + c[0] + "m";
-        closes = "\\x1b[" + c[1] + "m" + closes;
+        opens += "\x1b[" + c[0] + "m";
+        closes = "\x1b[" + c[1] + "m" + closes;
       }
     }
     return opens + String(text) + closes;
@@ -5890,7 +7298,7 @@ const __utilMod = {
     const shortToLong = {};
     for (const [name, spec] of Object.entries(options)) {
       if (!spec || (spec.type !== "string" && spec.type !== "boolean")) {
-        throw err("ERR_INVALID_ARG_TYPE", "The \\"options." + name + ".type\\" property must be one of: 'string', 'boolean'.");
+        throw err("ERR_INVALID_ARG_TYPE", "The \"options." + name + ".type\" property must be one of: 'string', 'boolean'.");
       }
       if (spec.short) shortToLong[spec.short] = name;
       if (spec.default !== undefined) values[name] = spec.default;
@@ -5907,7 +7315,7 @@ const __utilMod = {
     const optionValue = (name, inlineValue, next, raw) => {
       const spec = options[name];
       if (!spec) {
-        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'." + (allowPositionals ? " To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \\"" + raw + "\\"'." : ""));
+        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'." + (allowPositionals ? " To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"" + raw + "\"'." : ""));
         if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
         return { value: true, consumed: 0 };
       }
@@ -6004,20 +7412,20 @@ const __utilMod = {
 // "file:///" + __currentModulePath so relative URLs resolve against
 // the real on-VFS module location — restoring proper import.meta.url
 //
-// The leniency is scoped to calls that PASSED a base. \`new URL(x)\` with one
+// The leniency is scoped to calls that PASSED a base. `new URL(x)` with one
 // argument is Node's strict absolute-URL parse: it throws
 // TypeError [ERR_INVALID_URL] for anything that is not already a URL, and
 // that throw is load-bearing rather than incidental. Node's own ESM
 // resolver — and every vendored copy of it, including exsolve, which is what
-// \`nuxt dev\` resolves \`@nuxt/kit\` and \`nuxt\` with — spells the
+// `nuxt dev` resolves `@nuxt/kit` and `nuxt` with — spells the
 // bare-specifier test as
 //     try { resolved = new URL(specifier); } catch { packageResolve(…); }
-// Swallowing the throw made \`new URL("@nuxt/kit")\` answer
+// Swallowing the throw made `new URL("@nuxt/kit")` answer
 // file:///@nuxt/kit, so moduleResolve never reached packageResolve and
 // finalizeResolution stat'd /@nuxt/kit — the FILESYSTEM ROOT — instead of
 // walking <from>/node_modules. Two syscalls and every bare import in the
 // project was unresolvable. The bundler breakage this wrapper exists for
-// (\`new URL(rel, import.meta.url)\` where the rolldown/esbuild polyfill
+// (`new URL(rel, import.meta.url)` where the rolldown/esbuild polyfill
 // reduced import.meta.url to null/undefined) is always a two-argument call,
 // so requiring the base argument keeps that fix and restores Node's
 // contract for the one-argument form. URL.canParse, which is bound
@@ -6035,7 +7443,7 @@ const __utilMod = {
           // matches real ESM import-meta-url resolution.
           const cur = globalThis.__currentModulePath;
           const fallback = (typeof cur === "string" && cur.length > 0)
-            ? "file:///" + cur.replace(/^\\/+/, "")
+            ? "file:///" + cur.replace(/^\/+/, "")
             : "file:///";
           super(input, fallback);
           return;
@@ -6057,9 +7465,9 @@ const __utilMod = {
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
 // module are workerd's own node:url (see core/_shared/real-node-imports.ts).
-// It was imitated here over WHATWG \`new URL()\`, which throws for the path-only
-// URL every HTTP server receives as \`req.url\`: \`url.parse("/hello.txt")\` came
-// back as \`{ href }\` with no pathname, so node-static stat'ed
+// It was imitated here over WHATWG `new URL()`, which throws for the path-only
+// URL every HTTP server receives as `req.url`: `url.parse("/hello.txt")` came
+// back as `{ href }` with no pathname, so node-static stat'ed
 // "<root>/undefined" and answered 404 for every file.
 const __realUrl = (typeof __real_url !== "undefined")
   ? (__real_url.default ?? __real_url)
@@ -6070,19 +7478,19 @@ const __urlMod = {
   // Node's semantics: a relative path resolves against the process's cwd, a
   // trailing slash survives, and the characters the URL parser would read as
   // syntax or leave raw are percent-encoded ('%' first; the pathname setter
-  // encodes '?', '#', spaces and controls such as rolldown's "\\0" virtual-id
+  // encodes '?', '#', spaces and controls such as rolldown's "\0" virtual-id
   // prefix). Prefixing "file://" instead made a relative path's first segment
-  // the URL's host, which throws for "\\0rolldown/runtime.js" and misnames
+  // the URL's host, which throws for "\0rolldown/runtime.js" and misnames
   // every other one.
   pathToFileURL: (p) => {
     const input = String(p);
     let resolved = __pathMod.resolve(input);
     if (input.endsWith("/") && !resolved.endsWith("/")) resolved += "/";
     const url = new URL("file:///");
-    url.pathname = resolved.replace(/%/g, "%25").replace(/\\n/g, "%0A").replace(/\\r/g, "%0D").replace(/\\t/g, "%09");
+    url.pathname = resolved.replace(/%/g, "%25").replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/\t/g, "%09");
     return url;
   },
-  fileURLToPath: (u) => (typeof u === "string" ? u : u.pathname).replace(/^file:\\/\\//, ""),
+  fileURLToPath: (u) => (typeof u === "string" ? u : u.pathname).replace(/^file:\/\//, ""),
 };
 __urlMod.URL = globalThis.URL;
 
@@ -6151,7 +7559,7 @@ const __cryptoMod = (() => {
 // ── Runtime code: the async and generator Function constructors ──
 //
 // A Worker generates code from strings only while its modules evaluate: at
-// request time — where every program runs — \`new Function(...)\` and its async
+// request time — where every program runs — `new Function(...)` and its async
 // and generator siblings throw EvalError "Code generation from strings
 // disallowed for this context". The async and generator constructors here ask
 // the native one first and, refused that way, hand the arguments to the
@@ -6159,14 +7567,14 @@ const __cryptoMod = (() => {
 // which answers from this launch's module map or records the text for the next
 // launch of the command and throws EvalError code ERR_NIMBUS_CODE_NEXT_LAUNCH.
 // That is the constructor a module runner evaluates with (Vite's SSR runner:
-// \`new AsyncFunction(...)\`), reached as each kind's \`prototype.constructor\`,
-// which is how \`(async function () {}).constructor\` finds it. A facet without
+// `new AsyncFunction(...)`), reached as each kind's `prototype.constructor`,
+// which is how `(async function () {}).constructor` finds it. A facet without
 // the service (opencode's) keeps the native refusal.
 //
-// The plain \`Function\` constructor is routed differently, on evidence: code
+// The plain `Function` constructor is routed differently, on evidence: code
 // probes it once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
-// \`Function("null")\`, remembers whether it worked, and then compiles every
-// schema check with \`Function\`; staging every text, the next launch staged the
+// `Function("null")`, remembers whether it worked, and then compiles every
+// schema check with `Function`; staging every text, the next launch staged the
 // probe's text but not the checks' — the probe said yes, the first check threw,
 // and pi's TUI died. So it answers only text an earlier launch staged, keeps
 // the native refusal otherwise, and stages a refused text only when a failed
@@ -6181,7 +7589,53 @@ function __nimbusIsCodegenRefusal(e) {
 // decode it without compiling, preserving native eval (including its Workers
 // refusal) for everything else. No general-evaluation capability is exposed,
 // and Function("null") / eval("1 + 1") feature probes remain refused.
-const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
+const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(source) {
+  const text = source.trim();
+  const quote = text[0];
+  if ((quote !== '"' && quote !== "'") || text.length < 2) return undefined;
+  let result = '';
+  for (let i = 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === quote) return i === text.length - 1 ? result : undefined;
+    if (c === '\n' || c === '\r') return undefined;
+    if (c !== '\\') { result += c; continue; }
+    if (++i >= text.length) return undefined;
+    const escaped = text[i];
+    switch (escaped) {
+      case 'n': result += '\n'; break;
+      case 'r': result += '\r'; break;
+      case 't': result += '\t'; break;
+      case 'b': result += '\b'; break;
+      case 'f': result += '\f'; break;
+      case 'v': result += '\v'; break;
+      case '\r': if (text[i + 1] === '\n') i++; break;
+      case '\n': case '\u2028': case '\u2029': break;
+      case 'x': case 'u': {
+        const braced = escaped === 'u' && text[i + 1] === '{';
+        const start = i + (braced ? 2 : 1);
+        const end = braced ? text.indexOf('}', start) : start + (escaped === 'x' ? 2 : 4);
+        if (end <= start || end > text.length) return undefined;
+        const digits = text.slice(start, end);
+        if (!/^[0-9a-fA-F]+$/.test(digits)) return undefined;
+        const point = Number.parseInt(digits, 16);
+        if (point > 0x10ffff) return undefined;
+        result += String.fromCodePoint(point);
+        i = braced ? end : end - 1;
+        break;
+      }
+      default: {
+        if (escaped >= '0' && escaped <= '7') {
+          // 0..3 consumes up to three octal digits; 4..7 only two.
+          const end = Math.min(text.length, i + (escaped <= '3' ? 3 : 2));
+          let octal = escaped;
+          while (i + 1 < end && text[i + 1] >= '0' && text[i + 1] <= '7') octal += text[++i];
+          result += String.fromCharCode(Number.parseInt(octal, 8));
+        } else result += escaped;
+      }
+    }
+  }
+  return undefined;
+};
 (() => {
   const nativeEval = globalThis.eval;
   if (nativeEval.__nimbusNative) return;
@@ -6214,7 +7668,7 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
   // This reads that prologue and stops at the first other line.
   const viteHoistedImports = (body) => {
     const found = [];
-    for (const raw of body.split("\\n")) {
+    for (const raw of body.split("\n")) {
       const line = raw.trim();
       if (line === "" || line === '"use strict";' || line.startsWith("__vite_ssr_exportName__(")) continue;
       let rest = line;
@@ -6229,7 +7683,7 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       const quote = rest[0];
       if (quote !== '"' && quote !== "'") break;
       let end = 1;
-      while (end < rest.length && rest[end] !== quote) end += rest[end] === "\\\\" ? 2 : 1;
+      while (end < rest.length && rest[end] !== quote) end += rest[end] === "\\" ? 2 : 1;
       if (end >= rest.length) break;
       const source = __nimbusDecodeStringLiteral(rest.slice(0, end + 1));
       if (typeof source !== "string") break;
@@ -6305,7 +7759,7 @@ const __vmMod = (() => {
       }
       try { return real[method](...args); } catch (e) {
         // Workerd surfaces ERR_METHOD_NOT_IMPLEMENTED;
-        // \`new Function\` surfaces "Code generation from strings disallowed".
+        // `new Function` surfaces "Code generation from strings disallowed".
         if (e && (e.code === 'ERR_METHOD_NOT_IMPLEMENTED'
                   || /not implemented|disallowed|Code generation/i.test(e.message || ''))) {
           throw honestError(method, e);
@@ -6337,10 +7791,10 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return service.compileFunction("function", [], "return (\\n" + String(code) + "\\n);")();
+        return service.compileFunction("function", [], "return (\n" + String(code) + "\n);")();
       }
     },
-    // A function of \`params\` and \`code\` is what the Function constructor
+    // A function of `params` and `code` is what the Function constructor
     // builds, so a refusal goes to the same runtime-code service. Context
     // extensions and a parsing context have no such form.
     compileFunction: (code, params = [], options = {}) => {
@@ -6366,10 +7820,10 @@ const __vmMod = (() => {
 // ──  http2 module (W3: stub — non-throwing load, honest connect err) ─
 // ═══════════════════════════════════════════════════════════════════════
 //
-// axios's dist/node code does \`var http2 = require('http2')\` at top
+// axios's dist/node code does `var http2 = require('http2')` at top
 // level, unconditionally. Without this stub the require fails →
 // axios fails to load. The actual HTTP/2 transport is only invoked
-// when user opts in (\`httpVersion: 2\`); otherwise this shim is dormant.
+// when user opts in (`httpVersion: 2`); otherwise this shim is dormant.
 const __http2Mod = (() => {
   function _err(op) {
     const e = new Error('http2.' + op + ': not implemented in Nimbus. Use fetch() or HTTP/1.1.');
@@ -6605,13 +8059,13 @@ const __stringDecoderMod = {
 //   2. exec/execFile route through spawn (Node-doc semantics). The
 //      callback fires (err, stdout, stderr) once the child exits.
 //   3. fork() establishes a JSON-newline IPC channel via the stdin
-//      queue. ChildProcess.send(msg)→cpStdinWrite of JSON.stringify(msg)+'\\n'.
+//      queue. ChildProcess.send(msg)→cpStdinWrite of JSON.stringify(msg)+'\n'.
 //      Phase 1 limit: messages are JSON, NOT v8.serialize. Buffer/Date
 //      project to their JSON shapes ({type:'Buffer',data:[...]} and
 //      ISO strings respectively). Documented in cp-fork-ipc.mjs probe.
 //   4. spawnSync returns a result object that FILLS IN LATER: the spawn is
 //      async and the fields land as the child's events fire, so a caller
-//      reads status=null until it settles. \`__deferred\` resolves with the
+//      reads status=null until it settles. `__deferred` resolves with the
 //      completed result and is the contract Nimbus consumers await.
 //      execSync/execFileSync cannot offer that — their Node contract is to
 //      RETURN the child's stdout — so they refuse instead of lying; see
@@ -6637,7 +8091,7 @@ const __childProcessMod = (() => {
    * until the consumer calls .setEncoding(), which is how a binary protocol
    * (esbuild's service) reads its packets and how a text consumer opts into
    * text. It used to default to utf8 for the cross-spawn / husky pattern;
-   * that pattern reads \`String(chunk)\` and works on a Buffer, and the
+   * that pattern reads `String(chunk)` and works on a Buffer, and the
    * default turned every byte above 0x7f into U+FFFD for everyone else.
    * Flowing-mode resumption and encoding are the Readable base class's job —
    * see streams.ts.
@@ -7236,7 +8690,7 @@ const __childProcessMod = (() => {
       if (!child.connected) return false;
       if (!child.stdin) return false;
       try {
-        const line = JSON.stringify(msg) + "\\n";
+        const line = JSON.stringify(msg) + "\n";
         child.stdin.write(line);
         return true;
       } catch (e) {
@@ -7249,9 +8703,9 @@ const __childProcessMod = (() => {
     // JSON line counts as a message — non-JSON lines are dropped
     // silently (real fork would route them to stderr-style handling).
     // No __nimbusIpc envelope: round-trip is symmetric with the
-    // parent's child.send which writes raw JSON.stringify(msg)+'\\n'.
+    // parent's child.send which writes raw JSON.stringify(msg)+'\n'.
     child.stdout.on("data", (d) => {
-      const lines = String(d).split("\\n");
+      const lines = String(d).split("\n");
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
@@ -7337,7 +8791,7 @@ const __childProcessMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // The Console constructor workerd's node:console does not implement (it throws
 // "The Console method is not implemented"). OpenTUI's console capture
-// (setupConsoleCapture) constructs \`new Console({ stdout, stderr, ... })\` to
+// (setupConsoleCapture) constructs `new Console({ stdout, stderr, ... })` to
 // redirect console output into a captured stream; without a working
 // constructor the TUI renderer setup throws and the program exits before its
 // first frame. This shim writes to the supplied streams via util.format /
@@ -7352,16 +8806,16 @@ class __NimbusConsole {
     }
     const fmt = (a) => a.map((x) => typeof x === "string" ? x : __utilMod.inspect(x, inspectOptions)).join(" ");
     const write = (stream, s) => { try { if (stream && typeof stream.write === "function") stream.write(s); } catch {} };
-    this.log = (...a) => write(out, fmt(a) + "\\n");
-    this.info = (...a) => write(out, fmt(a) + "\\n");
-    this.debug = (...a) => write(out, fmt(a) + "\\n");
-    this.dir = (o, opts) => write(out, __utilMod.inspect(o, opts || inspectOptions) + "\\n");
-    this.error = (...a) => write(err, fmt(a) + "\\n");
-    this.warn = (...a) => write(err, fmt(a) + "\\n");
-    this.trace = (...a) => write(err, "Trace: " + fmt(a) + "\\n");
-    this.assert = (c, ...a) => { if (!c) write(err, "Assertion failed: " + fmt(a) + "\\n"); };
-    this.table = (d) => write(out, __utilMod.inspect(d, inspectOptions) + "\\n");
-    this.group = (...a) => { if (a.length) write(out, fmt(a) + "\\n"); };
+    this.log = (...a) => write(out, fmt(a) + "\n");
+    this.info = (...a) => write(out, fmt(a) + "\n");
+    this.debug = (...a) => write(out, fmt(a) + "\n");
+    this.dir = (o, opts) => write(out, __utilMod.inspect(o, opts || inspectOptions) + "\n");
+    this.error = (...a) => write(err, fmt(a) + "\n");
+    this.warn = (...a) => write(err, fmt(a) + "\n");
+    this.trace = (...a) => write(err, "Trace: " + fmt(a) + "\n");
+    this.assert = (c, ...a) => { if (!c) write(err, "Assertion failed: " + fmt(a) + "\n"); };
+    this.table = (d) => write(out, __utilMod.inspect(d, inspectOptions) + "\n");
+    this.group = (...a) => { if (a.length) write(out, fmt(a) + "\n"); };
     this.groupCollapsed = this.group;
     this.time = () => {}; this.timeEnd = () => {}; this.timeLog = () => {}; this.timeStamp = () => {};
     this.clear = () => {}; this.count = () => {}; this.countReset = () => {}; this.groupEnd = () => {};
@@ -7369,17 +8823,17 @@ class __NimbusConsole {
   }
 }
 const __consoleMod = {
-  log: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
-  error: (...a) => { stderr += __utilMod.format(...a) + "\\n"; },
-  warn: (...a) => { stderr += __utilMod.format(...a) + "\\n"; },
-  info: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
-  debug: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
-  dir: (o, opts) => { stdout += __utilMod.inspect(o, opts) + "\\n"; },
-  trace: (...a) => { stderr += "Trace: " + __utilMod.format(...a) + "\\n"; },
-  assert: (c, ...a) => { if (!c) stderr += "Assertion failed: " + __utilMod.format(...a) + "\\n"; },
+  log: (...a) => { stdout += __utilMod.format(...a) + "\n"; },
+  error: (...a) => { stderr += __utilMod.format(...a) + "\n"; },
+  warn: (...a) => { stderr += __utilMod.format(...a) + "\n"; },
+  info: (...a) => { stdout += __utilMod.format(...a) + "\n"; },
+  debug: (...a) => { stdout += __utilMod.format(...a) + "\n"; },
+  dir: (o, opts) => { stdout += __utilMod.inspect(o, opts) + "\n"; },
+  trace: (...a) => { stderr += "Trace: " + __utilMod.format(...a) + "\n"; },
+  assert: (c, ...a) => { if (!c) stderr += "Assertion failed: " + __utilMod.format(...a) + "\n"; },
   time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
   count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
-  table: (d) => { stdout += __utilMod.inspect(d) + "\\n"; },
+  table: (d) => { stdout += __utilMod.inspect(d) + "\n"; },
   Console: __NimbusConsole,
 };
 
@@ -7403,10 +8857,10 @@ function __nimbusWriteControl(stream, data, cb) {
 function __nimbusClearLine(stream, dir, cb) {
   const n = Number(dir);
   const mode = n < 0 ? 1 : n > 0 ? 0 : 2;
-  return __nimbusWriteControl(stream, "\\x1b[" + mode + "K", cb);
+  return __nimbusWriteControl(stream, "\x1b[" + mode + "K", cb);
 }
 function __nimbusClearScreenDown(stream, cb) {
-  return __nimbusWriteControl(stream, "\\x1b[0J", cb);
+  return __nimbusWriteControl(stream, "\x1b[0J", cb);
 }
 function __nimbusCursorTo(stream, x, y, cb) {
   if (typeof y === "function") {
@@ -7414,18 +8868,18 @@ function __nimbusCursorTo(stream, x, y, cb) {
     y = undefined;
   }
   const col = __nimbusClampTerminalCoordinate(x) + 1;
-  if (y === undefined) return __nimbusWriteControl(stream, "\\x1b[" + col + "G", cb);
+  if (y === undefined) return __nimbusWriteControl(stream, "\x1b[" + col + "G", cb);
   const row = __nimbusClampTerminalCoordinate(y) + 1;
-  return __nimbusWriteControl(stream, "\\x1b[" + row + ";" + col + "H", cb);
+  return __nimbusWriteControl(stream, "\x1b[" + row + ";" + col + "H", cb);
 }
 function __nimbusMoveCursor(stream, dx, dy, cb) {
   let out = "";
   const x = Math.trunc(Number(dx) || 0);
   const y = Math.trunc(Number(dy) || 0);
-  if (x < 0) out += "\\x1b[" + (-x) + "D";
-  else if (x > 0) out += "\\x1b[" + x + "C";
-  if (y < 0) out += "\\x1b[" + (-y) + "A";
-  else if (y > 0) out += "\\x1b[" + y + "B";
+  if (x < 0) out += "\x1b[" + (-x) + "D";
+  else if (x > 0) out += "\x1b[" + x + "C";
+  if (y < 0) out += "\x1b[" + (-y) + "A";
+  else if (y > 0) out += "\x1b[" + y + "B";
   return __nimbusWriteControl(stream, out, cb);
 }
 function __nimbusEmitTerminalResize() {
@@ -7441,7 +8895,7 @@ function __nimbusLiveInputChannel() {
     ? Number(env.NIMBUS_CP_CHILD_PID)
     : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
 }
-// fd 0 of a \`< file\` redirect is the file itself, from the redirect's
+// fd 0 of a `< file` redirect is the file itself, from the redirect's
 // offset (facets/manager.ts, __nimbusStdinFile): read at a position for a
 // synchronous read, streamed by process.stdin.
 function __nimbusStdinFileSource() {
@@ -7452,12 +8906,12 @@ function __nimbusStdinFileSource() {
 // two share one fd in Node): the launch's own stdin text; for a pipe
 // streaming through the live channel (facets/manager.ts, _pumpStdinPipe),
 // what __nimbusPrepareStdin took before the entry ran (all of it when the
-// pipe ended within the read ahead); for a \`< file\`, the file from its
-// offset. \`ended\` says nothing more will follow.
+// pipe ended within the read ahead); for a `< file`, the file from its
+// offset. `ended` says nothing more will follow.
 let __nimbusStdinTaken = false;
 let __nimbusQueuedStdin = null;
 function __nimbusStdinEnded() {
-  // A \`< file\` preloaded up to the read ahead ends there only when the file
+  // A `< file` preloaded up to the read ahead ends there only when the file
   // does; one not preloaded is read whole by path when a synchronous read
   // needs it (__nimbusTakeStdin).
   if (__nimbusStdinFileSource() !== null) return __nimbusQueuedStdin === null || __nimbusQueuedStdin.ended;
@@ -7500,15 +8954,15 @@ function __nimbusStdinWouldBlock(syscall) {
   // The whole message before the Error is built: its stack, which is what an
   // uncaught error prints, captures the message at construction.
   const why = __nimbusStdinFileSource() !== null
-    ? " — stdin is a file larger than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, and synchronous reads of it are served from its first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
-    : " — stdin is a pipe that had not ended within what was read ahead of the program (at most the first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, one budget shared by the session's concurrent launches), and a synchronous read cannot wait for the rest. Redirect a file instead (\`node script.js < file\`), or read process.stdin, which takes the pipe as it arrives";
+    ? " — stdin is a file larger than 16 MiB, and synchronous reads of it are served from its first 16 MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
+    : " — stdin is a pipe that had not ended within what was read ahead of the program (at most the first 16 MiB, one budget shared by the session's concurrent launches), and a synchronous read cannot wait for the rest. Redirect a file instead (`node script.js < file`), or read process.stdin, which takes the pipe as it arrives";
   const err = new Error("EAGAIN: resource temporarily unavailable, " + syscall + " '0'" + why);
   err.code = "EAGAIN";
   err.errno = -11;
   err.syscall = syscall;
   return err;
 }
-// A read of fd 0 into \`target\`: bytes copied, 0 at its end, EAGAIN when a
+// A read of fd 0 into `target`: bytes copied, 0 at its end, EAGAIN when a
 // writer still owes more than fd 0 held at the start.
 function __nimbusReadStdinInto(target, offset, length, syscall) {
   const state = __nimbusSyncStdinState();
@@ -7571,7 +9025,7 @@ async function __nimbusTakeQueuedStdin(whole) {
 }
 // Before the entry runs: what its synchronous reads of fd 0 need in hand.
 // A pipe: what the channel holds (all of it when it ends within the read
-// ahead). A \`< file\` the program reads synchronously: the file from its
+// ahead). A `< file` the program reads synchronously: the file from its
 // offset up to the read ahead, read in ranges into one buffer; a larger file
 // is never held whole, and process.stdin streams on from there. A file the
 // program only streams is read as process.stdin reads.
@@ -7580,7 +9034,7 @@ async function __nimbusPrepareStdin() {
   if (file !== null) {
     if (!file.syncRead) return;
     const size = (await __fsMod.promises.stat(file.path)).size;
-    const want = Math.max(0, Math.min(size - file.offset, ${STDIN_SYNC_READ_BYTES}));
+    const want = Math.max(0, Math.min(size - file.offset, 16777216));
     const bytes = __BufferMod.allocUnsafe(want);
     let got = 0;
     if (want > 0) {
@@ -7673,7 +9127,7 @@ function __makeProcessStdin() {
       }
       // A packet that delivers anything — input, its end, a signal, a resize
       // — hands the program news from outside it, and whatever sent the news
-      // may have written files first (a shell's \`echo v2 > f\` before the
+      // may have written files first (a shell's `echo v2 > f` before the
       // keystroke, the editor's save before the signal). So it takes the
       // barrier before any handler sees it. The poll sent this process's
       // ACQUIRE arguments and the packet carries the answer, so a keystroke
@@ -7718,7 +9172,7 @@ function __makeProcessStdin() {
   const seed = () => {
     if (seeded) return;
     seeded = true;
-    // A \`< file\` streams from the file itself as the program reads: after
+    // A `< file` streams from the file itself as the program reads: after
     // what a preload or synchronous reads left, from where that stopped.
     const file = __nimbusStdinFileSource();
     if (file !== null) {
@@ -7756,16 +9210,16 @@ function __makeProcessStdin() {
           return;
         }
         const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")), () => undefined).catch(() => {}); } catch {}
-        try { __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+        stderr += trace + "\n";
+        try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(trace + "\n")), () => undefined).catch(() => {}); } catch {}
+        try { __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\n"), () => undefined).catch(() => {}); } catch {}
         try { r.end(); } catch {}
       });
       __nimbusLiveStdinPump = pump;
       return;
     }
     queueMicrotask(() => {
-      // A Buffer, as Node's stdin chunks are: \`s += chunk\` and
+      // A Buffer, as Node's stdin chunks are: `s += chunk` and
       // chunk.toString() read text, where a bare Uint8Array reads "104,105".
       const data = __nimbusStdinRemainder();
       if (data.length > 0) r.write(data);
@@ -7949,7 +9403,7 @@ const __processMod = {
     throw new __ProcessExit(exitCode);
   },
   platform: "linux", arch: "x64",
-  version: ${NODE_VERSION_LITERAL}, versions: ${NODE_VERSIONS_LITERAL},
+  version: "v22.19.0", versions: {"node":"22.19.0","v8":"12.4.254.21","modules":"127"},
   features: Object.freeze({
     inspector: false,
     debug: false,
@@ -8078,7 +9532,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
-  const line = label + __nimbusRuntimeErrorTrace(error) + "\\n";
+  const line = label + __nimbusRuntimeErrorTrace(error) + "\n";
   stderr += line;
   if (__supervisor && typeof __supervisor.stderr === "function") {
     try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}
@@ -8123,13 +9577,13 @@ builtins.constants = __constantsMod;
 builtins["node:constants"] = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
-// X.5-R: real Node's \`require('stream')\` re-exports EventEmitter
-// (verified: \`require('stream').EventEmitter === require('events').EventEmitter\`
+// X.5-R: real Node's `require('stream')` re-exports EventEmitter
+// (verified: `require('stream').EventEmitter === require('events').EventEmitter`
 // in Node 20). Older CJS code reads EE off the stream module instead of
 // events — e.g., @redis/client/dist/lib/client/cache.js:301:
-// \`class ClientSideCacheProvider extends stream_1.EventEmitter {}\` where
-// \`stream_1 = require("stream")\`. Without this re-export, \`stream_1.EventEmitter\`
-// is undefined and \`class … extends undefined\` throws "Class extends value
+// `class ClientSideCacheProvider extends stream_1.EventEmitter {}` where
+// `stream_1 = require("stream")`. Without this re-export, `stream_1.EventEmitter`
+// is undefined and `class … extends undefined` throws "Class extends value
 // Idempotent guard so a future streams.ts revision that already exposes
 // EventEmitter doesn't get clobbered.
 if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
@@ -8150,10 +9604,272 @@ builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
-${NATIVE_HTTP_SOURCE}
+
+const __nativeHttpResponse = globalThis.Response;
+const __nativeHttpRequest = globalThis.Request;
+const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent", "referer", "authorization",
+  "proxy-authorization", "if-modified-since", "if-unmodified-since", "from", "location", "max-forwards"]);
+Object.defineProperty(builtins, "http", {
+  configurable: true, enumerable: true,
+  get() {
+    const http = typeof __real_http !== "undefined"
+      ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
+    const net = typeof __real_net !== "undefined"
+      ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
+    const ports = globalThis.__portRegistry ??= new Map();
+    const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
+    const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
+    // Native clients keep consuming their IncomingMessage after fetch has
+    // returned headers. Their close event is the end of the exchange (EOF,
+    // body error or cancellation), not the request-body finish event.
+    // https.get/request use this same ClientRequest class; prototype hooks
+    // cover named ESM imports and direct construction too. No response/error
+    // listeners are installed, preserving native auto-drain and error rules.
+    // workerd src/node/internal/internal_http_client.ts #handleFetchResponse
+    // and #emitClose, v1.20260926.1.
+    const clientProto = http.ClientRequest.prototype;
+    const clientPatch = Symbol.for("nimbus.native-http.client-lifetime");
+    if (!clientProto[clientPatch]) {
+      const inFlight = new WeakSet();
+      const end = clientProto.end, emit = clientProto.emit;
+      const release = request => {
+        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
+      };
+      Object.defineProperty(clientProto, clientPatch, { value: true });
+      clientProto.end = function () {
+        const started = !this.destroyed && !inFlight.has(this);
+        if (started) {
+          inFlight.add(this);
+          globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
+        }
+        try { return Reflect.apply(end, this, arguments); }
+        catch (error) { if (started) release(this); throw error; }
+      };
+      clientProto.emit = function (event) {
+        if (event === "close" && this.destroyed) release(this);
+        return Reflect.apply(emit, this, arguments);
+      };
+    }
+    const patchKey = Symbol.for("nimbus.native-http.patch");
+    if (!http.Server.prototype[patchKey]) {
+      const proto = http.Server.prototype;
+      // workerd v1.20260926.1 _storeHeader calls headers.hasOwnProperty:
+      // https://github.com/cloudflare/workerd/blob/v1.20260926.1/src/node/internal/internal_http_outgoing.ts
+      // Node also accepts null-prototype dictionaries (effect-platform uses
+      // them). Use the native progressive header API, without copying or
+      // mutating the caller map.
+      const responseProto = http.ServerResponse.prototype;
+      const responsePatch = Symbol.for("nimbus.native-http.response-headers");
+      if (!responseProto[responsePatch]) {
+        const writeHead = responseProto.writeHead;
+        Object.defineProperty(responseProto, responsePatch, { value: true });
+        responseProto.writeHead = function (status, reason, headers) {
+          const fields = typeof reason === "object" && reason !== null ? reason : headers;
+          if (fields && !Array.isArray(fields) && (Object.getPrototypeOf(fields) !== Object.prototype || Object.hasOwn(fields, "hasOwnProperty"))) {
+            for (const name in fields) if (Object.hasOwn(fields, name)) this.setHeader(name, fields[name]);
+            return Reflect.apply(writeHead, this, typeof reason === "string" ? [status, reason] : [status]);
+          }
+          return Reflect.apply(writeHead, this, arguments);
+        };
+      }
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit;
+      // An HTTP exchange keeps its process alive until it completes, as its
+      // connection does in Node, whether or not the server is still listening
+      // (a bound port is counted on its own): from 'request' until the response
+      // closes, finished or destroyed (the client went away, the header
+      // deadline passed). The response alone decides, as Node ties the
+      // exchange to it: a request body the handler never reads never ends
+      // here (workerd does not dump one), so it must not hold the process.
+      // One of the held connections __nimbusLiveHandles counts, never startup
+      // work: a response still streaming at boot (SSE, an HMR poll) does not
+      // hold a resident's boot answer.
+      const holdExchange = (response) => {
+        if (typeof response.once !== "function") return;
+        response.once("close", () => {
+          globalThis.__nimbusOpenSockets--;
+          globalThis.__nimbusHandleReleased?.();
+        });
+        globalThis.__nimbusOpenSockets = (globalThis.__nimbusOpenSockets || 0) + 1;
+      };
+      proto.emit = function (event, incoming, response) {
+        if (event === "request" && incoming && response) holdExchange(response);
+        return Reflect.apply(emit, this, arguments);
+      };
+      // Keep RPC capabilities inside this closure, not on globals or server
+      // properties visible to guest code. The setter refreshes the context
+      // when an isolate is reused, without revealing its current value.
+      let activeContext = context;
+      const owners = new WeakMap();
+      Object.defineProperty(proto, patchKey, { value: next => { activeContext = next; } });
+      proto.listen = function (...args) {
+        const ctx = activeContext;
+        const [options, callback] = net._normalizeArgs(args);
+        if (this.listening || owners.get(this)?.pending) {
+          const err = new Error("Listen method has been called more than once without closing.");
+          err.code = "ERR_SERVER_ALREADY_LISTEN";
+          throw err;
+        }
+        const state = { ctx, pending: false, cancelled: false, port: null };
+        owners.set(this, state);
+        const requested = options.port === undefined ? 0 : Number(options.port);
+        const allocationSettled = () => {
+          state.pending = false;
+          // A cancelled allocation can settle after this server relistens.
+          // Only the current owner can retire its pending-listen handle.
+          if (owners.get(this) === state && pendingListeners.delete(this)) globalThis.__nimbusHandleReleased?.();
+        };
+        const releaseAllocation = () => {
+          // An explicit relisten may have taken this same number while the
+          // cancelled allocation reply was in flight. That live binding now
+          // owns the reservation; retiring the old request must not remove it.
+          if (state.port !== null && !ctx.ports.has(state.port)) {
+            ctx.pending.push(Promise.resolve(ctx.supervisor.unregisterPort(state.port)));
+          }
+        };
+        const start = (port) => {
+          allocationSettled();
+          if (state.cancelled) {
+            releaseAllocation();
+            return;
+          }
+          try {
+            // Native listen validates the arguments and binds the native port.
+            // An EADDRINUSE from workerd is synchronous; Node emits it instead.
+            Reflect.apply(listen, this, [{ ...options, port }, ...(callback ? [callback] : [])]);
+            state.port = Number(this.address()?.port ?? port);
+            ctx.ports.set(state.port, this);
+            ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
+          } catch (e) {
+            if (requested === 0) releaseAllocation();
+            if (e && e.code === "EADDRINUSE") { queueMicrotask(() => this.emit("error", e)); return; }
+            throw e;
+          }
+        };
+        if (requested === 0) {
+          state.pending = true;
+          pendingListeners.add(this);
+          let allocation;
+          try { allocation = ctx.supervisor.allocatePort(); }
+          catch (error) { allocationSettled(); throw error; }
+          const task = Promise.resolve(allocation).then(port => {
+            state.port = port;
+            start(port);
+          }, error => { allocationSettled(); if (!state.cancelled) this.emit("error", error); });
+          ctx.pending.push(task);
+        } else start(options.port);
+        return this;
+      };
+      proto.close = function (callback) {
+        const state = owners.get(this);
+        if (state) {
+          state.cancelled = true;
+          if (state.pending) {
+            state.pending = false;
+            owners.delete(this);
+            pendingListeners.delete(this);
+            globalThis.__nimbusHandleReleased?.();
+            if (callback) this.once("close", callback);
+            queueMicrotask(() => this.emit("close"));
+            return this;
+          }
+          if (state.port !== null && state.ctx.ports.get(state.port) === this) {
+            state.ctx.ports.delete(state.port);
+            state.ctx.pending.push(Promise.resolve(state.ctx.supervisor.unregisterPort(state.port)));
+            globalThis.__nimbusHandleReleased?.();
+          }
+        }
+        return Reflect.apply(close, this, callback ? [callback] : []);
+      };
+      proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
+      proto.unref = function () {
+        this.__nimbusUnrefed = true;
+        globalThis.__nimbusHandleReleased?.();
+        return Reflect.apply(unref, this, []);
+      };
+    } else http.Server.prototype[patchKey](context);
+    globalThis.__nimbusServeHttp = async (request) => {
+      const port = Number(request.headers.get("X-Nimbus-Port") || 0);
+      const server = port ? ports.get(port) : ports.values().next().value;
+      if (!server) return new __nativeHttpResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
+      let acquired;
+      try { acquired = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
+      await __nimbusInboundBarrier(acquired);
+      const headers = new Headers(request.headers);
+      headers.delete("X-Nimbus-Vfs-Acquired");
+      const controller = new AbortController();
+      const inbound = new __nativeHttpRequest(request, { headers, signal: AbortSignal.any([request.signal, controller.signal]) });
+      let detach = () => {};
+      let timer;
+      let nativeResponse;
+      const captureResponse = (incoming, response) => {
+        nativeResponse = response;
+        // workerd's #toReqRes keeps only the text before the first unquoted
+        // comma of these fields (splitHeaderValue, meant to pick the first of
+        // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
+        // and "(KHTML" of a Chrome User-Agent. The edge has already joined any
+        // duplicates here, so the full value is Node's value.
+        // workerd v1.20260926.1 src/node/internal/internal_http_server.ts
+        // multipleForbiddenHeaders and #toReqRes.
+        const raw = incoming.rawHeaders;
+        for (let i = 0; i + 1 < raw.length; i += 2) {
+          const name = String(raw[i]).toLowerCase();
+          if (!__nativeSplitHeaderFields.has(name)) continue;
+          const full = inbound.headers.get(name);
+          if (full === null || full === raw[i + 1]) continue;
+          raw[i + 1] = full;
+          incoming.headers[name] = full;
+        }
+      };
+      const dispatch = async () => {
+        // effect-platform binds first and attaches its request handler later.
+        // Do not let the native server silently drop that first request.
+        if (server.listenerCount("request") === 0) {
+          const ready = Promise.withResolvers();
+          const added = (event) => { if (event === "request") queueMicrotask(ready.resolve); };
+          const closed = () => ready.resolve();
+          detach = () => { server.removeListener("newListener", added); server.removeListener("close", closed); };
+          server.on("newListener", added);
+          server.once("close", closed);
+          await ready.promise;
+          detach();
+        }
+        if (!server.listening) return new __nativeHttpResponse("Nimbus: HTTP server closed", { status: 502 });
+        // workerd emits request synchronously inside handleAsNodeRequest
+        // (internal_http_server.ts #onRequest), before its response promise.
+        server.prependOnceListener("request", captureResponse);
+        return __nimbusHandleAsNodeRequest(Number(server.address().port), inbound);
+      };
+      const deadline = Promise.withResolvers();
+      timer = setTimeout(() => {
+        deadline.resolve(new __nativeHttpResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 }));
+        detach();
+        nativeResponse?.destroy();
+        controller.abort();
+      }, Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000);
+      try {
+        return await Promise.race([dispatch(), deadline.promise]);
+      } finally { clearTimeout(timer); detach(); server.removeListener("request", captureResponse); }
+    };
+    Object.defineProperty(builtins, "http", { value: http, writable: true, enumerable: true, configurable: true });
+    return http;
+  },
+});
+Object.defineProperty(builtins, "https", {
+  configurable: true, enumerable: true,
+  get() {
+    // Install the shared HTTP Server prototype bridge before native HTTPS is
+    // used; workerd's HTTPS server is the HTTP server (TLS ends at ingress).
+    void builtins.http;
+    const https = typeof __real_https !== "undefined"
+      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
+    Object.defineProperty(builtins, "https", { value: https, writable: true, enumerable: true, configurable: true });
+    return https;
+  },
+});
+
 // W3 — net.Socket honest-error mode.
 //
-// Pre-W3 behaviour: \`new net.Socket().connect(443, 'example.com')\`
+// Pre-W3 behaviour: `new net.Socket().connect(443, 'example.com')`
 // immediately fired the 'connect' event without any I/O — silent lie.
 // Anything attempting raw TCP from a facet (pg, mysql2, redis wire
 // protocols) thought it succeeded but produced no I/O.
@@ -8214,8 +9930,8 @@ builtins.net = (() => {
     createServer: (o, h) => { if (typeof o === "function") { h = o; } return builtins.http.createServer(h); },
     createConnection: (p, h, cb) => new Socket().connect(p, h, cb),
     connect: (p, h, cb) => new Socket().connect(p, h, cb),
-    isIP: (s) => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(s) ? 4 : 0,
-    isIPv4: (s) => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(s),
+    isIP: (s) => /^\d+\.\d+\.\d+\.\d+$/.test(s) ? 4 : 0,
+    isIPv4: (s) => /^\d+\.\d+\.\d+\.\d+$/.test(s),
     isIPv6: () => false,
   };
 })();
@@ -8272,12 +9988,12 @@ builtins.tty = {
 // packages the facet provides itself (FACET_PROVIDED_PACKAGES), which are not
 // core and must not be reported as such — a package that sniffs this list
 // would otherwise conclude e.g. undici ships with node.
-const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL});
-// node:module. In Node \`require('module')\` IS the Module constructor, its
-// statics the module API, and \`Module.Module\` the same function: loaders
+const __nimbusFacetProvidedPackages = new Set(["undici"]);
+// node:module. In Node `require('module')` IS the Module constructor, its
+// statics the module API, and `Module.Module` the same function: loaders
 // such as jiti (Nuxt's nuxt.config, c12) build a module by hand —
-// \`new Module(filename)\`, then \`paths\`, \`require\`, and \`_compile\` — so
-// the constructor has to exist with Node's shape. \`_compile\` turns source
+// `new Module(filename)`, then `paths`, `require`, and `_compile` — so
+// the constructor has to exist with Node's shape. `_compile` turns source
 // text into code: through the runtime-code service when the launch carries
 // one (a module written after launch is staged for the next launch there),
 // otherwise with Node's own wrapper through the Function constructor, which
@@ -8301,7 +10017,7 @@ __NodeModule.prototype.require = function require(request) {
     e.code = request === "" ? "ERR_INVALID_ARG_VALUE" : "ERR_INVALID_ARG_TYPE";
     throw e;
   }
-  return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\\/+/, ""));
+  return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\/+/, ""));
 };
 __NodeModule.prototype._compile = function _compile(content, filename) {
   const file = String(filename ?? this.filename ?? this.id);
@@ -8342,7 +10058,7 @@ __NodeModule.enableCompileCache = () => ({ status: 3, message: 'compile cache is
 __NodeModule.getCompileCacheDir = () => undefined;
 __NodeModule.flushCompileCache = () => {};
 __NodeModule.constants = { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_ENABLED: 2, DISABLED: 3 } };
-__NodeModule.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\\n});"];
+__NodeModule.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
 __NodeModule.wrap = (script) => __NodeModule.wrapper[0] + script + __NodeModule.wrapper[1];
 __NodeModule._extensions = { ".js": () => {}, ".json": () => {}, ".node": () => {} };
 __NodeModule._cache = {};
@@ -8367,13 +10083,13 @@ __NodeModule._resolveFilename = (request, parent) => {
   const from = parent && (parent.filename || parent.id)
     ? __pathMod.dirname(parent.filename || parent.id)
     : (cwd || "/home/user");
-  const resolved = __resolveFrom(String(request), from.replace(/^\\/+/, ""));
+  const resolved = __resolveFrom(String(request), from.replace(/^\/+/, ""));
   if (!resolved) {
     const e = new Error("Cannot find module '" + request + "'");
     e.code = "MODULE_NOT_FOUND";
     throw e;
   }
-  return "/" + String(resolved).replace(/^\\/+/, "");
+  return "/" + String(resolved).replace(/^\/+/, "");
 };
 __NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
 __NodeModule.Module = __NodeModule;
@@ -8404,7 +10120,7 @@ builtins.zlib = (() => {
     const mod = {};
     // Constants, lookup tables, crc32, and the stream factories/classes pass
     // through bound to the native module (capitalized names are classes —
-    // binding would strip their prototype and break \`new\`).
+    // binding would strip their prototype and break `new`).
     for (const k of Object.keys(__real)) {
       const v = __real[k];
       mod[k] = (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v;
@@ -8472,7 +10188,7 @@ builtins.zlib = (() => {
   }
   function _isUnexpectedEnd(e) {
     const m = e instanceof Error && typeof e.message === "string" ? e.message : String(e);
-    return /unexpected end|end of (?:file|input|stream)|premature|truncated|\\bEOF\\b/i.test(m);
+    return /unexpected end|end of (?:file|input|stream)|premature|truncated|\bEOF\b/i.test(m);
   }
   function _decompressFailure(e) { return _isUnexpectedEnd(e) ? _zbuf(e) : _zdata(e); }
   function _destroyedWrite() {
@@ -8685,11 +10401,11 @@ builtins.readline = (() => {
       for (let i = 0; i < text.length; i++) {
         let str = text[i];
         let key = { sequence: str, name: str, ctrl: false, meta: false, shift: false };
-        if (str === "\\x1b" && text[i + 1] === "[") {
+        if (str === "\x1b" && text[i + 1] === "[") {
           const code = text[i + 2];
           if (code === "A" || code === "B" || code === "C" || code === "D") {
             i += 2;
-            str = "\\x1b[" + code;
+            str = "\x1b[" + code;
             key = {
               sequence: str,
               name: code === "A" ? "up" : code === "B" ? "down" : code === "C" ? "right" : "left",
@@ -8698,11 +10414,11 @@ builtins.readline = (() => {
               shift: false,
             };
           }
-        } else if (str === "\\x03") {
+        } else if (str === "\x03") {
           key = { sequence: str, name: "c", ctrl: true, meta: false, shift: false };
-        } else if (str === "\\x7f" || str === "\\b") {
+        } else if (str === "\x7f" || str === "\b") {
           key = { sequence: str, name: "backspace", ctrl: false, meta: false, shift: false };
-        } else if (str === "\\r" || str === "\\n") {
+        } else if (str === "\r" || str === "\n") {
           key = { sequence: str, name: "enter", ctrl: false, meta: false, shift: false };
         }
         stream.emit("keypress", str, key);
@@ -8729,18 +10445,18 @@ builtins.readline = (() => {
     function handleInputText(text) {
       for (let i = 0; i < text.length; i++) {
         const ch = text[i];
-        if (ch === "\\r" || ch === "\\n") {
-          if (ch === "\\r" && text[i + 1] === "\\n") i++;
+        if (ch === "\r" || ch === "\n") {
+          if (ch === "\r" && text[i + 1] === "\n") i++;
           const line = buffer;
           buffer = "";
           pushLine(line);
           continue;
         }
-        if (ch === "\\x7f" || ch === "\\b") {
+        if (ch === "\x7f" || ch === "\b") {
           if (buffer.length > 0) buffer = buffer.slice(0, -1);
           continue;
         }
-        if (ch === "\\x03") {
+        if (ch === "\x03") {
           rl.emit("SIGINT");
           continue;
         }
@@ -8993,7 +10709,7 @@ builtins["stream/consumers"] = (() => {
 builtins["node:stream/consumers"] = builtins["stream/consumers"];
 
 // stream/web — Web Streams API namespace. Node 17+. Userland CLIs
-// occasionally pull \`ReadableStream\` from here for portability. The
+// occasionally pull `ReadableStream` from here for portability. The
 // platform exposes these globals already; we just re-export them.
 builtins["stream/web"] = {
   ReadableStream: globalThis.ReadableStream,
@@ -9052,7 +10768,7 @@ builtins.undici = __undiciMod;
 // ═══════════════════════════════════════════════════════════════════════
 const __moduleCache = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
-const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
+const __nimbusAbiAdvisories = new Map([["sharp","Native libvips bindings; not portable to Workers. … try: no Workers-compatible target — render server-side or use Cloudflare Images. For the wasm32 build see @img/sharp-wasm32 entry below."],["sqlite3","Native sqlite3 .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or sql.js once wasm asset loading is available."],["better-sqlite3","Native sqlite .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or @libsql/client if its subpath exports resolve in your project."],["canvas","Native Cairo bindings. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["sodium-native","Native libsodium. … try: tweetnacl (pure JS, untested by Nimbus) or libsodium-wrappers (WASM, untested by Nimbus)."],["node-pty","PTY syscalls unavailable in workerd. … try: no Workers-compatible target — use the Nimbus built-in shell."],["robotjs","Desktop automation; sandboxed Workers cannot access OS UI. … try: no Workers-compatible target."],["electron","Embedded Chromium runtime; not applicable to Workers. … try: no Workers-compatible target."],["bcrypt","Native bcrypt; pure-JS bcryptjs has an equivalent sync API but the require() name differs and Nimbus does not yet support npm aliases. … try: change `require(\"bcrypt\")` to `require(\"bcryptjs\")`, then `npm install bcryptjs`. APIs are sync-compatible."],["argon2","Native Argon2 C bindings. … try: hash-wasm for argon2d, argon2i, and argon2id."],["node-sass","Native libsass; deprecated upstream. … try: sass (dart-sass, pure JS)."],["grpc","Deprecated native gRPC. … try: @grpc/grpc-js (pure JS, untested end-to-end in Nimbus)."],["@swc/core","Native Rust SWC. … try: @swc/wasm-web for transform/parse only; it does not provide the native Plugin API."],["prisma","Native query engine; not portable to Workers in this configuration. … try: @prisma/adapter-d1 (Prisma official Workers adapter, untested by Nimbus), or migrate to drizzle-orm + @libsql/client (untested by Nimbus)."],["@prisma/client","Same as `prisma` (native query engine). … try: @prisma/adapter-d1 (untested by Nimbus), or drizzle-orm + @libsql/client (untested)."],["puppeteer","Bundled Chromium binary (~150 MB). … try: no Workers-compatible target for the bundled binary — use puppeteer-core + Cloudflare Browser Rendering (untested by Nimbus)."],["playwright","Bundled browsers (~300 MB). … try: no Workers-compatible target for bundled browsers — use @playwright/test against a remote browser endpoint (untested by Nimbus)."],["sql.js","Installs but fails at runtime because dist/sql-wasm.wasm is not available to the runtime loader. … try: For SQL in Workers, consider Cloudflare D1 or @libsql/client."],["@swc/wasm-web","Installs but fails at runtime because its generated code path depends on workerd-blocked dynamic code generation. … try: For ESM transforms consider esbuild-wasm."],["@img/sharp-wasm32","WASM build of sharp; package is wasm32-cpu-only and libvips initThreads() requires pthread support unavailable in Workers. … try: wasm-vips may work for simple pipelines; for complex pipelines, render server-side and ship pixels."],["@napi-rs/canvas","Native bindings only (linux-x64-gnu/musl, darwin-arm64/x64, android-arm64, linux-arm64-gnu/musl, win32-x64-msvc, linux-arm-gnueabihf). No WASM build published. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@napi-rs/canvas-wasm32-wasi","@napi-rs/canvas does not publish a wasm32-wasi variant on npm (404). The @napi-rs/canvas project ships only native bindings. No WASM/WASI build exists. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@tailwindcss/oxide","Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen. … try: no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine."]]);
 
 /**
  * Direct VFS bundle access for module resolution.
@@ -9060,7 +10776,7 @@ const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
  * because resolver paths are already in VFS format (no leading /).
  */
 function __readFileOr(path, fallback) {
-  const k = path.replace(/^\\/+/, "");
+  const k = path.replace(/^\/+/, "");
   // binary-fs: bundle/writes cells may be Uint8Array; module-resolution
   // callers (package.json parse, source compile) want strings. Decode
   // bytes lossily — same as Node's Buffer.toString('utf8').
@@ -9077,7 +10793,7 @@ function __readFileOr(path, fallback) {
   try { return __fsMod.readFileSync("/" + k, "utf8"); } catch { return fallback; }
 }
 function __fileExists(path) {
-  const k = path.replace(/^\\/+/, "");
+  const k = path.replace(/^\/+/, "");
   // The namespace answers exactly (vfs/facet-resident-store.ts), except on a
   // mounted directory the launch did not list: asked only when the namespace
   // holds such a directory, statSync's refusal says so, and resolution
@@ -9095,7 +10811,7 @@ function __fileExists(path) {
 // can't read, throwing "Cannot read module: <dir>"). See W3 retro §S3 for
 // the fastify ret/dist/types failure.
 function __pathIsFile(path) {
-  const k = path.replace(/^\\/+/, "");
+  const k = path.replace(/^\/+/, "");
   const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
   return !!st && st.isFile();
 }
@@ -9128,21 +10844,21 @@ function __resolveFile(base) {
     if (__fileExists(cand)) return cand;
   }
   // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
-  const pkgJsonPath = base.replace(/\\/+$/, "") + "/package.json";
+  const pkgJsonPath = base.replace(/\/+$/, "") + "/package.json";
   if (__pathIsFile(pkgJsonPath)) {
     let pkg = null;
     try { pkg = JSON.parse(__readFileOr(pkgJsonPath, "null")); } catch { /* fall through */ }
     if (pkg && typeof pkg.main === "string" && pkg.main.length > 0) {
-      const mainStripped = pkg.main.replace(/^\\.\\/+/, "").replace(/^\\/+/, "");
+      const mainStripped = pkg.main.replace(/^\.\/+/, "").replace(/^\/+/, "");
       // Normalize so a parent-relative main (e.g. web-streams-polyfill's
       // ponyfill/package.json declaring main "../dist/ponyfill") collapses
       // its ".." segments instead of probing a literal "dir/../dist" path
       // that __fileExists never matches.
-      const mainBase = __vfsNormalizePath(base.replace(/\\/+$/, "") + "/" + mainStripped).replace(/^\\/+/, "");
+      const mainBase = __vfsNormalizePath(base.replace(/\/+$/, "") + "/" + mainStripped).replace(/^\/+/, "");
       // Recurse: main itself may be a directory (e.g. main: "lib") or
       // a file without extension. Guard against pkg.main === "." which
       // would re-enter this same base and stack-overflow.
-      if (mainBase !== base && mainBase !== base.replace(/\\/+$/, "")) {
+      if (mainBase !== base && mainBase !== base.replace(/\/+$/, "")) {
         const resolved = __resolveFile(mainBase);
         if (resolved) return resolved;
       }
@@ -9158,7 +10874,7 @@ function __resolveFile(base) {
   // nothing today. Must agree with the prefetch resolver or a file is shipped
   // that this cannot find; both come from src/_shared/typescript-specifiers.ts
   // and tests/unit/typescript-specifier-resolution.mjs compares them.
-  const baseTrim = base.replace(/\\/+$/, "");
+  const baseTrim = base.replace(/\/+$/, "");
   for (const cand of __typescriptFallbackCandidates(baseTrim)) {
     if (__pathIsFile(cand)) return cand;
   }
@@ -9173,12 +10889,129 @@ function __resolveFile(base) {
 // Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
 // Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
 //           DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS.
-${EXPORTS_RESOLVER_JS}
+
+// ── exports-resolver.js (auto-generated; keep in sync with src/_shared/exports-resolver.ts) ──
+const DEFAULT_ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
+const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'default'];
+
+function resolveExports(exportsField, subpath, conditions) {
+  if (subpath === undefined) subpath = '.';
+  if (!conditions) conditions = DEFAULT_ESM_CONDITIONS;
+  if (exportsField === undefined || exportsField === null) return null;
+  if (typeof exportsField === 'string') {
+    return subpath === '.' ? exportsField : null;
+  }
+  if (Array.isArray(exportsField)) {
+    for (const item of exportsField) {
+      const r = resolveExports(item, subpath, conditions);
+      if (r) return r;
+    }
+    return null;
+  }
+  if (typeof exportsField !== 'object') return null;
+  const keys = Object.keys(exportsField);
+  if (keys.length === 0) return null;
+  const isSubpathMap = keys[0].startsWith('.') || keys[0].startsWith('#');
+  if (isSubpathMap) {
+    if (subpath in exportsField) {
+      const target = exportsField[subpath];
+      if (target === null) return null;
+      return resolveConditionValue(target, conditions);
+    }
+    const wildcardKeys = keys
+      .filter(k => k.includes('*'))
+      .sort((a, b) => b.length - a.length);
+    for (const pattern of wildcardKeys) {
+      const target = exportsField[pattern];
+      const starIdx = pattern.indexOf('*');
+      const prefix = pattern.slice(0, starIdx);
+      const suffix = pattern.slice(starIdx + 1);
+      if (
+        subpath.startsWith(prefix) &&
+        (suffix ? subpath.endsWith(suffix) : true) &&
+        subpath.length >= prefix.length + suffix.length
+      ) {
+        if (target === null) return null;
+        const matched = subpath.slice(
+          prefix.length,
+          suffix ? subpath.length - suffix.length : undefined,
+        );
+        const resolved = resolveConditionValue(target, conditions);
+        if (resolved) return resolved.split('*').join(matched);
+      }
+    }
+    return null;
+  }
+  if (subpath !== '.') return null;
+  return resolveConditionValue(exportsField, conditions);
+}
+
+function resolveConditionValue(target, conditions) {
+  if (target === null || target === undefined) return null;
+  if (typeof target === 'string') return target;
+  if (Array.isArray(target)) {
+    for (const item of target) {
+      const r = resolveConditionValue(item, conditions);
+      if (r) return r;
+    }
+    return null;
+  }
+  if (typeof target !== 'object') return null;
+  for (const cond of conditions) {
+    if (cond in target) {
+      const r = resolveConditionValue(target[cond], conditions);
+      if (r) return r;
+    }
+  }
+  if (!conditions.includes('default') && 'default' in target) {
+    return resolveConditionValue(target.default, conditions);
+  }
+  return null;
+}
+
+function resolvePackageEntry(pkg, subpath, conditions) {
+  if (subpath === undefined) subpath = '.';
+  if (!conditions) conditions = DEFAULT_ESM_CONDITIONS;
+  if (pkg.exports !== undefined && pkg.exports !== null) {
+    const entry = resolveExports(pkg.exports, subpath, conditions);
+    if (entry) return entry;
+    return null;
+  }
+  if (subpath === '.') {
+    if (conditions.includes('module') && pkg.module) return pkg.module;
+    if (pkg.main) return pkg.main;
+    return null;
+  }
+  return subpath;
+}
+
+function packageSelfReferenceSubpath(pkg, specifier) {
+  if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0) return null;
+  if (pkg.exports === undefined || pkg.exports === null) return null;
+  if (specifier === pkg.name) return '.';
+  if (!specifier.startsWith(pkg.name + '/')) return null;
+  return '.' + specifier.slice(pkg.name.length);
+}
+// ── end exports-resolver.js ────────────────────────────────────────────
+
 
 // ── TypeScript specifier fallbacks ────────────────────────────────────────
 // Emitted from src/_shared/typescript-specifiers.ts. Declares:
 // __typescriptFallbackCandidates, __TYPESCRIPT_INDEX_CANDIDATES.
-${TYPESCRIPT_SPECIFIERS_JS}
+
+// ── typescript-specifiers (mirrors src/_shared/typescript-specifiers.ts) ──
+const __NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
+const __TYPESCRIPT_INDEX_CANDIDATES = ["/index.ts","/index.tsx"];
+function __typescriptFallbackCandidates(base) {
+  if (__NON_MAPPING_EXTENSION.test(base)) return [];
+  if (base.endsWith(".mjs")) return [base.slice(0, -4) + ".mts"];
+  if (base.endsWith(".js")) {
+    const stem = base.slice(0, -3);
+    return [stem + ".ts", stem + ".tsx"];
+  }
+  return [base + ".ts", base + ".tsx"];
+}
+
 
 /** Conditions for runtime CJS resolution (user-shell node). */
 const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];
@@ -9206,7 +11039,7 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   if (!pkg) {
     // No package.json — try direct probe
     if (subpath === ".") return __resolveFile(pkgDir + "/index");
-    return __resolveFile(pkgDir + "/" + subpath.replace(/^\\.\\/+/, ""));
+    return __resolveFile(pkgDir + "/" + subpath.replace(/^\.\/+/, ""));
   }
   let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
   // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
@@ -9223,7 +11056,7 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   }
   if (entry != null) {
     // Strip leading ./ from the resolver result
-    const stripped = entry.replace(/^\\.\\/+/, "");
+    const stripped = entry.replace(/^\.\/+/, "");
     const resolved = __resolveFile(pkgDir + "/" + stripped);
     if (resolved) return resolved;
     // W2.6a D2: exports/main yielded a target but the file doesn't exist
@@ -9244,13 +11077,13 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
     // exports → module → main, so re-probing main here only triggers when
     // entry was null OR entry's file was missing.
     if (typeof pkg.main === 'string') {
-      const mainStripped = pkg.main.replace(/^\\.\\/+/, "");
+      const mainStripped = pkg.main.replace(/^\.\/+/, "");
       const r = __resolveFile(pkgDir + "/" + mainStripped);
       if (r) return r;
     }
     return __resolveFile(pkgDir + "/index");
   }
-  const rel = subpath.replace(/^\\.\\/+/, "");
+  const rel = subpath.replace(/^\.\/+/, "");
   return __resolveFile(pkgDir + "/" + rel);
 }
 
@@ -9284,7 +11117,7 @@ function __resolveNodeModule(name, fromDir) {
   // existence checks used the same form, so iteration COULD terminate early
   // when hitting "" (empty string) at the root. Explicit termination on
   // empty string + always-also-check root node_modules covers both.
-  let dir = (fromDir || "").replace(/^\\/+/, "");
+  let dir = (fromDir || "").replace(/^\/+/, "");
   const visited = new Set();
   while (true) {
     if (visited.has(dir)) break;
@@ -9313,7 +11146,7 @@ function __resolveNodeModule(name, fromDir) {
  * encloses fromDir.
  */
 function __nearestPackageScope(fromDir) {
-  let dir = (fromDir || "").replace(/^\\/+/, "");
+  let dir = (fromDir || "").replace(/^\/+/, "");
   while (true) {
     if (dir === "node_modules" || dir.endsWith("/node_modules")) return null;
     const pkgJsonPath = (dir ? dir + "/" : "") + "package.json";
@@ -9351,16 +11184,16 @@ function __resolveImportsField(name, fromDir) {
 
 /**
  * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
- * itself (\`require('<its-name>')\`, \`require('<its-name>/sub')\`) resolves
- * through that package's own \`exports\` map — only when the nearest
- * package.json has \`exports\` AND its \`name\` matches, and only through
- * \`exports\` (no main/index probing: a subpath the map does not expose is
+ * itself (`require('<its-name>')`, `require('<its-name>/sub')`) resolves
+ * through that package's own `exports` map — only when the nearest
+ * package.json has `exports` AND its `name` matches, and only through
+ * `exports` (no main/index probing: a subpath the map does not expose is
  * not exported). Sits between the imports-field branch and the
  * node_modules walk, where Node puts it. Returns the resolved file or null.
  *
  * Conditions are the ones the node_modules walk uses for the same
  * require: the runtime's CJS set first, the ESM set when the map exposes
- * the subpath only under \`import\` (dynamic import() is lowered onto this
+ * the subpath only under `import` (dynamic import() is lowered onto this
  * require chain, see __resolvePkgSubpath).
  *
  * Tri-state, as in Node: null when the rule does not apply (the caller
@@ -9377,7 +11210,7 @@ function __resolvePackageSelf(name, fromDir) {
   let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
   if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
   if (entry == null) return { resolved: null };
-  return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, "")) };
+  return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\.\/+/, "")) };
 }
 
 function __exportsTarget(mod) {
@@ -9437,7 +11270,7 @@ function __makeLoadingExports(mod) {
  * available in a Worker, so a file the launch did not map cannot run.
  */
 function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
-  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\/+/, ""));
   if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
 
   const mod = { exports: {} };
@@ -9487,7 +11320,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   });
   Object.defineProperty(mod, "__nimbusImportMeta", { value: importMeta });
   try {
-    const normalizedPath = resolvedPath.replace(/^\\/+/, "");
+    const normalizedPath = resolvedPath.replace(/^\/+/, "");
     let cell = __nimbusModuleCell(normalizedPath);
     if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
@@ -9513,8 +11346,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
         const parts = at < 0 ? [] : resolvedPath.slice(at + 13).split("/");
         const pkg = parts[0] && parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
         const advisory = pkg ? __nimbusAbiAdvisories.get(pkg) : undefined;
-        const note = "\\nNimbus module: " + resolvedPath
-          + (advisory ? "\\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory : "");
+        const note = "\nNimbus module: " + resolvedPath
+          + (advisory ? "\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory : "");
         if (typeof e.message === "string") e.message += note;
         if (typeof e.stack === "string" && !e.stack.includes("Nimbus module:")) e.stack += note;
       } catch {}
@@ -9534,10 +11367,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir) {
-  // An absolute file: URL is a specifier Node accepts: \`import(href)\` is the
+  // An absolute file: URL is a specifier Node accepts: `import(href)` is the
   // portable way to load a path a resolver just handed back, and it is what
   // every package that resolves before it imports emits — @nuxt/cli's
-  // loadKit does \`import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)\`.
+  // loadKit does `import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)`.
   // The ESM→CJS transform funnels those imports through this one resolver, so
   // the scheme has to come off before the specifier is classified: with it on,
   // the file: URL misses the absolute-path branch below and gets looked up as
@@ -9547,10 +11380,10 @@ function __resolveFrom(id, fromDir) {
     try {
       const u = new URL(id);
       // .pathname drops the query a cache-busting importer appends
-      // (\`import(href + "?t=" + Date.now())\` is the standard HMR spelling),
+      // (`import(href + "?t=" + Date.now())` is the standard HMR spelling),
       // and the decode is what node:url's fileURLToPath does with it.
       filePath = decodeURIComponent(u.pathname);
-    } catch { filePath = id.replace(/^file:\\/\\//, ""); }
+    } catch { filePath = id.replace(/^file:\/\//, ""); }
     id = filePath;
   }
   // X.5-P: literal "." / ".." are CommonJS aliases for "./" / "../".
@@ -9567,14 +11400,14 @@ function __resolveFrom(id, fromDir) {
   if (id.startsWith("./") || id.startsWith("../") || id.startsWith("/")) {
     let base;
     if (id.startsWith("/")) {
-      base = id.replace(/^\\/+/, "");
+      base = id.replace(/^\/+/, "");
     } else {
       // VFS paths are stored without leading /. __pathMod.resolve treats
       // a non-absolute fromDir as relative-to-cwd which would corrupt the
       // result (audit §3.7-bug). Force-absolutise fromDir before resolving,
       // then strip the leading / again.
       const absFromDir = fromDir.startsWith("/") ? fromDir : "/" + fromDir;
-      base = __pathMod.resolve(absFromDir, id).replace(/^\\/+/, "");
+      base = __pathMod.resolve(absFromDir, id).replace(/^\/+/, "");
     }
     return __resolveFile(base);
   }
@@ -9607,7 +11440,504 @@ function __resolveFrom(id, fromDir) {
 const __ESM_SCHEME_ONLY_BUILTINS = new Set(["test", "test/reporters", "sqlite", "sea"]);
 // Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
 // scripts/bundle-facet-workers.mjs): declares createEsmResolver.
-${ESM_RESOLVER_PREAMBLE}
+function createEsmResolver(host) {
+  const conditions =   new Set(["node", "import", "module-sync"]);
+  const ask = {
+    *kind(path) {
+      const kind = yield host.kind(path);
+      return kind === "file" || kind === "directory" ? kind : null;
+    },
+    *readText(path) {
+      const text = yield host.readText(path);
+      return typeof text === "string" ? text : null;
+    },
+    *realpath(path) {
+      const real = yield host.realpath(path);
+      return typeof real === "string" ? real : path;
+    },
+    *cjsResolve(specifier, parentPath) {
+      const found = yield host.cjsResolve(specifier, parentPath);
+      return typeof found === "string" ? found : null;
+    }
+  };
+  function codedError(Ctor, code, message) {
+    return Object.assign(new Ctor(message), { code });
+  }
+  const codeOf = (error) => error !== null && typeof error === "object" && "code" in error ? error.code : void 0;
+  const filePath = (url) => decodeURIComponent(new URL(String(url)).pathname);
+  const fileUrl = (path) => {
+    const url = new URL("file://");
+    url.pathname = path;
+    return url;
+  };
+  function isRelativeSpecifier(specifier) {
+    if (specifier[0] !== ".") return false;
+    if (specifier.length === 1 || specifier[1] === "/") return true;
+    return specifier[1] === "." && (specifier.length === 2 || specifier[2] === "/");
+  }
+  const isRelativeOrAbsolute = (specifier) => specifier !== "" && (specifier[0] === "/" || isRelativeSpecifier(specifier));
+  function* readPackageConfig(pjsonPath, specifier, base) {
+    const text = (yield* ask.kind(pjsonPath)) === "file" ? yield* ask.readText(pjsonPath) : null;
+    if (text === null) return { exists: false, pjsonPath, type: "none" };
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw codedError(
+        Error,
+        "ERR_INVALID_PACKAGE_CONFIG",
+        `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
+      );
+    }
+    const config = { exists: true, pjsonPath, type: "none" };
+    if (parsed === null || typeof parsed !== "object") return config;
+    if (typeof parsed.name === "string") config.name = parsed.name;
+    if (typeof parsed.main === "string") config.main = parsed.main;
+    if ("exports" in parsed) config.exports = parsed.exports;
+    if (parsed.imports !== null && typeof parsed.imports === "object") config.imports = parsed.imports;
+    if (parsed.type === "module" || parsed.type === "commonjs") config.type = parsed.type;
+    return config;
+  }
+  function* packageScopeConfig(resolved) {
+    let pjsonUrl = new URL("./package.json", resolved);
+    while (true) {
+      if (pjsonUrl.pathname.endsWith("node_modules/package.json")) break;
+      const config = yield* readPackageConfig(filePath(pjsonUrl), resolved.href, void 0);
+      if (config.exists) return config;
+      const last = pjsonUrl;
+      pjsonUrl = new URL("../package.json", pjsonUrl);
+      if (pjsonUrl.pathname === last.pathname) break;
+    }
+    return { exists: false, pjsonPath: filePath(pjsonUrl), type: "none" };
+  }
+  function invalidPackageTarget(key, target, pjsonUrl, internal, base) {
+    const text = typeof target === "object" && target !== null ? JSON.stringify(target, null, "") : `${target}`;
+    const pkgPath = filePath(new URL(".", pjsonUrl));
+    const related = !internal && text.length > 0 && !text.startsWith("./");
+    const tail = `in the package config ${pkgPath}package.json imported from ${base}${related ? '; targets must start with "./"' : ""}`;
+    return codedError(
+      Error,
+      "ERR_INVALID_PACKAGE_TARGET",
+      key === "." ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}` : `Invalid "${internal ? "imports" : "exports"}" target ${JSON.stringify(text)} defined for '${key}' ${tail}`
+    );
+  }
+  const invalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))?(\\|\/|$)/i;
+  const deprecatedInvalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
+  function* resolveTargetString(target, subpath, match, pjsonUrl, base, pattern, internal, isPathMap) {
+    if (subpath !== "" && !pattern && target[target.length - 1] !== "/") {
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    if (!target.startsWith("./")) {
+      if (internal && !target.startsWith("../") && !target.startsWith("/")) {
+        let isUrl = false;
+        try {
+          new URL(target);
+          isUrl = true;
+        } catch {
+        }
+        if (!isUrl) {
+          const exportTarget = pattern ? target.replace(/\*/g, () => subpath) : target + subpath;
+          return yield* packageResolve(exportTarget, pjsonUrl.href);
+        }
+      }
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    if (invalidSegment.test(target.slice(2)) && deprecatedInvalidSegment.test(target.slice(2))) {
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    const resolved = new URL(target, pjsonUrl);
+    if (!resolved.pathname.startsWith(new URL(".", pjsonUrl).pathname)) {
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    if (subpath === "") return resolved;
+    if (invalidSegment.test(subpath) && deprecatedInvalidSegment.test(subpath) && !isPathMap) {
+      const request = pattern ? match.replace("*", () => subpath) : match + subpath;
+      throw codedError(
+        TypeError,
+        "ERR_INVALID_MODULE_SPECIFIER",
+        `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? "imports" : "exports"}" resolution of ${filePath(pjsonUrl)} imported from ${base}`
+      );
+    }
+    if (pattern) return new URL(resolved.href.replace(/\*/g, () => subpath));
+    return new URL(subpath, resolved);
+  }
+  function* resolveTarget(pjsonUrl, target, subpath, key, base, pattern, internal, isPathMap) {
+    if (typeof target === "string") {
+      return yield* resolveTargetString(target, subpath, key, pjsonUrl, base, pattern, internal, isPathMap);
+    }
+    if (Array.isArray(target)) {
+      if (target.length === 0) return null;
+      let lastException;
+      for (const item of target) {
+        let result;
+        try {
+          result = yield* resolveTarget(pjsonUrl, item, subpath, key, base, pattern, internal, isPathMap);
+        } catch (error) {
+          lastException = error;
+          if (codeOf(error) === "ERR_INVALID_PACKAGE_TARGET") continue;
+          throw error;
+        }
+        if (result === void 0) continue;
+        if (result === null) {
+          lastException = null;
+          continue;
+        }
+        return result;
+      }
+      if (lastException === void 0 || lastException === null) return lastException;
+      throw lastException;
+    }
+    if (typeof target === "object" && target !== null) {
+      const keys = Object.getOwnPropertyNames(target);
+      for (const condition of keys) {
+        if (/^\d+$/.test(condition) && String(Number(condition)) === condition && Number(condition) < 4294967295) {
+          throw codedError(
+            Error,
+            "ERR_INVALID_PACKAGE_CONFIG",
+            `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`
+          );
+        }
+      }
+      for (const condition of keys) {
+        if (condition !== "default" && !conditions.has(condition)) continue;
+        const result = yield* resolveTarget(
+          pjsonUrl,
+          Reflect.get(target, condition),
+          subpath,
+          key,
+          base,
+          pattern,
+          internal,
+          isPathMap
+        );
+        if (result === void 0) continue;
+        return result;
+      }
+      return void 0;
+    }
+    if (target === null) return null;
+    throw invalidPackageTarget(key, target, pjsonUrl, internal, base);
+  }
+  function patternKeyCompare(a, b) {
+    const aStar = a.indexOf("*");
+    const bStar = b.indexOf("*");
+    const baseA = aStar === -1 ? a.length : aStar + 1;
+    const baseB = bStar === -1 ? b.length : bStar + 1;
+    if (baseA > baseB) return -1;
+    if (baseB > baseA) return 1;
+    if (aStar === -1) return 1;
+    if (bStar === -1) return -1;
+    if (a.length > b.length) return -1;
+    if (b.length > a.length) return 1;
+    return 0;
+  }
+  function bestPattern(map, name) {
+    let best = "";
+    let bestSubpath = "";
+    for (const key of Object.getOwnPropertyNames(map)) {
+      const star = key.indexOf("*");
+      if (star === -1 || !name.startsWith(key.slice(0, star))) continue;
+      const trailer = key.slice(star + 1);
+      if (name.length >= key.length && name.endsWith(trailer) && patternKeyCompare(best, key) === 1 && key.lastIndexOf("*") === star) {
+        best = key;
+        bestSubpath = name.slice(star, name.length - trailer.length);
+      }
+    }
+    return best ? { key: best, subpath: bestSubpath } : null;
+  }
+  function exportsNotFound(subpath, pjsonUrl, base) {
+    const pkgPath = filePath(new URL(".", pjsonUrl));
+    return codedError(
+      Error,
+      "ERR_PACKAGE_PATH_NOT_EXPORTED",
+      subpath === "." ? `No "exports" main defined in ${pkgPath}package.json imported from ${base}` : `Package subpath '${subpath}' is not defined by "exports" in ${pkgPath}package.json imported from ${base}`
+    );
+  }
+  function* packageExportsResolve(pjsonUrl, subpath, config, base) {
+    let exports = config.exports;
+    const isSugar = (() => {
+      if (typeof exports === "string" || Array.isArray(exports)) return true;
+      if (typeof exports !== "object" || exports === null) return false;
+      let sugar = false;
+      let i = 0;
+      for (const key of Object.getOwnPropertyNames(exports)) {
+        const current = key === "" || key[0] !== ".";
+        if (i++ === 0) sugar = current;
+        else if (sugar !== current) {
+          throw codedError(
+            Error,
+            "ERR_INVALID_PACKAGE_CONFIG",
+            `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`
+          );
+        }
+      }
+      return sugar;
+    })();
+    if (isSugar) exports = { ".": exports };
+    const map = exports;
+    if (Object.prototype.hasOwnProperty.call(map, subpath) && !subpath.includes("*") && !subpath.endsWith("/")) {
+      const result = yield* resolveTarget(pjsonUrl, map[subpath], "", subpath, base, false, false, false);
+      if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
+      return result;
+    }
+    const best = bestPattern(map, subpath);
+    if (best) {
+      const result = yield* resolveTarget(pjsonUrl, map[best.key], best.subpath, best.key, base, true, false, subpath.endsWith("/"));
+      if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
+      return result;
+    }
+    throw exportsNotFound(subpath, pjsonUrl, base);
+  }
+  function* packageImportsResolve(name, baseUrl) {
+    const base = filePath(baseUrl);
+    if (name === "#" || name.startsWith("#/") || name.endsWith("/")) {
+      throw codedError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
+    }
+    const config = yield* packageScopeConfig(new URL(baseUrl));
+    let pjsonUrl;
+    if (config.exists) {
+      pjsonUrl = fileUrl(config.pjsonPath);
+      const imports = config.imports;
+      if (imports) {
+        if (Object.prototype.hasOwnProperty.call(imports, name) && !name.includes("*")) {
+          const result = yield* resolveTarget(pjsonUrl, imports[name], "", name, base, false, true, false);
+          if (result != null) return result;
+        } else {
+          const best = bestPattern(imports, name);
+          if (best) {
+            const result = yield* resolveTarget(pjsonUrl, imports[best.key], best.subpath, best.key, base, true, true, false);
+            if (result != null) return result;
+          }
+        }
+      }
+    }
+    const where = pjsonUrl ? ` in package ${filePath(new URL(".", pjsonUrl))}package.json` : "";
+    throw codedError(TypeError, "ERR_PACKAGE_IMPORT_NOT_DEFINED", `Package import specifier "${name}" is not defined${where} imported from ${base}`);
+  }
+  function* legacyMainResolve(pjsonUrl, config, base) {
+    const tries = [];
+    if (config.main !== void 0) {
+      for (const suffix of ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"]) tries.push(`./${config.main}${suffix}`);
+    }
+    tries.push("./index.js", "./index.json", "./index.node");
+    for (const candidate of tries) {
+      const url = new URL(candidate, pjsonUrl);
+      if ((yield* ask.kind(filePath(url))) === "file") return url;
+    }
+    const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
+    const missing = filePath(new URL(config.main ?? "index.js", dir));
+    throw codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
+  }
+  function* packageResolve(specifier, baseUrl) {
+    if (host.isBuiltin(specifier)) return new URL("node:" + specifier);
+    const base = filePath(baseUrl);
+    let separator = specifier.indexOf("/");
+    let valid = true;
+    let scoped = false;
+    if (specifier[0] === "@") {
+      scoped = true;
+      if (separator === -1 || specifier.length === 0) valid = false;
+      else separator = specifier.indexOf("/", separator + 1);
+    }
+    const name = separator === -1 ? specifier : specifier.slice(0, separator);
+    if (/^\.|%|\\/.test(name)) valid = false;
+    if (!valid) {
+      throw codedError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
+    }
+    const subpath = "." + (separator === -1 ? "" : specifier.slice(separator));
+    const self = yield* packageScopeConfig(new URL(baseUrl));
+    if (self.exists && self.exports != null && self.name === name) {
+      return yield* packageExportsResolve(fileUrl(self.pjsonPath), subpath, self, base);
+    }
+    let pjsonUrl = new URL("./node_modules/" + name + "/package.json", baseUrl);
+    let pjsonPath = filePath(pjsonUrl);
+    let lastPath;
+    do {
+      if ((yield* ask.kind(pjsonPath.slice(0, pjsonPath.length - 13))) !== "directory") {
+        lastPath = pjsonPath;
+        pjsonUrl = new URL((scoped ? "../../../../node_modules/" : "../../../node_modules/") + name + "/package.json", pjsonUrl);
+        pjsonPath = filePath(pjsonUrl);
+        continue;
+      }
+      const config = yield* readPackageConfig(pjsonPath, specifier, base);
+      if (config.exports != null) return yield* packageExportsResolve(pjsonUrl, subpath, config, base);
+      if (subpath === ".") return yield* legacyMainResolve(pjsonUrl, config, base);
+      return new URL(subpath, pjsonUrl);
+    } while (pjsonPath.length !== lastPath.length);
+    throw codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${name}' imported from ${base}`);
+  }
+  function* formatOf(url, path) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    const dot = base.lastIndexOf(".");
+    const ext = dot > 0 ? base.slice(dot) : "";
+    if (ext === ".mjs" || ext === ".mts") return "module";
+    if (ext === ".cjs" || ext === ".cts") return "commonjs";
+    if (ext === ".json") return "json";
+    if (ext === ".js" || ext === ".ts" || ext === "") {
+      const type = (yield* packageScopeConfig(url)).type;
+      if (type === "module") return "module";
+      if (type === "commonjs") return "commonjs";
+      return "detect";
+    }
+    throw codedError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", `Unknown file extension "${ext}" for ${path}`);
+  }
+  function* finalizeResolution(resolved, baseUrl) {
+    const base = filePath(baseUrl);
+    if (/%2f|%5c/i.test(resolved.pathname)) {
+      throw codedError(
+        TypeError,
+        "ERR_INVALID_MODULE_SPECIFIER",
+        `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`
+      );
+    }
+    const path = filePath(resolved);
+    const kind = path.endsWith("/") ? "directory" : yield* ask.kind(path);
+    if (kind === "directory") {
+      throw Object.assign(
+        codedError(Error, "ERR_UNSUPPORTED_DIR_IMPORT", `Directory import '${path}' is not supported resolving ES modules imported from ${base}`),
+        { url: resolved.href }
+      );
+    }
+    if (kind !== "file") {
+      throw Object.assign(
+        codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find module '${path}' imported from ${base}`),
+        { url: resolved.href }
+      );
+    }
+    const real = yield* ask.realpath(path);
+    const url = fileUrl(real);
+    url.search = resolved.search;
+    url.hash = resolved.hash;
+    return { url: url.href, path: real };
+  }
+  function* moduleResolve(specifier, parentUrl) {
+    let resolved;
+    if (isRelativeOrAbsolute(specifier)) resolved = new URL(specifier, parentUrl);
+    else if (specifier[0] === "#") resolved = yield* packageImportsResolve(specifier, parentUrl);
+    else {
+      try {
+        resolved = new URL(specifier);
+      } catch {
+        resolved = yield* packageResolve(specifier, parentUrl);
+      }
+    }
+    if (resolved.protocol === "node:") return { url: "node:" + resolved.pathname, builtin: resolved.pathname };
+    if (resolved.protocol !== "file:") return { url: resolved.href };
+    return yield* finalizeResolution(resolved, parentUrl);
+  }
+  function* loadable(resolved) {
+    if (resolved.builtin !== void 0) {
+      if (!host.isBuiltin("node:" + resolved.builtin)) {
+        throw codedError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", `No such built-in module: node:${resolved.builtin}`);
+      }
+      return { url: resolved.url, builtin: resolved.builtin, format: "builtin" };
+    }
+    if (resolved.url.startsWith("data:")) return { url: resolved.url, format: "data" };
+    if (resolved.path === void 0) {
+      throw codedError(
+        Error,
+        "ERR_UNSUPPORTED_ESM_URL_SCHEME",
+        `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`
+      );
+    }
+    return { url: resolved.url, path: resolved.path, format: yield* formatOf(new URL(resolved.url), resolved.path) };
+  }
+  function* commonJsHint(specifier, parentUrl) {
+    let found = yield* ask.cjsResolve(specifier, filePath(parentUrl));
+    if (found === null) return null;
+    if (isRelativeSpecifier(specifier)) {
+      const from = parentUrl.slice("file://".length, parentUrl.lastIndexOf("/")).split("/").filter(Boolean);
+      const to = fileUrl(found).pathname.split("/").filter(Boolean);
+      let common = 0;
+      while (common < from.length && common < to.length && from[common] === to[common]) common++;
+      found = [...from.slice(common).map(() => ".."), ...to.slice(common)].join("/");
+      if (!found.startsWith("../")) found = `./${found}`;
+    } else if (specifier[0] && specifier[0] !== "/" && specifier[0] !== ".") {
+      const slash = specifier.indexOf("/");
+      const pkg = slash === -1 ? specifier : specifier.slice(0, slash);
+      const needle = `/node_modules/${pkg}/`;
+      const at = found.lastIndexOf(needle);
+      found = at !== -1 ? pkg + "/" + found.slice(at + needle.length).split("/").map(encodeURIComponent).join("/") : fileUrl(found).href;
+    }
+    return found;
+  }
+  function* resolveWithHint(specifier, parentUrl) {
+    try {
+      return yield* moduleResolve(specifier, parentUrl);
+    } catch (error) {
+      const code = codeOf(error);
+      if (error instanceof Error && (code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT")) {
+        const asGiven = specifier.startsWith("file://") ? filePath(specifier) : specifier;
+        const found = yield* commonJsHint(asGiven, parentUrl);
+        if (found && found !== asGiven) error.message += `
+Did you mean to import ${JSON.stringify(found)}?`;
+      }
+      throw error;
+    }
+  }
+  function* importTarget(specifier, parentUrl) {
+    return yield* loadable(yield* resolveWithHint(specifier, parentUrl));
+  }
+  function* metaResolve(specifier, parentUrl) {
+    try {
+      return (yield* moduleResolve(specifier, parentUrl)).url;
+    } catch (error) {
+      const code = codeOf(error);
+      if ((code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT") && error !== null && typeof error === "object" && "url" in error && typeof error.url === "string") return error.url;
+      throw error;
+    }
+  }
+  function runSync(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      if (next.value instanceof Promise) throw new Error("resolveSync: the host answered asynchronously");
+      next = steps.next(next.value);
+    }
+    return next.value;
+  }
+  return {
+    async resolve(specifier, parentUrl) {
+      const steps = importTarget(specifier, parentUrl);
+      let next = steps.next();
+      while (!next.done) {
+        let answer;
+        try {
+          answer = await next.value;
+        } catch (error) {
+          next = steps.throw(error);
+          continue;
+        }
+        next = steps.next(answer);
+      }
+      return next.value;
+    },
+    resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
+    metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
+    validateAttributes(url, format, attributes) {
+      for (const key of Object.keys(attributes)) {
+        if (key !== "type") {
+          throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
+        }
+      }
+      const type = attributes.type;
+      if (format === "json" || format === "data" && /^data:application\/json(?:;[^,]*)?,/.test(url)) {
+        if (type === "json") return;
+        if (!("type" in attributes)) {
+          throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_MISSING", `Module "${url}" needs an import attribute of "type: json"`);
+        }
+      } else if (type == null) {
+        return;
+      }
+      if (typeof type !== "string") {
+        throw codedError(TypeError, "ERR_INVALID_ARG_TYPE", `The "type" argument must be of type string. Received ${typeof type}`);
+      }
+      if (type !== "json") {
+        throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "type" with value "${type}" is not supported in ${url}`);
+      }
+      throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE", `Module "${url}" is not of type "json"`);
+    }
+  };
+}
 const __esmResolver = createEsmResolver({
   kind(path) {
     const st = __fsMod.statSync(path, { throwIfNoEntry: false });
@@ -9625,9 +11955,9 @@ const __esmResolver = createEsmResolver({
   },
   cjsResolve(specifier, parentPath) {
     try {
-      const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\\/+/, "");
+      const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\/+/, "");
       const found = __resolveFrom(specifier, dir);
-      return found ? "/" + String(found).replace(/^\\/+/, "") : null;
+      return found ? "/" + String(found).replace(/^\/+/, "") : null;
     } catch { return null; }
   },
 });
@@ -9674,7 +12004,7 @@ function __esmLoad(resolution) {
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
         if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
-        if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
+        if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
         throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
       };
       const result = cell(mod.exports, requireData, mod, undefined, undefined);
@@ -9689,7 +12019,7 @@ function __esmLoad(resolution) {
       throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
     }
   } else {
-    const key = resolution.path.replace(/^\\/+/, "");
+    const key = resolution.path.replace(/^\/+/, "");
     const esm = resolution.format === "module"
       || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
     // Canonical queryless ESM shares evaluation with require() and static
@@ -9741,7 +12071,7 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
 globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
   const parent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
     ? parentUrl
-    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\\/+/, "");
+    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\/+/, "");
   return __esmResolver.metaResolveSync(String(specifier), parent);
 };
 
@@ -9812,8 +12142,8 @@ function __requireBaseDir(specifier) {
   const filePath = text.startsWith("file:")
     ? builtins.url.fileURLToPath(text)
     : text;
-  const normalized = filePath.replace(/^\\/+/, "");
-  const fullPath = normalized || (dirname || cwd || "/home/user").replace(/^\\/+/, "");
+  const normalized = filePath.replace(/^\/+/, "");
+  const fullPath = normalized || (dirname || cwd || "/home/user").replace(/^\/+/, "");
   const slash = fullPath.lastIndexOf("/");
   return slash >= 0 ? fullPath.substring(0, slash) : "";
 }
@@ -9851,5 +12181,3 @@ __require.main = null;
 // ── END OF GENERATED SHIMS — closing marker ─────────────────────────
 // (builtins block has been moved above the resolver functions)
 // ═══════════════════════════════════════════════════════════════════════
-`;
-}
