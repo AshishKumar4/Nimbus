@@ -826,7 +826,9 @@ const __fsMod = (() => {
   function _nsOwnView(k) {
     if (_nsOwn.size === 0) return null;
     const own = _nsOwn.get(k);
-    if (own) {
+    // A moved link whose own row the table no longer holds has been reported
+    // under its new name, where the table now answers for it.
+    if (own && !(own.link !== undefined && __nsRowAt(__residentRequire(), own.link) === undefined)) {
       if (own.state === "absent" || own.state === "absentTree") return "absent";
       if (own.state === "alias") return { alias: own.from, link: own.link };
       return { dir: true };
@@ -929,10 +931,7 @@ const __fsMod = (() => {
     if (own === "absent") return "absent";
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
-    if (!follow && own && own.link !== undefined) {
-      const row = __nsRowAt(__residentRequire(), own.link);
-      if (row !== undefined) return _nsRowMeta(row);
-    }
+    if (!follow && own && own.link !== undefined) return _nsRowMeta(__nsRowAt(__residentRequire(), own.link));
     // A directory this process made hides what the namespace held under its
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
