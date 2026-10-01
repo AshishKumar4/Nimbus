@@ -36,7 +36,7 @@ import type { SupervisorOpDispatch } from './supervisor-op.js';
  * append ledger's own writer/module/operation identity already makes them
  * repeatable), and the process, socket and storage-grant ops.
  */
-export declare const SUPERVISOR_DELIVERED_OPS: readonly ["writeFile", "fsWrite", "fsWriteRange", "fsTruncate", "writeBatch", "mkdir", "rmdir", "unlink", "rename", "symlink", "utimes", "chmod", "chown", "fsOpen", "fsClose", "fsDup", "fsSeek", "fsSetStatus", "fsSync", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation"];
+export declare const SUPERVISOR_DELIVERED_OPS: readonly ["writeFile", "writeFileStat", "fsWrite", "fsWriteRange", "fsTruncate", "writeBatch", "mkdir", "rmdir", "unlink", "rename", "symlink", "utimes", "chmod", "chown", "fsOpen", "fsClose", "fsDup", "fsSeek", "fsSetStatus", "fsSync", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation"];
 export type SupervisorDeliveredOpName = (typeof SUPERVISOR_DELIVERED_OPS)[number];
 /**
  * The delivered mutation `op` names, as this module's own string — a receipt

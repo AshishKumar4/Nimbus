@@ -44,6 +44,7 @@
  * sent once and a drop surfaces.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -146,6 +147,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null>;
     writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number>;
+    /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
+    writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<WriteFileStatAnswer>;
     stat(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
     }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>>;

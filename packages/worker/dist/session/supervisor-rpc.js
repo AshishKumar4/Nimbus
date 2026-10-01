@@ -260,6 +260,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // Uint8Array transparently; downstream _rpcWriteFile also accepts
         return this._call(this._fsMutation('writeFile', [path, content]));
     }
+    /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
+    async writeFileStat(path, content) {
+        return this._call(this._fsMutation('writeFileStat', [path, content]));
+    }
     async stat(path, options) {
         return this._call(this._fsRead('stat', [path, options]));
     }

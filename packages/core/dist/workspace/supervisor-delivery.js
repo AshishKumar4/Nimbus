@@ -37,7 +37,7 @@ import { VFS_DELIVERY_RECEIPT_RETENTION_MS, VFS_DELIVERY_TOMBSTONE_LIMIT, VFS_DE
  * repeatable), and the process, socket and storage-grant ops.
  */
 export const SUPERVISOR_DELIVERED_OPS = [
-    'writeFile', 'fsWrite', 'fsWriteRange', 'fsTruncate', 'writeBatch',
+    'writeFile', 'writeFileStat', 'fsWrite', 'fsWriteRange', 'fsTruncate', 'writeBatch',
     'mkdir', 'rmdir', 'unlink', 'rename', 'symlink',
     'utimes', 'chmod', 'chown',
     'fsOpen', 'fsClose', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsSync',
