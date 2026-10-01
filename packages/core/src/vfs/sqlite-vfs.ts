@@ -247,6 +247,12 @@ export interface CredentialedVfs {
   access(path: string, mode: number): void;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): void;
+  /**
+   * writeFile of a file whose `size` bytes arrive over time from `source`,
+   * published whole once they have (see SqliteVFS.writeFileFrom). Answers
+   * the revision the publication produced.
+   */
+  writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>, options?: { mode?: number }): Promise<number>;
   symlink(target: string, path: string): void;
   readlink(path: string): string;
   resolveSymlink(path: string): string | null;
@@ -2347,6 +2353,10 @@ export class SqliteVFS {
       access: (path, mode) => { this.checkAccess(path, mode, bound); },
       mkdir: (path, options) => this.mkdir(path, options, bound),
       writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
+      writeFileFrom: (path, size, source, options) => this.spanning(
+        () => this.writeFileFrom(path, size, source, options, bound, mutationOwner),
+        mutationOwner,
+      ),
       symlink: (target, path) => this.symlink(target, path, bound),
       readlink: (path) => this.readlink(path, bound),
       resolveSymlink: (path) => this.resolveSymlink(path, bound),
@@ -3167,13 +3177,17 @@ export class SqliteVFS {
     this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
   }
 
-  private writeFile(
+  /**
+   * The inode `writeFile` publishes for `size` bytes at `path`, once it is
+   * allowed to: the file the name resolves to, or a new one in a directory
+   * the caller may write.
+   */
+  private fileWriteInode(
     path: string,
-    content: string | Uint8Array,
+    size: number,
     options: { mode?: number } | undefined,
     cred: VfsCred,
-    onCommit?: () => void,
-  ): void {
+  ): BatchInodeEntry {
     this.assertMutationsAllowed([path]);
     const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
     const effectivePath = resolved.path;
@@ -3184,28 +3198,17 @@ export class SqliteVFS {
     } else {
       this.checkParentAccess(effectivePath, cred);
     }
-    const data = typeof content === 'string' ? enc.encode(content) : content;
-    const pp = this.parentPath(effectivePath);
     const now = this.now();
-    const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
-    const chunks: BatchChunkEntry[] = [];
-    for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
-      chunks.push({
-        path: effectivePath,
-        chunkId,
-        data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-      });
-    }
     // POSIX: rewriting an existing file never changes its mode; the mode
     // is chosen only at creation (open(2) O_CREAT).
     const prior = this.inodes.get(effectivePath);
     const made = prior ? undefined : this.creationAttrs(effectivePath, options?.mode ?? 0o666, cred, false);
-    const inode: BatchInodeEntry = {
+    return {
       path: effectivePath,
-      parentPath: pp,
+      parentPath: this.parentPath(effectivePath),
       kind: 'file',
       isDir: false,
-      size: data.length,
+      size,
       atime: now,
       mtime: now,
       mode: prior?.kind === 'file'
@@ -3213,8 +3216,27 @@ export class SqliteVFS {
         : made?.mode ?? this.creationMode(options?.mode ?? 0o666, cred),
       uid: prior?.uid ?? cred.uid,
       gid: prior?.gid ?? made!.gid,
-      chunkCount,
+      chunkCount: size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE),
     };
+  }
+
+  private writeFile(
+    path: string,
+    content: string | Uint8Array,
+    options: { mode?: number } | undefined,
+    cred: VfsCred,
+    onCommit?: () => void,
+  ): void {
+    const data = typeof content === 'string' ? enc.encode(content) : content;
+    const inode = this.fileWriteInode(path, data.length, options, cred);
+    const chunks: BatchChunkEntry[] = [];
+    for (let chunkId = 0; chunkId < inode.chunkCount; chunkId++) {
+      chunks.push({
+        path: inode.path,
+        chunkId,
+        data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
+      });
+    }
     try {
       this.writeBatch({ inodes: [inode], chunks }, cred, onCommit);
     } catch (error) {
@@ -5914,6 +5936,7 @@ export class SqliteVFS {
       copyTreeAsync: readOnly,
       writeBatch: readOnly,
       writeStream: readOnly,
+      writeFileFrom: readOnly,
       mkdirBatch: readOnly,
       revision: () => g,
       contentKey: (path) => {
@@ -7604,6 +7627,83 @@ export class SqliteVFS {
       onCommit,
     );
     return { inodes: result.inodes, chunks: inode.chunkCount };
+  }
+
+  /**
+   * `writeFile` of a file whose bytes arrive over time, without holding it:
+   * each byte is cut and hashed once as it arrives, staged in bounded
+   * transactions, and the file published whole by the last one, as
+   * replaceFileWithStagedContent does for a file too large for one
+   * transaction. `size` is what `source` must yield; a source that ends
+   * short, runs long or throws publishes nothing.
+   *
+   * Appending the same bytes a piece at a time (writeRange) re-cuts the
+   * file's tail on every piece, and a piece past half a transaction's blob
+   * bound copies the manifest of everything before it again.
+   */
+  private async writeFileFrom(
+    path: string,
+    size: number,
+    source: AsyncIterable<Uint8Array>,
+    options: { mode?: number } | undefined,
+    cred: VfsCred,
+    mutationOwner?: string,
+  ): Promise<number> {
+    if (!Number.isSafeInteger(size) || size < 0) throw vfsError('EINVAL', `${path}: invalid size ${size}`);
+    // Refused before a byte is read, as writeFile would refuse it.
+    const target = this.withMutationOwner(mutationOwner, () => this.fileWriteInode(path, size, options, cred)).path;
+    const sourceMismatch = (received: number) => vfsError(
+      'EINVAL',
+      `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes declared`,
+    );
+    if (size <= CHUNK_SIZE) {
+      // One chunk, named from its inode: no cut to stream into.
+      const data = new Uint8Array(size);
+      let received = 0;
+      for await (const piece of source) {
+        if (received + piece.byteLength > size) throw sourceMismatch(received + piece.byteLength);
+        data.set(piece, received);
+        received += piece.byteLength;
+      }
+      if (received !== size) throw sourceMismatch(received);
+      this.withMutationOwner(mutationOwner, () => this.writeFile(path, data, options, cred));
+      return this._revision;
+    }
+    const staging: StagingContent = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
+    let builder = this.newPlan();
+    const flush = (): void => {
+      if (builder.empty) return;
+      const plan = builder.build();
+      builder = this.newPlan();
+      this.assertTransactionFits(plan.metrics);
+      this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+    };
+    const stage = (data: Uint8Array): void => {
+      if (builder.wouldExceedPieces(data.byteLength, 1) !== null) flush();
+      builder.addStagedPiece(staging, { data, hash: chunkHash(data) }, target);
+    };
+    const cutter = new ContentCutter();
+    let received = 0;
+    try {
+      for await (const piece of source) {
+        received += piece.byteLength;
+        if (received > size) throw sourceMismatch(received);
+        // A staged chunk is held until its transaction; one that is a view
+        // of the source's piece is copied, since the source may reuse it.
+        for (const data of cutter.push(piece)) stage(data.buffer === piece.buffer ? data.slice() : data);
+      }
+      if (received !== size) throw sourceMismatch(received);
+      for (const data of cutter.finish()) stage(data);
+      flush();
+      this.withMutationOwner(mutationOwner, () => this.publishStagedFile(this.fileWriteInode(path, size, options, cred), staging));
+      // Read in the turn that published it: after an await it could be a peer's.
+      return this._revision;
+    } catch (error) {
+      if (staging.id !== 0) this.abandonStaging(staging);
+      throw error;
+    } finally {
+      this.runContentMaintenanceSafely(1);
+    }
   }
 
   /**

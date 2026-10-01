@@ -247,6 +247,23 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.rawVfs.revision();
   }
 
+  async writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number> {
+    const located = this.locateMutation(path, true, 'write');
+    if (!located.mount) return await this.vfs.writeFileFrom(located.path, size, source);
+    // A mounted filesystem takes the bytes through its own ranged writes.
+    const mount = located.mount;
+    if (!mount.writeRange) throw fsError('ENOTSUP', 'write', path);
+    mount.writeFile(located.path, new Uint8Array(0));
+    let offset = 0;
+    for await (const piece of source) {
+      if (offset + piece.byteLength > size) throw fsError('EINVAL', 'write', path);
+      mount.writeRange(located.path, offset, piece);
+      offset += piece.byteLength;
+    }
+    if (offset !== size) throw fsError('EINVAL', 'write', path);
+    return this.rawVfs.revision();
+  }
+
   readRange(
     path: RuntimeFsPath,
     offset: number,

@@ -14,7 +14,7 @@ export const FILESYSTEM_RPC_METHODS = {
   appendOnce: 'fsAppend', acknowledgeAppend: 'fsAppendAck', writeBatch: 'writeBatch',
   writeStream: 'writeBatchStream', acquireExclusiveMutation: 'fsAcquireExclusiveMutation',
   releaseExclusiveMutation: 'fsReleaseExclusiveMutation',
-} as const satisfies Record<Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'gateLaunch'>, string>;
+} as const satisfies Record<Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'gateLaunch' | 'writeFileFrom'>, string>;
 
 type Method = keyof typeof FILESYSTEM_RPC_METHODS;
 export type FilesystemSupervisor = {
@@ -149,6 +149,12 @@ export function supervisorFilesystem(supervisor: WasiSupervisorStub, local?: Run
     acknowledgeAppend: (...args) => hop(supervisor.fsAppendAck(...args)),
     writeBatch: (...args) => hop(supervisor.writeBatch(...args)),
     writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)),
+    // An iterable does not cross RPC. A program with a large file to write
+    // sends it as a W7 stream (writeStream), which does.
+    writeFileFrom: async (path) => {
+      const name = typeof path === 'string' ? path : path.path;
+      throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
+    },
     acquireExclusiveMutation: (...args) => hop(supervisor.fsAcquireExclusiveMutation(...args)),
     releaseExclusiveMutation: (...args) => hop(supervisor.fsReleaseExclusiveMutation(...args)),
   };

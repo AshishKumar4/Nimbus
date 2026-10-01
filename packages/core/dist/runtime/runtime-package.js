@@ -175,8 +175,9 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
         if (!(await vfs.exists(parent)))
             (await vfs.mkdir(parent, { recursive: true }));
     }
-    // Three in flight, as the R2 installer ran: blob reads dominate wall-clock
-    // and bounded overlap beats head-of-line batches. Each blob streams, so
+    // Three in flight, as the R2 installer ran: one blob's read waits while
+    // another's bytes are cut and committed, and bounded overlap beats
+    // head-of-line batches. Each blob streams, so
     // three in flight hold three pieces, not three blobs. A failure stops the
     // dequeue, but `Promise.all` still waits for every started worker — no
     // read is left running when the throw escapes, so a retry never contends
@@ -234,24 +235,58 @@ async function runtimeManifestIntact(vfs, root, manifest) {
 }
 async function writeVerifiedBlob(vfs, manifest, runtimePackage, file, target) {
     const partial = `${target}.nimbus-partial`;
-    // Left behind by an attempt that died mid-write; appending to it would
-    // keep its tail.
+    // Left behind by an attempt that died mid-write.
     if (await vfs.exists(partial))
         await vfs.unlink(partial);
     try {
-        await vfs.writeFile(partial, new Uint8Array(0));
         const digest = sha256Incremental();
-        let offset = 0;
-        for await (const piece of blobPieces(await runtimePackage.readBlob(file))) {
-            await vfs.writeRange(partial, offset, piece);
-            offset += piece.length;
-            await digest.update(piece);
+        // What the source did, apart from what the filesystem made of it: its own
+        // error (a source that verifies throws RuntimeBlobDigestMismatch at its
+        // end), how much it produced, and whether it was read to that end.
+        let sourceError = null;
+        let produced = 0;
+        let drained = false;
+        async function* verified() {
+            try {
+                for await (const piece of blobPieces(await runtimePackage.readBlob(file))) {
+                    await digest.update(piece);
+                    // Bytes past the declared size are digested but not written: the
+                    // blob is refused below either way, and a source that verifies
+                    // still reaches the end where it evicts them.
+                    const take = Math.max(0, Math.min(piece.length, file.size - produced));
+                    produced += piece.length;
+                    if (take > 0)
+                        yield take === piece.length ? piece : piece.subarray(0, take);
+                }
+                drained = true;
+            }
+            catch (error) {
+                sourceError = error;
+                throw error;
+            }
         }
-        const actual = await digest.hex();
-        if (actual !== file.sha256) {
-            throw new RuntimeBlobDigestMismatch(`${manifest.name}@${manifest.version}: sha256 mismatch for ${file.path} — manifest expects `
-                + `${file.sha256}, ${file.content} holds ${actual}`);
+        // Written in one pass: each byte cut and hashed once, and the file
+        // published whole. Appending it piece by piece re-cut the file's tail at
+        // every piece and, once a piece plus that tail passed half a
+        // transaction, copied the manifest of the whole prefix again.
+        let writeError = null;
+        try {
+            await vfs.writeFileFrom(partial, file.size, verified());
         }
+        catch (error) {
+            writeError = error;
+        }
+        if (sourceError !== null)
+            throw sourceError;
+        if (drained) {
+            const actual = await digest.hex();
+            if (produced !== file.size || actual !== file.sha256) {
+                throw new RuntimeBlobDigestMismatch(`${manifest.name}@${manifest.version}: sha256 mismatch for ${file.path} — manifest expects `
+                    + `${file.size} bytes hashing to ${file.sha256}, ${file.content} holds ${produced} hashing to ${actual}`);
+            }
+        }
+        if (writeError !== null)
+            throw writeError;
         await vfs.rename(partial, target);
     }
     catch (error) {

@@ -132,4 +132,28 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   files.vfs.unmount('/mnt/own');
 }
 
+// writeFileFrom publishes a file whole once its bytes have arrived, on SQLite
+// and on a mount alike; refused before a byte is read where writeFile would
+// be refused, and nothing is published from a source that ends short.
+{
+  const big = Uint8Array.from({ length: 300_000 }, (_, i) => (i * 7) & 0xff);
+  let pulled = 0;
+  const pieces = async function* (bytes, size = 70_001) {
+    for (let at = 0; at < bytes.length; at += size) {
+      pulled++;
+      yield bytes.slice(at, at + size);
+    }
+  };
+  await vfs.writeFileFrom('/home/user/streamed', big.length, pieces(big));
+  assert.deepEqual(await vfs.readFile('/home/user/streamed'), big);
+  assert.equal(((await vfs.stat('/home/user/streamed')).mode & 0o777).toString(8), '644', 'created as writeFile creates');
+  await vfs.writeFileFrom('/mnt/s/streamed', big.length, pieces(big));
+  assert.deepEqual(scratch.readFile('/streamed'), big, 'a mount takes the bytes through its own writes');
+  assert.equal(await code(() => vfs.writeFileFrom('/home/user/short', big.length + 1, pieces(big))), 'EINVAL');
+  assert.equal(await exists(vfs, '/home/user/short'), false, 'a source that ends short publishes nothing');
+  pulled = 0;
+  assert.equal(await code(() => vfs.writeFileFrom('/x', big.length, pieces(big))), 'EACCES');
+  assert.equal(pulled, 0, 'a refused write reads nothing from its source');
+}
+
 console.log('process-files-view: ok');

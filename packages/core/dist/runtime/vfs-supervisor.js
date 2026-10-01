@@ -138,6 +138,12 @@ export function supervisorFilesystem(supervisor, local) {
         acknowledgeAppend: (...args) => hop(supervisor.fsAppendAck(...args)),
         writeBatch: (...args) => hop(supervisor.writeBatch(...args)),
         writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)),
+        // An iterable does not cross RPC. A program with a large file to write
+        // sends it as a W7 stream (writeStream), which does.
+        writeFileFrom: async (path) => {
+            const name = typeof path === 'string' ? path : path.path;
+            throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
+        },
         acquireExclusiveMutation: (...args) => hop(supervisor.fsAcquireExclusiveMutation(...args)),
         releaseExclusiveMutation: (...args) => hop(supervisor.fsReleaseExclusiveMutation(...args)),
     };
