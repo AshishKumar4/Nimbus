@@ -110,6 +110,22 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # tests/unit/lean-proofs.mjs builds the Lean corpus (lean/) with the
+      # toolchain lean/lean-toolchain pins; the runner has no Lean.
+      - name: Cache the Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: elan-${{ hashFiles('lean/lean-toolchain') }}
+
+      - name: Install Lean
+        run: |
+          if [ ! -x "$HOME/.elan/bin/lake" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+              | sh -s -- -y --no-modify-path --default-toolchain "$(cat lean/lean-toolchain)"
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
       # tests/unit/run-all.mjs runs every file in a worker pool and exits
       # non-zero when any file fails, so this job IS the unit gate — no
       # record-and-fail-later step needed. Its red status never decides

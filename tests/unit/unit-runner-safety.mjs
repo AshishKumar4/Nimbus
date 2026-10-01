@@ -26,6 +26,9 @@ function populated(group) {
     return /populated 1/.test(readFileSync(`/sys/fs/cgroup${group}/cgroup.events`, 'utf8'));
   } catch { return false; }
 }
+function alive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+}
 function fixture(name, source) { writeFileSync(join(unit, name + '.mjs'), source); }
 // The workstation's wrapper requests one worker; repository defaults remain
 // available to controlled CI runs.
@@ -56,7 +59,7 @@ try {
   for (const mode of ['failure', 'timeout', 'signal']) {
     const pidFile = join(root, `${mode}.pid`);
     const ready = join(root, `${mode}.ready`);
-    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, require('node:fs').readFileSync('/proc/self/cgroup')); setInterval(() => {}, 1000);`;
+    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, process.pid + '\\n' + require('node:fs').readFileSync('/proc/self/cgroup')); setInterval(() => {}, 1000);`;
     fixture('tree', `
       const { spawn } = require('node:child_process');
       const fs = require('node:fs');
@@ -83,9 +86,18 @@ try {
       assert.equal(result.code, 1);
       assert.match(result.stdout, mode === 'timeout' ? /exceeded --timeout 500ms/ : /exit code=17/);
     }
-    const group = readFileSync(pidFile, 'utf8').trim().split('::')[1];
-    await until(() => !populated(group), `${mode}: ${group}`);
-    assert.equal(populated(group), false, `${mode}: descendant cgroup remained populated`);
+    const [pid, cgroup] = readFileSync(pidFile, 'utf8').trim().split('\n');
+    if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
+      // Isolated: each case has a cgroup of its own, which must empty. The
+      // pid is the descendant's in its own PID namespace, not this one's.
+      const group = cgroup.split('::')[1];
+      await until(() => !populated(group), `${mode}: ${group}`);
+      assert.equal(populated(group), false, `${mode}: descendant cgroup remained populated`);
+    } else {
+      // Portable (CI): the case shares the host's cgroup, which stays
+      // populated by everything else on it; the descendant itself must end.
+      await until(() => !alive(Number(pid)), `${mode}: pid ${pid}`);
+    }
   }
   const binary = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write(Buffer.from([0,255,128])); process.exit(7)'], { encoding: null });
   assert.equal(binary.reason, '', 'normal nonzero is not infrastructure failure');

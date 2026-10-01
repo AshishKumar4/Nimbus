@@ -127,8 +127,11 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     }
     const unit = strong
       ? `nimbus-case-${randomUUID()}.service` : null;
+    // The command is found in the child's own PATH, in either mode: a
+    // spawn's lookup falls back to a default search path when PATH is empty,
+    // so the portable mode ran \`sh\` that the isolated mode refused.
     let executable = command;
-    if (unit && !command.includes('/')) {
+    if (!command.includes('/')) {
       executable = (env.PATH ?? '/usr/bin:/bin').split(':').map((dir) => resolvePath(cwd ?? process.cwd(), dir, command)).find((path) => {
         try { accessSync(path, constants.X_OK); return true; } catch { return false; }
       });
@@ -137,10 +140,8 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         return;
       }
     }
-    if (unit) {
-      executable = resolvePath(cwd ?? process.cwd(), executable);
-      try { accessSync(executable, constants.X_OK); } catch { resolveResultMissing(); return; }
-    }
+    executable = resolvePath(cwd ?? process.cwd(), executable);
+    try { accessSync(executable, constants.X_OK); } catch { resolveResultMissing(); return; }
     function resolveResultMissing() {
       resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
     }
@@ -183,7 +184,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       '--unshare-pid', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--die-with-parent',
       '--', process.execPath, fileURLToPath(new URL('./subprocess-entry.mjs', import.meta.url)), requestFile,
     ] : args;
-    const child = spawn(unit ? '/usr/bin/systemd-run' : command, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
+    const child = spawn(unit ? '/usr/bin/systemd-run' : executable, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
     const rootStart = child.pid ? identity(child.pid) : null;
     const job = {
       name,
