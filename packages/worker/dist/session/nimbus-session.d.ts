@@ -348,6 +348,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcFsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
+    _rpcFsAcquired(acquire: unknown, op: unknown, args: unknown, pid?: number): Promise<_rpc.FsAcquiredAnswer>;
     _rpcFsStorageGrant(facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{
         granted: number;
     }>;

@@ -709,6 +709,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsAcquire(epoch, cursor, options, pid) {
         return _rpc._rpcFsAcquire(this, epoch, cursor, options, pid);
     }
+    async _rpcFsAcquired(acquire, op, args, pid) {
+        return _rpc._rpcFsAcquired(this, acquire, op, args, pid);
+    }
     async _rpcFsStorageGrant(facet, bytes, databaseSize, pid) {
         return _rpc._rpcFsStorageGrant(this, facet, bytes, databaseSize, pid);
     }

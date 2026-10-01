@@ -323,6 +323,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsAcquire(epoch, cursor, options) {
         return this._call(this._fsRead('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]));
     }
+    /** fsAcquire and one read in a single call (session/rpc.ts _rpcFsAcquired). */
+    async fsAcquired(acquire, op, args) {
+        return this._call(this._fsRead('fsAcquired', [acquire, op, args]));
+    }
     async fsRevision(path) {
         return this._call(this._fsRead('fsRevision', [path]));
     }

@@ -163,6 +163,32 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  * way would silently arrive as undefined.
  */
 export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
+/** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
+export declare const FS_ACQUIRED_READ_OPS: readonly ["stat", "lstat", "fsReadBatch"];
+/**
+ * A process's ACQUIRE and the read it was about to make, in one call.
+ *
+ * An async read applies a barrier and then reads, and each was its own round
+ * trip to this host: measured on a throwaway (2026-10-01), 7-8 ms each, with
+ * the host's own work under a millisecond. The answer to the barrier is the
+ * one fsAcquire gives (_acquireOnDelivery, as a delivery carries it), computed
+ * before the read, so the read sees everything the barrier reports, and the
+ * process applies the barrier before it uses the value.
+ */
+export declare function _rpcFsAcquired(self: RpcHost, acquire: unknown, op: unknown, args: unknown, pid?: number): Promise<FsAcquiredAnswer>;
+/** _rpcFsAcquired's answer: the barrier's, and the read's value or its refusal. */
+export type FsAcquiredAnswer = {
+    acquired: VfsDeliveredAcquire | undefined;
+    value: unknown;
+    failure?: undefined;
+} | {
+    acquired: VfsDeliveredAcquire | undefined;
+    value?: undefined;
+    failure: {
+        code: string | undefined;
+        message: string;
+    };
+};
 /**
  * N18: a process's facet store asks for room to grow, reporting what its
  * database measures. The ledger's row for the facet first takes the
