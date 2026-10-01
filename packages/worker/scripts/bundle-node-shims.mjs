@@ -12,6 +12,9 @@
  *     the write ledger the shims' filesystem writes go through;
  *   - `FACET_RESIDENT_STORE_SOURCE` (src/vfs/facet-resident-store.ts), a
  *     resident facet's SQLite-backed resident set the shims read from.
+ * and carries two more as modules of its map: the runtime-code interpreter
+ * and its host module (scripts/interpreter-bundle.mjs), which a launch
+ * compiles only when its program first produces code no launch staged.
  * Keeping them inside the worker bundle pushed the main bundle over its size
  * gate (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs), whose
  * intended fix is exactly this promote: large facet-runner source strings
@@ -28,6 +31,8 @@
  *   public/_assets/runtime/node-shims-<buildId>.js
  *   public/_assets/runtime/vfs-write-ledger-<buildId>.js
  *   public/_assets/runtime/resident-store-<buildId>.js
+ *   public/_assets/runtime/js-interpreter-<buildId>.js
+ *   public/_assets/runtime/js-interpreter-ops-<buildId>.js
  *   src/node-shims-artifact.generated.ts, per source:
  *     export const <NAME>_ENTRY: string;     // asset path
  *     export const <NAME>_BUILD_ID: string;  // content-hash prefix
@@ -51,6 +56,8 @@ const ROOT = path.resolve(__dirname, '..');
 const { generateShimsCode } = await import(path.join(ROOT, 'dist/runtime/node-shims.js'));
 const { FACET_RESIDENT_STORE_SOURCE } = await import(path.join(ROOT, 'dist/vfs/facet-resident-store.js'));
 const { VFS_WRITE_LEDGER_SOURCE } = await import('@nimbus-sh/core/_shared/vfs-write-ledger.js');
+const { bundleInterpreter } = await import('./interpreter-bundle.mjs');
+const interpreter = await bundleInterpreter({ start: ROOT });
 
 const shims = generateShimsCode();
 if (typeof shims !== 'string' || shims.length < 100_000) {
@@ -75,6 +82,18 @@ const SOURCES = [
     source: FACET_RESIDENT_STORE_SOURCE,
     from: 'dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE',
   },
+  {
+    name: 'JS_INTERPRETER',
+    family: 'js-interpreter',
+    source: interpreter.interpreter,
+    from: '@nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs',
+  },
+  {
+    name: 'JS_INTERPRETER_OPS',
+    family: 'js-interpreter-ops',
+    source: interpreter.ops,
+    from: '@nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE',
+  },
 ];
 
 const assetDir = path.join(ROOT, 'public/_assets/runtime');
@@ -90,8 +109,9 @@ for (const { name, family, source, from } of SOURCES) {
   const assetName = `${family}-${buildId}.js`;
   // Remove stale same-family assets so the directory carries exactly one blob
   // per family (the entry constant pins which one a deploy serves).
+  const isFamily = (f) => /^[0-9a-f]{16}\.js$/.test(f.slice(family.length + 1)) && f.startsWith(`${family}-`);
   for (const f of existing) {
-    if (f.startsWith(`${family}-`) && f !== assetName) await fs.unlink(path.join(assetDir, f));
+    if (isFamily(f) && f !== assetName) await fs.unlink(path.join(assetDir, f));
   }
   await fs.writeFile(path.join(assetDir, assetName), source, 'utf8');
   pins.push(
@@ -109,7 +129,8 @@ const generated = `/**
  * scripts/bundle-node-shims.mjs. DO NOT EDIT.
  *
  * Pins the staged sources of the node-compat layer, promoted out of the worker
- * bundle: the shims, the VFS write ledger and the resident store. Each
+ * bundle: the shims, the VFS write ledger, the resident store, and the
+ * runtime-code interpreter with its host module. Each
  * <NAME>_BUILD_ID is a content-hash prefix so cache layers never serve stale
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */

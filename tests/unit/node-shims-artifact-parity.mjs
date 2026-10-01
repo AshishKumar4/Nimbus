@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 // Parity guard for the node-compat layer's staged assets. The ~230 KiB
-// generateShimsCode() output, VFS_WRITE_LEDGER_SOURCE and
-// FACET_RESIDENT_STORE_SOURCE are promoted out of the worker bundle into
+// generateShimsCode() output, VFS_WRITE_LEDGER_SOURCE,
+// FACET_RESIDENT_STORE_SOURCE and the runtime-code interpreter with its host
+// module (scripts/interpreter-bundle.mjs) are promoted out of the worker bundle into
 // public/_assets/runtime/<family>-<buildId>.js (scripts/bundle-node-shims.mjs)
 // and fetched per isolate by runtime/node-shims-artifact.ts. The src modules
 // stay the single source of truth, consumed at BUILD time — so an edit to one
 // of them without re-running the bundle script would ship a stale source.
-// This test fails loud on exactly that drift, for each of the three:
+// This test fails loud on exactly that drift, for each of them:
 //   1. the staged asset's bytes === the CURRENT src output
 //   2. the generated sha/build-id constants match the staged bytes
 // Mirrors tests/unit/package-abi-policy.mjs (generated-vs-source parity).
@@ -21,16 +22,20 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 import * as pins from '../../packages/worker/src/node-shims-artifact.generated.ts';
+import { bundleInterpreter } from '../../packages/worker/scripts/interpreter-bundle.mjs';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../packages/worker',
 );
 
+const interpreter = await bundleInterpreter({ start: workerRoot });
 const cases = [
   { name: 'NODE_SHIMS', source: 'generateShimsCode()', current: generateShimsCode() },
   { name: 'VFS_WRITE_LEDGER', source: 'VFS_WRITE_LEDGER_SOURCE', current: VFS_WRITE_LEDGER_SOURCE },
   { name: 'RESIDENT_STORE', source: 'FACET_RESIDENT_STORE_SOURCE', current: FACET_RESIDENT_STORE_SOURCE },
+  { name: 'JS_INTERPRETER', source: 'the interpreter bundle of core src', current: interpreter.interpreter },
+  { name: 'JS_INTERPRETER_OPS', source: 'HOST_OPS_SOURCE', current: interpreter.ops },
 ];
 
 for (const { name, source, current } of cases) {

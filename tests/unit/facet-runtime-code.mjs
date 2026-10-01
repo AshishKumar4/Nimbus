@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
-// Code a program produces while it runs compiles in the next launch of the
-// same command.
+// Code a program produces while it runs is interpreted in the launch that
+// produced it, and compiles in the next launch of the same command.
 //
 // A Worker compiles code only from the module map it was launched with, and
 // that map cannot grow (core/_shared/commonjs-cell.ts, RUNTIME CODE). So the
 // two shapes of runtime code — text handed to a Function constructor (a module
 // runner's `new AsyncFunction`) and a file written, then required (Vite's
-// `.vite-temp/vite.config.ts.timestamp-<now>.mjs`) — fail loudly in the launch
-// that produced them, reach the supervisor in the run's report, and are
+// `.vite-temp/vite.config.ts.timestamp-<now>.mjs`) — run in the interpreter
+// the launch's map carries, reach the supervisor in the run's report, and are
 // carried by content into the next launch: the file under a name it has never
 // had before included, which is why the key is the text and not the path.
 // The next launch may be served by a fresh isolate — the session's was
@@ -134,16 +134,16 @@ const restore = () => {
   globalThis.Buffer = real.Buffer;
 };
 
-// ── First launch: both are produced here, so neither can compile here ──────
+// What the constructor builds, reading globals only; the file runs under its new name.
+const EXPECTED = 'fn=anonymous:AsyncFunction file={"answer":42,"file":true}\nasync=5undefined\n';
+
+// ── First launch: both are produced here, so the interpreter runs them ─────
 const first = await sessionManager().exec(PROGRAM, OPTS);
 restore();
-assert.equal(
-  first.stdout, 'fn-error=ERR_NIMBUS_CODE_NEXT_LAUNCH file-error=ERR_NIMBUS_CODE_NEXT_LAUNCH\n',
-  `each refusal names why: ${JSON.stringify(first)}`,
-);
+assert.equal(first.stdout, EXPECTED, `both run in the launch that produced them: ${JSON.stringify(first)}`);
 assert.deepEqual(
   first.runtimeCode.map((entry) => entry.kind).sort(), ['async', 'module'],
-  'the run reports what it could not compile',
+  'the run reports what its map did not carry',
 );
 assert.ok(
   !Object.keys(loaded.at(-1).modules).some((name) => name.startsWith('gen/')),
@@ -155,10 +155,7 @@ globalThis.__nimbusModuleMisses?.clear();
 // compile, from the map ─────────────────────────────────────────────────────
 const second = await sessionManager().exec(PROGRAM, OPTS);
 restore();
-assert.equal(
-  second.stdout, 'fn=anonymous:AsyncFunction file={"answer":42,"file":true}\nasync=5undefined\n',
-  `the function is what the constructor builds, reading globals only; the file runs under its new name: ${JSON.stringify(second)}`,
-);
+assert.equal(second.stdout, EXPECTED, `the staged modules answer the same: ${JSON.stringify(second)}`);
 assert.deepEqual(second.runtimeCode, [], 'and nothing is missed a second time');
 const genModules = Object.keys(loaded.at(-1).modules).filter((name) => name.startsWith('gen/'));
 assert.equal(genModules.length, 2, 'the launch carries each piece of runtime code once, by its key');

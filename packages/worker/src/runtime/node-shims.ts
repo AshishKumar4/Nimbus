@@ -6233,31 +6233,20 @@ const __cryptoMod = (() => {
 // execution does not.  Documented in W3 retro for W3.5 follow-up
 // (a parser-based vm fallback, or pre-bundle vm-using scripts at
 // install time).
-// ── Runtime code: the async and generator Function constructors ──
+// ── Runtime code: the Function constructors ──
 //
 // A Worker generates code from strings only while its modules evaluate: at
 // request time — where every program runs — \`new Function(...)\` and its async
 // and generator siblings throw EvalError "Code generation from strings
-// disallowed for this context". The async and generator constructors here ask
-// the native one first and, refused that way, hand the arguments to the
-// launch's runtime-code service (core/_shared/commonjs-cell.ts, RUNTIME CODE),
-// which answers from this launch's module map or records the text for the next
-// launch of the command and throws EvalError code ERR_NIMBUS_CODE_NEXT_LAUNCH.
-// That is the constructor a module runner evaluates with (Vite's SSR runner:
-// \`new AsyncFunction(...)\`), reached as each kind's \`prototype.constructor\`,
-// which is how \`(async function () {}).constructor\` finds it. A facet without
-// the service (opencode's) keeps the native refusal.
-//
-// The plain \`Function\` constructor is routed differently, on evidence: code
-// probes it once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
-// \`Function("null")\`, remembers whether it worked, and then compiles every
-// schema check with \`Function\`; staging every text, the next launch staged the
-// probe's text but not the checks' — the probe said yes, the first check threw,
-// and pi's TUI died. So it answers only text an earlier launch staged, keeps
-// the native refusal otherwise, and stages a refused text only when a failed
-// launch is attributable to it (the service's plainFunction, noteFailure and
-// stageFailedLaunch): a probe answers the same in every launch, while depd's
-// wrapper (express 4) and ajv's validators (serve) run from the next launch on.
+// disallowed for this context". Each constructor here asks the native one
+// first and, refused that way, hands the arguments to the launch's
+// runtime-code service (core/_shared/commonjs-cell.ts, RUNTIME CODE), which
+// answers from this launch's module map when an earlier launch staged the
+// text, and otherwise records it for the next launch and runs it in the
+// interpreter. That is the constructor a module runner evaluates with
+// (Vite's SSR runner: \`new AsyncFunction(...)\`), reached as each kind's
+// \`prototype.constructor\`, which is how \`(async function () {}).constructor\`
+// finds it. A facet without the service (opencode's) keeps the native refusal.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
@@ -6332,15 +6321,20 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
     if (Native.__nimbusNative) continue;
     const routed = function (...args) {
       try {
-        return Reflect.apply(Native, undefined, args);
+        return new.target === undefined ? Reflect.apply(Native, undefined, args) : Reflect.construct(Native, args, new.target);
       } catch (e) {
         const service = globalThis.__nimbusRuntimeCode;
         if (!__nimbusIsCodegenRefusal(e) || !service) throw e;
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
-        if (kind === "function") return service.plainFunction(params, body, e);
         try {
-          return service.compileFunction(kind, params, body);
+          const fn = service.compileFunction(kind, params, body);
+          // A subclass's \`new\` (\`class F extends Function\`) makes an instance of the subclass.
+          if (new.target !== undefined && new.target !== routed) {
+            const proto = new.target.prototype;
+            if (proto !== null && (typeof proto === "object" || typeof proto === "function")) Object.setPrototypeOf(fn, proto);
+          }
+          return fn;
         } catch (refusal) {
           const importAt = params.indexOf("__vite_ssr_import__");
           if (kind !== "async" || importAt < 0 || !refusal || refusal.code !== "ERR_NIMBUS_CODE_NEXT_LAUNCH") throw refusal;
@@ -8159,7 +8153,6 @@ function __nimbusFailUnhandledAsync(error, kind) {
     __nimbusReportProcessExit(error.code, "");
     return;
   }
-  if (globalThis.__nimbusRuntimeCode) globalThis.__nimbusRuntimeCode.noteFailure(error);
   const label = kind === "rejection"
     ? "Unhandled promise rejection: "
     : "Uncaught exception: ";
