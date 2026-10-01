@@ -3,6 +3,16 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Fixed: a programmatic exec without a `shellId` ran on the session's one
+  shared shell, so an `export`, function, alias or `set` option in one call
+  reached the next unnamed call, from any caller, and two unnamed calls
+  running at once read and overwrote each other's variables mid-run. Each
+  unnamed call now runs in a shell of its own, built from the session
+  shell's cwd and environment and discarded when it ends, as the SDK
+  documents. Named shells are unchanged.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,

@@ -77,10 +77,32 @@ try {
   const stillThere = await rpcExec(host, 'pwd', { shellId: 'agent-1' });
   assert.equal(stillThere.stdout.trim(), '/home/user/build', 'and does not disturb the first');
 
-  // ── An unnamed call remembers nothing, exactly as before ──────────────────
+  // ── An unnamed call remembers nothing, and shares nothing ─────────────────
+  // Kinu (2026-10-01): an `export` in one unnamed call reached the next
+  // unnamed call of another actor, and two unnamed calls running at once
+  // read and overwrote each other's variables mid-run.
   await rpcExec(host, 'cd /home/user/build');
   const unnamed = await rpcExec(host, 'pwd');
   assert.notEqual(unnamed.stdout.trim(), '/home/user/build', 'an unnamed exec is still one-shot');
+  await rpcExec(host, 'export LEAK=1; greet() { echo hi; }; alias ll="ls -l"; set -o noglob');
+  const after = await rpcExec(host, 'echo "${LEAK-unset}"; greet 2>/dev/null || echo no-function; alias | grep -q "ll=" && echo alias-leaked || echo no-alias; case $- in *f*) echo noglob;; *) echo glob;; esac');
+  assert.equal(after.stdout, 'unset\nno-function\nno-alias\nglob\n', 'its variables, functions, aliases and options do not reach the next unnamed call');
+  assert.equal(ws.shell.getEnv().LEAK, undefined, 'nor the session shell');
+  const [first, second] = await Promise.all([
+    rpcExec(host, 'export Y=first; sleep 0.3; echo "$Y"'),
+    rpcExec(host, 'sleep 0.1; echo "${Y-unset}"; export Y=second'),
+  ]);
+  assert.equal(first.stdout, 'first\n', 'a concurrent call does not overwrite its variable mid-run');
+  assert.equal(second.stdout, 'unset\n', 'nor see it');
+  // It starts from the session shell's state, and its own cwd and env.
+  ws.shell.getEnv().SESSION_VAR = 'from-session';
+  const inherited = await rpcExec(host, 'echo "$SESSION_VAR $CALL_VAR"; pwd', { cwd: '/home/user/build', env: { CALL_VAR: 'from-call' } });
+  assert.equal(inherited.stdout, 'from-session from-call\n/home/user/build\n');
+  assert.equal(ws.shell.getEnv().CALL_VAR, undefined, 'and leaves it as it was');
+  delete ws.shell.getEnv().SESSION_VAR;
+  const concurrent = Date.now();
+  await Promise.all([rpcExec(host, 'sleep 0.5'), rpcExec(host, 'sleep 0.5')]);
+  assert.ok(Date.now() - concurrent < 900, 'unnamed calls run concurrently');
 
   // ── shellRoot seeds a NEW shell only ──────────────────────────────────────
   const seeded = await rpcExec(host, 'pwd', { shellId: 'agent-3', shellRoot: '/home/user/build' });
