@@ -503,9 +503,9 @@ export class NpmInstaller {
      *
      * The supervisor still owns:
      *   - placement (`placed` / `pending` / `settled`, by placement path),
-     *   - X.5-F top-level / required-peer policy,
+     *   - required peers (an optional peer installs only when the project
+     *     lists it, as npm does),
      *   - X.5-G G1 optional-native silent-skip,
-     *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
      *     per-package task ALSO checks these for transitive correctness).
      *     A package is required iff it is reachable from a required root
@@ -553,9 +553,7 @@ export class NpmInstaller {
         // Announced as `[skip]` lines at record time; required-vs-optional is
         // classified at end of walk, when every required edge has been seen.
         const refusals = new Map();
-        const topLevelNames = new Set(Object.keys(specs));
         const optionalNames = new Set(); // X.5-G G1
-        const bestEffortNames = new Set(); // X.5-drizzle
         // A cycle with mutually incompatible ranges has no finite layout; the
         // edge is refused at this depth rather than nested without end.
         const MAX_NEST_DEPTH = 16;
@@ -762,30 +760,21 @@ export class NpmInstaller {
                 // w6-reject: an os/cpu/libc platform-gate refusal — npm's
                 // EBADPLATFORM. Announced as a [skip] line now and classified
                 // required-vs-optional at end of walk, when the required-edge
-                // closure is final; best-effort optional-peer subtrees still
-                // skip silently. Table rejects are advisories handled above and
+                // closure is final. Table rejects are advisories handled above and
                 // never reach this branch.
                 if (res.error && res.error.type === 'w6-reject') {
-                    if (bestEffortNames.has(taskName)) {
-                        // X.5-drizzle: silent-skip inside best-effort optional-peer
-                        // subtree.
-                        const reason = `inside best-effort optional-peer subtree (X.5-drizzle): ${res.error.reason}`;
-                        log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
-                        emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
-                        continue;
-                    }
                     refusals.set(taskName, res.error.reason);
                     const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
                     log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
                     emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
                     continue;
                 }
-                // Resolution failure. Optional (X.5-G G1) and best-effort
-                // optional-peer (X.5-drizzle) edges are allowed to disappear;
-                // anything else is a dependency the project asked for and did
-                // not get, so it is recorded and surfaced as an install failure.
+                // Resolution failure. Optional (X.5-G G1) edges are allowed to
+                // disappear; anything else is a dependency the project asked for
+                // and did not get, so it is recorded and surfaced as an install
+                // failure.
                 if (res.error && res.error.type === 'unresolved') {
-                    if (optionalNames.has(taskName) || bestEffortNames.has(taskName)) {
+                    if (optionalNames.has(taskName)) {
                         const reason = `optional dep unresolved: ${res.error.reason}`;
                         log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
                         emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
@@ -831,42 +820,21 @@ export class NpmInstaller {
                     resolved.set(pkg.name, pkg);
                 else
                     nested.set(actual, pkg);
-                // Edge extraction, from this package's own placement.
-                const inheritBestEffort = bestEffortNames.has(pkg.name);
+                // Edge extraction, from this package's own placement. Peers are
+                // the required ones only (resolve-one-facet drops the optional).
                 for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
-                    if (inheritBestEffort)
-                        bestEffortNames.add(depName);
                     queue.push({ name: depName, range: depRange, from: actual, kind: 'dep' });
                 }
                 const optDeps = pkg.optionalDependencies;
                 if (optDeps) {
                     for (const [depName, depRange] of Object.entries(optDeps)) {
                         optionalNames.add(depName);
-                        if (inheritBestEffort)
-                            bestEffortNames.add(depName);
                         queue.push({ name: depName, range: depRange, from: actual, kind: 'dep' });
                     }
                 }
                 if (pkg.peerDependencies) {
                     for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
-                        topLevelNames.add(peerName);
-                        if (inheritBestEffort)
-                            bestEffortNames.add(peerName);
                         queue.push({ name: peerName, range: peerRange, from: actual, kind: 'peer' });
-                    }
-                }
-                // X.5-F R2.5 + X.5-J: optional peers when THIS pkg is the
-                // user's top-level. They resolve best-effort; a policy-listed
-                // name that resolves installs with an advisory like any
-                // package, and one that does not is skipped quietly.
-                if (topLevelNames.has(pkg.name)) {
-                    const allPeers = pkg.__allPeerDependencies;
-                    if (allPeers) {
-                        for (const [peerName, peerRange] of Object.entries(allPeers)) {
-                            topLevelNames.add(peerName);
-                            bestEffortNames.add(peerName);
-                            queue.push({ name: peerName, range: peerRange, from: actual, kind: 'peer' });
-                        }
                     }
                 }
             }

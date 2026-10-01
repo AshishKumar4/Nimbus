@@ -121,9 +121,9 @@ export declare class NpmInstaller {
      *
      * The supervisor still owns:
      *   - placement (`placed` / `pending` / `settled`, by placement path),
-     *   - X.5-F top-level / required-peer policy,
+     *   - required peers (an optional peer installs only when the project
+     *     lists it, as npm does),
      *   - X.5-G G1 optional-native silent-skip,
-     *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
      *     per-package task ALSO checks these for transitive correctness).
      *     A package is required iff it is reachable from a required root
