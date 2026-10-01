@@ -7,7 +7,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 - `find` behaves as GNU findutils 4.10 does for the expression language
   scripts and agents use, checked line for line against the host's GNU find
-  over the same tree (318 command lines: same stdout, stderr and exit
+  over the same tree (341 command lines: same stdout, stderr and exit
   status, in readdir order). It parses GNU's grammar (`( )`, `!`, `-a`, `-o`,
   `,`, the implicit `-print`) with GNU's messages; implements -H/-L/-P with
   loop detection, -maxdepth, -mindepth, -depth, -xdev/-mount, the name,
@@ -15,8 +15,8 @@ published independently in the `@nimbus-sh` npm scope.
   tests, -printf, -prune, -quit, -delete, and -exec/-execdir with `;` and
   `{} +` as child processes; and reports unreadable directories and goes
   on. What it does not implement it refuses by name, exit 1: -regex,
-  -fstype, -ls, -fprint*, -files0-from, -ok, -okdir, and the -printf
-  directives Nimbus has no facts for (%b %k %S %F %Z). Before, an unknown
+  -fstype, -ls, -fprint*, -files0-from, -ok, -okdir, -O2 and above, and
+  the -printf directives Nimbus has no facts for (%b %k %S %F %Z). Before, an unknown
   flag's value became the search path, `-xdev` was refused, and every
   unreadable directory was skipped in silence.
 - `find -xdev` stays on the start point's file system, so `find / -xdev`
