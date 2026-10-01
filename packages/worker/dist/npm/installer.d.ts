@@ -223,6 +223,8 @@ export declare class NpmInstaller {
      * were removed.
      */
     private pruneExtraneous;
+    /** The bin names the package at `dir` declares in its package.json. */
+    private declaredBins;
     /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
      * records, checked against package.json first. The ABI policy the resolver
