@@ -3561,15 +3561,21 @@ const __fsMod = (() => {
     else _ensureWritable(newAbs, "rename", oldP, live, newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
-    // A name renamed to itself is left as it is, as rename(2) leaves it.
-    if (oldK === newK) return null;
+    const source = _statLadder(oldAbs, true);
+    // A name renamed to itself is left as it is, as rename(2) leaves it, once
+    // it is known to exist; a name this view does not list is the authority's
+    // to answer for.
+    if (oldK === newK) {
+      if (source !== undefined) return null;
+      if (_nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, (supervisor) => supervisor.rename(oldAbs, newAbs), undefined, undefined, newP);
+    }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
     // authority only later, so a move it refuses would otherwise have been
     // shown, and its descendants' writes sent, under the wrong names.
     // A refusal only the authority can judge (a destination this view does
     // not list) still arrives from it.
-    const source = _statLadder(oldAbs, true);
     if (source !== undefined && source.isDirectory()) {
       if (newK.startsWith(oldK + "/")) throw _fsErr("EINVAL", "rename", oldP, newP);
       if (target !== undefined && !target.isDirectory()) throw _fsErr("ENOTDIR", "rename", oldP, newP);

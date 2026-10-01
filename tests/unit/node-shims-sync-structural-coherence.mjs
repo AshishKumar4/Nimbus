@@ -237,6 +237,7 @@ for (const inFlight of [false, true]) {
   const parked = (name) => { fs.mkdirSync(`${dir}/${name}`, { recursive: true }); fs.writeFileSync(`${dir}/${name}/f.txt`, name); };
   parked('self');
   fs.renameSync(`${dir}/self`, `${dir}/self`);
+  assert.throws(() => fs.renameSync(`${dir}/absent`, `${dir}/absent`), { code: 'ENOENT' }, 'a missing name renamed to itself is ENOENT');
   parked('sub');
   assert.throws(() => fs.renameSync(`${dir}/sub`, `${dir}/sub/inner`), { code: 'EINVAL' }, 'into its own subtree is EINVAL');
   fs.mkdirSync(`${dir}/full`);
