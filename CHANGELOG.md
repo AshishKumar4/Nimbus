@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `git clone <url> /tmp/x` by a principal with a private `/tmp`
+  failed with `EPERM: … is outside exclusive mutation root tmp/x`. The
+  clone held the shared name while its writes landed in the private `/tmp`.
+  An exclusive lease taken through a credential now holds where that
+  credential's writes land, and every write is checked against leases at
+  the path it reaches: a write to a private `/tmp/x` is no longer refused by
+  a lease on the shared `tmp/x`, and a `cp -r` through a symlink into a held
+  tree is refused.
 - `npm install` no longer installs optional peer dependencies the project
   does not list, as npm, pnpm and bun do not. A fresh Vite 8 react-ts app
   installed ~456 packages (sass, less, stylus, terser, tsx, Babel and their

@@ -19,13 +19,15 @@ function registerCloneHarness() {
   // Device 1: the engine the command's view reports /home/user on (commandContext).
   const vfs = {
     deviceId: 1,
-    acquireExclusiveMutation(path, options) {
-      const owner = `owner-${acquiredRoots.length + 1}`;
-      acquiredRoots.push(path);
-      acquisitionOptions.push(options);
-      activeOwners.add(owner);
-      return { root: path.replace(/^\/+/, ''), owner };
-    },
+    as: () => ({
+      acquireExclusiveMutation(path, options) {
+        const owner = `owner-${acquiredRoots.length + 1}`;
+        acquiredRoots.push(path);
+        acquisitionOptions.push(options);
+        activeOwners.add(owner);
+        return { root: path.replace(/^\/+/, ''), owner };
+      },
+    }),
     releaseExclusiveMutation(owner) {
       releasedOwners.push(owner);
       activeOwners.delete(owner);
@@ -132,9 +134,11 @@ function commandContext(args) {
   };
   const branchVfs = {
     deviceId: 1,
-    acquireExclusiveMutation(path) {
-      return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
-    },
+    as: () => ({
+      acquireExclusiveMutation(path) {
+        return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
+      },
+    }),
     releaseExclusiveMutation() {},
   };
   const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {} };

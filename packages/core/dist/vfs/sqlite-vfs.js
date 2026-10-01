@@ -1714,6 +1714,11 @@ export class SqliteVFS {
             contentKey: (path) => this.contentKey(path, bound),
             invalidatedSince: (epoch, cursor) => this.invalidatedSince(epoch, cursor, bound),
             storageKey: (path) => this.storageKey(path, bound),
+            acquireExclusiveMutation: (path, options) => {
+                const lease = this.acquireExclusiveMutationAt(this.storageKey(path, bound), options);
+                // Never null: the key came from a name this caller has.
+                return { root: this.logicalPath(lease.root, bound) ?? lease.root, owner: lease.owner };
+            },
             subscribe: (path, listener) => this.subscribe(path, bound, listener),
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
@@ -2330,8 +2335,18 @@ export class SqliteVFS {
         }
         return [...latest.values()];
     }
+    /**
+     * Hold `path`'s subtree for one owner: a write there by anyone else is
+     * EBUSY, and the owner's writes outside it are EPERM. `path` is a storage
+     * key; a principal's name for a file goes through its view
+     * (`as(cred).acquireExclusiveMutation`), so a confined caller's /tmp is
+     * held where its writes land.
+     */
     acquireExclusiveMutation(path, options = {}) {
-        let root = normalizeVfsPath(path);
+        return this.acquireExclusiveMutationAt(normalizeVfsPath(path), options);
+    }
+    acquireExclusiveMutationAt(key, options = {}) {
+        let root = key;
         if (!root)
             throw vfsError('EINVAL', 'exclusive mutation root cannot be empty');
         if (options.includeMissingAncestors) {
@@ -2464,9 +2479,9 @@ export class SqliteVFS {
      * the caller may write.
      */
     fileWriteInode(path, size, options, cred) {
-        this.assertMutationsAllowed([path]);
         const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
         const effectivePath = resolved.path;
+        this.assertMutationsAllowed([this.storageKey(path, cred), effectivePath]);
         if (resolved.inode) {
             if (resolved.inode.kind === 'directory')
                 throw vfsError('EISDIR', effectivePath);
@@ -2520,7 +2535,6 @@ export class SqliteVFS {
         }
     }
     symlink(target, path, cred) {
-        this.assertMutationsAllowed([path]);
         const normalized = this.storageKey(path, cred);
         // Created where the name resolves with its last component unfollowed, as
         // symlink(2) does: under a link to a directory, inside that directory.
@@ -2530,6 +2544,7 @@ export class SqliteVFS {
         if (prior.inode)
             throw vfsError('EEXIST', normalized);
         const placed = prior.path;
+        this.assertMutationsAllowed([normalized, placed]);
         this.checkParentAccess(placed, cred);
         const data = enc.encode(target);
         const now = this.now();
@@ -2862,9 +2877,9 @@ export class SqliteVFS {
      * contract as writeFile).
      */
     writeRange(path, offset, bytes, cred, onCommit) {
-        this.assertMutationsAllowed([path]);
         const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
         const effectivePath = resolved.path;
+        this.assertMutationsAllowed([this.storageKey(path, cred), effectivePath]);
         const prior = resolved.inode;
         if (prior?.kind === 'directory')
             throw vfsError('EISDIR', effectivePath);
@@ -2953,9 +2968,9 @@ export class SqliteVFS {
         if (operationId > Math.max(ackedThrough, highestKnown) + VFS_APPEND_RECEIPT_LIMIT) {
             throw vfsError('EINVAL', `append operation gap exceeds ${VFS_APPEND_RECEIPT_LIMIT}`);
         }
-        this.assertMutationsAllowed([normalized]);
         const resolved = this.checkAccess(normalized, 0, cred, { allowMissingLeaf: true });
         const effectivePath = resolved.path;
+        this.assertMutationsAllowed([this.storageKey(normalized, cred), effectivePath]);
         const inode = resolved.inode;
         if (inode?.kind === 'directory')
             throw vfsError('EISDIR', effectivePath);
@@ -3199,8 +3214,8 @@ export class SqliteVFS {
      * re-cut; rows past it go. Every mutation commits before return.
      */
     truncate(path, size, cred) {
-        this.assertMutationsAllowed([path]);
         const resolved = this.checkAccess(path, 0o2, cred);
+        this.assertMutationsAllowed([this.storageKey(path, cred), resolved.path]);
         const inode = resolved.inode;
         if (!inode)
             throw vfsError('ENOENT', path);
@@ -3849,8 +3864,8 @@ export class SqliteVFS {
         return results;
     }
     unlink(path, cred) {
-        this.assertMutationsAllowed([path]);
         const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
+        this.assertMutationsAllowed([this.storageKey(path, cred), resolved.path]);
         const inode = resolved.inode;
         if (!inode)
             throw vfsError('ENOENT', path);
@@ -3861,11 +3876,11 @@ export class SqliteVFS {
         this.writeBatch({ inodes: [], chunks: [], deletePaths: [resolved.path] }, cred);
     }
     rmdir(path, cred) {
-        this.assertMutationsAllowed([path]);
         const np = this.storageKey(path, cred);
         // Everything below acts on the directory the name resolves to, the one
         // whose permissions are checked.
         const resolved = this.checkAccess(np, 0, cred, { followLeaf: false });
+        this.assertMutationsAllowed([np, resolved.path]);
         this.checkParentAccess(resolved.path, cred);
         const inode = resolved.inode;
         if (!inode)
@@ -3897,8 +3912,8 @@ export class SqliteVFS {
      * behind. The subtree is read a page at a time, never held whole.
      */
     removeRecursive(path, cred) {
-        this.assertMutationsAllowed([path]);
         const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
+        this.assertMutationsAllowed([this.storageKey(path, cred), resolved.path]);
         if (!resolved.inode)
             throw vfsError('ENOENT', normalizeVfsPath(path));
         this.checkParentAccess(resolved.path, cred);
@@ -3963,13 +3978,13 @@ export class SqliteVFS {
             yield rootInode;
     }
     rename(oldPath, newPath, cred) {
-        this.assertMutationsAllowed([oldPath, newPath]);
         // Resolve private /tmp names to storage keys before reading or mutating.
         const source = this.checkAccess(oldPath, 0, cred, { followLeaf: false });
         const inode = source.inode;
         if (!inode)
             throw vfsError('ENOENT', oldPath);
         const target = this.checkAccess(newPath, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+        this.assertMutationsAllowed([this.storageKey(oldPath, cred), this.storageKey(newPath, cred), source.path, target.path]);
         oldPath = source.path;
         newPath = target.path;
         // Linux order (do_renameat2, vfs_rename): the same entry is a no-op before
@@ -4242,8 +4257,8 @@ export class SqliteVFS {
             throw vfsError('EISDIR', source.path);
         if (inode.kind !== 'file')
             throw vfsError('EINVAL', `${source.path} is not a regular file`);
-        this.assertMutationsAllowed([dest]);
         const target = this.checkAccess(dest, 0, cred, { allowMissingLeaf: true });
+        this.assertMutationsAllowed([this.storageKey(dest, cred), target.path]);
         const prior = target.inode;
         if (prior?.kind === 'directory')
             throw vfsError('EISDIR', target.path);
@@ -4292,7 +4307,6 @@ export class SqliteVFS {
      * and a snapshot a job reads from cannot be dropped.
      */
     planCopyTree(src, dst, cred, options = {}) {
-        this.assertMutationsAllowed([dst]);
         const atGen = options.at === undefined ? undefined : this.requireSnapshot(options.at);
         if (atGen !== undefined)
             this.assertSnapshotLocal(atGen, normalizeVfsPath(src), options.at);
@@ -4300,6 +4314,7 @@ export class SqliteVFS {
         const source = this.checkAccess(src, 0o4, cred, { followLeaf: false, tree });
         const root = source.inode;
         const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+        this.assertMutationsAllowed([this.storageKey(dst, cred), target.path]);
         if (target.inode)
             throw vfsError('EEXIST', target.path);
         this.checkParentAccess(target.path, cred);
@@ -4406,6 +4421,9 @@ export class SqliteVFS {
      * the transaction that copies the page. `id` resumes a recorded job.
      */
     runCopyTree(job, id, maxPages = Infinity) {
+        // Each slice inserts rows directly, past every write's own check, and a
+        // lease may have been taken over the destination between slices.
+        this.assertMutationsAllowed([job.dst]);
         const range = subtreeRange(job.src);
         const columns = 'path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_id, content_id, dacl';
         // The rows copied: the live tree, or the snapshot's (live rows it still
@@ -4932,6 +4950,7 @@ export class SqliteVFS {
             storageKey: (path) => this.storageKey(path, bound),
             // Nothing under a snapshot ever changes, so a watch never fires.
             subscribe: () => () => { },
+            acquireExclusiveMutation: readOnly,
             unlink: readOnly,
             rmdir: readOnly,
             removeRecursive: readOnly,
@@ -8463,7 +8482,7 @@ export class SqliteVFS {
      * per-file mkdir overhead.
      */
     mkdirBatch(paths, cred) {
-        this.assertMutationsAllowed(paths);
+        this.assertMutationsAllowed(paths.map((path) => this.storageKey(path, cred)));
         const mtime = Date.now();
         const toCreate = [];
         const seen = new Set();
