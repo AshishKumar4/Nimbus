@@ -256,7 +256,7 @@ export async function registerHostedCommands(self, workspace) {
                         pid,
                         cred,
                         setUmask: (mask) => ctx.setUmask(mask),
-                        runAs: (targetCred, argv) => ctx.runAs(targetCred, argv),
+                        runAs: (targetCred, argv, options) => ctx.runAs(targetCred, argv, options),
                         vfs: new ProcessView(workspace.filesystem.bind({ pid, cred })),
                         signal: new AbortController().signal,
                         stdout,

@@ -64,7 +64,8 @@ function makeShellEntrypoint(shellName, shell) {
                 cred: ctx.cred,
                 setUmask: ctx.setUmask,
             },
-            runAs: async (_parent, cred, argv) => (await ctx.runAs(cred, argv)),
+            // A child starts where the script's command runs, which a `cd` in the script may have moved.
+            runAs: async (parent, cred, argv) => (await ctx.runAs(cred, argv, { cwd: parent.cwd })),
         });
         return result.exitCode;
     };

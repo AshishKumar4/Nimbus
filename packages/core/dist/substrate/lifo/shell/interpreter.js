@@ -837,8 +837,8 @@ export class Interpreter {
                                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                                 isFdPipe: (fd) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
                                 setUmask: identity.setUmask,
-                                runAs: async (cred, argv) => io.runAs
-                                    ? (await io.runAs(ctx, cred, argv))
+                                runAs: async (cred, argv, options) => io.runAs
+                                    ? (await io.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
                                     : Promise.resolve(126),
                             };
                             // Register process BEFORE executing so ps can see itself

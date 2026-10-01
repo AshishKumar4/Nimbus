@@ -5,7 +5,7 @@
  * No stubs, no "not implemented" — each does actual work.
  *
  * Commands: which, env, export, unset, history, clear, alias, date,
- * uptime, tree, find, grep -r, head, tail, wc, diff, sort, uniq,
+ * uptime, tree, grep -r, head, tail, wc, diff, sort, uniq,
  * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
  * du, man/help, basename, dirname, printf, true, false, seq, sleep,
  * touch, stat, file, xxd, od, hexdump, base64, sha256sum, id, hostname,
@@ -15,7 +15,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 /**
  * The registry these commands dispatch through: registration, and name
- * resolution for `which`, `type`, `command`, `find -exec` and `xargs`.
+ * resolution for `which`, `type`, `command` and `xargs`.
  * `resolve` answers `unknown` because the registry holds whatever any module
  * registered — and the worker's npm-bin fallback replaces the method outright
  * — so what comes back is a command only once it has been checked.

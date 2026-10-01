@@ -39,6 +39,10 @@ export interface CommandInputStream {
 export interface TerminalInputStream extends CommandInputStream {
     rawMode: boolean;
 }
+/** Where a child process `runAs` starts runs, when not in its parent's directory (find -execdir). */
+export interface RunAsOptions {
+    readonly cwd?: string;
+}
 export interface CommandContext {
     pid: number;
     cred: VfsCred;
@@ -57,7 +61,8 @@ export interface CommandContext {
     /** Whether `fd` is a shell pipe (S_ISFIFO): its reader ends a writer by closing it. */
     isFdPipe?: (fd: number) => boolean;
     setUmask(mask: number): void;
-    runAs(cred: VfsCred, argv: string[]): Promise<number>;
+    /** Run `argv` as a child process under `cred`, with this command's stdio and environment. */
+    runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<number>;
     execInterpreterDepth?: number;
 }
 export type CommandRunAsHost = (parent: CommandContext, cred: VfsCred, argv: string[]) => Promise<number>;
