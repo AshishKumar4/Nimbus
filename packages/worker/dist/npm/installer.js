@@ -25,6 +25,7 @@
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
+import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -53,7 +54,7 @@ import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coo
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
-import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, npmBinMap, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
+import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */

@@ -1,4 +1,5 @@
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { npmBinMap, npmBinName } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';
 /**
@@ -11,47 +12,6 @@ export function isStagedArtifactTarget(target) {
 }
 export function stagedArtifactId(target) {
     return target.slice(STAGED_ARTIFACT_BIN_PREFIX.length);
-}
-/**
- * The name a `bin` key links in `.bin`, as npm normalizes it
- * (npm-normalize-package-bin): its last path component, with `\` and `:`
- * read as separators. Null for a key that names no file there ('', '.',
- * '..'). Every name a shim is written, listed or removed under passes
- * through here, so no bin map can reach a file outside `.bin`.
- */
-export function npmBinName(key) {
-    const base = key.replace(/[\\:]/g, '/').split('/').filter(Boolean).pop() ?? '';
-    return base === '.' || base === '..' || base === '' ? null : base;
-}
-/**
- * A package's `bin` field as npm installs it: a string links under the
- * package's own name, each key under {@link npmBinName}, and each target is
- * a path inside the package, `..` stopping at its root (staged-artifact
- * sentinels pass through). Name -> target relative to the package.
- */
-export function npmBinMap(packageName, bin) {
-    const out = new Map();
-    const fields = typeof bin === 'string' ? [[packageName, bin]]
-        : bin !== null && typeof bin === 'object' ? Object.entries(bin) : [];
-    for (const [key, target] of fields) {
-        const name = npmBinName(key);
-        if (name === null || typeof target !== 'string')
-            continue;
-        const inside = isStagedArtifactTarget(target) ? target : withinPackage(target);
-        if (inside !== null)
-            out.set(name, inside);
-    }
-    return out;
-}
-function withinPackage(target) {
-    const out = [];
-    for (const segment of target.replace(/\\/g, '/').split('/')) {
-        if (segment === '..')
-            out.pop();
-        else if (segment !== '.' && segment !== '')
-            out.push(segment);
-    }
-    return out.length === 0 ? null : out.join('/');
 }
 /** The bin manifest a `.nimbus-bin-map.json` holds; null when it is not one, or names a file outside `.bin`. */
 export function parseNpmBinManifest(text) {
@@ -262,22 +222,7 @@ function nodeModulesPathForBinDir(binDir) {
     return binDir.slice(0, -suffix.length);
 }
 async function resolveFromManifest(vfs, nodeModulesPath, name) {
-    const manifestPath = npmBinManifestPath(nodeModulesPath);
-    if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath))
-        return null;
-    try {
-        const manifest = JSON.parse(await vfs.readFileString(manifestPath));
-        if (!manifest || typeof manifest !== 'object' || !('version' in manifest) ||
-            manifest.version !== NPM_BIN_MANIFEST_VERSION || !('bins' in manifest) ||
-            !manifest.bins || typeof manifest.bins !== 'object') {
-            return null;
-        }
-        const entry = Reflect.get(manifest.bins, name);
-        return await validateEntry(vfs, entry);
-    }
-    catch {
-        return null;
-    }
+    return await resolveManifestEntry(vfs, npmBinManifestPath(nodeModulesPath), name);
 }
 async function resolveFromBinDirManifest(vfs, binDir, name) {
     const manifestPath = `${binDir}/${NPM_BIN_MANIFEST_NAME}`;

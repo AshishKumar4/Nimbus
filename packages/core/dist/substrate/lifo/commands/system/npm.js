@@ -1,6 +1,7 @@
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
+import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, RegistryVersionInfoSchema, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
 import { npmLogEnabled } from './npm-log.js';
@@ -193,14 +194,9 @@ async function writeProjectPackageJson(vfs, cwd, pkg) {
     const pkgPath = join(cwd, 'package.json');
     (await vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n'));
 }
+/** A package's bins, name -> target inside the package, as npm installs them (npmBinMap). */
 export function getBinEntries(pkg) {
-    if (!pkg.bin)
-        return {};
-    if (typeof pkg.bin === 'string') {
-        // npm names a lone bin after the package, without its scope.
-        return { [(pkg.name || 'unknown').replace(/^@[^/]+\//, '')]: pkg.bin };
-    }
-    return pkg.bin;
+    return Object.fromEntries(npmBinMap(pkg.name ?? '', pkg.bin));
 }
 export function registerBinCommand(registry, binName, scriptPath, kernel) {
     registry.registerLazy(binName, () => import('./node.js').then((mod) => ({
