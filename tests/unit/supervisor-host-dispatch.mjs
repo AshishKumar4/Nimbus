@@ -108,6 +108,7 @@ const INPUTS = {
   readFile: [path],
   readFileBytes: [path],
   writeFile: [wPath, content],
+  writeFileStat: [wPath, content],
   stat: [path, options],
   lstat: [linkPath],
   hasLegacySymlinkUnder: [path],
@@ -304,6 +305,12 @@ const nativeAssert = {
   readFile: (r) => assert.equal(r, 'seeded\n', 'readFile'),
   readFileBytes: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('seeded\n')), 'readFileBytes'),
   writeFile: async () => assert.equal(dec.decode(kernelVfs.readFile('home/user/w')), content, 'writeFile persisted'),
+  writeFileStat: async (r) => {
+    assert.equal(dec.decode(kernelVfs.readFile('home/user/w')), content, 'writeFileStat persisted');
+    assert.equal(typeof r.revision, 'number', 'writeFileStat answers the revision');
+    assert.equal(r.stat.type, 'file', 'and the stat the write left');
+    assert.equal(r.stat.size, new TextEncoder().encode(content).byteLength, 'at its size');
+  },
   stat: (r) => assert.equal(r.type, 'file', 'stat'),
   lstat: (r) => assert.equal(r.type, 'symlink', 'lstat'),
   hasLegacySymlinkUnder: (r) => assert.equal(r, false, 'hasLegacySymlinkUnder'),

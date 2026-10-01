@@ -49,7 +49,7 @@ import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent, type DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
-import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import {
   SUPERVISOR_DELIVER_OP,
   type SupervisorDeliveredOpName,
@@ -326,6 +326,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // and corrupting binary content. RPC structured-clone handles
     // Uint8Array transparently; downstream _rpcWriteFile also accepts
     return this._call(this._fsMutation('writeFile', [path, content]));
+  }
+
+  /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
+  async writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<WriteFileStatAnswer> {
+    return this._call(this._fsMutation('writeFileStat', [path, content]));
   }
 
   async stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>> {

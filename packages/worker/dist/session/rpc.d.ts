@@ -124,8 +124,11 @@ export declare function fsReadBatchRequestBytes(request: FsReadBatchRequest): nu
  * the error itself: with `enhanced_error_serialization` on both ends, workerd
  * clones an Error with its own properties, so its `code` arrives with it.
  */
-export type FsReadBatchEntry = {
+export type FsReadBatchEntry = 
+/** \`path\`: the file the read reached, its symlinks resolved as the read resolved them. */
+{
     bytes: Uint8Array | null;
+    path?: string;
     stat?: undefined;
     error?: undefined;
 } | {

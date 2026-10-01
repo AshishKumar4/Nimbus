@@ -438,4 +438,28 @@ function makeHost({ deliveries } = {}) {
   console.log(`  a repeat of a queued ${requests.length}-range batch joined it: ${requests.length} ranges read, not ${2 * requests.length}`);
 }
 
+// ── a read names the file it reached, only when that name is its receipt ─
+// A synchronous read and the name it reached are taken in one step, so a
+// link a peer retargets cannot come between them. An asynchronous read
+// awaits, and a name looked up after it would pair one file's bytes with
+// another's name, so it carries none.
+{
+  kernelVfs.writeFile('home/user/many/target.txt', 'target', { mode: 0o644 });
+  kernelVfs.symlink('target.txt', 'home/user/many/link.txt');
+  const { host } = makeHost();
+  const plain = processes.spawn('node', ['plain.js'], '/home/user');
+  const [viaLink, direct, absent] = await _rpcFsReadBatch(host, [
+    { path: '/home/user/many/link.txt', offset: 0, length: CHUNK },
+    { path: '/home/user/many/target.txt', offset: 0, length: CHUNK },
+    { path: '/home/user/many/absent.txt', offset: 0, length: CHUNK },
+  ], plain.pid);
+  assert.equal(dec.decode(viaLink.bytes), 'target');
+  assert.equal(viaLink.path, '/home/user/many/target.txt', 'a read through a link names its target');
+  assert.equal(direct.path, '/home/user/many/target.txt');
+  assert.deepEqual(absent, { bytes: null }, 'nothing read, nothing named');
+  const [awaited] = await _rpcFsReadBatch(host, [{ path: '/home/user/many/link.txt', offset: 0, length: CHUNK }], user.pid);
+  assert.equal(dec.decode(awaited.bytes), 'target');
+  assert.equal('path' in awaited, false, 'an awaited read names nothing');
+}
+
 console.log('session-fs-read-batch OK: many ranges, one round trip, same authority');

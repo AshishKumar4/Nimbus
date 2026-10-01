@@ -708,9 +708,10 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
     // The same bytes under the name they are held by: through a symlink, or
     // under the old name of a rename this process has not seen land yet.
+    // A parked write is in the bundle too (_parkWrite).
     if (__vfsBundle && _nsActive()) {
-      const real = _nsRealKey(k);
-      if (real !== null && real !== k && real in __vfsBundle) return __vfsBundle[real];
+      const held = _nsHeldKey(k);
+      if (held !== null && held !== k && held in __vfsBundle) return __vfsBundle[held];
     }
     return undefined;
   }
@@ -836,12 +837,51 @@ const __fsMod = (() => {
     return null;
   }
 
-  /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
-  function _nsRealKey(k) {
+  /**
+   * The key an operation that follows symlinks lands on: every link on \`k\`
+   * followed, the last one too, as open(2) and chmod(2) follow them; null on
+   * a loop. It is the name a barrier reports when that file changes, so
+   * this process's own state for it (parked bytes, a pending mode or times,
+   * a creation, a resident fill) is kept there. Kept under a link's own
+   * name, a write became a regular file where the link is, and nothing a
+   * later write to the target reported ever replaced it.
+   *
+   * The namespace resolves it, as the authority will. \`k\` as given when the
+   * namespace cannot say: it is not active, or this process's own unsettled
+   * rename, unlink or mkdir is on the path, which the table does not show.
+   */
+  function _nsLandingKey(k) {
+    if (!_nsActive() || _nsOwnView(k) !== null) return k;
+    const found = __nsLookup(k, true);
+    return found === "ELOOP" ? null : found.path;
+  }
+
+  /** \`p\` resolved to the path an operation that follows symlinks lands on (_nsLandingKey). */
+  function _resolveFollow(p, syscall) {
+    const absPath = _resolve(p);
+    const k = _strip(absPath);
+    const landing = _nsLandingKey(k);
+    if (landing === null) throw _fsErr("ELOOP", syscall, p);
+    return landing === k ? absPath : "/" + landing;
+  }
+
+  /**
+   * Where the bytes \`k\` denotes are held, if they are anywhere: symlinks
+   * followed, and the old name of this process's own rename that has not
+   * landed. A name the table does not list yet is held too (a file this
+   * process made through a link). Null when nothing can be there.
+   */
+  function _nsHeldKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
-    return found && found !== "ELOOP" ? found.path : null;
+    const found = __nsLookup(own && own.alias !== undefined ? own.alias : k, true);
+    return found === "ELOOP" ? null : found.path;
+  }
+
+  /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
+  function _nsRealKey(k) {
+    const held = _nsHeldKey(k);
+    return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
   }
 
   function _nsRowMeta(row) {
@@ -883,6 +923,12 @@ const __fsMod = (() => {
       const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
+      // Followed to a name the table does not list yet: a file this process
+      // made through the link, which its own write holds.
+      if (follow) {
+        const held = _nsHeldKey(k);
+        if (held !== null && held !== k && __vfsWrites && held in __vfsWrites) return _nsMeta(held, false);
+      }
     }
     // The namespace is exact, so a name it lacks is not there, whatever bytes
     // the module map carries under it (a file removed since the map was
@@ -1094,15 +1140,21 @@ const __fsMod = (() => {
    */
   const _observedAbsent = new Set();
 
+  // The miss is the access the program made; the fault-in reads, and so
+  // holds, the file the links on it name by that file's own name.
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
     _recordMiss(k);
-    _faultIn(k);
+    _faultIn(_nsLandingKey(k) ?? k);
   }
 
   function _residencySatisfied(absPath) {
     if (_residencyMisses.size === 0) return;
-    _residencyMisses.delete(_strip(absPath));
+    const k = _strip(absPath);
+    _residencyMisses.delete(k);
+    // A descriptor opened through a link misses under the file it names.
+    const held = _nsActive() ? _nsHeldKey(k) : null;
+    if (held !== null) _residencyMisses.delete(held);
   }
 
   /**
@@ -1208,11 +1260,34 @@ const __fsMod = (() => {
   // some of which stayed pending and never reached the session
   // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
   // the learns cost a round trip per batch, as the reads before them do.
-  async function _learnLive(absPath, supervisor) {
+  /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
+  async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
-    let stat;
-    try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
-    __nsNoteLiveStat(_strip(absPath), stat ?? null);
+    const ticket = _beginFill(_strip(absPath));
+    try {
+      let stat;
+      try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
+      _noteLearnedStat(absPath, stat ?? null, ticket, written);
+    } finally {
+      _endFill(ticket);
+    }
+  }
+
+  /**
+   * Keep a stat the authority answered while \`ticket\` (_beginFill) was
+   * open, unless a barrier reported the path, meanwhile, above what the stat
+   * is known to cover: the cursor the ticket was dated at, or the own write
+   * it was read after (\`written\`). A deletion among those reports leaves
+   * no row the stat could be judged against, and keeping the stat would
+   * bring back a name nothing will report gone again. False when the stat
+   * was not kept, so the caller can ask for a fresh one (_learnLive): a
+   * ticket that cannot date its read at all (_acquiredRead, _spoilFills)
+   * says nothing of whether the path changed.
+   */
+  function _noteLearnedStat(absPath, stat, ticket, written) {
+    if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
+    __nsNoteLiveStat(_strip(absPath), stat, written);
+    return true;
   }
 
   /**
@@ -1639,10 +1714,19 @@ const __fsMod = (() => {
    * The parent's manifest entry gains the name too, so the existence view
    * cannot go on denying a file whose bytes this process is holding.
    */
-  function _installResident(absPath, bytes, fill) {
+  function _installResident(absPath, bytes, fill, reached) {
     if (!__vfsBundle) return;
-    const k = _strip(absPath);
-    if (k === "") return;
+    // Bytes read through a symlink are held under the file the read reached,
+    // which a later write to it is reported under; kept under the link's own
+    // name, nothing would ever replace them. \`reached\` names it, as the
+    // authority resolved it (_rpcFsReadBatch). Without one (a session
+    // deployed before it, a read in several chunks through a link: null),
+    // only a name with no link on it is known to be the file read: this
+    // view's own resolution can be older than the read's.
+    const asked = _strip(absPath);
+    const k = typeof reached === "string" ? _strip(reached)
+      : reached === undefined && _nsLandingKey(asked) === asked ? asked : null;
+    if (k === null || k === "") return;
     if (fill.reported > fill.rev) return;
     // Never over a cell this facet owns.
     //
@@ -2435,7 +2519,21 @@ const __fsMod = (() => {
     );
   }
 
-  async function _flushLocalPathToSupervisor(absPath, supervisor) {
+  /**
+   * Send what this process holds for \`absPath\` ahead of a request about
+   * it. \`follow\`: the request follows symlinks, so what is parked under the
+   * file they name (_nsLandingKey: its bytes, its mode) goes first too; a
+   * request about the link itself (lstat, lchown, lutimes) leaves that be.
+   */
+  async function _flushLocalPathToSupervisor(absPath, supervisor, follow = true) {
+    await _flushHeld(absPath, supervisor);
+    if (!follow) return;
+    const k = _strip(absPath);
+    const landing = _nsLandingKey(k);
+    if (landing !== null && landing !== k) await _flushHeld("/" + landing, supervisor);
+  }
+
+  async function _flushHeld(absPath, supervisor) {
     const k = _strip(absPath);
     await _announceLocalDirs(absPath, supervisor);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
@@ -2727,6 +2825,7 @@ const __fsMod = (() => {
     // is out reports against it, and dated when the answer comes back
     // (_acquiredRead).
     let fill = refetch || null;
+    let reachedFill = null;
     let first = null;
     if (!refetch && _servesFsAcquired(supervisor) && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
@@ -2740,9 +2839,23 @@ const __fsMod = (() => {
         const [read, learned] = Array.isArray(entries) ? entries : [];
         if (!read || read.error) throw _mapSupervisorError(read ? read.error : null, "read", p);
         if (read.bytes === null || read.bytes === undefined) throw _fsErr("ENOENT", "open", p);
-        first = { chunk: read.bytes.byteLength === 0 ? null : read.bytes, stat: learned && !learned.error ? learned.stat ?? null : undefined };
+        first = {
+          chunk: read.bytes.byteLength === 0 ? null : read.bytes,
+          stat: learned && !learned.error ? learned.stat ?? null : undefined,
+          path: typeof read.path === "string" ? read.path : undefined,
+        };
+        // Reached through a link: the barriers report the file by its own
+        // name, so that is the name whose reports date the fill from here.
+        // Anything applied since the read's own barrier may already have
+        // reported it unheard, so a cursor that moved spoils it.
+        if (first.path !== undefined && _strip(first.path) !== _strip(absPath)) {
+          reachedFill = _beginFill(_strip(first.path));
+          reachedFill.rev = fill.rev;
+          if (fill.reported > fill.rev || _cursor.rev !== fill.rev) reachedFill.reported = Infinity;
+        }
       } catch (error) {
         _endFill(fill);
+        if (reachedFill) _endFill(reachedFill);
         throw error;
       }
     } else if (!refetch) {
@@ -2777,9 +2890,18 @@ const __fsMod = (() => {
           break;
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
-        _installResident(absPath, bytes, fill);
-        if (first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES) __nsNoteLiveStat(_strip(absPath), first.stat);
-        else await _learnLive(absPath, supervisor);
+        // The file the first chunk reached. A later chunk read through a link
+        // may reach another, so a read through one in several chunks names none.
+        const asked = _strip(absPath);
+        const reached = first === null || first.path === undefined ? undefined
+          : _strip(first.path) === asked || total <= READ_STREAM_CHUNK_BYTES ? first.path : null;
+        _installResident(absPath, bytes, reachedFill ?? fill, reached);
+        // The read resolved a link differently from this view, which a peer
+        // changed after the read's barrier: catch the view up, so a sync read
+        // through the link is not older than what this one returned.
+        if (typeof reached === "string" && _nsLandingKey(asked) !== _strip(reached)) await _acquireBarrier(supervisor);
+        const kept = first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES && _noteLearnedStat(absPath, first.stat, fill);
+        if (!kept) await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
 
@@ -2794,6 +2916,7 @@ const __fsMod = (() => {
       }
     } finally {
       if (!refetch) _endFill(fill);
+      if (reachedFill) _endFill(reachedFill);
     }
 
     throw _fsErr("ENOENT", "open", p);
@@ -2838,6 +2961,22 @@ const __fsMod = (() => {
   }
 
   /**
+   * The ops a session deployed before them does not serve, and whether this
+   * one does: a refusal that says so switches the process to the calls those
+   * ops replaced, from then on. An RPC stub answers \`typeof "function"\` for
+   * any method, so only the refusal can tell.
+   */
+  const _served = { fsAcquired: true, writeFileStat: true };
+  /** The refusal of \`op\` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
+  function _unserved(error, op) {
+    const message = error && typeof error.message === "string" ? error.message : "";
+    return message.includes('does not implement the method "' + op + '"')
+      || message.includes("'" + op + "' is not served by this host")
+      || message.includes("'" + op + "' is not a read")
+      || message.includes("'deliverOnce' names no mutation it can deliver once");
+  }
+
+  /**
    * The barrier and the read an async call makes after it, in one round
    * trip (session/rpc.ts _rpcFsAcquired): the authority answers the barrier
    * before it reads, and the barrier is applied before the value is used,
@@ -2855,9 +2994,8 @@ const __fsMod = (() => {
    * A session that does not serve fsAcquired (one deployed before it) is
    * asked for the barrier and the read separately, from then on.
    */
-  let _fsAcquiredServed = true;
   function _servesFsAcquired(supervisor) {
-    return _fsAcquiredServed && typeof supervisor.fsAcquired === "function";
+    return _served.fsAcquired && typeof supervisor.fsAcquired === "function";
   }
   async function _acquiredRead(supervisor, op, args, rpc, syscall, p, fill) {
     const acquire = _acquireArgs();
@@ -2865,11 +3003,8 @@ const __fsMod = (() => {
     try {
       answer = await __nimbusUseRpcResult(supervisor.fsAcquired(acquire, op, args), (result) => result);
     } catch (error) {
-      const message = error && typeof error.message === "string" ? error.message : "";
-      // An entrypoint without the method, a host without the op, or one that
-      // refuses it as a read id's carrier: each a session deployed before it.
-      if (!/does not implement the method|'fsAcquired' is not (served by this host|a read)/.test(message)) throw _mapSupervisorError(error, syscall, p);
-      _fsAcquiredServed = false;
+      if (!_unserved(error, "fsAcquired")) throw _mapSupervisorError(error, syscall, p);
+      _served.fsAcquired = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
       return rpc(supervisor[op](...args));
@@ -2895,7 +3030,7 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor[syscall] === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
       let meta;
       if (_servesFsAcquired(supervisor)) {
@@ -2987,24 +3122,48 @@ const __fsMod = (() => {
   }
 
   async function _writeFileAsync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     writeFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.writeFile === "function") {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
-      await __nimbusFlushVfsWrite(absPath, (content) =>
-        _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result)
-      );
-      _markVfsStale();
-      // Accepted: the authority's stat is what the sync view keeps for it.
-      await _learnLive(absPath, supervisor);
+      // The authority's stat comes back with the write where it can, and is
+      // what the sync view keeps for the path. The ticket hears what the
+      // barriers report of the path while the write is out.
+      let learned;
+      let written;
+      let kept = false;
+      const ticket = _beginFill(_strip(absPath));
+      try {
+        await __nimbusFlushVfsWrite(absPath, async (content) => {
+          if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
+            try {
+              const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
+              learned = answer.stat;
+              written = answer.revision;
+              return answer.revision;
+            } catch (error) {
+              if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
+              _served.writeFileStat = false;
+            }
+          }
+          written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
+          return written;
+        });
+        _markVfsStale();
+        if (typeof written !== "number") written = undefined;
+        if (learned !== undefined) kept = _noteLearnedStat(absPath, learned, ticket, written);
+      } finally {
+        _endFill(ticket);
+      }
+      if (!kept) await _learnLive(absPath, supervisor, written);
     }
   }
 
   async function _appendFileAsync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
@@ -3030,7 +3189,7 @@ const __fsMod = (() => {
   async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP, true); }
 
   async function _truncateAsync(p, len) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     const size = Math.max(0, Math.trunc(Number(len) || 0));
     const supervisor = _supervisor();
     const localCell = _bundleLookup(absPath);
@@ -3087,7 +3246,7 @@ const __fsMod = (() => {
 
   function utimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "utimes", p, "fs.promises.utimes");
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "utimes");
     _recordLocalTimes(absPath, atime, mtime, "utimes", p);
   }
 
@@ -3100,7 +3259,7 @@ const __fsMod = (() => {
   async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
     const followSymlinks = !(opts && opts.followSymlinks === false);
     const syscall = syscallOverride || (followSymlinks ? "utimes" : "lutimes");
-    const absPath = _resolve(p);
+    const absPath = followSymlinks ? _resolveFollow(p, syscall) : _resolve(p);
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
@@ -3109,7 +3268,7 @@ const __fsMod = (() => {
     }
     const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
     if (supervisor && typeof supervisor.utimes === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
@@ -3141,16 +3300,17 @@ const __fsMod = (() => {
 
   function chmodSync(p, mode) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
-    _ensureModeOwner(_resolve(p), "chmod", p);
+    const absPath = _resolveFollow(p, "chmod");
+    _ensureModeOwner(absPath, "chmod", p);
     // Local-visible immediately (statSync overlay); the live write-through
     // rides the next flush of the same path — same fidelity as utimesSync.
-    const k = _strip(_resolve(p));
+    const k = _strip(absPath);
     _localModes[k] = _coerceMode(mode, "chmod", p);
     _pendingModes.add(k);
   }
 
   async function _chmodAsync(p, mode) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "chmod");
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
@@ -3186,7 +3346,7 @@ const __fsMod = (() => {
     }
     const nextUid = _coerceId(uid, syscall, p);
     const nextGid = _coerceId(gid, syscall, p);
-    await _flushLocalPathToSupervisor(absPath, supervisor);
+    await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
     await _ownMutation(
       absPath,
       () => _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result),
@@ -3385,7 +3545,7 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     let cell;
@@ -3400,7 +3560,7 @@ const __fsMod = (() => {
   // combined cell is bytes (lossless for both). When both are strings,
   // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const previousAppend = __nimbusCapturePendingVfsAppend(k);
@@ -3488,9 +3648,12 @@ const __fsMod = (() => {
     _nsRequire("stat", absPath, "fs.promises.stat");
     const meta = _nsMeta(k, !noFollow);
     if (meta === "absent" || meta === "ELOOP") return undefined;
+    // A followed stat describes the file the links name, and this process's
+    // own mode and times for it are kept under that name.
+    const key = noFollow ? k : (_nsLandingKey(k) ?? k);
     return meta.own
-      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
-      : _statObject(meta, k);
+      ? _localStatObject(key, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
+      : _statObject(meta, key);
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
@@ -3905,7 +4068,7 @@ const __fsMod = (() => {
   // The resident-view rule of ftruncateSync applied to a path: trim the
   // resident cell and park it, refuse EAGAIN when the bytes are not here.
   function truncateSync(p, len) {
-    const absPath = _resolve(p);
+    const absPath = _resolveFollow(p, "open");
     const st = statSync(p, { throwIfNoEntry: false });
     if (st === undefined) throw _fsErr("ENOENT", "truncate", p);
     if (st.isDirectory()) throw _fsErr("EISDIR", "truncate", p);
@@ -3934,8 +4097,8 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, true);
     if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
     if (meta === "absent") throw _absentErr(absPath, "realpath", p, "fs.promises.realpath");
-    const real = _nsRealKey(k);
-    return real === null ? absPath : "/" + real;
+    const real = _nsHeldKey(k);
+    return real === null || real === k ? absPath : "/" + real;
   }
   realpathSync.native = realpathSync;
 
@@ -4044,7 +4207,7 @@ const __fsMod = (() => {
   class __FileHandle {
     constructor(path, flagInfo, size) {
       this._path = path;
-      this._abs = _resolve(path);
+      this._abs = _resolveFollow(path, "open");
       this._flags = flagInfo;
       this._position = 0;
       this._size = size;
@@ -4271,7 +4434,7 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const absPath = _resolve(path);
+    const absPath = _resolveFollow(path, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
     if (supervisor && typeof supervisor.stat === "function") {
@@ -4308,14 +4471,15 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const absPath = _resolve(path);
+    const absPath = _resolveFollow(path, "open");
     _ensureAncestorsTraversable(absPath, "open", path);
     const st = statSync(path, { throwIfNoEntry: false });
     if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
     const exists = st !== undefined;
     if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
-    if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
+    // O_EXCL does not follow a final symlink: a dangling link is there.
+    if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath));
     let size = exists ? st.size : 0;
