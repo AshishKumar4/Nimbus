@@ -377,7 +377,7 @@ export class NimbusWrangler {
       return false;
     }
 
-    // Bundle via esbuild
+    // Bundle (EsbuildService.build: the build facet, rolldown)
     this.onLog('  Building Worker...\n');
     try {
       // [WRANGLER-DEV-HANG P0b] Time-bound the bundle. Pre-fix,

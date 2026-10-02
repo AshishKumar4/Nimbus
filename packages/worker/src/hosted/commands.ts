@@ -656,7 +656,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     // real wrangler, and that Nimbus is doing something different.
     if (invokedAs === 'wrangler' && !self.wranglerAliasBannerShown) {
       ctx.stdout.write(
-        '\x1b[2m\u2388  wrangler (Nimbus DO-in-DO mode) — bundling via esbuild-wasm, running via env.LOADER\x1b[0m\n',
+        '\x1b[2m\u2388  wrangler (Nimbus DO-in-DO mode) — bundling via rolldown, running via env.LOADER\x1b[0m\n',
       );
       self.wranglerAliasBannerShown = true;
     }

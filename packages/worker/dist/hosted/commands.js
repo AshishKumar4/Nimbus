@@ -600,7 +600,7 @@ export async function registerHostedCommands(self, workspace) {
         // per session. Makes it OBVIOUS to the user that they're not running
         // real wrangler, and that Nimbus is doing something different.
         if (invokedAs === 'wrangler' && !self.wranglerAliasBannerShown) {
-            ctx.stdout.write('\x1b[2m\u2388  wrangler (Nimbus DO-in-DO mode) — bundling via esbuild-wasm, running via env.LOADER\x1b[0m\n');
+            ctx.stdout.write('\x1b[2m\u2388  wrangler (Nimbus DO-in-DO mode) — bundling via rolldown, running via env.LOADER\x1b[0m\n');
             self.wranglerAliasBannerShown = true;
         }
         // Report ignored flags (also one-shot — if user sees it once per

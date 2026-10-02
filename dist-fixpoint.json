@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d4b02c4fed1d10f23b197d1ba277118e76021d52690e6d43bb7697b585f99469",
+  "fingerprint": "3d894d57eb0ca45b6eb1aa908b6f96a407937296a8ee38d27b753f702afa7003",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1677,7 +1677,7 @@
     "packages/worker/dist/git/unified-diff.js": "9182dbf0047c98f56f3f78588157a3545e60fb572e70bf1b5de5907f65947341",
     "packages/worker/dist/hosted/commands.d.ts": "b1779652124f6e2a12c061069cb3ba7571a3b329fc8e4e1a999f5a5c949c03a1",
     "packages/worker/dist/hosted/commands.d.ts.map": "7bd74a473adf52fd25240acd2128985f6f10e21d1674b00ea6179c48af053d96",
-    "packages/worker/dist/hosted/commands.js": "1e89045810671a688ee12ae3f5048938ac50415dcf242e5b80bcebf8aab06015",
+    "packages/worker/dist/hosted/commands.js": "15f7b1f61e236af3f97fc3cee67e030ef4e3b9676aeacfef488192afea0afec1",
     "packages/worker/dist/hosted/runtime.d.ts": "2b50b4620b4276a3acc93a70a9762d611faf845f67e2be94c703e9d08e4c8114",
     "packages/worker/dist/hosted/runtime.d.ts.map": "95b81e98a6d62d2db4a6f6f3e0106c7d5ebe47875183692361bbbdbf36bb1e84",
     "packages/worker/dist/hosted/runtime.js": "e30d868bc0cb0f8f8116eb271f705aca0b501c59ea4eca92919320197451e0e4",
@@ -2004,7 +2004,7 @@
     "packages/worker/dist/workspace.js": "6378bf2e4ee8854ee859c94b2c3ff5ecfa5cd23fe997b32ae8ff0b9b347e1b48",
     "packages/worker/dist/wrangler/nimbus-wrangler.d.ts": "27f0333af19e6b8df8a608453c9aadfae7562e54bc8e5021a5fb128d0b4bed45",
     "packages/worker/dist/wrangler/nimbus-wrangler.d.ts.map": "0a52d677930d50efda7b17e8b80b924c1087b059a47cd506c198fffb288d48d8",
-    "packages/worker/dist/wrangler/nimbus-wrangler.js": "52b9bd19cd1bbb8849a321cf0106206c7d76073f3ee694c69a74897875e510bc",
+    "packages/worker/dist/wrangler/nimbus-wrangler.js": "42bdc59c41cae0249010aa6ea614cc7e44111624a03e1680b8a5defddf40e3af",
     "packages/worker/frontend/agent-chat/agent-chat.css": "9ada51411d5f72e4dc14c394546a3d50a5dd7487bd3baa056bd15d867c91e0cf",
     "packages/worker/frontend/agent-chat/api.ts": "f14e7324b27e3fd6e5acfd9888f0e33b20a0c006296753556ad20f780409a4a2",
     "packages/worker/frontend/agent-chat/components/AgentChat.tsx": "077309ac17ce669af03499e44084c880c4ea31ad3ce0524f53b2cea489fa42ae",
@@ -2188,7 +2188,7 @@
     "packages/worker/src/git/commands.ts": "c435e97786bc5b0bcb974cf329820b2c2c46361da6d75698417e8bbddd283496",
     "packages/worker/src/git/network-facet.ts": "b87a59e0307c3b1fb585c91d6782eaa4f76aa4978121de1cebd57d4e3258ae5c",
     "packages/worker/src/git/unified-diff.ts": "7d322a113cc4895cd699316bcb39a14506d5ed9bef4b72bfd8768b64bd15e905",
-    "packages/worker/src/hosted/commands.ts": "ea49f0321aa26ca641c326290838ec96eee9c26bba220d598479324cb005eb52",
+    "packages/worker/src/hosted/commands.ts": "579852632e7686bfa8eb27bd218a87d9db8c3542cfca21b7815ea79264d908ff",
     "packages/worker/src/hosted/runtime.ts": "095f2ee41feabd2d35bd1c09c1186a0e84c647f94b6e72e1e73b6f2c57c4ca0e",
     "packages/worker/src/hosted/services.ts": "9b19998bfc8a3c038035b24969135d82a487526a612005ddc6b377f4e25420fa",
     "packages/worker/src/hosted/session.ts": "d03d53bffd45f9668ae832279d29b252fd3e92fac887b9a903ec4b8f3adb8997",
@@ -2300,7 +2300,7 @@
     "packages/worker/src/vfs/facet-resident-store.ts": "bc87318627d1de014682b072244fbee9d08f5a56b71e6c00e3e8c933cf0c1550",
     "packages/worker/src/workspace-host.ts": "816e14307a8cdf211c77405d00fa71f7ffeb105c5c6d008cfc982e20e5b2dce5",
     "packages/worker/src/workspace.ts": "39d753a50eadabfd3c9739bdfff05f9874ce6333761914ed5698a8d9fac5013c",
-    "packages/worker/src/wrangler/nimbus-wrangler.ts": "191841594405ccf3eb2d05c070edf05c820c9c2908b16d3a3c23592078498e57",
+    "packages/worker/src/wrangler/nimbus-wrangler.ts": "37dc6a4db00db2eb074ba20708586a5ff183156ceb9b6618784632eb420bc3f4",
     "packages/worker/tsconfig.json": "fa6f4d05c31f08aebf48fc3a2373a2478cb3df3f937c5246a9c47a310ec08c0b",
     "packages/worker/vendor/git-http.generated.d.ts": "5adcb490107c88a98f78c45c9cbc6ed5b0e67ab2db87d3de1a44f7d2aa0736b7",
     "packages/worker/vendor/git-upstream.generated.d.ts": "1a3e44a15fed146a199b53d3e858ad3bd934725bcf187fdd8f9dcd82d1649fa6",
