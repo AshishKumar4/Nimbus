@@ -30,6 +30,7 @@
  * Code the closure loads is in the module map already; the store adopts it,
  * so it is readable as data too.
  */
+import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 
 export interface DataPlanEntry { path: string; kind: string; size: number; linkTarget?: string }
@@ -218,6 +219,23 @@ async function resolveSpecifier(
     }
     if (dir === '') return null;
   }
+}
+
+/** The resolver's filesystem (require-resolution.ts) over the plan's source. */
+function resolutionFs(source: DataPlanSource): RequireFs {
+  return {
+    exists: async (path) => (await source.stat(path)) !== null,
+    isDirectory: async (path) => (await source.stat(path))?.kind === 'directory',
+    readFileString: async (path) => {
+      const text = await source.readText(path);
+      if (text === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return text;
+    },
+    stat: async (path) => {
+      const found = await source.stat(path);
+      return found === null ? null : { size: found.size };
+    },
+  };
 }
 
 /** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
@@ -483,8 +501,11 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  // The working dir's dependencies' entries. A `main` or `module` without its
-  // extension names the file Node would load for it.
+  // The working dir's dependencies' entries, each the file Node's resolver
+  // loads for it (require-resolution.ts, as the module-map walk resolves): a
+  // `main` without its extension, or naming a directory with a package.json
+  // of its own.
+  const files = resolutionFs(source);
   const projectManifest = await readManifest(source, cwd, manifests);
   const dependencies = new Set<string>();
   for (const field of ['dependencies', 'devDependencies', 'optionalDependencies'] as const) {
@@ -501,14 +522,12 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     const manifest = await readManifest(source, pkgDir, manifests);
     if (manifest === null) continue;
     for (const rel of entryTargets(manifest)) {
-      for (const candidate of [rel, rel + '.js', rel + '/index.js']) {
-        const k = await throughLinks(source, joinKey(pkgDir, candidate));
-        if (k === null) break;
-        const found = await source.stat(k);
-        if (found === null || found.kind !== 'file') continue;
-        if (found.size < PACKAGE_DATA_MAX_BYTES && !closure.has(k)) take({ path: k, kind: 'file', size: found.size }, 'entries');
-        break;
-      }
+      const resolved = await resolveFile(files, joinKey(pkgDir, rel));
+      const k = resolved === null ? null : await throughLinks(source, resolved);
+      if (k === null) continue;
+      const found = await source.stat(k);
+      if (found === null || found.kind !== 'file') continue;
+      if (found.size < PACKAGE_DATA_MAX_BYTES && !closure.has(k)) take({ path: k, kind: 'file', size: found.size }, 'entries');
     }
   }
 

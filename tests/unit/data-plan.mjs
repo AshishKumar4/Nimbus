@@ -285,4 +285,23 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.equal(entries.rules.entries.files, 4);
 }
 
+// An entry is the file Node's resolver loads for it, as the module-map walk
+// resolves it (require-resolution.ts): a `main` naming a directory goes
+// through that directory's own package.json `main`, and an extensionless
+// one through every extension Node tries.
+{
+  const ns = namespace({
+    'home/user/app/package.json': JSON.stringify({ dependencies: { nested: '1', cjs: '1' } }),
+    'home/user/app/node_modules/nested/package.json': JSON.stringify({ name: 'nested', main: 'lib' }),
+    'home/user/app/node_modules/nested/lib/package.json': JSON.stringify({ main: 'actual.cjs' }),
+    'home/user/app/node_modules/nested/lib/actual.cjs': 'x',
+    'home/user/app/node_modules/cjs/package.json': JSON.stringify({ name: 'cjs', main: 'dist/entry' }),
+    'home/user/app/node_modules/cjs/dist/entry.cjs': 'x',
+  });
+  const plan = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
+  const planned = new Set(plan.paths);
+  assert.ok(planned.has('home/user/app/node_modules/nested/lib/actual.cjs'), "a directory main through its own package.json's main");
+  assert.ok(planned.has('home/user/app/node_modules/cjs/dist/entry.cjs'), 'an extensionless main as Node probes it');
+}
+
 console.log('data-plan: ok');
