@@ -175,8 +175,9 @@ export declare class NimbusWorkspace {
      * kernel's authority (see CRED_SESSION_USER in os-contracts.ts). A relative
      * path is taken from its own working directory, the one the shell starts
      * in (create's `cwd`, else HOME), which a `cd` in the shell does not move.
-     * Helpers such as readText, writeText and exists are vfs.ts free functions
-     * over it.
+     * `move` is mv's: a rename, or across mounts a copy that happens whole or
+     * not at all. Helpers such as readText, writeText and exists are vfs.ts
+     * free functions over it.
      */
     readonly fs: WorkspaceFs;
     /** The raw durable filesystem, for hosts that need uid-aware operations. */

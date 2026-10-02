@@ -14,6 +14,7 @@
  * from a working directory, and a user's relative path never reaches one
  * that would read it from the root.
  */
+import { move } from '../vfs/move.js';
 import { syscallError, VfsError } from '../vfs/vfs-error.js';
 export class WorkspaceFs {
     view;
@@ -74,8 +75,16 @@ export class WorkspaceFs {
     async mkdir(path, options) { return await this.view.mkdir(this.resolve(path), options); }
     async unlink(path) { return await this.view.unlink(this.entry(path, 'unlink')); }
     async rmdir(path) { return await this.view.rmdir(this.entry(path, 'rmdir')); }
-    /** rename(2): EXDEV across filesystems. */
+    /** rename(2): EXDEV across filesystems, where {@link move} copies. */
     async rename(from, to) { return await this.view.rename(this.entry(from, 'rename'), this.entry(to, 'rename')); }
+    /**
+     * mv: one rename, or across filesystems (and on one that cannot rename in
+     * place) a copy that happens whole or not at all, directories included.
+     * `to` is the new name, as rename's is. See vfs/move.ts.
+     */
+    async move(from, to, options) {
+        await move(this.view, this.entry(from, 'rename'), this.entry(to, 'rename'), options);
+    }
     async readRange(path, offset, length) { return await this.view.readRange(this.resolve(path), offset, length); }
     /** A ranged read that neither consults nor fills the session's content cache. */
     async readRangeUncached(path, offset, length) {

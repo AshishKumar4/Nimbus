@@ -14,6 +14,7 @@
  * from a working directory, and a user's relative path never reaches one
  * that would read it from the root.
  */
+import { type MoveOptions } from '../vfs/move.js';
 import type { VFS, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
 export declare class WorkspaceFs implements VFS {
@@ -59,8 +60,14 @@ export declare class WorkspaceFs implements VFS {
     }): Promise<void>;
     unlink(path: string): Promise<void>;
     rmdir(path: string): Promise<void>;
-    /** rename(2): EXDEV across filesystems. */
+    /** rename(2): EXDEV across filesystems, where {@link move} copies. */
     rename(from: string, to: string): Promise<void>;
+    /**
+     * mv: one rename, or across filesystems (and on one that cannot rename in
+     * place) a copy that happens whole or not at all, directories included.
+     * `to` is the new name, as rename's is. See vfs/move.ts.
+     */
+    move(from: string, to: string, options?: MoveOptions): Promise<void>;
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
     /** A ranged read that neither consults nor fills the session's content cache. */
     readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array>;
