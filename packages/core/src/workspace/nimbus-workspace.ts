@@ -37,13 +37,14 @@ import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
 import {
-  DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_PATH, SEEDED_TOP_LEVEL_DIRS,
+  DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
+import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
@@ -194,13 +195,16 @@ export interface NimbusWorkspaceOptions {
  */
 export class NimbusWorkspace {
   /**
-   * The namespace as the session user sees it: a `VFS` (absolute paths), the
-   * shell process's own view, so every write passes the same lease check a
-   * command's does. Never the kernel's authority (see CRED_SESSION_USER in
-   * os-contracts.ts). Helpers such as readText, writeText and exists are
-   * vfs.ts free functions over it.
+   * The namespace as the session user sees it: the shell process's own view,
+   * so every write passes the same lease check a command's does. Never the
+   * kernel's authority (see CRED_SESSION_USER in os-contracts.ts). A relative
+   * path is taken from its own working directory, the one the shell starts
+   * in (create's `cwd`, else HOME), which a `cd` in the shell does not move.
+   * `move` is mv's: a rename, or across mounts a copy that happens whole or
+   * not at all. Helpers such as readText, writeText and exists are vfs.ts
+   * free functions over it.
    */
-  readonly fs: ProcessView;
+  readonly fs: WorkspaceFs;
   /** The raw durable filesystem, for hosts that need uid-aware operations. */
   readonly vfs: SqliteVFS;
   readonly kernel: Kernel;
@@ -249,8 +253,9 @@ export class NimbusWorkspace {
     this.shellProcessPid = shellProcessPid;
     this.commands = new SandboxCommandsImpl(shell, registry);
     // The shell's own process view: a host calling `.fs` acts as the
-    // session user, never as the kernel.
-    this.fs = shell.getVfs();
+    // session user, never as the kernel. Its working directory is the
+    // shell's before anything has run: create's `cwd`, else HOME.
+    this.fs = new WorkspaceFs(shell.getVfs(), shell.getCwd());
   }
 
   static async create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace> {
@@ -261,7 +266,11 @@ export class NimbusWorkspace {
     if (options.filesystemNamespace !== undefined && options.filesystemNamespace !== vfs.namespace) {
       throw new Error('filesystemNamespace differs from the supplied filesystem namespace');
     }
-    seedBaseFilesystem(vfs);
+    // Everything the OS keeps per user follows the configured home: the
+    // seeded home directory, its /etc/passwd entry, PATH and the XDG dirs.
+    const home = options.env?.HOME ?? DEFAULT_HOME;
+    if (!home.startsWith('/')) throw new Error(`HOME must be an absolute path, got ${JSON.stringify(home)}`);
+    seedBaseFilesystem(vfs, home);
 
     // The namespace (SQLite at `/`, /proc, /dev) and what binds processes to it.
     const filesystem = options.filesystem ?? new ProcessFiles(vfs);
@@ -279,7 +288,7 @@ export class NimbusWorkspace {
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
 
-    const env = { ...defaultEnv(), ...options.env };
+    const env = { ...defaultEnv(home), ...options.env };
 
     // The identity every shell command runs as. A host that supplied one keeps
     // it verbatim — its pid is already alive in ITS process table. Otherwise
@@ -293,7 +302,7 @@ export class NimbusWorkspace {
       identity = options.identity;
       shellProcessPid = options.identity.pid;
     } else {
-      const shellProcess = processes.spawn('sh', ['sh'], options.cwd ?? env.HOME ?? DEFAULT_HOME);
+      const shellProcess = processes.spawn('sh', ['sh'], options.cwd ?? home);
       shellProcessPid = shellProcess.pid;
       identity = workspaceShellIdentity(processes, shellProcess, () => shell);
     }
@@ -347,6 +356,7 @@ export class NimbusWorkspace {
           registry,
           processes,
           runtimes,
+          getHome,
         });
         // With a facet host the workspace owns the runner table, and it is
         // complete here: a supplied package naming a runner outside it would
@@ -380,8 +390,8 @@ export class NimbusWorkspace {
         // stub when something could satisfy it. Registered last so every real
         // command and the PATH resolver still win.
         const baseResolve = registry.resolve.bind(registry);
-        registry.resolve = async (name) => {
-          const found = await baseResolve(name);
+        registry.resolve = async (name, from) => {
+          const found = await baseResolve(name, from);
           if (found) return found;
           if (!name || name.includes('/')) return undefined;
           try {
@@ -390,7 +400,7 @@ export class NimbusWorkspace {
             return undefined;
           }
           runtimes.registerInstallStub(name);
-          return baseResolve(name);
+          return baseResolve(name, from);
         };
       } else {
         // Before the runners are wired, because registration reads what the
@@ -522,22 +532,22 @@ function openFilesystem(options: NimbusWorkspaceOptions): SqliteVFS {
  * choice of mode, so a default of `development` made `vite build` emit a
  * development bundle (jsxDEV calls, React's development build).
  */
-function defaultEnv(): Record<string, string> {
+function defaultEnv(home: string): Record<string, string> {
   return {
-    HOME: DEFAULT_HOME,
+    HOME: home,
     USER: DEFAULT_USER,
     SHELL: DEFAULT_SHELL,
     HOSTNAME: DEFAULT_HOSTNAME,
     TERM: 'xterm-256color',
-    PWD: DEFAULT_HOME,
-    PATH: DEFAULT_PATH,
+    PWD: home,
+    PATH: defaultPath(home),
     PS1: `\x1b[1;32muser@${DEFAULT_HOSTNAME}\x1b[0m:\x1b[1;34m\\w\x1b[0m$ `,
     LANG: 'en_US.UTF-8',
     EDITOR: 'nano',
     NIMBUS_VERSION: NIMBUS_VERSION,
     TMPDIR: '/tmp',
-    XDG_CONFIG_HOME: `${DEFAULT_HOME}/.config`,
-    XDG_DATA_HOME: `${DEFAULT_HOME}/.local/share`,
+    XDG_CONFIG_HOME: `${home}/.config`,
+    XDG_DATA_HOME: `${home}/.local/share`,
     npm_config_prefix: '/usr/local',
     PORT: '3000',
     HOST: '0.0.0.0',
@@ -646,6 +656,7 @@ function registerWasmRuntimes(deps: {
   registry: CommandRegistry;
   processes: SessionProcessSupervisor;
   runtimes: RuntimeManager;
+  getHome(): string;
 }): void {
   // wasm-runner allocates pids for what it runs, off the SAME supervisor the
   // shell identity uses — the host's own when it supplied one.
@@ -694,7 +705,7 @@ function registerWasmRuntimes(deps: {
     'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
       .makeCPythonRunnerFactory({ facets: deps.facets })),
     'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry })),
+      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
       .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
   };
@@ -761,8 +772,11 @@ const WORKSPACE_TABLES = [
  * and it is exported because a host may need the filesystem before it needs a
  * shell: the Nimbus session seeds its starter project for a browser that hits
  * `/preview` without ever opening a terminal.
+ *
+ * `home` is the session user's home directory: it is made and owned by the
+ * user, and /etc/passwd names it.
  */
-export function seedBaseFilesystem(vfs: SqliteVFS): void {
+export function seedBaseFilesystem(vfs: SqliteVFS, home: string = DEFAULT_HOME): void {
   const fs = vfs.as(CRED_SESSION_USER);
   const rootFs = vfs.as(CRED_KERNEL);
 
@@ -774,8 +788,17 @@ export function seedBaseFilesystem(vfs: SqliteVFS): void {
     rootFs.mkdir(top, { mode: 0o777 & ~CRED_SESSION_USER.umask });
     rootFs.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   }
+  // The home is made the way useradd -m makes it: by root, wherever it is,
+  // then handed to the user. Its parents stay root's.
+  const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (homeDir !== '' && !rootFs.exists(homeDir)) {
+    rootFs.mkdir(homeDir, { recursive: true, mode: 0o755 });
+    rootFs.chown(homeDir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  }
+  // HOME=/ is root's directory, not one Nimbus populates for the user.
+  const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
   for (const dir of [
-    'home/user', 'home/user/.config', 'home/user/projects',
+    ...homeChildren,
     'tmp', 'var/log',
     'usr/bin', 'usr/lib', 'usr/lib/node_modules',
     'usr/share', 'usr/share/pkg', 'usr/share/pkg/node_modules',
@@ -815,21 +838,35 @@ export function seedBaseFilesystem(vfs: SqliteVFS): void {
     if (stat.uid !== 0 || stat.gid !== 0) rootFs.chown(path, 0, 0);
     if ((stat.mode & 0o7777) !== 0o644) rootFs.chmod(path, 0o644);
   };
-  accountFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:/home/user:/bin/sh\n');
+  const passwdFor = (dir: string) => `root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:${dir}:/bin/sh\n`;
+  accountFile('etc/passwd', passwdFor(home));
+  // The passwd every workspace got before its home was configurable named
+  // /home/user. Exactly that file is Nimbus's to move to the configured home;
+  // any other content is the user's.
+  if (home !== DEFAULT_HOME && rootFs.readFileString('etc/passwd') === passwdFor(DEFAULT_HOME)) {
+    rootFs.writeFile('etc/passwd', passwdFor(home));
+  }
   accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
 
-  const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
+  // `$HOME` is expanded when the profile is sourced, so one profile serves
+  // whatever home the session has.
+  const defaultProfile = `export PATH=${defaultPath('$HOME')}\nexport EDITOR=nano\n`;
+  // Profiles Nimbus seeded before: the lifo default, from before Nimbus had a
+  // PATH of its own, and Nimbus's own with the home spelled out. Nobody ever
+  // chose them, so replacing them is not overwriting a user's file.
+  const seededProfiles = [
+    'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n',
+    `export PATH=${defaultPath(DEFAULT_HOME)}\nexport EDITOR=nano\n`,
+  ];
   if (!rootFs.exists('etc/profile')) {
     rootFs.writeFile('etc/profile', defaultProfile);
     rootFs.chown('etc/profile', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  } else if (rootFs.readFileString('etc/profile') === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
-    // The lifo default, from before Nimbus had a PATH of its own. Nobody ever
-    // chose it, so replacing it is not overwriting a user's file.
+  } else if (seededProfiles.includes(rootFs.readFileString('etc/profile'))) {
     rootFs.writeFile('etc/profile', defaultProfile);
   }
 
-  if (!fs.exists('home/user/.nimbusrc')) {
-    fs.writeFile('home/user/.nimbusrc',
+  if (homeDir !== '' && !fs.exists(`${homeDir}/.nimbusrc`)) {
+    fs.writeFile(`${homeDir}/.nimbusrc`,
       '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n',
     );
   }

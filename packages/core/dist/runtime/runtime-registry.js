@@ -225,6 +225,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             const stdin = await programStdin(code, null, ctx.cwd || '/home/user', launchesServer);
             const result = await spec.run(code, {
                 cred: ctx.cred,
+                invokerPid: ctx.pid,
                 signal: ctx.signal,
                 argv: args.slice(evalIdx + 2),
                 env: ctx.env,
@@ -262,6 +263,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
             const result = await spec.run(code, {
                 cred: ctx.cred,
+                invokerPid: ctx.pid,
                 signal: ctx.signal,
                 argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
                 env: ctx.env,
@@ -295,6 +297,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             // [exportName, intArg1, intArg2, ...] for wasm-runner).
             const result = await spec.run('', {
                 cred: ctx.cred,
+                invokerPid: ctx.pid,
                 signal: ctx.signal,
                 argv: args.slice(scriptIdx + 1),
                 env: ctx.env,
@@ -427,6 +430,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         const leadingFlags = args.slice(0, scriptIdx);
         const result = await spec.run(code, {
             cred: ctx.cred,
+            invokerPid: ctx.pid,
             signal: ctx.signal,
             argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
             env: ctx.env,

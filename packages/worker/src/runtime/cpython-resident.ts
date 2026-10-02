@@ -98,6 +98,7 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
     const workerCode = buildCPythonSocketProcessWorker(buildCPythonPreamble());
     const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
       resident: { argv: args.argv, runtime: 'python' },
+      invokerPid: args.invokerPid,
       restart: z.object({ NIMBUS_RESTART: z.literal('on-failure') }).safeParse(args.startArgs.userEnv).success ? 'on-failure' : 'never',
       // By path, not by value: the interpreter is 10.6 MiB, more than a single
       // RPC value may carry, so whichever host runs this process reads it itself.

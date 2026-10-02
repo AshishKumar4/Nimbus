@@ -63,6 +63,18 @@ export interface InlineExecutionOptions {
     positionals?: string[];
 }
 export type BuiltinFn = (args: string[], stdout: CommandOutputStream, stderr: CommandOutputStream, stdin?: CommandInputStream, context?: BuiltinExecutionContext) => Promise<number>;
+/**
+ * A file a redirection opened. `refs` counts what holds it, as the kernel
+ * counts references to an open file description: the redirection's command
+ * until it ends, each descriptor `exec` keeps on it, and each child shell that
+ * inherited it, the way fork(2) dups descriptors. It closes when the last of
+ * them lets go.
+ */
+type OpenFile = {
+    stream: CommandInputStream | CommandOutputStream;
+    close: () => Promise<void>;
+    refs: number;
+};
 type ExecutionIo = {
     stdin?: CommandInputStream;
     stdout?: CommandOutputStream;
@@ -92,6 +104,8 @@ type ExecutionIo = {
     vfs?: ProcessView;
     /** The terminal's own shell (bash -i): job notices are printed. */
     interactive?: boolean;
+    /** Files the enclosing redirections hold open, by their stream. */
+    openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
 export type TerminalFdState = {
     stdin?: boolean;
@@ -225,7 +239,11 @@ export declare class Interpreter {
     executeCapture(input: string, io?: ExecutionIo): Promise<CapturedCommand>;
     private executeInline;
     private executeLineWithIo;
-    /** A child shell's end: its EXIT trap runs, and an `exit` inside it ends only it. */
+    /**
+     * A child shell's run and end: it holds the files its io inherited while it
+     * runs, its EXIT trap runs, an `exit` inside it ends only it, and its
+     * descriptors close.
+     */
     private finishChild;
     private runExitTrap;
     private createTerminalIo;
@@ -244,13 +262,23 @@ export declare class Interpreter {
     private applyRedirections;
     private persistFdState;
     /**
-     * `exec N>file` keeps a descriptor past the command that opened it, so its
-     * bridge handle outlives the per-command flush and nothing there may close
-     * it. The close travels with the descriptor instead and runs when that
-     * descriptor is closed (`exec N>&-`) or repointed at another target.
+     * The shell's end: its descriptors close, as a process's do at exit(2). A
+     * file closes with them unless something else still holds it.
+     */
+    closeDescriptors(): Promise<void>;
+    /** Empty the descriptor table, returning one file per descriptor it held. */
+    private takeDescriptors;
+    /** Let go of one reference per entry; a file nothing holds any more closes. */
+    private release;
+    /** One entry per descriptor, so a file `exec 4>&3` shares appears twice. */
+    private persistentHandles;
+    /**
+     * Point a descriptor `exec` keeps past its command at `stream`, holding a
+     * reference on the file behind it: one this `exec` opened, one an enclosing
+     * redirection holds (`{ exec 3>&1; } >f`), or one another descriptor names
+     * (`exec 4>&3`). The file it named before goes to `released`.
      */
     private repointPersistentHandle;
-    private trackedClose;
     private setOutputFd;
     private setInputFd;
     private dupOutputFd;

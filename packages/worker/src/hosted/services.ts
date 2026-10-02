@@ -197,7 +197,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           return 127;
         }
         const commandName = normalizeCpCommandName(payload.command);
-        const cmd = await registry.resolve(commandName);
+        const cmd = await registry.resolve(commandName, { cwd: payload.cwd || '/home/user' });
         if (!cmd) {
           hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
           return 127;
@@ -299,11 +299,8 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       ): Promise<number> => {
         const registry = self._cpRegistry;
         if (!registry) { hooks.onStderr(textBytes('cp: registry unavailable\n')); return 127; }
-        // A command named by a relative path is found from the directory it runs in, as execvp
-        // finds it; the registry's path resolver would take the session shell's directory.
-        const named = name.includes('/') && !name.startsWith('/') ? `${cwd.replace(/\/+$/, '')}/${name}` : name;
-        const commandName = normalizeCpCommandName(named);
-        const cmd = await registry.resolve(commandName);
+        const commandName = normalizeCpCommandName(name);
+        const cmd = await registry.resolve(commandName, { cwd });
         if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
         const cred = self.processes.cred(pid);
         const ac = new AbortController();

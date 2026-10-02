@@ -1,11 +1,11 @@
 import { extractTarball } from '../_shared/tarball.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 const RUBYGEMS_API = 'https://rubygems.org';
-const DEFAULT_GEM_HOME = 'home/user/.gem';
-export function defaultGemHome() {
-    return DEFAULT_GEM_HOME;
+/** Where `gem install` puts gems for the user whose home is `home`, as `gem --user-install` does. */
+export function gemHomeFor(home) {
+    return `${normalizeVfsPath(home)}/.gem`;
 }
-export async function installedGemLibRoots(vfs, gemHome = DEFAULT_GEM_HOME) {
+export async function installedGemLibRoots(vfs, gemHome) {
     const gemsRoot = `${gemHome}/gems`;
     if (!(await vfs.exists(gemsRoot)))
         return [];
@@ -19,7 +19,7 @@ export async function installedGemLibRoots(vfs, gemHome = DEFAULT_GEM_HOME) {
     }
     return out.sort();
 }
-export async function installedGemBins(vfs, gemHome = DEFAULT_GEM_HOME) {
+export async function installedGemBins(vfs, gemHome) {
     const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
     if (!(await vfs.exists(binRoot)) || !(await vfs.isDirectory(binRoot)))
         return [];
@@ -28,8 +28,8 @@ export async function installedGemBins(vfs, gemHome = DEFAULT_GEM_HOME) {
         .map((entry) => ({ name: entry.name, path: `${binRoot}/${entry.name}` }))
         .sort((a, b) => a.name.localeCompare(b.name));
 }
-export async function installRubyGems(vfs, requests, opts = {}) {
-    const gemHome = normalizeVfsPath(opts.gemHome || DEFAULT_GEM_HOME);
+export async function installRubyGems(vfs, requests, opts) {
+    const gemHome = normalizeVfsPath(opts.gemHome);
     const includeDependencies = opts.includeDependencies !== false;
     const report = { installed: [], alreadyInstalled: [] };
     const visiting = new Set();
@@ -47,7 +47,7 @@ export async function installRubyGems(vfs, requests, opts = {}) {
     }
     return report;
 }
-export async function installRubyBundle(vfs, cwd, opts = {}) {
+export async function installRubyBundle(vfs, cwd, opts) {
     const gemfilePath = resolveVfsPath('Gemfile', cwd);
     if (!(await vfs.exists(gemfilePath))) {
         throw new Error('Gemfile not found');
@@ -62,7 +62,7 @@ export async function installRubyBundle(vfs, cwd, opts = {}) {
         includeDependencies: true,
     });
     const lockfilePath = resolveVfsPath('Gemfile.lock', cwd);
-    const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome || DEFAULT_GEM_HOME)));
+    const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome)));
     const specs = all
         .sort((a, b) => a.name.localeCompare(b.name) || compareVersions(a.version, b.version))
         .map((g) => `    ${g.name} (${g.version})`)

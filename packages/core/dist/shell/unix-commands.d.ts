@@ -13,6 +13,7 @@
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
+import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 /**
  * The registry these commands dispatch through: registration, and name
  * resolution for `which`, `type`, `command` and `xargs`.
@@ -22,7 +23,7 @@ import type { Command } from '../substrate/lifo/commands/types.js';
  */
 type UnixCommandRegistry = {
     register(name: string, handler: Command): void;
-    resolve(name: string): unknown;
+    resolve(name: string, from?: ResolveContext): unknown;
 };
 export declare function fsErrorMessage(error: unknown): string;
 export declare function registerUnixCommands(registry: UnixCommandRegistry, sqliteVfs: SqliteVFS): void;

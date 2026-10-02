@@ -5,6 +5,7 @@ import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js'
 import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 const RemoteRpcBodySchema = z.object({
     profile: z.string().optional(),
@@ -332,6 +333,14 @@ function execOptions(ctx, value) {
     // and is trusted with `cred` the same way it is trusted with kernel writes.
     if (options.cred !== undefined) {
         throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+    }
+    if (options.execId !== undefined) {
+        try {
+            parseExecId(options.execId);
+        }
+        catch (error) {
+            throw apiError(errorMessage(error), 'E_ARG_SHAPE', 400);
+        }
     }
     // A named shell owns its cwd; defaulting one here reset it on every call.
     if (options.shellId !== undefined && options.cwd === undefined)

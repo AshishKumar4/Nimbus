@@ -35,6 +35,7 @@
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
+import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { FacetManager } from './manager.js';
 import { processHostFor } from '../loaders/process-host.js';
 import { resolveDurableWorkerImage } from './durable-images.js';
@@ -109,6 +110,8 @@ export function composeFacetManager(deps) {
                     pid: Number(entry.pid),
                     registeredAt: Number(entry.registeredAt),
                     capability: String(entry.capability),
+                    // The listener's exec id, read from its process: the one place it lives.
+                    ...execIdField(deps.processes.get(entry.pid)),
                 }));
             },
             routeCapabilityPort(port, capability, request, innerPath) {

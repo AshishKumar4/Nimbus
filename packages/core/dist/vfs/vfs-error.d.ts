@@ -50,6 +50,22 @@ export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;
  * Anything without a known code is returned as it is.
  */
 export declare function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown;
+/**
+ * What rename refuses with before it changes anything. A filesystem whose
+ * rename fails after making part of it answers with another code (EIO), so
+ * one of these means both names are as they were. EXDEV is among them, and
+ * says only that this filesystem cannot make this rename in place.
+ */
+export declare const RENAME_REFUSALS: ReadonlySet<VfsErrorCode>;
+/**
+ * What a rename that failed did, where the filesystem knows it: 'none',
+ * both names as they were, whatever the error's code; 'all', the new name
+ * holds everything that moved, and what is left at the old name is
+ * residue. Undefined where it does not say. Read through `cause`, since a
+ * layer re-throws a filesystem's error as its own.
+ */
+export type RenameOutcome = 'none' | 'all';
+export declare function renameOutcome(error: unknown): RenameOutcome | undefined;
 /** strerror(3) for a code: the text GNU coreutils print. */
 export declare const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>>;
 /**

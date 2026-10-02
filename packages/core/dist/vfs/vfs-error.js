@@ -75,6 +75,25 @@ export function toVfsError(error, syscall, path, dest) {
     }
     return error;
 }
+/**
+ * What rename refuses with before it changes anything. A filesystem whose
+ * rename fails after making part of it answers with another code (EIO), so
+ * one of these means both names are as they were. EXDEV is among them, and
+ * says only that this filesystem cannot make this rename in place.
+ */
+export const RENAME_REFUSALS = new Set([
+    'EACCES', 'EPERM', 'EBUSY', 'EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EINVAL', 'EXDEV', 'EROFS', 'ENOSPC',
+]);
+export function renameOutcome(error) {
+    const seen = new Set();
+    for (let at = error; typeof at === 'object' && at !== null && !seen.has(at); at = at.cause) {
+        seen.add(at);
+        const renamed = at.renamed;
+        if (renamed === 'none' || renamed === 'all')
+            return renamed;
+    }
+    return undefined;
+}
 /** strerror(3) for a code: the text GNU coreutils print. */
 export const VFS_STRERROR = {
     EPERM: 'Operation not permitted', ENOENT: 'No such file or directory', EIO: 'Input/output error',

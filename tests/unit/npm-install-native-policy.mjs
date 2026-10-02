@@ -45,14 +45,14 @@ function resolvedResult(name, version, overrides = {}) {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
       dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
     },
-    deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+    deps: {}, peerDeps: {}, optionalDeps: {},
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }
 
 function rejectedResult(from, reason, suggest) {
   return {
-    pkg: null, deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+    pkg: null, deps: {}, peerDeps: {}, optionalDeps: {},
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
     error: { type: 'w6-reject', from, reason, suggest },
   };

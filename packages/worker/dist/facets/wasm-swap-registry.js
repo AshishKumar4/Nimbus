@@ -629,37 +629,6 @@ export function policyNativePlatformReject(policy, pkg) {
 export function isOptionalNativeBinding(p) {
     return policyIsOptionalNativeBinding(PACKAGE_ABI_POLICY, p);
 }
-/**
- * Select which entries in `peerDependencies` should be auto-installed.
- *
- * npm v7+ default behaviour:
- *   - All `peerDependencies` entries auto-install.
- *   - Entries marked `optional: true` in `peerDependenciesMeta` STILL
- *     auto-install (with `--include=peer` default-on) — but tools may
- *     opt-out with `--no-include=peer`.
- *   - Entries that exist ONLY in `peerDependenciesMeta` (NOT in
- *     `peerDependencies`) are NEVER auto-installed (they're feature-
- *     detect signals, e.g. ts-jest's `esbuild`).
- *
- * X.5-G strict mode (the default here): we only iterate `peerDependencies`
- * keys. peer-meta-only entries are excluded by construction.
- *
- * The `requiredOnly` flag, when true, also filters out entries marked
- * optional in meta — used for transitive (depth>0) enqueue per X5F R2.
- * When false (top-level / X5F R2.5), all `peerDependencies` entries are
- * returned including optional-marked-in-meta ones (npm CLI default).
- */
-export function selectAutoInstallPeers(pkg, opts = {}) {
-    const peers = pkg.peerDependencies || {};
-    const meta = pkg.peerDependenciesMeta || {};
-    const out = [];
-    for (const name of Object.keys(peers)) {
-        if (opts.requiredOnly && meta[name]?.optional)
-            continue;
-        out.push(name);
-    }
-    return out;
-}
 // ─────────────────────────────────────────────────────────────────────────
 // Module-load assertion: swap and reject `from` names are disjoint
 // ─────────────────────────────────────────────────────────────────────────

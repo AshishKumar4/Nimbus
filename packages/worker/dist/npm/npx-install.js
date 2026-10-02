@@ -27,6 +27,7 @@
  *   6. Invoke via Nimbus's `node` registry command (preserves PID
  *      tracking, log buffer, process table membership)
  */
+import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
@@ -179,36 +180,17 @@ async function findBinInPackage(vfs, packageDir, binName) {
     catch {
         return null;
     }
-    const binField = pkgJson.bin;
-    if (!binField)
+    // As npm installs them: a string `bin` is named for the package, and every
+    // target stays inside it.
+    const bins = npmBinMap(String(pkgJson.name || ''), pkgJson.bin);
+    const single = typeof pkgJson.bin === 'string';
+    // An object `bin` without the requested name runs its first entry, as npm
+    // runs a single-binary package; a string `bin` only under its own name.
+    const rel = bins.get(binName) ?? (single ? undefined : bins.values().next().value);
+    if (rel === undefined)
         return null;
-    let resolved = null;
-    if (typeof binField === 'string') {
-        // Single-bin shorthand: bin name is package name's last segment.
-        const expected = String(pkgJson.name || '').split('/').pop();
-        if (expected === binName)
-            resolved = binField;
-    }
-    else if (typeof binField === 'object') {
-        const candidate = binField[binName];
-        if (typeof candidate === 'string') {
-            resolved = candidate;
-        }
-        else {
-            // Fall back to the first bin entry, matching npm's common single-binary
-            // package behavior when the requested bin is not explicitly named.
-            const first = Object.values(binField)[0];
-            if (typeof first === 'string')
-                resolved = first;
-        }
-    }
-    if (!resolved)
-        return null;
-    // Strip leading "./" if present and join with packageDir. Return
-    // the absolute path (with leading slash) — the `node` registry
-    // command expects an absolute filesystem path as the first arg.
-    // The vfs.exists checks against _vfsKey internally.
-    const rel = resolved.startsWith('./') ? resolved.slice(2) : resolved;
+    // The `node` registry command expects an absolute path as the first arg;
+    // vfs.exists checks it against _vfsKey internally.
     return `${packageDir}/${rel}`;
 }
 /**

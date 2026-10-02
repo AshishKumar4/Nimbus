@@ -2010,8 +2010,10 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 // other session surface can mutate its destination subtree. Acquire
                 // the lease before the facet performs its lstat/readdir emptiness
                 // proof; the clone's W7 stream carries the opaque owner capability
-                // through the trusted SupervisorRPC binding.
-                const mutationLease = vfs.acquireExclusiveMutation(target, {
+                // through the trusted SupervisorRPC binding. Taken as the command's
+                // credential: the clone writes as it, so a confined caller's /tmp is
+                // held where those writes land, not at the shared tmp/ of that name.
+                const mutationLease = vfs.as(ctx.cred).acquireExclusiveMutation(target, {
                     includeMissingAncestors: true,
                 });
                 // Delegate to git-network-facet: heavy packfile processing runs in

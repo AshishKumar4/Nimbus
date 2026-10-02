@@ -147,6 +147,7 @@ export async function runFresh(facetMgr, code, opts) {
             attachedTty: opts.attachedTty,
             skipSpawn: opts.skipSpawn,
             callerPid: opts.callerPid,
+            invokerPid: opts.invokerPid,
             bundleProfile: opts.bundleProfile,
         });
     }

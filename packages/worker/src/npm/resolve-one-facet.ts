@@ -32,10 +32,6 @@
  *     out of the returned `pkg` and decides what goes in layer N+1.
  *   - Cycle detection: the supervisor maintains the `seen` set across
  *     layers. The task only sees one (name, range) per call.
- *   - Best-effort optional-peer tagging: the supervisor maintains the
- *     bestEffortNames set; the task returns the `pkg` raw and the
- *     supervisor decides whether a downstream reject silent-skips or
- *     propagates.
  *
  * What the task DOES do
  * ─────────────────────
@@ -50,9 +46,8 @@
  *   6. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   7. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
- *      cacheWrites, messages, events, packumentBytesDecoded,
- *      packumentSource, error?}.
+ *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
+ *      events, packumentBytesDecoded, packumentSource, error?}.
  */
 
 import type { ResolvedPackage } from './resolver.js';
@@ -122,7 +117,6 @@ export interface ResolveOneResult {
   deps: Record<string, string>;
   peerDeps: Record<string, string>;
   optionalDeps: Record<string, string>;
-  allPeerDependencies: Record<string, string>;
   /**
    * Cache writes the task is asking the supervisor to flush. Includes
    * the resolved version + up to 5 recent versions seen in the
@@ -273,7 +267,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     deps: pkg?.dependencies ?? {},
     peerDeps: pkg?.peerDependencies ?? {},
     optionalDeps: ((pkg as any)?.optionalDependencies as Record<string, string>) ?? {},
-    allPeerDependencies: ((pkg as any)?.__allPeerDependencies as Record<string, string>) ?? {},
     cacheWrites,
     messages,
     events,
@@ -619,21 +612,19 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const bin: Record<string, string> = typeof binField === 'string'
       ? { [String(packageName).split('/').pop()!]: binField }
       : binField;
+    // Required peers only: npm never installs an optional one
+    // (peerDependenciesMeta) the project does not list itself.
     let peerDependencies: Record<string, string> | undefined;
-    let allPeers: Record<string, string> | undefined;
     const peers = v.peerDependencies;
     if (peers && typeof peers === 'object') {
       const meta = v.peerDependenciesMeta;
       const required: Record<string, string> = {};
-      const all: Record<string, string> = {};
       for (const [n, r] of Object.entries(peers)) {
         if (typeof r !== 'string') continue;
-        all[n] = r;
         if (meta && meta[n] && meta[n].optional === true) continue;
         required[n] = r;
       }
       if (Object.keys(required).length > 0) peerDependencies = required;
-      if (Object.keys(all).length > 0) allPeers = all;
     }
     const optionalDependencies =
       v.optionalDependencies && typeof v.optionalDependencies === 'object'
@@ -655,7 +646,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       module: v.module || '',
       bin,
     };
-    if (allPeers) resolvedOut.__allPeerDependencies = allPeers;
     // Staged-artifact rewrite: native-launcher packages install as their
     // prebuilt Nimbus JS bundle. STAGED_ARTIFACT_APPLY is the preamble copy
     // of the supervisor's policyApplyStagedArtifact (package-abi-policy.mjs

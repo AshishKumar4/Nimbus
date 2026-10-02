@@ -1475,7 +1475,7 @@ export class CompositeVFS {
             unlink: (path) => syncValue(reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel)))),
             rmdir: (path) => syncValue(reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true))),
             rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
-            removeRecursive: (path) => { reported({ syscall: 'rm', path }, () => this.removeAt(path, true)); },
+            removeRecursive: (path) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true))),
             symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
             readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
             chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),

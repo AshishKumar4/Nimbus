@@ -15,7 +15,7 @@
  */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
-import { PID_GEN_STRIDE, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { PID_GEN_STRIDE, execIdField, parseExecId, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -45,6 +45,7 @@ export interface ProgrammaticShell {
   getEnv(): Record<string, string>;
   getCwd(): string;
   execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{ exitCode: number }>;
+  closeDescriptors(): Promise<void>;
 }
 
 /**
@@ -65,7 +66,6 @@ interface ProgrammaticShellExecuteOptions {
   onStderr?: (data: Uint8Array) => void | Promise<void>;
   signal?: AbortSignal;
   stdin?: string;
-  isolateShellState?: boolean;
   commandContext?: Record<string, unknown>;
 }
 
@@ -165,6 +165,14 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
   shellId?: string;
   /** @internal Initial cwd for a shellId with no durable state yet. */
   shellRoot?: string;
+  /**
+   * A name for this call, which every process it starts carries, and every
+   * process those spawn: `listProcesses` and `listPorts` report it, and a
+   * resident keeps it across a reset. 1 to 160 characters from
+   * `A-Z a-z 0-9 . _ : -`, starting with a letter or digit (`parseExecId`).
+   * Not unique: two calls may share one.
+   */
+  execId?: string;
   /**
    * What to do when the started process exits on its own with a non-zero
    * code: 'never' (the default) leaves it stopped; 'on-failure' restarts it
@@ -316,6 +324,8 @@ export interface SerializedProcess {
   endTime: number | null;
   longRunning: boolean;
   attachedTty: boolean;
+  /** The exec that started the process (`ProgrammaticExecOptions.execId`); absent when none named one. */
+  execId?: string;
 }
 
 export interface SerializedPort {
@@ -323,6 +333,8 @@ export interface SerializedPort {
   pid: number;
   registeredAt: number;
   capability: string;
+  /** The exec id of the process listening (`SerializedProcess.execId`). */
+  execId?: string;
 }
 
 /**
@@ -417,10 +429,17 @@ function startShellJob(
   const entry = self.processes.spawn(line, [line], cwd, {
     longRunning: job.background,
     cred: options.cred,
+    execId: options.execId,
   });
-  // The scoped shell is built around the pid, so its `$` and its credential
-  // are the ones this command actually runs under.
-  const shell = scoped?.create(entry.pid) ?? parentShell;
+  // Every call runs on a shell of its own, built around the pid so its `$`
+  // and its credential are the ones this command runs under. A named shell
+  // starts from its durable state; an unnamed call from the session shell's
+  // cwd and environment, and what it changes goes nowhere: the session shell
+  // is shared by every unnamed call (and the terminal), and two calls running
+  // on it at once would read and overwrite each other's variables mid-run.
+  // The shell ends with the call, closing the descriptors an `exec` left open.
+  const shell = scoped?.create(entry.pid)
+    ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
   const pid = entry.pid;
   if (job.background) self.processes.openInput(pid);
 
@@ -437,18 +456,15 @@ function startShellJob(
   };
 
   const run = shell.execute(line, {
-    // A named shell already holds its own cwd and env; passing them again
-    // would pin it to the values this call started with and `cd` would not
-    // survive the call, which is the whole point of naming one.
-    cwd: scoped ? options.cwd : cwd,
-    env: scoped ? options.env : { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
+    // The shell already starts from this call's cwd and env. Passing them to
+    // a named shell again would pin it to the values the call started with,
+    // and its `cd` would not survive the call.
+    cwd: scoped ? options.cwd : undefined,
+    env: scoped ? options.env : undefined,
     onStdout: emit('stdout', job.onStdout),
     onStderr: emit('stderr', job.onStderr),
     signal: controller.signal,
     stdin: options.stdin,
-    // A background job must not mutate the interactive shell's cwd, env, or
-    // options; a foreground exec stays stateful, as it always has been.
-    isolateShellState: job.background,
     commandContext: {
       pid,
       cred: entry.cred,
@@ -464,7 +480,7 @@ function startShellJob(
         }
         : {}),
     },
-  });
+  }).finally(() => shell.closeDescriptors());
 
   return { pid, entry, run, abort: () => { try { controller.abort(); } catch {} } };
 }
@@ -480,6 +496,11 @@ function assertAbsoluteExecCwd(options: ProgrammaticExecOptions): void {
   if (cwd !== undefined && (typeof cwd !== 'string' || !cwd.startsWith('/'))) {
     throw new Error(`cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(cwd)}`);
   }
+}
+
+/** A caller's string that every process the call starts carries: refused before anything runs unless it is a name. */
+function assertExecId(options: ProgrammaticExecOptions): void {
+  if (options.execId !== undefined) parseExecId(options.execId);
 }
 
 /** Buffered exec: the exec stream collected into strings by the caller of this function. */
@@ -502,6 +523,7 @@ export async function rpcExecStream(
   options: ProgrammaticExecOptions = {},
 ): Promise<ExecStream> {
   assertAbsoluteExecCwd(options);
+  assertExecId(options);
   await ensureProgrammaticReady(self, options);
   let writer: ExecStreamWriter | null = null;
   return new Promise<ExecStream>((resolve, reject) => {
@@ -626,6 +648,7 @@ export async function rpcStartProcess(
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticStartResult> {
   assertAbsoluteExecCwd(options);
+  assertExecId(options);
   await ensureProgrammaticReady(self, options);
   if (options.restart !== undefined && options.restart !== 'never' && options.restart !== 'on-failure') {
     throw new Error(`startProcess: restart must be 'never' or 'on-failure', got ${String(options.restart)}`);
@@ -679,7 +702,7 @@ async function startOnShell(
     command: line,
     pid: job.pid,
     process: serializeProcess(job.entry)!,
-    ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map(serializePort),
+    ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map((p) => serializePort(self, p)),
     startedAt: job.entry.startTime,
   };
 }
@@ -866,6 +889,8 @@ export interface ExposedAppResult {
   visibility: PortVisibility;
   /** Built from the deployment's preview suffix or the session's last-seen origin; null when neither is known. */
   url: string | null;
+  /** The exec id of `pid` (`SerializedProcess.execId`). */
+  execId?: string;
 }
 
 export interface ListedApp extends ResidentAppSummary {
@@ -943,6 +968,7 @@ export async function rpcExposePort(
     visibility: exposed.visibility,
     owner: exposed.owner,
     name: exposed.name,
+    ...execIdField(entry && self.processes.get(entry.pid)),
   };
 }
 
@@ -980,6 +1006,7 @@ export async function rpcExposeApp(
     capability: exposed.capability,
     visibility: exposed.visibility,
     url: appUrl(self, { port: resolved.port, ...exposed }),
+    ...execIdField(live && self.processes.get(live.pid)),
   };
 }
 
@@ -1106,6 +1133,7 @@ export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): 
     capability,
     visibility: previous.visibility,
     url: appUrl(self, { port: resolved.port, name: previous.name, capability, visibility: previous.visibility }),
+    ...execIdField(live && self.processes.get(live.pid)),
   };
 }
 
@@ -1573,15 +1601,17 @@ function serializeProcess(p: ProcessEntry | undefined): SerializedProcess | null
     endTime: p.endTime,
     longRunning: p.longRunning === true,
     attachedTty: p.attachedTty === true,
+    ...execIdField(p),
   };
 }
 
-function serializePort(p: PortEntry): SerializedPort {
+function serializePort(self: ProgrammaticHost, p: PortEntry): SerializedPort {
   return {
     port: Number(p.port),
     pid: Number(p.pid),
     registeredAt: Number(p.registeredAt),
     capability: String(p.capability),
+    ...execIdField(self.processes.get(p.pid)),
   };
 }
 

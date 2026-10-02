@@ -62,6 +62,8 @@ export declare function makeRubyRunnerFactory(deps: {
     };
     /** Where a program that keeps serving goes. See {@link RubyResidentStart}. */
     startResident?: RubyResidentStart;
+    /** The session user's home, whose gems are registered when the runtime loads. */
+    getHome(): string;
 }): RubyRunnerFactory;
 /** What one invocation hands the VM. Identical for both process shapes. */
 export interface RubyFacetCallArgs {
@@ -93,6 +95,8 @@ export type RubyResidentStart = (spawn: {
     startArgs: RubyFacetCallArgs;
     cwd: string;
     command: string;
+    /** The launching command's process: the resident carries its exec id. */
+    invokerPid: number;
     /** The launching command: what the program prints until it binds or exits, and its interrupt. */
     signal: AbortSignal;
     write(stream: 'stdout' | 'stderr', text: string): void;

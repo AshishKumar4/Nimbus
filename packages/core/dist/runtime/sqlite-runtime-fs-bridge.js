@@ -376,7 +376,7 @@ export class SqliteRuntimeFsBridge {
         if (located === null)
             throw fsError('ELOOP', 'open', path);
         if (located.mount)
-            return this.openMount(located.mount, located.path, path, normalizedFlags);
+            return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode);
         const p = located.path;
         if (p === '')
             return this.openRoot(path, normalizedFlags);
@@ -546,8 +546,20 @@ export class SqliteRuntimeFsBridge {
     rename(from, to) {
         // Every refusal names the call's own two paths, whichever lookup met it.
         const call = { syscall: 'rename', path: from, dest: to };
-        const oldPath = this.sqlitePath(from, false, call);
-        const newPath = this.sqlitePath(to, false, call);
+        const source = this.locateMutation(from, false, call);
+        const target = this.locateMutation(to, false, call);
+        // A name on a mount is renamed by the namespace: within one mount by that
+        // mount, and otherwise refused in the namespace's order (EBUSY for a
+        // mount point, then EXDEV between two filesystems and on a backend with
+        // no rename in place).
+        if (source.mount || target.mount) {
+            const fromPath = source.mount ? source.path : `/${source.path}`;
+            const toPath = target.mount ? target.path : `/${target.path}`;
+            mountOp((source.mount ?? target.mount).rename, call)(fromPath, toPath);
+            return;
+        }
+        const oldPath = source.path;
+        const newPath = target.path;
         const oldKey = this.legacyKey(oldPath);
         const newKey = this.legacyKey(newPath);
         if (this.vfs.exists(oldPath)) {
@@ -649,10 +661,15 @@ export class SqliteRuntimeFsBridge {
             const located = this.locateMutation(path, false, 'remove');
             if (located.mount) {
                 const mount = located.mount;
-                if (mount.removeRecursive)
-                    mount.removeRecursive(located.path);
-                else
+                if (!mount.removeRecursive)
                     removeTree(mount, located.path);
+                else {
+                    // A walked removal carries on past an entry it cannot remove and
+                    // reports it; rm -r fails with the first.
+                    const failed = mount.removeRecursive(located.path)?.failures[0];
+                    if (failed)
+                        throw failed.error;
+                }
             }
             else
                 this.vfs.removeRecursive(located.path);
@@ -699,7 +716,7 @@ export class SqliteRuntimeFsBridge {
         const parent = parentVfsPath(p);
         if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent)))
             this.vfs.access(parent, 0o3);
-        return this.rawVfs.acquireExclusiveMutation(p, options);
+        return this.vfs.acquireExclusiveMutation(p, options);
     }
     releaseExclusiveMutation(owner) { this.rawVfs.releaseExclusiveMutation(owner); }
     pathArgument(path) {
@@ -817,12 +834,14 @@ export class SqliteRuntimeFsBridge {
     locateMutation(path, followSymlinks, call) {
         // A lease on a directory also covers names inside it that resolve
         // elsewhere through a symlink, so the literal path is checked as well.
-        this.rawVfs.assertMutationAllowed(normalizeVfsPath(this.pathArgument(path)));
+        // Leases are held on storage keys: a confined caller's /tmp/x is its
+        // private file, not the shared tmp/x.
+        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(this.pathArgument(path))));
         const located = this.locate(path, followSymlinks);
         if (located === null)
             throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
-        if (!located.mount)
-            this.rawVfs.assertMutationAllowed(located.path);
+        // And the name it reaches, on a mount as on SQLite.
+        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.mount ? normalizeVfsPath(located.path) : located.path));
         return located;
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
@@ -845,14 +864,15 @@ export class SqliteRuntimeFsBridge {
         this.scope.handles.set(handle.id, { handle, node, refs: 1 });
         return { ...handle };
     }
-    openMount(mount, name, path, flags) {
+    /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
+    openMount(mount, name, path, flags, mode) {
         const exists = mount.stat(name) !== null;
         if (flags.exclusive && flags.create && exists)
             throw fsError('EEXIST', 'open', path);
         if (!exists && !flags.create)
             throw fsError('ENOENT', 'open', path);
         if (!exists)
-            mount.writeFile(name, new Uint8Array(0));
+            mount.writeFile(name, new Uint8Array(0), mode === undefined ? undefined : { mode });
         const stat = this.virtualStat(mount, name);
         if (flags.directory && stat.type !== 'directory')
             throw fsError('ENOTDIR', 'open', path);

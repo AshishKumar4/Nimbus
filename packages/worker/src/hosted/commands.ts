@@ -27,7 +27,7 @@ import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../sessi
 import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
-import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
+import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { VITE_CONFIG_KEY } from '../session/keys.js';
 import type { SessionInternal } from '../session/internal.js';
 import { isJsonObject } from '../npm/package-lock.js';
@@ -165,6 +165,7 @@ workspace.runtimes.registerRunner(
         authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
+        home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
         manifest,
         // REPL-R7-1: thread the shell so ReplSession can drain
         // shell.pasteQueue on attach (multi-line WS frames like
@@ -216,6 +217,7 @@ workspace.runtimes.registerRunner(
       filesystem: workspace.filesystem,
       registry,
       startResident: rubyResidentStart(facetMgr),
+      getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
     })(manifest, installRoot, binName, binKind);
     return runner(ctx);
   },
@@ -309,6 +311,7 @@ workspace.runtimes.registerRunner(
           facetMgr,
           authority: workspace.filesystem,
           installRoot: target.root,
+          home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
           manifest: target.manifest,
         });
         ctx.stdout.write('[python] ready\n');
@@ -494,6 +497,9 @@ const bunSpec: RuntimeSpec = {
             env: ctx.env,
             onStdout: textSink((d) => ctx.stdout.write(d)),
             onStderr: textSink((d) => ctx.stderr.write(d)),
+            // The script runs as the process that ran `bun run`, as an
+            // `npm run` script does, not as the workspace shell.
+            commandContext: { pid: ctx.pid, cred: ctx.cred, setUmask: ctx.setUmask },
           });
           return shellResult.exitCode;
         } catch (e: any) {
@@ -1362,7 +1368,7 @@ registry.register('npx', async (ctx: any) => {
   const cmd = getNpxCommandWord(npxArgs);
 
   // Check if it's a built-in command (vite, esbuild, etc.)
-  const resolved = cmd ? await registry.resolve(cmd) : null;
+  const resolved = cmd ? await registry.resolve(cmd, { cwd: ctx.cwd }) : null;
   if (resolved) {
     return await resolved({ ...ctx, args: getNpxCommandArgs(npxArgs) });
   }

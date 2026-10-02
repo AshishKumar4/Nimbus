@@ -165,7 +165,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return 127;
             }
             const commandName = normalizeCpCommandName(payload.command);
-            const cmd = await registry.resolve(commandName);
+            const cmd = await registry.resolve(commandName, { cwd: payload.cwd || '/home/user' });
             if (!cmd) {
                 hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
                 return 127;
@@ -188,14 +188,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 // For commands that need stdin we pass a tiny adapter.
                 stdin: staticStdinReader(payload.stdin || ''),
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
-                runAs: async (targetCred, argv, options) => {
+                runAs: async (targetCred, argv) => {
                     if (argv.length === 0)
                         return 0;
-                    const childCwd = options?.cwd ?? payload.cwd;
-                    const child = self.processes.spawn(argv.join(' '), argv, childCwd, { parentPid: payload.processPid, cred: targetCred });
+                    const child = self.processes.spawn(argv.join(' '), argv, payload.cwd, { parentPid: payload.processPid, cred: targetCred });
                     let exitCode = 1;
                     try {
-                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, childCwd, payload.stdin, hooks);
+                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, payload.cwd, payload.stdin, hooks);
                         return exitCode;
                     }
                     finally {
@@ -255,11 +254,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes('cp: registry unavailable\n'));
                 return 127;
             }
-            // A command named by a relative path is found from the directory it runs in, as execvp
-            // finds it; the registry's path resolver would take the session shell's directory.
-            const named = name.includes('/') && !name.startsWith('/') ? `${cwd.replace(/\/+$/, '')}/${name}` : name;
-            const commandName = normalizeCpCommandName(named);
-            const cmd = await registry.resolve(commandName);
+            const commandName = normalizeCpCommandName(name);
+            const cmd = await registry.resolve(commandName, { cwd });
             if (!cmd) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
@@ -276,14 +272,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 signal: ac.signal,
                 stdin: staticStdinReader(stdin),
                 setUmask: (mask) => { self.processes.setUmask(pid, mask); },
-                runAs: async (targetCred, argv, options) => {
+                runAs: async (targetCred, argv) => {
                     if (argv.length === 0)
                         return 0;
-                    const childCwd = options?.cwd ?? cwd;
-                    const child = self.processes.spawn(argv.join(' '), argv, childCwd, { parentPid: pid, cred: targetCred });
+                    const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
                     let exitCode = 1;
                     try {
-                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, childCwd, stdin, hooks);
+                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
                         return exitCode;
                     }
                     finally {
@@ -326,14 +321,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 }
                 const cred = self.processes.cred(pid);
                 const setUmask = (mask) => { self.processes.setUmask(pid, mask); };
-                const runAs = async (parent, targetCred, argv) => {
+                const runAs = async (_parent, targetCred, argv) => {
                     if (argv.length === 0)
                         return 0;
-                    // Where the command line's own command runs, which a `cd` in it may have moved.
-                    const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: pid, cred: targetCred });
+                    const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
                     let exitCode = 1;
                     try {
-                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, parent.cwd, stdin, hooks);
+                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
                         return exitCode;
                     }
                     finally {

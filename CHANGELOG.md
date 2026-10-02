@@ -30,6 +30,165 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: after `cd` in a `bash` script, a command started for it by `sudo`
   or `find -exec` ran in the directory the script started in.
 
+## 2026-10-02
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`, as described below.
+
+- Changed: a workspace's per-user defaults follow the `HOME` its host
+  configures (`NimbusWorkspace.create({ env: { HOME } })`). The home
+  directory and `~/.nimbusrc` are seeded there, `/etc/passwd` names it, and
+  `PATH`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are under it. So are gems
+  and pip packages, as runtimes already were. Before, all of these named
+  `/home/user` whatever HOME was. `/etc/profile` now spells the user's bins
+  as `$HOME/...`. A passwd or profile that is still exactly the one Nimbus
+  seeded before (naming `/home/user`) moves to the configured home; one the
+  user changed stays. A gem's command runs the script under the invoking
+  HOME's gem home, and the Python prompt chooses its interpreter from the
+  invoking HOME's packages. A relative HOME is refused. With no HOME
+  configured, nothing changes.
+- `exec`, `execStream`, `startProcess` and `runCode` take an `execId`: a
+  name for the call. Every process the command starts carries it in the
+  process table (`node`, `bun`, npm bins and `opencode`, python and ruby
+  servers, wasm programs, the `vite` builtin, package scripts), and so does
+  everything those processes spawn, so a port's listener names the call that
+  started its server. `processes.list()`, `ports.list()`, `apps.list()`,
+  `apps.expose()`, `ports.expose()` and `startProcess`'s `process` report it
+  as `execId`, over the SDK, the remote API and a hosted runtime's session,
+  as does the session's own `/api/processes` listing; a record about a
+  process no call named is unchanged. A resident server keeps
+  it across a platform reset (its journal row carries it), and a `vite` dev
+  server across a hibernation. An `execId` is 1 to 160 characters from
+  `A-Z a-z 0-9 . _ : -`, starting with a letter or digit; anything else is
+  refused before the command runs, as `400 E_ARG_SHAPE` over the remote API.
+- Fixed: a package script run by `bun run <script>` ran as the workspace
+  shell rather than as the process that ran `bun`, so under a hosted session
+  scoped to an identity it acted as the session user. It now runs as the
+  command that ran it, as an `npm run` script does.
+- Fixed: a real-vite dev server restored after a hibernation was given an
+  empty argv at its root instead of the identity persisted with its config,
+  so the app verbs could derive a different owner for it.
+- `ws.fs` takes a relative path from a working directory of its own, as a
+  process does: the one the workspace starts in (`create`'s `cwd`, else
+  `HOME`), which a `cd` in the shell does not move. On 0.14.0 a workspace
+  created with `cwd: '/home/user'` answered `ws.fs.readFile('a.txt')` with
+  `ENOENT` while /home/user/a.txt existed, so every embedder resolved
+  paths itself. `ws.fs.cwd` and `ws.fs.resolve(path)` say where a path
+  leads: the cwd, then the path as spelled, with `.` and `..` left to the
+  walk. An empty path is `ENOENT` (`readdir('')` listed `/`), and
+  removing or renaming a last component of `.` or `..` is refused with
+  Linux's code (`remove('/a/b/.', { recursive: true })` removed /a/b).
+  `ws.fs` has every method it had except `process`, the root-relative
+  bridge. The session shell's `ProcessView`, which Nimbus's own code hands
+  root-relative keys such as `etc/passwd`, is still `ws.shell.getVfs()`;
+  the two types are not assignable to each other.
+- `ws.fs.move(from, to)` is mv's move, and `move(vfs, from, to)` in
+  `@nimbus-sh/core/vfs/move.js` is the same move over any `VFS`; the
+  shell's `mv` uses it. Within one filesystem it is one rename. Between
+  two, and on a backend that cannot rename in place, it stages a copy
+  beside the destination and confirms it, removes the source, and renames
+  the copy over the destination, which keeps its bytes until then. A
+  failure at any step puts the source back and leaves no copy behind;
+  `mv` copied straight onto the destination, so a failure mid-copy left
+  part of a tree there, or a destination file already overwritten. A
+  failed final rename is decided by its own answer: a refusal made before
+  anything changed (`RENAME_REFUSALS`) puts the source back and is the
+  answer, a filesystem saying it renamed all of it (`renameOutcome`) has
+  moved it, and anything else is `EIO` with nothing undone or removed,
+  naming where what was moving is. What it makes is private until complete:
+  `mv` made a copy at the default mode and narrowed it after, so a 0600
+  file moved into /tmp was readable by other users meanwhile. Directories
+  move too. `rename` still answers `EXDEV` between mounts. A directory
+  moved onto a file now answers `ENOTDIR`, where `mv` said `ENOTEMPTY`,
+  and `mv` no longer makes a missing destination directory.
+- A rename on the SQLite filesystem that fails says what it did: an error
+  carrying `renamed: 'none'` when its store shows the destination as it
+  was, and `EIO` with `renamed: 'all'` when the tree was published whole
+  and only removing the old name failed. A commit that was durable and
+  still threw, or a tree published in part, is `EIO`; before, each of
+  these rethrew the storage error unchanged, so a caller could not tell
+  a rename that did nothing from one that did some of it.
+- Fixed: renaming a tree large enough to take several transactions onto
+  an empty directory, on the SQLite filesystem, removed that directory
+  when a later transaction failed: the unwind took away the published
+  root, and with it the directory the root had replaced, while the inode
+  cache and the file counts still had it. The unwind now puts the
+  directory back as it was, with its inode, mode, owner and times.
+- Fixed: a file a process creates on a synchronous mount with a mode
+  (`open` with `O_CREAT`, `writeFile` with `mode`) was made at the
+  backend's default mode. It is now made at the mode asked for, as on an
+  asynchronous mount.
+- Fixed: a process's rename within one mount answered `EXDEV` even where the
+  mounted backend renames, so `mv /m/a /m/b`, a node process's `fs.rename`
+  and `ws.fs.rename` copied, or failed, where the namespace renames in
+  place. Within one mount a rename is now that mount's own. Between two
+  filesystems, and on a backend with no rename in place, it still answers
+  `EXDEV`; renaming a mount point answers `EBUSY`, as on Linux. A
+  mutation on a mount reached through a link is checked against leases at
+  the name it reaches, as one on SQLite is.
+- Fixed: `rm -r` of a tree on a mount whose backend has no removal of its
+  own exited 0 when an entry in the tree could not be removed, and left the
+  entry there. It now fails with that entry's error, as the asynchronous
+  path already did.
+
+## 2026-10-01
+
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
+message shape, VFS export schema 3 (its pages carry `source`), and the
+`enhanced_error_serialization` requirement; each is described below.
+
+- Fixed: a programmatic exec without a `shellId` ran on the session's one
+  shared shell, so an `export`, function, alias or `set` option in one call
+  reached the next unnamed call, from any caller, and two unnamed calls
+  running at once read and overwrote each other's variables mid-run. Each
+  unnamed call now runs in a shell of its own, built from the session
+  shell's cwd and environment and discarded when it ends, as the SDK
+  documents. Named shells are unchanged.
+- Fixed: in a named shell, `./task.sh`, a relative script path, an npm bin
+  and `command -v` resolved from the session shell's directory, not the
+  named shell's, so `cd build` then `./task.sh` ran the wrong file or none.
+  Commands now resolve from the cwd of the shell that runs them.
+- Fixed: in the shell, `exec 3>file` or `exec 3>&-` inside a subshell
+  closed the parent's fd 3, so the parent's next write through it failed
+  with `EBADF`. A background job lost an inherited descriptor, or the file
+  its enclosing redirection opened, when the parent let go of it first. A
+  file a subshell opened with `exec`, or one opened before a redirection
+  that failed to open or to expand (`( : ) >out <${X:?}`), was never
+  closed. Every file a redirection opens is now
+  counted the way the kernel counts an open file: by the command, by each
+  descriptor `exec` keeps on it, and by each child shell that inherited it.
+  It closes when the last of them lets go. A programmatic call's shell ends
+  with the call, so a file an `exec` left open in it is closed too.
+- Fixed: `git clone <url> /tmp/x` by a principal with a private `/tmp`
+  failed with `EPERM: … is outside exclusive mutation root tmp/x`. The
+  clone held the shared name while its writes landed in the private `/tmp`.
+  An exclusive lease taken through a credential now holds where that
+  credential's writes land, and every write is checked against leases at
+  the path it reaches: a write to a private `/tmp/x` is no longer refused by
+  a lease on the shared `tmp/x`, and a `cp -r` through a symlink into a held
+  tree is refused.
+- `npm install` no longer installs optional peer dependencies the project
+  does not list, as npm, pnpm and bun do not. A fresh Vite 8 react-ts app
+  installed ~456 packages (sass, less, stylus, terser, tsx, Babel and their
+  trees) where npm installs 70. A project that uses one of those tools
+  lists it, as it would on a real machine (`npm i -D sass`).
+- `npm install` removes packages the project no longer needs, as npm does:
+  a dependency dropped from package.json, what only it needed, and its
+  bins. This also clears the optional peers earlier installs added.
+- A package's `bin` names and targets are normalized as npm normalizes
+  them: a key links under its last path component (`../../x` links `x`) and
+  a target stays inside its package. Linking and pruning read installed
+  `package.json` files and the bin manifest only through that rule, so no
+  bin map can write or remove a file outside `node_modules/.bin`.
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session
@@ -52,16 +211,6 @@ published independently in the `@nimbus-sh` npm scope.
   link is `EEXIST`.
 - Fixed: a symlink a node process renamed was a regular file to `lstat`
   under its new name until the rename was reported back.
-
-## 2026-10-01
-
-Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
-sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
-are minor-strict, so every range on core, worker, fabric, platform and sdk
-moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
-message shape, VFS export schema 3 (its pages carry `source`), and the
-`enhanced_error_serialization` requirement; each is described below.
-
 - An async `fs.promises.readFile`, `stat` or `lstat` in a node process is one
   call to the session where it was two or three: the read takes its
   consistency barrier with it (`fsAcquired`), and a file's stat for the

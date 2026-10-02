@@ -19,6 +19,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
+import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { type RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestEntrypoint, type RuntimeManifest } from './runtime-manifest.js';
 /** Minimal shell-registry shape we depend on. */
@@ -26,7 +27,7 @@ export interface MinShellRegistry {
     register(name: string, handler: Command): void;
     unregister?(name: string): void;
     has?(name: string): boolean;
-    resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
+    resolve?(name: string, from?: ResolveContext): Promise<Command | null | undefined> | Command | null | undefined;
 }
 /** Runner-factory contract. Each registered runner produces a shell-
  *  command handler given the manifest + the installed root dir. The

@@ -56,7 +56,7 @@ import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
 import {
-  defaultGemHome,
+  gemHomeFor,
   installRubyBundle,
   installRubyGems,
   installedGemBins,
@@ -90,6 +90,8 @@ export function makeRubyRunnerFactory(deps: {
   };
   /** Where a program that keeps serving goes. See {@link RubyResidentStart}. */
   startResident?: RubyResidentStart;
+  /** The session user's home, whose gems are registered when the runtime loads. */
+  getHome(): string;
 }): RubyRunnerFactory {
   const { registry } = deps;
 
@@ -100,12 +102,19 @@ export function makeRubyRunnerFactory(deps: {
     };
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
 
-    const registerGemBins = async (vfs: CredentialedVfs): Promise<void> => {
+    const registerGemBins = async (vfs: CredentialedVfs, home: string): Promise<void> => {
       if (!registry) return;
-      for (const bin of (await installedGemBins(vfs, defaultGemHome()))) {
+      for (const bin of (await installedGemBins(vfs, gemHomeFor(home)))) {
         if (RUBY_RUNTIME_BIN_NAMES.has(bin.name)) continue;
+        // The name is registered once for the session; which script it runs
+        // is the invoking HOME's, as a PATH lookup of ~/.gem/bin would find.
         registry.register(bin.name, async (ctx: CommandContext) => {
-          const args = [bin.path.startsWith('/') ? bin.path : '/' + bin.path, ...(ctx.args ?? [])];
+          const script = `/${gemHomeFor(ctx.env?.HOME || deps.getHome())}/bin/${bin.name}`;
+          if (!(await ctx.vfs.exists(script))) {
+            ctx.stderr.write(`${bin.name}: command not found\n`);
+            return 127;
+          }
+          const args = [script, ...(ctx.args ?? [])];
           const ruby = typeof registry.resolve === 'function' ? await registry.resolve('ruby') : null;
           if (!ruby) {
             ctx.stderr.write(`${bin.name}: Ruby runtime is not registered\n`);
@@ -124,9 +133,10 @@ export function makeRubyRunnerFactory(deps: {
       const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
 
-      const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
+      const home = ctx.env?.HOME || deps.getHome();
+      const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx);
       if (packageCommand.handled) {
-        if (packageCommand.exitCode === 0) (await registerGemBins(vfs));
+        if (packageCommand.exitCode === 0) (await registerGemBins(vfs, home));
         return packageCommand.exitCode;
       }
 
@@ -202,11 +212,11 @@ export function makeRubyRunnerFactory(deps: {
       }
 
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      if (!userEnv.HOME) userEnv.HOME = '/home/user';
+      if (!userEnv.HOME) userEnv.HOME = home;
       if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
-      userEnv.GEM_HOME ||= '/' + defaultGemHome();
+      userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
       userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-      userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, defaultGemHome())).join(':');
+      userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, gemHomeFor(home))).join(':');
       // Ruby looks for charset hints via these vars; set sensible
       // defaults so puts of non-ASCII strings doesn't trip on the
       // wasi default of "ASCII-8BIT".
@@ -236,6 +246,7 @@ export function makeRubyRunnerFactory(deps: {
           cwd,
           command: formatRubyCommand(binName, argv),
           argv: [binName, ...argv],
+          invokerPid: ctx.pid,
           signal: ctx.signal,
           write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
         });
@@ -253,7 +264,7 @@ export function makeRubyRunnerFactory(deps: {
       return result.exitCode;
     };
 
-    if (deps.registry) await withHostView(deps.filesystem, CRED_KERNEL, registerGemBins);
+    if (deps.registry) await withHostView(deps.filesystem, CRED_KERNEL, (vfs) => registerGemBins(vfs, deps.getHome()));
     return rubyBinHandler;
   };
 }
@@ -270,6 +281,7 @@ async function maybeHandleRubyPackageCommand(
   binName: string,
   argv: string[],
   cwd: string,
+  home: string,
   vfs: CredentialedVfs,
   ctx: CommandContext,
 ): Promise<{ handled: boolean; exitCode: number }> {
@@ -283,7 +295,7 @@ async function maybeHandleRubyPackageCommand(
       return { handled: true, exitCode: 2 };
     }
     try {
-      const report = await installRubyGems(vfs, parsed.requests, { gemHome: defaultGemHome(), includeDependencies: true });
+      const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true });
       for (const name of report.installed) ctx.stdout.write(`Successfully installed ${name}\n`);
       for (const name of report.alreadyInstalled) ctx.stdout.write(`${name} is already installed\n`);
       ctx.stdout.write(`${report.installed.length + report.alreadyInstalled.length} gem(s) processed\n`);
@@ -296,7 +308,7 @@ async function maybeHandleRubyPackageCommand(
 
   if (isBundle && argv[0] === 'install') {
     try {
-      const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: defaultGemHome() });
+      const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home) });
       for (const name of report.installed) ctx.stdout.write(`Successfully installed ${name}\n`);
       for (const name of report.alreadyInstalled) ctx.stdout.write(`${name} is already installed\n`);
       ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${report.installed.length + report.alreadyInstalled.length} gem(s) now installed.\n`);
@@ -594,6 +606,8 @@ export type RubyResidentStart = (spawn: {
   startArgs: RubyFacetCallArgs;
   cwd: string;
   command: string;
+  /** The launching command's process: the resident carries its exec id. */
+  invokerPid: number;
   /** The launching command: what the program prints until it binds or exits, and its interrupt. */
   signal: AbortSignal;
   write(stream: 'stdout' | 'stderr', text: string): void;

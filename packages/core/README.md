@@ -85,6 +85,86 @@ root. The shell enforces the same permission model either way: a root-owned
 `/etc/passwd` refuses a write from `.fs`, and `id` resolves names through
 it.
 
+`.fs` takes a relative path from a working directory of its own, as a
+process does: the one the workspace starts in, which is `create`'s `cwd`,
+else `HOME`. A `cd` typed into the shell moves the shell, not `.fs`.
+`ws.fs.cwd` says where that is, and `ws.fs.resolve(path)` gives the
+absolute path an operation on `path` uses: the cwd, then `path` as it is
+spelled. `.` and `..` are left to the walk, which takes them after a link,
+as the kernel does, so with a cwd that is a link to a directory, `.` is
+the directory. An empty path names nothing (`ENOENT`), and removing or
+renaming `.` or `..` is refused with Linux's code.
+
+```ts
+const ws = await NimbusWorkspace.create({ sql, transactions, cwd: '/home/user/app' });
+await ws.fs.writeFile('notes.txt', 'hi\n');   // /home/user/app/notes.txt
+ws.fs.resolve('src/main.ts');                 // '/home/user/app/src/main.ts'
+```
+
+The session shell's own view, `ws.shell.getVfs()`, is a `ProcessView`:
+it takes every relative path from `/`, because Nimbus's own code hands it
+keys such as `etc/passwd`. `.fs` is a `WorkspaceFs`. Neither type is
+assignable to the other, so neither kind of path can reach the other view.
+
+`ws.fs.rename` is rename(2): between two mounts it answers `EXDEV`.
+`ws.fs.move` is mv's move, and the shell's `mv` runs the same code. Within
+one filesystem it is one rename. Between two (and on a mounted backend
+that cannot rename in place) it copies the file or tree to a staged name
+beside the destination and confirms the copy, then removes the source,
+then renames the copy over the destination, which keeps what it held
+until that rename. A failure before that rename puts back what of the
+source had gone and removes the staged copy, so the move leaves both
+names as they were.
+
+When the final rename fails, its own answer decides, never what the
+names then hold. A refusal made before anything changed (EPERM, EACCES,
+ENOSPC and the rest of `RENAME_REFUSALS` in `vfs/vfs-error.js`) puts the
+source back and is the answer. A filesystem that says it renamed all of
+it (`renameOutcome`; the SQLite filesystem says so from its own store)
+has moved it, and the residue at the staged name goes. Anything else,
+EIO or an error with no code, may have renamed it in whole or in part,
+so nothing is undone or removed, and the answer is `EIO` naming the
+staged name and the destination.
+
+Each file and directory it makes is made private and given its own mode
+and times once it is complete, as GNU cp makes a copy, so no one reads a
+copy the source would not let them. Mode and times are carried best
+effort, as GNU mv carries them. The same move works over any `VFS`,
+mounted or not:
+
+```ts
+import { move } from '@nimbus-sh/core/vfs/move.js';
+
+await ws.fs.move('dist', '/shared/dist');   // a tree onto another mount
+await move(plane, '/a.txt', '/b.txt');      // a bare VFS, with or without rename
+```
+
+It is not atomic to a reader, and a crash can interrupt it: between the
+source's removal and the final rename, what is moving is only at
+`.nimbus-move-<id>` in the destination's directory. A backend that cannot
+rename in place has its destination replaced where it is, after what it
+held is read so it can be put back; a write another process makes to it
+meanwhile can be lost, as on any filesystem written in place.
+
+## The user's home
+
+`env.HOME` sets the session user's home directory, `/home/user` by default.
+Everything Nimbus keeps per user follows it:
+
+- the home directory itself, made for the user, with `~/.config` and `~/.nimbusrc`
+- the user's entry in `/etc/passwd`
+- `PATH` (`~/.local/bin`, `~/.gem/bin`), `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+- installed runtimes (`~/.nimbus/runtimes`), gems (`~/.gem`) and pip packages
+  (`~/.nimbus-python/site-packages`)
+
+```ts
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, env: { HOME: '/home/main' } });
+```
+
+HOME must be an absolute path. A workspace first seeded under another home
+keeps its files there. Nimbus moves `/etc/passwd` and `/etc/profile` to the
+new home only while they are still exactly what it seeded for `/home/user`.
+
 ## Real runtimes, off Cloudflare
 
 The wasm runtimes are separate npm packages, so nobody downloads a Python

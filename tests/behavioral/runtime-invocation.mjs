@@ -101,8 +101,16 @@ await sleep(1_500);
 }
 
 // 3b. In-shell curl routes loopback requests through the session port registry.
+//     "[started (long-running)]" is printed before the server binds, so the
+//     request is retried until the server answers, within its 14 s life.
 {
-  const r = await t.run(`curl -s --max-time 5 http://127.0.0.1:${SERVER_PORT}/`, 25_000);
+  const deadline = Date.now() + 10_000;
+  let r;
+  for (;;) {
+    r = await t.run(`curl -s --max-time 2 http://127.0.0.1:${SERVER_PORT}/`, 15_000);
+    if (/hello-from-http-server/.test(r.output) || Date.now() > deadline) break;
+    await sleep(250);
+  }
   a.check('in-shell curl localhost returns the body', /hello-from-http-server/.test(r.output), r.output.slice(-200));
 }
 

@@ -1,11 +1,13 @@
 import { maxSatisfying, satisfies as pep440Satisfies, valid as validPep440Version, validRange as validPep440Range, } from '@renovatebot/pep440';
 import { parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxError, } from 'pip-requirements-js';
 import { z } from 'zod/v4';
-import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import { isRuntimePythonPackageArtifactMetadata, } from './runtime-manifest.js';
-export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
-export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;
+/** Where `pip install` puts packages for the user whose home is `home`. */
+export function pythonSitePackages(home) {
+    return `${normalizeVfsPath(home)}/.nimbus-python/site-packages`;
+}
 const PYPI_API = 'https://pypi.org/pypi';
 const IGNORED_PIP_INSTALL_FLAGS = new Set([
     '--upgrade',
@@ -92,9 +94,10 @@ const SCI_VARIANT_DIST_INFO = Object.freeze([
  * is right for `python -c` reading a module name out of a variable, which a
  * per-program classifier cannot be.
  */
-export async function sessionUsesSciVariant(vfs) {
+export async function sessionUsesSciVariant(vfs, home) {
+    const sitePackages = pythonSitePackages(home);
     for (const dir of SCI_VARIANT_DIST_INFO)
-        if (await vfs.exists(`${PYTHON_SITE_PACKAGES_ROOT}/${dir}`))
+        if (await vfs.exists(`${sitePackages}/${dir}`))
             return true;
     return false;
 }
@@ -136,7 +139,7 @@ const PyodideLockfileSchema = z.object({
     packages: z.record(z.string(), PyodideLockPackageSchema),
 });
 const pypiCache = new Map();
-export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext = {}) {
+export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext) {
     const wantsVersion = argv.includes('--version') || argv.includes('-V');
     const wantsHelp = argv.length === 0 || argv.includes('--help') || argv.includes('-h');
     if (wantsVersion) {
@@ -173,7 +176,7 @@ export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext
     }
     return {
         mode: 'pip',
-        code: buildPipInstallCode(plan),
+        code: buildPipInstallCode(plan, pythonSitePackages(runtimeContext.home)),
         exitCode: 0,
         pyodidePackages: plan.pyodidePackages,
     };
@@ -864,7 +867,7 @@ function wheelTags(fileName) {
         platformTag: parts[parts.length - 1].toLowerCase(),
     };
 }
-function buildPipInstallCode(plan) {
+function buildPipInstallCode(plan, sitePackages) {
     return [
         'import hashlib',
         'import io',
@@ -882,8 +885,8 @@ function buildPipInstallCode(plan) {
         `variant_packages = ${JSON.stringify(plan.variantPackages)}`,
         `pyodide_packages = ${JSON.stringify(plan.pyodidePackages)}`,
         `display_packages = ${JSON.stringify(plan.displayPackages)}`,
-        `target_site_packages = ${JSON.stringify('/' + PYTHON_SITE_PACKAGES_ROOT)}`,
-        `pyodide_manifest_path = ${JSON.stringify('/' + PYTHON_PYODIDE_PACKAGE_MANIFEST)}`,
+        `target_site_packages = ${JSON.stringify(`/${sitePackages}`)}`,
+        `pyodide_manifest_path = ${JSON.stringify(`/${sitePackages}/.nimbus-pyodide-packages.json`)}`,
         'unsupported_extension_suffixes = (".so", ".pyd", ".dll", ".dylib")',
         'os.makedirs(target_site_packages, exist_ok=True)',
         'if target_site_packages not in sys.path:',

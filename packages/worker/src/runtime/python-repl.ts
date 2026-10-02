@@ -55,6 +55,8 @@ export interface PythonReplDeps {
   terminal: WebSocketTerminal;
   /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/cpython/3.13.14'. */
   installRoot: string;
+  /** The invoking command's HOME: its pip packages decide the interpreter, and the prompt runs with it. */
+  home: string;
   manifest: RuntimeManifest;
   /**
    * The Nimbus shell, when there is one.
@@ -81,7 +83,7 @@ export interface PythonReplDeps {
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
-type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'manifest' | 'pid'>;
+type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid'>;
 
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
@@ -238,7 +240,7 @@ class PythonReplAdapter implements ReplAdapter {
 
   private async ensurePoolFrom(vfs: ProcessView): Promise<void> {
     const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
-    const wantsSci = (await sessionUsesSciVariant(vfs)) && (await vfs.exists(sciPath));
+    const wantsSci = (await sessionUsesSciVariant(vfs, this.deps.home)) && (await vfs.exists(sciPath));
     // A prompt that was open before `pip install numpy` is holding the
     // interpreter that does not have it. Dropping the pool rebuilds on the next
     // statement, which is the facet restart EXTENSIONS.md says this costs.
@@ -297,7 +299,7 @@ class PythonReplAdapter implements ReplAdapter {
           userCode,
           pythonHome: this.pythonHome,
           pyArgv: ['python'],
-          userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
+          userEnv: { HOME: this.deps.home, PYTHONUNBUFFERED: '1' },
           progName: 'python',
           cwd: '/home/user',
         }),
@@ -360,7 +362,7 @@ export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
  * source compiles to a no-op, so the only thing it does is bring the facet up.
  */
 export async function warmPythonRepl(
-  deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'manifest'>,
+  deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest'>,
 ): Promise<void> {
   const adapter = new PythonReplAdapter(deps);
   await adapter.push('');

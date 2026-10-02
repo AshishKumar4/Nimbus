@@ -30,7 +30,7 @@ function resolvedResult(name, version, overrides = {}) {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
       dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
     },
-    deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+    deps: {}, peerDeps: {}, optionalDeps: {},
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }

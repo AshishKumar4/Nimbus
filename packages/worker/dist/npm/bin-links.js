@@ -1,4 +1,5 @@
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { npmBinMap, npmBinName } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';
 /**
@@ -12,10 +13,20 @@ export function isStagedArtifactTarget(target) {
 export function stagedArtifactId(target) {
     return target.slice(STAGED_ARTIFACT_BIN_PREFIX.length);
 }
+/** The bin manifest a `.nimbus-bin-map.json` holds; null when it is not one, or names a file outside `.bin`. */
+export function parseNpmBinManifest(text) {
+    try {
+        const parsed = NpmBinManifestSchema.safeParse(JSON.parse(text));
+        return parsed.success ? parsed.data : null;
+    }
+    catch {
+        return null;
+    }
+}
 export const NPM_BIN_MANIFEST_VERSION = 1;
 export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
 const NpmBinEntrySchema = z.object({
-    name: z.string().min(1),
+    name: z.string().refine((name) => npmBinName(name) === name),
     packageName: z.string().min(1),
     packageVersion: z.string(),
     packagePath: z.string().min(1),
@@ -24,7 +35,7 @@ const NpmBinEntrySchema = z.object({
 const NpmBinManifestSchema = z.object({
     version: z.literal(NPM_BIN_MANIFEST_VERSION),
     bins: z.record(z.string(), NpmBinEntrySchema),
-});
+}).refine((manifest) => Object.entries(manifest.bins).every(([key, entry]) => key === entry.name));
 const PackageJsonSchema = z.object({
     name: z.string().min(1),
     version: z.string().optional(),
@@ -67,26 +78,16 @@ function relativeRequest(fromDir, target) {
 }
 export function packageBinEntries(pkg, nodeModulesPath) {
     const packagePath = normalizeVfsPath(`${nodeModulesPath}/${pkg.name}`);
-    const entries = [];
     const packageVersion = String(pkg.version || '');
-    if (!pkg.bin || typeof pkg.bin !== 'object')
-        return entries;
-    for (const [name, rawTarget] of Object.entries(pkg.bin)) {
-        if (typeof rawTarget !== 'string' || !name)
-            continue;
-        entries.push({
-            name,
-            packageName: pkg.name,
-            packageVersion,
-            packagePath,
-            // Staged-artifact sentinels pass through verbatim; everything else
-            // resolves to a concrete VFS path under the package dir.
-            targetPath: isStagedArtifactTarget(rawTarget)
-                ? rawTarget
-                : resolveVfsPath(rawTarget, packagePath),
-        });
-    }
-    return entries;
+    return [...npmBinMap(pkg.name, pkg.bin)].map(([name, target]) => ({
+        name,
+        packageName: pkg.name,
+        packageVersion,
+        packagePath,
+        // Staged-artifact sentinels pass through verbatim; everything else is a
+        // VFS path under the package dir.
+        targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
+    }));
 }
 export async function resolveNpmBin(vfs, cwd, name) {
     const root = normalizeVfsPath(cwd || '/home/user');
@@ -221,22 +222,7 @@ function nodeModulesPathForBinDir(binDir) {
     return binDir.slice(0, -suffix.length);
 }
 async function resolveFromManifest(vfs, nodeModulesPath, name) {
-    const manifestPath = npmBinManifestPath(nodeModulesPath);
-    if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath))
-        return null;
-    try {
-        const manifest = JSON.parse(await vfs.readFileString(manifestPath));
-        if (!manifest || typeof manifest !== 'object' || !('version' in manifest) ||
-            manifest.version !== NPM_BIN_MANIFEST_VERSION || !('bins' in manifest) ||
-            !manifest.bins || typeof manifest.bins !== 'object') {
-            return null;
-        }
-        const entry = Reflect.get(manifest.bins, name);
-        return await validateEntry(vfs, entry);
-    }
-    catch {
-        return null;
-    }
+    return await resolveManifestEntry(vfs, npmBinManifestPath(nodeModulesPath), name);
 }
 async function resolveFromBinDirManifest(vfs, binDir, name) {
     const manifestPath = `${binDir}/${NPM_BIN_MANIFEST_NAME}`;
@@ -321,34 +307,16 @@ async function* listPackagePaths(vfs, nodeModulesPath) {
 async function packageJsonBinEntry(vfs, packagePath, pkg, requestedName) {
     const packageName = pkg.name;
     const packageVersion = pkg.version || '';
-    const bin = pkg.bin;
-    if (typeof bin === 'string') {
-        const name = defaultBinName(packageName);
-        if (requestedName && requestedName !== name)
-            return [];
-        const entry = await validateEntry(vfs, {
-            name,
-            packageName,
-            packageVersion,
-            packagePath,
-            targetPath: resolveVfsPath(bin, packagePath),
-        });
-        return entry ? [entry] : [];
-    }
-    if (!bin || typeof bin !== 'object')
-        return [];
     const entries = [];
-    for (const [name, rawTarget] of Object.entries(bin)) {
+    for (const [name, target] of npmBinMap(packageName, pkg.bin)) {
         if (requestedName && requestedName !== name)
-            continue;
-        if (typeof rawTarget !== 'string')
             continue;
         const entry = await validateEntry(vfs, {
             name,
             packageName,
             packageVersion,
             packagePath,
-            targetPath: resolveVfsPath(rawTarget, packagePath),
+            targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
         });
         if (entry)
             entries.push(entry);
@@ -407,8 +375,7 @@ async function readNpmBinManifest(vfs, manifestPath) {
     if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath))
         return null;
     try {
-        const parsed = NpmBinManifestSchema.safeParse(JSON.parse(await vfs.readFileString(manifestPath)));
-        return parsed.success ? parsed.data : null;
+        return parseNpmBinManifest(await vfs.readFileString(manifestPath));
     }
     catch {
         return null;
@@ -421,8 +388,4 @@ async function safeIsDirectory(vfs, path) {
     catch {
         return false;
     }
-}
-function defaultBinName(packageName) {
-    const slash = packageName.lastIndexOf('/');
-    return slash >= 0 ? packageName.slice(slash + 1) : packageName;
 }

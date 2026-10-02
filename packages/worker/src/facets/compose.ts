@@ -41,6 +41,7 @@ import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-p
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { FacetManager, type FacetManagerHooks, type WorkerRecipe } from './manager.js';
 import { processHostFor } from '../loaders/process-host.js';
 import { resolveDurableWorkerImage } from './durable-images.js';
@@ -151,7 +152,7 @@ export interface ComposedFacetManager {
      * moment the embedder is told it — a capability nobody has been handed
      * does not need to survive anything.
      */
-    listPorts(): Promise<Array<{ port: number; pid: number; registeredAt: number; capability: string }>>;
+    listPorts(): Promise<Array<{ port: number; pid: number; registeredAt: number; capability: string; execId?: string }>>;
     /**
      * Route a request carrying a port capability to the process on `port`:
      * a durable application a reset left dead is re-driven first
@@ -232,6 +233,8 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
           pid: Number(entry.pid),
           registeredAt: Number(entry.registeredAt),
           capability: String(entry.capability),
+          // The listener's exec id, read from its process: the one place it lives.
+          ...execIdField(deps.processes.get(entry.pid)),
         }));
       },
       routeCapabilityPort(port, capability, request, innerPath) {

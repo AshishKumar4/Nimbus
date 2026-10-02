@@ -64,8 +64,10 @@ export interface NimbusSandboxOptions {
 export interface NimbusExecOptions {
     /**
      * Run in a named shell whose cwd and environment persist between calls, the
-     * way a terminal tab does. Omitted, the call runs on the session's one shell
-     * and remembers nothing — the behaviour every programmatic exec has had.
+     * way a terminal tab does; calls on one name run one at a time. Omitted,
+     * the call runs in a shell of its own that starts from the session shell's
+     * cwd and environment and remembers nothing: no variable, function, alias
+     * or option it sets reaches another call, and unnamed calls run at once.
      */
     shellId?: string;
     cwd?: string;
@@ -77,6 +79,16 @@ export interface NimbusExecOptions {
      * user, which is what every programmatic exec has always run as.
      */
     cred?: VfsCred;
+    /**
+     * A name for this call. Every process the command starts carries it, and
+     * so does everything those processes spawn: `processes.list()`,
+     * `ports.list()` and `apps.list()` report it as `execId`, so a listening
+     * port names the call that started its server. A resident server keeps it
+     * across a session reset. 1 to 160 characters from `A-Z a-z 0-9 . _ : -`,
+     * starting with a letter or digit; anything else is refused before the
+     * command runs. Omitted, nothing is tagged.
+     */
+    execId?: string;
     /**
      * `startProcess` only: what to do when the process exits on its own with
      * a non-zero code. 'never' (default) leaves it stopped; 'on-failure'
@@ -136,6 +148,8 @@ export interface NimbusExposedApp {
     visibility: NimbusAppVisibility;
     /** Browser-facing URL, built the way `ports.url` builds one; undefined when the deployment is not addressable. */
     url: string | undefined;
+    /** The `execId` of the call that started `pid`; absent when none named one. */
+    execId?: string;
 }
 export interface NimbusApp {
     owner: string;
@@ -149,6 +163,8 @@ export interface NimbusApp {
     /** With status 'failed': what went wrong, e.g. `listened on 3000, owns 5173`. */
     diagnostic: string | null;
     url: string | undefined;
+    /** The `execId` of the call that started `pid`; absent when none named one. */
+    execId?: string;
 }
 /** A slice of a command's stdout or stderr, as the bytes it wrote. */
 export type NimbusExecChunk = ExecChunk;
@@ -201,6 +217,8 @@ export interface NimbusProcess {
     endTime: number | null;
     longRunning: boolean;
     attachedTty: boolean;
+    /** The `execId` of the call that started this process or an ancestor; absent when none named one. */
+    execId?: string;
 }
 export interface NimbusProcessLogChunk {
     seq: number;
@@ -244,6 +262,8 @@ export interface NimbusPort {
      * session. A new registration on the port retires it.
      */
     capability: string;
+    /** The `execId` of the call that started the listening process; absent when none named one. */
+    execId?: string;
 }
 export interface NimbusFileStat {
     type: 'file' | 'directory' | string;
@@ -347,6 +367,7 @@ export interface NimbusSessionSurface {
         visibility?: 'scoped' | 'public';
         owner?: string | null;
         name?: string | null;
+        execId?: string;
     }>;
     _rpcExposeApp(target: NimbusAppTarget, options?: {
         visibility?: 'scoped' | 'public';
@@ -541,6 +562,7 @@ export declare class NimbusSandbox {
             visibility?: "scoped" | "public";
             owner?: string | null;
             name?: string | null;
+            execId?: string;
         }>;
         unexpose: (port: number) => Promise<{
             port: number;
@@ -707,6 +729,7 @@ export declare class NimbusSandbox {
                     visibility?: "scoped" | "public";
                     owner?: string | null;
                     name?: string | null;
+                    execId?: string;
                 }>;
             };
             unexposePort: {

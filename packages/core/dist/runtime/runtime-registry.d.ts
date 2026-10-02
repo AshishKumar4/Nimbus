@@ -40,6 +40,7 @@ import { type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
+import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -72,6 +73,11 @@ export interface RuntimeRunOpts {
     bundleProfile?: FacetBundleProfile;
     /** Invoking process credentials for credential-bound runtime snapshots. */
     cred?: VfsCred;
+    /**
+     * The process whose command runs the program. A process the runner spawns
+     * for the run carries its exec id (`ProcessEntry.execId`).
+     */
+    invokerPid?: number;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
     /**
@@ -183,7 +189,7 @@ export interface RuntimeSpec {
  * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
-    resolve(name: string): Promise<Command | null | undefined> | Command | null | undefined;
+    resolve(name: string, from?: ResolveContext): Promise<Command | null | undefined> | Command | null | undefined;
 }
 /**
  * Build a shell-handler function for a runtime. The returned function

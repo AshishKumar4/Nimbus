@@ -239,6 +239,12 @@ export interface CredentialedVfs {
      */
     storageKey(path: string): string;
     /**
+     * SqliteVFS.acquireExclusiveMutation on the file this credential's name
+     * means, which is where its writes land: a confined caller's /tmp/x is
+     * var/agents/<p>/tmp/x. The lease's `root` is the caller's own name.
+     */
+    acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
+    /**
      * Watch `path` and everything under it, in this credential's view: the
      * watch is on the file its name means (a confined caller's /tmp/x is its
      * own), and an event is delivered under the caller's name for its path,
@@ -888,7 +894,15 @@ export declare class SqliteVFS {
      * where a reconcile against list() is cheaper than the delta.
      */
     private invalidatedFromSql;
+    /**
+     * Hold `path`'s subtree for one owner: a write there by anyone else is
+     * EBUSY, and the owner's writes outside it are EPERM. `path` is a storage
+     * key; a principal's name for a file goes through its view
+     * (`as(cred).acquireExclusiveMutation`), so a confined caller's /tmp is
+     * held where its writes land.
+     */
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
+    private acquireExclusiveMutationAt;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
     hasExclusiveMutation(): boolean;
@@ -1120,11 +1134,20 @@ export declare class SqliteVFS {
      * These rows name content the source still owns, so removing them collects
      * nothing — the point is only that a retry sees an empty destination rather
      * than a subtree conflict. Deepest-first in bounded groups, like any other
-     * removal. A failure here is swallowed: the caller is already unwinding, and
-     * the source tree — which is what the data lives in — is untouched either
-     * way.
+     * removal. The first group replaced `occupant` (an empty directory), so
+     * it comes back, as it was (its inode, mode, owner and times), in the
+     * transaction that takes the root away. A failure here is swallowed: the
+     * caller is already unwinding and reads back what the store holds, and the
+     * source tree — which is what the data lives in — is untouched either way.
      */
     private unpublishRenameDestination;
+    /**
+     * Whether `paths` hold, in the store, what they held before a rename onto
+     * them: nothing, or `occupant` alone, there (a moved entry keeps its inode,
+     * so the number tells the two apart). A store that cannot answer has not
+     * said so.
+     */
+    private renameTargetsUntouched;
     /**
      * Copy a file by reference: one inode row naming the source's chunk or
      * manifest. No byte is read or written; a later write to either side

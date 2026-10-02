@@ -24,6 +24,7 @@ import assert from 'node:assert/strict';
 import { MAX_TX_LOGICAL_ROWS } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { renameOutcome } from '../../packages/core/src/vfs/vfs-error.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
@@ -183,6 +184,11 @@ function treeShape(vfs, root) {
     const destinationComplete = reconstructed.exists('src/proteus')
       && treeShape(reconstructed, 'src/proteus').length === shape.before.length;
 
+    // And the rename says which, from what the store holds, never left to
+    // the caller to judge from what the names hold.
+    assert.equal(renameOutcome(threw), destinationComplete ? 'all' : 'none', `commit ${failAt}: the failure says what it did`);
+    if (destinationComplete) assert.equal(threw.code, 'EIO', `commit ${failAt}: a rename that moved it all is no refusal`);
+
     if (destinationComplete) {
       // Retirement was interrupted: the destination is already whole, and the
       // residue is a partial source the caller's cleanup removes.
@@ -214,6 +220,93 @@ function treeShape(vfs, root) {
   }
   assert.ok(unwound > 0, 'the sweep must cover a failure during publication');
   assert.ok(completed > 0, 'the sweep must cover a failure during retirement');
+}
+
+// ── A commit that is durable and still throws ─────────────────────────────
+// The rename cannot take its own failure as "nothing committed": the store
+// is read back, and a destination that holds the moved entry is EIO, saying
+// nothing of how far it got, never a refusal saying nothing changed.
+{
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('from.txt', 'NEW');
+  vfs.writeFile('to.txt', 'OLD');
+  harness.failAfterTransaction();
+  let threw = null;
+  try { vfs.rename('from.txt', 'to.txt'); } catch (error) { threw = error; }
+  harness.clearFault();
+  assert.equal(threw?.code, 'EIO', 'durable, then thrown: EIO');
+  assert.equal(renameOutcome(threw), undefined, 'and not said to have renamed nothing');
+  assert.match(threw.message, /^EIO: moving from\.txt to to\.txt failed \(injected reset after transaction \d+\) with part of it at to\.txt; all of it is still at from\.txt$/);
+  const reconstructed = reopenVfs(harness);
+  assert.equal(reconstructed.readFileString('to.txt'), 'NEW', 'the destination holds what committed');
+  assert.equal(reconstructed.readFileString('from.txt'), 'NEW', 'and the source is still whole');
+}
+// A refusal made before anything commits is the refusal, said to have renamed nothing.
+{
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('a.txt', 'A');
+  harness.failOnTransactionStatement(1, { error: Object.assign(new Error('ENOSPC: injected full disk'), { code: 'ENOSPC' }) });
+  let threw = null;
+  try { vfs.rename('a.txt', 'b.txt'); } catch (error) { threw = error; }
+  harness.clearFault();
+  assert.equal(threw?.code, 'ENOSPC');
+  assert.equal(renameOutcome(threw), 'none');
+  assert.equal(vfs.readFileString('a.txt'), 'A');
+  assert.equal(vfs.exists('b.txt'), false);
+}
+
+// ── An interrupted overwrite of an empty directory puts the directory back ─
+// A tree onto an empty directory replaces it in the first group. When a
+// later group fails, the unwind took the published root away and, with it,
+// the directory it replaced, while the cache still had it and the counters
+// still counted it: a rename "that changed nothing" had removed the
+// destination. The unwind puts it back as it was, and 'none' is said only
+// when the store holds it. Read back from a reopened store, so no cache can
+// stand in for it.
+{
+  const interrupted = (failRestore) => {
+    const { harness, rawVfs, vfs } = openVfs();
+    seedTree(vfs, 'src', 15, 17);
+    vfs.mkdir('dst', { mode: 0o750 });
+    const before = vfs.stat('dst');
+    let commits = 0;
+    const realExec = rawVfs.executeTransactionPlan.bind(rawVfs);
+    rawVfs.executeTransactionPlan = (plan, execution) => {
+      if (++commits === 2) {
+        // From here on, the directory cannot be written back.
+        if (failRestore) harness.setFaultInjector((statement) => (statement.sql.startsWith('INSERT OR REPLACE INTO vfs_inodes')
+          && statement.params.includes('dst') ? new Error('injected: the directory cannot be written back') : null));
+        throw new Error('injected: the second group');
+      }
+      return realExec(plan, execution);
+    };
+    let threw = null;
+    try { vfs.rename('src', 'dst'); } catch (error) { threw = error; } finally {
+      rawVfs.executeTransactionPlan = realExec;
+      harness.clearFault();
+    }
+    return { harness, rawVfs, vfs, before, threw, commits, reopened: reopenVfs(harness) };
+  };
+
+  const restored = interrupted(false);
+  assert.ok(restored.commits > 2, 'the tree takes more than one group');
+  assert.equal(renameOutcome(restored.threw), 'none', 'said to have changed nothing');
+  assert.equal(restored.reopened.isDirectory('dst'), true, 'and the store holds the directory');
+  assert.equal(restored.reopened.stat('dst').ino, restored.before.ino, 'the same one');
+  assert.equal(restored.reopened.stat('dst').mode & 0o777, 0o750);
+  assert.deepEqual(restored.reopened.readdir('dst'), [], 'empty, as it was');
+  assert.equal(restored.vfs.stat('dst').ino, restored.before.ino, 'the cache agrees');
+  assert.equal(restored.reopened.exists('src/pkg-14/lib/file-16.js'), true, 'the source is whole');
+  assert.equal(restored.rawVfs._verifyCounters(), null);
+
+  const lostIt = interrupted(true);
+  assert.equal(lostIt.threw?.code, 'EIO', 'the directory not written back: EIO');
+  assert.equal(renameOutcome(lostIt.threw), undefined, 'never said to have changed nothing');
+  assert.notEqual(lostIt.reopened.exists('dst') ? lostIt.reopened.stat('dst').ino : null, lostIt.before.ino, 'the store does not hold it');
+  assert.equal(lostIt.vfs.exists('dst') ? lostIt.vfs.stat('dst').ino : null, lostIt.reopened.exists('dst') ? lostIt.reopened.stat('dst').ino : null,
+    'the cache says what the store says');
+  assert.equal(lostIt.reopened.exists('src/pkg-14/lib/file-16.js'), true, 'the source is whole');
+  assert.equal(lostIt.rawVfs._verifyCounters(), null, 'and the counters are the store\'s');
 }
 
 // ── Every rename guarantee the single transaction gave, still given ───────

@@ -16,6 +16,7 @@ import {
 } from '../auth/index.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 
 export type NimbusRuntimeName =
   | 'node'
@@ -497,6 +498,13 @@ function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown
   // and is trusted with `cred` the same way it is trusted with kernel writes.
   if (options.cred !== undefined) {
     throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+  }
+  if (options.execId !== undefined) {
+    try {
+      parseExecId(options.execId);
+    } catch (error: unknown) {
+      throw apiError(errorMessage(error), 'E_ARG_SHAPE', 400);
+    }
   }
   // A named shell owns its cwd; defaulting one here reset it on every call.
   if (options.shellId !== undefined && options.cwd === undefined) return options;

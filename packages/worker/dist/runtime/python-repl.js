@@ -166,7 +166,7 @@ class PythonReplAdapter {
     }
     async ensurePoolFrom(vfs) {
         const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
-        const wantsSci = (await sessionUsesSciVariant(vfs)) && (await vfs.exists(sciPath));
+        const wantsSci = (await sessionUsesSciVariant(vfs, this.deps.home)) && (await vfs.exists(sciPath));
         // A prompt that was open before `pip install numpy` is holding the
         // interpreter that does not have it. Dropping the pool rebuilds on the next
         // statement, which is the facet restart EXTENSIONS.md says this costs.
@@ -222,7 +222,7 @@ class PythonReplAdapter {
                 userCode,
                 pythonHome: this.pythonHome,
                 pyArgv: ['python'],
-                userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
+                userEnv: { HOME: this.deps.home, PYTHONUNBUFFERED: '1' },
                 progName: 'python',
                 cwd: '/home/user',
             }),

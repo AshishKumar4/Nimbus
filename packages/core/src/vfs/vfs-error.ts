@@ -112,6 +112,35 @@ export function toVfsError(error: unknown, syscall: string, path: string, dest?:
   return error;
 }
 
+/**
+ * What rename refuses with before it changes anything. A filesystem whose
+ * rename fails after making part of it answers with another code (EIO), so
+ * one of these means both names are as they were. EXDEV is among them, and
+ * says only that this filesystem cannot make this rename in place.
+ */
+export const RENAME_REFUSALS: ReadonlySet<VfsErrorCode> = new Set<VfsErrorCode>([
+  'EACCES', 'EPERM', 'EBUSY', 'EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EINVAL', 'EXDEV', 'EROFS', 'ENOSPC',
+]);
+
+/**
+ * What a rename that failed did, where the filesystem knows it: 'none',
+ * both names as they were, whatever the error's code; 'all', the new name
+ * holds everything that moved, and what is left at the old name is
+ * residue. Undefined where it does not say. Read through `cause`, since a
+ * layer re-throws a filesystem's error as its own.
+ */
+export type RenameOutcome = 'none' | 'all';
+
+export function renameOutcome(error: unknown): RenameOutcome | undefined {
+  const seen = new Set<unknown>();
+  for (let at = error; typeof at === 'object' && at !== null && !seen.has(at); at = (at as { cause?: unknown }).cause) {
+    seen.add(at);
+    const renamed = (at as { renamed?: unknown }).renamed;
+    if (renamed === 'none' || renamed === 'all') return renamed;
+  }
+  return undefined;
+}
+
 /** strerror(3) for a code: the text GNU coreutils print. */
 export const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>> = {
   EPERM: 'Operation not permitted', ENOENT: 'No such file or directory', EIO: 'Input/output error',

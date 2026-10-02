@@ -12,16 +12,17 @@
 
 import assert from 'node:assert/strict';
 
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { programmaticHost } from './lib/programmatic-host.mjs';
 import { rpcExec, rpcStartProcess } from '../../packages/worker/src/session/programmatic.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 import { createExecStream, encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
 
+const opened = [];
 const AGENT = Object.freeze({ uid: 4242, gid: 4242, groups: Object.freeze([4242]), umask: 0o022 });
 
 // ── exec runs as the credential it was given ────────────────────────────────
 {
-  const host = makeHost();
+  const host = await makeHost();
   await rpcExec(host, 'whoami', { cred: AGENT });
   assert.equal(host.spawned.length, 1);
   assert.deepEqual(
@@ -33,14 +34,14 @@ const AGENT = Object.freeze({ uid: 4242, gid: 4242, groups: Object.freeze([4242]
 
 // ── startProcess does too — a background job is the same spawn ──────────────
 {
-  const host = makeHost();
+  const host = await makeHost();
   await rpcStartProcess(host, 'server', { cred: AGENT });
   assert.deepEqual(host.processes.cred(host.spawned[0]), AGENT);
 }
 
 // ── omitted, nothing changes: the spawn inherits the session default ────────
 {
-  const host = makeHost();
+  const host = await makeHost();
   await rpcExec(host, 'whoami');
   const inherited = host.processes.cred(host.spawned[0]);
   assert.notEqual(inherited.uid, AGENT.uid, 'no credential means the default, not the last one used');
@@ -67,42 +68,21 @@ const AGENT = Object.freeze({ uid: 4242, gid: 4242, groups: Object.freeze([4242]
   assert.equal(calls[0].options.cred, undefined);
 }
 
+for (const box of opened) box.close();
 console.log('programmatic exec credential: ok');
 
-function makeHost() {
-  const processes = new SessionProcessSupervisor();
+/** A real workspace host whose process table records each pid an exec spawns. */
+async function makeHost() {
+  const box = await programmaticHost({ commands: { async whoami() { return 0; }, async server() { return 0; } } });
+  opened.push(box);
   const spawned = [];
-  const originalSpawn = processes.spawn.bind(processes);
-  processes.spawn = (command, argv, cwd, opts) => {
+  const originalSpawn = box.host.processes.spawn.bind(box.host.processes);
+  box.host.processes.spawn = (command, argv, cwd, opts) => {
     const entry = originalSpawn(command, argv, cwd, opts);
     spawned.push(entry.pid);
     return entry;
   };
-  return {
-    _w1SessionDestroyed: false,
-    env: {},
-    ctx: { waitUntil: () => {}, storage: {} },
-    shell: {
-      getEnv: () => ({ HOME: '/home/user' }),
-      getCwd: () => '/home/user',
-      execute: async () => ({ exitCode: 0 }),
-    },
-    shellProcessPid: null,
-    sqliteFs: {},
-    processes,
-    spawned,
-    portRegistry: { getAll: () => [] },
-    facetManager: null,
-    viteDevServer: null,
-    cirrusReal: null,
-    _cpRegistry: {},
-    _viteShimPid: null,
-    _viteShimPort: null,
-    terminal: null,
-    ensureSqliteFs() {},
-    ensureFacetManager() {},
-    ensureRuntimeReady() { assert.ok(this.shell && this.sqliteFs, 'the test host must already be initialized'); },
-  };
+  return Object.assign(box.host, { spawned });
 }
 
 // `allowLegacy` with no JWT_SECRET is the documented unauthenticated path, and

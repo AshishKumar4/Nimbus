@@ -134,6 +134,7 @@ export interface ComposedFacetManager {
             pid: number;
             registeredAt: number;
             capability: string;
+            execId?: string;
         }>>;
         /**
          * Route a request carrying a port capability to the process on `port`:

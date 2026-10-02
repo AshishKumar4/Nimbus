@@ -56,6 +56,7 @@ const unreachableFacets = {
   const runRuby = await makeRubyRunnerFactory({
     facets: unreachableFacets,
     filesystem,
+    getHome: () => '/home/user',
   })(manifest, '/runtime/ruby', 'ruby', undefined);
   const invocation = outputContext(filesystem, ['script.rb', '--version']);
   assert.equal(await runRuby(invocation.ctx), 127);

@@ -43,7 +43,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { documentPolicyOf } from '@nimbus-sh/core/runtime/document-policy.js';
-import { startRealVite } from './start-real-vite.js';
+import { persistedIdentity, startRealVite } from './start-real-vite.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -138,6 +138,7 @@ export async function restorePersistedDevServer(self, onlyPort) {
                 port,
                 basePath: config.basePath || self.viteBasePath,
                 configDir: config.configDir || config.root,
+                identity: persistedIdentity(config.identity),
             }).finally(() => { self._realViteRestore = null; });
             await self._realViteRestore;
             await readoptCapability(self, port, persistedCapability);
@@ -160,7 +161,7 @@ export async function restorePersistedDevServer(self, onlyPort) {
         // identity the app verbs derive from the process table is unchanged
         // across the hibernation — a reservation exposed under a name re-adopts
         // its capability at registration below.
-        const entry = self.processes.spawn('vite (rehydrated, ' + config.root + ')', Array.isArray(config.identity?.argv) ? config.identity.argv.map(String) : [], typeof config.identity?.cwd === 'string' ? config.identity.cwd : config.root, { longRunning: true });
+        const entry = self.processes.spawn('vite (rehydrated, ' + config.root + ')', Array.isArray(config.identity?.argv) ? config.identity.argv.map(String) : [], typeof config.identity?.cwd === 'string' ? config.identity.cwd : config.root, { longRunning: true, execId: persistedIdentity(config.identity)?.execId });
         self.viteDevServer = new ViteDevServer({
             vfs: self.sqliteFs, esbuild: self.esbuildService, root: config.root,
             aliases: config.aliases, define: config.define,

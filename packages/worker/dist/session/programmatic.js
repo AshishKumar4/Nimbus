@@ -13,7 +13,7 @@
  * duplicating the interactive terminal boot path.
  */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
-import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
+import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -177,10 +177,17 @@ function startShellJob(self, command, options, job, scoped) {
     const entry = self.processes.spawn(line, [line], cwd, {
         longRunning: job.background,
         cred: options.cred,
+        execId: options.execId,
     });
-    // The scoped shell is built around the pid, so its `$` and its credential
-    // are the ones this command actually runs under.
-    const shell = scoped?.create(entry.pid) ?? parentShell;
+    // Every call runs on a shell of its own, built around the pid so its `$`
+    // and its credential are the ones this command runs under. A named shell
+    // starts from its durable state; an unnamed call from the session shell's
+    // cwd and environment, and what it changes goes nowhere: the session shell
+    // is shared by every unnamed call (and the terminal), and two calls running
+    // on it at once would read and overwrite each other's variables mid-run.
+    // The shell ends with the call, closing the descriptors an `exec` left open.
+    const shell = scoped?.create(entry.pid)
+        ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
     const pid = entry.pid;
     if (job.background)
         self.processes.openInput(pid);
@@ -201,18 +208,15 @@ function startShellJob(self, command, options, job, scoped) {
         return sink?.(data);
     };
     const run = shell.execute(line, {
-        // A named shell already holds its own cwd and env; passing them again
-        // would pin it to the values this call started with and `cd` would not
-        // survive the call, which is the whole point of naming one.
-        cwd: scoped ? options.cwd : cwd,
-        env: scoped ? options.env : { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
+        // The shell already starts from this call's cwd and env. Passing them to
+        // a named shell again would pin it to the values the call started with,
+        // and its `cd` would not survive the call.
+        cwd: scoped ? options.cwd : undefined,
+        env: scoped ? options.env : undefined,
         onStdout: emit('stdout', job.onStdout),
         onStderr: emit('stderr', job.onStderr),
         signal: controller.signal,
         stdin: options.stdin,
-        // A background job must not mutate the interactive shell's cwd, env, or
-        // options; a foreground exec stays stateful, as it always has been.
-        isolateShellState: job.background,
         commandContext: {
             pid,
             cred: entry.cred,
@@ -228,7 +232,7 @@ function startShellJob(self, command, options, job, scoped) {
                 }
                 : {}),
         },
-    });
+    }).finally(() => shell.closeDescriptors());
     return { pid, entry, run, abort: () => { try {
             controller.abort();
         }
@@ -246,6 +250,11 @@ function assertAbsoluteExecCwd(options) {
         throw new Error(`cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(cwd)}`);
     }
 }
+/** A caller's string that every process the call starts carries: refused before anything runs unless it is a name. */
+function assertExecId(options) {
+    if (options.execId !== undefined)
+        parseExecId(options.execId);
+}
 /** Buffered exec: the exec stream collected into strings by the caller of this function. */
 export async function rpcExec(self, command, options = {}) {
     return collectExecStream(await rpcExecStream(self, command, options));
@@ -257,6 +266,7 @@ export async function rpcExec(self, command, options = {}) {
  */
 export async function rpcExecStream(self, command, options = {}) {
     assertAbsoluteExecCwd(options);
+    assertExecId(options);
     await ensureProgrammaticReady(self, options);
     let writer = null;
     return new Promise((resolve, reject) => {
@@ -365,6 +375,7 @@ function collectJobOutput(self, pid) {
  */
 export async function rpcStartProcess(self, command, options = {}) {
     assertAbsoluteExecCwd(options);
+    assertExecId(options);
     await ensureProgrammaticReady(self, options);
     if (options.restart !== undefined && options.restart !== 'never' && options.restart !== 'on-failure') {
         throw new Error(`startProcess: restart must be 'never' or 'on-failure', got ${String(options.restart)}`);
@@ -410,7 +421,7 @@ async function startOnShell(self, command, options, scoped) {
         command: line,
         pid: job.pid,
         process: serializeProcess(job.entry),
-        ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map(serializePort),
+        ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map((p) => serializePort(self, p)),
         startedAt: job.entry.startTime,
     };
 }
@@ -613,6 +624,7 @@ export async function rpcExposePort(self, port, options) {
         visibility: exposed.visibility,
         owner: exposed.owner,
         name: exposed.name,
+        ...execIdField(entry && self.processes.get(entry.pid)),
     };
 }
 /**
@@ -643,6 +655,7 @@ export async function rpcExposeApp(self, target, options = {}) {
         capability: exposed.capability,
         visibility: exposed.visibility,
         url: appUrl(self, { port: resolved.port, ...exposed }),
+        ...execIdField(live && self.processes.get(live.pid)),
     };
 }
 /**
@@ -771,6 +784,7 @@ export async function rpcRotateLink(self, target) {
         capability,
         visibility: previous.visibility,
         url: appUrl(self, { port: resolved.port, name: previous.name, capability, visibility: previous.visibility }),
+        ...execIdField(live && self.processes.get(live.pid)),
     };
 }
 /** A name or owner identifies a reservation, never whoever happens to occupy its port. */
@@ -1281,14 +1295,16 @@ function serializeProcess(p) {
         endTime: p.endTime,
         longRunning: p.longRunning === true,
         attachedTty: p.attachedTty === true,
+        ...execIdField(p),
     };
 }
-function serializePort(p) {
+function serializePort(self, p) {
     return {
         port: Number(p.port),
         pid: Number(p.pid),
         registeredAt: Number(p.registeredAt),
         capability: String(p.capability),
+        ...execIdField(self.processes.get(p.pid)),
     };
 }
 function shellQuote(s) {
