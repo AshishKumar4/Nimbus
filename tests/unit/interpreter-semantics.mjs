@@ -257,6 +257,7 @@ async function runCases(interpreterFile, opsFile) {
   check('an iterable\'s @@iterator is read once per use',
     F('let reads = 0; const it = { get [Symbol.iterator]() { reads++; return function* () { yield 1; yield 2 } } }; for (const x of it) {} const s = [...it]; const [a] = it; (function () {})(...it); const d = [...(function* () { yield* it })()]; return [reads, s, a, d]')(),
     [5, [1, 2], 1, [1, 2]]);
+  check('a call evaluates its arguments before checking its callee', F('let f = 0, n = 0; try { f(++n); } catch {} return n')(), 1);
 
   // ── Module cells ──
   {

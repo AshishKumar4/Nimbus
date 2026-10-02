@@ -2904,11 +2904,18 @@ export class Compiler {
         if (typeof f !== 'function') throw new TypeError(`${text} is not a function`);
         return f;
       };
+      // The callee is read, then the arguments evaluated, then the callee checked.
       switch (fns.length) {
         case 0: return syncCode((env) => check(read(env))());
-        case 1: { const x = fns[0]; return syncCode((env) => { const f = check(read(env)); return f(x(env)); }); }
-        case 2: { const x = fns[0], y = fns[1]; return syncCode((env) => { const f = check(read(env)); return f(x(env), y(env)); }); }
-        default: { const x = fns[0], y = fns[1], z = fns[2]; return syncCode((env) => { const f = check(read(env)); return f(x(env), y(env), z(env)); }); }
+        case 1: { const x = fns[0]; return syncCode((env) => { const f = read(env); const a = x(env); return check(f)(a); }); }
+        case 2: {
+          const x = fns[0], y = fns[1];
+          return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); return check(f)(a, b); });
+        }
+        default: {
+          const x = fns[0], y = fns[1], z = fns[2];
+          return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); const c = z(env); return check(f)(a, b, c); });
+        }
       }
     }
     const member = this.memberCall(node, inChain, text);
