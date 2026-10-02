@@ -3,6 +3,7 @@
  * signals, interpreted function objects, classes and private names.
  */
 import type { FactoryFunctionInfo, HostOperators, HostOps, NativeFunction } from './host-ops.js';
+import { SafeWeakMap, SafeWeakSet } from './intrinsics.js';
 /**
  * A scope's environment: slot 0 is the enclosing environment, the rest are
  * the scope's bindings (scope.ts assigns the slots).
@@ -72,6 +73,8 @@ export declare class FunctionInfo implements FactoryFunctionInfo {
     derived: boolean;
     /** A class constructor with no constructor in its source. */
     implicit: boolean;
+    /** Compiles the body, on the function's first call (compile.ts); null once compiled. */
+    lazy: (() => void) | null;
     constructor(shape: FunctionShape, name: string, length: number, strict: boolean, 
     /** The source text Function.prototype.toString answers. */
     source: string);
@@ -103,9 +106,9 @@ export declare function functionName(key: PropertyKey, prefix?: string): string;
 export declare class PrivateName {
     readonly description: string;
     kind: 'field' | 'method' | 'accessor';
-    readonly values: WeakMap<object, unknown>;
+    readonly values: SafeWeakMap<object, unknown>;
     /** For methods and accessors: the objects that carry the class's brand. */
-    brand: WeakSet<object>;
+    brand: SafeWeakSet<object>;
     method: unknown;
     getter: unknown;
     setter: unknown;

@@ -11,12 +11,23 @@ export const RUNTIME_FUNCTION_HEADS = {
     generator: 'function*',
     asyncGenerator: 'async function*',
 };
+/**
+ * The parameters joined with commas, as the constructor joins them. Built
+ * with a loop: the interpreter calls this at runtime, after the program may
+ * have replaced Array.prototype.join.
+ */
+function parameterList(params) {
+    let text = '';
+    for (let i = 0; i < params.length; i++)
+        text += i === 0 ? params[i] : `,${params[i]}`;
+    return text;
+}
 export function isRuntimeFunctionKind(kind) {
     return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
 }
 /** The function literal V8 builds for `new <Kind>Function(...params, body)`. */
 export function runtimeFunctionSource(kind, params, body) {
-    return `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${params.join(',')}\n) {\n${body}\n}`;
+    return `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${parameterList(params)}\n) {\n${body}\n}`;
 }
 /**
  * The function literal `text` holds, checked as V8 checks a constructor's
@@ -32,7 +43,7 @@ function functionLiteral(text, bodyStart, emptyBody) {
     catch (e) {
         return e instanceof Error ? e.message : String(e);
     }
-    const [statement] = program.body;
+    const statement = program.body[0];
     const fn = program.body.length === 1 && statement.type === 'ExpressionStatement' ? statement.expression : null;
     if (!fn || fn.type !== 'FunctionExpression' || fn.start !== 1 || fn.end !== text.length - 1
         || fn.body.start !== bodyStart || (emptyBody && fn.body.body.length !== 0)) {
@@ -52,14 +63,14 @@ function functionLiteral(text, bodyStart, emptyBody) {
  */
 export function runtimeFunctionSyntaxError(kind, params, body) {
     const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
-    const paramText = params.join(',');
+    const paramText = parameterList(params);
     const checks = [
         [`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true],
         [`${head}\n) {\n${body}\n})`, `${head}\n) `.length, false],
         [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
     ];
-    for (const [text, bodyStart, emptyBody] of checks) {
-        const checked = functionLiteral(text, bodyStart, emptyBody);
+    for (let i = 0; i < checks.length; i++) {
+        const checked = functionLiteral(checks[i][0], checks[i][1], checks[i][2]);
         if (typeof checked === 'string')
             return checked;
     }
@@ -75,7 +86,7 @@ export function runtimeFunctionSyntaxError(kind, params, body) {
  */
 export function parseRuntimeFunction(kind, params, body) {
     const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
-    const paramText = params.join(',');
+    const paramText = parameterList(params);
     const own = functionLiteral(`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true);
     if (typeof own === 'string')
         throw new SyntaxError(own);

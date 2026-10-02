@@ -1,7 +1,8 @@
+import { SafeMap, SafeWeakMap, SafeWeakSet, arrayIsArray, arraySliceFrom, defineOrThrow, objectCreate, objectFreeze, objectGetPrototypeOf, reflectApply, reflectConstruct, reflectGet, stringOf, } from './intrinsics.js';
 /** The enclosing environment of `env`. */
 export function up(env) {
     const parent = env[0];
-    if (!Array.isArray(parent))
+    if (!arrayIsArray(parent))
         throw new Error('interpreter: environment without a parent');
     return parent;
 }
@@ -13,7 +14,7 @@ export function upN(env, hops) {
     return e;
 }
 /** The value of a lexical binding before its declaration has run. */
-export const TDZ = Object.freeze(Object.create(null));
+export const TDZ = objectFreeze(objectCreate(null));
 export function tdzError(name) {
     return new ReferenceError(`Cannot access '${name}' before initialization`);
 }
@@ -31,7 +32,7 @@ export class Completion {
 }
 export const BREAK = new Completion('break', null, undefined);
 export const CONTINUE = new Completion('continue', null, undefined);
-const labeled = new Map();
+const labeled = new SafeMap();
 export function labeledSignal(kind, label) {
     const key = `${kind}:${label}`;
     let signal = labeled.get(key);
@@ -42,10 +43,10 @@ export function labeledSignal(kind, label) {
     return signal;
 }
 /** The marker an async generator body yields to await, yield or delegate; its operand is beside it. */
-export const AWAIT = Object.freeze({ mark: 'await' });
-export const YIELD = Object.freeze({ mark: 'yield' });
-export const DELEGATE = Object.freeze({ mark: 'delegate' });
-export const MARK = Object.freeze({ mark: 'return' });
+export const AWAIT = objectFreeze({ mark: 'await' });
+export const YIELD = objectFreeze({ mark: 'yield' });
+export const DELEGATE = objectFreeze({ mark: 'delegate' });
+export const MARK = objectFreeze({ mark: 'return' });
 let pendingOperand;
 export function signalOperand(value) {
     pendingOperand = value;
@@ -77,6 +78,8 @@ export class FunctionInfo {
     derived = false;
     /** A class constructor with no constructor in its source. */
     implicit = false;
+    /** Compiles the body, on the function's first call (compile.ts); null once compiled. */
+    lazy = null;
     constructor(shape, name, length, strict, 
     /** The source text Function.prototype.toString answers. */
     source) {
@@ -92,11 +95,13 @@ let host;
 let strictFactories;
 let sloppyFactories;
 /** Source text of every interpreted function, for Function.prototype.toString. */
-const sources = new WeakMap();
+const sources = new SafeWeakMap();
 export function operators() {
     return host;
 }
 function enter(fi, scope, fn, thisArg, args, newTarget, home) {
+    if (fi.lazy !== null)
+        fi.lazy();
     const env = new Array(fi.size);
     env[0] = scope;
     if (fi.thisSlot !== 0)
@@ -144,17 +149,17 @@ export class ClassRecord {
     home = undefined;
 }
 /** The record of each class constructor, for super() calls, which know only the constructor. */
-const classRecords = new WeakMap();
+const classRecords = new SafeWeakMap();
 function registerClass(ctor, record) {
     classRecords.set(ctor, record);
 }
 /** The object a derived constructor's super(...args) constructs, before its fields. */
 export function superConstruct(ctor, args, newTarget) {
-    const parent = Object.getPrototypeOf(ctor);
+    const parent = objectGetPrototypeOf(ctor);
     if (typeof parent !== 'function' || typeof newTarget !== 'function') {
-        throw new TypeError(`Super constructor ${String(parent)} of anonymous class is not a constructor`);
+        throw new TypeError(`Super constructor ${stringOf(parent)} of anonymous class is not a constructor`);
     }
-    const instance = Reflect.construct(parent, args, newTarget);
+    const instance = reflectConstruct(parent, args, newTarget);
     if (!isObject(instance))
         throw new TypeError('Derived constructor did not produce an object');
     return instance;
@@ -187,7 +192,7 @@ const runtime = {
     constructDerived(fi, scope, ctor, record, args, newTarget) {
         // The implicit constructor passes its arguments on as they are, without iterating them.
         if (fi.implicit) {
-            const instance = superConstruct(ctor, Array.prototype.slice.call(args), newTarget);
+            const instance = superConstruct(ctor, arraySliceFrom(args, 0), newTarget);
             if (record.initialize)
                 record.initialize(instance);
             return instance;
@@ -261,9 +266,9 @@ export function makeClass(fi, scope, parent, name, record) {
 }
 function finishFunction(fn, fi, name) {
     if (fi.length !== 0)
-        Object.defineProperty(fn, 'length', { value: fi.length, configurable: true });
+        defineOrThrow(fn, 'length', { value: fi.length, configurable: true });
     if (name !== '' || fi.shape === 'method')
-        Object.defineProperty(fn, 'name', { value: name, configurable: true });
+        defineOrThrow(fn, 'name', { value: name, configurable: true });
     sources.set(fn, fi.source);
     return fn;
 }
@@ -275,7 +280,7 @@ export function functionName(key, prefix) {
         name = description === undefined ? '' : `[${description}]`;
     }
     else {
-        name = String(key);
+        name = stringOf(key);
     }
     return prefix ? `${prefix} ${name}` : name;
 }
@@ -297,20 +302,20 @@ function installToString() {
                 if (source !== undefined)
                     return source;
             }
-            return Reflect.apply(native, this, []);
+            return reflectApply(native, this, []);
         },
     }.toString;
     sources.set(replacement, 'function toString() { [native code] }');
-    Object.defineProperty(Function.prototype, 'toString', { value: replacement, writable: true, enumerable: false, configurable: true });
+    defineOrThrow(Function.prototype, 'toString', { value: replacement, writable: true, enumerable: false, configurable: true });
 }
 // ── Private names ──
 /** One private name of one evaluation of a class. */
 export class PrivateName {
     description;
     kind = 'field';
-    values = new WeakMap();
+    values = new SafeWeakMap();
     /** For methods and accessors: the objects that carry the class's brand. */
-    brand = new WeakSet();
+    brand = new SafeWeakSet();
     method = undefined;
     getter = undefined;
     setter = undefined;
@@ -331,7 +336,7 @@ export class PrivateName {
             return this.method;
         if (typeof this.getter !== 'function')
             throw new TypeError(`'${this.description}' was defined without a getter`);
-        return Reflect.apply(this.getter, target, []);
+        return reflectApply(this.getter, target, []);
     }
     set(target, value) {
         if (!this.present(target))
@@ -344,11 +349,11 @@ export class PrivateName {
             throw new TypeError(`Private method '${this.description}' is not writable`);
         if (typeof this.setter !== 'function')
             throw new TypeError(`'${this.description}' was defined without a setter`);
-        Reflect.apply(this.setter, target, [value]);
+        reflectApply(this.setter, target, [value]);
     }
     has(target) {
         if (!isObject(target))
-            throw new TypeError(`Cannot use 'in' operator to search for '${this.description}' in ${String(target)}`);
+            throw new TypeError(`Cannot use 'in' operator to search for '${this.description}' in ${stringOf(target)}`);
         return this.kind === 'field' ? this.values.has(target) : this.brand.has(target);
     }
     /** PrivateFieldAdd / PrivateMethodOrAccessorAdd. */
@@ -369,15 +374,15 @@ export class PrivateName {
 export function asyncFromSyncIterator(syncIterator, next) {
     const settle = (result, closeOnRejection) => {
         if (!isObject(result))
-            return Promise.reject(new TypeError(`Iterator result ${String(result)} is not an object`));
-        const done = Boolean(Reflect.get(result, 'done'));
-        const value = Reflect.get(result, 'value');
+            return Promise.reject(new TypeError(`Iterator result ${stringOf(result)} is not an object`));
+        const done = Boolean(reflectGet(result, 'done'));
+        const value = reflectGet(result, 'value');
         return Promise.resolve(value).then((v) => ({ value: v, done }), (error) => {
             if (!done && closeOnRejection) {
-                const ret = Reflect.get(syncIterator, 'return');
+                const ret = reflectGet(syncIterator, 'return');
                 if (typeof ret === 'function') {
                     try {
-                        Reflect.apply(ret, syncIterator, []);
+                        reflectApply(ret, syncIterator, []);
                     }
                     catch { /* the rejection wins */ }
                 }
@@ -390,7 +395,7 @@ export function asyncFromSyncIterator(syncIterator, next) {
             try {
                 if (typeof next !== 'function')
                     throw new TypeError('iterator.next is not a function');
-                return settle(Reflect.apply(next, syncIterator, [value]), true);
+                return settle(reflectApply(next, syncIterator, [value]), true);
             }
             catch (e) {
                 return Promise.reject(e);
@@ -398,12 +403,12 @@ export function asyncFromSyncIterator(syncIterator, next) {
         },
         return(value) {
             try {
-                const ret = Reflect.get(syncIterator, 'return');
+                const ret = reflectGet(syncIterator, 'return');
                 if (ret === undefined || ret === null)
                     return Promise.resolve({ value, done: true });
                 if (typeof ret !== 'function')
                     throw new TypeError('iterator.return is not a function');
-                return settle(Reflect.apply(ret, syncIterator, [value]), false);
+                return settle(reflectApply(ret, syncIterator, [value]), false);
             }
             catch (e) {
                 return Promise.reject(e);
@@ -411,16 +416,16 @@ export function asyncFromSyncIterator(syncIterator, next) {
         },
         throw(value) {
             try {
-                const thr = Reflect.get(syncIterator, 'throw');
+                const thr = reflectGet(syncIterator, 'throw');
                 if (thr === undefined || thr === null) {
-                    const ret = Reflect.get(syncIterator, 'return');
+                    const ret = reflectGet(syncIterator, 'return');
                     if (typeof ret === 'function')
-                        Reflect.apply(ret, syncIterator, []);
+                        reflectApply(ret, syncIterator, []);
                     throw new TypeError('The iterator does not provide a throw method');
                 }
                 if (typeof thr !== 'function')
                     throw new TypeError('iterator.throw is not a function');
-                return settle(Reflect.apply(thr, syncIterator, [value]), true);
+                return settle(reflectApply(thr, syncIterator, [value]), true);
             }
             catch (e) {
                 return Promise.reject(e);

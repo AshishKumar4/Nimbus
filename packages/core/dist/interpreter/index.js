@@ -24,7 +24,8 @@ import { parse } from 'acorn';
 import { parseRuntimeFunction, runtimeFunctionSource } from '../_shared/runtime-function-source.js';
 import { Compiler, ROOT_ENV } from './compile.js';
 import { installHost, makeFunction } from './runtime.js';
-import { FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram } from './scope.js';
+import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
+import { SafeMap, charCodeAt, isWhitespaceCode, someItem, stringLastIndexOf, stringSlice } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { HOST_OPS_SOURCE } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
@@ -34,9 +35,9 @@ const WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname
 const UNPARSED_EXTENSIONS = { '.ts': true, '.mts': true, '.cts': true, '.tsx': true, '.jsx': true };
 const PARSE = { ecmaVersion: 'latest', allowHashBang: true };
 function extensionOf(path) {
-    const base = path.slice(path.lastIndexOf('/') + 1);
-    const dot = base.lastIndexOf('.');
-    return dot > 0 ? base.slice(dot) : '';
+    const base = stringSlice(path, stringLastIndexOf(path, '/') + 1);
+    const dot = stringLastIndexOf(base, '.');
+    return dot > 0 ? stringSlice(base, dot) : '';
 }
 /**
  * `text` without its trailing `//` comment lines (and blank lines): what
@@ -52,11 +53,15 @@ function withoutTrailingLineComments(text) {
     let end = text.length;
     for (;;) {
         let last = end;
-        while (last > 0 && /\s/.test(text[last - 1]))
+        while (last > 0 && isWhitespaceCode(charCodeAt(text, last - 1)))
             last--;
-        const lineStart = text.lastIndexOf('\n', last - 1) + 1;
-        if (lineStart === 0 || !text.slice(lineStart, last).trimStart().startsWith('//'))
-            return end === text.length ? text : text.slice(0, end);
+        const lineStart = stringLastIndexOf(text, '\n', last - 1) + 1;
+        let first = lineStart;
+        while (first < last && isWhitespaceCode(charCodeAt(text, first)))
+            first++;
+        const comment = first + 1 < last && charCodeAt(text, first) === 0x2f && charCodeAt(text, first + 1) === 0x2f;
+        if (lineStart === 0 || !comment)
+            return end === text.length ? text : stringSlice(text, 0, end);
         end = lineStart - 1;
     }
 }
@@ -73,12 +78,22 @@ function parseQuick(text, options) {
     }
     return parse(text, options);
 }
+/** The number of '/' characters `path` starts with. */
+function leadingSlashes(path) {
+    let i = 0;
+    while (i < path.length && charCodeAt(path, i) === 0x2f)
+        i++;
+    return i;
+}
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
-    return program.body.some((s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
+    return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
         || s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
 }
 let installed = null;
+function unitContext(source, module, host, moduleScope) {
+    return { source, module, host, imports: new SafeMap(), moduleScope };
+}
 export function createInterpreter(hostOps, host) {
     if (installed !== hostOps) {
         installHost(hostOps);
@@ -100,15 +115,23 @@ export function createInterpreter(hostOps, host) {
             const { node, text } = parsed;
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
-            const compiler = new Compiler(analysis, text, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, root);
-            const fi = compiler.functionInfo(node, 'anonymous', undefined, runtimeFunctionSource(kind, params, body));
+            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+            const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
+            releaseScopes(root);
             return makeFunction(fi, ROOT_ENV, undefined);
         },
         compileModule(path, text) {
             if (UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
-            const parentUrl = path.startsWith('data:') ? 'data:text/javascript,' : `file:///${path.replace(/^\/+/, '')}`;
+            const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
             const unitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
+            const moduleCell = (program) => {
+                const analysis = analyzeProgram(program, { kind: 'module', strict: true });
+                const root = analysis.functionScopeOf(program);
+                const cell = new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).moduleCell(program, root);
+                releaseScopes(root);
+                return cell;
+            };
             let module = null;
             try {
                 module = parseQuick(text, { ...PARSE, sourceType: 'module' });
@@ -116,11 +139,8 @@ export function createInterpreter(hostOps, host) {
             catch {
                 // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
             }
-            if (module !== null && hasModuleSyntax(module)) {
-                const analysis = analyzeProgram(module, { kind: 'module', strict: true });
-                const root = analysis.functionScopeOf(module);
-                return new Compiler(analysis, text, unitHost, root).moduleCell(module, root);
-            }
+            if (module !== null && hasModuleSyntax(module))
+                return moduleCell(module);
             let script;
             try {
                 script = parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true });
@@ -129,13 +149,12 @@ export function createInterpreter(hostOps, host) {
                 // Top-level await or import.meta without imports or exports: still a module.
                 if (module === null)
                     throw error;
-                const analysis = analyzeProgram(module, { kind: 'module', strict: true });
-                const root = analysis.functionScopeOf(module);
-                return new Compiler(analysis, text, unitHost, root).moduleCell(module, root);
+                return moduleCell(module);
             }
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
-            const fi = new Compiler(analysis, text, unitHost, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            const fi = new Compiler(analysis, unitContext(text, false, unitHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return makeFunction(fi, ROOT_ENV, undefined);
         },
@@ -143,10 +162,9 @@ export function createInterpreter(hostOps, host) {
             const program = parse(text, { ...PARSE, sourceType: 'script' });
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
-            if (!(root instanceof FunctionScope))
-                throw new Error('interpreter: script without a scope');
-            const body = new Compiler(analysis, text, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, root)
-                .programBody(program, root);
+            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+            const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
+            releaseScopes(root);
             if (body.g !== null)
                 throw new UnsupportedSyntax('await in a script');
             const env = new Array(root.size);

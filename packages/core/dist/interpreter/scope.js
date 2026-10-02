@@ -1,3 +1,4 @@
+import { SafeMap, append, arrayIsArray, objectKeys, reflectGet, someItem } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 /**
  * Kinds that throw when read before their declaration runs: lexical
@@ -31,7 +32,8 @@ export class Binding {
 export class Scope {
     kind;
     parent;
-    bindings = new Map();
+    bindings = new SafeMap();
+    /** The scopes inside this one, for laying out slots; null once the analysis is released. */
     children = [];
     materialized = false;
     /** Slots of the environment this scope allocates, when materialized. */
@@ -46,8 +48,8 @@ export class Scope {
         this.parent = parent;
         this.fn = fn ?? (this instanceof FunctionScope ? this : unreachable('scope without a function'));
         this.strict = strict ?? (kind === 'class' || (parent !== null && parent.fn === this.fn ? parent.strict : false));
-        if (parent)
-            parent.children.push(this);
+        if (parent !== null && parent.children !== null)
+            append(parent.children, this);
     }
     /** The scope whose environment holds this scope's bindings at runtime. */
     holder() {
@@ -58,6 +60,12 @@ export class Scope {
             s = s.parent;
         }
         return s;
+    }
+    /** The scope's bindings, in the order they were declared. */
+    bindingList() {
+        const list = [];
+        this.bindings.forEach((binding) => { append(list, binding); });
+        return list;
     }
     declare(name, kind, declEnd) {
         const existing = this.bindings.get(name);
@@ -70,7 +78,6 @@ export class Scope {
 }
 export class FunctionScope extends Scope {
     functionKind;
-    node;
     strict;
     async;
     generator;
@@ -90,10 +97,9 @@ export class FunctionScope extends Scope {
     method = false;
     /** A script's top-level var and function names: global object properties, not bindings. */
     globalVars = [];
-    constructor(functionKind, parent, node, strict, arrow, async, generator) {
+    constructor(functionKind, parent, strict, arrow, async, generator) {
         super(functionKind, parent, null, strict);
         this.functionKind = functionKind;
-        this.node = node;
         this.strict = strict;
         this.async = async;
         this.generator = generator;
@@ -109,7 +115,8 @@ function unreachable(what) {
 }
 /** Whether a function body opens with a "use strict" directive. */
 export function hasUseStrict(body) {
-    for (const statement of body) {
+    for (let i = 0; i < body.length; i++) {
+        const statement = body[i];
         if (statement.type !== 'ExpressionStatement' || typeof statement.directive !== 'string')
             return false;
         if (statement.directive === 'use strict')
@@ -121,16 +128,20 @@ export function hasUseStrict(body) {
 export function patternIdentifiers(pattern, out = []) {
     switch (pattern.type) {
         case 'Identifier':
-            out.push(pattern);
+            append(out, pattern);
             break;
         case 'ObjectPattern':
-            for (const p of pattern.properties)
+            for (let i = 0; i < pattern.properties.length; i++) {
+                const p = pattern.properties[i];
                 patternIdentifiers(p.type === 'RestElement' ? p.argument : p.value, out);
+            }
             break;
         case 'ArrayPattern':
-            for (const e of pattern.elements)
+            for (let i = 0; i < pattern.elements.length; i++) {
+                const e = pattern.elements[i];
                 if (e)
                     patternIdentifiers(e, out);
+            }
             break;
         case 'RestElement':
             patternIdentifiers(pattern.argument, out);
@@ -142,16 +153,26 @@ export function patternIdentifiers(pattern, out = []) {
     }
     return out;
 }
-const SKIP_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
+/** The child nodes of `node`, in a new array. */
+export function childNodes(node) {
+    const children = [];
+    forEachChildNode(node, (child) => { append(children, child); });
+    return children;
+}
 /** Each child node of `node`. */
 export function forEachChildNode(node, visit) {
-    for (const [key, value] of Object.entries(node)) {
-        if (SKIP_KEYS.has(key))
+    const keys = objectKeys(node);
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range')
             continue;
-        if (Array.isArray(value)) {
-            for (const item of value)
+        const value = reflectGet(node, key);
+        if (arrayIsArray(value)) {
+            for (let j = 0; j < value.length; j++) {
+                const item = value[j];
                 if (isNode(item))
                     visit(item);
+            }
         }
         else if (isNode(value)) {
             visit(value);
@@ -163,15 +184,15 @@ function isNode(value) {
 }
 /** The analysis of one compiled unit. */
 export class Analysis {
-    refs = new Map();
+    refs = new SafeMap();
     /** Scope of each scope-creating node (functions, blocks, loops, catch, switch, with, class). */
-    scopes = new Map();
-    classes = new Map();
+    scopes = new SafeMap();
+    classes = new SafeMap();
     /** For `this`, `super` and `new.target`: the function scope that provides them. */
-    receivers = new Map();
+    receivers = new SafeMap();
     /** Block-level function declarations that also assign a var of their name (Annex B.3.3). */
-    annexB = new Map();
-    privateRefs = new Map();
+    annexB = new SafeMap();
+    privateRefs = new SafeMap();
     /** A module's own scope, which holds `%module` for import.meta. */
     moduleScope = null;
     scopeOf(node) {
@@ -198,15 +219,19 @@ export const MODULE_CELL_PARAMS = ['%exports', '%require', '%module', '%filename
 export function analyzeProgram(program, options) {
     const analyzer = new Analyzer();
     const strict = options.strict || options.kind === 'module' || hasUseStrict(program.body);
-    const root = new FunctionScope(options.kind, null, program, strict, false, options.kind === 'module', false);
+    const root = new FunctionScope(options.kind, null, strict, false, options.kind === 'module', false);
     analyzer.analysis.scopes.set(program, root);
     if (options.kind === 'module') {
         // A module runs as a cell of the five CommonJS wrapper arguments.
-        for (const name of MODULE_CELL_PARAMS)
+        for (let i = 0; i < MODULE_CELL_PARAMS.length; i++) {
+            const name = MODULE_CELL_PARAMS[i];
             root.special(name);
+        }
         analyzer.analysis.moduleScope = root;
-        for (const statement of program.body)
+        for (let i = 0; i < program.body.length; i++) {
+            const statement = program.body[i];
             analyzer.declareImports(statement, root);
+        }
     }
     analyzer.declareLexical(program.body, root);
     analyzer.hoistVars(program.body, root, true);
@@ -217,9 +242,45 @@ export function analyzeProgram(program, options) {
 /** Analyze a function expression that closes over the global scope (a Function constructor's). */
 export function analyzeFunction(node) {
     const analyzer = new Analyzer();
-    analyzer.visitFunction(node, null, { strict: false, method: false, derived: false, ctor: false });
+    analyzer.visitFunction(node, null, { strict: false, method: false, derived: false, ctor: false, unbound: true });
     analyzer.finish(analyzer.analysis.functionScopeOf(node));
     return analyzer.analysis;
+}
+/**
+ * Analyze a function compiled on its first call, parsed again on its own
+ * (reparse.ts), inside the scopes of the function that defined it, which an
+ * earlier analysis made and released. Their bindings and slots stand: this
+ * analysis resolves the function's names to them as that one did.
+ */
+export function analyzeLazyFunction(node, outer, options, moduleScope) {
+    const analyzer = new Analyzer();
+    analyzer.analysis.moduleScope = moduleScope;
+    analyzer.finish(analyzer.visitFunction(node, outer, options));
+    return analyzer.analysis;
+}
+/**
+ * Release an analysis once its function is compiled: what it keeps is what a
+ * function compiled later needs of the scopes it sits in. Its scopes drop
+ * their links to inner scopes and the declarations they held, and each keeps
+ * only the bindings a nested function refers to (captured) and the implicit
+ * ones (this, arguments, the module), which is all a later analysis can
+ * resolve a name to. Scopes no function compiled later sits in are then
+ * garbage.
+ */
+export function releaseScopes(scope) {
+    const children = scope.children;
+    scope.children = null;
+    scope.functions = [];
+    const dropped = [];
+    scope.bindings.forEach((binding, name) => {
+        if (!binding.captured && binding.kind !== 'special')
+            append(dropped, name);
+    });
+    for (let i = 0; i < dropped.length; i++)
+        scope.bindings.delete(dropped[i]);
+    if (children !== null)
+        for (let i = 0; i < children.length; i++)
+            releaseScopes(children[i]);
 }
 /**
  * Analyze a CommonJS module body: a function of Node's five wrapper
@@ -228,10 +289,12 @@ export function analyzeFunction(node) {
 export function analyzeCommonJs(program, params) {
     const analyzer = new Analyzer();
     const strict = hasUseStrict(program.body);
-    const root = new FunctionScope('function', null, program, strict, false, false, false);
+    const root = new FunctionScope('function', null, strict, false, false, false);
     analyzer.analysis.scopes.set(program, root);
-    for (const name of params)
+    for (let i = 0; i < params.length; i++) {
+        const name = params[i];
         root.declare(name, 'param', -1);
+    }
     analyzer.declareLexical(program.body, root);
     analyzer.hoistVars(program.body, root, true);
     analyzer.visitStatements(program.body, root);
@@ -245,7 +308,8 @@ class Analyzer {
     declareImports(statement, scope) {
         if (statement.type !== 'ImportDeclaration')
             return;
-        for (const spec of statement.specifiers) {
+        for (let i = 0; i < statement.specifiers.length; i++) {
+            const spec = statement.specifiers[i];
             const binding = scope.declare(spec.local.name, 'import', -1);
             this.analysis.refs.set(spec.local, { binding, tdz: false, withs: [] });
         }
@@ -259,17 +323,20 @@ class Analyzer {
         const script = target.fn.functionKind === 'script' && target === target.fn;
         const declareVar = (id) => {
             if (script)
-                target.fn.globalVars.push(id.name);
+                append(target.fn.globalVars, id.name);
             else
                 target.declare(id.name, 'var', -1);
         };
         const visit = (node, top) => {
             switch (node.type) {
                 case 'VariableDeclaration':
-                    if (node.kind === 'var')
-                        for (const d of node.declarations)
-                            for (const id of patternIdentifiers(d.id))
-                                declareVar(id);
+                    if (node.kind === 'var') {
+                        for (let i = 0; i < node.declarations.length; i++) {
+                            const ids = patternIdentifiers(node.declarations[i].id);
+                            for (let j = 0; j < ids.length; j++)
+                                declareVar(ids[j]);
+                        }
+                    }
                     return;
                 case 'FunctionDeclaration':
                     if (top) {
@@ -296,8 +363,10 @@ class Analyzer {
                     }
                     return;
                 case 'BlockStatement':
-                    for (const s of node.body)
+                    for (let i = 0; i < node.body.length; i++) {
+                        const s = node.body[i];
                         visit(s, false);
+                    }
                     return;
                 case 'IfStatement':
                     visit(node.consequent, false);
@@ -329,16 +398,22 @@ class Analyzer {
                         visit(node.finalizer, false);
                     return;
                 case 'SwitchStatement':
-                    for (const c of node.cases)
-                        for (const s of c.consequent)
+                    for (let i = 0; i < node.cases.length; i++) {
+                        const c = node.cases[i];
+                        for (let j = 0; j < c.consequent.length; j++) {
+                            const s = c.consequent[j];
                             visit(s, false);
+                        }
+                    }
                     return;
                 default:
                     return;
             }
         };
-        for (const statement of body)
+        for (let i = 0; i < body.length; i++) {
+            const statement = body[i];
             visit(statement, topLevel);
+        }
     }
     /**
      * Declare the lexical declarations directly in `body` (let, const, class,
@@ -348,7 +423,8 @@ class Analyzer {
     declareLexical(body, scope) {
         const functionLevel = scope === scope.fn.varScope || scope.kind === 'body';
         const script = scope.fn.functionKind === 'script' && scope === scope.fn;
-        for (const raw of body) {
+        for (let i = 0; i < body.length; i++) {
+            const raw = body[i];
             let node = raw;
             if (node.type === 'ExportNamedDeclaration' && node.declaration)
                 node = node.declaration;
@@ -360,7 +436,7 @@ class Analyzer {
                 else if (d.type === 'FunctionDeclaration') {
                     if (!d.id)
                         scope.declare('*default*', 'function', -1);
-                    scope.functions.push(d);
+                    append(scope.functions, d);
                 }
                 else {
                     scope.declare('*default*', 'const', node.end);
@@ -372,9 +448,11 @@ class Analyzer {
                     if (node.kind === 'using' || node.kind === 'await using')
                         throw new UnsupportedSyntax(`${node.kind} declarations`);
                     if (node.kind !== 'var') {
-                        for (const d of node.declarations) {
-                            for (const id of patternIdentifiers(d.id))
-                                scope.declare(id.name, node.kind, d.end);
+                        for (let j = 0; j < node.declarations.length; j++) {
+                            const d = node.declarations[j];
+                            const ids = patternIdentifiers(d.id);
+                            for (let k = 0; k < ids.length; k++)
+                                scope.declare(ids[k].name, node.kind, d.end);
                         }
                     }
                     break;
@@ -383,11 +461,11 @@ class Analyzer {
                     break;
                 case 'FunctionDeclaration':
                     if (functionLevel || script) {
-                        scope.functions.push(node);
+                        append(scope.functions, node);
                     }
                     else {
                         scope.declare(node.id.name, 'function', -1);
-                        scope.functions.push(node);
+                        append(scope.functions, node);
                     }
                     break;
                 default:
@@ -396,8 +474,9 @@ class Analyzer {
         }
     }
     declarePattern(pattern, kind, scope, declEnd = -1) {
-        for (const id of patternIdentifiers(pattern))
-            scope.declare(id.name, kind, declEnd);
+        const ids = patternIdentifiers(pattern);
+        for (let i = 0; i < ids.length; i++)
+            scope.declare(ids[i].name, kind, declEnd);
     }
     // ── References ──
     /**
@@ -425,7 +504,7 @@ class Analyzer {
                 return;
             }
             if (s.kind === 'with')
-                withs.push(s);
+                append(withs, s);
             s = s.parent;
         }
         this.analysis.refs.set(id, { binding: null, tdz: false, withs });
@@ -479,8 +558,10 @@ class Analyzer {
     }
     // ── Walk ──
     visitStatements(body, scope) {
-        for (const statement of body)
+        for (let i = 0; i < body.length; i++) {
+            const statement = body[i];
             this.visitStatement(statement, scope);
+        }
     }
     visitStatement(node, scope) {
         switch (node.type) {
@@ -559,9 +640,11 @@ class Analyzer {
                 if (node.declaration)
                     this.visitStatement(node.declaration, scope);
                 else if (!node.source)
-                    for (const spec of node.specifiers)
+                    for (let i = 0; i < node.specifiers.length; i++) {
+                        const spec = node.specifiers[i];
                         if (spec.local.type === 'Identifier')
                             this.resolve(spec.local, scope);
+                    }
                 return;
             case 'ExportDefaultDeclaration': {
                 const d = node.declaration;
@@ -599,7 +682,8 @@ class Analyzer {
         this.analysis.annexB.set(node, target);
     }
     visitVariableDeclaration(node, scope) {
-        for (const d of node.declarations) {
+        for (let i = 0; i < node.declarations.length; i++) {
+            const d = node.declarations[i];
             this.visitPattern(d.id, scope, true);
             if (d.init)
                 this.visitExpression(d.init, scope);
@@ -615,9 +699,12 @@ class Analyzer {
         this.visitExpression(node.discriminant, scope);
         const block = new Scope('switch', scope, scope.fn);
         this.analysis.scopes.set(node, block);
-        for (const c of node.cases)
+        for (let i = 0; i < node.cases.length; i++) {
+            const c = node.cases[i];
             this.declareLexical(c.consequent, block);
-        for (const c of node.cases) {
+        }
+        for (let i = 0; i < node.cases.length; i++) {
+            const c = node.cases[i];
             if (c.test)
                 this.visitExpression(c.test, block);
             this.visitStatements(c.consequent, block);
@@ -657,20 +744,25 @@ class Analyzer {
             // The right side sees the loop's names in their TDZ (a separate scope in the spec).
             const tdzScope = new Scope('loop', scope, scope.fn);
             this.analysis.scopes.set(node.right, tdzScope);
-            for (const d of left.declarations)
+            for (let i = 0; i < left.declarations.length; i++) {
+                const d = left.declarations[i];
                 this.declarePattern(d.id, left.kind === 'const' ? 'const' : 'let', tdzScope, node.end);
+            }
             this.visitExpression(node.right, tdzScope);
             const inner = new Scope('loop', scope, scope.fn);
             this.analysis.scopes.set(node, inner);
             this.declareLexical([left], inner);
-            for (const d of left.declarations)
+            for (let i = 0; i < left.declarations.length; i++) {
+                const d = left.declarations[i];
                 this.visitPattern(d.id, inner, true);
+            }
             this.visitStatement(node.body, inner);
             return;
         }
         this.visitExpression(node.right, scope);
         if (left.type === 'VariableDeclaration') {
-            for (const d of left.declarations) {
+            for (let i = 0; i < left.declarations.length; i++) {
+                const d = left.declarations[i];
                 this.visitPattern(d.id, scope, true);
                 if (d.init)
                     this.visitExpression(d.init, scope);
@@ -694,7 +786,8 @@ class Analyzer {
                 this.visitExpression(pattern, scope);
                 return;
             case 'ObjectPattern':
-                for (const p of pattern.properties) {
+                for (let i = 0; i < pattern.properties.length; i++) {
+                    const p = pattern.properties[i];
                     if (p.type === 'RestElement') {
                         this.visitPattern(p.argument, scope, declaration);
                     }
@@ -706,9 +799,11 @@ class Analyzer {
                 }
                 return;
             case 'ArrayPattern':
-                for (const e of pattern.elements)
+                for (let i = 0; i < pattern.elements.length; i++) {
+                    const e = pattern.elements[i];
                     if (e)
                         this.visitPattern(e, scope, declaration);
+                }
                 return;
             case 'RestElement':
                 this.visitPattern(pattern.argument, scope, declaration);
@@ -723,14 +818,16 @@ class Analyzer {
         const arrow = node.type === 'ArrowFunctionExpression';
         const body = node.body;
         const strict = options.strict || (body.type === 'BlockStatement' && hasUseStrict(body.body));
-        const fn = new FunctionScope('function', scope, node, strict, arrow, node.async, node.generator);
+        const fn = new FunctionScope('function', scope, strict, arrow, node.async, node.generator);
         fn.method = options.method;
         fn.derived = options.derived;
         this.analysis.scopes.set(node, fn);
         // With expressions in the list, each parameter is in its TDZ until bound.
-        const expressions = node.params.some((p) => p.type !== 'Identifier');
-        for (const param of node.params)
+        const expressions = someItem(node.params, (p) => p.type !== 'Identifier');
+        for (let i = 0; i < node.params.length; i++) {
+            const param = node.params[i];
             this.declarePattern(param, 'param', fn, expressions ? param.end : -1);
+        }
         if (body.type === 'BlockStatement') {
             // With parameter expressions the body's declarations are a scope of
             // their own, which the parameter list cannot see.
@@ -740,7 +837,7 @@ class Analyzer {
             this.declareLexical(body.body, fn.varScope);
             this.hoistVars(body.body, fn.varScope, true);
         }
-        if (node.type === 'FunctionExpression' && node.id && !fn.bindings.has(node.id.name) && !fn.varScope.bindings.has(node.id.name)) {
+        if (!options.unbound && node.type === 'FunctionExpression' && node.id && !fn.bindings.has(node.id.name) && !fn.varScope.bindings.has(node.id.name)) {
             fn.funcBinding = fn.declare(node.id.name, 'callee', -1);
         }
         if (options.ctor && !fn.funcBinding)
@@ -756,8 +853,10 @@ class Analyzer {
                 fn.argumentsBinding = fn.special('arguments');
             }
         }
-        for (const param of node.params)
+        for (let i = 0; i < node.params.length; i++) {
+            const param = node.params[i];
             this.visitPattern(param, fn, true);
+        }
         if (body.type === 'BlockStatement')
             this.visitStatements(body.body, fn.varScope);
         else
@@ -772,7 +871,8 @@ class Analyzer {
         // The heritage sees the class's own name, uninitialized.
         if (node.superClass)
             this.visitExpression(node.superClass, classScope);
-        for (const member of node.body.body) {
+        for (let i = 0; i < node.body.body.length; i++) {
+            const member = node.body.body[i];
             if (member.type !== 'StaticBlock' && member.key.type === 'PrivateIdentifier') {
                 classScope.declare(`#${member.key.name}`, 'private', -1);
             }
@@ -780,7 +880,8 @@ class Analyzer {
         let instanceFields = null;
         let staticFields = null;
         const derived = Boolean(node.superClass);
-        for (const member of node.body.body) {
+        for (let i = 0; i < node.body.body.length; i++) {
+            const member = node.body.body[i];
             if (member.type === 'StaticBlock') {
                 this.visitStaticBlock(member, classScope);
                 continue;
@@ -796,7 +897,7 @@ class Analyzer {
             if (member.value) {
                 let fieldScope = member.static ? staticFields : instanceFields;
                 if (!fieldScope) {
-                    fieldScope = new FunctionScope('field', classScope, null, true, false, false, false);
+                    fieldScope = new FunctionScope('field', classScope, true, false, false, false);
                     fieldScope.method = true;
                     if (member.static)
                         staticFields = fieldScope;
@@ -817,7 +918,7 @@ class Analyzer {
         this.visitFunction(member.value, classScope, { strict: true, method: true, derived: ctor && derived, ctor });
     }
     visitStaticBlock(block, classScope) {
-        const fn = new FunctionScope('static', classScope, block, true, false, false, false);
+        const fn = new FunctionScope('static', classScope, true, false, false, false);
         fn.method = true;
         this.analysis.scopes.set(block, fn);
         this.declareLexical(block.body, fn);
@@ -843,12 +944,15 @@ class Analyzer {
                 this.useThis(node, scope);
                 return;
             case 'ArrayExpression':
-                for (const e of node.elements)
+                for (let i = 0; i < node.elements.length; i++) {
+                    const e = node.elements[i];
                     if (e)
                         this.visitExpression(e.type === 'SpreadElement' ? e.argument : e, scope);
+                }
                 return;
             case 'ObjectExpression':
-                for (const p of node.properties) {
+                for (let i = 0; i < node.properties.length; i++) {
+                    const p = node.properties[i];
                     if (p.type === 'SpreadElement') {
                         this.visitExpression(p.argument, scope);
                         continue;
@@ -903,17 +1007,23 @@ class Analyzer {
                     this.useSuperCall(node.callee, scope);
                 else
                     this.visitExpression(node.callee, scope);
-                for (const a of node.arguments)
+                for (let i = 0; i < node.arguments.length; i++) {
+                    const a = node.arguments[i];
                     this.visitExpression(a.type === 'SpreadElement' ? a.argument : a, scope);
+                }
                 return;
             case 'NewExpression':
                 this.visitExpression(node.callee, scope);
-                for (const a of node.arguments)
+                for (let i = 0; i < node.arguments.length; i++) {
+                    const a = node.arguments[i];
                     this.visitExpression(a.type === 'SpreadElement' ? a.argument : a, scope);
+                }
                 return;
             case 'SequenceExpression':
-                for (const e of node.expressions)
+                for (let i = 0; i < node.expressions.length; i++) {
+                    const e = node.expressions[i];
                     this.visitExpression(e, scope);
+                }
                 return;
             case 'YieldExpression':
                 if (node.argument)
@@ -923,13 +1033,17 @@ class Analyzer {
                 this.visitExpression(node.argument, scope);
                 return;
             case 'TemplateLiteral':
-                for (const e of node.expressions)
+                for (let i = 0; i < node.expressions.length; i++) {
+                    const e = node.expressions[i];
                     this.visitExpression(e, scope);
+                }
                 return;
             case 'TaggedTemplateExpression':
                 this.visitExpression(node.tag, scope);
-                for (const e of node.quasi.expressions)
+                for (let i = 0; i < node.quasi.expressions.length; i++) {
+                    const e = node.quasi.expressions[i];
                     this.visitExpression(e, scope);
+                }
                 return;
             case 'ClassExpression':
                 this.visitClass(node, scope);
@@ -961,17 +1075,19 @@ function layoutFunction(fn) {
     assignSlots(fn, fn);
 }
 function assignSlots(scope, holder) {
-    for (const binding of scope.bindings.values())
-        binding.slot = holder.size++;
-    for (const child of scope.children) {
+    scope.bindings.forEach((binding) => { binding.slot = holder.size++; });
+    const children = scope.children;
+    if (children === null)
+        throw new Error('interpreter scope analysis: layout of a released scope');
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
         if (child instanceof FunctionScope) {
             layoutFunction(child);
             continue;
         }
         let captured = child.kind === 'with';
-        for (const binding of child.bindings.values())
-            if (binding.captured)
-                captured = true;
+        child.bindings.forEach((binding) => { if (binding.captured)
+            captured = true; });
         child.materialized = captured;
         if (captured) {
             // A with scope keeps its object in slot 1.
