@@ -139,6 +139,10 @@ for (const [kind, Native] of kinds) {
   if (kind === 'function') globalThis.Function = routed;
 }
 
+// What node-shims captures as the launch starts, to call a script's function with.
+const apply = Reflect.apply;
+const scriptThis = globalThis;
+
 routeRunInThisContext((code, native) => {
   const value = native();
   record({ vmExpressions: 1 });
@@ -147,7 +151,7 @@ routeRunInThisContext((code, native) => {
   let interpreted;
   try {
     // Called as node-shims calls it: with the global object as `this`, a script's own.
-    interpreted = Reflect.apply(interp.compileExpression(code), globalThis, []);
+    interpreted = apply(interp.compileExpression(code), scriptThis, []);
   } catch (e) {
     record({ refused: [{ key, kind: 'vm', error: `${e && e.code} ${e && e.message}` }] });
     return value;

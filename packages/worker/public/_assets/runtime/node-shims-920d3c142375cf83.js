@@ -7807,6 +7807,11 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
 
 const __vmMod = (() => {
   const real = (typeof __real_vm !== 'undefined') ? (__real_vm.default ?? __real_vm) : null;
+  // What a script's function is called with, as the launch starts: the
+  // program may later replace Reflect.apply or the globalThis property, and
+  // native vm consults neither.
+  const apply = Reflect.apply;
+  const scriptThis = globalThis;
   function honestError(method, originalErr) {
     const e = new Error(
       'vm.' + method + ': workerd does not implement runtime eval. ' +
@@ -7860,7 +7865,7 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return Reflect.apply(service.compileExpression(String(code)), globalThis, []);
+        return apply(service.compileExpression(String(code)), scriptThis, []);
       }
     },
     // A function of `params` and `code` is what the Function constructor

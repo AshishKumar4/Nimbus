@@ -27,8 +27,12 @@ globalThis.eval = function (source) {
   }
 };
 
+// What node-shims captures as the launch starts, to call a script's function with.
+const apply = Reflect.apply;
+const scriptThis = globalThis;
+
 routeRunInThisContext((code) => {
   recordPart(process.env.NIMBUS_DIFF_REPORT, { vmExpressions: [code.slice(0, 2000)] });
   // Called as node-shims calls it: with the global object as `this`, a script's own.
-  return Reflect.apply(interp.compileExpression(code), globalThis, []);
+  return apply(interp.compileExpression(code), scriptThis, []);
 });
