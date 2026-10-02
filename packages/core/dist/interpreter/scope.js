@@ -159,6 +159,36 @@ export function childNodes(node) {
     forEachChildNode(node, (child) => { append(children, child); });
     return children;
 }
+/**
+ * Whether evaluating `node` awaits or yields in the function it sits in
+ * (await and yield are valid only where that function suspends). The
+ * compiler refuses a few such places (UnsupportedSyntax); the analysis of a
+ * unit, which covers every function in it, refuses them before any of the
+ * unit runs, as the compiler, compiling a function on its first call, could
+ * not.
+ */
+function suspendsHere(node) {
+    if (node.type === 'AwaitExpression' || node.type === 'YieldExpression')
+        return true;
+    if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' || node.type === 'FunctionDeclaration')
+        return false;
+    if (node.type === 'ClassExpression' || node.type === 'ClassDeclaration') {
+        if (node.superClass && suspendsHere(node.superClass))
+            return true;
+        const members = node.body.body;
+        for (let i = 0; i < members.length; i++) {
+            const m = members[i];
+            if (m.type !== 'StaticBlock' && m.computed && suspendsHere(m.key))
+                return true;
+        }
+        return false;
+    }
+    const children = childNodes(node);
+    for (let i = 0; i < children.length; i++)
+        if (suspendsHere(children[i]))
+            return true;
+    return false;
+}
 /** Each child node of `node`. */
 export function forEachChildNode(node, visit) {
     const keys = objectKeys(node);
@@ -959,6 +989,9 @@ class Analyzer {
                     }
                     if (p.computed)
                         this.visitExpression(p.key, scope);
+                    if (p.computed && p.value.type === 'ClassExpression' && !p.value.id && p.value.superClass && suspendsHere(p.value.superClass)) {
+                        throw new UnsupportedSyntax('await or yield in the heritage of a class named by a computed key');
+                    }
                     if (p.value.type === 'FunctionExpression' && (p.method || p.kind !== 'init')) {
                         this.visitFunction(p.value, scope, { strict: scope.strict, method: true, derived: false, ctor: false });
                     }
@@ -971,9 +1004,16 @@ class Analyzer {
             case 'ArrowFunctionExpression':
                 this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false });
                 return;
-            case 'UnaryExpression':
+            case 'UnaryExpression': {
+                let target = node.argument;
+                while (target.type === 'ParenthesizedExpression' || target.type === 'ChainExpression')
+                    target = target.expression;
+                if (node.operator === 'delete' && target.type === 'MemberExpression' && target.computed && suspendsHere(target.property)) {
+                    throw new UnsupportedSyntax('await or yield in the key of a deleted member');
+                }
                 this.visitExpression(node.argument, scope);
                 return;
+            }
             case 'UpdateExpression':
                 this.visitExpression(node.argument, scope);
                 return;
@@ -990,6 +1030,9 @@ class Analyzer {
                 this.visitExpression(node.right, scope);
                 return;
             case 'MemberExpression':
+                if (node.object.type === 'Super' && node.computed && suspendsHere(node.property)) {
+                    throw new UnsupportedSyntax('await or yield in the key of a super member');
+                }
                 if (node.object.type === 'Super')
                     this.useHome(node.object, scope);
                 else
