@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { WorkspaceFs } from '../../packages/core/src/workspace/workspace-fs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -109,8 +111,8 @@ assert.equal(await ws.fs.readlink('/tmp/data/rel'), 'real/f.txt');
 // ── resolve, and what names nothing ──────────────────────────────────────
 assert.equal(ws.fs.resolve('a.txt'), '/home/user/a.txt');
 assert.equal(ws.fs.resolve('/etc/passwd'), '/etc/passwd', 'an absolute path is untouched');
-assert.equal(ws.fs.resolve('.'), '/home/user');
-assert.equal(ws.fs.resolve('./x//y/.'), '/home/user/x/y/');
+assert.equal(ws.fs.resolve('.'), '/home/user/.', '. is left for the walk');
+assert.equal(ws.fs.resolve('./x//y/.'), '/home/user/./x//y/.', 'as spelled');
 assert.equal(ws.fs.resolve('../x'), '/home/user/../x', '.. is left for the walk');
 assert.equal(ws.fs.resolve('d/'), '/home/user/d/');
 assert.throws(() => ws.fs.resolve(''), { code: 'ENOENT' });
@@ -130,6 +132,33 @@ assert.equal(await code(() => inKeep.rename('.', '/home/user/moved')), 'EBUSY');
 assert.equal(await code(() => inKeep.move('/home/user/a.txt', '..')), 'EBUSY');
 assert.equal(await ws.fs.isDirectory('keep/inner'), true, 'nothing was removed');
 assert.equal(inKeep.resolve('x'), '/home/user/keep/inner/x', 'a view at another directory');
+
+// ── A cwd that is a link: `.` is the directory it leads to ──────────────
+// The trailing `.` makes the walk follow the link, as it does for a process;
+// the view answers what the process view answers for the same spelling.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const files = new ProcessFiles(engine);
+  files.vfs.mount('/m', new MemoryVFS({ uid: 1000, gid: 1000 }));
+  const linked = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs: engine, filesystem: files });
+  const view = linked.shell.getVfs();
+  await view.mkdir('/m/real');
+  await view.writeFile('/m/real/f.txt', 'F');
+  await view.symlink('/m/real', '/m/link');
+  const atLink = new WorkspaceFs(view, '/m/link');
+  assert.equal((await atLink.stat('.', { follow: false })).type, 'directory', 'lstat(".") at a linked cwd is the directory');
+  assert.equal((await view.stat('/m/link/.', { follow: false })).type, 'directory', 'as the process view has it');
+  assert.equal(await code(() => atLink.readlink('.')), 'EINVAL', '. is not the link');
+  assert.equal(await atLink.realpath('.'), '/m/real');
+  assert.equal(await atLink.readFileString('f.txt'), 'F');
+  // On SQLite, the same spelling is passed as it is.
+  await view.mkdir('/home/user/sreal');
+  await view.symlink('/home/user/sreal', '/home/user/slink');
+  const atSqliteLink = new WorkspaceFs(view, '/home/user/slink');
+  assert.deepEqual(await atSqliteLink.stat('.', { follow: false }), await view.stat('/home/user/slink/.', { follow: false }));
+  await linked.close();
+}
 
 // ── A cd in the session shell is that process's, not the view's ─────────
 await ws.shell.execute('cd /tmp');

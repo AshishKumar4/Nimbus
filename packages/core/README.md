@@ -89,9 +89,11 @@ it.
 process does: the one the workspace starts in, which is `create`'s `cwd`,
 else `HOME`. A `cd` typed into the shell moves the shell, not `.fs`.
 `ws.fs.cwd` says where that is, and `ws.fs.resolve(path)` gives the
-absolute path an operation on `path` uses. `..` is taken after a link, as
-the kernel takes it. An empty path names nothing (`ENOENT`), and removing
-or renaming `.` or `..` is refused with Linux's code.
+absolute path an operation on `path` uses: the cwd, then `path` as it is
+spelled. `.` and `..` are left to the walk, which takes them after a link,
+as the kernel does, so with a cwd that is a link to a directory, `.` is
+the directory. An empty path names nothing (`ENOENT`), and removing or
+renaming `.` or `..` is refused with Linux's code.
 
 ```ts
 const ws = await NimbusWorkspace.create({ sql, transactions, cwd: '/home/user/app' });

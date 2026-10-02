@@ -14,7 +14,8 @@ longer a `ProcessView`, as described below.
   created with `cwd: '/home/user'` answered `ws.fs.readFile('a.txt')` with
   `ENOENT` while /home/user/a.txt existed, so every embedder resolved
   paths itself. `ws.fs.cwd` and `ws.fs.resolve(path)` say where a path
-  leads. An empty path is `ENOENT` (`readdir('')` listed `/`), and
+  leads: the cwd, then the path as spelled, with `.` and `..` left to the
+  walk. An empty path is `ENOENT` (`readdir('')` listed `/`), and
   removing or renaming a last component of `.` or `..` is refused with
   Linux's code (`remove('/a/b/.', { recursive: true })` removed /a/b).
   `ws.fs` has every method it had except `process`, the root-relative

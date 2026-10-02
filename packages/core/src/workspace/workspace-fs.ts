@@ -31,16 +31,15 @@ export class WorkspaceFs implements VFS {
 
   /**
    * The absolute path this view's operations use for `path`: itself when it
-   * is absolute, else from `cwd`, with `.` components dropped and `..` kept
-   * for the walk. An empty path names nothing (ENOENT), as in open(2).
+   * is absolute, else `cwd` and then `path` as it is spelled. Every `.` and
+   * `..` is left to the walk: `.` after a link makes it followed, so with
+   * `cwd` a link to a directory, `.` is that directory, as it is to a
+   * process. An empty path names nothing (ENOENT), as in open(2).
    */
   resolve(path: string): string {
     if (path === '') throw new VfsError('ENOENT', 'no such file or directory', path);
     if (path.startsWith('/')) return path;
-    const rest = path.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
-    if (rest === '') return this.cwd;
-    // A trailing slash says the name is a directory; it stays.
-    return `${this.cwd === '/' ? '' : this.cwd}/${rest}${/\/\.?$/.test(path) ? '/' : ''}`;
+    return `${this.cwd === '/' ? '' : this.cwd}/${path}`;
   }
 
   /**
