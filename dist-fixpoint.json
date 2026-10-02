@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a774a0a1ba007b2b95a17dcdcb88cf2748e5f63da49ad72e4e0c982654ac8446",
+  "fingerprint": "581ae9830f2e2fe8761bc230c449219d89234f37886c8ba7c4847a5c79842b02",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -932,7 +932,7 @@
     "packages/core/dist/vfs/sqlite-files.js": "7b5a8f3aa35127fa914575d13ce0b986f88fe8f08c67adbc4362452410b204cb",
     "packages/core/dist/vfs/sqlite-vfs.d.ts": "aeeb27b9154612bda16d9e18f00b7afb607c5cf3b3ff1e150f6b56bd54784681",
     "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "1a59b6c798ed1ab5b0676067269980ac7667d889fc8377a66e27a6a7689f6bfe",
-    "packages/core/dist/vfs/sqlite-vfs.js": "47b3244fcf07238c934bba6ef5cc42ef83c3237e9345e99b253f32d2de7a820b",
+    "packages/core/dist/vfs/sqlite-vfs.js": "90ce4e778134a08ca3e683e665a0e807ad677a56f3975680d2c3ff87e2d98092",
     "packages/core/dist/vfs/symlink-registry.d.ts": "2f070895b41608e49772066ace71fa2415b5500e655bbd6a204944057a4f0803",
     "packages/core/dist/vfs/symlink-registry.d.ts.map": "cb3c101363d49acdd12258f9e2e4941ddc026d6bf0092758080e922f9ecf1e96",
     "packages/core/dist/vfs/symlink-registry.js": "aeff373a644847fa6b5edcba0b3df01b1d81253f308adc859924c6fba0fbed1a",
@@ -1248,7 +1248,7 @@
     "packages/core/src/vfs/proc-vfs.ts": "6b66fc887bed23d11cb76f1906206c378ab42d78da8339b54751a451f3faea91",
     "packages/core/src/vfs/seed-project.ts": "72a9217bb335b6b2881a41e563cfd18361344bc0c5b69f6c3c74e0ad46f44e7d",
     "packages/core/src/vfs/sqlite-files.ts": "9882e8c50b8b0db6d64ee1c31c28f5d806274718b9c4077c0e74493e254734f6",
-    "packages/core/src/vfs/sqlite-vfs.ts": "dd2206359c1a1958ebc55d57714cf9a193266edbecc79d614208b38f73cbeb12",
+    "packages/core/src/vfs/sqlite-vfs.ts": "34ff3d6b00335e98b39ef34478a1ed52696744a56c687bc72e1679c6b5c02ff2",
     "packages/core/src/vfs/symlink-registry.ts": "02e7663e91b0ce2e6cb96732722767eef3669808e12693af66c65d695af7c98c",
     "packages/core/src/vfs/vfs-error.ts": "e3e5112aae77dd21d9ef55c1a7b8398d504593e719e67dc45b8084ccacadf192",
     "packages/core/src/vfs/vfs.ts": "470b063e1aab91d6f2ed85a46e383985c727150527e8cd2cd8e23080f2ce9fae",
