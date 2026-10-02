@@ -3,6 +3,19 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Fixed: a process's rename within one mount answered `EXDEV` even where the
+  mounted backend renames, so `mv /m/a /m/b`, a node process's `fs.rename`
+  and `ws.fs.rename` copied, or failed, where the namespace renames in
+  place. Within one mount a rename is now that mount's own. Between two
+  filesystems, and on a backend with no rename in place, it still answers
+  `EXDEV`; renaming a mount point answers `EBUSY`, as on Linux.
+- Fixed: `rm -r` of a tree on a mount whose backend has no removal of its
+  own exited 0 when an entry in the tree could not be removed, and left the
+  entry there. It now fails with that entry's error, as the asynchronous
+  path already did.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
