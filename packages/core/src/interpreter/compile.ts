@@ -49,7 +49,7 @@ import { UnsupportedSyntax } from './unsupported.js';
 import {
   AWAIT, BREAK, CONTINUE, ClassRecord, Completion, DELEGATE, type Env, FunctionInfo, type FunctionShape, PrivateName,
   type Signal, type Sync, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance,
-  frameTemplate, isObject, labeledSignal, makeClass, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN,
+  frameTemplate, isObject, makeClass, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN,
 } from './runtime.js';
 import {
   arrayIteration, asyncFromSyncIterator, closeArrayIteration, describe, getIterator, iteratorFrom,
@@ -893,11 +893,11 @@ export class Compiler {
         return syncCode((env) => { throw as(env); });
       }
       case 'BreakStatement': {
-        const signal = node.label ? labeledSignal('break', node.label.name) : BREAK;
+        const signal = node.label ? new Completion('break', node.label.name, undefined) : BREAK;
         return syncCode(() => signal);
       }
       case 'ContinueStatement': {
-        const signal = node.label ? labeledSignal('continue', node.label.name) : CONTINUE;
+        const signal = node.label ? new Completion('continue', node.label.name, undefined) : CONTINUE;
         return syncCode(() => signal);
       }
       case 'LabeledStatement': return this.labeled(node.label.name, node.body, labels);
@@ -1035,11 +1035,11 @@ export class Compiler {
     if (inner === null) return null;
     if (isLoop) return inner;
     // A labeled non-loop statement ends normally on a break to its label.
-    const target = labeledSignal('break', label);
+    const ends = (s: unknown): boolean => s instanceof Completion && s.kind === 'break' && s.label === label;
     const is = inner.s;
     const ig = inner.g;
-    if (ig) return genCode(function* (env) { const s = yield* ig(env); return s === target ? undefined : s; });
-    return syncCode((env) => { const s = is(env); return s === target ? undefined : s; });
+    if (ig) return genCode(function* (env) { const s = yield* ig(env); return ends(s) ? undefined : s; });
+    return syncCode((env) => { const s = is(env); return ends(s) ? undefined : s; });
   }
 
   /**
@@ -1047,14 +1047,11 @@ export class Compiler {
    * iteration, stop normally, or hand the completion out.
    */
   private loopControl(labels: Labels): (s: Completion) => LoopStep {
-    const breaks = mapList(labels, (l) => labeledSignal('break', l));
-    const continues = mapList(labels, (l) => labeledSignal('continue', l));
     return (s) => {
       if (s === CONTINUE) return 'next';
       if (s === BREAK) return 'stop';
-      if (s.kind === 'continue' && contains(continues, s)) return 'next';
-      if (s.kind === 'break' && contains(breaks, s)) return 'stop';
-      return 'out';
+      if (s.label === null || !contains(labels, s.label)) return 'out';
+      return s.kind === 'continue' ? 'next' : s.kind === 'break' ? 'stop' : 'out';
     };
   }
 
@@ -1526,7 +1523,6 @@ export class Compiler {
   }
 
   private switchStatement(node: SwitchStatement, labels: Labels): Code {
-    const breakLabels = mapList(labels, (l) => labeledSignal('break', l));
     const discriminant = this.expr(node.discriminant);
     const scope = this.analysis.scopeOf(node);
     const entry = this.scopeEntry(scope);
@@ -1545,7 +1541,7 @@ export class Compiler {
     const finish = (s: unknown): unknown => {
       if (s === undefined) return undefined;
       if (s === BREAK) return undefined;
-      if (s instanceof Completion && s.kind === 'break' && contains(breakLabels, s)) return undefined;
+      if (s instanceof Completion && s.kind === 'break' && s.label !== null && contains(labels, s.label)) return undefined;
       return s;
     };
     const allSync = discriminant.g === null && everyItem(tests, (t) => t === null || t.g === null) && everyItem(bodies, (b) => b.g === null);

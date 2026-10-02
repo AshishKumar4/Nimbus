@@ -4,7 +4,7 @@
  */
 import type { FactoryFunctionInfo, FunctionFactories, FunctionRuntime, HostOperators, HostOps, NativeFunction } from './host-ops.js';
 import {
-  Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeMap, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList,
+  Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList,
   dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn,
   reflectApply, reflectConstruct, reflectOwnKeys, registerSource, stringOf, symbolDescription, withElement,
 } from './intrinsics.js';
@@ -50,16 +50,6 @@ export type Signal = Completion | undefined;
 
 export const BREAK = new Completion('break', null, undefined);
 export const CONTINUE = new Completion('continue', null, undefined);
-const labeled = new SafeMap<string, Completion>();
-export function labeledSignal(kind: 'break' | 'continue', label: string): Completion {
-  const key = `${kind}:${label}`;
-  let signal = labeled.get(key);
-  if (!signal) {
-    signal = new Completion(kind, label, undefined);
-    labeled.set(key, signal);
-  }
-  return signal;
-}
 
 /** The marker an async generator body yields to await, yield or delegate; its operand is beside it. */
 export const AWAIT = objectFreeze({ mark: 'await' });
