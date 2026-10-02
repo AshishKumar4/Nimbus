@@ -360,4 +360,21 @@ function treeShape(vfs, root) {
   assert.equal(rawVfs._verifyCounters(), null);
 }
 
+// ── Overwriting an occupant counts what it was ───────────────────────────
+// The counters were loaded before the rename, so the rename's own accounting
+// is what keeps them: an empty directory replaced by another is one directory
+// fewer, not one file fewer, and a file replaced by a file is one file fewer.
+{
+  const { rawVfs, vfs } = openVfs();
+  vfs.mkdir('a/one', { recursive: true });
+  vfs.mkdir('a/two', { recursive: true });
+  vfs.writeFile('a/f1', 'x');
+  vfs.writeFile('a/f2', 'yy');
+  rawVfs.getStats();
+  vfs.rename('a/one', 'a/two');
+  assert.equal(rawVfs._verifyCounters(), null, 'a directory over an empty directory');
+  vfs.rename('a/f1', 'a/f2');
+  assert.equal(rawVfs._verifyCounters(), null, 'a file over a file');
+}
+
 console.log('sqlite-vfs-rename-bounded: ok');

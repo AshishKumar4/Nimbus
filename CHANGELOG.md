@@ -40,6 +40,10 @@ published independently in the `@nimbus-sh` npm scope.
   terms), so past its own limit neither transforms it.
 - `jsx: "preserve"` with `format: "cjs"` is refused: preserved JSX would name
   imports that the conversion to CommonJS moved onto records.
+- Fixed: on the SQLite filesystem, renaming a directory over an empty
+  directory counted the replaced directory as a file, so `df` and the
+  filesystem's stats reported one file too few and one directory too many
+  until the counters were next reloaded from the store.
 
 ## 2026-10-02
 
