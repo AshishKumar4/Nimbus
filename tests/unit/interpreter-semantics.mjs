@@ -246,6 +246,12 @@ async function runCases(interpreterFile, opsFile) {
   assert.throws(() => F('}, globalThis.__broke = 1, function () {'), SyntaxError);
   check('a body cannot break out of its function', globalThis.__broke, undefined);
   assert.throws(() => interp.compileFunction('function', [], '{ using x = null; }'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  // What the compiler refuses is refused before any of the code runs, though inner functions compile on first call.
+  globalThis.__ran = false;
+  assert.throws(() => interp.compileFunction('function', [], 'globalThis.__ran = true; return async function () { delete o[await k]; };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  assert.throws(() => interp.compileFunction('function', [], 'return { m() { return async () => super[await k]; } };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  assert.throws(() => interp.compileFunction('function', [], 'return async function () { return { [k]: class extends (await B) {} }; };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  check('nothing of a refused unit ran', globalThis.__ran, false);
   assert.throws(() => interp.compileModule('/w/m.ts', 'export const x: number = 1;'), (e) => e.code === INTERPRETER_UNSUPPORTED);
 
   // ── Module cells ──
