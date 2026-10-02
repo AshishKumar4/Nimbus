@@ -36,15 +36,14 @@ if (process.argv[2] !== '--cases') {
 
 async function runCases(interpreterFile, opsFile) {
   const require = createRequire(import.meta.url);
-  const { createInterpreter, INTERPRETER_UNSUPPORTED } = require(interpreterFile);
+  const { loadInterpreter } = await import('./lib/interpreter-load.mjs');
   const { ROUTE_FUNCTION_CONSTRUCTORS } = await import('./lib/interpreter-build.mjs');
   const imports = [];
-  const interp = createInterpreter(require(opsFile), {
-    dynamicImport: (parent, specifier) => {
-      imports.push([parent, specifier]);
-      return Promise.resolve({ specifier });
-    },
+  const interp = loadInterpreter(interpreterFile, opsFile, (parent, specifier) => {
+    imports.push([parent, specifier]);
+    return Promise.resolve({ specifier });
   });
+  const { INTERPRETER_UNSUPPORTED } = require(interpreterFile);
   assert.throws(() => Function('return 1'), EvalError, 'the process refuses string code generation');
   // A program's own Function, as node-shims installs it: routed to the interpreter.
   const route = interp.compileFunction('function', [], `return ${ROUTE_FUNCTION_CONSTRUCTORS};`)();
@@ -253,6 +252,11 @@ async function runCases(interpreterFile, opsFile) {
   assert.throws(() => interp.compileFunction('function', [], 'return async function () { return { [k]: class extends (await B) {} }; };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
   check('nothing of a refused unit ran', globalThis.__ran, false);
   assert.throws(() => interp.compileModule('/w/m.ts', 'export const x: number = 1;'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+
+  // ── Found in review ──
+  check('an iterable\'s @@iterator is read once per use',
+    F('let reads = 0; const it = { get [Symbol.iterator]() { reads++; return function* () { yield 1; yield 2 } } }; for (const x of it) {} const s = [...it]; const [a] = it; (function () {})(...it); const d = [...(function* () { yield* it })()]; return [reads, s, a, d]')(),
+    [5, [1, 2], 1, [1, 2]]);
 
   // ── Module cells ──
   {

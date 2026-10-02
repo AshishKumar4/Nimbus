@@ -83,6 +83,12 @@ const SOURCES = [
     from: 'dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE',
   },
   {
+    name: 'JS_INTERPRETER_PRIMORDIALS',
+    family: 'js-interpreter-primordials',
+    source: interpreter.primordials,
+    from: '@nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs',
+  },
+  {
     name: 'JS_INTERPRETER',
     family: 'js-interpreter',
     source: interpreter.interpreter,

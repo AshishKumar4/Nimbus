@@ -21,21 +21,32 @@
  * natively too.
  */
 import { parse, type FunctionExpression, type Options, type Program } from 'acorn';
-import { parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
+import {
+  type SourceRealm, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
+} from '../_shared/runtime-function-source.js';
 import { Compiler, ROOT_ENV, type ModuleCell, type UnitContext, type UnitHost } from './compile.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
-import { installHost, makeFunction } from './runtime.js';
+import { frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
-import { SafeMap, charCodeAt, isWhitespaceCode, someItem, stringLastIndexOf, stringSlice } from './intrinsics.js';
+import {
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf,
+  stringOf, stringSlice, withElement,
+} from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
-export { HOST_OPS_SOURCE, type HostOps } from './host-ops.js';
+export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export type { ModuleCell } from './compile.js';
 
 export interface InterpreterHost {
   /** `import(specifier, options)` from code whose module URL is `parentUrl`. */
   dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
+  /**
+   * LAUNCH_PRIMORDIALS of the primordials module the launch loaded at its
+   * start: the interpreter must have loaded that same module, not a second
+   * evaluation of it, which would capture what the program has replaced.
+   */
+  readonly primordials: object;
 }
 
 export interface Interpreter {
@@ -115,6 +126,15 @@ function hasModuleSyntax(program: Program): boolean {
     || s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
 }
 
+/** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
+const REALM: SourceRealm = {
+  SyntaxError,
+  messageOf(error) {
+    const message = isObject(error) ? reflectGet(error, 'message') : undefined;
+    return typeof message === 'string' ? message : stringOf(error);
+  },
+};
+
 let installed: HostOps | null = null;
 
 function unitContext(source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
@@ -122,6 +142,7 @@ function unitContext(source: string, module: boolean, host: UnitHost, moduleScop
 }
 
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
+  if (host.primordials !== LAUNCH_PRIMORDIALS) throw new Error('interpreter: its built-ins were not captured at the launch start');
   if (installed !== hostOps) {
     installHost(hostOps);
     installed = hostOps;
@@ -132,10 +153,10 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const short = withoutTrailingLineComments(body);
       let parsed: { readonly node: FunctionExpression; readonly text: string };
       try {
-        parsed = parseRuntimeFunction(kind, params, short);
+        parsed = parseRuntimeFunction(kind, params, short, REALM);
       } catch (error) {
         if (short === body) throw error;
-        parsed = parseRuntimeFunction(kind, params, body);
+        parsed = parseRuntimeFunction(kind, params, body, REALM);
       }
       const { node, text } = parsed;
       const analysis = analyzeFunction(node);
@@ -188,9 +209,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
       releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');
-      const env: unknown[] = new Array<unknown>(root.size);
-      env[0] = ROOT_ENV;
-      body.s(env);
+      body.s(withElement(frameTemplate(root.size, []), 0, ROOT_ENV));
     },
   };
 }

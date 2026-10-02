@@ -8,11 +8,11 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { loadInterpreter } from '../../unit/lib/interpreter-load.mjs';
 import { same } from './same.mjs';
 
 const require = createRequire(import.meta.url);
-const { createInterpreter } = require(process.env.NIMBUS_INTERPRETER);
-const interp = createInterpreter(require(process.env.NIMBUS_INTERPRETER_OPS), { dynamicImport: (parent, specifier) => import(String(specifier)) });
+const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBUS_INTERPRETER_OPS, (parent, specifier) => import(String(specifier)));
 const reportFile = process.argv[2];
 const report = JSON.parse(readFileSync(reportFile, 'utf8'));
 report.moduleResults = [];

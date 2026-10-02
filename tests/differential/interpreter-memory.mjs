@@ -77,7 +77,7 @@ try {
   const liveNative = Math.min(...live.native);
   const liveInterpreted = Math.min(...live.interpreted);
 
-  console.log(`interpreter load: ${MiB(interpretedFunctions.interpreterLoad)}`);
+  console.log(`primordials at the launch start: ${MiB(interpretedFunctions.primordialsLoad)}; interpreter load: ${MiB(interpretedFunctions.interpreterLoad)}`);
   console.log(`Astro first render, ${nativeFunctions.functions} functions (${MiB(nativeFunctions.sourceBytes)} of source) built and held: native ${MiB(nativeFunctions.retained)}, interpreted ${MiB(interpretedFunctions.retained)} (${(interpretedFunctions.retained / nativeFunctions.retained).toFixed(2)}x)`);
   console.log(`Vite config module loaded and held: native ${MiB(nativeConfig.retained)}, interpreted ${MiB(interpretedConfig.retained)} (${(interpretedConfig.retained / nativeConfig.retained).toFixed(2)}x)`);
   console.log(`Astro dev server after its first render, live heap: native ${MiB(liveNative)}, interpreted ${MiB(liveInterpreted)} (+${MiB(liveInterpreted - liveNative)})`);

@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
+import { PRIMORDIALS_FILE } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
 import { ROUTE_FUNCTION_CONSTRUCTORS } from './interpreter-build.mjs';
 
 // Test code's rejections and late errors land on this process; each test's
@@ -15,9 +16,10 @@ import { ROUTE_FUNCTION_CONSTRUCTORS } from './interpreter-build.mjs';
 process.on('unhandledRejection', () => {});
 process.on('uncaughtException', () => {});
 
-const [, , listFile, rootDir, interpreterFile, opsFile] = process.argv;
+const [, , listFile, rootDir, primordialsFile, interpreterFile, opsFile] = process.argv;
 const tests = JSON.parse(readFileSync(listFile, 'utf8'));
-const wrap = (file) => new vm.Script(`(function (module, exports) {${readFileSync(file, 'utf8')}\n})`, { filename: file });
+const wrap = (file) => new vm.Script(`(function (module, exports, require) {${readFileSync(file, 'utf8')}\n})`, { filename: file });
+const primordialsScript = wrap(primordialsFile);
 const interpreterScript = wrap(interpreterFile);
 const opsScript = wrap(opsFile);
 const routeScript = new vm.Script(ROUTE_FUNCTION_CONSTRUCTORS);
@@ -31,9 +33,13 @@ function harnessFile(name) {
   return text;
 }
 
-function load(script, context) {
+/** A CommonJS module evaluated in `context`; its require answers with `modules` by specifier. */
+function load(script, context, modules = {}) {
   const module = { exports: {} };
-  script.runInContext(context)(module, module.exports);
+  script.runInContext(context)(module, module.exports, (id) => {
+    if (!Object.hasOwn(modules, id)) throw new Error(`no module ${id}`);
+    return modules[id];
+  });
   return module.exports;
 }
 
@@ -43,8 +49,13 @@ function realm(interpreted, printed) {
   const global = vm.runInContext('globalThis', context);
   let interp = null;
   if (interpreted) {
-    const { createInterpreter } = load(interpreterScript, context);
-    interp = createInterpreter(load(opsScript, context), { dynamicImport: () => Promise.reject(new Error('no module loader')) });
+    // The primordials first, as a launch loads them before any program code.
+    const primordials = load(primordialsScript, context);
+    const { createInterpreter } = load(interpreterScript, context, { [`./${PRIMORDIALS_FILE}`]: primordials });
+    interp = createInterpreter(load(opsScript, context), {
+      dynamicImport: () => Promise.reject(new Error('no module loader')),
+      primordials: primordials.LAUNCH_PRIMORDIALS,
+    });
     routeScript.runInContext(context)(interp);
   }
   global.print = (...args) => { printed.push(args.join(' ')); };

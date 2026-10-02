@@ -2,6 +2,10 @@
  * runtime-function-source.ts — the source text a Function constructor call
  * stands for, and when V8 refuses it. Shared by the module a staged call
  * becomes (commonjs-cell.ts) and the interpreter that runs an unstaged one.
+ *
+ * The interpreter runs this after a program may have replaced built-ins, so
+ * nothing here names one: the caller's SourceRealm supplies the two it needs
+ * (the interpreter's, from the launch's start; commonjs-cell's, its own).
  */
 import { parse, type FunctionExpression, type Program } from 'acorn';
 
@@ -25,8 +29,11 @@ function parameterList(params: readonly string[]): string {
   return text;
 }
 
-export function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
-  return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
+/** The built-ins this module's checks use, as the caller has them. */
+export interface SourceRealm {
+  readonly SyntaxError: new (message: string) => Error;
+  /** The message of what the parser threw. */
+  messageOf(error: unknown): string;
 }
 
 /** The function literal V8 builds for `new <Kind>Function(...params, body)`. */
@@ -40,12 +47,12 @@ export function runtimeFunctionSource(kind: RuntimeFunctionKind, params: readonl
  * at `bodyStart` (and empty, for the parameters' own check). Otherwise the
  * message V8 refuses it with.
  */
-function functionLiteral(text: string, bodyStart: number, emptyBody: boolean): FunctionExpression | string {
+function functionLiteral(text: string, bodyStart: number, emptyBody: boolean, realm: SourceRealm): FunctionExpression | string {
   let program: Program;
   try {
     program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
   } catch (e) {
-    return e instanceof Error ? e.message : String(e);
+    return realm.messageOf(e);
   }
   const statement = program.body[0];
   const fn = program.body.length === 1 && statement.type === 'ExpressionStatement' ? statement.expression : null;
@@ -68,7 +75,7 @@ function functionLiteral(text: string, bodyStart: number, emptyBody: boolean): F
  * such as `}, globalThis.x = 1, function () {` run code at module
  * evaluation that the constructor never would.
  */
-export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null {
+export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string, realm: SourceRealm): string | null {
   const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
   const paramText = parameterList(params);
   const checks: Array<[text: string, bodyStart: number, emptyBody: boolean]> = [
@@ -77,7 +84,7 @@ export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: re
     [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
   ];
   for (let i = 0; i < checks.length; i++) {
-    const checked = functionLiteral(checks[i][0], checks[i][1], checks[i][2]);
+    const checked = functionLiteral(checks[i][0], checks[i][1], checks[i][2], realm);
     if (typeof checked === 'string') return checked;
   }
   return null;
@@ -91,13 +98,15 @@ export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: re
  * body is parsed as the body alone would be, in the parameters' context.
  * Throws the SyntaxError V8 would. `text` is what `node`'s offsets index.
  */
-export function parseRuntimeFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string): { readonly node: FunctionExpression; readonly text: string } {
+export function parseRuntimeFunction(
+  kind: RuntimeFunctionKind, params: readonly string[], body: string, realm: SourceRealm,
+): { readonly node: FunctionExpression; readonly text: string } {
   const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
   const paramText = parameterList(params);
-  const own = functionLiteral(`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true);
-  if (typeof own === 'string') throw new SyntaxError(own);
+  const own = functionLiteral(`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true, realm);
+  if (typeof own === 'string') throw new realm.SyntaxError(own);
   const text = `${head}${paramText}\n) {\n${body}\n})`;
-  const node = functionLiteral(text, `${head}${paramText}\n) `.length, false);
-  if (typeof node === 'string') throw new SyntaxError(node);
+  const node = functionLiteral(text, `${head}${paramText}\n) `.length, false, realm);
+  if (typeof node === 'string') throw new realm.SyntaxError(node);
   return { node, text };
 }

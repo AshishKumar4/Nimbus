@@ -1,7 +1,7 @@
 
-const ops = (function () {
+const operators = (function () {
   "use strict";
-  return {
+  return (ownKeys) => ({
     add: (a, b) => a + b,
     sub: (a, b) => a - b,
     mul: (a, b) => a * b,
@@ -26,19 +26,26 @@ const ops = (function () {
     numeric: (v) => { let x = v; return x++; },
     increment: (n) => { let x = n; return ++x; },
     decrement: (n) => { let x = n; return --x; },
-    propertyKey: (v) => Reflect.ownKeys({ [v]: 0 })[0],
+    propertyKey: (v) => ownKeys({ [v]: 0 })[0],
     get: (o, k) => o[k],
     set: (o, k, v) => { o[k] = v; },
     remove: (o, k) => delete o[k],
-  };
+  });
 })();
-const globals = { "Object": () => globalThis.Object, "Function": () => globalThis.Function, "Array": () => globalThis.Array, "Number": () => globalThis.Number, "String": () => globalThis.String, "Boolean": () => globalThis.Boolean, "Symbol": () => globalThis.Symbol, "BigInt": () => globalThis.BigInt, "Math": () => globalThis.Math, "JSON": () => globalThis.JSON, "Date": () => globalThis.Date, "RegExp": () => globalThis.RegExp, "Error": () => globalThis.Error, "TypeError": () => globalThis.TypeError, "RangeError": () => globalThis.RangeError, "SyntaxError": () => globalThis.SyntaxError, "ReferenceError": () => globalThis.ReferenceError, "EvalError": () => globalThis.EvalError, "URIError": () => globalThis.URIError, "AggregateError": () => globalThis.AggregateError, "Promise": () => globalThis.Promise, "Proxy": () => globalThis.Proxy, "Reflect": () => globalThis.Reflect, "Map": () => globalThis.Map, "Set": () => globalThis.Set, "WeakMap": () => globalThis.WeakMap, "WeakSet": () => globalThis.WeakSet, "WeakRef": () => globalThis.WeakRef, "FinalizationRegistry": () => globalThis.FinalizationRegistry, "ArrayBuffer": () => globalThis.ArrayBuffer, "SharedArrayBuffer": () => globalThis.SharedArrayBuffer, "DataView": () => globalThis.DataView, "Uint8Array": () => globalThis.Uint8Array, "Int8Array": () => globalThis.Int8Array, "Uint16Array": () => globalThis.Uint16Array, "Int16Array": () => globalThis.Int16Array, "Uint32Array": () => globalThis.Uint32Array, "Int32Array": () => globalThis.Int32Array, "Float32Array": () => globalThis.Float32Array, "Float64Array": () => globalThis.Float64Array, "BigInt64Array": () => globalThis.BigInt64Array, "BigUint64Array": () => globalThis.BigUint64Array, "Uint8ClampedArray": () => globalThis.Uint8ClampedArray, "Intl": () => globalThis.Intl, "Atomics": () => globalThis.Atomics, "globalThis": () => globalThis.globalThis, "undefined": () => globalThis.undefined, "NaN": () => globalThis.NaN, "Infinity": () => globalThis.Infinity, "isNaN": () => globalThis.isNaN, "isFinite": () => globalThis.isFinite, "parseInt": () => globalThis.parseInt, "parseFloat": () => globalThis.parseFloat, "encodeURIComponent": () => globalThis.encodeURIComponent, "decodeURIComponent": () => globalThis.decodeURIComponent, "encodeURI": () => globalThis.encodeURI, "decodeURI": () => globalThis.decodeURI, "escape": () => globalThis.escape, "unescape": () => globalThis.unescape, "console": () => globalThis.console, "process": () => globalThis.process, "Buffer": () => globalThis.Buffer, "setTimeout": () => globalThis.setTimeout, "clearTimeout": () => globalThis.clearTimeout, "setInterval": () => globalThis.setInterval, "clearInterval": () => globalThis.clearInterval, "setImmediate": () => globalThis.setImmediate, "clearImmediate": () => globalThis.clearImmediate, "queueMicrotask": () => globalThis.queueMicrotask, "structuredClone": () => globalThis.structuredClone, "fetch": () => globalThis.fetch, "Request": () => globalThis.Request, "Response": () => globalThis.Response, "Headers": () => globalThis.Headers, "URL": () => globalThis.URL, "URLSearchParams": () => globalThis.URLSearchParams, "TextEncoder": () => globalThis.TextEncoder, "TextDecoder": () => globalThis.TextDecoder, "AbortController": () => globalThis.AbortController, "AbortSignal": () => globalThis.AbortSignal, "Event": () => globalThis.Event, "EventTarget": () => globalThis.EventTarget, "crypto": () => globalThis.crypto, "performance": () => globalThis.performance, "atob": () => globalThis.atob, "btoa": () => globalThis.btoa, "Blob": () => globalThis.Blob, "FormData": () => globalThis.FormData, "ReadableStream": () => globalThis.ReadableStream, "WritableStream": () => globalThis.WritableStream, "TransformStream": () => globalThis.TransformStream, "WebAssembly": () => globalThis.WebAssembly, "navigator": () => globalThis.navigator, "require": () => globalThis.require, "module": () => globalThis.module, "exports": () => globalThis.exports, "__filename": () => globalThis.__filename, "__dirname": () => globalThis.__dirname };
-ops.globalReader = (name) => (Object.hasOwn(globals, name) ? globals[name] : undefined);
-ops.setSloppy = function (o, k, v) { o[k] = v; };
-ops.removeSloppy = function (o, k) { return delete o[k]; };
+function hostOperators(rt) {
+  const ops = operators(rt.ownKeys);
+  const g = rt.global, hasOwn = rt.hasOwn;
+  const globals = { __proto__: null, "Object": () => g.Object, "Function": () => g.Function, "Array": () => g.Array, "Number": () => g.Number, "String": () => g.String, "Boolean": () => g.Boolean, "Symbol": () => g.Symbol, "BigInt": () => g.BigInt, "Math": () => g.Math, "JSON": () => g.JSON, "Date": () => g.Date, "RegExp": () => g.RegExp, "Error": () => g.Error, "TypeError": () => g.TypeError, "RangeError": () => g.RangeError, "SyntaxError": () => g.SyntaxError, "ReferenceError": () => g.ReferenceError, "EvalError": () => g.EvalError, "URIError": () => g.URIError, "AggregateError": () => g.AggregateError, "Promise": () => g.Promise, "Proxy": () => g.Proxy, "Reflect": () => g.Reflect, "Map": () => g.Map, "Set": () => g.Set, "WeakMap": () => g.WeakMap, "WeakSet": () => g.WeakSet, "WeakRef": () => g.WeakRef, "FinalizationRegistry": () => g.FinalizationRegistry, "ArrayBuffer": () => g.ArrayBuffer, "SharedArrayBuffer": () => g.SharedArrayBuffer, "DataView": () => g.DataView, "Uint8Array": () => g.Uint8Array, "Int8Array": () => g.Int8Array, "Uint16Array": () => g.Uint16Array, "Int16Array": () => g.Int16Array, "Uint32Array": () => g.Uint32Array, "Int32Array": () => g.Int32Array, "Float32Array": () => g.Float32Array, "Float64Array": () => g.Float64Array, "BigInt64Array": () => g.BigInt64Array, "BigUint64Array": () => g.BigUint64Array, "Uint8ClampedArray": () => g.Uint8ClampedArray, "Intl": () => g.Intl, "Atomics": () => g.Atomics, "globalThis": () => g.globalThis, "undefined": () => g.undefined, "NaN": () => g.NaN, "Infinity": () => g.Infinity, "isNaN": () => g.isNaN, "isFinite": () => g.isFinite, "parseInt": () => g.parseInt, "parseFloat": () => g.parseFloat, "encodeURIComponent": () => g.encodeURIComponent, "decodeURIComponent": () => g.decodeURIComponent, "encodeURI": () => g.encodeURI, "decodeURI": () => g.decodeURI, "escape": () => g.escape, "unescape": () => g.unescape, "console": () => g.console, "process": () => g.process, "Buffer": () => g.Buffer, "setTimeout": () => g.setTimeout, "clearTimeout": () => g.clearTimeout, "setInterval": () => g.setInterval, "clearInterval": () => g.clearInterval, "setImmediate": () => g.setImmediate, "clearImmediate": () => g.clearImmediate, "queueMicrotask": () => g.queueMicrotask, "structuredClone": () => g.structuredClone, "fetch": () => g.fetch, "Request": () => g.Request, "Response": () => g.Response, "Headers": () => g.Headers, "URL": () => g.URL, "URLSearchParams": () => g.URLSearchParams, "TextEncoder": () => g.TextEncoder, "TextDecoder": () => g.TextDecoder, "AbortController": () => g.AbortController, "AbortSignal": () => g.AbortSignal, "Event": () => g.Event, "EventTarget": () => g.EventTarget, "crypto": () => g.crypto, "performance": () => g.performance, "atob": () => g.atob, "btoa": () => g.btoa, "Blob": () => g.Blob, "FormData": () => g.FormData, "ReadableStream": () => g.ReadableStream, "WritableStream": () => g.WritableStream, "TransformStream": () => g.TransformStream, "WebAssembly": () => g.WebAssembly, "navigator": () => g.navigator, "require": () => g.require, "module": () => g.module, "exports": () => g.exports, "__filename": () => g.__filename, "__dirname": () => g.__dirname };
+  ops.globalReader = (name) => (hasOwn(globals, name) ? globals[name] : undefined);
+  ops.setSloppy = function (o, k, v) { o[k] = v; };
+  ops.removeSloppy = function (o, k) { return delete o[k]; };
+  const delegate = function* (iterable) { return yield* iterable; };
+  delegate.prototype = rt.SafeGeneratorPrototype;
+  ops.delegate = delegate;
+  return ops;
+}
 function sloppy(rt) {
-const { call, arrow: callArrow, enter, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
-const KEY = Symbol("nimbus.interpreter.environment");
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
@@ -64,6 +71,7 @@ async function* drain(it, r) {
     r = ok ? it.next(value) : it.throw(value);
   }
 }
+drain.prototype = rt.SafeAsyncGeneratorPrototype;
 return {
   plain(fi, scope) {
     const f = (0, function () { return call(fi, scope, f, this, arguments, new.target, undefined); });
@@ -77,7 +85,8 @@ return {
     return (...args) => callArrow(fi, scope, args);
   },
   generator(fi, scope, home) {
-    const f = (0, function* (...{ [KEY]: env = enter(fi, scope, f, this, arguments, undefined, home) }) {
+    const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
+      const env = takeFrame(arguments);
       return finish(fi, fi.body ? fi.body(env) : yield* fi.gen(env));
     });
     return f;
@@ -116,7 +125,8 @@ return {
   // read the value of, so the body is returned with MARK: if its finally
   // blocks leave MARK alone, the native return proceeds with its own value.
   asyncGenerator(fi, scope, home) {
-    const f = (0, async function* (...{ [KEY]: env = enter(fi, scope, f, this, arguments, undefined, home) }) {
+    const f = (0, async function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
+      const env = takeFrame(arguments);
       if (fi.body) return finish(fi, fi.body(env));
       const it = fi.gen(env);
       let r = it.next();
@@ -156,8 +166,7 @@ return {
 const strict = (function () {
   "use strict";
   return function (rt) {
-const { call, arrow: callArrow, enter, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
-const KEY = Symbol("nimbus.interpreter.environment");
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
@@ -183,6 +192,7 @@ async function* drain(it, r) {
     r = ok ? it.next(value) : it.throw(value);
   }
 }
+drain.prototype = rt.SafeAsyncGeneratorPrototype;
 return {
   plain(fi, scope) {
     const f = (0, function () { return call(fi, scope, f, this, arguments, new.target, undefined); });
@@ -196,7 +206,8 @@ return {
     return (...args) => callArrow(fi, scope, args);
   },
   generator(fi, scope, home) {
-    const f = (0, function* (...{ [KEY]: env = enter(fi, scope, f, this, arguments, undefined, home) }) {
+    const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
+      const env = takeFrame(arguments);
       return finish(fi, fi.body ? fi.body(env) : yield* fi.gen(env));
     });
     return f;
@@ -235,7 +246,8 @@ return {
   // read the value of, so the body is returned with MARK: if its finally
   // blocks leave MARK alone, the native return proceeds with its own value.
   asyncGenerator(fi, scope, home) {
-    const f = (0, async function* (...{ [KEY]: env = enter(fi, scope, f, this, arguments, undefined, home) }) {
+    const f = (0, async function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
+      const env = takeFrame(arguments);
       if (fi.body) return finish(fi, fi.body(env));
       const it = fi.gen(env);
       let r = it.next();
@@ -273,4 +285,4 @@ return {
 };
 };
 })();
-module.exports = { ops, bind: (rt) => ({ strict: strict(rt), sloppy: sloppy(rt) }) };
+module.exports = { bind: (rt) => ({ ops: hostOperators(rt), strict: strict(rt), sloppy: sloppy(rt) }) };

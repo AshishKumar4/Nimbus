@@ -16,6 +16,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getHeapStatistics } from 'node:v8';
 
+import { loadPrimordials } from '../../unit/lib/interpreter-load.mjs';
+
 const [, , mode, captureDir, interpreterFile, opsFile] = process.argv;
 const require = createRequire(import.meta.url);
 const used = () => {
@@ -23,14 +25,18 @@ const used = () => {
   globalThis.gc();
   return getHeapStatistics().used_heap_size;
 };
+// The launch loads the primordials at its start, whatever its program does: measured apart.
+const beforePrimordials = used();
+const { LAUNCH_PRIMORDIALS: launchPrimordials } = loadPrimordials(interpreterFile);
+const primordialsLoad = used() - beforePrimordials;
 const read = (sub) => readdirSync(join(captureDir, sub)).sort().map((f) => JSON.parse(readFileSync(join(captureDir, sub, f), 'utf8')));
 const held = [];
-const result = { mode };
+const result = { mode, primordialsLoad };
 
 function loadInterpreter() {
   const before = used();
   const { createInterpreter } = require(interpreterFile);
-  const interp = createInterpreter(require(opsFile), { dynamicImport: (parent, specifier) => import(String(specifier)) });
+  const interp = createInterpreter(require(opsFile), { dynamicImport: (parent, specifier) => import(String(specifier)), primordials: launchPrimordials });
   // A first function and module warm the interpreter's own code; that is part of loading it.
   interp.compileFunction('function', ['a'], 'return a + 1')(1);
   const warm = { exports: {} };

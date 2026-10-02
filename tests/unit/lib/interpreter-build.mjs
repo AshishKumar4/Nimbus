@@ -1,8 +1,9 @@
 // The runtime-code interpreter built from core src (packages/worker/scripts/
-// interpreter-bundle.mjs, as staged for a node launch's map), written as two
-// CommonJS files a node process loads, and the routing the guest shims
-// install: each Function constructor answers a code-generation refusal with
-// the interpreter. Tests run them under `node
+// interpreter-bundle.mjs, as staged for a node launch's map), written as the
+// three CommonJS files a node process loads (the primordials first, as a
+// launch loads them at its start), and the routing the guest shims install:
+// each Function constructor answers a code-generation refusal with the
+// interpreter. Tests run them under `node
 // --disallow-code-generation-from-strings`, which refuses string code
 // generation exactly as a Worker does at request time.
 
@@ -11,19 +12,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bundleInterpreter } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
+import { PRIMORDIALS_FILE, bundleInterpreter } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
-/** Build the interpreter and its host module into a fresh directory under TMPDIR. */
+/** Build the interpreter, its primordials and its host module into a fresh directory under TMPDIR. */
 export async function buildInterpreterFiles() {
-  const { interpreter, ops } = await bundleInterpreter({ start: join(REPO, 'packages/worker') });
+  const { primordials, interpreter, ops } = await bundleInterpreter({ start: join(REPO, 'packages/worker') });
   const dir = mkdtempSync(join(tmpdir(), 'nimbus-interpreter-'));
-  const interpreterFile = join(dir, 'interpreter.cjs');
-  const opsFile = join(dir, 'interpreter-ops.cjs');
+  // A package.json of its own: `.js` files here are CommonJS, whatever encloses TMPDIR.
+  writeFileSync(join(dir, 'package.json'), '{"type":"commonjs"}');
+  const primordialsFile = join(dir, PRIMORDIALS_FILE);
+  const interpreterFile = join(dir, 'interpreter.js');
+  const opsFile = join(dir, 'interpreter-ops.js');
+  writeFileSync(primordialsFile, primordials);
   writeFileSync(interpreterFile, interpreter);
   writeFileSync(opsFile, ops);
-  return { dir, interpreterFile, opsFile };
+  return { dir, primordialsFile, interpreterFile, opsFile };
 }
 
 /**

@@ -4,8 +4,9 @@
  */
 import type { FactoryFunctionInfo, FunctionFactories, FunctionRuntime, HostOperators, HostOps, NativeFunction } from './host-ops.js';
 import {
-  SafeMap, SafeWeakMap, SafeWeakSet, arrayIsArray, arraySliceFrom, defineOrThrow, objectCreate, objectFreeze,
-  objectGetPrototypeOf, reflectApply, reflectConstruct, reflectGet, stringOf,
+  Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeMap, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList,
+  dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn,
+  reflectApply, reflectConstruct, reflectOwnKeys, registerSource, stringOf, symbolDescription, withElement,
 } from './intrinsics.js';
 
 /**
@@ -83,7 +84,6 @@ export class FunctionInfo implements FactoryFunctionInfo {
   gen: Gen | null = null;
   /** The body evaluates to the return value itself (an arrow's expression body). */
   expression = false;
-  size = 1;
   thisSlot = 0;
   argumentsSlot = 0;
   newTargetSlot = 0;
@@ -93,8 +93,11 @@ export class FunctionInfo implements FactoryFunctionInfo {
   params: number[] | null = null;
   /** Binds the parameters otherwise. */
   bindParams: ((env: Env, args: ArrayLike<unknown>) => void) | null = null;
-  /** Slots that start in their TDZ when the frame is created. */
-  tdzSlots: number[] = [];
+  /**
+   * What a call's frame starts as: slot 0 (the scope) unset, lexical slots
+   * in their TDZ, the rest undefined. Copied per call (frameTemplate).
+   */
+  frame: Env = [];
   /** A derived constructor's `this` starts uninitialized. */
   derived = false;
   /** A class constructor with no constructor in its source. */
@@ -116,8 +119,17 @@ export class FunctionInfo implements FactoryFunctionInfo {
 let host: HostOperators;
 let strictFactories: FunctionFactories<FunctionInfo, Env, ClassRecord>;
 let sloppyFactories: FunctionFactories<FunctionInfo, Env, ClassRecord>;
-/** Source text of every interpreted function, for Function.prototype.toString. */
-const sources = new SafeWeakMap<object, string>();
+
+/**
+ * A frame of `size` slots, `tdz` of them in their TDZ: every slot an own
+ * property, so that an environment copied from it (withElement) is read and
+ * written without ever consulting Array.prototype.
+ */
+export function frameTemplate(size: number, tdz: readonly number[]): Env {
+  const frame = newList(size);
+  for (let i = 0; i < tdz.length; i++) frame[tdz[i]] = TDZ;
+  return frame;
+}
 
 export function operators(): HostOperators {
   return host;
@@ -128,15 +140,12 @@ function enter(
   newTarget: Function | undefined, home: object | undefined,
 ): Env {
   if (fi.lazy !== null) fi.lazy();
-  const env: Env = new Array<unknown>(fi.size);
-  env[0] = scope;
+  const env = withElement(fi.frame, 0, scope);
   if (fi.thisSlot !== 0) env[fi.thisSlot] = fi.derived ? TDZ : thisArg;
   if (fi.argumentsSlot !== 0) env[fi.argumentsSlot] = args;
   if (fi.newTargetSlot !== 0) env[fi.newTargetSlot] = newTarget;
   if (fi.homeSlot !== 0) env[fi.homeSlot] = home;
   if (fi.funcSlot !== 0) env[fi.funcSlot] = fn;
-  const tdz = fi.tdzSlots;
-  for (let i = 0; i < tdz.length; i++) env[tdz[i]] = TDZ;
   const params = fi.params;
   if (params !== null) {
     for (let i = 0; i < params.length; i++) env[params[i]] = args[i];
@@ -212,7 +221,7 @@ const runtime: FunctionRuntime<FunctionInfo, Env, ClassRecord> = {
   constructDerived(fi, scope, ctor, record, args, newTarget) {
     // The implicit constructor passes its arguments on as they are, without iterating them.
     if (fi.implicit) {
-      const instance = superConstruct(ctor, arraySliceFrom(args, 0), newTarget);
+      const instance = superConstruct(ctor, copyList(args), newTarget);
       if (record.initialize) record.initialize(instance);
       return instance;
     }
@@ -227,23 +236,44 @@ const runtime: FunctionRuntime<FunctionInfo, Env, ClassRecord> = {
     // Returning undefined uninitialized makes the native constructor throw its ReferenceError.
     return self === TDZ ? undefined : self;
   },
+  enterGenerator(fi, scope, fn, thisArg, args, home) {
+    pendingFrames.set(args, enter(fi, scope, fn, thisArg, args, undefined, home));
+    return 'length';
+  },
+  takeFrame(args) {
+    const env = pendingFrames.get(args);
+    if (env === undefined) throw new Error('interpreter: a generator started without its frame');
+    pendingFrames.delete(args);
+    return env;
+  },
   operand() {
     const value = pendingOperand;
     pendingOperand = undefined;
     return value;
   },
+  ownKeys: reflectOwnKeys,
+  hasOwn: objectHasOwn,
+  global: globalObject,
+  SafeGeneratorPrototype,
+  SafeAsyncGeneratorPrototype,
   AWAIT,
   YIELD,
   DELEGATE,
   MARK,
 };
 
+/**
+ * The frame a generator's call bound, from when its parameters are bound
+ * (at the call) to when its body starts (at the first next()), keyed by the
+ * call's arguments object, which nothing else holds then.
+ */
+const pendingFrames = new SafeWeakMap<object, Env>();
+
 export function installHost(hostOps: HostOps): void {
-  host = hostOps.ops;
   const bound = hostOps.bind(runtime);
+  host = bound.ops;
   strictFactories = bound.strict;
   sloppyFactories = bound.sloppy;
-  installToString();
 }
 
 /** A function object of `fi`'s shape over `scope`. */
@@ -271,9 +301,9 @@ export function makeClass(fi: FunctionInfo, scope: Env, parent: unknown, name: s
 }
 
 function finishFunction(fn: NativeFunction, fi: FunctionInfo, name: string): NativeFunction {
-  if (fi.length !== 0) defineOrThrow(fn, 'length', { value: fi.length, configurable: true });
-  if (name !== '' || fi.shape === 'method') defineOrThrow(fn, 'name', { value: name, configurable: true });
-  sources.set(fn, fi.source);
+  if (fi.length !== 0) defineOrThrow(fn, 'length', dataDescriptor(fi.length, false, false, true));
+  if (name !== '' || fi.shape === 'method') defineOrThrow(fn, 'name', dataDescriptor(name, false, false, true));
+  registerSource(fn, fi.source);
   return fn;
 }
 
@@ -281,35 +311,12 @@ function finishFunction(fn: NativeFunction, fi: FunctionInfo, name: string): Nat
 export function functionName(key: PropertyKey, prefix?: string): string {
   let name: string;
   if (typeof key === 'symbol') {
-    const description = key.description;
+    const description = symbolDescription(key);
     name = description === undefined ? '' : `[${description}]`;
   } else {
     name = stringOf(key);
   }
   return prefix ? `${prefix} ${name}` : name;
-}
-
-let toStringInstalled = false;
-/**
- * Function.prototype.toString answers an interpreted function's source text,
- * as it would for the function compiled natively; everything else, and the
- * replacement itself, answer as before.
- */
-function installToString(): void {
-  if (toStringInstalled) return;
-  toStringInstalled = true;
-  const native = Function.prototype.toString;
-  const replacement = {
-    toString(this: unknown): string {
-      if (typeof this === 'function') {
-        const source = sources.get(this);
-        if (source !== undefined) return source;
-      }
-      return reflectApply(native, this, []);
-    },
-  }.toString;
-  sources.set(replacement, 'function toString() { [native code] }');
-  defineOrThrow(Function.prototype, 'toString', { value: replacement, writable: true, enumerable: false, configurable: true });
 }
 
 // ── Private names ──
@@ -364,61 +371,4 @@ export class PrivateName {
     if (this.brand.has(target)) throw new TypeError(`Cannot initialize private methods of class ${this.description} twice on the same object`);
     this.brand.add(target);
   }
-}
-
-// ── Iteration helpers ──
-
-/** CreateAsyncFromSyncIterator, for `for await` over a sync iterable. */
-export function asyncFromSyncIterator(syncIterator: object, next: unknown): object {
-  const settle = (result: unknown, closeOnRejection: boolean): Promise<unknown> => {
-    if (!isObject(result)) return Promise.reject(new TypeError(`Iterator result ${stringOf(result)} is not an object`));
-    const done = Boolean(reflectGet(result, 'done'));
-    const value: unknown = reflectGet(result, 'value');
-    return Promise.resolve(value).then(
-      (v) => ({ value: v, done }),
-      (error: unknown) => {
-        if (!done && closeOnRejection) {
-          const ret: unknown = reflectGet(syncIterator, 'return');
-          if (typeof ret === 'function') {
-            try { reflectApply(ret, syncIterator, []); } catch { /* the rejection wins */ }
-          }
-        }
-        throw error;
-      },
-    );
-  };
-  return {
-    next(value: unknown): Promise<unknown> {
-      try {
-        if (typeof next !== 'function') throw new TypeError('iterator.next is not a function');
-        return settle(reflectApply(next, syncIterator, [value]), true);
-      } catch (e) {
-        return Promise.reject(e);
-      }
-    },
-    return(value: unknown): Promise<unknown> {
-      try {
-        const ret: unknown = reflectGet(syncIterator, 'return');
-        if (ret === undefined || ret === null) return Promise.resolve({ value, done: true });
-        if (typeof ret !== 'function') throw new TypeError('iterator.return is not a function');
-        return settle(reflectApply(ret, syncIterator, [value]), false);
-      } catch (e) {
-        return Promise.reject(e);
-      }
-    },
-    throw(value: unknown): Promise<unknown> {
-      try {
-        const thr: unknown = reflectGet(syncIterator, 'throw');
-        if (thr === undefined || thr === null) {
-          const ret: unknown = reflectGet(syncIterator, 'return');
-          if (typeof ret === 'function') reflectApply(ret, syncIterator, []);
-          throw new TypeError('The iterator does not provide a throw method');
-        }
-        if (typeof thr !== 'function') throw new TypeError('iterator.throw is not a function');
-        return settle(reflectApply(thr, syncIterator, [value]), true);
-      } catch (e) {
-        return Promise.reject(e);
-      }
-    },
-  };
 }

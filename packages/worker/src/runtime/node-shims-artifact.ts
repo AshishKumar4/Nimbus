@@ -14,6 +14,9 @@
 
 import {
   JS_INTERPRETER_BUILD_ID,
+  JS_INTERPRETER_PRIMORDIALS_BUILD_ID,
+  JS_INTERPRETER_PRIMORDIALS_ENTRY,
+  JS_INTERPRETER_PRIMORDIALS_SHA256,
   JS_INTERPRETER_ENTRY,
   JS_INTERPRETER_OPS_BUILD_ID,
   JS_INTERPRETER_OPS_ENTRY,
@@ -44,6 +47,8 @@ export interface NodeFacetSources {
   ledger: string;
   /** A resident facet's SQLite-backed resident set: vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE. */
   residentStore: string;
+  /** The built-ins the interpreter calls, captured at the launch's start (core interpreter/primordials.ts), a module of the map. */
+  interpreterPrimordials: string;
   /** The runtime-code interpreter (core interpreter/), a module of the map. */
   interpreter: string;
   /** The interpreter's host module (core interpreter/host-ops.ts HOST_OPS_SOURCE), a module of the map. */
@@ -78,6 +83,14 @@ const RESIDENT_STORE = stagedRuntimeSource({
   requiredBy: REQUIRED_BY,
 });
 
+const JS_INTERPRETER_PRIMORDIALS = stagedRuntimeSource({
+  label: 'js-interpreter-primordials',
+  entry: JS_INTERPRETER_PRIMORDIALS_ENTRY,
+  buildId: JS_INTERPRETER_PRIMORDIALS_BUILD_ID,
+  sha256: JS_INTERPRETER_PRIMORDIALS_SHA256,
+  stagedBy: STAGED_BY,
+  requiredBy: REQUIRED_BY,
+});
 const JS_INTERPRETER = stagedRuntimeSource({
   label: 'js-interpreter',
   entry: JS_INTERPRETER_ENTRY,
@@ -102,12 +115,13 @@ const JS_INTERPRETER_OPS = stagedRuntimeSource({
  */
 export const fetchNodeFacetSources: (env: StagedSourceEnv) => Promise<NodeFacetSources> =
   memoizeUntilRejected(async (env: StagedSourceEnv) => {
-    const [shims, ledger, residentStore, interpreter, interpreterOps] = await Promise.all([
+    const [shims, ledger, residentStore, interpreterPrimordials, interpreter, interpreterOps] = await Promise.all([
       fetchStagedText(env, NODE_SHIMS),
       fetchStagedText(env, VFS_WRITE_LEDGER),
       fetchStagedText(env, RESIDENT_STORE),
+      fetchStagedText(env, JS_INTERPRETER_PRIMORDIALS),
       fetchStagedText(env, JS_INTERPRETER),
       fetchStagedText(env, JS_INTERPRETER_OPS),
     ]);
-    return { shims, ledger, residentStore, interpreter, interpreterOps };
+    return { shims, ledger, residentStore, interpreterPrimordials, interpreter, interpreterOps };
   });

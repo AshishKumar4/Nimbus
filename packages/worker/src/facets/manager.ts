@@ -25,6 +25,7 @@ import {
   declaresWrapperBinding,
   RUNTIME_INTERPRETER_MODULE,
   RUNTIME_INTERPRETER_OPS_MODULE,
+  RUNTIME_INTERPRETER_PRIMORDIALS_MODULE,
   runtimeCodeModuleName,
   runtimeFunctionModule,
   wrapCommonJsCell,
@@ -779,12 +780,17 @@ interface GeneratedNodeFacetCode {
 }
 
 /**
- * The runtime-code interpreter and its host module, in every launch's map:
- * the registry compiles them only when the program first produces code no
- * launch staged (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ * The runtime-code interpreter, its primordials and its host module, in every
+ * launch's map: the primordials load at the launch's start, the other two
+ * only when the program first produces code no launch staged
+ * (core/_shared/commonjs-cell.ts, RUNTIME CODE).
  */
 function interpreterModules(sources: NodeFacetSources): Record<string, string> {
-  return { [RUNTIME_INTERPRETER_MODULE]: sources.interpreter, [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps };
+  return {
+    [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
+    [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
+    [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+  };
 }
 
 /**

@@ -21,7 +21,10 @@ import type {
   Identifier, MethodDefinition, ModuleDeclaration, Pattern, PrivateIdentifier, Program, PropertyDefinition,
   Statement, StaticBlock, SwitchStatement, VariableDeclaration,
 } from 'acorn';
-import { SafeMap, append, arrayIsArray, objectKeys, reflectGet, someItem } from './intrinsics.js';
+import {
+  Error, SafeMap, type SafeList, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys,
+  reflectGet, someItem,
+} from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
@@ -71,12 +74,12 @@ export type ScopeKind =
 export class Scope {
   readonly bindings = new SafeMap<string, Binding>();
   /** The scopes inside this one, for laying out slots; null once the analysis is released. */
-  children: Scope[] | null = [];
+  children: SafeList<Scope> | null = newSafeList();
   materialized = false;
   /** Slots of the environment this scope allocates, when materialized. */
   size = 1;
   /** Function declarations this scope instantiates on entry, in source order. */
-  functions: Array<FunctionDeclaration | AnonymousFunctionDeclaration> = [];
+  functions: SafeList<FunctionDeclaration | AnonymousFunctionDeclaration> = newSafeList();
   readonly fn: FunctionScope;
   /** Whether code in this scope is strict: its function's mode, or a class body's (always strict). */
   readonly strict: boolean;
@@ -98,7 +101,7 @@ export class Scope {
 
   /** The scope's bindings, in the order they were declared. */
   bindingList(): Binding[] {
-    const list: Binding[] = [];
+    const list = newSafeList<Binding>();
     this.bindings.forEach((binding) => { append(list, binding); });
     return list;
   }
@@ -130,7 +133,7 @@ export class FunctionScope extends Scope {
   /** Whether this function is a method with a home object (for super.x). */
   method = false;
   /** A script's top-level var and function names: global object properties, not bindings. */
-  readonly globalVars: string[] = [];
+  readonly globalVars = newSafeList<string>();
   constructor(
     readonly functionKind: FunctionKind,
     parent: Scope | null,
@@ -175,7 +178,7 @@ export function hasUseStrict(body: readonly (Statement | ModuleDeclaration)[]): 
 }
 
 /** The names a binding pattern declares, with the pattern identifiers. */
-export function patternIdentifiers(pattern: Pattern, out: Identifier[] = []): Identifier[] {
+export function patternIdentifiers(pattern: Pattern, out: SafeList<Identifier> = newSafeList()): SafeList<Identifier> {
   switch (pattern.type) {
     case 'Identifier': append(out, pattern); break;
     case 'ObjectPattern':
@@ -193,7 +196,7 @@ export function patternIdentifiers(pattern: Pattern, out: Identifier[] = []): Id
 
 /** The child nodes of `node`, in a new array. */
 export function childNodes(node: AnyNode): AnyNode[] {
-  const children: AnyNode[] = [];
+  const children = newSafeList<AnyNode>();
   forEachChildNode(node, (child) => { append(children, child); });
   return children;
 }
@@ -239,7 +242,7 @@ export function forEachChildNode(node: AnyNode, visit: (child: AnyNode) => void)
 }
 
 function isNode(value: unknown): value is AnyNode {
-  return typeof value === 'object' && value !== null && 'type' in value && typeof value.type === 'string' && 'start' in value;
+  return typeof value === 'object' && value !== null && objectHasOwn(value, 'type') && objectHasOwn(value, 'start');
 }
 
 export interface ClassScopes {
@@ -347,8 +350,8 @@ export function analyzeLazyFunction(node: FunctionNode, outer: Scope, options: F
 export function releaseScopes(scope: Scope): void {
   const children = scope.children;
   scope.children = null;
-  scope.functions = [];
-  const dropped: string[] = [];
+  scope.functions = newSafeList();
+  const dropped = newSafeList<string>();
   scope.bindings.forEach((binding, name) => {
     if (!binding.captured && binding.kind !== 'special') append(dropped, name);
   });
@@ -379,7 +382,7 @@ export interface FunctionOptions {
   readonly derived: boolean;
   readonly ctor: boolean;
   /** A Function constructor's function: it is named `anonymous`, but the name binds nothing in it. */
-  readonly unbound?: boolean;
+  readonly unbound: boolean;
 }
 
 class Analyzer {
@@ -531,8 +534,18 @@ class Analyzer {
    * initializing its binding: it never checks the TDZ.
    */
   resolve(id: Identifier, scope: Scope, init = false): void {
+    // The interpreter's own bindings ('%this', '*default*', '#field') have
+    // names no identifier can have. acorn runs on the realm's built-ins, which
+    // a program may have replaced to change the tree it returns; a tree
+    // naming one of those bindings is refused rather than given its slot.
+    const first = charCodeAt(id.name, 0);
+    if (first === 0x25 || first === 0x2a || first === 0x23) throw new Error(`interpreter: the parser produced the identifier ${id.name}`);
+    this.resolveName(id, scope, init);
+  }
+
+  private resolveName(id: Identifier, scope: Scope, init: boolean): void {
     const name = id.name;
-    const withs: Scope[] = [];
+    const withs = newSafeList<Scope>();
     let s: Scope | null = scope;
     while (s) {
       let binding = s.bindings.get(name);
@@ -641,7 +654,7 @@ class Analyzer {
       case 'ForStatement': this.visitFor(node, scope); return;
       case 'ForInStatement': case 'ForOfStatement': this.visitForInOf(node, scope); return;
       case 'FunctionDeclaration': {
-        this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false });
+        this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false, unbound: false });
         this.noteAnnexB(node, scope);
         return;
       }
@@ -655,7 +668,7 @@ class Analyzer {
       case 'ExportDefaultDeclaration': {
         const d = node.declaration;
         if (d.type === 'FunctionDeclaration') {
-          this.visitFunction(d, scope, { strict: true, method: false, derived: false, ctor: false });
+          this.visitFunction(d, scope, { strict: true, method: false, derived: false, ctor: false, unbound: false });
         } else if (d.type === 'ClassDeclaration') {
           this.visitClass(d, scope);
         } else {
@@ -850,7 +863,7 @@ class Analyzer {
     }
     let instanceFields: FunctionScope | null = null;
     let staticFields: FunctionScope | null = null;
-    const derived = Boolean(node.superClass);
+    const derived = !!node.superClass;
     for (let i = 0; i < node.body.body.length; i++) {
       const member = node.body.body[i];
       if (member.type === 'StaticBlock') {
@@ -882,7 +895,7 @@ class Analyzer {
 
   visitMethod(member: MethodDefinition, classScope: Scope, derived: boolean): void {
     const ctor = member.kind === 'constructor';
-    this.visitFunction(member.value, classScope, { strict: true, method: true, derived: ctor && derived, ctor });
+    this.visitFunction(member.value, classScope, { strict: true, method: true, derived: ctor && derived, ctor, unbound: false });
   }
 
   visitStaticBlock(block: StaticBlock, classScope: Scope): void {
@@ -897,7 +910,7 @@ class Analyzer {
   resolvePrivate(node: PrivateIdentifier, scope: Scope): void {
     // Private names resolve like identifiers, under their '#'-prefixed name.
     const id: Identifier = { type: 'Identifier', name: `#${node.name}`, start: node.start, end: node.end };
-    this.resolve(id, scope);
+    this.resolveName(id, scope, false);
     this.analysis.privateRefs.set(node, this.analysis.ref(id));
   }
 
@@ -922,14 +935,14 @@ class Analyzer {
             throw new UnsupportedSyntax('await or yield in the heritage of a class named by a computed key');
           }
           if (p.value.type === 'FunctionExpression' && (p.method || p.kind !== 'init')) {
-            this.visitFunction(p.value, scope, { strict: scope.strict, method: true, derived: false, ctor: false });
+            this.visitFunction(p.value, scope, { strict: scope.strict, method: true, derived: false, ctor: false, unbound: false });
           } else {
             this.visitExpression(p.value, scope);
           }
         }
         return;
       case 'FunctionExpression': case 'ArrowFunctionExpression':
-        this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false });
+        this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false, unbound: false });
         return;
       case 'UnaryExpression': {
         let target: Expression = node.argument;

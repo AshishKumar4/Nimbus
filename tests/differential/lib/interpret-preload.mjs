@@ -4,14 +4,12 @@
 // indirect eval es-module-lexer decodes quoted names with is evaluated as the
 // single expression it is (node-shims decodes those string literals).
 
-import { createRequire } from 'node:module';
+import { loadInterpreter } from '../../unit/lib/interpreter-load.mjs';
 
-const require = createRequire(import.meta.url);
-const { createInterpreter } = require(process.env.NIMBUS_INTERPRETER);
 const { ROUTE_FUNCTION_CONSTRUCTORS } = await import('../../unit/lib/interpreter-build.mjs');
-const interp = createInterpreter(require(process.env.NIMBUS_INTERPRETER_OPS), {
-  dynamicImport: (parent, specifier) => import(parent && /^\.\.?\//.test(String(specifier)) ? new URL(String(specifier), parent).href : String(specifier)),
-});
+const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBUS_INTERPRETER_OPS, (parent, specifier) => (
+  import(parent && /^\.\.?\//.test(String(specifier)) ? new URL(String(specifier), parent).href : String(specifier))
+));
 interp.compileFunction('function', [], `return ${ROUTE_FUNCTION_CONSTRUCTORS};`)()(interp);
 
 const nativeEval = globalThis.eval;

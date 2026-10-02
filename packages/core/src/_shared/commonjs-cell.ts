@@ -106,11 +106,24 @@
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
 import {
-  RUNTIME_FUNCTION_HEADS, isRuntimeFunctionKind, runtimeFunctionSource, runtimeFunctionSyntaxError, type RuntimeFunctionKind,
+  RUNTIME_FUNCTION_HEADS, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, type RuntimeFunctionKind,
+  type SourceRealm,
 } from './runtime-function-source.js';
-import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported.js';
+import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 
-export { runtimeFunctionSyntaxError, type RuntimeFunctionKind } from './runtime-function-source.js';
+export type { RuntimeFunctionKind } from './runtime-function-source.js';
+
+/** This module's own built-ins, for the checks it shares with the interpreter. */
+const REALM: SourceRealm = { SyntaxError, messageOf: (e) => (e instanceof Error ? e.message : String(e)) };
+
+function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
+  return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
+}
+
+/** Why V8's constructor would refuse these arguments, or null when it would build the function. */
+export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null {
+  return syntaxErrorIn(kind, params, body, REALM);
+}
 
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -371,9 +384,14 @@ export function runtimeCodeCharge(entry: RuntimeCodeEntry): number {
   return runtimeCodeKeySource(entry).length + (entry.kind === 'module' ? entry.path.length : 0) + RUNTIME_CODE_ENTRY_OVERHEAD;
 }
 
-/** The module names, in every node launch's map, of the interpreter and the host module it runs on. */
+/**
+ * The module names, in every node launch's map, of the interpreter, the host
+ * module it runs on, and its primordials, which it requires from beside it as
+ * ./interpreter-primordials.js (worker scripts/interpreter-bundle.mjs).
+ */
 export const RUNTIME_INTERPRETER_MODULE = 'nimbus/interpreter.js';
 export const RUNTIME_INTERPRETER_OPS_MODULE = 'nimbus/interpreter-ops.js';
+export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primordials.js';
 
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key: string): string {
@@ -433,6 +451,10 @@ export const COMMONJS_CELL_IMPORTS = [
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
+// The built-ins the interpreter calls, captured now, before any program code
+// runs (core interpreter/primordials.ts): the interpreter itself loads only
+// when the program first produces code, by when it may have replaced them.
+const { LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
@@ -551,6 +573,7 @@ function __nimbusRuntimeInterpreter() {
     const { createInterpreter } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
     __nimbusInterpreter = createInterpreter(__nimbusRegistryRequire("./${RUNTIME_INTERPRETER_OPS_MODULE}"), {
       dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
+      primordials: __nimbusLaunchPrimordials,
     });
   }
   return __nimbusInterpreter;

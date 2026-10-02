@@ -21,13 +21,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire, registerHooks } from 'node:module';
 import { join } from 'node:path';
 
+import { loadInterpreter } from '../../unit/lib/interpreter-load.mjs';
 import { same } from './same.mjs';
 
 const require = createRequire(import.meta.url);
-const { createInterpreter } = require(process.env.NIMBUS_INTERPRETER);
-const interp = createInterpreter(require(process.env.NIMBUS_INTERPRETER_OPS), {
-  dynamicImport: (parent, specifier) => import(parent && /^\.\.?\//.test(String(specifier)) ? new URL(String(specifier), parent).href : String(specifier)),
-});
+const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBUS_INTERPRETER_OPS, (parent, specifier) => (
+  import(parent && /^\.\.?\//.test(String(specifier)) ? new URL(String(specifier), parent).href : String(specifier))
+));
 const corpus = process.env.NIMBUS_DIFF_CORPUS;
 mkdirSync(corpus, { recursive: true });
 const report = { functions: 0, ssrModules: 0, compared: 0, equal: 0, mismatches: [], refused: [], modules: [] };

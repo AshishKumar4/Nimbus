@@ -36,18 +36,25 @@ import {
   type Scope, analyzeLazyFunction, childNodes, patternIdentifiers, releaseScopes,
 } from './scope.js';
 import {
-  SafeMap, SafeSet, SafeWeakMap, append, arrayIsArray, arraySliceFrom, contains, defineOrThrow, everyItem, indexWhere,
-  mapList, objectCreate, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, reflectApply, reflectConstruct,
-  reflectDefineProperty, reflectGet, reflectGetOwnPropertyDescriptor, objectGetPrototypeOf, reflectHas, reflectOwnKeys,
-  reflectSet, reflectSetPrototypeOf, skipTrivia, someItem, stringOf, stringSlice, symbolAsyncIterator, symbolDescriptiveString, symbolIterator,
-  symbolUnscopables, withLast,
+  BigInt, Error, ObjectConstructor, ReferenceError, RegExp, SafeList, SafeMap, SafeSet,
+  SafeWeakMap, SyntaxError, TypeError, accessorDescriptor, append, arraySliceFrom, contains, copyList,
+  createDataProperty, dataDescriptor, defineOrThrow, everyItem, globalObject, indexWhere, isEnumerableOwn, listOf, mapList, newList,
+  newSafeList, objectCreate, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, promiseReject, reflectApply,
+  reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, objectGetPrototypeOf, reflectHas,
+  reflectOwnKeys, reflectSet, reflectSetPrototypeOf, resume, resumeThrowing, safeGenerator, skipTrivia, someItem, stringOf,
+  stringSlice, symbolAsyncIterator, symbolIterator, symbolUnscopables, toObject, withElement,
+  withFirst, withLast,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import {
   AWAIT, BREAK, CONTINUE, ClassRecord, Completion, DELEGATE, type Env, FunctionInfo, type FunctionShape, PrivateName,
-  type Signal, type Sync, TDZ, THIS_BEFORE_SUPER, YIELD, asyncFromSyncIterator, functionName, initializeInstance,
-  isObject, labeledSignal, makeClass, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN,
+  type Signal, type Sync, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance,
+  frameTemplate, isObject, labeledSignal, makeClass, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN,
 } from './runtime.js';
+import {
+  arrayIteration, asyncFromSyncIterator, closeArrayIteration, describe, getIterator, iteratorFrom,
+  iteratorMethod, spreadInto,
+} from './iteration.js';
 
 /** Code that evaluates to a T: run directly (`s`), or as a generator (`g`) when it suspends. */
 export interface CodeOf<T> {
@@ -69,14 +76,14 @@ function suspendedBind(): never {
 }
 
 function genCode<T>(g: (env: Env) => Generator<unknown, T, unknown>): CodeOf<T> {
-  return { s: suspendedSync, g };
+  return { s: suspendedSync, g: safeGenerator(g) };
 }
 
 /** A generator that runs `c` in a suspending context. */
 function asGen<T>(c: CodeOf<T>): (env: Env) => Generator<unknown, T, unknown> {
   if (c.g !== null) return c.g;
   const s = c.s;
-  return function* (env) { return s(env); };
+  return safeGenerator(function* (env) { return s(env); });
 }
 
 /** The value an optional chain short-circuits to, inside the chain. */
@@ -130,7 +137,7 @@ function lazily(fi: FunctionInfo, site: LazySite): () => void {
 type Labels = readonly string[];
 
 /** A property key known when compiling, or computed when the code runs. */
-type KeyCode = { readonly static: PropertyKey } | { readonly computed: Code };
+type KeyCode = { readonly kind: 'static'; readonly static: PropertyKey } | { readonly kind: 'computed'; readonly computed: Code };
 
 /**
  * A class element's key: static, one of the class's private names, or the
@@ -139,12 +146,15 @@ type KeyCode = { readonly static: PropertyKey } | { readonly computed: Code };
  * reach the class until its definition completes, so that order is
  * unobservable, and it lets a key await or yield.
  */
-type ElementKey = { readonly static: PropertyKey } | { readonly private: (env: Env) => PrivateName } | { readonly computed: number };
+type ElementKey =
+  | { readonly kind: 'static'; readonly static: PropertyKey }
+  | { readonly kind: 'private'; readonly private: (env: Env) => PrivateName }
+  | { readonly kind: 'computed'; readonly computed: number };
 
 /** A function value and the `this` a call through it passes. */
 type Callee = readonly [fn: unknown, thisArg: unknown];
 
-const G: typeof globalThis = globalThis;
+const G = globalObject;
 
 const constructors = new SafeWeakMap<Function, boolean>();
 function isConstructorValue(value: unknown): value is Function {
@@ -153,7 +163,7 @@ function isConstructorValue(value: unknown): value is Function {
   if (known === undefined) {
     try {
       // Constructing with `value` as new.target succeeds only for a constructor.
-      reflectConstruct(Object, [], value);
+      reflectConstruct(ObjectConstructor, [], value);
       known = true;
     } catch {
       known = false;
@@ -169,79 +179,11 @@ function toPropertyKey(value: unknown): PropertyKey {
   return stringOf(value);
 }
 
-function describe(value: unknown): string {
-  if (typeof value === 'function') return 'function';
-  if (typeof value === 'object' && value !== null) return 'object';
-  if (typeof value === 'symbol') return symbolDescriptiveString(value);
-  return stringOf(value);
-}
-
-function isIterable(value: unknown): value is Iterable<unknown> {
-  return value !== null && value !== undefined && typeof operators().get(value, symbolIterator) === 'function';
-}
-
-/** `value` as an iterable, or the TypeError for spreading or iterating a non-iterable. */
-function iterable(value: unknown): Iterable<unknown> {
-  if (isIterable(value)) return value;
-  throw new TypeError(`${describe(value)} is not iterable`);
-}
-
-/** An iterator record over `value`, for destructuring (which may stop early and must close it). */
-interface IteratorRecord {
-  /**
-   * Whether the iterator is finished: it said done, or a call to next()
-   * (or its result) threw, after which it is never closed.
-   */
-  readonly done: boolean;
-  /** IteratorStep: the next value, or `undefined` with `done` set. */
-  step(): unknown;
-  /** IteratorClose on a normal or return completion: calls return() and checks its result. */
-  close(): void;
-}
-
-function getIterator(value: unknown): IteratorRecord {
-  const method: unknown = operators().get(iterable(value), symbolIterator);
-  if (typeof method !== 'function') throw new TypeError(`${describe(value)} is not iterable`);
-  const it: unknown = reflectApply(method, value, []);
-  if (!isObject(it)) throw new TypeError('Result of the symbolIterator method is not an object');
-  const next: unknown = reflectGet(it, 'next');
-  let done = false;
-  return {
-    get done() { return done; },
-    step() {
-      done = true;
-      if (typeof next !== 'function') throw new TypeError(`${describe(next)} is not a function`);
-      const result: unknown = reflectApply(next, it, []);
-      if (!isObject(result)) throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
-      if (reflectGet(result, 'done')) return undefined;
-      const value: unknown = reflectGet(result, 'value');
-      done = false;
-      return value;
-    },
-    close() {
-      const ret: unknown = reflectGet(it, 'return');
-      if (ret === undefined || ret === null) return;
-      if (typeof ret !== 'function') throw new TypeError(`${describe(ret)} is not a function`);
-      const result: unknown = reflectApply(ret, it, []);
-      if (!isObject(result)) throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
-    },
-  };
-}
-
-/** IteratorClose on an abrupt completion: the completion's error wins over return()'s. */
-function closeQuietly(it: IteratorRecord): void {
-  try { it.close(); } catch { /* the original error propagates */ }
-}
-
-const ArrayValues: unknown = Array.prototype[symbolIterator];
-const ArrayIteratorPrototype: object = objectGetPrototypeOf([][symbolIterator]());
-const ArrayIteratorNext: unknown = reflectGet(ArrayIteratorPrototype, 'next');
-
-/** Whether indexing `value` is exactly iterating it (an array whose iteration nobody replaced). */
-function plainArray(value: unknown): value is unknown[] {
-  return arrayIsArray(value)
-    && reflectGet(value, symbolIterator) === ArrayValues
-    && reflectGet(ArrayIteratorPrototype, 'next') === ArrayIteratorNext;
+/** An array literal's array: `elements`, with no element at each index of `holes` (an elision). */
+function arrayWithHoles(elements: SafeList<unknown>, holes: SafeList<number>): unknown[] {
+  const out = listOf(elements);
+  for (let i = 0; i < holes.length; i++) reflectDeleteProperty(out, holes[i]);
+  return out;
 }
 
 function requireObjectCoercible(value: unknown): void {
@@ -251,39 +193,26 @@ function requireObjectCoercible(value: unknown): void {
 /** CopyDataProperties(target, source, excluded): an object rest or spread. */
 function copyDataProperties(target: object, source: unknown, excluded: readonly PropertyKey[] | null): void {
   if (source === null || source === undefined) return;
-  const from: object = Object(source);
+  const from = toObject(source);
   const keys = reflectOwnKeys(from);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
     if (excluded && contains(excluded, key)) continue;
-    const desc = reflectGetOwnPropertyDescriptor(from, key);
-    if (desc && desc.enumerable) createDataProperty(target, key, reflectGet(from, key));
+    if (isEnumerableOwn(from, key)) createDataProperty(target, key, reflectGet(from, key));
   }
-}
-
-/** CreateDataPropertyOrThrow, with one descriptor object reused. */
-const DATA: PropertyDescriptor = { value: undefined, writable: true, enumerable: true, configurable: true };
-function createDataProperty(target: object, key: PropertyKey, value: unknown): void {
-  DATA.value = value;
-  const ok = reflectDefineProperty(target, key, DATA);
-  DATA.value = undefined;
-  if (!ok) throw new TypeError(`Cannot redefine property: ${stringOf(key)}`);
 }
 
 function defineMethod(target: object, key: PropertyKey, value: unknown, enumerable: boolean): void {
-  if (!reflectDefineProperty(target, key, { value, writable: true, enumerable, configurable: true })) {
-    throw new TypeError(`Cannot redefine property: ${stringOf(key)}`);
-  }
+  defineOrThrow(target, key, dataDescriptor(value, true, enumerable, true));
 }
 
 function defineAccessor(target: object, key: PropertyKey, kind: 'get' | 'set', fn: NativeFunction, enumerable: boolean): void {
-  const desc: PropertyDescriptor = kind === 'get' ? { get: fn, enumerable, configurable: true } : { set: fn, enumerable, configurable: true };
-  if (!reflectDefineProperty(target, key, desc)) throw new TypeError(`Cannot redefine property: ${stringOf(key)}`);
+  defineOrThrow(target, key, accessorDescriptor(kind, fn, enumerable, true));
 }
 
 function templateObject(cooked: readonly (string | undefined)[], raw: readonly string[]): readonly (string | undefined)[] {
-  const strings = arraySliceFrom(cooked, 0);
-  defineOrThrow(strings, 'raw', { value: objectFreeze(arraySliceFrom(raw, 0)), writable: false, enumerable: false, configurable: false });
+  const strings = copyList(cooked);
+  defineOrThrow(strings, 'raw', dataDescriptor(objectFreeze(copyList(raw)), false, false, false));
   return objectFreeze(strings);
 }
 
@@ -369,8 +298,8 @@ function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | null, p
       s: (env, name) => {
         const classEnv = enter(env);
         const parent = h ? h(classEnv) : undefined;
-        const computed = new Array<PropertyKey>(ks.length);
-        for (let i = 0; i < ks.length; i++) computed[i] = toPropertyKey(ks[i](classEnv));
+        const computed = newSafeList<PropertyKey>();
+        for (let i = 0; i < ks.length; i++) append(computed, toPropertyKey(ks[i](classEnv)));
         return define(classEnv, parent, name, computed);
       },
       g: null,
@@ -380,13 +309,13 @@ function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | null, p
   const kgs = mapList(keys, asGen);
   return {
     s: suspendedSync,
-    g: function* (env, name) {
+    g: safeGenerator(function* (env: Env, name: string) {
       const classEnv = enter(env);
       const parent = hg ? yield* hg(classEnv) : undefined;
-      const computed = new Array<PropertyKey>(kgs.length);
-      for (let i = 0; i < kgs.length; i++) computed[i] = toPropertyKey(yield* kgs[i](classEnv));
+      const computed = newSafeList<PropertyKey>();
+      for (let i = 0; i < kgs.length; i++) append(computed, toPropertyKey(yield* kgs[i](classEnv)));
       return define(classEnv, parent, name, computed);
-    },
+    }),
   };
 }
 
@@ -419,8 +348,7 @@ interface ClassPlan {
 
 /** A field initializer's (or static block's) frame: `this` and the home object. */
 function fieldFrame(fi: FunctionInfo, scope: Env, thisArg: unknown, home: object): Env {
-  const env: Env = new Array<unknown>(fi.size);
-  env[0] = scope;
+  const env = withElement(fi.frame, 0, scope);
   if (fi.thisSlot !== 0) env[fi.thisSlot] = thisArg;
   if (fi.homeSlot !== 0) env[fi.homeSlot] = home;
   return env;
@@ -436,17 +364,17 @@ function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: s
     if (!isObject(protoValue)) throw new Error('interpreter: class without a prototype');
     const proto = protoValue;
     type FieldRecord = { key: PropertyKey | PrivateName; value: Sync | null; named: ((env: Env, name: string) => unknown) | null };
-    const instanceFieldList: FieldRecord[] = [];
-    const instancePrivateMethods: PrivateName[] = [];
-    const staticWork: Array<{ field: FieldRecord } | { block: FunctionInfo }> = [];
-    const staticPrivateMethods: PrivateName[] = [];
+    const instanceFieldList = newSafeList<FieldRecord>();
+    const instancePrivateMethods = newSafeList<PrivateName>();
+    const staticWork = newSafeList<{ readonly kind: 'field'; readonly field: FieldRecord } | { readonly kind: 'block'; readonly block: FunctionInfo }>();
+    const staticPrivateMethods = newSafeList<PrivateName>();
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
-      if (el.kind === 'static') { staticWork[staticWork.length] = { block: el.fi }; continue; }
+      if (el.kind === 'static') { append(staticWork, { kind: 'block', block: el.fi }); continue; }
       const target = el.isStatic ? C : proto;
       let key: PropertyKey | PrivateName;
-      if ('private' in el.key) key = el.key.private(classEnv);
-      else if ('static' in el.key) key = el.key.static;
+      if (el.key.kind === 'private') key = el.key.private(classEnv);
+      else if (el.key.kind === 'static') key = el.key.static;
       else key = computed[el.key.computed];
       if (el.kind === 'method') {
         const fname = key instanceof PrivateName ? (el.accessor ? `${el.accessor} ${key.description}` : key.description)
@@ -457,7 +385,7 @@ function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: s
           else if (el.accessor === 'set') key.setter = fn;
           else key.method = fn;
           const list = el.isStatic ? staticPrivateMethods : instancePrivateMethods;
-          if (!contains(list, key)) list[list.length] = key;
+          if (!contains(list, key)) append(list, key);
         } else if (el.accessor) {
           defineAccessor(target, key, el.accessor, fn, false);
         } else {
@@ -466,8 +394,8 @@ function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: s
         continue;
       }
       const record: FieldRecord = { key, value: el.value, named: el.named };
-      if (el.isStatic) staticWork[staticWork.length] = { field: record };
-      else instanceFieldList[instanceFieldList.length] = record;
+      if (el.isStatic) append(staticWork, { kind: 'field', field: record });
+      else append(instanceFieldList, record);
     }
     const defineField = (fieldEnv: Env | null, receiver: object, f: FieldRecord) => {
       let v: unknown;
@@ -491,7 +419,7 @@ function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: s
     const staticEnv = staticFi ? fieldFrame(staticFi, classEnv, C, C) : null;
     for (let i = 0; i < staticWork.length; i++) {
       const work = staticWork[i];
-      if ('block' in work) {
+      if (work.kind === 'block') {
         const fi = work.block;
         if (fi.body) fi.body(fieldFrame(fi, classEnv, C, C));
       } else {
@@ -502,7 +430,7 @@ function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: s
   };
 }
 
-type ObjectPatternStep = (env: Env, source: unknown, used: PropertyKey[] | null) => void;
+type ObjectPatternStep = (env: Env, source: unknown, used: SafeList<PropertyKey> | null) => void;
 type ObjectPatternStepGen = { readonly key: ((env: Env) => Generator<unknown, PropertyKey, unknown>) | null; readonly el: ElementGen };
 
 /** A member expression target's reference: evaluated before the value it is set to is read. */
@@ -526,7 +454,7 @@ type LoopStep = 'next' | 'stop' | 'out';
 
 /** The [parameter slot, body var slot] pairs of body vars that start with a parameter's value. */
 function parameterCopies(fs: FunctionScope, varScope: Scope): Array<[from: number, to: number]> {
-  const copies: Array<[from: number, to: number]> = [];
+  const copies = newSafeList<[from: number, to: number]>();
   const bindings = varScope.bindingList();
   for (let i = 0; i < bindings.length; i++) {
     const b = bindings[i];
@@ -540,7 +468,7 @@ function parameterCopies(fs: FunctionScope, varScope: Scope): Array<[from: numbe
 
 /** The slots of `scope`'s bindings that start in their TDZ when it is entered (parameters, or the rest). */
 function tdzSlots(scope: Scope, params: boolean): number[] {
-  const slots: number[] = [];
+  const slots = newSafeList<number>();
   const bindings = scope.bindingList();
   for (let i = 0; i < bindings.length; i++) {
     const b = bindings[i];
@@ -562,13 +490,6 @@ function keyOnce(key: unknown): unknown {
 }
 
 /** `rest` with `first` before it. */
-function withFirst(first: unknown, rest: readonly unknown[]): unknown[] {
-  const out = new Array<unknown>(rest.length + 1);
-  out[0] = first;
-  for (let i = 0; i < rest.length; i++) out[i + 1] = rest[i];
-  return out;
-}
-
 function signalOf(value: unknown): Signal {
   return value instanceof Completion ? value : undefined;
 }
@@ -688,7 +609,7 @@ export class Compiler {
   private scopeEntry(scope: Scope, frame = false): ((env: Env) => Env) | null {
     const tdz = tdzSlots(scope, false);
     const script = scope.fn.functionKind === 'script' && scope === scope.fn;
-    const functions: Array<{ readonly fi: FunctionInfo; readonly slot: number; readonly global: string | null }> = [];
+    const functions = newSafeList<{ readonly fi: FunctionInfo; readonly slot: number; readonly global: string | null }>();
     const outer = this.enter(scope);
     for (let i = 0; i < scope.functions.length; i++) {
       const decl = scope.functions[i];
@@ -703,8 +624,7 @@ export class Compiler {
         const f = functions[i];
         const value = makeFunction(f.fi, env, undefined);
         if (f.global !== null) {
-          reflectDefineProperty(G, f.global, { value, writable: true, enumerable: true, configurable: false })
-            || reflectSet(G, f.global, value);
+          reflectDefineProperty(G, f.global, dataDescriptor(value, true, true, false)) || reflectSet(G, f.global, value);
         } else {
           env[f.slot] = value;
         }
@@ -712,12 +632,8 @@ export class Compiler {
       return env;
     };
     if (scope.materialized && !frame) {
-      const size = scope.size;
-      return (env) => {
-        const e: Env = new Array<unknown>(size);
-        e[0] = env;
-        return instantiate(e);
-      };
+      const template = frameTemplate(scope.size, []);
+      return (env) => instantiate(withElement(template, 0, env));
     }
     if (tdz.length === 0 && functions.length === 0) return null;
     return instantiate;
@@ -748,7 +664,7 @@ export class Compiler {
       unit: this.unit,
       reparse: { source: this.unit.source, module: this.unit.module, start: node.start + this.base, end: node.end + this.base, syntax, strict: outer.strict },
       outer,
-      options: { strict: outer.strict, method: fs.method, derived: fs.derived, ctor: shape === 'classBase' || shape === 'classDerived' },
+      options: { strict: outer.strict, method: fs.method, derived: fs.derived, ctor: shape === 'classBase' || shape === 'classDerived', unbound: false },
     });
     return fi;
   }
@@ -767,7 +683,6 @@ export class Compiler {
     this.scope = fs;
     this.shape = fi.shape;
     try {
-      fi.size = fs.size;
       fi.derived = fs.derived;
       if (fs.thisBinding) fi.thisSlot = fs.thisBinding.slot;
       if (fs.argumentsBinding) fi.argumentsSlot = fs.argumentsBinding.slot;
@@ -775,11 +690,12 @@ export class Compiler {
       if (fs.homeBinding) fi.homeSlot = fs.homeBinding.slot;
       if (fs.funcBinding) fi.funcSlot = fs.funcBinding.slot;
       if (everyItem(params, (p) => p.type === 'Identifier')) {
-        const slots: number[] = [];
+        const slots = newSafeList<number>();
         for (let i = 0; i < params.length; i++) append(slots, this.declaredBinding(params[i]).slot);
-        fi.params = slots;
+        fi.params = listOf(slots);
+        fi.frame = frameTemplate(fs.size, []);
       } else {
-        fi.tdzSlots = tdzSlots(fs, true);
+        fi.frame = frameTemplate(fs.size, tdzSlots(fs, true));
         fi.bindParams = this.paramBinder(params);
       }
       if (body.type !== 'BlockStatement') {
@@ -848,7 +764,7 @@ export class Compiler {
   }
 
   private paramBinder(params: readonly Pattern[]): (env: Env, args: ArrayLike<unknown>) => void {
-    const binders: Array<(env: Env, args: ArrayLike<unknown>) => void> = [];
+    const binders = newSafeList<(env: Env, args: ArrayLike<unknown>) => void>();
     for (let i = 0; i < params.length; i++) append(binders, this.parameterBinder(params[i], i));
     return (env, args) => {
       for (let i = 0; i < binders.length; i++) binders[i](env, args);
@@ -897,7 +813,7 @@ export class Compiler {
   // ── Statements ──
 
   private statementList(list: readonly (Statement | ModuleDeclaration)[]): Code {
-    const codes: Code[] = [];
+    const codes = newSafeList<Code>();
     for (let j = 0; j < list.length; j++) {
       const s = list[j];
       const c = this.stmt(s, []);
@@ -1039,7 +955,7 @@ export class Compiler {
   }
 
   private variableDeclaration(node: VariableDeclaration): Code | null {
-    const parts: Code[] = [];
+    const parts = newSafeList<Code>();
     for (let i = 0; i < node.declarations.length; i++) {
       const d = node.declarations[i];
       if (!d.init) {
@@ -1315,7 +1231,7 @@ export class Compiler {
       return syncCode((env) => {
         const object = r(env);
         if (object === null || object === undefined) return undefined;
-        for (const key in Object(object)) {
+        for (const key in toObject(object)) {
           const e = entry ? entry(env) : env;
           bind(e, key);
           const s = b(e);
@@ -1334,7 +1250,7 @@ export class Compiler {
     return genCode(function* (env) {
       const object = yield* rg(env);
       if (object === null || object === undefined) return undefined;
-      for (const key in Object(object)) {
+      for (const key in toObject(object)) {
         const e = entry ? entry(env) : env;
         if (bindGen) yield* bindGen(e, key); else bind(e, key);
         const s = yield* bg(e);
@@ -1382,48 +1298,73 @@ export class Compiler {
       const r = right.s;
       const b = body.s;
       return syncCode((env) => {
-        const subject = r(env);
-        for (const value of iterable(subject)) {
-          const e = entry ? entry(env) : env;
-          bind(e, value);
-          const s = b(e);
+        const it = getIterator(r(env));
+        for (;;) {
+          const value = it.step();
+          if (it.done) return undefined;
+          let s: unknown;
+          try {
+            const e = entry ? entry(env) : env;
+            bind(e, value);
+            s = b(e);
+          } catch (error) {
+            it.closeQuietly();
+            throw error;
+          }
           if (s instanceof Completion) {
             const c = control(s);
-            if (c === 'stop') break;
-            if (c === 'out') return s;
+            if (c === 'next') continue;
+            it.close();
+            return c === 'stop' ? undefined : s;
           }
         }
-        return undefined;
       });
     }
     const rg = asGen(right);
     const bg = asGen(body);
     const bindGen = head.bindGen;
     return genCode(function* (env) {
-      const subject = yield* rg(env);
-      for (const value of iterable(subject)) {
-        const e = entry ? entry(env) : env;
-        if (bindGen) yield* bindGen(e, value); else bind(e, value);
-        const s = yield* bg(e);
-        if (s instanceof Completion) {
-          const c = control(s);
-          if (c === 'stop') break;
-          if (c === 'out') return s;
+      const it = getIterator(yield* rg(env));
+      // Whether leaving now must close the iterator: a generator's return()
+      // while suspended in the body leaves through `finally` alone.
+      let open = true;
+      try {
+        for (;;) {
+          const value = it.step();
+          if (it.done) return undefined;
+          let s: unknown;
+          try {
+            const e = entry ? entry(env) : env;
+            if (bindGen) yield* bindGen(e, value); else bind(e, value);
+            s = yield* bg(e);
+          } catch (error) {
+            open = false;
+            it.closeQuietly();
+            throw error;
+          }
+          if (s instanceof Completion) {
+            const c = control(s);
+            if (c === 'next') continue;
+            open = false;
+            it.close();
+            return c === 'stop' ? undefined : s;
+          }
         }
+      } finally {
+        if (open && !it.done) it.close();
       }
-      return undefined;
     });
   }
 
   /** `await x` inside this function's generator body. */
   private awaiter(): (x: unknown) => Generator<unknown, unknown, unknown> {
     if (this.shape === 'asyncGenerator') {
-      return function* (x) {
+      return safeGenerator(function* (x) {
         signalOperand(x);
         return yield AWAIT;
-      };
+      });
     }
-    return function* (x) { return yield x; };
+    return safeGenerator(function* (x) { return yield x; });
   }
 
   private forAwait(node: ForOfStatement, labels: Labels): Code {
@@ -1503,11 +1444,11 @@ export class Compiler {
       const run = asGen(body);
       return {
         s: suspendedSync,
-        g: function* (env, error) {
+        g: safeGenerator(function* (env, error) {
           const e = entry ? entry(env) : env;
           yield* bindGen(e, error);
           return signalOf(yield* run(e));
-        },
+        }),
       };
     }
     const bg = body.g;
@@ -1517,11 +1458,11 @@ export class Compiler {
         if (bind) bind(e, error);
         return signalOf(bs(e));
       },
-      g: bg === null ? null : function* (env, error) {
+      g: bg === null ? null : safeGenerator(function* (env, error) {
         const e = entry ? entry(env) : env;
         if (bind) bind(e, error);
         return signalOf(yield* bg(e));
-      },
+      }),
     };
   }
 
@@ -1562,7 +1503,10 @@ export class Compiler {
       });
     }
     const bg = asGen(block);
-    const hg = h === null ? null : h.g ?? ((env: Env, error: unknown) => (function* (): Generator<unknown, Signal, unknown> { return h.s(env, error); })());
+    const hs = h === null ? null : h.s;
+    const hg = h === null ? null : h.g ?? safeGenerator(function* (env: Env, error: unknown): Generator<unknown, Signal, unknown> {
+      return hs === null ? undefined : hs(env, error);
+    });
     const fg = finalizer ? asGen(finalizer) : null;
     return genCode(function* (env) {
       let s: unknown;
@@ -1588,8 +1532,8 @@ export class Compiler {
     const entry = this.scopeEntry(scope);
     const outer = this.enter(scope);
     const cases = node.cases;
-    const tests: Array<Code | null> = [];
-    const bodies: Code[] = [];
+    const tests = newSafeList<Code | null>();
+    const bodies = newSafeList<Code>();
     let defaultIndex = -1;
     for (let i = 0; i < cases.length; i++) {
       const test = cases[i].test;
@@ -1654,9 +1598,7 @@ export class Compiler {
     const body = this.stmtIn(withScope, node.body);
     const enter = (env: Env, target: unknown): Env => {
       if (target === null || target === undefined) throw new TypeError('Cannot convert undefined or null to object');
-      const e: Env = new Array<unknown>(2);
-      e[0] = env;
-      e[1] = Object(target);
+      const e: Env = [env, toObject(target)];
       return e;
     };
     if (object.g === null && body.g === null) {
@@ -1749,7 +1691,7 @@ export class Compiler {
 
   /** Readers of the objects of the `with` statements between a reference and its binding, innermost first. */
   private withObjects(ref: Reference): Array<(env: Env) => unknown> {
-    const readers: Array<(env: Env) => unknown> = [];
+    const readers = newSafeList<(env: Env) => unknown>();
     for (let i = 0; i < ref.withs.length; i++) append(readers, this.slotReader(this.hops(ref.withs[i]), 1));
     return readers;
   }
@@ -1888,11 +1830,11 @@ export class Compiler {
 
   private objectPatternBinder(pattern: ObjectPattern, init: boolean): (env: Env, value: unknown) => void {
     const hasRest = someItem(pattern.properties, (p) => p.type === 'RestElement');
-    const steps: ObjectPatternStep[] = [];
+    const steps = newSafeList<ObjectPatternStep>();
     for (let i = 0; i < pattern.properties.length; i++) append(steps, this.objectPatternStep(pattern.properties[i], init));
     return (env, value) => {
       requireObjectCoercible(value);
-      const used = hasRest ? [] : null;
+      const used = hasRest ? newSafeList<PropertyKey>() : null;
       for (let i = 0; i < steps.length; i++) steps[i](env, value, used);
     };
   }
@@ -1927,7 +1869,7 @@ export class Compiler {
     const member = target.type === 'MemberExpression' ? this.memberTarget(target) : null;
     return (env, source, used) => {
       const k = key(env);
-      if (used !== null) used[used.length] = k;
+      if (used !== null) append(used, k);
       const set = member ? member(env) : null;
       let v = ops.get(source, k);
       if (v === undefined && dflt !== null) v = dflt(env);
@@ -1949,37 +1891,46 @@ export class Compiler {
   }
 
   private arrayPatternBinder(pattern: ArrayPattern, init: boolean): (env: Env, value: unknown) => void {
-    const elements: ArrayPatternElement[] = [];
+    const elements = newSafeList<ArrayPatternElement>();
     for (let i = 0; i < pattern.elements.length; i++) append(elements, this.arrayPatternElement(pattern.elements[i], init));
     return (env, value) => {
-      if (plainArray(value)) {
+      const method = iteratorMethod(value);
+      if (arrayIteration(value, method)) {
+        // The array's iterator, stepped by index: it is done once a step
+        // finds the index at the length, as that step reads it.
+        let done = false;
         for (let i = 0; i < elements.length; i++) {
           const el = elements[i];
-          if (el.kind === 'skip') continue;
+          if (el.kind === 'skip') {
+            if (!done && i >= value.length) done = true;
+            continue;
+          }
           // A member target's reference is evaluated before the value is read.
           const set = el.member ? el.member(env) : null;
           let v: unknown;
           if (el.kind === 'rest') {
-            v = arraySliceFrom(value, i);
+            v = done ? [] : arraySliceFrom(value, i);
+            done = true;
           } else {
-            v = value[i];
+            if (!done && i < value.length) v = value[i];
+            else done = true;
             if (v === undefined && el.dflt !== null) v = el.dflt(env);
           }
           if (set) set(v); else el.bind(env, v);
-          if (el.kind === 'rest') break;
         }
+        if (!done) closeArrayIteration(value);
         return;
       }
-      const it = getIterator(value);
+      const it = iteratorFrom(value, method);
       try {
         for (let i = 0; i < elements.length; i++) {
           const el = elements[i];
           const set = el.kind !== 'skip' && el.member ? el.member(env) : null;
           let v: unknown;
           if (el.kind === 'rest') {
-            const rest: unknown[] = [];
-            for (let x = it.step(); !it.done; x = it.step()) rest[rest.length] = x;
-            v = rest;
+            const rest = newSafeList<unknown>();
+            for (let x = it.step(); !it.done; x = it.step()) append(rest, x);
+            v = listOf(rest);
           } else if (!it.done) {
             v = it.step();
           }
@@ -1988,7 +1939,7 @@ export class Compiler {
           if (set) set(v); else el.bind(env, v);
         }
       } catch (error) {
-        if (!it.done) closeQuietly(it);
+        if (!it.done) it.closeQuietly();
         throw error;
       }
       if (!it.done) it.close();
@@ -2001,23 +1952,23 @@ export class Compiler {
     switch (pattern.type) {
       case 'Identifier': {
         const bind = this.patternBinder(pattern, init);
-        return function* (env, value) { bind(env, value); };
+        return safeGenerator(function* (env, value) { bind(env, value); });
       }
       case 'MemberExpression': {
         // A lone target (a for-of head): its reference is evaluated after the value.
         const ref = this.memberTargetGen(pattern);
-        return function* (env, value) { (yield* ref(env))(value); };
+        return safeGenerator(function* (env, value) { (yield* ref(env))(value); });
       }
       case 'AssignmentPattern': case 'RestElement': {
         const el = this.elementGen(pattern, init);
-        return function* (env, value) { yield* el.assign(env, yield* el.reference(env), value); };
+        return safeGenerator(function* (env, value) { yield* el.assign(env, yield* el.reference(env), value); });
       }
       case 'ObjectPattern': {
-        const steps: ObjectPatternStepGen[] = [];
+        const steps = newSafeList<ObjectPatternStepGen>();
         for (let i = 0; i < pattern.properties.length; i++) append(steps, this.objectPatternStepGen(pattern.properties[i], init));
-        return function* (env, value) {
+        return safeGenerator(function* (env, value) {
           requireObjectCoercible(value);
-          const used: PropertyKey[] = [];
+          const used = newSafeList<PropertyKey>();
           for (let i = 0; i < steps.length; i++) {
             const { key, el } = steps[i];
             if (key === null) {
@@ -2028,19 +1979,19 @@ export class Compiler {
               continue;
             }
             const k = yield* key(env);
-            used[used.length] = k;
+            append(used, k);
             const target = yield* el.reference(env);
             yield* el.assign(env, target, ops.get(value, k));
           }
-        };
+        });
       }
       case 'ArrayPattern': {
-        const elements: Array<{ readonly rest: boolean; readonly el: ElementGen } | null> = [];
+        const elements = newSafeList<{ readonly rest: boolean; readonly el: ElementGen } | null>();
         for (let i = 0; i < pattern.elements.length; i++) {
           const e = pattern.elements[i];
           append(elements, e === null ? null : { rest: e.type === 'RestElement', el: this.elementGen(e.type === 'RestElement' ? e.argument : e, init) });
         }
-        return function* (env, value) {
+        return safeGenerator(function* (env, value) {
           const it = getIterator(value);
           // A generator's return() while suspended in here is a return
           // completion: it closes the iterator, and return()'s error wins.
@@ -2052,9 +2003,9 @@ export class Compiler {
               const target = item ? yield* item.el.reference(env) : null;
               let v: unknown;
               if (item && item.rest) {
-                const rest: unknown[] = [];
-                for (let x = it.step(); !it.done; x = it.step()) rest[rest.length] = x;
-                v = rest;
+                const rest = newSafeList<unknown>();
+                for (let x = it.step(); !it.done; x = it.step()) append(rest, x);
+                v = listOf(rest);
               } else if (!it.done) {
                 v = it.step();
               }
@@ -2063,13 +2014,13 @@ export class Compiler {
             finished = true;
           } catch (error) {
             threw = true;
-            if (!it.done) closeQuietly(it);
+            if (!it.done) it.closeQuietly();
             throw error;
           } finally {
             if (!finished && !threw && !it.done) it.close();
           }
           if (!it.done) it.close();
-        };
+        });
       }
     }
   }
@@ -2079,10 +2030,10 @@ export class Compiler {
     if (p.type === 'RestElement') return { key: null, el: this.elementGen(p.argument, init) };
     if (p.computed) {
       const k = asGen(this.expr(p.key));
-      return { key: function* (env) { return toPropertyKey(yield* k(env)); }, el: this.elementGen(p.value, init) };
+      return { key: safeGenerator(function* (env) { return toPropertyKey(yield* k(env)); }), el: this.elementGen(p.value, init) };
     }
     const name = this.staticKey(p.key);
-    return { key: function* () { return name; }, el: this.elementGen(p.value, init) };
+    return { key: safeGenerator(function* () { return name; }), el: this.elementGen(p.value, init) };
   }
 
   /**
@@ -2099,19 +2050,19 @@ export class Compiler {
       const ref = this.memberTargetGen(target);
       return {
         reference: ref,
-        * assign(env, set, value) {
+        assign: safeGenerator(function* (env, set, value) {
           const v = value === undefined && dflt !== null ? yield* dflt(env) : value;
           if (set === null) throw new Error('interpreter: member target without a reference');
           set(v);
-        },
+        }),
       };
     }
     const bind = this.patternBinderGen(target, init);
     return {
-      * reference() { return null; },
-      * assign(env, _set, value) {
+      reference: safeGenerator(function* () { return null; }),
+      assign: safeGenerator(function* (env, _set, value) {
         yield* bind(env, value === undefined && dflt !== null ? yield* dflt(env) : value);
-      },
+      }),
     };
   }
 
@@ -2119,7 +2070,7 @@ export class Compiler {
   private memberTargetGen(node: MemberExpression): (env: Env) => Generator<unknown, (value: unknown) => void, unknown> {
     if (!this.suspends(node)) {
       const target = this.memberTarget(node);
-      return function* (env) { return target(env); };
+      return safeGenerator(function* (env) { return target(env); });
     }
     if (node.object.type === 'Super') throw new UnsupportedSyntax('await or yield inside a super member key of a destructuring target');
     const ops = operators();
@@ -2127,19 +2078,19 @@ export class Compiler {
     const og = asGen(this.expr(node.object));
     if (node.property.type === 'PrivateIdentifier') {
       const name = this.privateName(node.property);
-      return function* (env) {
+      return safeGenerator(function* (env) {
         const o = yield* og(env);
         const pn = name(env);
         return (value) => pn.set(o, value);
-      };
+      });
     }
     const kg = node.computed ? asGen(this.expr(node.property)) : null;
     const name = !node.computed && node.property.type === 'Identifier' ? node.property.name : '';
-    return function* (env) {
+    return safeGenerator(function* (env) {
       const o = yield* og(env);
       const k = kg ? yield* kg(env) : name;
       return (value) => set(o, k, value);
-    };
+    });
   }
 
   private staticKey(key: Expression | PrivateIdentifier): PropertyKey {
@@ -2232,7 +2183,7 @@ export class Compiler {
 
   /** Each expression's code, in order. */
   private exprs(nodes: readonly Expression[]): Code[] {
-    const codes: Code[] = [];
+    const codes = newSafeList<Code>();
     for (let i = 0; i < nodes.length; i++) append(codes, this.expr(nodes[i]));
     return codes;
   }
@@ -2243,14 +2194,14 @@ export class Compiler {
   }
 
   private argumentParts(args: readonly (Expression | SpreadElement)[]): ListPart[] {
-    const parts: ListPart[] = [];
+    const parts = newSafeList<ListPart>();
     for (let i = 0; i < args.length; i++) append(parts, this.listPart(args[i]));
     return parts;
   }
 
   /** An array literal's parts: null for a hole. */
   private elementParts(elements: readonly (Expression | SpreadElement | null)[]): Array<ListPart | null> {
-    const parts: Array<ListPart | null> = [];
+    const parts = newSafeList<ListPart | null>();
     for (let i = 0; i < elements.length; i++) {
       const e = elements[i];
       append(parts, e === null ? null : this.listPart(e));
@@ -2317,7 +2268,7 @@ export class Compiler {
     const specifier = this.expr(node.source);
     const options = node.options ? this.expr(node.options) : null;
     const run = (spec: unknown, opts: unknown): Promise<unknown> => {
-      if (!load) return Promise.reject(new TypeError('import() is not supported here'));
+      if (!load) return promiseReject(new TypeError('import() is not supported here'));
       return load(spec, opts);
     };
     if (specifier.g === null && (options === null || options.g === null)) {
@@ -2365,9 +2316,10 @@ export class Compiler {
           return yield DELEGATE;
         });
       }
+      const ops = operators();
       return genCode(function* (env) {
         const v = ag ? yield* ag(env) : as ? as(env) : undefined;
-        return yield* iterable(v);
+        return yield* ops.delegate(v);
       });
     }
     if (async) {
@@ -2729,12 +2681,12 @@ export class Compiler {
       const key = node.computed && node.property.type !== 'PrivateIdentifier' ? asGen(this.expr(node.property)) : null;
       const name = !node.computed && node.property.type === 'Identifier' ? node.property.name : '';
       const privateName = node.property.type === 'PrivateIdentifier' ? this.privateName(node.property) : null;
-      return function* (env) {
+      return safeGenerator(function* (env) {
         const o = yield* object(env);
         if (o === SHORT || (optional && (o === null || o === undefined))) return SHORT;
         if (privateName) return privateName(env).get(o);
         return ops.get(o, key ? yield* key(env) : name);
-      };
+      });
     }
     if (node.type === 'CallExpression' && node.callee.type !== 'Super') {
       const callee = node.callee;
@@ -2747,20 +2699,20 @@ export class Compiler {
         const key = callee.computed && callee.property.type !== 'PrivateIdentifier' ? asGen(this.expr(callee.property)) : null;
         const name = !callee.computed && callee.property.type === 'Identifier' ? callee.property.name : '';
         const privateName = callee.property.type === 'PrivateIdentifier' ? this.privateName(callee.property) : null;
-        return function* (env) {
+        return safeGenerator(function* (env) {
           const o = yield* object(env);
           if (o === SHORT || (memberOptional && (o === null || o === undefined))) return SHORT;
           const fn = privateName ? privateName(env).get(o) : ops.get(o, key ? yield* key(env) : name);
           if (optional && (fn === null || fn === undefined)) return SHORT;
           return callValue(fn, o, yield* args(env), text);
-        };
+        });
       }
       const fnCode = this.chainGen(callee);
-      return function* (env) {
+      return safeGenerator(function* (env) {
         const fn = yield* fnCode(env);
         if (fn === SHORT || (optional && (fn === null || fn === undefined))) return SHORT;
         return callValue(fn, undefined, yield* args(env), text);
-      };
+      });
     }
     return asGen(this.expr(node));
   }
@@ -2893,32 +2845,35 @@ export class Compiler {
           case 1: { const a = fns[0]; return syncCode((env) => [a(env)]); }
           case 2: { const a = fns[0], b = fns[1]; return syncCode((env) => [a(env), b(env)]); }
           case 3: { const a = fns[0], b = fns[1], c = fns[2]; return syncCode((env) => [a(env), b(env), c(env)]); }
-          default: return syncCode((env) => {
-            const out = new Array<unknown>(fns.length);
-            for (let i = 0; i < fns.length; i++) out[i] = fns[i](env);
-            return out;
-          });
+          default: {
+            const template = newList(fns.length);
+            return syncCode((env) => {
+              const out = copyList(template);
+              for (let i = 0; i < fns.length; i++) out[i] = fns[i](env);
+              return out;
+            });
+          }
         }
       }
       const spreads = mapList(parts, (p) => p.spread);
       return syncCode((env) => {
-        const out: unknown[] = [];
+        const out = newSafeList<unknown>();
         for (let i = 0; i < fns.length; i++) {
           const v = fns[i](env);
-          if (spreads[i]) for (const x of iterable(v)) out[out.length] = x; else out[out.length] = v;
+          if (spreads[i]) spreadInto(out, v); else append(out, v);
         }
-        return out;
+        return listOf(out);
       });
     }
     const gens = mapList(parts, (p) => ({ spread: p.spread, g: asGen(p.code) }));
     return genCode(function* (env) {
-      const out: unknown[] = [];
+      const out = newSafeList<unknown>();
       for (let i = 0; i < gens.length; i++) {
         const p = gens[i];
         const v = yield* p.g(env);
-        if (p.spread) for (const x of iterable(v)) out[out.length] = x; else out[out.length] = v;
+        if (p.spread) spreadInto(out, v); else append(out, v);
       }
-      return out;
+      return listOf(out);
     });
   }
 
@@ -2930,7 +2885,7 @@ export class Compiler {
 
   /** The arguments' values, for a list plainArguments accepts. */
   private argumentValues(args: readonly (Expression | SpreadElement)[]): Sync[] {
-    const fns: Sync[] = [];
+    const fns = newSafeList<Sync>();
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       append(fns, a.type === 'SpreadElement' ? suspendedSync : this.expr(a).s);
@@ -3100,72 +3055,76 @@ export class Compiler {
           case 2: { const a = fns[0], b = fns[1]; return syncCode((env) => [a(env), b(env)]); }
           case 3: { const a = fns[0], b = fns[1], c = fns[2]; return syncCode((env) => [a(env), b(env), c(env)]); }
           case 4: { const a = fns[0], b = fns[1], c = fns[2], d = fns[3]; return syncCode((env) => [a(env), b(env), c(env), d(env)]); }
-          default: return syncCode((env) => {
-            const out = new Array<unknown>(fns.length);
-            for (let i = 0; i < fns.length; i++) out[i] = fns[i](env);
-            return out;
-          });
+          default: {
+            const template = newList(fns.length);
+            return syncCode((env) => {
+              const out = copyList(template);
+              for (let i = 0; i < fns.length; i++) out[i] = fns[i](env);
+              return out;
+            });
+          }
         }
       }
       const items = mapList(parts, (p) => (p === null ? null : { spread: p.spread, f: p.code.s }));
       return syncCode((env) => {
-        const out: unknown[] = [];
+        const out = newSafeList<unknown>();
+        const holes = newSafeList<number>();
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
-          if (item === null) out.length++;
-          else if (item.spread) for (const v of iterable(item.f(env))) out[out.length] = v;
-          else out[out.length] = item.f(env);
+          if (item === null) { append(holes, out.length); out.length++; }
+          else if (item.spread) spreadInto(out, item.f(env));
+          else append(out, item.f(env));
         }
-        return out;
+        return arrayWithHoles(out, holes);
       });
     }
     const items = mapList(parts, (p) => (p === null ? null : { spread: p.spread, g: asGen(p.code) }));
     return genCode(function* (env) {
-      const out: unknown[] = [];
+      const out = newSafeList<unknown>();
+      const holes = newSafeList<number>();
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        if (item === null) { out.length++; continue; }
+        if (item === null) { append(holes, out.length); out.length++; continue; }
         const v = yield* item.g(env);
-        if (item.spread) for (const x of iterable(v)) out[out.length] = x;
-        else out[out.length] = v;
+        if (item.spread) spreadInto(out, v); else append(out, v);
       }
-      return out;
+      return arrayWithHoles(out, holes);
     });
   }
 
   /** One property of an object literal, compiled. */
   private propertyPart(p: ObjectExpression['properties'][number]): PropertyPart {
     if (p.type === 'SpreadElement') return { kind: 'spread', value: this.expr(p.argument) };
-    const key: KeyCode = p.computed ? { computed: this.expr(p.key) } : { static: this.staticKey(p.key) };
-    if (!p.computed && !p.shorthand && !p.method && p.kind === 'init' && 'static' in key && key.static === '__proto__') {
+    const key: KeyCode = p.computed ? { kind: 'computed', computed: this.expr(p.key) } : { kind: 'static', static: this.staticKey(p.key) };
+    if (!p.computed && !p.shorthand && !p.method && p.kind === 'init' && key.kind === 'static' && key.static === '__proto__') {
       return { kind: 'proto', value: this.expr(p.value) };
     }
     if (p.kind !== 'init' || p.method) {
       if (p.value.type !== 'FunctionExpression') throw new Error('interpreter: method without a function');
-      const name = 'static' in key ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
+      const name = key.kind === 'static' ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
       // A method's source text is its whole definition, key included.
       return { kind: p.kind === 'init' ? 'method' : p.kind, key, fi: this.functionInfo(p.value, name, undefined, this.sourceOf(p.start, p.value.end)) };
     }
-    if ('static' in key) return { kind: 'data', key, value: this.named(p.value, functionName(key.static)), named: null };
+    if (key.kind === 'static') return { kind: 'data', key, value: this.named(p.value, functionName(key.static)), named: null };
     if (isAnonymousFunctionDefinition(p.value)) return { kind: 'data', key, value: null, named: this.namedAtRuntime(p.value) };
     return { kind: 'data', key, value: this.expr(p.value), named: null };
   }
 
   private objectExpr(node: ObjectExpression): Code {
     type Part = PropertyPart;
-    const parts: Part[] = [];
+    const parts = newSafeList<Part>();
     for (let i = 0; i < node.properties.length; i++) append(parts, this.propertyPart(node.properties[i]));
     const suspends = someItem(parts, (p) => ((p.kind === 'spread' || p.kind === 'proto') && p.value.g !== null)
-      || ((p.kind === 'data' || p.kind === 'method' || p.kind === 'get' || p.kind === 'set') && 'computed' in p.key && p.key.computed.g !== null)
+      || ((p.kind === 'data' || p.kind === 'method' || p.kind === 'get' || p.kind === 'set') && p.key.kind === 'computed' && p.key.computed.g !== null)
       || (p.kind === 'data' && p.value !== null && p.value.g !== null));
     // Static keys and plain values only: a template copied with own data
     // properties (define semantics), then filled in.
-    if (!suspends && everyItem(parts, (p) => p.kind === 'data' && 'static' in p.key || p.kind === 'method' && 'static' in p.key || p.kind === 'proto')) {
+    if (!suspends && everyItem(parts, (p) => p.kind === 'data' && p.key.kind === 'static' || p.kind === 'method' && p.key.kind === 'static' || p.kind === 'proto')) {
       const template: Record<PropertyKey, unknown> = {};
       const seen = new SafeSet<PropertyKey>();
       for (let j = 0; j < parts.length; j++) {
         const p = parts[j];
-        if ((p.kind === 'data' || p.kind === 'method') && 'static' in p.key && !seen.has(p.key.static)) {
+        if ((p.kind === 'data' || p.kind === 'method') && p.key.kind === 'static' && !seen.has(p.key.static)) {
           seen.add(p.key.static);
           createDataProperty(template, p.key.static, undefined);
         }
@@ -3173,7 +3132,7 @@ export class Compiler {
       // Data properties only (most literals): the values written in order.
       if (everyItem(parts, (p) => p.kind === 'data')) {
         if (parts.length === 0) return syncCode(() => ({}));
-        const keys = mapList(parts, (p) => (p.kind === 'data' && 'static' in p.key ? p.key.static : ''));
+        const keys = mapList(parts, (p) => (p.kind === 'data' && p.key.kind === 'static' ? p.key.static : ''));
         const values = mapList(parts, (p) => (p.kind === 'data' && p.value !== null ? p.value.s : suspendedSync));
         return syncCode((env) => {
           const o: Record<PropertyKey, unknown> = { ...template };
@@ -3183,8 +3142,8 @@ export class Compiler {
       }
       const fills = mapList(parts, (p) => {
         if (p.kind === 'proto') return { proto: p.value.s, key: '' as PropertyKey, value: null, fi: null };
-        if (p.kind === 'data' && 'static' in p.key && p.value !== null) return { proto: null, key: p.key.static, value: p.value.s, fi: null };
-        if (p.kind === 'method' && 'static' in p.key) return { proto: null, key: p.key.static, value: null, fi: p.fi };
+        if (p.kind === 'data' && p.key.kind === 'static' && p.value !== null) return { proto: null, key: p.key.static, value: p.value.s, fi: null };
+        if (p.kind === 'method' && p.key.kind === 'static') return { proto: null, key: p.key.static, value: null, fi: p.fi };
         throw new Error('interpreter: object template');
       });
       return syncCode((env) => {
@@ -3203,24 +3162,24 @@ export class Compiler {
         return o;
       });
     }
-    const keyOf = (key: KeyCode, env: Env): PropertyKey => ('static' in key ? key.static : toPropertyKey(key.computed.s(env)));
-    function* keyOfGen(key: KeyCode, env: Env): Generator<unknown, PropertyKey, unknown> {
-      if ('static' in key) return key.static;
+    const keyOf = (key: KeyCode, env: Env): PropertyKey => (key.kind === 'static' ? key.static : toPropertyKey(key.computed.s(env)));
+    const keyOfGen = safeGenerator(function* (key: KeyCode, env: Env): Generator<unknown, PropertyKey, unknown> {
+      if (key.kind === 'static') return key.static;
       const g = key.computed.g;
       return toPropertyKey(g ? yield* g(env) : key.computed.s(env));
-    }
+    });
     const apply = (o: object, p: Part, k: PropertyKey, value: unknown, env: Env) => {
       switch (p.kind) {
         case 'spread': copyDataProperties(o, value, null); return;
         case 'proto': if (isObject(value) || value === null) reflectSetPrototypeOf(o, value); return;
         case 'data': createDataProperty(o, k, value); return;
         case 'method': {
-          const fn = makeFunction(p.fi, env, o, 'computed' in p.key ? functionName(k) : p.fi.name);
+          const fn = makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k) : p.fi.name);
           createDataProperty(o, k, fn);
           return;
         }
         case 'get': case 'set': {
-          const fn = makeFunction(p.fi, env, o, 'computed' in p.key ? functionName(k, p.kind) : p.fi.name);
+          const fn = makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k, p.kind) : p.fi.name);
           defineAccessor(o, k, p.kind, fn, true);
           return;
         }
@@ -3294,7 +3253,7 @@ export class Compiler {
     const named = left.type === 'Identifier' && node.start === left.start && (operator === '=' || logical);
     const right = named && left.type === 'Identifier' ? this.named(node.right, left.name) : this.expr(node.right);
     const op = operator === '=' || logical ? null : binaryOperator(stringSlice(operator, 0, -1), ops);
-    const shortCircuit = (v: unknown): boolean => (operator === '&&=' ? !v : operator === '||=' ? Boolean(v) : v !== null && v !== undefined);
+    const shortCircuit = (v: unknown): boolean => (operator === '&&=' ? !v : operator === '||=' ? !!v : v !== null && v !== undefined);
     const rs = right.s;
     // The common targets, without a reference object: a binding, or a member with a plain object expression.
     if (right.g === null && left.type === 'Identifier') {
@@ -3432,7 +3391,7 @@ export class Compiler {
       const os = object.s;
       const og = object.g;
       const make = (o: unknown, pn: PrivateName): RefValue => ({ get: () => pn.get(o), set: (v) => pn.set(o, v) });
-      return { s: (env) => make(os(env), name(env)), g: og ? function* (env) { return make(yield* og(env), name(env)); } : null };
+      return { s: (env) => make(os(env), name(env)), g: og ? safeGenerator(function* (env) { return make(yield* og(env), name(env)); }) : null };
     }
     const key = node.computed ? this.expr(node.property) : null;
     const staticName = !node.computed && node.property.type === 'Identifier' ? node.property.name : '';
@@ -3452,7 +3411,7 @@ export class Compiler {
           const o = os(env);
           return { get: () => ops.get(o, staticName), set: (v) => set(o, staticName, v) };
         },
-        g: og ? function* (env) { const o = yield* og(env); return { get: () => ops.get(o, staticName), set: (v: unknown) => set(o, staticName, v) }; } : null,
+        g: og ? safeGenerator(function* (env) { const o = yield* og(env); return { get: () => ops.get(o, staticName), set: (v: unknown) => set(o, staticName, v) }; }) : null,
       };
     }
     if (object.g === null && key.g === null) {
@@ -3567,7 +3526,7 @@ export class Compiler {
   /** What defining a class does, compiled: its constructor, elements and private names (classDefiner runs it). */
   private classPlan(node: ClassNode, instanceFields: FunctionScope | null, staticFields: FunctionScope | null, classScope: Scope): ClassPlan {
     const body: ClassBody = node.body;
-    const derived = Boolean(node.superClass);
+    const derived = !!node.superClass;
     const ctorIndex = indexWhere(body.body, (m) => m.type === 'MethodDefinition' && m.kind === 'constructor');
     const ctorMember = ctorIndex < 0 ? null : body.body[ctorIndex];
     const ctorNode = ctorMember !== null && ctorMember.type === 'MethodDefinition' ? ctorMember : null;
@@ -3583,9 +3542,9 @@ export class Compiler {
 
     const innerBinding = node.id ? classScope.bindings.get(node.id.name) ?? null : null;
     const writeInner = innerBinding ? this.slotWriter(0, innerBinding.slot) : null;
-    const computedKeys: Code[] = [];
-    const elements: ClassElement[] = [];
-    const privateNames: ClassPrivateName[] = [];
+    const computedKeys = newSafeList<Code>();
+    const elements = newSafeList<ClassElement>();
+    const privateNames = newSafeList<ClassPrivateName>();
     const declaredPrivate = new SafeSet<string>();
     for (let j = 0; j < body.body.length; j++) {
       const member = body.body[j];
@@ -3604,14 +3563,14 @@ export class Compiler {
           declaredPrivate.add(pname);
           append(privateNames, { slot: binding.slot, kind: member.type === 'PropertyDefinition' ? 'field' : member.kind === 'method' ? 'method' : 'accessor', description: pname });
         }
-        key = { private: this.privateName(member.key) };
+        key = { kind: 'private', private: this.privateName(member.key) };
         staticName = pname;
       } else if (member.computed) {
-        key = { computed: computedKeys.length };
+        key = { kind: 'computed', computed: computedKeys.length };
         append(computedKeys, this.expr(member.key));
       } else {
         const k = this.staticKey(member.key);
-        key = { static: k };
+        key = { kind: 'static', static: k };
         staticName = functionName(k);
       }
       if (member.type === 'MethodDefinition') {
@@ -3662,7 +3621,7 @@ export class Compiler {
   /** The frame layout of a class's field initializer scope. */
   private fieldInfo(fs: FunctionScope): FunctionInfo {
     const fi = new FunctionInfo('method', '', 0, true, '');
-    fi.size = fs.size;
+    fi.frame = frameTemplate(fs.size, []);
     if (fs.thisBinding) fi.thisSlot = fs.thisBinding.slot;
     if (fs.homeBinding) fi.homeSlot = fs.homeBinding.slot;
     return fi;
@@ -3672,7 +3631,7 @@ export class Compiler {
     const fs = this.analysis.functionScopeOf(block);
     const fi = new FunctionInfo('method', '', 0, true, '');
     const outer = this.enterFunction(fs, 'method');
-    fi.size = fs.size;
+    fi.frame = frameTemplate(fs.size, []);
     if (fs.thisBinding) fi.thisSlot = fs.thisBinding.slot;
     if (fs.homeBinding) fi.homeSlot = fs.homeBinding.slot;
     const entry = this.scopeEntry(fs, true);
@@ -3686,7 +3645,7 @@ export class Compiler {
   /** A program's top level (module or script), as a body over its root environment. */
   programBody(program: Program, root: FunctionScope): Code {
     const entry = this.scopeEntry(root, true);
-    const globals = root.globalVars;
+    const globals = listOf(root.globalVars);
     let list: Code;
     if (root.functionKind === 'module') {
       const saved = this.shape;
@@ -3705,7 +3664,7 @@ export class Compiler {
     const declare = (env: Env): Env => {
       for (let i = 0; i < globals.length; i++) {
         const name = globals[i];
-        if (!objectHasOwn(G, name)) reflectDefineProperty(G, name, { value: undefined, writable: true, enumerable: true, configurable: false });
+        if (!objectHasOwn(G, name)) reflectDefineProperty(G, name, dataDescriptor(undefined, true, true, false));
       }
       return env;
     };
@@ -3715,12 +3674,12 @@ export class Compiler {
   /** A CommonJS body: a function of the wrapper's parameters. */
   commonJsFunction(program: Program, root: FunctionScope, params: readonly string[]): FunctionInfo {
     const fi = new FunctionInfo('plain', '', params.length, root.strict, this.unit.source);
-    fi.size = root.size;
+    fi.frame = frameTemplate(root.size, []);
     if (root.thisBinding) fi.thisSlot = root.thisBinding.slot;
     if (root.argumentsBinding) fi.argumentsSlot = root.argumentsBinding.slot;
-    const slots: number[] = [];
+    const slots = newSafeList<number>();
     for (let i = 0; i < params.length; i++) append(slots, bindingSlot(root, params[i]));
-    fi.params = slots;
+    fi.params = listOf(slots);
     const code = this.programBody(program, root);
     if (code.g !== null) throw new UnsupportedSyntax('await at the top level of a CommonJS module');
     fi.body = code.s;
@@ -3745,9 +3704,9 @@ export class Compiler {
     const filenameSlot = bindingSlot(root, '%filename');
     const dirnameSlot = bindingSlot(root, '%dirname');
     type Load = (env: Env, require: (id: string) => unknown) => void;
-    const loads: Load[] = [];
-    const getters: Array<[name: string, read: (env: Env) => unknown]> = [];
-    const starSources: Array<(env: Env) => unknown> = [];
+    const loads = newSafeList<Load>();
+    const getters = newSafeList<[name: string, read: (env: Env) => unknown]>();
+    const starSources = newSafeList<(env: Env) => unknown>();
     const sourceOf = (node: Literal): string => {
       if (typeof node.value !== 'string') throw new Error('interpreter: module specifier');
       return node.value;
@@ -3757,7 +3716,7 @@ export class Compiler {
       const statement = program.body[n];
       if (statement.type === 'ImportDeclaration') {
         const source = sourceOf(statement.source);
-        const slots: Array<{ slot: number; namespace: boolean }> = [];
+        const slots = newSafeList<{ slot: number; namespace: boolean }>();
         for (let k = 0; k < statement.specifiers.length; k++) {
           const spec = statement.specifiers[k];
           const binding = root.bindings.get(spec.local.name);
@@ -3809,7 +3768,7 @@ export class Compiler {
       if (statement.type === 'ExportNamedDeclaration' && !statement.source) {
         if (statement.declaration) {
           const d = statement.declaration;
-          const ids: Identifier[] = [];
+          const ids = newSafeList<Identifier>();
           if (d.type === 'VariableDeclaration') for (let j = 0; j < d.declarations.length; j++) patternIdentifiers(d.declarations[j].id, ids);
           else append(ids, d.id);
           for (let k = 0; k < ids.length; k++) { const id = ids[k]; append(getters, [id.name, this.rootRead(root, id.name)]); }
@@ -3826,12 +3785,11 @@ export class Compiler {
       }
     }
     const body = this.programBody(program, root);
-    const size = root.size;
+    const template = frameTemplate(root.size, []);
     const bs = body.s;
     const bg = body.g;
     return (exportsArg, requireArg, moduleArg, filename, dirname) => {
-      const env: Env = new Array<unknown>(size);
-      env[0] = ROOT_ENV;
+      const env = withElement(template, 0, ROOT_ENV);
       env[exportsSlot] = exportsArg;
       env[requireSlot] = requireArg;
       env[moduleSlot] = moduleArg;
@@ -3841,11 +3799,11 @@ export class Compiler {
       const require = (id: string): unknown => reflectApply(requireArg, undefined, [id]);
       for (let i = 0; i < loads.length; i++) loads[i](env, require);
       const facade = {};
-      defineOrThrow(facade, '__esModule', { value: true });
+      defineOrThrow(facade, '__esModule', dataDescriptor(true, false, false, false));
       for (let i = 0; i < getters.length; i++) {
         const name = getters[i][0];
         const read = getters[i][1];
-        if (!objectHasOwn(facade, name)) defineOrThrow(facade, name, { get: () => read(env), enumerable: true });
+        if (!objectHasOwn(facade, name)) defineOrThrow(facade, name, accessorDescriptor('get', () => read(env), true, false));
       }
       for (let i = 0; i < starSources.length; i++) {
         const m = starSources[i](env);
@@ -3854,8 +3812,7 @@ export class Compiler {
         for (let j = 0; j < keys.length; j++) {
           const key = keys[j];
           if (key === 'default' || objectHasOwn(facade, key)) continue;
-          const desc = reflectGetOwnPropertyDescriptor(m, key);
-          defineOrThrow(facade, key, { get: () => ops.get(m, key), enumerable: !desc || Boolean(desc.enumerable) });
+          defineOrThrow(facade, key, accessorDescriptor('get', () => ops.get(m, key), isEnumerableOwn(m, key), false));
         }
       }
       ops.set(moduleArg, 'exports', facade);
@@ -3889,14 +3846,13 @@ export const ROOT_ENV: Env = [];
 /** esbuild's __toESM: a namespace object over a CommonJS module's exports. */
 function toESM(m: unknown): object {
   const target: object = objectCreate(isObject(m) ? objectGetPrototypeOf(m) : null);
-  if (!isObject(m) || !reflectGet(m, '__esModule')) defineOrThrow(target, 'default', { value: m, enumerable: true });
+  if (!isObject(m) || !reflectGet(m, '__esModule')) defineOrThrow(target, 'default', dataDescriptor(m, false, true, false));
   if (isObject(m)) {
     const keys = objectGetOwnPropertyNames(m);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
       if (objectHasOwn(target, key)) continue;
-      const desc = reflectGetOwnPropertyDescriptor(m, key);
-      defineOrThrow(target, key, { get: () => reflectGet(m, key), enumerable: !desc || Boolean(desc.enumerable) });
+      defineOrThrow(target, key, accessorDescriptor('get', () => reflectGet(m, key), isEnumerableOwn(m, key), false));
     }
   }
   return target;
@@ -3904,7 +3860,7 @@ function toESM(m: unknown): object {
 
 /** Runs a module body's generator as an async function would: one await per yielded value. */
 async function drive(it: Generator<unknown, unknown, unknown>): Promise<unknown> {
-  let r = it.next();
+  let r = resume(it, undefined);
   while (!r.done) {
     let value: unknown;
     let ok = true;
@@ -3914,7 +3870,7 @@ async function drive(it: Generator<unknown, unknown, unknown>): Promise<unknown>
       ok = false;
       value = error;
     }
-    r = ok ? it.next(value) : it.throw(value);
+    r = ok ? resume(it, value) : resumeThrowing(it, value);
   }
   return undefined;
 }

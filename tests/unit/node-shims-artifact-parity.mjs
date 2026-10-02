@@ -34,6 +34,7 @@ const cases = [
   { name: 'NODE_SHIMS', source: 'generateShimsCode()', current: generateShimsCode() },
   { name: 'VFS_WRITE_LEDGER', source: 'VFS_WRITE_LEDGER_SOURCE', current: VFS_WRITE_LEDGER_SOURCE },
   { name: 'RESIDENT_STORE', source: 'FACET_RESIDENT_STORE_SOURCE', current: FACET_RESIDENT_STORE_SOURCE },
+  { name: 'JS_INTERPRETER_PRIMORDIALS', source: 'the primordials bundle of core src', current: interpreter.primordials },
   { name: 'JS_INTERPRETER', source: 'the interpreter bundle of core src', current: interpreter.interpreter },
   { name: 'JS_INTERPRETER_OPS', source: 'HOST_OPS_SOURCE', current: interpreter.ops },
 ];
