@@ -22,6 +22,19 @@ published independently in the `@nimbus-sh` npm scope.
   since the transform host's identity changed. Output is printed
   differently (formatting only); `supervisorEsbuildService` keeps its name,
   signature and contract.
+- Lowering a module with top-level await (the transform's ESM output run as a
+  CommonJS cell) now evaluates every module the source requests before the
+  body, re-exports included, in source order, as Node does; and each export
+  is a live getter installed before the body runs, so `export let db; db =
+  await connect()` exports the connected value, wherever the transform
+  printed the export.
+- A module nested deeper than Oxc's recursive passes can run on the host's
+  stack (under V8: about 4,800 concatenated terms, a 1,950-arm ternary, 1,400
+  chained calls or arrays 585 deep) is transformed by esbuild in the esbuild
+  facet, that module alone. esbuild's own wasm grows with depth too (268 MiB
+  for 5,000 concatenated terms), so past its own limit neither transforms it.
+- `jsx: "preserve"` with `format: "cjs"` is refused: preserved JSX would name
+  imports that the conversion to CommonJS moved onto records.
 
 ## 2026-10-01
 

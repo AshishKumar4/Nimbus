@@ -28,6 +28,7 @@ import { lowerAsyncModule } from '../../packages/core/src/runtime/async-module-l
 import { importMetaDefines } from '../../packages/core/src/runtime/import-meta-transform.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { oxcEngine } from './lib/oxc-engine.mjs';
+import { isOxcStackExhaustion } from '../../packages/core/src/runtime/oxc-transform.ts';
 
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 
@@ -59,8 +60,13 @@ function describe(value) {
   return `object:${Object.keys(value).sort().join(',')}`;
 }
 
-/** Run a CommonJS cell as Nimbus's wrapper does; report what a program could see. */
-function observe(code, lowered) {
+/**
+ * Run a CommonJS cell as Nimbus's wrapper does, and settle what a lowered
+ * (top-level await) cell returns; report what a program could see. A
+ * module's `__trace(label)` records into `requires`, so the order of its own
+ * side effects and its dependencies' is compared too.
+ */
+async function observe(code, lowered) {
   const holder = {};
   try {
     new Function('module', wrapCommonJsCell(code, lowered ? 'block' : 'function').text)(holder);
@@ -71,12 +77,13 @@ function observe(code, lowered) {
   const module = { exports: {}, __nimbusImportMeta: { url: 'file:///app/x.js', dirname: '/app', filename: '/app/x.js', resolve: (s) => s } };
   globalThis.__nimbusDynamicImport = (_parent, specifier) => { requires.push(`import(${String(specifier)})`); return Promise.resolve({}); };
   globalThis.__nimbusImportMetaResolveForModule = () => (s) => s;
+  globalThis.__trace = (label) => requires.push(`trace:${label}`);
   let threw = null;
   const log = console.log;
   console.log = () => {};
   try {
     const returned = holder.exports.call(module.exports, module.exports, (s) => { requires.push(s); return anything(); }, module, '/app/x.js', '/app');
-    if (returned && typeof returned.then === 'function') returned.catch(() => {});
+    if (returned && typeof returned.then === 'function') await returned;
   } catch (error) {
     // The message names the binding esbuild or Oxc chose; the constructor does not.
     threw = error.constructor.name;
@@ -106,13 +113,13 @@ const outcomes = {
       outcome = { error: String(error.message) };
     }
     const settled = settleBundleCell(cell, outcome);
-    return settled.failed ? { refused: true } : observe(settled.code, settled.lowered);
+    return settled.failed ? { refused: true } : await observe(settled.code, settled.lowered);
   },
   async entry(engine, name, source) {
     const url = `file:///app/${name}`;
     try {
       const { code } = await engine.transform(source, { loader: loaderOf(name), format: 'cjs', define: importMetaDefines(url), supported: { 'dynamic-import': true, 'import-meta': false } });
-      return observe(code, true);
+      return await observe(code, true);
     } catch (error) {
       return { refused: true, topLevelAwait: /top-level await.*not supported.*cjs/i.test(String(error.message)) };
     }
@@ -129,7 +136,7 @@ const outcomes = {
     // One engine reads both outputs as CommonJS, so only the first pass differs.
     try {
       const { code: cjs } = await esbuild.transform(code, { loader: 'js', format: 'cjs', supported: { 'dynamic-import': true, 'import-meta': true } });
-      return observe(cjs, true);
+      return await observe(cjs, true);
     } catch (error) {
       // Where in the output it was refused depends on the printer; why does not.
       return { refused: true, reread: String(error.message).split('\n')[1].replace(/^<stdin>:\d+:\d+: /, '') };
@@ -140,17 +147,79 @@ const outcomes = {
 let compared = 0;
 let equal = 0;
 const divergent = new Set();
+const unexpected = [];
 for (const [name, source] of CASES) {
   for (const [path, outcome] of Object.entries(outcomes)) {
     const [before, after] = [await outcome(engines.esbuild, name, source), await outcome(engines.oxc, name, source)];
     compared++;
     if (JSON.stringify(before) === JSON.stringify(after)) { equal++; continue; }
-    assert.ok(DIVERGENT[name], `${name} (${path}) differs:\n  esbuild-wasm: ${JSON.stringify(before)}\n  oxc:          ${JSON.stringify(after)}`);
-    divergent.add(name);
+    if (DIVERGENT[name]) divergent.add(name);
+    else unexpected.push(`${name} (${path}) differs:\n  esbuild-wasm: ${JSON.stringify(before)}\n  oxc:          ${JSON.stringify(after)}`);
   }
 }
+assert.deepEqual(unexpected, [], unexpected.join('\n'));
 assert.deepEqual([...divergent].sort(), Object.keys(DIVERGENT).sort(), 'every listed divergence still diverges');
 console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} transforms: ${equal} of ${compared} equal, the rest the ${divergent.size} listed divergences`);
+
+// ── A top-level-await module's dependencies run before its body, as in Node ─
+{
+  // Node evaluates every module the source requests, in source order, before
+  // the body; the lowering hoists re-exports' requires with the imports'.
+  const source = "__trace('body'); await 0; export { x } from 'y'; export * from 'z'; import 'w';";
+  for (const [name, engine] of Object.entries(engines)) {
+    const seen = await outcomes.cell(engine, 'tla-reexport-order.mjs', source);
+    assert.deepEqual(seen.requires, ['y', 'z', 'w', 'trace:body'], `${name}: ${JSON.stringify(seen)}`);
+    assert.ok(seen.exports.some((e) => e.startsWith('x=')), `${name}: ${JSON.stringify(seen.exports)}`);
+  }
+  console.log('  ok  a top-level-await module requires its dependencies before its body runs');
+}
+
+// ── Deep modules: Oxc, or past its stack esbuild (oxcTransformHost's rule) ──
+{
+  // Oxc's passes recurse once per level of nesting on the host's stack; a
+  // module deeper than it holds goes to esbuild. Under Node (V8, as workerd)
+  // they hold 4,784 concatenated terms, a 1,952-arm ternary, 1,415 chained
+  // calls and arrays 585 deep; Bun's stack holds more (3,027 deep arrays). Sizes stay where esbuild's
+  // own wasm fits a Worker (it grows to 108 MiB for 3,000 concatenated terms,
+  // 268 MiB for 5,000), and where one esbuild instance can take them all in
+  // turn (esbuild-build-host.mjs runs a 5,000-deep array on a fresh one).
+  const terms = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+  const deep = {
+    'concat-3000.mjs': `export const s = ${terms(3000, (i) => `"p${i}"`).join(' + ')};`,
+    'ternary-1000.mjs': `export const f = (a) => ${terms(1000, (i) => `a === ${i} ? "v${i}" :`).join(' ')} null;`,
+    'ternary-5000.mjs': `export const f = (a) => ${terms(5000, (i) => `a === ${i} ? "v${i}" :`).join(' ')} null;`,
+    'nested-300.mjs': `export const x = ${'['.repeat(300)}1${']'.repeat(300)};`,
+    'nested-4000.mjs': `export const x = ${'['.repeat(4000)}1${']'.repeat(4000)};`,
+    'chain-3000.mjs': `import { q } from 'q'; export const c = () => q${'.m()'.repeat(3000)};`,
+    // What a minifier makes of a large switch and a string table.
+    'minified-switch.mjs': `import{t as e}from"t";export function m(r){return ${terms(2500, (i) => `r===${i}?e("k${i}")`).join(':')}:void 0}export const s=${terms(1500, (i) => `"${i.toString(36)}"`).join('+')};`,
+  };
+  const settle = async (engine, name, source) => {
+    const cell = prepareBundleCell(`app/${name}`, source);
+    let outcome;
+    try {
+      outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, rewriteDynamicImports, lowerAsyncModule);
+    } catch (error) {
+      outcome = { error: String(error.message) };
+    }
+    return { cell, outcome };
+  };
+  let viaOxc = 0;
+  let viaEsbuild = 0;
+  for (const [name, source] of Object.entries(deep)) {
+    const expected = await outcomes.cell(esbuild, name, source);
+    let { cell, outcome } = await settle(oxcEngine, name, source);
+    if ('error' in outcome && isOxcStackExhaustion(outcome.error)) {
+      viaEsbuild++;
+      ({ cell, outcome } = await settle(esbuild, name, source));
+    } else viaOxc++;
+    const settled = settleBundleCell(cell, outcome);
+    const actual = settled.failed ? { refused: true } : await observe(settled.code, settled.lowered);
+    assert.deepEqual(actual, expected, `${name}: ${JSON.stringify(actual).slice(0, 300)}`);
+  }
+  assert.ok(viaOxc > 0 && viaEsbuild > 0, `both routes taken: ${viaOxc} by Oxc, ${viaEsbuild} by esbuild`);
+  console.log(`  ok  ${Object.keys(deep).length} deep modules equal: ${viaOxc} by Oxc, ${viaEsbuild} past its stack by esbuild`);
+}
 
 // ── The CommonJS shape other code reads by name ─────────────────────────────
 {

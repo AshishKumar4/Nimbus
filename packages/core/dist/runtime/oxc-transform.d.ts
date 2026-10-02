@@ -7,7 +7,9 @@
  * with the same output contract: the loaders `js`, `jsx`, `ts` and `tsx`;
  * `format` unset (module syntax kept), `esm` or `cjs` with esbuild's interop
  * helpers and `__esModule` marking; `define`; `supported['dynamic-import']`
- * and `supported['import-meta']`; JSX classic, automatic or preserved;
+ * and `supported['import-meta']`; JSX classic, automatic or preserved (for
+ * ES module output only: preserved JSX in CommonJS would name imports that
+ * conversion moved onto records, and nothing in Nimbus asks for it);
  * source maps returned or inlined; and esbuild's error message shape, down to
  * the top-level-await refusal the caller recognizes. Anything else a caller
  * asks for (another target, minify, a tsconfig, CSS) is refused rather than
@@ -18,9 +20,18 @@
  * whose memory passed `retireAboveBytes` is dropped after its call, and one
  * that trapped is never called again: the next call instantiates afresh.
  *
- * Self-contained (no imports, nothing from module scope) so the transform
- * facet can evaluate it from its source text.
+ * Oxc's passes recurse once per level of nesting, on the host's native stack.
+ * A module nested deeper than that stack holds (a concatenation of some ten
+ * thousand terms under workerd) fails with OXC_STACK_EXHAUSTED in its message;
+ * the transform facet's host sends such a module to esbuild instead
+ * (facets/oxc-transform.ts).
+ *
+ * No imports: the transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
+/** In the message of a transform that ran out of native stack, and only there. */
+export declare const OXC_STACK_EXHAUSTED = "the Oxc transform ran out of stack";
+/** Whether a transform outcome's error is a stack exhaustion, which esbuild may still answer. */
+export declare function isOxcStackExhaustion(error: string): boolean;
 export interface OxcTransformOptions {
     loader?: string;
     format?: string;

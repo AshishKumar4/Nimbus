@@ -4,13 +4,22 @@
   "target": "wasm32-unknown-unknown",
   "source": {
     "crate": "packages/worker/scripts/oxc-wasm",
-    "files": {
-      "Cargo.toml": "12e02dd3f9ae9ba0aa7f710ff58d77c1df8ada5454694f5c3e3c0b3ce6752b25",
-      "Cargo.lock": "d31688c6583e5c1403139c6b26e379442f4a6e41d45897bc608c00316cc82b89",
-      "rust-toolchain.toml": "1f65896ce423e463d3278c0a9fbf946892f9e7c95ca680f27b7a337dd5065736"
-    },
     "manifestVersion": "0.1.0",
-    "src": "ae32879ad8ec78b3dbe3c872bfaf37450c2286508cbdd70db4b516c7e855ad77"
+    "inputs": {
+      "../napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "Cargo.lock": "d31688c6583e5c1403139c6b26e379442f4a6e41d45897bc608c00316cc82b89",
+      "Cargo.toml": "12e02dd3f9ae9ba0aa7f710ff58d77c1df8ada5454694f5c3e3c0b3ce6752b25",
+      "build.mjs": "e0448273318f684eee17ec7873be77f8810b330a376dab2c5dd83e889a383819",
+      "inputs.mjs": "a92a9eccc374aa5184b8df53475c188938baa19d5f40163e026948843e708d90",
+      "rust-toolchain.toml": "1f65896ce423e463d3278c0a9fbf946892f9e7c95ca680f27b7a337dd5065736",
+      "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
+      "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
+      "src/helpers.rs": "cf0da308d383ea902c44f55a9d1e04fcc991ce80d6c4f1c89a69901621be5d8f",
+      "src/lib.rs": "31d68d740f2621fa0da68abe5a5c14a4f917b3d18434b2c2cb888298f2a79b65",
+      "src/module.rs": "3173e956253e6b1cacedbe009a9aa0cc335347e1bd42fda8f13062bfec2df45b",
+      "src/names.rs": "4b475452c58d047f4536a255d5ee6871e3fd905fe21fc715b0e55b08e9f117d0",
+      "src/options.rs": "11a90f89d6cafc6a25e0786ef8d168469c42498d7ae09740387ad6957bf27bf2"
+    }
   },
   "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
   "cargo": {
@@ -56,8 +65,8 @@
   },
   "outputs": {
     "nimbus-oxc.wasm": {
-      "bytes": 2273727,
-      "sha256": "59cd65a72c5dff4d8edd5e15b71949fa85db42e82430e8c4022f8b33224865e4"
+      "bytes": 2276933,
+      "sha256": "1aa8c4c7057c6c28c5f11b7b6cd4dd66daae5653d79e8d17fabfdd1e7d1447b8"
     }
   }
 }

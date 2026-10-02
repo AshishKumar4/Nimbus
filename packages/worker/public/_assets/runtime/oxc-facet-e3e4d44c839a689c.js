@@ -1,5 +1,26 @@
 "use strict";
 (() => {
+  var OXC_STACK_EXHAUSTED = "the Oxc transform ran out of stack";
+  function bindExports(instance) {
+    const exports = instance.exports;
+    const memory = exports.memory;
+    if (!(memory instanceof WebAssembly.Memory)) throw new Error("oxc transform: the wasm exports no memory");
+    const call = (name) => {
+      const fn = exports[name];
+      if (typeof fn !== "function") throw new Error(`oxc transform: the wasm does not export ${name}`);
+      return (...args) => Number(fn(...args));
+    };
+    const release = call("nimbus_oxc_release");
+    return {
+      memory,
+      nimbus_oxc_alloc: call("nimbus_oxc_alloc"),
+      nimbus_oxc_realloc: call("nimbus_oxc_realloc"),
+      nimbus_oxc_transform: call("nimbus_oxc_transform"),
+      nimbus_oxc_release: () => {
+        release();
+      }
+    };
+  }
   function createOxcTransform(module, { retireAboveBytes = 64 * 1024 * 1024 } = {}) {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -58,10 +79,23 @@
       }
       return fields.join("\0");
     }
-    function messages(text) {
+    function messages(bytes) {
       const errors = [];
       const warnings = [];
-      const fields = text.split("\0");
+      const fields = [];
+      for (let at2 = 0; at2 < bytes.length; ) {
+        let length = 0;
+        for (; bytes[at2] !== 58; at2++) {
+          const digit = bytes[at2] - 48;
+          if (!(digit >= 0 && digit <= 9) || at2 >= bytes.length) throw new Error("oxc transform: malformed diagnostics");
+          length = length * 10 + digit;
+        }
+        at2++;
+        if (at2 + length > bytes.length) throw new Error("oxc transform: malformed diagnostics");
+        fields.push(decoder.decode(bytes.subarray(at2, at2 + length)));
+        at2 += length;
+      }
+      if (fields.length % 7 !== 0) throw new Error("oxc transform: malformed diagnostics");
       for (let i = 0; i + 7 <= fields.length; i += 7) {
         const [kind, line, column, length, file, lineText, message] = fields.slice(i, i + 7);
         const lineNumber = Number(line);
@@ -77,7 +111,7 @@
 ${lines.join("\n")}`), { errors, warnings });
     }
     function run(code, optionsWire) {
-      const exports = instance ??= new WebAssembly.Instance(module, {}).exports;
+      const exports = instance ??= bindExports(new WebAssembly.Instance(module, {}));
       const options = encoder.encode(optionsWire);
       let capacity = code.length + options.length;
       let ptr = exports.nimbus_oxc_alloc(capacity);
@@ -99,7 +133,7 @@ ${lines.join("\n")}`), { errors, warnings });
         const [status, codePtr, codeLength, mapPtr, mapLength, diagnosticsPtr, diagnosticsLength, arenaUsed, arenaReserved] = new Uint32Array(exports.memory.buffer, at2, 9);
         lastArena = { used: arenaUsed, reserved: arenaReserved };
         const memory = exports.memory.buffer;
-        const { errors, warnings } = messages(decoder.decode(new Uint8Array(memory, diagnosticsPtr, diagnosticsLength)));
+        const { errors, warnings } = messages(new Uint8Array(memory, diagnosticsPtr, diagnosticsLength));
         if (status !== 0) {
           if (status === 2) throw Object.assign(new Error(`oxc transform: ${errors[0]?.text ?? "the options were refused"}`), { errors, warnings });
           throw failure(errors, warnings);
@@ -122,8 +156,9 @@ ${lines.join("\n")}`), { errors, warnings });
           if (error instanceof Error && Reflect.get(error, "errors") !== void 0) throw error;
           instance = null;
           const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+          const what = error instanceof RangeError && /Maximum call stack size exceeded/.test(error.message) ? OXC_STACK_EXHAUSTED : "the Oxc transform crashed";
           throw new Error(`Transform failed with 1 error:
-error: the Oxc transform crashed (${reason})`);
+error: ${what} (${reason})`);
         } finally {
           if (instance && instance.memory.buffer.byteLength > retireAboveBytes) instance = null;
         }
@@ -8640,14 +8675,13 @@ const ${binding} = arguments[2];
     const key = (name) => `[${JSON.stringify(name)}]`;
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
     const sourceOf = (node) => JSON.stringify(String(node.value));
-    let marked = false;
-    const esModule = () => {
-      if (marked) return "";
-      marked = true;
-      return "module.exports.__esModule = true; ";
-    };
+    const exportsRef = temp();
+    const exportGetter = temp();
+    const live = (exported, value) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`;
     const requires = [];
+    const getters = [];
     const edits = [];
+    let exportsAnything = false;
     if (esm.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
     for (const node of program.body) {
       switch (node.type) {
@@ -8670,47 +8704,43 @@ const ${binding} = arguments[2];
           break;
         }
         case "ExportNamedDeclaration": {
+          exportsAnything = true;
           if (node.declaration) {
             edits.push({ start: node.start, end: node.declaration.start, text: "" });
-            const names = declaredNames(node.declaration);
-            edits.push({
-              start: node.end,
-              end: node.end,
-              text: "\n" + esModule() + names.map((name) => `module.exports${key(name)} = ${name};`).join(" ")
-            });
+            for (const name of declaredNames(node.declaration)) getters.push([name, name]);
           } else if (node.source) {
             const mod = temp();
-            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
-            edits.push({
-              start: node.start,
-              end: node.end,
-              text: `${esModule()}{ const ${mod} = require(${sourceOf(node.source)}); ${assigns.join(" ")} }`
-            });
+            edits.push({ start: node.start, end: node.end, text: "" });
+            requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
+            for (const s of node.specifiers) getters.push([nameOf(s.exported), `${mod}${key(nameOf(s.local))}`]);
           } else {
-            const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
-            edits.push({ start: node.start, end: node.end, text: esModule() + assigns.join(" ") });
+            edits.push({ start: node.start, end: node.end, text: "" });
+            for (const s of node.specifiers) getters.push([nameOf(s.exported), nameOf(s.local)]);
           }
           break;
         }
         case "ExportDefaultDeclaration": {
+          exportsAnything = true;
           const declaration = node.declaration;
           if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
             edits.push({ start: node.start, end: declaration.start, text: "" });
-            edits.push({ start: node.end, end: node.end, text: `
-${esModule()}module.exports.default = ${declaration.id.name};` });
+            getters.push(["default", declaration.id.name]);
           } else {
             edits.push({
               start: node.start,
               end: node.end,
-              text: `${esModule()}module.exports.default = (${esm.slice(declaration.start, declaration.end)});`
+              text: `${exportsRef}.default = (${esm.slice(declaration.start, declaration.end)});`
             });
           }
           break;
         }
         case "ExportAllDeclaration": {
+          exportsAnything = true;
           const mod = temp();
-          const text = node.exported ? `module.exports${key(nameOf(node.exported))} = require(${sourceOf(node.source)});` : `{ const ${mod} = require(${sourceOf(node.source)}); for (const k in ${mod}) if (k !== "default" && k !== "__esModule") module.exports[k] = ${mod}[k]; }`;
-          edits.push({ start: node.start, end: node.end, text: esModule() + text });
+          edits.push({ start: node.start, end: node.end, text: "" });
+          requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
+          if (node.exported) getters.push([nameOf(node.exported), mod]);
+          else requires.push(`for (const k in ${mod}) if (k !== "default" && k !== "__esModule") ${exportGetter}(k, () => ${mod}[k]);`);
           break;
         }
         default:
@@ -8724,8 +8754,13 @@ ${esModule()}module.exports.default = ${declaration.id.name};` });
       at2 = end;
     }
     parts.push(esm.slice(at2));
-    return `${requires.join("\n")}
-return (async () => {
+    const header = exportsAnything ? [
+      `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true;`,
+      `const ${exportGetter} = (name, get) => Object.defineProperty(${exportsRef}, name, { enumerable: true, configurable: true, get });`
+    ] : [];
+    const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => live(exported, value));
+    return `${[...header, ...requires].join("\n")}
+return (async () => { ${installed.join(" ")}
 ${parts.join("")}
 })();
 `;

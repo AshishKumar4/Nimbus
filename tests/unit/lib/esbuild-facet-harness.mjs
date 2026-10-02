@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { esbuildFacetWorkerCode } from '../../../packages/worker/src/facets/esbuild-transform.ts';
 import { ESBUILD_JS_ASSET_PATH } from '../../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../../packages/worker/src/esbuild-cli-artifact.generated.ts';
+import { OXC_FACET_ASSET_PATH } from '../../../packages/worker/src/oxc-facet-artifact.generated.ts';
 
 /**
  * What the facet's esbuilds have done since the last reset. `beforeInitialize`
@@ -90,7 +91,7 @@ const countedJsFnBody = [
 globalThis.__esbuilds = esbuilds;
 
 const wasmModule = await WebAssembly.compile(wasmBytes);
-const facetSource = esbuildFacetWorkerCode(wasmModule, countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH))
+const facetSource = esbuildFacetWorkerCode(wasmModule, countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH))
   .modules['worker.js']
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
   .replace('import wasmModule from "esbuild.wasm";', 'const { wasmModule } = globalThis.__facetImports;');

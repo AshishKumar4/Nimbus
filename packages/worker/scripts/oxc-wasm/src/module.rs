@@ -167,7 +167,10 @@ impl<'a> ModulePass<'a> {
         self.wrap_commonjs = self.options.format == Format::Esm
             && !self.options.has_export_syntax
             && !self.options.has_import_meta
-            && ["module", "exports"].iter().any(|n| scoping.root_unresolved_references().contains_key(*n));
+            && ["module", "exports"].iter().any(|&name| reads_commonjs_name(&scoping, name));
+        // Top-level await makes it an ES module after all; known before the
+        // walk, which rewrites `this` by it.
+        self.wrap_commonjs = self.wrap_commonjs && !has_top_level_await(program);
         let lowers_dynamic_import = !self.options.dynamic_import && self.options.has_dynamic_import;
 
         if self.to_cjs || self.wrap_commonjs || lowers_dynamic_import {
@@ -181,9 +184,15 @@ impl<'a> ModulePass<'a> {
             if self.wrap_commonjs {
                 claimed.add(Helper::CommonJs);
                 self.wrapper_name = Some(names.generate("require_stdin", &mut scoping, allocator));
+                // `var exports` and `function module() {}` redeclare the
+                // wrapper's parameter, as in Node's own wrapper; a lexical or
+                // imported binding of the name would clash with it.
                 for (param, name) in self.wrapper_params.iter_mut().zip(["exports", "module"]) {
-                    if scoping.get_root_binding(name.into()).is_some() {
-                        *param = names.claim_fresh(name);
+                    if let Some(symbol) = scoping.get_root_binding(name.into()) {
+                        let flags = scoping.symbol_flags(symbol);
+                        if !flags.is_function_scoped_declaration() && !flags.is_function() {
+                            *param = names.claim_fresh(name);
+                        }
                     }
                 }
             }
@@ -242,15 +251,20 @@ impl<'a> ModulePass<'a> {
     /// global the output reads: `const Promise2 = 1; export { Promise2 as
     /// Promise }`, so the module's exports keep their names.
     fn alias_renamed_exports(program: &mut Program<'a>, scoping: &Scoping, allocator: &'a Allocator) {
+        // Every name the declaration binds, as (its spelling now, its export
+        // name), once any of them was renamed: the declaration loses `export`,
+        // so each of its names needs a specifier.
         let renamed = |decl: &Declaration<'a>| {
             let mut pairs = Vec::new();
+            let mut any = false;
             decl.bound_names(&mut |ident: &BindingIdentifier<'a>| {
-                if let Some(symbol) = ident.symbol_id.get()
-                    && scoping.symbol_name(symbol) != ident.name.as_str()
-                {
-                    pairs.push((Ident::from(scoping.symbol_name(symbol)), ident.name));
-                }
+                let local = ident.symbol_id.get().map_or(ident.name.as_str(), |symbol| scoping.symbol_name(symbol));
+                any |= local != ident.name.as_str();
+                pairs.push((Ident::from(local), ident.name));
             });
+            if !any {
+                pairs.clear();
+            }
             pairs
         };
         let needs = program.body.iter().any(|s| matches!(s, Statement::ExportDeclaration(e) if !renamed(&e.declaration).is_empty()));
@@ -728,6 +742,12 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
         match expr {
             Expression::Identifier(_) if !self.bindings.is_empty() => self.rewrite_identifier(expr, ctx),
             Expression::ImportMeta(_) => self.import_meta(expr, ctx),
+            // A CommonJS module's `this` is its `exports`, imports or not; the
+            // wrapper is called without a receiver, so it says so (esbuild too).
+            Expression::ThisExpression(this) if self.wrap_commonjs && this_is_module_level(ctx) => {
+                let exports = Ident::from_str_in(&self.wrapper_params[0], ctx);
+                *expr = Expression::new_identifier(this.span, exports, ctx);
+            }
             Expression::ThisExpression(this) if self.is_esm && this_is_module_level(ctx) => {
                 let span = this.span;
                 let zero = Expression::new_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal, ctx);
@@ -846,6 +866,20 @@ pub fn has_top_level_await(program: &Program<'_>) -> bool {
     let mut finder = Finder(false);
     oxc::ast_visit::Visit::visit_program(&mut finder, program);
     finder.0
+}
+
+/// Whether the module uses CommonJS's `name` (`module` or `exports`): reads
+/// it as a global, or uses a top-level `var`/`function` of that name, which
+/// in a CommonJS module is the wrapper's parameter (a `let` is not).
+fn reads_commonjs_name(scoping: &Scoping, name: &str) -> bool {
+    if scoping.root_unresolved_references().contains_key(name) {
+        return true;
+    }
+    scoping.get_root_binding(name.into()).is_some_and(|symbol| {
+        let flags = scoping.symbol_flags(symbol);
+        (flags.is_function_scoped_declaration() || flags.is_function())
+            && !scoping.get_resolved_reference_ids(symbol).is_empty()
+    })
 }
 
 /// Whether `this` here is the module's: no function, class field

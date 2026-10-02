@@ -90,6 +90,17 @@ export const CASES = [
   ["tla-script-this.js", "await Promise.resolve(); globalThis.seenThis = this === undefined;"],
   ["import-meta-this.js", "console.log(import.meta.url); module.exports = this;"],
   ["ts-elided-import-this.ts", "import { A } from 'a'; let x: A; module.exports = { self: this === module.exports };"],
+  ["tla-export-let.mjs", "export let database; database = await Promise.resolve(7); export function read() { return database; } export { database as db };"],
+  ["esm-alias-siblings.mjs", "export const Promise = 1, answer = 42; export const f = () => import('x');"],
+  ["esm-alias-destructure.mjs", "export const { import_meta, other } = { import_meta: 1, other: 2 }; export const u = import.meta.url;"],
+  ["cjs-this-is-exports.js", "module.exports = this;"],
+  ["cjs-this-same.js", "exports.same = this === exports;"],
+  ["cjs-var-redeclared.js", "exports.same = this === exports; var exports; var module;"],
+  ["cjs-function-module.js", "function module() {} exports.a = typeof module;"],
+  ["cts-top-level-return.cts", "const a: number = 1; if (a) return; module.exports = 2;"],
+  ["esm-top-level-return.mjs", "export const a = 1; return;"],
+  ["nul-in-await-line.mjs", "export const s = '\u0000'; await 0;"],
+  ["nul-in-error-line.mjs", "const s = '\u0000'; let a = ;"],
   ["ambient-default.ts", "declare const _default: { a: number }; export default _default;"],
 ];
 

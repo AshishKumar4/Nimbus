@@ -15,8 +15,10 @@
 //!    arena a large module needed is reused for the next module's arena and
 //!    everything else.
 //!
-//! Diagnostics are NUL-separated fields, seven per diagnostic: `E` or `W`,
-//! line, column, length, file, line text, message.
+//! Diagnostics are seven fields per diagnostic: `E` or `W`, line, column,
+//! length, file, line text, message. Each field is its UTF-8 byte length in
+//! decimal, `:`, then its bytes, so a field may hold any character (a source
+//! line can hold a NUL).
 
 use std::alloc::{Layout, alloc, dealloc, realloc};
 use std::fmt::Write;
@@ -88,7 +90,7 @@ fn run(source: &[u8], options: &[u8]) -> Result {
         words: [status, 0, 0, 0, 0, 0, 0, 0, 0],
         code: String::new(),
         map: String::new(),
-        diagnostics: format!("E\00\00\00\0<stdin>\0\0{message}\0"),
+        diagnostics: diagnostic_fields(['E'.to_string(), "0".into(), "0".into(), "0".into(), "<stdin>".into(), String::new(), message]),
     };
     let Ok(source) = std::str::from_utf8(source) else {
         return refused(1, "the source is not UTF-8".into());
@@ -101,24 +103,34 @@ fn run(source: &[u8], options: &[u8]) -> Result {
     let output = crate::transform(&allocator, source, &options);
     let arena = [allocator.used_bytes() as u32, allocator.capacity() as u32];
     drop(allocator);
-    let mut diagnostics = String::new();
-    for d in &output.diagnostics {
-        let _ = write!(
-            diagnostics,
-            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0",
-            if d.error { 'E' } else { 'W' },
-            d.line,
-            d.column,
-            d.length,
-            d.file,
-            d.line_text,
-            d.text
-        );
-    }
+    let diagnostics = output
+        .diagnostics
+        .iter()
+        .map(|d| {
+            diagnostic_fields([
+                if d.error { "E" } else { "W" }.to_string(),
+                d.line.to_string(),
+                d.column.to_string(),
+                d.length.to_string(),
+                d.file.clone(),
+                d.line_text.clone(),
+                d.text.clone(),
+            ])
+        })
+        .collect();
     Result {
         words: [u32::from(output.has_errors()), 0, 0, 0, 0, 0, 0, arena[0], arena[1]],
         code: output.code,
         map: output.map.unwrap_or_default(),
         diagnostics,
     }
+}
+
+/// One diagnostic's fields, each as `<byte length>:<bytes>`.
+fn diagnostic_fields(fields: [String; 7]) -> String {
+    let mut out = String::new();
+    for field in fields {
+        let _ = write!(out, "{}:{field}", field.len());
+    }
+    out
 }

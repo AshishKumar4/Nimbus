@@ -30,6 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { changedInputs, oxcWasmInputs } from './inputs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TARGET = 'wasm32-unknown-unknown';
@@ -99,7 +100,10 @@ function toolchain(crateDir, text) {
   if (!existsSync(path.join(sysroot, 'lib', 'rustlib', TARGET))) {
     throw new Error(`oxc-wasm: rustc ${pinned} has no ${TARGET} target (rustup target add --toolchain ${pinned} ${TARGET})`);
   }
-  return { rustc: rustc.trim(), env };
+  // The compiler itself, not a rustup proxy: cargo is told to use exactly this.
+  const compiler = path.join(sysroot, 'bin', 'rustc');
+  if (run(compiler, ['-vV'], { capture: true }) !== rustc) throw new Error(`oxc-wasm: ${compiler} is not the rustc ${pinned} checked`);
+  return { rustc: rustc.trim(), compiler, env };
 }
 
 async function wasmOpt() {
@@ -161,20 +165,11 @@ function wasmFacts(bytes) {
   return facts;
 }
 
-/** `<sha256>  src/<path>` for every file under `dir`, sorted by path. */
-async function srcListing(dir) {
-  const files = (await fs.readdir(dir, { recursive: true, withFileTypes: true }))
-    .filter((e) => e.isFile())
-    .map((e) => path.relative(path.dirname(dir), path.join(e.parentPath, e.name)).split(path.sep).join('/'))
-    .sort();
-  const lines = await Promise.all(files.map(async (f) => `${sha256(await fs.readFile(path.join(path.dirname(dir), f)))}  ${f}\n`));
-  return lines.join('');
-}
-
 // ── Main ────────────────────────────────────────────────────────────────
 await fs.mkdir(WORK, { recursive: true });
 await fs.mkdir(OUT, { recursive: true });
 const crateDir = path.join(WORK, 'nimbus-oxc');
+const inputs = await oxcWasmInputs();
 await copyCrate(crateDir);
 const toolchainText = await fs.readFile(path.join(crateDir, 'rust-toolchain.toml'), 'utf8');
 const rust = toolchain(crateDir, toolchainText);
@@ -182,14 +177,18 @@ const optimizer = await wasmOpt();
 
 const cargoHome = process.env.CARGO_HOME ?? path.join(process.env.HOME ?? '/', '.cargo');
 // Cargo and rustc read settings from the environment that Cargo.toml and the
-// flags below pin (CARGO_PROFILE_RELEASE_*, CARGO_BUILD_*, RUSTFLAGS,
-// RUSTC_WRAPPER, …): the build sees none of them but where its caches live.
+// flags below pin (RUSTC, RUSTDOC, CARGO_PROFILE_RELEASE_*, CARGO_BUILD_*,
+// RUSTFLAGS, RUSTC_WRAPPER, …): the build sees none of them but where its
+// caches live, and the compiler is the one toolchain() checked.
 const KEPT = new Set(['CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN']);
-const ambient = Object.fromEntries(
-  Object.entries(rust.env).filter(([name]) => KEPT.has(name) || !/^(CARGO|RUST|RUSTC|RUSTDOC)_|^RUSTFLAGS$|^RUSTDOCFLAGS$/.test(name)),
-);
+const OVERRIDES = /^(CARGO|RUST|RUSTC|RUSTDOC)(_|$)|^RUSTFLAGS$|^RUSTDOCFLAGS$/;
+const ambient = Object.fromEntries(Object.entries(rust.env).filter(([name]) => KEPT.has(name) || !OVERRIDES.test(name)));
+for (const name of ['RUSTC', 'RUSTDOC', 'RUSTFLAGS', 'RUSTC_WRAPPER', 'CARGO_PROFILE_RELEASE_OPT_LEVEL', 'CARGO_BUILD_TARGET']) {
+  if (name in ambient) throw new Error(`oxc-wasm: ${name} survived the environment filter`);
+}
 const env = {
   ...ambient,
+  RUSTC: rust.compiler,
   CARGO_TARGET_DIR: path.join(WORK, 'target'),
   CARGO_ENCODED_RUSTFLAGS: RUSTFLAGS.join('\x1f'),
   // Machine paths out of panic messages without entering cargo's metadata
@@ -221,6 +220,8 @@ if (memory.initial > OXC_MAX_INITIAL_PAGES) {
   throw new Error(`oxc-wasm: the module's memory starts at ${memory.initial} pages, over OXC_MAX_INITIAL_PAGES (${OXC_MAX_INITIAL_PAGES})`);
 }
 
+const drifted = changedInputs(inputs, await oxcWasmInputs());
+if (drifted.length) throw new Error(`oxc-wasm: inputs changed during the build: ${drifted.join(', ')}`);
 const cargoToml = await fs.readFile(path.join(crateDir, 'Cargo.toml'), 'utf8');
 const lock = await fs.readFile(path.join(crateDir, 'Cargo.lock'), 'utf8');
 const provenance = {
@@ -229,12 +230,10 @@ const provenance = {
   target: TARGET,
   source: {
     crate: 'packages/worker/scripts/oxc-wasm',
-    files: Object.fromEntries(await Promise.all(
-      ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'].map(async (f) => [f, sha256(await fs.readFile(path.join(crateDir, f)))]),
-    )),
     manifestVersion: cargoToml.match(/^version = "(.+)"$/m)?.[1],
-    // sha256 over `<sha256>  src/<path>` lines, sorted by path.
-    src: sha256(await srcListing(path.join(crateDir, 'src'))),
+    // Every input's sha256 (inputs.mjs); bundle-oxc-wasm.mjs stages this wasm
+    // only while they are the tree's.
+    inputs,
   },
   toolchain: rust.rustc,
   cargo: {

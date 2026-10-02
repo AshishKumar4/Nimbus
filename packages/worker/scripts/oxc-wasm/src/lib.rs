@@ -23,7 +23,8 @@ use oxc::ast::ast::{Program, Statement};
 use oxc::codegen::{Codegen, CodegenOptions, CommentOptions, LegalComment};
 use oxc::parser::{ParseOptions, Parser};
 use oxc::semantic::SemanticBuilder;
-use oxc::span::SourceType;
+use oxc::diagnostics::OxcDiagnostic;
+use oxc::span::{SourceType, Span};
 use oxc::transformer::{
     EnvOptions, JsxOptions, JsxRuntime, TransformOptions, Transformer, TypeScriptOptions,
 };
@@ -59,22 +60,39 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
         Loader::Tsx => SourceType::tsx().with_unambiguous(true),
     };
     let sourcefile = options.sourcefile.as_deref().unwrap_or("<stdin>");
-    let parse = |source_type| {
+    let parse = |source_type, allow_return_outside_function| {
         Parser::new(allocator, source, source_type)
-            .with_options(ParseOptions { preserve_parens: false, ..ParseOptions::default() })
+            .with_options(ParseOptions {
+                preserve_parens: false,
+                allow_return_outside_function,
+                ..ParseOptions::default()
+            })
             .parse()
     };
-    let mut parsed = parse(source_type);
+    let failed = |parsed: &oxc::parser::ParserReturn<'_>| parsed.diagnostics.has_errors() || parsed.fatal_error;
+    let mut parsed = parse(source_type, false);
     let mut parsed_as_module = false;
-    if parsed.diagnostics.has_errors() || parsed.fatal_error {
+    // Where a top-level `return` is, in a source that only parses with one.
+    let mut top_level_return = None;
+    if failed(&parsed) {
         // Unambiguous parsing reads top-level `await` as a module's, but not
-        // `for await`: a source only a module can be is parsed as one.
-        let as_module = parse(source_type.with_module(true));
-        if as_module.diagnostics.has_errors() || as_module.fatal_error {
-            return Output::failed(diagnostics::convert(source, sourcefile, parsed.diagnostics.into_vec()));
+        // `for await`: a source only a module can be is parsed as one. A
+        // CommonJS module may `return` at its top level (its wrapper is a
+        // function), which an ES module may not: that is decided below.
+        let as_module = parse(source_type.with_module(true), false);
+        if !failed(&as_module) {
+            parsed = as_module;
+            parsed_as_module = true;
+        } else {
+            let with_return = parse(source_type, true);
+            if failed(&with_return) {
+                return Output::failed(diagnostics::convert(source, sourcefile, parsed.diagnostics.into_vec()));
+            }
+            top_level_return = parsed.diagnostics.iter().find_map(|d| d.labels.first()).map(|label| {
+                Span::sized(label.offset() as u32, label.span().size())
+            });
+            parsed = with_return;
         }
-        parsed = as_module;
-        parsed_as_module = true;
     }
     let has_dynamic_import = !parsed.module_record.dynamic_imports.is_empty();
     let has_import_meta = !parsed.module_record.import_metas.is_empty();
@@ -119,6 +137,10 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
     // reads the difference, so only a source with both is walked for it.
     if !is_esm && memchr::memmem::find(source.as_bytes(), b"await").is_some() && memchr::memmem::find(source.as_bytes(), b"this").is_some() {
         is_esm = module::has_top_level_await(&program);
+    }
+    if is_esm && let Some(span) = top_level_return {
+        let error = OxcDiagnostic::error("Top-level return cannot be used inside an ECMAScript module").with_label(span);
+        return Output::failed(diagnostics::convert(source, sourcefile, vec![error]));
     }
     let pass = module::ModulePass::new(module::ModuleOptions {
         format: options.format,

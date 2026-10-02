@@ -1,6 +1,7 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { generateTransformFacetRuntimeSource, transformSlices, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isOxcStackExhaustion } from '@nimbus-sh/core/runtime/oxc-transform.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
@@ -115,8 +116,13 @@ const SLICE_ATTEMPTS = 2;
  * minted stub; an overloaded facet is not asked again. A slice that still
  * fails answers each of its requests with a transient error, which is no
  * verdict on the source, and the other slices keep their answers.
+ *
+ * A module nested deeper than the host's native stack lets Oxc's recursive
+ * passes run (OXC_STACK_EXHAUSTED) goes to `stackFallback`, the esbuild
+ * facet in production, and its answer stands; if that call fails, the
+ * module's answer is transient. Without a fallback the exhaustion stands.
  */
-export function oxcTransformHost(ctx, env) {
+export function oxcTransformHost(ctx, env, stackFallback) {
     return async (requests) => {
         let facet = null;
         const outcomes = [];
@@ -152,6 +158,20 @@ export function oxcTransformHost(ctx, env) {
         }
         finally {
             endFetch();
+        }
+        const exhausted = stackFallback
+            ? outcomes.flatMap((outcome, index) => ('error' in outcome && isOxcStackExhaustion(outcome.error) ? [index] : []))
+            : [];
+        if (stackFallback && exhausted.length) {
+            let answered;
+            try {
+                answered = await stackFallback(exhausted.map((index) => requests[index]));
+            }
+            catch (error) {
+                const transient = { error: `esbuild facet unavailable: ${errorText(error)}`, transient: true };
+                answered = exhausted.map(() => transient);
+            }
+            exhausted.forEach((index, i) => { outcomes[index] = answered[i]; });
         }
         return outcomes;
     };

@@ -89,16 +89,30 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   console.log('  ok  a crash is a verdict on its module, and the next gets a fresh instance');
 }
 
-// ── Deep nesting past the host's stack is that module's error, not the facet's ─
+// ── Nesting past the host's stack goes to the fallback, that module alone ──
 {
   resetInstances();
   const { ctx, env } = durableObject(await freshFacetClass());
-  const host = oxcTransformHost(ctx, env);
-  const deep = `export const x = ${'['.repeat(200000)}${']'.repeat(200000)};`;
-  const [nested, after] = await host([{ code: deep, options: { loader: 'js', format: 'cjs' } }, request]);
-  assert.match(nested.error, /Oxc transform crashed \(RangeError: Maximum call stack size exceeded\.?\)/);
-  assert.equal(after.error, undefined, after.error);
-  console.log('  ok  nesting past the host stack fails that module alone');
+  const deep = { code: `export const x = ${'['.repeat(200000)}${']'.repeat(200000)};`, options: { loader: 'js', format: 'cjs' } };
+  // Without a fallback the exhaustion is that module's answer.
+  const [alone, sibling] = await oxcTransformHost(ctx, env)([deep, request]);
+  assert.match(alone.error, /the Oxc transform ran out of stack \(RangeError: Maximum call stack size exceeded\.?\)/);
+  assert.equal(sibling.error, undefined, sibling.error);
+  // With one, only that module goes to it, and its answer stands.
+  const sent = [];
+  const fallback = async (requests) => { sent.push(...requests); return requests.map(() => ({ code: 'answered by the fallback' })); };
+  const [nested, after] = await oxcTransformHost(ctx, env, fallback)([deep, request]);
+  assert.deepEqual(sent, [deep]);
+  assert.equal(nested.code, 'answered by the fallback');
+  assert.match(after.code, /const n = 1;/);
+  // A fallback that cannot be reached leaves the module's answer transient.
+  const [unreached] = await oxcTransformHost(ctx, env, async () => { throw new Error('esbuild facet reset'); })([deep]);
+  assert.equal(unreached.transient, true);
+  assert.match(unreached.error, /esbuild facet unavailable: esbuild facet reset/);
+  // An error that is not a stack exhaustion never goes to the fallback.
+  const [syntax] = await oxcTransformHost(ctx, env, async () => assert.fail('a syntax error is a verdict'))([{ code: 'let a = ;', options: { loader: 'js' } }]);
+  assert.match(syntax.error, /Transform failed with 1 error/);
+  console.log('  ok  nesting past the host stack goes to the fallback, that module alone');
 }
 
 // ── A stub that threw is dropped: the retry mints a fresh one ───────────────

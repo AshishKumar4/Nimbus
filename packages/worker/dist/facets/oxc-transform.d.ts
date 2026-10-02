@@ -14,6 +14,11 @@ export declare function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): 
  * minted stub; an overloaded facet is not asked again. A slice that still
  * fails answers each of its requests with a transient error, which is no
  * verdict on the source, and the other slices keep their answers.
+ *
+ * A module nested deeper than the host's native stack lets Oxc's recursive
+ * passes run (OXC_STACK_EXHAUSTED) goes to `stackFallback`, the esbuild
+ * facet in production, and its answer stands; if that call fails, the
+ * module's answer is transient. Without a fallback the exhaustion stands.
  */
-export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost;
+export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown, stackFallback?: EsbuildTransformHost): EsbuildTransformHost;
 //# sourceMappingURL=oxc-transform.d.ts.map

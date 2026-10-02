@@ -6,8 +6,11 @@
  *
  *   nimbus-oxc.wasm, provenance.json
  *
- * This script does NOT rebuild (that needs the pinned Rust toolchain). It
- * stages that pair into the static-assets layer under a name carrying a
+ * This script does NOT rebuild (that needs the pinned Rust toolchain), and
+ * refuses a wasm whose provenance records other inputs than the tree's
+ * (scripts/oxc-wasm/inputs.mjs: the crate, its lockfile and toolchain pin,
+ * the recipe and its compiler wrapper), so a Rust change cannot ship the
+ * previous build. It stages that pair into the static-assets layer under a name carrying a
  * prefix of the wasm's digest, so no cache layer can serve another build's
  * bytes under it, and pins the digest and size in
  * src/oxc-wasm-artifact.generated.ts, which runtime/oxc-wasm-bytes.ts verifies
@@ -27,6 +30,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { changedInputs, oxcWasmInputs } from './oxc-wasm/inputs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -57,6 +61,10 @@ const digest = sha256(wasm);
 if (provenance.artifact !== 'nimbus-oxc') fail(`${src.provenance} describes ${provenance.artifact}, not nimbus-oxc`);
 if (provenance.outputs?.['nimbus-oxc.wasm']?.sha256 !== digest) {
   fail(`${src.wasm} sha256 ${digest} does not match its provenance.json (${provenance.outputs?.['nimbus-oxc.wasm']?.sha256})`);
+}
+const stale = changedInputs(provenance.source?.inputs, await oxcWasmInputs());
+if (stale.length) {
+  fail(`${src.wasm} was built from other inputs than this tree's (${stale.join(', ')}); rebuild it with scripts/oxc-wasm/build.mjs and stage that build`);
 }
 const memoryPages = provenance.wasm?.memoryInitialPages;
 if (!Number.isInteger(memoryPages) || memoryPages <= 0) fail(`${src.provenance} records no memoryInitialPages`);

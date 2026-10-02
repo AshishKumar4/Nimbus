@@ -7,7 +7,9 @@
  * with the same output contract: the loaders `js`, `jsx`, `ts` and `tsx`;
  * `format` unset (module syntax kept), `esm` or `cjs` with esbuild's interop
  * helpers and `__esModule` marking; `define`; `supported['dynamic-import']`
- * and `supported['import-meta']`; JSX classic, automatic or preserved;
+ * and `supported['import-meta']`; JSX classic, automatic or preserved (for
+ * ES module output only: preserved JSX in CommonJS would name imports that
+ * conversion moved onto records, and nothing in Nimbus asks for it);
  * source maps returned or inlined; and esbuild's error message shape, down to
  * the top-level-await refusal the caller recognizes. Anything else a caller
  * asks for (another target, minify, a tsconfig, CSS) is refused rather than
@@ -18,9 +20,22 @@
  * whose memory passed `retireAboveBytes` is dropped after its call, and one
  * that trapped is never called again: the next call instantiates afresh.
  *
- * Self-contained (no imports, nothing from module scope) so the transform
- * facet can evaluate it from its source text.
+ * Oxc's passes recurse once per level of nesting, on the host's native stack.
+ * A module nested deeper than that stack holds (a concatenation of some ten
+ * thousand terms under workerd) fails with OXC_STACK_EXHAUSTED in its message;
+ * the transform facet's host sends such a module to esbuild instead
+ * (facets/oxc-transform.ts).
+ *
+ * No imports: the transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
+
+/** In the message of a transform that ran out of native stack, and only there. */
+export const OXC_STACK_EXHAUSTED = 'the Oxc transform ran out of stack';
+
+/** Whether a transform outcome's error is a stack exhaustion, which esbuild may still answer. */
+export function isOxcStackExhaustion(error: string): boolean {
+  return error.includes(OXC_STACK_EXHAUSTED);
+}
 
 export interface OxcTransformOptions {
   loader?: string;
@@ -78,16 +93,31 @@ interface OxcExports {
   nimbus_oxc_release(): void;
 }
 
+/** The wasm's exports, checked against the ABI scripts/oxc-wasm/src/abi.rs defines. */
+function bindExports(instance: WebAssembly.Instance): OxcExports {
+  const exports = instance.exports;
+  const memory = exports.memory;
+  if (!(memory instanceof WebAssembly.Memory)) throw new Error('oxc transform: the wasm exports no memory');
+  const call = (name: string): ((...args: number[]) => number) => {
+    const fn = exports[name];
+    if (typeof fn !== 'function') throw new Error(`oxc transform: the wasm does not export ${name}`);
+    return (...args) => Number(fn(...args));
+  };
+  const release = call('nimbus_oxc_release');
+  return {
+    memory,
+    nimbus_oxc_alloc: call('nimbus_oxc_alloc'),
+    nimbus_oxc_realloc: call('nimbus_oxc_realloc'),
+    nimbus_oxc_transform: call('nimbus_oxc_transform'),
+    nimbus_oxc_release: () => { release(); },
+  };
+}
+
 export function createOxcTransform(
   module: WebAssembly.Module,
   { retireAboveBytes = 64 * 1024 * 1024 }: { retireAboveBytes?: number } = {},
 ): OxcTransform {
-  // Core's ambient TextEncoder (substrate/lifo/platform-globals.d.ts) declares
-  // encode() alone; every runtime this runs on has encodeInto().
-  const encoder = new TextEncoder() as unknown as {
-    encode(input: string): Uint8Array;
-    encodeInto(input: string, into: Uint8Array): { read: number; written: number };
-  };
+  const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let instance: OxcExports | null = null;
   let lastArena = { used: 0, reserved: 0 };
@@ -138,10 +168,24 @@ export function createOxcTransform(
     return fields.join('\0');
   }
 
-  function messages(text: string): { errors: OxcMessage[]; warnings: OxcMessage[] } {
+  /** abi.rs's diagnostics: seven fields each, every field `<byte length>:<bytes>`. */
+  function messages(bytes: Uint8Array): { errors: OxcMessage[]; warnings: OxcMessage[] } {
     const errors: OxcMessage[] = [];
     const warnings: OxcMessage[] = [];
-    const fields = text.split('\0');
+    const fields: string[] = [];
+    for (let at = 0; at < bytes.length;) {
+      let length = 0;
+      for (; bytes[at] !== 0x3a; at++) {
+        const digit = bytes[at] - 0x30;
+        if (!(digit >= 0 && digit <= 9) || at >= bytes.length) throw new Error('oxc transform: malformed diagnostics');
+        length = length * 10 + digit;
+      }
+      at++;
+      if (at + length > bytes.length) throw new Error('oxc transform: malformed diagnostics');
+      fields.push(decoder.decode(bytes.subarray(at, at + length)));
+      at += length;
+    }
+    if (fields.length % 7 !== 0) throw new Error('oxc transform: malformed diagnostics');
     for (let i = 0; i + 7 <= fields.length; i += 7) {
       const [kind, line, column, length, file, lineText, message] = fields.slice(i, i + 7);
       const lineNumber = Number(line);
@@ -162,7 +206,7 @@ export function createOxcTransform(
   }
 
   function run(code: string, optionsWire: string): OxcTransformResult {
-    const exports = instance ??= new WebAssembly.Instance(module, {}).exports as unknown as OxcExports;
+    const exports = instance ??= bindExports(new WebAssembly.Instance(module, {}));
     const options = encoder.encode(optionsWire);
     // Room for the source as ASCII, grown only by what its other characters need.
     let capacity = code.length + options.length;
@@ -186,7 +230,7 @@ export function createOxcTransform(
         new Uint32Array(exports.memory.buffer, at, 9);
       lastArena = { used: arenaUsed, reserved: arenaReserved };
       const memory = exports.memory.buffer;
-      const { errors, warnings } = messages(decoder.decode(new Uint8Array(memory, diagnosticsPtr, diagnosticsLength)));
+      const { errors, warnings } = messages(new Uint8Array(memory, diagnosticsPtr, diagnosticsLength));
       if (status !== 0) {
         if (status === 2) throw Object.assign(new Error(`oxc transform: ${errors[0]?.text ?? 'the options were refused'}`), { errors, warnings });
         throw failure(errors, warnings);
@@ -212,7 +256,10 @@ export function createOxcTransform(
         // module, leaves the instance mid-call: never call it again.
         instance = null;
         const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        throw new Error(`Transform failed with 1 error:\nerror: the Oxc transform crashed (${reason})`);
+        const what = error instanceof RangeError && /Maximum call stack size exceeded/.test(error.message)
+          ? OXC_STACK_EXHAUSTED
+          : 'the Oxc transform crashed';
+        throw new Error(`Transform failed with 1 error:\nerror: ${what} (${reason})`);
       } finally {
         if (instance && instance.memory.buffer.byteLength > retireAboveBytes) instance = null;
       }

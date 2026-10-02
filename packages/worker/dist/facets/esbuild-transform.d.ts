@@ -1,4 +1,4 @@
-import { EsbuildService, type EsbuildBuildHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, type EsbuildTransformHost, type EsbuildBuildHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
@@ -14,7 +14,13 @@ export declare const ESBUILD_FACET_WORKER_ID: string;
  * the global one unless given). `cliRunner` is the staged runner of the
  * `esbuild` command (fetchEsbuildCliRunner).
  */
-export declare function esbuildFacetWorkerCode(wasmModule: WebAssembly.Module, jsFnBody: string, cliRunner: string): WorkerCode;
+export declare function esbuildFacetWorkerCode(wasmModule: WebAssembly.Module, jsFnBody: string, cliRunner: string, transformRuntime: string): WorkerCode;
+/**
+ * Where the transform facet sends a module that ran Oxc out of native stack
+ * (oxcTransformHost): the esbuild facet, whose Go stacks grow. One call per
+ * batch; the caller answers a failed call as transient.
+ */
+export declare function esbuildStackFallbackHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost;
 /**
  * The build host a Durable Object's esbuild runs its builds on: its esbuild
  * facet. The plugin, and with it every file read, stays with the caller.

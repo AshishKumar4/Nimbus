@@ -1,5 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { EsbuildService, generateEsbuildFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, generateEsbuildFacetRuntimeSource, generateTransformFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
@@ -8,22 +8,45 @@ import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
 import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-wasm-bytes.js';
+import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
+import { fetchOxcFacetRuntime } from '../runtime/oxc-wasm-bytes.js';
 import { esbuildWasmModule } from '../runtime/host-wasm.js';
 import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
- * which the wasm version keys, and the `esbuild` command's runner, which its
- * build id keys. `wasmModule` and `newEsbuild` are bound by the lines before
- * it, and the runner installs `globalThis.__esbuildCliRun`.
+ * which the wasm version keys, the `esbuild` command's runner, which its
+ * build id keys, and the transform facet's runtime (the dynamic-import
+ * rewrite and the top-level-await lowering), which its build id keys.
+ * `wasmModule` and `newEsbuild` are bound by the lines before it; the runner
+ * installs `globalThis.__esbuildCliRun`, the runtime its own globals.
  *
- * Transforms do not run here: they run in the transform facet
- * (oxc-transform.ts). A build or an `esbuild` command gets its own Go
- * instance, dropped when it ends.
+ * Transforms run in the transform facet (oxc-transform.ts); `transformMany`
+ * here answers only the modules that ran it out of stack (oxcTransformHost).
+ * A build, an `esbuild` command or such a batch gets its own Go instance,
+ * dropped when it ends.
  */
 const ESBUILD_FACET_BODY = [
     ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildFacetRuntimeSource(),
+    generateTransformFacetRuntimeSource(),
     'export class EsbuildFacet extends DurableObject {',
+    '  async transformMany(requests) {',
+    '    const own = newEsbuild();',
+    '    await own.initialize({ wasmModule, worker: false });',
+    '    try {',
+    '      const outcomes = [];',
+    '      for (const { code, options } of requests) {',
+    '        try {',
+    '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule));',
+    '        } catch (e) {',
+    '          outcomes.push({ error: String((e && e.message) || e) });',
+    '        }',
+    '      }',
+    '      return outcomes;',
+    '    } finally {',
+    '      await own.stop();',
+    '    }',
+    '  }',
     '  async build(options, plugin) {',
     '    const own = newEsbuild();',
     '    await own.initialize({ wasmModule, worker: false });',
@@ -39,7 +62,7 @@ const ESBUILD_FACET_BODY = [
     '}',
 ].join('\n');
 // The loader serves the code it cached under an id, so the id carries the code.
-export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
+export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
  * `wasmModule` is the host Worker's own compiled esbuild module
@@ -51,13 +74,14 @@ export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:$
  * the global one unless given). `cliRunner` is the staged runner of the
  * `esbuild` command (fetchEsbuildCliRunner).
  */
-export function esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner) {
+export function esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner, transformRuntime) {
     const source = [
         'import { DurableObject } from "cloudflare:workers";',
         'import wasmModule from "esbuild.wasm";',
         `const esbuildFactory = new Function("WebAssembly", ${JSON.stringify(jsFnBody)});`,
         'const newEsbuild = (webAssembly = WebAssembly) => esbuildFactory(webAssembly);',
         cliRunner,
+        transformRuntime,
         ESBUILD_FACET_BODY,
     ].join('\n');
     return {
@@ -87,12 +111,13 @@ async function esbuildFacet(ctx, env) {
     }
     const worker = await loader.get(ESBUILD_FACET_WORKER_ID, async () => {
         const assetsEnv = { ASSETS: assets };
-        const [wasmModule, jsFnBody, cliRunner] = await Promise.all([
+        const [wasmModule, jsFnBody, cliRunner, transformRuntime] = await Promise.all([
             esbuildWasmModule(),
             fetchEsbuildJsFnBody(assetsEnv),
             fetchEsbuildCliRunner(assetsEnv),
+            fetchOxcFacetRuntime(assetsEnv),
         ]);
-        return esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner);
+        return esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner, transformRuntime);
     });
     const facetClass = worker.getDurableObjectClass('EsbuildFacet');
     return ctx.facets.get(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
@@ -138,6 +163,14 @@ async function onEsbuildFacet(ctx, env, call) {
     }
 }
 /**
+ * Where the transform facet sends a module that ran Oxc out of native stack
+ * (oxcTransformHost): the esbuild facet, whose Go stacks grow. One call per
+ * batch; the caller answers a failed call as transient.
+ */
+export function esbuildStackFallbackHost(ctx, env) {
+    return async (requests) => onEsbuildFacet(ctx, env, (facet) => facet.transformMany(requests));
+}
+/**
  * The build host a Durable Object's esbuild runs its builds on: its esbuild
  * facet. The plugin, and with it every file read, stays with the caller.
  */
@@ -170,7 +203,7 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
  */
 export function supervisorEsbuildService(ctx, env, vfs) {
     return new EsbuildService(vfs, {
-        transformHost: oxcTransformHost(ctx, env),
+        transformHost: oxcTransformHost(ctx, env, esbuildStackFallbackHost(ctx, env)),
         buildHost: esbuildBuildHost(ctx, env),
         transformHostId: OXC_FACET_WORKER_ID,
     });
