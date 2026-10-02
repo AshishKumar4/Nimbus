@@ -5,6 +5,35 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-02
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`, as described below.
+
+- Code a node program produces while it runs now runs in the same launch.
+  Before, Workers' ban on compiling code at runtime meant such code (a
+  `Function` or `AsyncFunction` constructor's text, `vm.runInThisContext`, a
+  module file written after the launch) was refused with
+  `ERR_NIMBUS_CODE_NEXT_LAUNCH` and ran from the next launch, so a Vite or
+  Nuxt dev server failed its first run. Nimbus now runs it in its own
+  JavaScript interpreter, and still records it so the next launch compiles
+  it natively. Interpreted code observes what V8 would: test262 passes on
+  39,145 of the 39,191 tests V8 passes, and the interpreter itself calls
+  none of the built-ins a program can replace (its parser, acorn, still
+  does). It loads only when a program first produces such code; each
+  launch's map carries it (240 KiB). Measured locally, it runs 1.1 to 1.9
+  times slower than native on framework code and about 45 times slower on
+  tight generated code such as a JSON-schema validator, for that first
+  launch only. TypeScript or JSX text and `using` still wait
+  for the next launch. `import()` of a module that uses top-level await
+  waits for it; `require()` of one, and a static import of one, return its
+  exports at once.
 - Transforms run on Nimbus's own build of Oxc instead of esbuild-wasm: every
   TypeScript, JSX and ES-module-to-CommonJS transform a session makes (a
   launch's module cells and entry, the built-in Vite dev server's modules,
@@ -44,18 +73,6 @@ published independently in the `@nimbus-sh` npm scope.
   directory counted the replaced directory as a file, so `df` and the
   filesystem's stats reported one file too few and one directory too many
   until the counters were next reloaded from the store.
-
-## 2026-10-02
-
-Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
-0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
-unchanged. The carets are minor-strict, so every range on core, worker,
-fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
-`WorkspaceFs`, no longer a `ProcessView`; and core's
-`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
-`defaultGemHome` give way to `pythonSitePackages(home)` and
-`gemHomeFor(home)`, as described below.
-
 - Changed: a workspace's per-user defaults follow the `HOME` its host
   configures (`NimbusWorkspace.create({ env: { HOME } })`). The home
   directory and `~/.nimbusrc` are seeded there, `/etc/passwd` names it, and

@@ -119,12 +119,14 @@ Nimbus already has a real base:
   program produces at runtime (a
   file written then required or imported, or text handed to the
   `AsyncFunction`/generator constructors, `vm.compileFunction` or
-  `Module.prototype._compile`; the plain `Function` constructor stays
-  native, because code probes it once and keeps the answer) cannot run in
-  that launch (no request-time
-  code generation, and a Worker Loader map cannot grow); the next launch of
-  the same command stages it by content key as `gen/<sha256>.js`, kept in the
-  session's storage (`facets/launch-learning-store.ts`). The same store keeps,
+  `Module.prototype._compile`, and the plain `Function` constructor) cannot
+  be compiled in that launch (no request-time code generation, and a Worker
+  Loader map cannot grow). It runs there in Nimbus's JavaScript interpreter
+  (`packages/core/src/interpreter`), and the next launch of the same command
+  stages it by content key as `gen/<sha256>.js` and compiles it natively,
+  kept in the session's storage (`facets/launch-learning-store.ts`). Code the
+  interpreter refuses (TypeScript or JSX text, `using`) still waits for the
+  next launch, with `ERR_NIMBUS_CODE_NEXT_LAUNCH`. The same store keeps,
   apart, the modules a run tried to execute that its map lacked (the next
   map's graph roots) and the files it read and did not have (staged as data,
   never walked as code, whatever their extension).
