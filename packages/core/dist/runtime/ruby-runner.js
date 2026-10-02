@@ -73,8 +73,15 @@ export function makeRubyRunnerFactory(deps) {
             for (const bin of (await installedGemBins(vfs, gemHomeFor(home)))) {
                 if (RUBY_RUNTIME_BIN_NAMES.has(bin.name))
                     continue;
+                // The name is registered once for the session; which script it runs
+                // is the invoking HOME's, as a PATH lookup of ~/.gem/bin would find.
                 registry.register(bin.name, async (ctx) => {
-                    const args = [bin.path.startsWith('/') ? bin.path : '/' + bin.path, ...(ctx.args ?? [])];
+                    const script = `/${gemHomeFor(ctx.env?.HOME || deps.getHome())}/bin/${bin.name}`;
+                    if (!(await ctx.vfs.exists(script))) {
+                        ctx.stderr.write(`${bin.name}: command not found\n`);
+                        return 127;
+                    }
+                    const args = [script, ...(ctx.args ?? [])];
                     const ruby = typeof registry.resolve === 'function' ? await registry.resolve('ruby') : null;
                     if (!ruby) {
                         ctx.stderr.write(`${bin.name}: Ruby runtime is not registered\n`);

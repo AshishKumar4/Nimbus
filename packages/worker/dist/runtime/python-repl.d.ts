@@ -31,6 +31,8 @@ export interface PythonReplDeps {
     terminal: WebSocketTerminal;
     /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/cpython/3.13.14'. */
     installRoot: string;
+    /** The invoking command's HOME: its pip packages decide the interpreter, and the prompt runs with it. */
+    home: string;
     manifest: RuntimeManifest;
     /**
      * The Nimbus shell, when there is one.
@@ -59,5 +61,5 @@ export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
  * Pay the interpreter's boot before the user asks for a prompt. Pushing empty
  * source compiles to a no-op, so the only thing it does is bring the facet up.
  */
-export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'manifest'>): Promise<void>;
+export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest'>): Promise<void>;
 //# sourceMappingURL=python-repl.d.ts.map
