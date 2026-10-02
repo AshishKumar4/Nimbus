@@ -124,10 +124,10 @@ function forgetOxcFacet(ctx: DurableObjectState, stub: Promise<Fetcher<OxcFacetR
   if (sharedFacets.get(ctx) === stub) sharedFacets.delete(ctx);
 }
 
-/** Modules one batch sends to the stack fallback; the rest answer transient, for a later batch. */
+/** Modules one stack-fallback call carries; a batch with more makes more calls. */
 const STACK_FALLBACK_MODULES = 4;
 
-/** How long one module's fallback call may take before its answer is transient. */
+/** How long one stack-fallback call may take before its modules' answers are transient. */
 const STACK_FALLBACK_DEADLINE_MS = 30_000;
 
 /** `call`, or a rejection once `ms` pass first. */
@@ -156,11 +156,11 @@ const SLICE_ATTEMPTS = 2;
  *
  * A module whose outcome says Oxc ran out of native stack on it
  * (`stackExhausted`, set by the driver from the RangeError, never read off
- * message text) goes to `stackFallback`, the esbuild facet in production: one
- * call per module, each with a deadline, at most STACK_FALLBACK_MODULES per
- * batch, each logged. Its answer stands; a call that fails or misses its
- * deadline, and a module past the bound, answer transient. Without a
- * fallback the exhaustion stands.
+ * message text) goes to `stackFallback`, the esbuild facet in production:
+ * every such module, in calls of at most STACK_FALLBACK_MODULES, each with a
+ * deadline, each module logged. Its answer stands; the modules of a call that
+ * fails or misses its deadline answer transient. Without a fallback the
+ * exhaustion stands.
  */
 export function oxcTransformHost(
   ctx: DurableObjectState,
@@ -200,21 +200,19 @@ export function oxcTransformHost(
       endFetch();
     }
     if (stackFallback) {
+      // Every module answered here: some callers (a prefetch bundle) have no
+      // store or pacer that would send a deferred one again.
       const exhausted = outcomes.flatMap((outcome, index) => ('stackExhausted' in outcome && outcome.stackExhausted === true ? [index] : []));
-      for (const [n, index] of exhausted.entries()) {
-        const request = requests[index];
-        const path = request.options?.dynamicImportParent ?? '<unnamed module>';
-        const reason = 'error' in outcomes[index] ? outcomes[index].error.split('\n').at(-1) : '';
-        if (n >= STACK_FALLBACK_MODULES) {
-          console.warn(`[oxc-transform] ${path}: ${reason}; deferred, ${STACK_FALLBACK_MODULES} modules already went to esbuild in this batch`);
-          outcomes[index] = { error: `${reason}; deferred to a later batch (at most ${STACK_FALLBACK_MODULES} per batch go to esbuild)`, transient: true };
-          continue;
+      for (let at = 0; at < exhausted.length; at += STACK_FALLBACK_MODULES) {
+        const group = exhausted.slice(at, at + STACK_FALLBACK_MODULES);
+        for (const index of group) {
+          const reason = 'error' in outcomes[index] ? outcomes[index].error.split('\n').at(-1) : '';
+          console.warn(`[oxc-transform] ${requests[index].options?.dynamicImportParent ?? '<unnamed module>'}: ${reason}; transforming it with esbuild`);
         }
-        console.warn(`[oxc-transform] ${path}: ${reason}; transforming it with esbuild`);
-        outcomes[index] = await withDeadline(stackFallback([request]), fallbackDeadlineMs).then(
-          ([answer]) => answer,
-          (error: unknown) => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true as const }),
+        const answered = await withDeadline(stackFallback(group.map((index) => requests[index])), fallbackDeadlineMs).catch(
+          (error: unknown) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true as const })),
         );
+        group.forEach((index, i) => { outcomes[index] = answered[i]; });
       }
     }
     return outcomes;

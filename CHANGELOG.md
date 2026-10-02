@@ -32,9 +32,9 @@ published independently in the `@nimbus-sh` npm scope.
 - A module nested deeper than Oxc's recursive passes can run on the host's
   stack (under V8: about 4,800 concatenated terms, a 1,950-arm ternary, 1,400
   chained calls or arrays 585 deep) is transformed by esbuild in the esbuild
-  facet, that module alone: one call per module, logged with its path and
-  reason, with a 30 s deadline, at most four per batch (the rest retry in a
-  later one). Only the driver's own RangeError marks a module so, never
+  facet, that module alone: every such module of a batch, in calls of at most
+  four, each call with a 30 s deadline, each module logged with its path and
+  reason. Only the driver's own RangeError marks a module so, never
   message text. Stored launch transforms are keyed by both engines' code.
   esbuild's own wasm grows with depth too (268 MiB for 5,000 concatenated
   terms), so past its own limit neither transforms it.

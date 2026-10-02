@@ -112,12 +112,11 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
     assert.equal(nested.code, 'answered by the fallback');
     assert.match(after.code, /const n = 1;/);
     assert.ok(warnings.some((w) => /\[oxc-transform\] file:\/\/\/app\/deep\.mjs: .*ran out of stack.*; transforming it with esbuild/.test(w)), warnings.join('\n'));
-    // A batch sends at most four; the rest answer transient, for a later batch.
+    // Each call carries at most four, and every module gets its answer in this batch.
     calls.length = 0;
     const six = await oxcTransformHost(ctx, env, fallback)(Array(6).fill(deep));
-    assert.equal(calls.length, 4);
-    assert.deepEqual(six.map((o) => o.transient === true), [false, false, false, false, true, true]);
-    assert.match(six[5].error, /deferred to a later batch \(at most 4 per batch go to esbuild\)/);
+    assert.deepEqual(calls.map((c) => c.length), [4, 2]);
+    assert.deepEqual(six.map((o) => o.code), Array(6).fill('answered by the fallback'));
     // A fallback that cannot be reached, or does not answer in time, leaves it transient.
     const [unreached] = await oxcTransformHost(ctx, env, async () => { throw new Error('esbuild facet reset'); })([deep]);
     assert.equal(unreached.transient, true);
@@ -137,6 +136,55 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const [syntax] = await oxcTransformHost(ctx, env, async () => assert.fail('a syntax error is a verdict'))([{ code: 'let a = ;', options: { loader: 'js' } }]);
   assert.match(syntax.error, /Transform failed with 1 error/);
   console.log('  ok  nesting past the host stack goes to the fallback: that module, typed, bounded, timed, logged');
+}
+
+// ── More than four too-deep cells, unpaced and unstored: every one is placed ─
+{
+  // stageOpencode's prefetch bundle transforms with no store and no pacer:
+  // nothing would send a deferred module again, so none may be deferred.
+  resetInstances();
+  const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+  const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { lowerAsyncModule } = await import('../../packages/core/src/runtime/async-module-lowering.ts');
+  const { transformBundleCells } = await import('../../packages/core/src/runtime/bundle-cell-transform.ts');
+  const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
+  const { createRequire } = await import('node:module');
+  const { readFile } = await import('node:fs/promises');
+  const fromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
+  const esbuild = await import(fromCore.resolve('esbuild-wasm/esm/browser.js'));
+  // esbuild's Go runtime wants the native WebAssembly.Instance the harness counts through.
+  releaseFacetHarness();
+  await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(fromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });
+  const { ctx, env } = durableObject(await freshFacetClass());
+  // The esbuild facet's transformMany, in this process.
+  const calls = [];
+  const fallback = async (requests) => {
+    calls.push(requests.length);
+    const outcomes = [];
+    for (const { code, options } of requests) outcomes.push(await runTransformRequest(esbuild, code, options, rewriteDynamicImports, lowerAsyncModule));
+    return outcomes;
+  };
+  // Arrays 4,000 deep: past Oxc's passes on Bun's stack (and Node's 585).
+  const cells = Array.from({ length: 6 }, (_, i) => ({
+    path: `node_modules/deep/d${i}.mjs`,
+    source: `export const x${i} = ${'['.repeat(4000)}${i}${']'.repeat(4000)};`,
+  }));
+  const placed = new Map();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await transformBundleCells(cells, { host: { transformMany: oxcTransformHost(ctx, env, fallback) } }, (path, result) => placed.set(path, result));
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(placed.size, 6);
+  for (const [i, { path }] of cells.entries()) {
+    const result = placed.get(path);
+    assert.equal(result.failed, false, `${path}: ${result.code.slice(0, 200)}`);
+    assert.match(result.code, new RegExp(`x${i}: \\(\\) => x${i}`));
+  }
+  assert.ok(calls.every((n) => n <= 4) && calls.reduce((a, b) => a + b, 0) === 6, JSON.stringify(calls));
+  console.log('  ok  six too-deep cells with no store or pacer are all placed, four per esbuild call at most');
 }
 
 // ── The host's identity names both engines ──────────────────────────────────

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f6513c5d8a9b0505b84fa8760cc0232baf4e9ae348eb83430054fcee0ae9af5b",
+  "fingerprint": "e62fd84dc1df2098ff5433f3a42f00493c1fd6d1d97a6958cf586ff8133277d2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1611,9 +1611,9 @@
     "packages/worker/dist/facets/opencode-staging.d.ts": "91adb325e06e8ca0748860340218a0e31b5cb40b4f579059c66c32a56eb0e309",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "66ec3b46e5956d1fc56e6ca85a9712eece204de44e32491d1c1149e00f34bdc8",
     "packages/worker/dist/facets/opencode-staging.js": "81e3b8a0f62a0719c2fefbddc6cbb5bd8bf536388284ac58c179dcd3dcbeaf71",
-    "packages/worker/dist/facets/oxc-transform.d.ts": "251becb313aa2481ef8efddb6c2ce490021e50342192d2e459613f9ce171e618",
-    "packages/worker/dist/facets/oxc-transform.d.ts.map": "c564708c8ac55e0b6d3ac15b4657ccb7d41f53654996076a8df682faa0301041",
-    "packages/worker/dist/facets/oxc-transform.js": "5cd145d87910ebfff652191a4fa8c899e9f3ad9c66ed0af3d5febf8aa508b557",
+    "packages/worker/dist/facets/oxc-transform.d.ts": "ec7a1e7f5fe7c2ae4236f4cbd6ae03c8dcfb97c0434e6f85c11645bc93793d14",
+    "packages/worker/dist/facets/oxc-transform.d.ts.map": "988bb271eb0c30ca97f73401a7ba36a9b76211c7f74eaf196fbd3c3144a2ad4c",
+    "packages/worker/dist/facets/oxc-transform.js": "7f1a7303277fd4c867888bd8d782000a05b7175f78dcb94ae89ad744a1b0316f",
     "packages/worker/dist/facets/process.d.ts": "f15066aa2ee8343d4a566cdd16957de42933b1510fbbeb874390d3df6ea276ec",
     "packages/worker/dist/facets/process.d.ts.map": "a3fd972a9b34d01bb36f374f64db58a354e003e35a6b331ef76371048c5a97e1",
     "packages/worker/dist/facets/process.js": "78dcabe7baf794e13740abdb3db3a8dddd977537423fa0b65936297f67d2e4c1",
@@ -2147,7 +2147,7 @@
     "packages/worker/src/facets/launch-learning-store.ts": "0ba1ebe8b6e30ff694f70db7de5e06c0b536beed882c3f9e3db3068ec49851d8",
     "packages/worker/src/facets/manager.ts": "0c147af4cc42903d7b51d7d583291d767b8afcdf8f3b1a8ac37a6b2517cda9a7",
     "packages/worker/src/facets/opencode-staging.ts": "e5c78bd8159028f448266e0b7c94f2bb8dcfbcaa52e482a24e5dfd840b78a257",
-    "packages/worker/src/facets/oxc-transform.ts": "5b28180f3f8e7e1d70fb623f0cfa47e8c3ac58a1ebc7929fe47f700e28b51e75",
+    "packages/worker/src/facets/oxc-transform.ts": "e021aad8b0c99e2550e0dafe2ab2cce10fbf75cbfb032d2583dd35e32fca30b3",
     "packages/worker/src/facets/process.ts": "32272dd21783b141eeb079674bfcc9c0475a5a86100720fab5ef2312a00c9b20",
     "packages/worker/src/facets/read-profile.ts": "a9e55aa4bef8c22f5e2d8185cd27b76a5de6ec6757a5b0aa5a3484db16fef67b",
     "packages/worker/src/facets/real-vite-fs-shim.ts": "62543eeea667a320a55400a4d4c4f5beb27536b864db47f321ea19b8408c007d",

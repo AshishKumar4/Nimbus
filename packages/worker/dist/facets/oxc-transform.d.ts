@@ -17,11 +17,11 @@ export declare function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): 
  *
  * A module whose outcome says Oxc ran out of native stack on it
  * (`stackExhausted`, set by the driver from the RangeError, never read off
- * message text) goes to `stackFallback`, the esbuild facet in production: one
- * call per module, each with a deadline, at most STACK_FALLBACK_MODULES per
- * batch, each logged. Its answer stands; a call that fails or misses its
- * deadline, and a module past the bound, answer transient. Without a
- * fallback the exhaustion stands.
+ * message text) goes to `stackFallback`, the esbuild facet in production:
+ * every such module, in calls of at most STACK_FALLBACK_MODULES, each with a
+ * deadline, each module logged. Its answer stands; the modules of a call that
+ * fails or misses its deadline answer transient. Without a fallback the
+ * exhaustion stands.
  */
 export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown, stackFallback?: EsbuildTransformHost, { fallbackDeadlineMs }?: {
     fallbackDeadlineMs?: number;
