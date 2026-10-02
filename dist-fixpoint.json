@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6364fa28dce8ba27683cbc9d7d3a9c15db77a114a0714fd26dde316883e9c0f5",
+  "fingerprint": "fa9d21b1e0daa01dac6ea3310ac3fd26d3eb58ace3c4efb72dfc957e5f124948",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1650,8 +1650,8 @@
     "packages/worker/dist/git/unified-diff.d.ts.map": "0a781142e0c43af30a8075231f2da12de1a65fb583bb113a7026a5722fe78646",
     "packages/worker/dist/git/unified-diff.js": "9182dbf0047c98f56f3f78588157a3545e60fb572e70bf1b5de5907f65947341",
     "packages/worker/dist/hosted/commands.d.ts": "b1779652124f6e2a12c061069cb3ba7571a3b329fc8e4e1a999f5a5c949c03a1",
-    "packages/worker/dist/hosted/commands.d.ts.map": "a54eb98316adcacbadbeecee5364b7a6d1bc0b23444301e257363c95079b7342",
-    "packages/worker/dist/hosted/commands.js": "49eeb05176de1905dd09c3b7b854940531208664903b86b882852daa469f89fc",
+    "packages/worker/dist/hosted/commands.d.ts.map": "6f48ea8b1e5fa77e092ed8b1e24db812000d3b0404ed5e9f8e5b672aa2a43676",
+    "packages/worker/dist/hosted/commands.js": "b3c37f37d6cf38136365a405f5172260b58f54ee51f00e8a131037d51b2c7072",
     "packages/worker/dist/hosted/runtime.d.ts": "2b50b4620b4276a3acc93a70a9762d611faf845f67e2be94c703e9d08e4c8114",
     "packages/worker/dist/hosted/runtime.d.ts.map": "95b81e98a6d62d2db4a6f6f3e0106c7d5ebe47875183692361bbbdbf36bb1e84",
     "packages/worker/dist/hosted/runtime.js": "e30d868bc0cb0f8f8116eb271f705aca0b501c59ea4eca92919320197451e0e4",
@@ -2127,7 +2127,7 @@
     "packages/worker/src/git/commands.ts": "c435e97786bc5b0bcb974cf329820b2c2c46361da6d75698417e8bbddd283496",
     "packages/worker/src/git/network-facet.ts": "b87a59e0307c3b1fb585c91d6782eaa4f76aa4978121de1cebd57d4e3258ae5c",
     "packages/worker/src/git/unified-diff.ts": "7d322a113cc4895cd699316bcb39a14506d5ed9bef4b72bfd8768b64bd15e905",
-    "packages/worker/src/hosted/commands.ts": "cf186e924e51b5493be17d90a013188609ffb1c363b6f54a8ca450323d8bd49b",
+    "packages/worker/src/hosted/commands.ts": "17e091cb9c4f961292cca003e0bc89d4783ce25a9060f0560684b1931459c474",
     "packages/worker/src/hosted/runtime.ts": "095f2ee41feabd2d35bd1c09c1186a0e84c647f94b6e72e1e73b6f2c57c4ca0e",
     "packages/worker/src/hosted/services.ts": "d42896fc1284221951d71959bccf9302dacc4ca6a4bbdec7a9b762cefcd0ad02",
     "packages/worker/src/hosted/session.ts": "d03d53bffd45f9668ae832279d29b252fd3e92fac887b9a903ec4b8f3adb8997",

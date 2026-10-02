@@ -453,6 +453,9 @@ export async function registerHostedCommands(self, workspace) {
                             env: ctx.env,
                             onStdout: textSink((d) => ctx.stdout.write(d)),
                             onStderr: textSink((d) => ctx.stderr.write(d)),
+                            // The script runs as the process that ran `bun run`, as an
+                            // `npm run` script does, not as the workspace shell.
+                            commandContext: { pid: ctx.pid, cred: ctx.cred, setUmask: ctx.setUmask },
                         });
                         return shellResult.exitCode;
                     }
