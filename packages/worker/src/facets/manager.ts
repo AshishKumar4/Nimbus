@@ -45,7 +45,7 @@ import {
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
@@ -5132,6 +5132,38 @@ export class FacetManager {
   }
 
   /**
+   * A one-shot's data plan: what its closure reads synchronously by a path its
+   * code spells out (static-fs-refs.ts; readFileSync, or a read-only openSync),
+   * any size, through any links on it, that the module map does not hold. It
+   * is data-plan.ts's `static` rule for synchronous reads, which needs the
+   * closure and a stat per path but no listing. The store fetches it at boot,
+   * so it is held beside the module map rather than carried in it: `vite
+   * build` reads lightningcss's 15.8 MB image with readFileSync(new
+   * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
+   * left the closure no room under the map's bound.
+   */
+  private async _staticReadPlan(entry: ProcessEntry, vfsState: FacetVfsState, cwd: string, pacer: TurnBudget): Promise<string[]> {
+    if (!this.filesystem) return [];
+    const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
+    const held = new Set(vfsState.bundlePaths ?? []);
+    const dir = stripLeadingSlashes(cwd).replace(/\/+$/, '');
+    const reads = new Set<string>();
+    for (const refs of await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer)) {
+      for (const ref of refs.exact) if (ref.sync) reads.add(stripLeadingSlashes(ref.path));
+      for (const ref of refs.cwdRelative) if (ref.sync) reads.add(normalizeVfsPath((dir ? dir + '/' : '') + ref.path));
+    }
+    const plan = new Set<string>();
+    for (const path of reads) {
+      let target: string;
+      try { target = stripLeadingSlashes(await vfs.realpath('/' + path)); } catch { continue; }
+      if (held.has(target)) continue;
+      const stat = await filesOf(vfs).stat(target).catch(() => null);
+      if (stat?.type === 'file') plan.add(target);
+    }
+    return [...plan];
+  }
+
+  /**
    * Paths earlier launches of the same build missed in this session. Other
    * sessions' misses (the shared read profile) join the module map instead,
    * in _buildProcessBundle, where a learned module brings its imports.
@@ -5770,10 +5802,12 @@ export class FacetManager {
     opts.signal?.addEventListener('abort', onShellAbort, { once: true });
     try {
       // A one-shot holds its module map and what it was seen to read (both in
-      // the bundle), and plans nothing beyond them: a data plan is chosen from
-      // a listing of the namespace, and a one-shot takes no listing of its own
-      // (§2.8: the principal's image is where that comes from).
-      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, pacer, diagSink);
+      // the bundle), and plans no listing of the namespace (§2.8: the
+      // principal's image is where that comes from). What its closure reads
+      // synchronously by a path its code spells out needs no listing, and is
+      // its data plan.
+      const dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+      const result = await this._execViaLoader(code, opts, entry, vfsState, dataPlan, abortController.signal, pacer, diagSink);
       await this._recordLaunchLearning(vfsState.bundleKey, {
         code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
       }).catch((error) => this._learningLost(entry.pid, error));
