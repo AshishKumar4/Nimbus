@@ -7843,12 +7843,14 @@ const __vmMod = (() => {
     isContext: real?.isContext ?? ((o) => !!o),
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
-    // jiti evaluates a parenthesized (async) CommonJS wrapper expression.
-    // Stage that expression as a zero-argument function returning its value;
-    // the wrapper itself executes only when the caller invokes it. This is
-    // not a vm context or a global-script evaluator: declarations/completion
-    // values spanning statements, execution deadlines and context mutation
-    // have no equivalent here and remain unsupported.
+    // jiti evaluates a parenthesized (async) CommonJS wrapper expression
+    // statement, `(function (exports, require, ...) { ... });`. The service
+    // stages a script that is one expression as a zero-argument function
+    // returning its value (the script's completion value); the wrapper
+    // itself executes only when the caller invokes it. This is not a vm
+    // context or a global-script evaluator: declarations/completion values
+    // spanning statements, execution deadlines and context mutation have no
+    // equivalent here and remain unsupported.
     runInThisContext: (code, options = {}) => {
       try { return wrapRuntimeEval('runInThisContext')(code, options); }
       catch (e) {
@@ -7856,7 +7858,7 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return service.compileFunction("function", [], "return (\n" + String(code) + "\n);")();
+        return service.compileExpression(String(code))();
       }
     },
     // A function of `params` and `code` is what the Function constructor
@@ -10831,6 +10833,9 @@ builtins.undici = __undiciMod;
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __moduleCache = new Map();
+// A module cell's evaluation when it completes later (top-level await), by
+// its evaluation key: what an import of it waits for.
+const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map([["sharp","Native libvips bindings; not portable to Workers. … try: no Workers-compatible target — render server-side or use Cloudflare Images. For the wasm32 build see @img/sharp-wasm32 entry below."],["sqlite3","Native sqlite3 .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or sql.js once wasm asset loading is available."],["better-sqlite3","Native sqlite .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or @libsql/client if its subpath exports resolve in your project."],["canvas","Native Cairo bindings. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["sodium-native","Native libsodium. … try: tweetnacl (pure JS, untested by Nimbus) or libsodium-wrappers (WASM, untested by Nimbus)."],["node-pty","PTY syscalls unavailable in workerd. … try: no Workers-compatible target — use the Nimbus built-in shell."],["robotjs","Desktop automation; sandboxed Workers cannot access OS UI. … try: no Workers-compatible target."],["electron","Embedded Chromium runtime; not applicable to Workers. … try: no Workers-compatible target."],["bcrypt","Native bcrypt; pure-JS bcryptjs has an equivalent sync API but the require() name differs and Nimbus does not yet support npm aliases. … try: change `require(\"bcrypt\")` to `require(\"bcryptjs\")`, then `npm install bcryptjs`. APIs are sync-compatible."],["argon2","Native Argon2 C bindings. … try: hash-wasm for argon2d, argon2i, and argon2id."],["node-sass","Native libsass; deprecated upstream. … try: sass (dart-sass, pure JS)."],["grpc","Deprecated native gRPC. … try: @grpc/grpc-js (pure JS, untested end-to-end in Nimbus)."],["@swc/core","Native Rust SWC. … try: @swc/wasm-web for transform/parse only; it does not provide the native Plugin API."],["prisma","Native query engine; not portable to Workers in this configuration. … try: @prisma/adapter-d1 (Prisma official Workers adapter, untested by Nimbus), or migrate to drizzle-orm + @libsql/client (untested by Nimbus)."],["@prisma/client","Same as `prisma` (native query engine). … try: @prisma/adapter-d1 (untested by Nimbus), or drizzle-orm + @libsql/client (untested)."],["puppeteer","Bundled Chromium binary (~150 MB). … try: no Workers-compatible target for the bundled binary — use puppeteer-core + Cloudflare Browser Rendering (untested by Nimbus)."],["playwright","Bundled browsers (~300 MB). … try: no Workers-compatible target for bundled browsers — use @playwright/test against a remote browser endpoint (untested by Nimbus)."],["sql.js","Installs but fails at runtime because dist/sql-wasm.wasm is not available to the runtime loader. … try: For SQL in Workers, consider Cloudflare D1 or @libsql/client."],["@swc/wasm-web","Installs but fails at runtime because its generated code path depends on workerd-blocked dynamic code generation. … try: For ESM transforms consider esbuild-wasm."],["@img/sharp-wasm32","WASM build of sharp; package is wasm32-cpu-only and libvips initThreads() requires pthread support unavailable in Workers. … try: wasm-vips may work for simple pipelines; for complex pipelines, render server-side and ship pixels."],["@napi-rs/canvas","Native bindings only (linux-x64-gnu/musl, darwin-arm64/x64, android-arm64, linux-arm64-gnu/musl, win32-x64-msvc, linux-arm-gnueabihf). No WASM build published. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@napi-rs/canvas-wasm32-wasi","@napi-rs/canvas does not publish a wasm32-wasi variant on npm (404). The @napi-rs/canvas project ships only native bindings. No WASM/WASI build exists. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@tailwindcss/oxide","Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen. … try: no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine."]]);
 
@@ -11400,7 +11405,11 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       cell = __nimbusRuntimeModule(normalizedPath, text);
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
-    cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+    const evaluation = cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+    // A module with top-level await completes later. require() returns its
+    // exports now (static imports lowered to require cannot wait); import()
+    // waits for it (__esmLoad).
+    if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
     __moduleCache.delete(evaluationKey);
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
@@ -12089,21 +12098,31 @@ function __esmLoad(resolution) {
     // Canonical queryless ESM shares evaluation with require() and static
     // imports lowered to require(). Queries/fragments are distinct jobs.
     const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
-    const exports = __loadModule(key, variant ? resolution.url : key);
-    if (resolution.format === "json") {
-      ns = __esmNamespaceOf(["default"], () => exports);
-    } else if (esm) {
-      // The ESM→CJS transform's exports: the module's own names, live.
-      const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
-      ns = __esmNamespaceOf(names, (name) => exports[name]);
-    } else {
+    const evaluationKey = variant ? resolution.url : key;
+    const exports = __loadModule(key, evaluationKey);
+    const namespace = () => {
+      if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
+      if (esm) {
+        // The ESM→CJS transform's exports: the module's own names, live.
+        const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
+        return __esmNamespaceOf(names, (name) => exports[name]);
+      }
       // CommonJS: module.exports is the default, its names the named exports.
       const mod = exports;
       const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
       names.delete("default");
       names.add("default");
-      ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+      return __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+    };
+    // A module with top-level await: the import resolves once its evaluation
+    // completes, and rejects with what it throws.
+    const evaluation = __moduleEvaluations.get(evaluationKey);
+    if (evaluation !== undefined) {
+      const pending = evaluation.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+      __esmNamespaces.set(resolution.url, pending);
+      return pending;
     }
+    ns = namespace();
   }
   __esmNamespaces.set(resolution.url, ns);
   return ns;

@@ -9,18 +9,19 @@
  * and the function is found in the result by its offset. The unit's own
  * parse already accepted the text, so this parse fails only on a bug.
  */
-import * as acorn from 'acorn';
 import { parse } from 'acorn';
-import { reflectGet, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
+import { Error, reflectGetPrototypeOf, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
 import { forEachChildNode } from './scope.js';
 // acorn assigns each node's fields as it builds it. A program may since have
 // defined accessors on Object.prototype under those names (test262 defines
 // `callee`), which the assignments would run into; nodes inherit nothing.
-// (acorn exports its Node class, but its typings declare only the interface.)
-const AcornNode = reflectGet(acorn, 'Node');
-if (typeof AcornNode !== 'function')
-    throw new Error('interpreter: acorn no longer exports its Node class');
-reflectSetPrototypeOf(AcornNode.prototype, null);
+// The prototype of acorn's nodes is read off a node: its typings declare
+// Node only as an interface, and a namespace import would be built at load
+// with Object.defineProperty, which a program may have replaced.
+const NodePrototype = reflectGetPrototypeOf(parse('0', { ecmaVersion: 'latest' }));
+if (NodePrototype === null)
+    throw new Error('interpreter: acorn nodes no longer have a prototype of their own');
+reflectSetPrototypeOf(NodePrototype, null);
 const OPTIONS = {
     ecmaVersion: 'latest',
     // Whether a private name is declared, the unit's parse already checked.

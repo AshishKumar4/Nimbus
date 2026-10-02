@@ -24,12 +24,8 @@ import type { AnyNode, BlockStatement, Expression, FunctionExpression, Pattern, 
 import { type Analysis, type Binding, type ClassNode, type FunctionNode, FunctionScope } from './scope.js';
 import { SafeMap } from './intrinsics.js';
 import { type Env, FunctionInfo, type FunctionShape } from './runtime.js';
-/** Code that evaluates to a T: run directly (`s`), or as a generator (`g`) when it suspends. */
-export interface CodeOf<T> {
-    readonly s: (env: Env) => T;
-    readonly g: ((env: Env) => Generator<unknown, T, unknown>) | null;
-}
-export type Code = CodeOf<unknown>;
+import { type Code } from './code.js';
+import type { ModulePlan } from './modules.js';
 /** What the host gives a compiled unit. */
 export interface UnitHost {
     /** The unit's `import(specifier, options)`. */
@@ -129,9 +125,12 @@ export declare class Compiler {
     private exportDefault;
     private annexBFunction;
     private blockStatement;
+    private blockIn;
     private variableDeclaration;
     private sequenceStatements;
     private ifStatement;
+    /** An if statement's clause: a function declaration there is a block of its own (Annex B.3.4, Analyzer.visitClause). */
+    private clause;
     private labeled;
     /**
      * How a loop treats its body's completion: continue with the next
@@ -301,13 +300,12 @@ export declare class Compiler {
      * import is esbuild's __toESM of it. With top-level await, the cell
      * returns the promise of the body.
      */
-    moduleCell(program: Program, root: FunctionScope): ModuleCell;
+    /** A module's plan (modules.ts): its imports and exports, its instantiation, its statements. */
+    modulePlan(program: Program, root: FunctionScope): ModulePlan;
+    /** A module's statements, compiled as an async function body (top-level await). */
+    private moduleStatements;
     /** A live read of a module-scope binding, for an export getter. */
     private rootRead;
 }
-/** A module cell: Node's CommonJS wrapper function. */
-export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
-/** The environment above every unit's: nothing reads it. */
-export declare const ROOT_ENV: Env;
 export {};
 //# sourceMappingURL=compile.d.ts.map

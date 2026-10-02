@@ -2,6 +2,10 @@
  * runtime-function-source.ts — the source text a Function constructor call
  * stands for, and when V8 refuses it. Shared by the module a staged call
  * becomes (commonjs-cell.ts) and the interpreter that runs an unstaged one.
+ *
+ * The interpreter runs this after a program may have replaced built-ins, so
+ * nothing here names one: the caller's SourceRealm supplies the two it needs
+ * (the interpreter's, from the launch's start; commonjs-cell's, its own).
  */
 import { parse } from 'acorn';
 /** The constructors whose text a program can hand in at runtime. */
@@ -22,9 +26,6 @@ function parameterList(params) {
         text += i === 0 ? params[i] : `,${params[i]}`;
     return text;
 }
-export function isRuntimeFunctionKind(kind) {
-    return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
-}
 /** The function literal V8 builds for `new <Kind>Function(...params, body)`. */
 export function runtimeFunctionSource(kind, params, body) {
     return `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${parameterList(params)}\n) {\n${body}\n}`;
@@ -35,13 +36,13 @@ export function runtimeFunctionSource(kind, params, body) {
  * at `bodyStart` (and empty, for the parameters' own check). Otherwise the
  * message V8 refuses it with.
  */
-function functionLiteral(text, bodyStart, emptyBody) {
+function functionLiteral(text, bodyStart, emptyBody, realm) {
     let program;
     try {
         program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
     }
     catch (e) {
-        return e instanceof Error ? e.message : String(e);
+        return realm.messageOf(e);
     }
     const statement = program.body[0];
     const fn = program.body.length === 1 && statement.type === 'ExpressionStatement' ? statement.expression : null;
@@ -61,7 +62,7 @@ function functionLiteral(text, bodyStart, emptyBody) {
  * such as `}, globalThis.x = 1, function () {` run code at module
  * evaluation that the constructor never would.
  */
-export function runtimeFunctionSyntaxError(kind, params, body) {
+export function runtimeFunctionSyntaxError(kind, params, body, realm) {
     const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
     const paramText = parameterList(params);
     const checks = [
@@ -70,7 +71,7 @@ export function runtimeFunctionSyntaxError(kind, params, body) {
         [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
     ];
     for (let i = 0; i < checks.length; i++) {
-        const checked = functionLiteral(checks[i][0], checks[i][1], checks[i][2]);
+        const checked = functionLiteral(checks[i][0], checks[i][1], checks[i][2], realm);
         if (typeof checked === 'string')
             return checked;
     }
@@ -84,15 +85,52 @@ export function runtimeFunctionSyntaxError(kind, params, body) {
  * body is parsed as the body alone would be, in the parameters' context.
  * Throws the SyntaxError V8 would. `text` is what `node`'s offsets index.
  */
-export function parseRuntimeFunction(kind, params, body) {
+export function parseRuntimeFunction(kind, params, body, realm) {
     const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
     const paramText = parameterList(params);
-    const own = functionLiteral(`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true);
+    const own = functionLiteral(`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true, realm);
     if (typeof own === 'string')
-        throw new SyntaxError(own);
+        throw new realm.SyntaxError(own);
     const text = `${head}${paramText}\n) {\n${body}\n})`;
-    const node = functionLiteral(text, `${head}${paramText}\n) `.length, false);
+    const node = functionLiteral(text, `${head}${paramText}\n) `.length, false, realm);
     if (typeof node === 'string')
-        throw new SyntaxError(node);
+        throw new realm.SyntaxError(node);
     return { node, text };
+}
+/**
+ * The one expression a script is, after its directive prologue, for
+ * vm.runInThisContext: node-shims hands the runtime-code service code it
+ * cannot compile at request time, and the service runs it as a function
+ * returning that expression's value (the script's completion value), its
+ * directives the function's own. jiti's module wrapper
+ * (`(function (exports, require, ...) { ... });`, Nuxt's config loader) and
+ * vite-node's (`'use strict';(...) => { ... }`) are such scripts. Throws the
+ * SyntaxError V8 would for code that does not parse; null for a script of
+ * another shape, whose completion value no function can stand in for.
+ */
+export function scriptExpression(code, realm) {
+    let program;
+    try {
+        program = parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+    }
+    catch (e) {
+        throw new realm.SyntaxError(realm.messageOf(e));
+    }
+    const body = program.body;
+    let first = 0;
+    while (first < body.length && isDirective(body[first]))
+        first++;
+    if (first !== body.length - 1)
+        return null;
+    const statement = body[first];
+    if (statement.type !== 'ExpressionStatement')
+        return null;
+    return { prologueEnd: first === 0 ? 0 : body[first - 1].end, start: statement.expression.start, end: statement.expression.end };
+}
+function isDirective(statement) {
+    return statement.type === 'ExpressionStatement' && typeof statement.directive === 'string';
+}
+/** The body of the function that returns an expression's value, after a script's directive prologue. */
+export function expressionFunctionBody(prologue, expression) {
+    return `${prologue}\nreturn (\n${expression}\n);`;
 }

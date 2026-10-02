@@ -30,6 +30,14 @@ export interface FunctionRuntime<F, E, R> {
     arrow(fi: F, scope: E, args: unknown[]): unknown;
     /** Bind a call's environment: the function's frame with its parameters bound. */
     enter(fi: F, scope: E, fn: Function | undefined, thisArg: unknown, args: ArrayLike<unknown>, newTarget: Function | undefined, home: object | undefined): E;
+    /**
+     * Bind a generator call's environment, when its parameters bind, and keep
+     * it for takeFrame: the key the parameter list destructures, which is
+     * `'length'`, an own property of the rest array.
+     */
+    enterGenerator(fi: F, scope: E, fn: Function, thisArg: unknown, args: IArguments, home: object | undefined): 'length';
+    /** The environment enterGenerator bound for the call whose arguments object is `args`. */
+    takeFrame(args: IArguments): E;
     /** A body's completion as the function's return value. */
     finish(fi: F, result: unknown): unknown;
     /** Run a base class constructor: fields, then the body. */
@@ -38,6 +46,13 @@ export interface FunctionRuntime<F, E, R> {
     constructDerived(fi: F, scope: E, ctor: Function, record: R, args: IArguments, newTarget: Function): unknown;
     /** The operand of the await, yield or yield* an async generator body just signalled. */
     operand(): unknown;
+    /** Built-ins, as captured at the launch's start (primordials.ts). */
+    readonly ownKeys: typeof Reflect.ownKeys;
+    readonly hasOwn: typeof Object.hasOwn;
+    readonly global: typeof globalThis;
+    /** The prototypes of the module's own generators (delegate, drain). */
+    readonly SafeGeneratorPrototype: object;
+    readonly SafeAsyncGeneratorPrototype: object;
     readonly AWAIT: object;
     readonly YIELD: object;
     readonly DELEGATE: object;
@@ -108,10 +123,12 @@ export interface HostOperators {
     setSloppy(target: unknown, key: unknown, value: unknown): void;
     remove(target: unknown, key: unknown): boolean;
     removeSloppy(target: unknown, key: unknown): boolean;
+    /** `yield* iterable` in a sync generator body: the language's own delegation, which reads its @@iterator once. */
+    delegate(iterable: unknown): Generator<unknown, unknown, unknown>;
 }
 export interface HostOps {
-    readonly ops: HostOperators;
     bind<F extends FactoryFunctionInfo, E, R>(rt: FunctionRuntime<F, E, R>): {
+        readonly ops: HostOperators;
         readonly strict: FunctionFactories<F, E, R>;
         readonly sloppy: FunctionFactories<F, E, R>;
     };

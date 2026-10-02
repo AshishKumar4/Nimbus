@@ -24,13 +24,15 @@
  * The factories' text, instantiated twice: once sloppy, once strict. Each
  * wrapper is created inside a comma expression so it starts anonymous (its
  * name is defined by the interpreter). Generators and async generators bind
- * their environment in a parameter default (the rest element's absent key),
- * which runs when the function is called, before the generator object
- * exists, as parameter binding does natively.
+ * their environment while their parameters bind, when the function is
+ * called and before the generator object exists, as parameter binding does
+ * natively: in the computed key of the rest element's pattern, which then
+ * reads the rest array's own `length` (a read of any other key could reach
+ * Array.prototype, where a program may answer it). The body takes the
+ * environment by the call's arguments object.
  */
 const FACTORIES = String.raw `
-const { call, arrow: callArrow, enter, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
-const KEY = Symbol("nimbus.interpreter.environment");
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
@@ -56,6 +58,7 @@ async function* drain(it, r) {
     r = ok ? it.next(value) : it.throw(value);
   }
 }
+drain.prototype = rt.SafeAsyncGeneratorPrototype;
 return {
   plain(fi, scope) {
     const f = (0, function () { return call(fi, scope, f, this, arguments, new.target, undefined); });
@@ -69,7 +72,8 @@ return {
     return (...args) => callArrow(fi, scope, args);
   },
   generator(fi, scope, home) {
-    const f = (0, function* (...{ [KEY]: env = enter(fi, scope, f, this, arguments, undefined, home) }) {
+    const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
+      const env = takeFrame(arguments);
       return finish(fi, fi.body ? fi.body(env) : yield* fi.gen(env));
     });
     return f;
@@ -108,7 +112,8 @@ return {
   // read the value of, so the body is returned with MARK: if its finally
   // blocks leave MARK alone, the native return proceeds with its own value.
   asyncGenerator(fi, scope, home) {
-    const f = (0, async function* (...{ [KEY]: env = enter(fi, scope, f, this, arguments, undefined, home) }) {
+    const f = (0, async function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
+      const env = takeFrame(arguments);
       if (fi.body) return finish(fi, fi.body(env));
       const it = fi.gen(env);
       let r = it.next();
@@ -160,11 +165,17 @@ const WELL_KNOWN_GLOBALS = [
     'crypto', 'performance', 'atob', 'btoa', 'Blob', 'FormData', 'ReadableStream', 'WritableStream', 'TransformStream',
     'WebAssembly', 'navigator', 'require', 'module', 'exports', '__filename', '__dirname',
 ];
+/** Each well-known global's reader, as source: a property read of the global object captured at the start. */
+let WELL_KNOWN_GLOBALS_LIST = '';
+for (let i = 0; i < WELL_KNOWN_GLOBALS.length; i++) {
+    const name = WELL_KNOWN_GLOBALS[i];
+    WELL_KNOWN_GLOBALS_LIST += `${i === 0 ? '' : ', '}"${name}": () => g.${name}`;
+}
 /** The module's source: `module.exports` is a HostOps. */
 export const HOST_OPS_SOURCE = String.raw `
-const ops = (function () {
+const operators = (function () {
   "use strict";
-  return {
+  return (ownKeys) => ({
     add: (a, b) => a + b,
     sub: (a, b) => a - b,
     mul: (a, b) => a * b,
@@ -189,20 +200,28 @@ const ops = (function () {
     numeric: (v) => { let x = v; return x++; },
     increment: (n) => { let x = n; return ++x; },
     decrement: (n) => { let x = n; return --x; },
-    propertyKey: (v) => Reflect.ownKeys({ [v]: 0 })[0],
+    propertyKey: (v) => ownKeys({ [v]: 0 })[0],
     get: (o, k) => o[k],
     set: (o, k, v) => { o[k] = v; },
     remove: (o, k) => delete o[k],
-  };
+  });
 })();
-const globals = { ${WELL_KNOWN_GLOBALS.map((name) => `${JSON.stringify(name)}: () => globalThis.${name}`).join(', ')} };
-ops.globalReader = (name) => (Object.hasOwn(globals, name) ? globals[name] : undefined);
-ops.setSloppy = function (o, k, v) { o[k] = v; };
-ops.removeSloppy = function (o, k) { return delete o[k]; };
+function hostOperators(rt) {
+  const ops = operators(rt.ownKeys);
+  const g = rt.global, hasOwn = rt.hasOwn;
+  const globals = { __proto__: null, ${WELL_KNOWN_GLOBALS_LIST} };
+  ops.globalReader = (name) => (hasOwn(globals, name) ? globals[name] : undefined);
+  ops.setSloppy = function (o, k, v) { o[k] = v; };
+  ops.removeSloppy = function (o, k) { return delete o[k]; };
+  const delegate = function* (iterable) { return yield* iterable; };
+  delegate.prototype = rt.SafeGeneratorPrototype;
+  ops.delegate = delegate;
+  return ops;
+}
 function sloppy(rt) {${FACTORIES}}
 const strict = (function () {
   "use strict";
   return function (rt) {${FACTORIES}};
 })();
-module.exports = { ops, bind: (rt) => ({ strict: strict(rt), sloppy: sloppy(rt) }) };
+module.exports = { bind: (rt) => ({ ops: hostOperators(rt), strict: strict(rt), sloppy: sloppy(rt) }) };
 `;

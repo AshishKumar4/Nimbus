@@ -3,7 +3,7 @@
  * signals, interpreted function objects, classes and private names.
  */
 import type { FactoryFunctionInfo, HostOperators, HostOps, NativeFunction } from './host-ops.js';
-import { SafeWeakMap, SafeWeakSet } from './intrinsics.js';
+import { SafeWeakSet } from './intrinsics.js';
 /**
  * A scope's environment: slot 0 is the enclosing environment, the rest are
  * the scope's bindings (scope.ts assigns the slots).
@@ -13,6 +13,8 @@ export type Env = unknown[];
 export declare function up(env: Env): Env;
 /** An environment `hops` levels up. */
 export declare function upN(env: Env, hops: number): Env;
+/** The environment above every unit's: nothing reads it. */
+export declare const ROOT_ENV: Env;
 /** The value of a lexical binding before its declaration has run. */
 export declare const TDZ: object;
 export declare function tdzError(name: string): ReferenceError;
@@ -27,7 +29,6 @@ export declare class Completion {
 export type Signal = Completion | undefined;
 export declare const BREAK: Completion;
 export declare const CONTINUE: Completion;
-export declare function labeledSignal(kind: 'break' | 'continue', label: string): Completion;
 /** The marker an async generator body yields to await, yield or delegate; its operand is beside it. */
 export declare const AWAIT: Readonly<{
     mark: "await";
@@ -57,7 +58,6 @@ export declare class FunctionInfo implements FactoryFunctionInfo {
     gen: Gen | null;
     /** The body evaluates to the return value itself (an arrow's expression body). */
     expression: boolean;
-    size: number;
     thisSlot: number;
     argumentsSlot: number;
     newTargetSlot: number;
@@ -67,8 +67,11 @@ export declare class FunctionInfo implements FactoryFunctionInfo {
     params: number[] | null;
     /** Binds the parameters otherwise. */
     bindParams: ((env: Env, args: ArrayLike<unknown>) => void) | null;
-    /** Slots that start in their TDZ when the frame is created. */
-    tdzSlots: number[];
+    /**
+     * What a call's frame starts as: slot 0 (the scope) unset, lexical slots
+     * in their TDZ, the rest undefined. Copied per call (frameTemplate).
+     */
+    frame: Env;
     /** A derived constructor's `this` starts uninitialized. */
     derived: boolean;
     /** A class constructor with no constructor in its source. */
@@ -79,6 +82,12 @@ export declare class FunctionInfo implements FactoryFunctionInfo {
     /** The source text Function.prototype.toString answers. */
     source: string);
 }
+/**
+ * A frame of `size` slots, `tdz` of them in their TDZ: every slot an own
+ * property, so that an environment copied from it (withElement) is read and
+ * written without ever consulting Array.prototype.
+ */
+export declare function frameTemplate(size: number, tdz: readonly number[]): Env;
 export declare function operators(): HostOperators;
 /**
  * One evaluation of a class: what constructing an instance initializes, and
@@ -106,7 +115,7 @@ export declare function functionName(key: PropertyKey, prefix?: string): string;
 export declare class PrivateName {
     readonly description: string;
     kind: 'field' | 'method' | 'accessor';
-    readonly values: SafeWeakMap<object, unknown>;
+    readonly values: import("./primordials.js").SafeWeakMap<object, unknown>;
     /** For methods and accessors: the objects that carry the class's brand. */
     brand: SafeWeakSet<object>;
     method: unknown;
@@ -120,6 +129,4 @@ export declare class PrivateName {
     /** PrivateFieldAdd / PrivateMethodOrAccessorAdd. */
     add(target: object, value: unknown): void;
 }
-/** CreateAsyncFromSyncIterator, for `for await` over a sync iterable. */
-export declare function asyncFromSyncIterator(syncIterator: object, next: unknown): object;
 //# sourceMappingURL=runtime.d.ts.map

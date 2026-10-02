@@ -6389,12 +6389,14 @@ const __vmMod = (() => {
     isContext: real?.isContext ?? ((o) => !!o),
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
-    // jiti evaluates a parenthesized (async) CommonJS wrapper expression.
-    // Stage that expression as a zero-argument function returning its value;
-    // the wrapper itself executes only when the caller invokes it. This is
-    // not a vm context or a global-script evaluator: declarations/completion
-    // values spanning statements, execution deadlines and context mutation
-    // have no equivalent here and remain unsupported.
+    // jiti evaluates a parenthesized (async) CommonJS wrapper expression
+    // statement, \`(function (exports, require, ...) { ... });\`. The service
+    // stages a script that is one expression as a zero-argument function
+    // returning its value (the script's completion value); the wrapper
+    // itself executes only when the caller invokes it. This is not a vm
+    // context or a global-script evaluator: declarations/completion values
+    // spanning statements, execution deadlines and context mutation have no
+    // equivalent here and remain unsupported.
     runInThisContext: (code, options = {}) => {
       try { return wrapRuntimeEval('runInThisContext')(code, options); }
       catch (e) {
@@ -6402,7 +6404,7 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return service.compileFunction("function", [], "return (\\n" + String(code) + "\\n);")();
+        return service.compileExpression(String(code))();
       }
     },
     // A function of \`params\` and \`code\` is what the Function constructor
@@ -9115,6 +9117,9 @@ builtins.undici = __undiciMod;
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __moduleCache = new Map();
+// A module cell's evaluation when it completes later (top-level await), by
+// its evaluation key: what an import of it waits for.
+const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 
@@ -9567,7 +9572,11 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       cell = __nimbusRuntimeModule(normalizedPath, text);
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
-    cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+    const evaluation = cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+    // A module with top-level await completes later. require() returns its
+    // exports now (static imports lowered to require cannot wait); import()
+    // waits for it (__esmLoad).
+    if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
     __moduleCache.delete(evaluationKey);
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
@@ -9759,21 +9768,31 @@ function __esmLoad(resolution) {
     // Canonical queryless ESM shares evaluation with require() and static
     // imports lowered to require(). Queries/fragments are distinct jobs.
     const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
-    const exports = __loadModule(key, variant ? resolution.url : key);
-    if (resolution.format === "json") {
-      ns = __esmNamespaceOf(["default"], () => exports);
-    } else if (esm) {
-      // The ESM→CJS transform's exports: the module's own names, live.
-      const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
-      ns = __esmNamespaceOf(names, (name) => exports[name]);
-    } else {
+    const evaluationKey = variant ? resolution.url : key;
+    const exports = __loadModule(key, evaluationKey);
+    const namespace = () => {
+      if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
+      if (esm) {
+        // The ESM→CJS transform's exports: the module's own names, live.
+        const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
+        return __esmNamespaceOf(names, (name) => exports[name]);
+      }
       // CommonJS: module.exports is the default, its names the named exports.
       const mod = exports;
       const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
       names.delete("default");
       names.add("default");
-      ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+      return __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+    };
+    // A module with top-level await: the import resolves once its evaluation
+    // completes, and rejects with what it throws.
+    const evaluation = __moduleEvaluations.get(evaluationKey);
+    if (evaluation !== undefined) {
+      const pending = evaluation.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+      __esmNamespaces.set(resolution.url, pending);
+      return pending;
     }
+    ns = namespace();
   }
   __esmNamespaces.set(resolution.url, ns);
   return ns;

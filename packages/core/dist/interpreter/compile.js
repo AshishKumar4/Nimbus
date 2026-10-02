@@ -1,26 +1,21 @@
 import { reparseFunction } from './reparse.js';
 import { analyzeLazyFunction, childNodes, patternIdentifiers, releaseScopes, } from './scope.js';
-import { SafeMap, SafeSet, SafeWeakMap, append, arrayIsArray, arraySliceFrom, contains, defineOrThrow, everyItem, indexWhere, mapList, objectCreate, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, reflectApply, reflectConstruct, reflectDefineProperty, reflectGet, reflectGetOwnPropertyDescriptor, objectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, skipTrivia, someItem, stringOf, stringSlice, symbolAsyncIterator, symbolDescriptiveString, symbolIterator, symbolUnscopables, withLast, } from './intrinsics.js';
+import { BigInt, Error, ReferenceError, RegExp, SafeMap, SafeSet, SafeWeakMap, SyntaxError, TypeError, append, arraySliceFrom, contains, copyList, createDataProperty, dataDescriptor, everyItem, globalObject, indexWhere, listOf, mapList, newList, newSafeList, objectFreeze, objectHasOwn, promiseReject, reflectApply, reflectDefineProperty, reflectGet, objectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, safeGenerator, skipTrivia, someItem, stringOf, stringSlice, symbolAsyncIterator, symbolIterator, toObject, withElement, withFirst, withLast, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
-import { AWAIT, BREAK, CONTINUE, ClassRecord, Completion, DELEGATE, FunctionInfo, PrivateName, TDZ, THIS_BEFORE_SUPER, YIELD, asyncFromSyncIterator, functionName, initializeInstance, isObject, labeledSignal, makeClass, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN, } from './runtime.js';
-function syncCode(s) {
-    return { s, g: null };
+import { AWAIT, BREAK, CONTINUE, Completion, DELEGATE, FunctionInfo, PrivateName, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance, frameTemplate, isObject, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN, } from './runtime.js';
+import { arrayIteration, asyncFromSyncIterator, asyncIteratorClose, closeArrayIteration, describe, getIterator, iteratorFrom, iteratorMethod, spreadInto, } from './iteration.js';
+import { asGen, genCode, suspendedBind, suspendedSync, syncCode } from './code.js';
+import { classMaking, } from './classes.js';
+import { arrayWithHoles, callValue, constructValue, copyDataProperties, defineAccessor, keyOnce, nullBase, requireObjectCoercible, signalOf, templateObject, toPropertyKey, withHas, } from './operations.js';
+/** A module specifier's text. */
+function specifierOf(node) {
+    if (typeof node.value !== 'string')
+        throw new Error('interpreter: module specifier');
+    return node.value;
 }
-function suspendedSync() {
-    throw new Error('interpreter: suspending code run synchronously');
-}
-function suspendedBind() {
-    throw new Error('interpreter: suspending pattern bound synchronously');
-}
-function genCode(g) {
-    return { s: suspendedSync, g };
-}
-/** A generator that runs `c` in a suspending context. */
-function asGen(c) {
-    if (c.g !== null)
-        return c.g;
-    const s = c.s;
-    return function* (env) { return s(env); };
+/** An imported or exported name: an identifier, or a string such as `export { a as "b-c" }`. */
+function exportedName(node) {
+    return node.type === 'Identifier' ? node.name : stringOf(node.value);
 }
 /** The value an optional chain short-circuits to, inside the chain. */
 const SHORT = objectFreeze({ short: true });
@@ -37,178 +32,7 @@ function compileLater(fi, site) {
 function lazily(fi, site) {
     return () => compileLater(fi, site);
 }
-const G = globalThis;
-const constructors = new SafeWeakMap();
-function isConstructorValue(value) {
-    if (typeof value !== 'function')
-        return false;
-    let known = constructors.get(value);
-    if (known === undefined) {
-        try {
-            // Constructing with `value` as new.target succeeds only for a constructor.
-            reflectConstruct(Object, [], value);
-            known = true;
-        }
-        catch {
-            known = false;
-        }
-        constructors.set(value, known);
-    }
-    return known;
-}
-function toPropertyKey(value) {
-    if (typeof value === 'string' || typeof value === 'symbol')
-        return value;
-    if (isObject(value))
-        return operators().propertyKey(value);
-    return stringOf(value);
-}
-function describe(value) {
-    if (typeof value === 'function')
-        return 'function';
-    if (typeof value === 'object' && value !== null)
-        return 'object';
-    if (typeof value === 'symbol')
-        return symbolDescriptiveString(value);
-    return stringOf(value);
-}
-function isIterable(value) {
-    return value !== null && value !== undefined && typeof operators().get(value, symbolIterator) === 'function';
-}
-/** `value` as an iterable, or the TypeError for spreading or iterating a non-iterable. */
-function iterable(value) {
-    if (isIterable(value))
-        return value;
-    throw new TypeError(`${describe(value)} is not iterable`);
-}
-function getIterator(value) {
-    const method = operators().get(iterable(value), symbolIterator);
-    if (typeof method !== 'function')
-        throw new TypeError(`${describe(value)} is not iterable`);
-    const it = reflectApply(method, value, []);
-    if (!isObject(it))
-        throw new TypeError('Result of the symbolIterator method is not an object');
-    const next = reflectGet(it, 'next');
-    let done = false;
-    return {
-        get done() { return done; },
-        step() {
-            done = true;
-            if (typeof next !== 'function')
-                throw new TypeError(`${describe(next)} is not a function`);
-            const result = reflectApply(next, it, []);
-            if (!isObject(result))
-                throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
-            if (reflectGet(result, 'done'))
-                return undefined;
-            const value = reflectGet(result, 'value');
-            done = false;
-            return value;
-        },
-        close() {
-            const ret = reflectGet(it, 'return');
-            if (ret === undefined || ret === null)
-                return;
-            if (typeof ret !== 'function')
-                throw new TypeError(`${describe(ret)} is not a function`);
-            const result = reflectApply(ret, it, []);
-            if (!isObject(result))
-                throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
-        },
-    };
-}
-/** IteratorClose on an abrupt completion: the completion's error wins over return()'s. */
-function closeQuietly(it) {
-    try {
-        it.close();
-    }
-    catch { /* the original error propagates */ }
-}
-const ArrayValues = Array.prototype[symbolIterator];
-const ArrayIteratorPrototype = objectGetPrototypeOf([][symbolIterator]());
-const ArrayIteratorNext = reflectGet(ArrayIteratorPrototype, 'next');
-/** Whether indexing `value` is exactly iterating it (an array whose iteration nobody replaced). */
-function plainArray(value) {
-    return arrayIsArray(value)
-        && reflectGet(value, symbolIterator) === ArrayValues
-        && reflectGet(ArrayIteratorPrototype, 'next') === ArrayIteratorNext;
-}
-function requireObjectCoercible(value) {
-    if (value === null || value === undefined)
-        throw new TypeError(`Cannot destructure '${stringOf(value)}' as it is ${stringOf(value)}.`);
-}
-/** CopyDataProperties(target, source, excluded): an object rest or spread. */
-function copyDataProperties(target, source, excluded) {
-    if (source === null || source === undefined)
-        return;
-    const from = Object(source);
-    const keys = reflectOwnKeys(from);
-    for (let i = 0; i < keys.length; i++) {
-        const key = keys[i];
-        if (excluded && contains(excluded, key))
-            continue;
-        const desc = reflectGetOwnPropertyDescriptor(from, key);
-        if (desc && desc.enumerable)
-            createDataProperty(target, key, reflectGet(from, key));
-    }
-}
-/** CreateDataPropertyOrThrow, with one descriptor object reused. */
-const DATA = { value: undefined, writable: true, enumerable: true, configurable: true };
-function createDataProperty(target, key, value) {
-    DATA.value = value;
-    const ok = reflectDefineProperty(target, key, DATA);
-    DATA.value = undefined;
-    if (!ok)
-        throw new TypeError(`Cannot redefine property: ${stringOf(key)}`);
-}
-function defineMethod(target, key, value, enumerable) {
-    if (!reflectDefineProperty(target, key, { value, writable: true, enumerable, configurable: true })) {
-        throw new TypeError(`Cannot redefine property: ${stringOf(key)}`);
-    }
-}
-function defineAccessor(target, key, kind, fn, enumerable) {
-    const desc = kind === 'get' ? { get: fn, enumerable, configurable: true } : { set: fn, enumerable, configurable: true };
-    if (!reflectDefineProperty(target, key, desc))
-        throw new TypeError(`Cannot redefine property: ${stringOf(key)}`);
-}
-function templateObject(cooked, raw) {
-    const strings = arraySliceFrom(cooked, 0);
-    defineOrThrow(strings, 'raw', { value: objectFreeze(arraySliceFrom(raw, 0)), writable: false, enumerable: false, configurable: false });
-    return objectFreeze(strings);
-}
-function callValue(fn, thisArg, args, text) {
-    if (typeof fn !== 'function')
-        throw new TypeError(`${text} is not a function`);
-    return reflectApply(fn, thisArg, args);
-}
-function constructValue(fn, args, text) {
-    if (typeof fn !== 'function')
-        throw new TypeError(`${text} is not a constructor`);
-    try {
-        return reflectConstruct(fn, args);
-    }
-    catch (error) {
-        // V8 names a non-constructor by its own source text; name it by the expression.
-        if (error instanceof TypeError && !isConstructorValue(fn))
-            throw new TypeError(`${text} is not a constructor`);
-        throw error;
-    }
-}
-/** A key as an error message shows it, without converting an object key (which could run its code). */
-function keyText(key) {
-    return isObject(key) ? 'object' : stringOf(key);
-}
-/** The TypeError for reading `key` of null or undefined, before the key is converted. */
-function nullBase(base, key) {
-    return new TypeError(`Cannot read properties of ${stringOf(base)} (reading '${keyText(key)}')`);
-}
-/** Whether `name` resolves on a `with` object (HasBinding of an object environment). */
-function withHas(target, name) {
-    if (!isObject(target) || !reflectHas(target, name))
-        return false;
-    const unscopables = reflectGet(target, symbolUnscopables);
-    return !(isObject(unscopables) && reflectGet(unscopables, name));
-}
+const G = globalObject;
 function isAnonymousFunctionDefinition(node) {
     return (node.type === 'FunctionExpression' && !node.id) || node.type === 'ArrowFunctionExpression' || (node.type === 'ClassExpression' && !node.id);
 }
@@ -222,164 +46,9 @@ function expectedArgumentCount(params) {
     }
     return n;
 }
-/** A class's making at runtime: its scope entered, private names made, heritage and keys evaluated, then defined. */
-function classMaking(entry, heritage, plan) {
-    const define = classDefiner(plan);
-    const keys = plan.computedKeys;
-    const privateNames = plan.privateNames;
-    // The class's private names exist from its scope's start: its heritage and keys can name them.
-    const enter = (env) => {
-        const classEnv = entry ? entry(env) : env;
-        for (let i = 0; i < privateNames.length; i++) {
-            const p = privateNames[i];
-            const pn = new PrivateName(p.description);
-            pn.kind = p.kind;
-            classEnv[p.slot] = pn;
-        }
-        return classEnv;
-    };
-    if ((heritage === null || heritage.g === null) && everyItem(keys, (k) => k.g === null)) {
-        const h = heritage ? heritage.s : null;
-        const ks = mapList(keys, (k) => k.s);
-        return {
-            s: (env, name) => {
-                const classEnv = enter(env);
-                const parent = h ? h(classEnv) : undefined;
-                const computed = new Array(ks.length);
-                for (let i = 0; i < ks.length; i++)
-                    computed[i] = toPropertyKey(ks[i](classEnv));
-                return define(classEnv, parent, name, computed);
-            },
-            g: null,
-        };
-    }
-    const hg = heritage ? asGen(heritage) : null;
-    const kgs = mapList(keys, asGen);
-    return {
-        s: suspendedSync,
-        g: function* (env, name) {
-            const classEnv = enter(env);
-            const parent = hg ? yield* hg(classEnv) : undefined;
-            const computed = new Array(kgs.length);
-            for (let i = 0; i < kgs.length; i++)
-                computed[i] = toPropertyKey(yield* kgs[i](classEnv));
-            return define(classEnv, parent, name, computed);
-        },
-    };
-}
-/** A field initializer's (or static block's) frame: `this` and the home object. */
-function fieldFrame(fi, scope, thisArg, home) {
-    const env = new Array(fi.size);
-    env[0] = scope;
-    if (fi.thisSlot !== 0)
-        env[fi.thisSlot] = thisArg;
-    if (fi.homeSlot !== 0)
-        env[fi.homeSlot] = home;
-    return env;
-}
-/** ClassDefinitionEvaluation's runtime half, from a compiled plan. */
-function classDefiner(plan) {
-    const { ctorInfo, writeInner, elements, instanceFi, staticFi } = plan;
-    return (classEnv, parent, name, computed) => {
-        const record = new ClassRecord();
-        const C = makeClass(ctorInfo, classEnv, parent, name, record);
-        const protoValue = reflectGet(C, 'prototype');
-        if (!isObject(protoValue))
-            throw new Error('interpreter: class without a prototype');
-        const proto = protoValue;
-        const instanceFieldList = [];
-        const instancePrivateMethods = [];
-        const staticWork = [];
-        const staticPrivateMethods = [];
-        for (let i = 0; i < elements.length; i++) {
-            const el = elements[i];
-            if (el.kind === 'static') {
-                staticWork[staticWork.length] = { block: el.fi };
-                continue;
-            }
-            const target = el.isStatic ? C : proto;
-            let key;
-            if ('private' in el.key)
-                key = el.key.private(classEnv);
-            else if ('static' in el.key)
-                key = el.key.static;
-            else
-                key = computed[el.key.computed];
-            if (el.kind === 'method') {
-                const fname = key instanceof PrivateName ? (el.accessor ? `${el.accessor} ${key.description}` : key.description)
-                    : functionName(key, el.accessor ?? undefined);
-                const fn = makeFunction(el.fi, classEnv, target, fname);
-                if (key instanceof PrivateName) {
-                    if (el.accessor === 'get')
-                        key.getter = fn;
-                    else if (el.accessor === 'set')
-                        key.setter = fn;
-                    else
-                        key.method = fn;
-                    const list = el.isStatic ? staticPrivateMethods : instancePrivateMethods;
-                    if (!contains(list, key))
-                        list[list.length] = key;
-                }
-                else if (el.accessor) {
-                    defineAccessor(target, key, el.accessor, fn, false);
-                }
-                else {
-                    defineMethod(target, key, fn, false);
-                }
-                continue;
-            }
-            const record = { key, value: el.value, named: el.named };
-            if (el.isStatic)
-                staticWork[staticWork.length] = { field: record };
-            else
-                instanceFieldList[instanceFieldList.length] = record;
-        }
-        const defineField = (fieldEnv, receiver, f) => {
-            let v;
-            if (fieldEnv !== null) {
-                if (f.value !== null)
-                    v = f.value(fieldEnv);
-                else if (f.named !== null)
-                    v = f.named(fieldEnv, f.key instanceof PrivateName ? f.key.description : functionName(f.key));
-            }
-            if (f.key instanceof PrivateName)
-                f.key.add(receiver, v);
-            else
-                createDataProperty(receiver, f.key, v);
-        };
-        const initialize = instanceFieldList.length === 0 && instancePrivateMethods.length === 0 ? null : (instance) => {
-            for (let i = 0; i < instancePrivateMethods.length; i++)
-                instancePrivateMethods[i].add(instance, undefined);
-            if (instanceFieldList.length === 0)
-                return;
-            const fieldEnv = instanceFi ? fieldFrame(instanceFi, classEnv, instance, proto) : null;
-            for (let i = 0; i < instanceFieldList.length; i++)
-                defineField(fieldEnv, instance, instanceFieldList[i]);
-        };
-        record.initialize = initialize;
-        record.home = proto;
-        if (writeInner)
-            writeInner(classEnv, C);
-        for (let i = 0; i < staticPrivateMethods.length; i++)
-            staticPrivateMethods[i].add(C, undefined);
-        const staticEnv = staticFi ? fieldFrame(staticFi, classEnv, C, C) : null;
-        for (let i = 0; i < staticWork.length; i++) {
-            const work = staticWork[i];
-            if ('block' in work) {
-                const fi = work.block;
-                if (fi.body)
-                    fi.body(fieldFrame(fi, classEnv, C, C));
-            }
-            else {
-                defineField(staticEnv, C, work.field);
-            }
-        }
-        return C;
-    };
-}
 /** The [parameter slot, body var slot] pairs of body vars that start with a parameter's value. */
 function parameterCopies(fs, varScope) {
-    const copies = [];
+    const copies = newSafeList();
     const bindings = varScope.bindingList();
     for (let i = 0; i < bindings.length; i++) {
         const b = bindings[i];
@@ -395,7 +64,7 @@ function parameterCopies(fs, varScope) {
 }
 /** The slots of `scope`'s bindings that start in their TDZ when it is entered (parameters, or the rest). */
 function tdzSlots(scope, params) {
-    const slots = [];
+    const slots = newSafeList();
     const bindings = scope.bindingList();
     for (let i = 0; i < bindings.length; i++) {
         const b = bindings[i];
@@ -410,21 +79,6 @@ function bindingSlot(scope, name) {
     if (!b)
         throw new Error(`interpreter: no binding ${name}`);
     return b.slot;
-}
-/** A key read and then written converts once, as the reference does. */
-function keyOnce(key) {
-    return typeof key === 'string' || typeof key === 'number' || typeof key === 'symbol' ? key : toPropertyKey(key);
-}
-/** `rest` with `first` before it. */
-function withFirst(first, rest) {
-    const out = new Array(rest.length + 1);
-    out[0] = first;
-    for (let i = 0; i < rest.length; i++)
-        out[i + 1] = rest[i];
-    return out;
-}
-function signalOf(value) {
-    return value instanceof Completion ? value : undefined;
 }
 export class Compiler {
     analysis;
@@ -550,7 +204,7 @@ export class Compiler {
     scopeEntry(scope, frame = false) {
         const tdz = tdzSlots(scope, false);
         const script = scope.fn.functionKind === 'script' && scope === scope.fn;
-        const functions = [];
+        const functions = newSafeList();
         const outer = this.enter(scope);
         for (let i = 0; i < scope.functions.length; i++) {
             const decl = scope.functions[i];
@@ -566,8 +220,7 @@ export class Compiler {
                 const f = functions[i];
                 const value = makeFunction(f.fi, env, undefined);
                 if (f.global !== null) {
-                    reflectDefineProperty(G, f.global, { value, writable: true, enumerable: true, configurable: false })
-                        || reflectSet(G, f.global, value);
+                    reflectDefineProperty(G, f.global, dataDescriptor(value, true, true, false)) || reflectSet(G, f.global, value);
                 }
                 else {
                     env[f.slot] = value;
@@ -576,12 +229,8 @@ export class Compiler {
             return env;
         };
         if (scope.materialized && !frame) {
-            const size = scope.size;
-            return (env) => {
-                const e = new Array(size);
-                e[0] = env;
-                return instantiate(e);
-            };
+            const template = frameTemplate(scope.size, []);
+            return (env) => instantiate(withElement(template, 0, env));
         }
         if (tdz.length === 0 && functions.length === 0)
             return null;
@@ -612,7 +261,7 @@ export class Compiler {
             unit: this.unit,
             reparse: { source: this.unit.source, module: this.unit.module, start: node.start + this.base, end: node.end + this.base, syntax, strict: outer.strict },
             outer,
-            options: { strict: outer.strict, method: fs.method, derived: fs.derived, ctor: shape === 'classBase' || shape === 'classDerived' },
+            options: { strict: outer.strict, method: fs.method, derived: fs.derived, ctor: shape === 'classBase' || shape === 'classDerived', unbound: false },
         });
         return fi;
     }
@@ -629,7 +278,6 @@ export class Compiler {
         this.scope = fs;
         this.shape = fi.shape;
         try {
-            fi.size = fs.size;
             fi.derived = fs.derived;
             if (fs.thisBinding)
                 fi.thisSlot = fs.thisBinding.slot;
@@ -642,13 +290,14 @@ export class Compiler {
             if (fs.funcBinding)
                 fi.funcSlot = fs.funcBinding.slot;
             if (everyItem(params, (p) => p.type === 'Identifier')) {
-                const slots = [];
+                const slots = newSafeList();
                 for (let i = 0; i < params.length; i++)
                     append(slots, this.declaredBinding(params[i]).slot);
-                fi.params = slots;
+                fi.params = listOf(slots);
+                fi.frame = frameTemplate(fs.size, []);
             }
             else {
-                fi.tdzSlots = tdzSlots(fs, true);
+                fi.frame = frameTemplate(fs.size, tdzSlots(fs, true));
                 fi.bindParams = this.paramBinder(params);
             }
             if (body.type !== 'BlockStatement') {
@@ -725,7 +374,7 @@ export class Compiler {
         return ref.binding;
     }
     paramBinder(params) {
-        const binders = [];
+        const binders = newSafeList();
         for (let i = 0; i < params.length; i++)
             append(binders, this.parameterBinder(params[i], i));
         return (env, args) => {
@@ -760,21 +409,20 @@ export class Compiler {
     /** Like named(), with the name known only when the code runs (a computed key). */
     namedAtRuntime(node) {
         if (!isAnonymousFunctionDefinition(node)) {
-            const c = this.expr(node).s;
-            return (env) => c(env);
+            const c = this.expr(node);
+            const cs = c.s;
+            const cg = c.g;
+            return { s: (env) => cs(env), g: cg === null ? null : safeGenerator(function* (env) { return yield* cg(env); }) };
         }
-        if (node.type === 'ClassExpression') {
-            const make = this.classMaker(node);
-            if (make.g !== null)
-                throw new UnsupportedSyntax('await in the heritage of a class named by a computed key');
-            return make.s;
-        }
+        // A class whose heritage or keys await or yield makes its constructor in the generator flavor.
+        if (node.type === 'ClassExpression')
+            return this.classMaker(node);
         const fi = this.functionInfo(node, '');
-        return (env, name) => makeFunction(fi, env, undefined, name);
+        return { s: (env, name) => makeFunction(fi, env, undefined, name), g: null };
     }
     // ── Statements ──
     statementList(list) {
-        const codes = [];
+        const codes = newSafeList();
         for (let j = 0; j < list.length; j++) {
             const s = list[j];
             const c = this.stmt(s, []);
@@ -862,11 +510,11 @@ export class Compiler {
                 return syncCode((env) => { throw as(env); });
             }
             case 'BreakStatement': {
-                const signal = node.label ? labeledSignal('break', node.label.name) : BREAK;
+                const signal = node.label ? new Completion('break', node.label.name, undefined) : BREAK;
                 return syncCode(() => signal);
             }
             case 'ContinueStatement': {
-                const signal = node.label ? labeledSignal('continue', node.label.name) : CONTINUE;
+                const signal = node.label ? new Completion('continue', node.label.name, undefined) : CONTINUE;
                 return syncCode(() => signal);
             }
             case 'LabeledStatement': return this.labeled(node.label.name, node.body, labels);
@@ -916,7 +564,9 @@ export class Compiler {
         return syncCode((env) => { write(env, read(env)); return undefined; });
     }
     blockStatement(node, body) {
-        const scope = this.analysis.scopeOf(node);
+        return this.blockIn(this.analysis.scopeOf(node), body);
+    }
+    blockIn(scope, body) {
         const entry = this.scopeEntry(scope);
         const outer = this.enter(scope);
         const list = this.statementList(body);
@@ -924,7 +574,7 @@ export class Compiler {
         return this.entered(entry, list);
     }
     variableDeclaration(node) {
-        const parts = [];
+        const parts = newSafeList();
         for (let i = 0; i < node.declarations.length; i++) {
             const d = node.declarations[i];
             if (!d.init) {
@@ -983,8 +633,8 @@ export class Compiler {
     }
     ifStatement(testNode, consequent, alternate) {
         const test = this.expr(testNode);
-        const then = this.stmt(consequent, []) ?? syncCode(() => undefined);
-        const otherwise = alternate ? this.stmt(alternate, []) ?? syncCode(() => undefined) : null;
+        const then = this.clause(consequent) ?? syncCode(() => undefined);
+        const otherwise = alternate ? this.clause(alternate) ?? syncCode(() => undefined) : null;
         if (test.g === null && then.g === null && (otherwise === null || otherwise.g === null)) {
             const t = test.s;
             const a = then.s;
@@ -1002,6 +652,15 @@ export class Compiler {
             return bg ? yield* bg(env) : undefined;
         });
     }
+    /** An if statement's clause: a function declaration there is a block of its own (Annex B.3.4, Analyzer.visitClause). */
+    clause(node) {
+        if (node.type !== 'FunctionDeclaration')
+            return this.stmt(node, []);
+        const block = this.analysis.clauseBlocks.get(node);
+        if (!block)
+            throw new Error('interpreter: an if clause declaration without its block');
+        return this.blockIn(block, [node]);
+    }
     labeled(label, body, labels) {
         const all = withLast(labels, label);
         const isLoop = body.type === 'ForStatement' || body.type === 'ForInStatement' || body.type === 'ForOfStatement'
@@ -1014,30 +673,26 @@ export class Compiler {
         if (isLoop)
             return inner;
         // A labeled non-loop statement ends normally on a break to its label.
-        const target = labeledSignal('break', label);
+        const ends = (s) => s instanceof Completion && s.kind === 'break' && s.label === label;
         const is = inner.s;
         const ig = inner.g;
         if (ig)
-            return genCode(function* (env) { const s = yield* ig(env); return s === target ? undefined : s; });
-        return syncCode((env) => { const s = is(env); return s === target ? undefined : s; });
+            return genCode(function* (env) { const s = yield* ig(env); return ends(s) ? undefined : s; });
+        return syncCode((env) => { const s = is(env); return ends(s) ? undefined : s; });
     }
     /**
      * How a loop treats its body's completion: continue with the next
      * iteration, stop normally, or hand the completion out.
      */
     loopControl(labels) {
-        const breaks = mapList(labels, (l) => labeledSignal('break', l));
-        const continues = mapList(labels, (l) => labeledSignal('continue', l));
         return (s) => {
             if (s === CONTINUE)
                 return 'next';
             if (s === BREAK)
                 return 'stop';
-            if (s.kind === 'continue' && contains(continues, s))
-                return 'next';
-            if (s.kind === 'break' && contains(breaks, s))
-                return 'stop';
-            return 'out';
+            if (s.label === null || !contains(labels, s.label))
+                return 'out';
+            return s.kind === 'continue' ? 'next' : s.kind === 'break' ? 'stop' : 'out';
         };
     }
     /** while, do-while, and for(;;) without per-iteration bindings. */
@@ -1232,7 +887,7 @@ export class Compiler {
                 const object = r(env);
                 if (object === null || object === undefined)
                     return undefined;
-                for (const key in Object(object)) {
+                for (const key in toObject(object)) {
                     const e = entry ? entry(env) : env;
                     bind(e, key);
                     const s = b(e);
@@ -1254,7 +909,7 @@ export class Compiler {
             const object = yield* rg(env);
             if (object === null || object === undefined)
                 return undefined;
-            for (const key in Object(object)) {
+            for (const key in toObject(object)) {
                 const e = entry ? entry(env) : env;
                 if (bindGen)
                     yield* bindGen(e, key);
@@ -1307,54 +962,83 @@ export class Compiler {
             const r = right.s;
             const b = body.s;
             return syncCode((env) => {
-                const subject = r(env);
-                for (const value of iterable(subject)) {
-                    const e = entry ? entry(env) : env;
-                    bind(e, value);
-                    const s = b(e);
+                const it = getIterator(r(env));
+                for (;;) {
+                    const value = it.step();
+                    if (it.done)
+                        return undefined;
+                    let s;
+                    try {
+                        const e = entry ? entry(env) : env;
+                        bind(e, value);
+                        s = b(e);
+                    }
+                    catch (error) {
+                        it.closeQuietly();
+                        throw error;
+                    }
                     if (s instanceof Completion) {
                         const c = control(s);
-                        if (c === 'stop')
-                            break;
-                        if (c === 'out')
-                            return s;
+                        if (c === 'next')
+                            continue;
+                        it.close();
+                        return c === 'stop' ? undefined : s;
                     }
                 }
-                return undefined;
             });
         }
         const rg = asGen(right);
         const bg = asGen(body);
         const bindGen = head.bindGen;
         return genCode(function* (env) {
-            const subject = yield* rg(env);
-            for (const value of iterable(subject)) {
-                const e = entry ? entry(env) : env;
-                if (bindGen)
-                    yield* bindGen(e, value);
-                else
-                    bind(e, value);
-                const s = yield* bg(e);
-                if (s instanceof Completion) {
-                    const c = control(s);
-                    if (c === 'stop')
-                        break;
-                    if (c === 'out')
-                        return s;
+            const it = getIterator(yield* rg(env));
+            // Whether leaving now must close the iterator: a generator's return()
+            // while suspended in the body leaves through `finally` alone.
+            let open = true;
+            try {
+                for (;;) {
+                    const value = it.step();
+                    if (it.done)
+                        return undefined;
+                    let s;
+                    try {
+                        const e = entry ? entry(env) : env;
+                        if (bindGen)
+                            yield* bindGen(e, value);
+                        else
+                            bind(e, value);
+                        s = yield* bg(e);
+                    }
+                    catch (error) {
+                        open = false;
+                        it.closeQuietly();
+                        throw error;
+                    }
+                    if (s instanceof Completion) {
+                        const c = control(s);
+                        if (c === 'next')
+                            continue;
+                        open = false;
+                        it.close();
+                        return c === 'stop' ? undefined : s;
+                    }
                 }
             }
-            return undefined;
+            finally {
+                if (open && !it.done)
+                    it.close();
+            }
         });
     }
     /** `await x` inside this function's generator body. */
     awaiter() {
         if (this.shape === 'asyncGenerator') {
-            return function* (x) {
+            return safeGenerator(function* (x) {
                 signalOperand(x);
                 return yield AWAIT;
-            };
+            });
         }
-        return function* (x) { return yield x; };
+        return safeGenerator(function* (x) { return yield x; });
     }
     forAwait(node, labels) {
         const control = this.loopControl(labels);
@@ -1388,48 +1072,72 @@ export class Compiler {
                 iterator = it;
             }
             const next = reflectGet(iterator, 'next');
-            for (;;) {
-                if (typeof next !== 'function')
-                    throw new TypeError('iterator.next is not a function');
-                const result = yield* awaitValue(reflectApply(next, iterator, []));
-                if (!isObject(result))
-                    throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
-                if (reflectGet(result, 'done'))
-                    return undefined;
-                const value = reflectGet(result, 'value');
-                let s;
-                try {
-                    const e = entry ? entry(env) : env;
-                    if (bindGen)
-                        yield* bindGen(e, value);
-                    else
-                        bind(e, value);
-                    s = yield* body(e);
-                }
-                catch (error) {
-                    // AsyncIteratorClose with a throw completion: the original error wins.
+            // Whether leaving now must close the iterator: an async generator's
+            // return() while suspended in the body leaves through `finally` alone.
+            let open = true;
+            try {
+                for (;;) {
+                    if (typeof next !== 'function') {
+                        open = false;
+                        throw new TypeError('iterator.next is not a function');
+                    }
+                    let result;
                     try {
-                        const ret = reflectGet(iterator, 'return');
-                        if (typeof ret === 'function')
-                            yield* awaitValue(reflectApply(ret, iterator, []));
+                        result = yield* awaitValue(reflectApply(next, iterator, []));
                     }
-                    catch { /* the body's error is what propagates */ }
-                    throw error;
-                }
-                if (s instanceof Completion) {
-                    const c = control(s);
-                    if (c === 'next')
-                        continue;
-                    const ret = reflectGet(iterator, 'return');
-                    if (ret !== undefined && ret !== null) {
-                        if (typeof ret !== 'function')
-                            throw new TypeError('iterator.return is not a function');
-                        const closed = yield* awaitValue(reflectApply(ret, iterator, []));
-                        if (!isObject(closed))
-                            throw new TypeError(`Iterator result ${stringOf(closed)} is not an object`);
+                    catch (error) {
+                        open = false;
+                        throw error;
                     }
-                    return c === 'stop' ? undefined : s;
+                    if (!isObject(result)) {
+                        open = false;
+                        throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
+                    }
+                    let value;
+                    try {
+                        if (reflectGet(result, 'done')) {
+                            open = false;
+                            return undefined;
+                        }
+                        value = reflectGet(result, 'value');
+                    }
+                    catch (error) {
+                        open = false;
+                        throw error;
+                    }
+                    let s;
+                    try {
+                        const e = entry ? entry(env) : env;
+                        if (bindGen)
+                            yield* bindGen(e, value);
+                        else
+                            bind(e, value);
+                        s = yield* body(e);
+                    }
+                    catch (error) {
+                        open = false;
+                        // AsyncIteratorClose with a throw completion: the original error wins.
+                        try {
+                            const ret = reflectGet(iterator, 'return');
+                            if (typeof ret === 'function')
+                                yield* awaitValue(reflectApply(ret, iterator, []));
+                        }
+                        catch { /* the body's error is what propagates */ }
+                        throw error;
+                    }
+                    if (s instanceof Completion) {
+                        const c = control(s);
+                        if (c === 'next')
+                            continue;
+                        open = false;
+                        yield* asyncIteratorClose(iterator, awaitValue);
+                        return c === 'stop' ? undefined : s;
+                    }
                 }
+            }
+            finally {
+                if (open)
+                    yield* asyncIteratorClose(iterator, awaitValue);
             }
         });
     }
@@ -1449,11 +1157,11 @@ export class Compiler {
             const run = asGen(body);
             return {
                 s: suspendedSync,
-                g: function* (env, error) {
+                g: safeGenerator(function* (env, error) {
                     const e = entry ? entry(env) : env;
                     yield* bindGen(e, error);
                     return signalOf(yield* run(e));
-                },
+                }),
             };
         }
         const bg = body.g;
@@ -1464,12 +1172,12 @@ export class Compiler {
                     bind(e, error);
                 return signalOf(bs(e));
             },
-            g: bg === null ? null : function* (env, error) {
+            g: bg === null ? null : safeGenerator(function* (env, error) {
                 const e = entry ? entry(env) : env;
                 if (bind)
                     bind(e, error);
                 return signalOf(yield* bg(e));
-            },
+            }),
         };
     }
     tryStatement(node) {
@@ -1514,7 +1222,10 @@ export class Compiler {
             });
         }
         const bg = asGen(block);
-        const hg = h === null ? null : h.g ?? ((env, error) => (function* () { return h.s(env, error); })());
+        const hs = h === null ? null : h.s;
+        const hg = h === null ? null : h.g ?? safeGenerator(function* (env, error) {
+            return hs === null ? undefined : hs(env, error);
+        });
         const fg = finalizer ? asGen(finalizer) : null;
         return genCode(function* (env) {
             let s;
@@ -1537,14 +1248,13 @@ export class Compiler {
         });
     }
     switchStatement(node, labels) {
-        const breakLabels = mapList(labels, (l) => labeledSignal('break', l));
         const discriminant = this.expr(node.discriminant);
         const scope = this.analysis.scopeOf(node);
         const entry = this.scopeEntry(scope);
         const outer = this.enter(scope);
         const cases = node.cases;
-        const tests = [];
-        const bodies = [];
+        const tests = newSafeList();
+        const bodies = newSafeList();
         let defaultIndex = -1;
         for (let i = 0; i < cases.length; i++) {
             const test = cases[i].test;
@@ -1559,7 +1269,7 @@ export class Compiler {
                 return undefined;
             if (s === BREAK)
                 return undefined;
-            if (s instanceof Completion && s.kind === 'break' && contains(breakLabels, s))
+            if (s instanceof Completion && s.kind === 'break' && s.label !== null && contains(labels, s.label))
                 return undefined;
             return s;
         };
@@ -1626,9 +1336,7 @@ export class Compiler {
         const enter = (env, target) => {
             if (target === null || target === undefined)
                 throw new TypeError('Cannot convert undefined or null to object');
-            const e = new Array(2);
-            e[0] = env;
-            e[1] = Object(target);
+            const e = [env, toObject(target)];
             return e;
         };
         if (object.g === null && body.g === null) {
@@ -1725,7 +1433,7 @@ export class Compiler {
     }
     /** Readers of the objects of the `with` statements between a reference and its binding, innermost first. */
     withObjects(ref) {
-        const readers = [];
+        const readers = newSafeList();
         for (let i = 0; i < ref.withs.length; i++)
             append(readers, this.slotReader(this.hops(ref.withs[i]), 1));
         return readers;
@@ -1873,12 +1581,12 @@ export class Compiler {
     }
     objectPatternBinder(pattern, init) {
         const hasRest = someItem(pattern.properties, (p) => p.type === 'RestElement');
-        const steps = [];
+        const steps = newSafeList();
         for (let i = 0; i < pattern.properties.length; i++)
             append(steps, this.objectPatternStep(pattern.properties[i], init));
         return (env, value) => {
             requireObjectCoercible(value);
-            const used = hasRest ? [] : null;
+            const used = hasRest ? newSafeList() : null;
             for (let i = 0; i < steps.length; i++)
                 steps[i](env, value, used);
         };
@@ -1914,7 +1622,7 @@ export class Compiler {
         return (env, source, used) => {
             const k = key(env);
             if (used !== null)
-                used[used.length] = k;
+                append(used, k);
             const set = member ? member(env) : null;
             let v = ops.get(source, k);
             if (v === undefined && dflt !== null)
@@ -1939,23 +1647,34 @@ export class Compiler {
         return { kind: 'one', bind: this.patternBinder(target, init), dflt, member: target.type === 'MemberExpression' ? this.memberTarget(target) : null };
     }
     arrayPatternBinder(pattern, init) {
-        const elements = [];
+        const elements = newSafeList();
         for (let i = 0; i < pattern.elements.length; i++)
             append(elements, this.arrayPatternElement(pattern.elements[i], init));
         return (env, value) => {
-            if (plainArray(value)) {
+            const method = iteratorMethod(value);
+            if (arrayIteration(value, method)) {
+                // The array's iterator, stepped by index: it is done once a step
+                // finds the index at the length, as that step reads it.
+                let done = false;
                 for (let i = 0; i < elements.length; i++) {
                     const el = elements[i];
-                    if (el.kind === 'skip')
+                    if (el.kind === 'skip') {
+                        if (!done && i >= value.length)
+                            done = true;
                         continue;
+                    }
                     // A member target's reference is evaluated before the value is read.
                     const set = el.member ? el.member(env) : null;
                     let v;
                     if (el.kind === 'rest') {
-                        v = arraySliceFrom(value, i);
+                        v = done ? [] : arraySliceFrom(value, i);
+                        done = true;
                     }
                     else {
-                        v = value[i];
+                        if (!done && i < value.length)
+                            v = value[i];
+                        else
+                            done = true;
                         if (v === undefined && el.dflt !== null)
                             v = el.dflt(env);
                     }
@@ -1963,22 +1682,22 @@ export class Compiler {
                         set(v);
                     else
                         el.bind(env, v);
-                    if (el.kind === 'rest')
-                        break;
                 }
+                if (!done)
+                    closeArrayIteration(value);
                 return;
             }
-            const it = getIterator(value);
+            const it = iteratorFrom(value, method);
             try {
                 for (let i = 0; i < elements.length; i++) {
                     const el = elements[i];
                     const set = el.kind !== 'skip' && el.member ? el.member(env) : null;
                     let v;
                     if (el.kind === 'rest') {
-                        const rest = [];
+                        const rest = newSafeList();
                         for (let x = it.step(); !it.done; x = it.step())
-                            rest[rest.length] = x;
-                        v = rest;
+                            append(rest, x);
+                        v = listOf(rest);
                     }
                     else if (!it.done) {
                         v = it.step();
@@ -1995,7 +1714,7 @@ export class Compiler {
             }
             catch (error) {
                 if (!it.done)
-                    closeQuietly(it);
+                    it.closeQuietly();
                 throw error;
             }
             if (!it.done)
@@ -2008,25 +1727,25 @@ export class Compiler {
         switch (pattern.type) {
             case 'Identifier': {
                 const bind = this.patternBinder(pattern, init);
-                return function* (env, value) { bind(env, value); };
+                return safeGenerator(function* (env, value) { bind(env, value); });
             }
             case 'MemberExpression': {
                 // A lone target (a for-of head): its reference is evaluated after the value.
                 const ref = this.memberTargetGen(pattern);
-                return function* (env, value) { (yield* ref(env))(value); };
+                return safeGenerator(function* (env, value) { (yield* ref(env))(value); });
             }
             case 'AssignmentPattern':
             case 'RestElement': {
                 const el = this.elementGen(pattern, init);
-                return function* (env, value) { yield* el.assign(env, yield* el.reference(env), value); };
+                return safeGenerator(function* (env, value) { yield* el.assign(env, yield* el.reference(env), value); });
             }
             case 'ObjectPattern': {
-                const steps = [];
+                const steps = newSafeList();
                 for (let i = 0; i < pattern.properties.length; i++)
                     append(steps, this.objectPatternStepGen(pattern.properties[i], init));
-                return function* (env, value) {
+                return safeGenerator(function* (env, value) {
                     requireObjectCoercible(value);
-                    const used = [];
+                    const used = newSafeList();
                     for (let i = 0; i < steps.length; i++) {
                         const { key, el } = steps[i];
                         if (key === null) {
@@ -2037,19 +1756,19 @@ export class Compiler {
                             continue;
                         }
                         const k = yield* key(env);
-                        used[used.length] = k;
+                        append(used, k);
                         const target = yield* el.reference(env);
                         yield* el.assign(env, target, ops.get(value, k));
                     }
-                };
+                });
             }
             case 'ArrayPattern': {
-                const elements = [];
+                const elements = newSafeList();
                 for (let i = 0; i < pattern.elements.length; i++) {
                     const e = pattern.elements[i];
                     append(elements, e === null ? null : { rest: e.type === 'RestElement', el: this.elementGen(e.type === 'RestElement' ? e.argument : e, init) });
                 }
-                return function* (env, value) {
+                return safeGenerator(function* (env, value) {
                     const it = getIterator(value);
                     // A generator's return() while suspended in here is a return
                     // completion: it closes the iterator, and return()'s error wins.
@@ -2061,10 +1780,10 @@ export class Compiler {
                             const target = item ? yield* item.el.reference(env) : null;
                             let v;
                             if (item && item.rest) {
-                                const rest = [];
+                                const rest = newSafeList();
                                 for (let x = it.step(); !it.done; x = it.step())
-                                    rest[rest.length] = x;
-                                v = rest;
+                                    append(rest, x);
+                                v = listOf(rest);
                             }
                             else if (!it.done) {
                                 v = it.step();
@@ -2077,7 +1796,7 @@ export class Compiler {
                     catch (error) {
                         threw = true;
                         if (!it.done)
-                            closeQuietly(it);
+                            it.closeQuietly();
                         throw error;
                     }
                     finally {
@@ -2086,7 +1805,7 @@ export class Compiler {
                     }
                     if (!it.done)
                         it.close();
-                };
+                });
             }
         }
     }
@@ -2096,10 +1815,10 @@ export class Compiler {
             return { key: null, el: this.elementGen(p.argument, init) };
         if (p.computed) {
             const k = asGen(this.expr(p.key));
-            return { key: function* (env) { return toPropertyKey(yield* k(env)); }, el: this.elementGen(p.value, init) };
+            return { key: safeGenerator(function* (env) { return toPropertyKey(yield* k(env)); }), el: this.elementGen(p.value, init) };
         }
         const name = this.staticKey(p.key);
-        return { key: function* () { return name; }, el: this.elementGen(p.value, init) };
+        return { key: safeGenerator(function* () { return name; }), el: this.elementGen(p.value, init) };
     }
     /**
      * One element of a suspending pattern: a member target's reference,
@@ -2115,27 +1834,27 @@ export class Compiler {
             const ref = this.memberTargetGen(target);
             return {
                 reference: ref,
-                *assign(env, set, value) {
+                assign: safeGenerator(function* (env, set, value) {
                     const v = value === undefined && dflt !== null ? yield* dflt(env) : value;
                     if (set === null)
                         throw new Error('interpreter: member target without a reference');
                     set(v);
-                },
+                }),
             };
         }
         const bind = this.patternBinderGen(target, init);
         return {
-            *reference() { return null; },
-            *assign(env, _set, value) {
+            reference: safeGenerator(function* () { return null; }),
+            assign: safeGenerator(function* (env, _set, value) {
                 yield* bind(env, value === undefined && dflt !== null ? yield* dflt(env) : value);
-            },
+            }),
         };
     }
     /** A member assignment target whose object or key awaits or yields: its setter, once its reference is evaluated. */
     memberTargetGen(node) {
         if (!this.suspends(node)) {
             const target = this.memberTarget(node);
-            return function* (env) { return target(env); };
+            return safeGenerator(function* (env) { return target(env); });
         }
         if (node.object.type === 'Super')
             throw new UnsupportedSyntax('await or yield inside a super member key of a destructuring target');
@@ -2144,19 +1863,19 @@ export class Compiler {
         const og = asGen(this.expr(node.object));
         if (node.property.type === 'PrivateIdentifier') {
             const name = this.privateName(node.property);
-            return function* (env) {
+            return safeGenerator(function* (env) {
                 const o = yield* og(env);
                 const pn = name(env);
                 return (value) => pn.set(o, value);
-            };
+            });
         }
         const kg = node.computed ? asGen(this.expr(node.property)) : null;
         const name = !node.computed && node.property.type === 'Identifier' ? node.property.name : '';
-        return function* (env) {
+        return safeGenerator(function* (env) {
             const o = yield* og(env);
             const k = kg ? yield* kg(env) : name;
             return (value) => set(o, k, value);
-        };
+        });
     }
     staticKey(key) {
         if (key.type === 'Identifier')
@@ -2251,7 +1970,7 @@ export class Compiler {
     }
     /** Each expression's code, in order. */
     exprs(nodes) {
-        const codes = [];
+        const codes = newSafeList();
         for (let i = 0; i < nodes.length; i++)
             append(codes, this.expr(nodes[i]));
         return codes;
@@ -2261,14 +1980,14 @@ export class Compiler {
         return node.type === 'SpreadElement' ? { spread: true, code: this.expr(node.argument) } : { spread: false, code: this.expr(node) };
     }
     argumentParts(args) {
-        const parts = [];
+        const parts = newSafeList();
         for (let i = 0; i < args.length; i++)
             append(parts, this.listPart(args[i]));
         return parts;
     }
     /** An array literal's parts: null for a hole. */
     elementParts(elements) {
-        const parts = [];
+        const parts = newSafeList();
         for (let i = 0; i < elements.length; i++) {
             const e = elements[i];
             append(parts, e === null ? null : this.listPart(e));
@@ -2339,7 +2058,7 @@ export class Compiler {
         const options = node.options ? this.expr(node.options) : null;
         const run = (spec, opts) => {
             if (!load)
-                return Promise.reject(new TypeError('import() is not supported here'));
+                return promiseReject(new TypeError('import() is not supported here'));
             return load(spec, opts);
         };
         if (specifier.g === null && (options === null || options.g === null)) {
@@ -2385,9 +2104,10 @@ export class Compiler {
                     return yield DELEGATE;
                 });
             }
+            const ops = operators();
             return genCode(function* (env) {
                 const v = ag ? yield* ag(env) : as ? as(env) : undefined;
-                return yield* iterable(v);
+                return yield* ops.delegate(v);
             });
         }
         if (async) {
@@ -2503,6 +2223,18 @@ export class Compiler {
             target = target.expression;
         if (target.type === 'ChainExpression' && target.expression.type === 'MemberExpression') {
             const m = target.expression;
+            if (this.suspends(m)) {
+                const object = this.chainGen(m.object);
+                const optional = m.optional;
+                const key = m.computed ? asGen(this.expr(m.property)) : null;
+                const name = !m.computed && m.property.type === 'Identifier' ? m.property.name : '';
+                return genCode(function* (env) {
+                    const o = yield* object(env);
+                    if (o === SHORT || (optional && (o === null || o === undefined)))
+                        return true;
+                    return remove(o, key ? yield* key(env) : name);
+                });
+            }
             const object = this.chainObject(m);
             const key = this.memberKey(m);
             return syncCode((env) => {
@@ -2521,6 +2253,14 @@ export class Compiler {
                 });
             }
             const object = this.expr(target.object);
+            if (target.computed && this.suspends(target.property)) {
+                const og = asGen(object);
+                const kg = asGen(this.expr(target.property));
+                return genCode(function* (env) {
+                    const o = yield* og(env);
+                    return remove(o, yield* kg(env));
+                });
+            }
             const key = this.memberKey(target);
             if (object.g === null) {
                 const os = object.s;
@@ -2823,14 +2563,14 @@ export class Compiler {
             const key = node.computed && node.property.type !== 'PrivateIdentifier' ? asGen(this.expr(node.property)) : null;
             const name = !node.computed && node.property.type === 'Identifier' ? node.property.name : '';
             const privateName = node.property.type === 'PrivateIdentifier' ? this.privateName(node.property) : null;
-            return function* (env) {
+            return safeGenerator(function* (env) {
                 const o = yield* object(env);
                 if (o === SHORT || (optional && (o === null || o === undefined)))
                     return SHORT;
                 if (privateName)
                     return privateName(env).get(o);
                 return ops.get(o, key ? yield* key(env) : name);
-            };
+            });
         }
         if (node.type === 'CallExpression' && node.callee.type !== 'Super') {
             const callee = node.callee;
@@ -2843,7 +2583,7 @@ export class Compiler {
                 const key = callee.computed && callee.property.type !== 'PrivateIdentifier' ? asGen(this.expr(callee.property)) : null;
                 const name = !callee.computed && callee.property.type === 'Identifier' ? callee.property.name : '';
                 const privateName = callee.property.type === 'PrivateIdentifier' ? this.privateName(callee.property) : null;
-                return function* (env) {
+                return safeGenerator(function* (env) {
                     const o = yield* object(env);
                     if (o === SHORT || (memberOptional && (o === null || o === undefined)))
                         return SHORT;
@@ -2851,15 +2591,15 @@ export class Compiler {
                     if (optional && (fn === null || fn === undefined))
                         return SHORT;
                     return callValue(fn, o, yield* args(env), text);
-                };
+                });
             }
             const fnCode = this.chainGen(callee);
-            return function* (env) {
+            return safeGenerator(function* (env) {
                 const fn = yield* fnCode(env);
                 if (fn === SHORT || (optional && (fn === null || fn === undefined)))
                     return SHORT;
                 return callValue(fn, undefined, yield* args(env), text);
-            };
+            });
         }
         return asGen(this.expr(node));
     }
@@ -3009,41 +2749,42 @@ export class Compiler {
                         const a = fns[0], b = fns[1], c = fns[2];
                         return syncCode((env) => [a(env), b(env), c(env)]);
                     }
-                    default: return syncCode((env) => {
-                        const out = new Array(fns.length);
-                        for (let i = 0; i < fns.length; i++)
-                            out[i] = fns[i](env);
-                        return out;
-                    });
+                    default: {
+                        const template = newList(fns.length);
+                        return syncCode((env) => {
+                            const out = copyList(template);
+                            for (let i = 0; i < fns.length; i++)
+                                out[i] = fns[i](env);
+                            return out;
+                        });
+                    }
                 }
             }
             const spreads = mapList(parts, (p) => p.spread);
             return syncCode((env) => {
-                const out = [];
+                const out = newSafeList();
                 for (let i = 0; i < fns.length; i++) {
                     const v = fns[i](env);
                     if (spreads[i])
-                        for (const x of iterable(v))
-                            out[out.length] = x;
+                        spreadInto(out, v);
                     else
-                        out[out.length] = v;
+                        append(out, v);
                 }
-                return out;
+                return listOf(out);
             });
         }
         const gens = mapList(parts, (p) => ({ spread: p.spread, g: asGen(p.code) }));
         return genCode(function* (env) {
-            const out = [];
+            const out = newSafeList();
             for (let i = 0; i < gens.length; i++) {
                 const p = gens[i];
                 const v = yield* p.g(env);
                 if (p.spread)
-                    for (const x of iterable(v))
-                        out[out.length] = x;
+                    spreadInto(out, v);
                 else
-                    out[out.length] = v;
+                    append(out, v);
             }
-            return out;
+            return listOf(out);
         });
     }
     /** Whether no argument spreads or suspends. */
@@ -3055,7 +2796,7 @@ export class Compiler {
     }
     /** The arguments' values, for a list plainArguments accepts. */
     argumentValues(args) {
-        const fns = [];
+        const fns = newSafeList();
         for (let i = 0; i < args.length; i++) {
             const a = args[i];
             append(fns, a.type === 'SpreadElement' ? suspendedSync : this.expr(a).s);
@@ -3080,19 +2821,20 @@ export class Compiler {
                     throw new TypeError(`${text} is not a function`);
                 return f;
             };
+            // The callee is read, then the arguments evaluated, then the callee checked.
             switch (fns.length) {
                 case 0: return syncCode((env) => check(read(env))());
                 case 1: {
                     const x = fns[0];
-                    return syncCode((env) => { const f = check(read(env)); return f(x(env)); });
+                    return syncCode((env) => { const f = read(env); const a = x(env); return check(f)(a); });
                 }
                 case 2: {
                     const x = fns[0], y = fns[1];
-                    return syncCode((env) => { const f = check(read(env)); return f(x(env), y(env)); });
+                    return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); return check(f)(a, b); });
                 }
                 default: {
                     const x = fns[0], y = fns[1], z = fns[2];
-                    return syncCode((env) => { const f = check(read(env)); return f(x(env), y(env), z(env)); });
+                    return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); const c = z(env); return check(f)(a, b, c); });
                 }
             }
         }
@@ -3260,85 +3002,92 @@ export class Compiler {
                         const a = fns[0], b = fns[1], c = fns[2], d = fns[3];
                         return syncCode((env) => [a(env), b(env), c(env), d(env)]);
                     }
-                    default: return syncCode((env) => {
-                        const out = new Array(fns.length);
-                        for (let i = 0; i < fns.length; i++)
-                            out[i] = fns[i](env);
-                        return out;
-                    });
+                    default: {
+                        const template = newList(fns.length);
+                        return syncCode((env) => {
+                            const out = copyList(template);
+                            for (let i = 0; i < fns.length; i++)
+                                out[i] = fns[i](env);
+                            return out;
+                        });
+                    }
                 }
             }
             const items = mapList(parts, (p) => (p === null ? null : { spread: p.spread, f: p.code.s }));
             return syncCode((env) => {
-                const out = [];
+                const out = newSafeList();
+                const holes = newSafeList();
                 for (let i = 0; i < items.length; i++) {
                     const item = items[i];
-                    if (item === null)
+                    if (item === null) {
+                        append(holes, out.length);
                         out.length++;
+                    }
                     else if (item.spread)
-                        for (const v of iterable(item.f(env)))
-                            out[out.length] = v;
+                        spreadInto(out, item.f(env));
                     else
-                        out[out.length] = item.f(env);
+                        append(out, item.f(env));
                 }
-                return out;
+                return arrayWithHoles(out, holes);
             });
         }
         const items = mapList(parts, (p) => (p === null ? null : { spread: p.spread, g: asGen(p.code) }));
         return genCode(function* (env) {
-            const out = [];
+            const out = newSafeList();
+            const holes = newSafeList();
             for (let i = 0; i < items.length; i++) {
                 const item = items[i];
                 if (item === null) {
+                    append(holes, out.length);
                     out.length++;
                     continue;
                 }
                 const v = yield* item.g(env);
                 if (item.spread)
-                    for (const x of iterable(v))
-                        out[out.length] = x;
+                    spreadInto(out, v);
                 else
-                    out[out.length] = v;
+                    append(out, v);
             }
-            return out;
+            return arrayWithHoles(out, holes);
         });
     }
     /** One property of an object literal, compiled. */
     propertyPart(p) {
         if (p.type === 'SpreadElement')
             return { kind: 'spread', value: this.expr(p.argument) };
-        const key = p.computed ? { computed: this.expr(p.key) } : { static: this.staticKey(p.key) };
-        if (!p.computed && !p.shorthand && !p.method && p.kind === 'init' && 'static' in key && key.static === '__proto__') {
+        const key = p.computed ? { kind: 'computed', computed: this.expr(p.key) } : { kind: 'static', static: this.staticKey(p.key) };
+        if (!p.computed && !p.shorthand && !p.method && p.kind === 'init' && key.kind === 'static' && key.static === '__proto__') {
             return { kind: 'proto', value: this.expr(p.value) };
         }
         if (p.kind !== 'init' || p.method) {
             if (p.value.type !== 'FunctionExpression')
                 throw new Error('interpreter: method without a function');
-            const name = 'static' in key ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
+            const name = key.kind === 'static' ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
             // A method's source text is its whole definition, key included.
             return { kind: p.kind === 'init' ? 'method' : p.kind, key, fi: this.functionInfo(p.value, name, undefined, this.sourceOf(p.start, p.value.end)) };
         }
-        if ('static' in key)
+        if (key.kind === 'static')
             return { kind: 'data', key, value: this.named(p.value, functionName(key.static)), named: null };
         if (isAnonymousFunctionDefinition(p.value))
             return { kind: 'data', key, value: null, named: this.namedAtRuntime(p.value) };
         return { kind: 'data', key, value: this.expr(p.value), named: null };
     }
     objectExpr(node) {
-        const parts = [];
+        const parts = newSafeList();
         for (let i = 0; i < node.properties.length; i++)
             append(parts, this.propertyPart(node.properties[i]));
         const suspends = someItem(parts, (p) => ((p.kind === 'spread' || p.kind === 'proto') && p.value.g !== null)
-            || ((p.kind === 'data' || p.kind === 'method' || p.kind === 'get' || p.kind === 'set') && 'computed' in p.key && p.key.computed.g !== null)
-            || (p.kind === 'data' && p.value !== null && p.value.g !== null));
+            || ((p.kind === 'data' || p.kind === 'method' || p.kind === 'get' || p.kind === 'set') && p.key.kind === 'computed' && p.key.computed.g !== null)
+            || (p.kind === 'data' && p.value !== null && p.value.g !== null)
+            || (p.kind === 'data' && p.named !== null && p.named.g !== null));
         // Static keys and plain values only: a template copied with own data
         // properties (define semantics), then filled in.
-        if (!suspends && everyItem(parts, (p) => p.kind === 'data' && 'static' in p.key || p.kind === 'method' && 'static' in p.key || p.kind === 'proto')) {
+        if (!suspends && everyItem(parts, (p) => p.kind === 'data' && p.key.kind === 'static' || p.kind === 'method' && p.key.kind === 'static' || p.kind === 'proto')) {
             const template = {};
             const seen = new SafeSet();
             for (let j = 0; j < parts.length; j++) {
                 const p = parts[j];
-                if ((p.kind === 'data' || p.kind === 'method') && 'static' in p.key && !seen.has(p.key.static)) {
+                if ((p.kind === 'data' || p.kind === 'method') && p.key.kind === 'static' && !seen.has(p.key.static)) {
                     seen.add(p.key.static);
                     createDataProperty(template, p.key.static, undefined);
                 }
@@ -3347,7 +3096,7 @@ export class Compiler {
             if (everyItem(parts, (p) => p.kind === 'data')) {
                 if (parts.length === 0)
                     return syncCode(() => ({}));
-                const keys = mapList(parts, (p) => (p.kind === 'data' && 'static' in p.key ? p.key.static : ''));
+                const keys = mapList(parts, (p) => (p.kind === 'data' && p.key.kind === 'static' ? p.key.static : ''));
                 const values = mapList(parts, (p) => (p.kind === 'data' && p.value !== null ? p.value.s : suspendedSync));
                 return syncCode((env) => {
                     const o = { ...template };
@@ -3359,9 +3108,9 @@ export class Compiler {
             const fills = mapList(parts, (p) => {
                 if (p.kind === 'proto')
                     return { proto: p.value.s, key: '', value: null, fi: null };
-                if (p.kind === 'data' && 'static' in p.key && p.value !== null)
+                if (p.kind === 'data' && p.key.kind === 'static' && p.value !== null)
                     return { proto: null, key: p.key.static, value: p.value.s, fi: null };
-                if (p.kind === 'method' && 'static' in p.key)
+                if (p.kind === 'method' && p.key.kind === 'static')
                     return { proto: null, key: p.key.static, value: null, fi: p.fi };
                 throw new Error('interpreter: object template');
             });
@@ -3384,13 +3133,13 @@ export class Compiler {
                 return o;
             });
         }
-        const keyOf = (key, env) => ('static' in key ? key.static : toPropertyKey(key.computed.s(env)));
-        function* keyOfGen(key, env) {
-            if ('static' in key)
+        const keyOf = (key, env) => (key.kind === 'static' ? key.static : toPropertyKey(key.computed.s(env)));
+        const keyOfGen = safeGenerator(function* (key, env) {
+            if (key.kind === 'static')
                 return key.static;
             const g = key.computed.g;
             return toPropertyKey(g ? yield* g(env) : key.computed.s(env));
-        }
+        });
         const apply = (o, p, k, value, env) => {
             switch (p.kind) {
                 case 'spread':
@@ -3404,13 +3153,13 @@ export class Compiler {
                     createDataProperty(o, k, value);
                     return;
                 case 'method': {
-                    const fn = makeFunction(p.fi, env, o, 'computed' in p.key ? functionName(k) : p.fi.name);
+                    const fn = makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k) : p.fi.name);
                     createDataProperty(o, k, fn);
                     return;
                 }
                 case 'get':
                 case 'set': {
-                    const fn = makeFunction(p.fi, env, o, 'computed' in p.key ? functionName(k, p.kind) : p.fi.name);
+                    const fn = makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k, p.kind) : p.fi.name);
                     defineAccessor(o, k, p.kind, fn, true);
                     return;
                 }
@@ -3427,7 +3176,7 @@ export class Compiler {
                     }
                     const k = keyOf(p.key, env);
                     if (p.kind === 'data') {
-                        const v = p.value !== null ? p.value.s(env) : p.named !== null ? p.named(env, functionName(k)) : undefined;
+                        const v = p.value !== null ? p.value.s(env) : p.named !== null ? p.named.s(env, functionName(k)) : undefined;
                         apply(o, p, k, v, env);
                     }
                     else {
@@ -3454,7 +3203,8 @@ export class Compiler {
                         v = g ? yield* g(env) : p.value.s(env);
                     }
                     else if (p.named !== null) {
-                        v = p.named(env, functionName(k));
+                        const g = p.named.g;
+                        v = g ? yield* g(env, functionName(k)) : p.named.s(env, functionName(k));
                     }
                     apply(o, p, k, v, env);
                 }
@@ -3489,7 +3239,7 @@ export class Compiler {
         const named = left.type === 'Identifier' && node.start === left.start && (operator === '=' || logical);
         const right = named && left.type === 'Identifier' ? this.named(node.right, left.name) : this.expr(node.right);
         const op = operator === '=' || logical ? null : binaryOperator(stringSlice(operator, 0, -1), ops);
-        const shortCircuit = (v) => (operator === '&&=' ? !v : operator === '||=' ? Boolean(v) : v !== null && v !== undefined);
+        const shortCircuit = (v) => (operator === '&&=' ? !v : operator === '||=' ? !!v : v !== null && v !== undefined);
         const rs = right.s;
         // The common targets, without a reference object: a binding, or a member with a plain object expression.
         if (right.g === null && left.type === 'Identifier') {
@@ -3639,7 +3389,7 @@ export class Compiler {
             const os = object.s;
             const og = object.g;
             const make = (o, pn) => ({ get: () => pn.get(o), set: (v) => pn.set(o, v) });
-            return { s: (env) => make(os(env), name(env)), g: og ? function* (env) { return make(yield* og(env), name(env)); } : null };
+            return { s: (env) => make(os(env), name(env)), g: og ? safeGenerator(function* (env) { return make(yield* og(env), name(env)); }) : null };
         }
         const key = node.computed ? this.expr(node.property) : null;
         const staticName = !node.computed && node.property.type === 'Identifier' ? node.property.name : '';
@@ -3660,7 +3410,7 @@ export class Compiler {
                     const o = os(env);
                     return { get: () => ops.get(o, staticName), set: (v) => set(o, staticName, v) };
                 },
-                g: og ? function* (env) { const o = yield* og(env); return { get: () => ops.get(o, staticName), set: (v) => set(o, staticName, v) }; } : null,
+                g: og ? safeGenerator(function* (env) { const o = yield* og(env); return { get: () => ops.get(o, staticName), set: (v) => set(o, staticName, v) }; }) : null,
             };
         }
         if (object.g === null && key.g === null) {
@@ -3774,7 +3524,7 @@ export class Compiler {
     /** What defining a class does, compiled: its constructor, elements and private names (classDefiner runs it). */
     classPlan(node, instanceFields, staticFields, classScope) {
         const body = node.body;
-        const derived = Boolean(node.superClass);
+        const derived = !!node.superClass;
         const ctorIndex = indexWhere(body.body, (m) => m.type === 'MethodDefinition' && m.kind === 'constructor');
         const ctorMember = ctorIndex < 0 ? null : body.body[ctorIndex];
         const ctorNode = ctorMember !== null && ctorMember.type === 'MethodDefinition' ? ctorMember : null;
@@ -3790,9 +3540,9 @@ export class Compiler {
         }
         const innerBinding = node.id ? classScope.bindings.get(node.id.name) ?? null : null;
         const writeInner = innerBinding ? this.slotWriter(0, innerBinding.slot) : null;
-        const computedKeys = [];
-        const elements = [];
-        const privateNames = [];
+        const computedKeys = newSafeList();
+        const elements = newSafeList();
+        const privateNames = newSafeList();
         const declaredPrivate = new SafeSet();
         for (let j = 0; j < body.body.length; j++) {
             const member = body.body[j];
@@ -3813,16 +3563,16 @@ export class Compiler {
                     declaredPrivate.add(pname);
                     append(privateNames, { slot: binding.slot, kind: member.type === 'PropertyDefinition' ? 'field' : member.kind === 'method' ? 'method' : 'accessor', description: pname });
                 }
-                key = { private: this.privateName(member.key) };
+                key = { kind: 'private', private: this.privateName(member.key) };
                 staticName = pname;
             }
             else if (member.computed) {
-                key = { computed: computedKeys.length };
+                key = { kind: 'computed', computed: computedKeys.length };
                 append(computedKeys, this.expr(member.key));
             }
             else {
                 const k = this.staticKey(member.key);
-                key = { static: k };
+                key = { kind: 'static', static: k };
                 staticName = functionName(k);
             }
             if (member.type === 'MethodDefinition') {
@@ -3840,10 +3590,11 @@ export class Compiler {
                 if (!fieldScope)
                     throw new Error('interpreter: field without a scope');
                 const outer = this.enterFunction(fieldScope, 'method');
+                // A field initializer cannot await or yield (an early error), so its code is the plain flavor.
                 if (staticName !== null)
                     value = this.named(member.value, staticName).s;
                 else
-                    named = this.namedAtRuntime(member.value);
+                    named = this.namedAtRuntime(member.value).s;
                 this.leave(outer);
             }
             append(elements, { kind: 'field', isStatic: member.static, key, value, named });
@@ -3872,7 +3623,7 @@ export class Compiler {
     /** The frame layout of a class's field initializer scope. */
     fieldInfo(fs) {
         const fi = new FunctionInfo('method', '', 0, true, '');
-        fi.size = fs.size;
+        fi.frame = frameTemplate(fs.size, []);
         if (fs.thisBinding)
             fi.thisSlot = fs.thisBinding.slot;
         if (fs.homeBinding)
@@ -3883,7 +3634,7 @@ export class Compiler {
         const fs = this.analysis.functionScopeOf(block);
         const fi = new FunctionInfo('method', '', 0, true, '');
         const outer = this.enterFunction(fs, 'method');
-        fi.size = fs.size;
+        fi.frame = frameTemplate(fs.size, []);
         if (fs.thisBinding)
             fi.thisSlot = fs.thisBinding.slot;
         if (fs.homeBinding)
@@ -3897,22 +3648,8 @@ export class Compiler {
     /** A program's top level (module or script), as a body over its root environment. */
     programBody(program, root) {
         const entry = this.scopeEntry(root, true);
-        const globals = root.globalVars;
-        let list;
-        if (root.functionKind === 'module') {
-            const saved = this.shape;
-            this.shape = 'async';
-            try {
-                list = this.statementList(program.body);
-            }
-            finally {
-                this.shape = saved;
-            }
-        }
-        else {
-            list = this.statementList(program.body);
-        }
-        const body = this.entered(entry, list);
+        const globals = listOf(root.globalVars);
+        const body = this.entered(entry, this.statementList(program.body));
         if (globals.length === 0)
             return body;
         // A script's vars are properties of the global object, created before it runs.
@@ -3920,7 +3657,7 @@ export class Compiler {
             for (let i = 0; i < globals.length; i++) {
                 const name = globals[i];
                 if (!objectHasOwn(G, name))
-                    reflectDefineProperty(G, name, { value: undefined, writable: true, enumerable: true, configurable: false });
+                    reflectDefineProperty(G, name, dataDescriptor(undefined, true, true, false));
             }
             return env;
         };
@@ -3929,15 +3666,15 @@ export class Compiler {
     /** A CommonJS body: a function of the wrapper's parameters. */
     commonJsFunction(program, root, params) {
         const fi = new FunctionInfo('plain', '', params.length, root.strict, this.unit.source);
-        fi.size = root.size;
+        fi.frame = frameTemplate(root.size, []);
         if (root.thisBinding)
             fi.thisSlot = root.thisBinding.slot;
         if (root.argumentsBinding)
             fi.argumentsSlot = root.argumentsBinding.slot;
-        const slots = [];
+        const slots = newSafeList();
         for (let i = 0; i < params.length; i++)
             append(slots, bindingSlot(root, params[i]));
-        fi.params = slots;
+        fi.params = listOf(slots);
         const code = this.programBody(program, root);
         if (code.g !== null)
             throw new UnsupportedSyntax('await at the top level of a CommonJS module');
@@ -3954,27 +3691,15 @@ export class Compiler {
      * import is esbuild's __toESM of it. With top-level await, the cell
      * returns the promise of the body.
      */
-    moduleCell(program, root) {
-        const ops = operators();
-        const exportsSlot = bindingSlot(root, '%exports');
-        const requireSlot = bindingSlot(root, '%require');
-        const moduleSlot = bindingSlot(root, '%module');
-        const filenameSlot = bindingSlot(root, '%filename');
-        const dirnameSlot = bindingSlot(root, '%dirname');
-        const loads = [];
-        const getters = [];
-        const starSources = [];
-        const sourceOf = (node) => {
-            if (typeof node.value !== 'string')
-                throw new Error('interpreter: module specifier');
-            return node.value;
-        };
-        const exportedName = (node) => (node.type === 'Identifier' ? node.name : stringOf(node.value));
+    /** A module's plan (modules.ts): its imports and exports, its instantiation, its statements. */
+    modulePlan(program, root) {
+        const imports = newSafeList();
+        const exports = newSafeList();
+        const stars = newSafeList();
         for (let n = 0; n < program.body.length; n++) {
             const statement = program.body[n];
             if (statement.type === 'ImportDeclaration') {
-                const source = sourceOf(statement.source);
-                const slots = [];
+                const bindings = newSafeList();
                 for (let k = 0; k < statement.specifiers.length; k++) {
                     const spec = statement.specifiers[k];
                     const binding = root.bindings.get(spec.local.name);
@@ -3986,126 +3711,81 @@ export class Compiler {
                         this.unit.imports.set(binding, { kind: 'namespace', name: '*' });
                     else
                         this.unit.imports.set(binding, { kind: 'named', name: exportedName(spec.imported) });
-                    append(slots, { slot: binding.slot, namespace: spec.type === 'ImportNamespaceSpecifier' });
+                    append(bindings, { slot: binding.slot, namespace: spec.type === 'ImportNamespaceSpecifier' });
                 }
-                append(loads, (env, require) => {
-                    const m = require(source);
-                    for (let i = 0; i < slots.length; i++)
-                        env[slots[i].slot] = slots[i].namespace ? toESM(m) : m;
-                });
+                append(imports, { source: specifierOf(statement.source), slot: null, bindings: listOf(bindings) });
             }
             else if (statement.type === 'ExportAllDeclaration') {
-                const source = sourceOf(statement.source);
                 const slot = root.size++;
-                append(loads, (env, require) => { env[slot] = require(source); });
-                if (statement.exported) {
-                    let namespace;
-                    let made = false;
-                    append(getters, [exportedName(statement.exported), (env) => {
-                            if (!made) {
-                                namespace = toESM(env[slot]);
-                                made = true;
-                            }
-                            return namespace;
-                        }]);
-                }
-                else {
-                    append(starSources, (env) => env[slot]);
-                }
+                append(imports, { source: specifierOf(statement.source), slot, bindings: [] });
+                if (statement.exported)
+                    append(exports, { name: exportedName(statement.exported), read: { kind: 'namespace', slot } });
+                else
+                    append(stars, slot);
             }
-            else if (statement.type === 'ExportNamedDeclaration') {
-                if (statement.source) {
-                    const source = sourceOf(statement.source);
-                    const slot = root.size++;
-                    append(loads, (env, require) => { env[slot] = require(source); });
-                    for (let k = 0; k < statement.specifiers.length; k++) {
-                        const spec = statement.specifiers[k];
-                        const local = exportedName(spec.local);
-                        append(getters, [exportedName(spec.exported), local === 'default'
-                                ? (env) => {
-                                    const m = env[slot];
-                                    return isObject(m) && reflectGet(m, '__esModule') ? ops.get(m, 'default') : m;
-                                }
-                                : (env) => ops.get(env[slot], local)]);
-                    }
+            else if (statement.type === 'ExportNamedDeclaration' && statement.source) {
+                const slot = root.size++;
+                append(imports, { source: specifierOf(statement.source), slot, bindings: [] });
+                for (let k = 0; k < statement.specifiers.length; k++) {
+                    const spec = statement.specifiers[k];
+                    append(exports, { name: exportedName(spec.exported), read: { kind: 'reexport', slot, name: exportedName(spec.local) } });
                 }
             }
         }
-        // Local exports, read live from their bindings once the imports are known.
+        // Local exports, read live from their bindings.
         for (let n = 0; n < program.body.length; n++) {
             const statement = program.body[n];
             if (statement.type === 'ExportNamedDeclaration' && !statement.source) {
                 if (statement.declaration) {
                     const d = statement.declaration;
-                    const ids = [];
+                    const ids = newSafeList();
                     if (d.type === 'VariableDeclaration')
                         for (let j = 0; j < d.declarations.length; j++)
                             patternIdentifiers(d.declarations[j].id, ids);
                     else
                         append(ids, d.id);
-                    for (let k = 0; k < ids.length; k++) {
-                        const id = ids[k];
-                        append(getters, [id.name, this.rootRead(root, id.name)]);
-                    }
+                    for (let k = 0; k < ids.length; k++)
+                        append(exports, { name: ids[k].name, read: { kind: 'binding', read: this.rootRead(root, ids[k].name) } });
                 }
                 for (let k = 0; k < statement.specifiers.length; k++) {
                     const spec = statement.specifiers[k];
                     if (spec.local.type !== 'Identifier')
                         throw new Error('interpreter: string export of a local');
-                    append(getters, [exportedName(spec.exported), this.rootRead(root, spec.local.name)]);
+                    append(exports, { name: exportedName(spec.exported), read: { kind: 'binding', read: this.rootRead(root, spec.local.name) } });
                 }
             }
             else if (statement.type === 'ExportDefaultDeclaration') {
                 const d = statement.declaration;
                 const local = (d.type === 'FunctionDeclaration' || d.type === 'ClassDeclaration') && d.id ? d.id.name : '*default*';
-                append(getters, ['default', this.rootRead(root, local)]);
+                append(exports, { name: 'default', read: { kind: 'binding', read: this.rootRead(root, local) } });
             }
         }
-        const body = this.programBody(program, root);
-        const size = root.size;
-        const bs = body.s;
-        const bg = body.g;
-        return (exportsArg, requireArg, moduleArg, filename, dirname) => {
-            const env = new Array(size);
-            env[0] = ROOT_ENV;
-            env[exportsSlot] = exportsArg;
-            env[requireSlot] = requireArg;
-            env[moduleSlot] = moduleArg;
-            env[filenameSlot] = filename;
-            env[dirnameSlot] = dirname;
-            if (typeof requireArg !== 'function')
-                throw new TypeError('require is not a function');
-            const require = (id) => reflectApply(requireArg, undefined, [id]);
-            for (let i = 0; i < loads.length; i++)
-                loads[i](env, require);
-            const facade = {};
-            defineOrThrow(facade, '__esModule', { value: true });
-            for (let i = 0; i < getters.length; i++) {
-                const name = getters[i][0];
-                const read = getters[i][1];
-                if (!objectHasOwn(facade, name))
-                    defineOrThrow(facade, name, { get: () => read(env), enumerable: true });
-            }
-            for (let i = 0; i < starSources.length; i++) {
-                const m = starSources[i](env);
-                if (!isObject(m))
-                    continue;
-                const keys = objectGetOwnPropertyNames(m);
-                for (let j = 0; j < keys.length; j++) {
-                    const key = keys[j];
-                    if (key === 'default' || objectHasOwn(facade, key))
-                        continue;
-                    const desc = reflectGetOwnPropertyDescriptor(m, key);
-                    defineOrThrow(facade, key, { get: () => ops.get(m, key), enumerable: !desc || Boolean(desc.enumerable) });
-                }
-            }
-            ops.set(moduleArg, 'exports', facade);
-            if (bg === null) {
-                bs(env);
-                return undefined;
-            }
-            return drive(bg(env));
+        const instantiate = this.scopeEntry(root, true);
+        const body = this.moduleStatements(program);
+        return {
+            frame: frameTemplate(root.size, []),
+            exportsSlot: bindingSlot(root, '%exports'),
+            requireSlot: bindingSlot(root, '%require'),
+            moduleSlot: bindingSlot(root, '%module'),
+            filenameSlot: bindingSlot(root, '%filename'),
+            dirnameSlot: bindingSlot(root, '%dirname'),
+            imports: listOf(imports),
+            exports: listOf(exports),
+            stars: listOf(stars),
+            instantiate,
+            body,
         };
+    }
+    /** A module's statements, compiled as an async function body (top-level await). */
+    moduleStatements(program) {
+        const saved = this.shape;
+        this.shape = 'async';
+        try {
+            return this.statementList(program.body);
+        }
+        finally {
+            this.shape = saved;
+        }
     }
     /** A live read of a module-scope binding, for an export getter. */
     rootRead(root, name) {
@@ -4120,42 +3800,6 @@ export class Compiler {
         this.scope = outer;
         return read;
     }
-}
-/** The environment above every unit's: nothing reads it. */
-export const ROOT_ENV = [];
-/** esbuild's __toESM: a namespace object over a CommonJS module's exports. */
-function toESM(m) {
-    const target = objectCreate(isObject(m) ? objectGetPrototypeOf(m) : null);
-    if (!isObject(m) || !reflectGet(m, '__esModule'))
-        defineOrThrow(target, 'default', { value: m, enumerable: true });
-    if (isObject(m)) {
-        const keys = objectGetOwnPropertyNames(m);
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            if (objectHasOwn(target, key))
-                continue;
-            const desc = reflectGetOwnPropertyDescriptor(m, key);
-            defineOrThrow(target, key, { get: () => reflectGet(m, key), enumerable: !desc || Boolean(desc.enumerable) });
-        }
-    }
-    return target;
-}
-/** Runs a module body's generator as an async function would: one await per yielded value. */
-async function drive(it) {
-    let r = it.next();
-    while (!r.done) {
-        let value;
-        let ok = true;
-        try {
-            value = await r.value;
-        }
-        catch (error) {
-            ok = false;
-            value = error;
-        }
-        r = ok ? it.next(value) : it.throw(value);
-    }
-    return undefined;
 }
 function binaryOperator(operator, ops) {
     switch (operator) {

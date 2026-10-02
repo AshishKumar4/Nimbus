@@ -15,7 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, runtimeCodeModuleName, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -537,12 +537,17 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
     `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
     generateSqliteFacetPreamble();
 /**
- * The runtime-code interpreter and its host module, in every launch's map:
- * the registry compiles them only when the program first produces code no
- * launch staged (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ * The runtime-code interpreter, its primordials and its host module, in every
+ * launch's map: the primordials load at the launch's start, the other two
+ * only when the program first produces code no launch staged
+ * (core/_shared/commonjs-cell.ts, RUNTIME CODE).
  */
 function interpreterModules(sources) {
-    return { [RUNTIME_INTERPRETER_MODULE]: sources.interpreter, [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps };
+    return {
+        [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
+        [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
+        [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+    };
 }
 /**
  * The entry code as a module of the map, named for the script it came from so
@@ -4643,6 +4648,10 @@ export class FacetManager {
     async _stagedRuntimeCode(learning, pacer) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
+            if (entry.kind === 'expression') {
+                modules.set(codeKey, runtimeExpressionModule(entry.code));
+                continue;
+            }
             if (entry.kind !== 'module') {
                 modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
                 continue;

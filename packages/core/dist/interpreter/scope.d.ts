@@ -16,7 +16,7 @@
  * are the frame of a call.
  */
 import type { AnonymousClassDeclaration, AnonymousFunctionDeclaration, AnyNode, ArrowFunctionExpression, BlockStatement, CatchClause, ClassDeclaration, ClassExpression, ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, MethodDefinition, ModuleDeclaration, Pattern, PrivateIdentifier, Program, PropertyDefinition, Statement, StaticBlock, SwitchStatement, VariableDeclaration } from 'acorn';
-import { SafeMap } from './intrinsics.js';
+import { type SafeList } from './intrinsics.js';
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
 export type ClassNode = ClassDeclaration | AnonymousClassDeclaration | ClassExpression;
 export type BindingKind = 'var' | 'let' | 'const' | 'class' | 'function' | 'param' | 'catch' | 'import'
@@ -48,14 +48,14 @@ export type ScopeKind = 'function' | 'module' | 'script' | 'field' | 'static'
 export declare class Scope {
     readonly kind: ScopeKind;
     readonly parent: Scope | null;
-    readonly bindings: SafeMap<string, Binding>;
+    readonly bindings: import("./primordials.js").SafeMap<string, Binding>;
     /** The scopes inside this one, for laying out slots; null once the analysis is released. */
-    children: Scope[] | null;
+    children: SafeList<Scope> | null;
     materialized: boolean;
     /** Slots of the environment this scope allocates, when materialized. */
     size: number;
     /** Function declarations this scope instantiates on entry, in source order. */
-    functions: Array<FunctionDeclaration | AnonymousFunctionDeclaration>;
+    functions: SafeList<FunctionDeclaration | AnonymousFunctionDeclaration>;
     readonly fn: FunctionScope;
     /** Whether code in this scope is strict: its function's mode, or a class body's (always strict). */
     readonly strict: boolean;
@@ -87,7 +87,7 @@ export declare class FunctionScope extends Scope {
     /** Whether this function is a method with a home object (for super.x). */
     method: boolean;
     /** A script's top-level var and function names: global object properties, not bindings. */
-    readonly globalVars: string[];
+    readonly globalVars: SafeList<string>;
     constructor(functionKind: FunctionKind, parent: Scope | null, strict: boolean, arrow: boolean, async: boolean, generator: boolean);
     special(name: string): Binding;
 }
@@ -103,7 +103,7 @@ export interface Reference {
 /** Whether a function body opens with a "use strict" directive. */
 export declare function hasUseStrict(body: readonly (Statement | ModuleDeclaration)[]): boolean;
 /** The names a binding pattern declares, with the pattern identifiers. */
-export declare function patternIdentifiers(pattern: Pattern, out?: Identifier[]): Identifier[];
+export declare function patternIdentifiers(pattern: Pattern, out?: SafeList<Identifier>): SafeList<Identifier>;
 /** The child nodes of `node`, in a new array. */
 export declare function childNodes(node: AnyNode): AnyNode[];
 /** Each child node of `node`. */
@@ -117,15 +117,17 @@ export interface ClassScopes {
 }
 /** The analysis of one compiled unit. */
 export declare class Analysis {
-    readonly refs: SafeMap<Identifier, Reference>;
+    readonly refs: import("./primordials.js").SafeMap<Identifier, Reference>;
     /** Scope of each scope-creating node (functions, blocks, loops, catch, switch, with, class). */
-    readonly scopes: SafeMap<Identifier | import("acorn").ExpressionStatement | BlockStatement | import("acorn").EmptyStatement | import("acorn").DebuggerStatement | import("acorn").WithStatement | import("acorn").ReturnStatement | import("acorn").LabeledStatement | import("acorn").BreakStatement | import("acorn").ContinueStatement | import("acorn").IfStatement | SwitchStatement | import("acorn").ThrowStatement | import("acorn").TryStatement | import("acorn").WhileStatement | import("acorn").DoWhileStatement | ForStatement | ForInStatement | ForOfStatement | FunctionDeclaration | VariableDeclaration | ClassDeclaration | import("acorn").Literal | import("acorn").ThisExpression | import("acorn").ArrayExpression | import("acorn").ObjectExpression | FunctionExpression | import("acorn").UnaryExpression | import("acorn").UpdateExpression | import("acorn").BinaryExpression | import("acorn").AssignmentExpression | import("acorn").LogicalExpression | import("acorn").MemberExpression | import("acorn").ConditionalExpression | import("acorn").CallExpression | import("acorn").NewExpression | import("acorn").SequenceExpression | ArrowFunctionExpression | import("acorn").YieldExpression | import("acorn").TemplateLiteral | import("acorn").TaggedTemplateExpression | ClassExpression | import("acorn").MetaProperty | import("acorn").AwaitExpression | import("acorn").ChainExpression | import("acorn").ImportExpression | import("acorn").ParenthesizedExpression | import("acorn").ImportDeclaration | import("acorn").ExportNamedDeclaration | import("acorn").ExportDefaultDeclaration | import("acorn").ExportAllDeclaration | Program | import("acorn").SwitchCase | CatchClause | import("acorn").Property | import("acorn").Super | import("acorn").SpreadElement | import("acorn").TemplateElement | import("acorn").AssignmentProperty | import("acorn").ObjectPattern | import("acorn").ArrayPattern | import("acorn").RestElement | import("acorn").AssignmentPattern | import("acorn").ClassBody | MethodDefinition | import("acorn").ImportAttribute | import("acorn").ImportSpecifier | import("acorn").ImportDefaultSpecifier | import("acorn").ImportNamespaceSpecifier | import("acorn").ExportSpecifier | AnonymousFunctionDeclaration | AnonymousClassDeclaration | PropertyDefinition | PrivateIdentifier | StaticBlock | import("acorn").VariableDeclarator, Scope>;
-    readonly classes: SafeMap<ClassNode, ClassScopes>;
+    readonly scopes: import("./primordials.js").SafeMap<Identifier | import("acorn").ExpressionStatement | BlockStatement | import("acorn").EmptyStatement | import("acorn").DebuggerStatement | import("acorn").WithStatement | import("acorn").ReturnStatement | import("acorn").LabeledStatement | import("acorn").BreakStatement | import("acorn").ContinueStatement | import("acorn").IfStatement | SwitchStatement | import("acorn").ThrowStatement | import("acorn").TryStatement | import("acorn").WhileStatement | import("acorn").DoWhileStatement | ForStatement | ForInStatement | ForOfStatement | FunctionDeclaration | VariableDeclaration | ClassDeclaration | import("acorn").Literal | import("acorn").ThisExpression | import("acorn").ArrayExpression | import("acorn").ObjectExpression | FunctionExpression | import("acorn").UnaryExpression | import("acorn").UpdateExpression | import("acorn").BinaryExpression | import("acorn").AssignmentExpression | import("acorn").LogicalExpression | import("acorn").MemberExpression | import("acorn").ConditionalExpression | import("acorn").CallExpression | import("acorn").NewExpression | import("acorn").SequenceExpression | ArrowFunctionExpression | import("acorn").YieldExpression | import("acorn").TemplateLiteral | import("acorn").TaggedTemplateExpression | ClassExpression | import("acorn").MetaProperty | import("acorn").AwaitExpression | import("acorn").ChainExpression | import("acorn").ImportExpression | import("acorn").ParenthesizedExpression | import("acorn").ImportDeclaration | import("acorn").ExportNamedDeclaration | import("acorn").ExportDefaultDeclaration | import("acorn").ExportAllDeclaration | Program | import("acorn").SwitchCase | CatchClause | import("acorn").Property | import("acorn").Super | import("acorn").SpreadElement | import("acorn").TemplateElement | import("acorn").AssignmentProperty | import("acorn").ObjectPattern | import("acorn").ArrayPattern | import("acorn").RestElement | import("acorn").AssignmentPattern | import("acorn").ClassBody | MethodDefinition | import("acorn").ImportAttribute | import("acorn").ImportSpecifier | import("acorn").ImportDefaultSpecifier | import("acorn").ImportNamespaceSpecifier | import("acorn").ExportSpecifier | AnonymousFunctionDeclaration | AnonymousClassDeclaration | PropertyDefinition | PrivateIdentifier | StaticBlock | import("acorn").VariableDeclarator, Scope>;
+    readonly classes: import("./primordials.js").SafeMap<ClassNode, ClassScopes>;
     /** For `this`, `super` and `new.target`: the function scope that provides them. */
-    readonly receivers: SafeMap<Identifier | import("acorn").ExpressionStatement | BlockStatement | import("acorn").EmptyStatement | import("acorn").DebuggerStatement | import("acorn").WithStatement | import("acorn").ReturnStatement | import("acorn").LabeledStatement | import("acorn").BreakStatement | import("acorn").ContinueStatement | import("acorn").IfStatement | SwitchStatement | import("acorn").ThrowStatement | import("acorn").TryStatement | import("acorn").WhileStatement | import("acorn").DoWhileStatement | ForStatement | ForInStatement | ForOfStatement | FunctionDeclaration | VariableDeclaration | ClassDeclaration | import("acorn").Literal | import("acorn").ThisExpression | import("acorn").ArrayExpression | import("acorn").ObjectExpression | FunctionExpression | import("acorn").UnaryExpression | import("acorn").UpdateExpression | import("acorn").BinaryExpression | import("acorn").AssignmentExpression | import("acorn").LogicalExpression | import("acorn").MemberExpression | import("acorn").ConditionalExpression | import("acorn").CallExpression | import("acorn").NewExpression | import("acorn").SequenceExpression | ArrowFunctionExpression | import("acorn").YieldExpression | import("acorn").TemplateLiteral | import("acorn").TaggedTemplateExpression | ClassExpression | import("acorn").MetaProperty | import("acorn").AwaitExpression | import("acorn").ChainExpression | import("acorn").ImportExpression | import("acorn").ParenthesizedExpression | import("acorn").ImportDeclaration | import("acorn").ExportNamedDeclaration | import("acorn").ExportDefaultDeclaration | import("acorn").ExportAllDeclaration | Program | import("acorn").SwitchCase | CatchClause | import("acorn").Property | import("acorn").Super | import("acorn").SpreadElement | import("acorn").TemplateElement | import("acorn").AssignmentProperty | import("acorn").ObjectPattern | import("acorn").ArrayPattern | import("acorn").RestElement | import("acorn").AssignmentPattern | import("acorn").ClassBody | MethodDefinition | import("acorn").ImportAttribute | import("acorn").ImportSpecifier | import("acorn").ImportDefaultSpecifier | import("acorn").ImportNamespaceSpecifier | import("acorn").ExportSpecifier | AnonymousFunctionDeclaration | AnonymousClassDeclaration | PropertyDefinition | PrivateIdentifier | StaticBlock | import("acorn").VariableDeclarator, FunctionScope>;
+    readonly receivers: import("./primordials.js").SafeMap<Identifier | import("acorn").ExpressionStatement | BlockStatement | import("acorn").EmptyStatement | import("acorn").DebuggerStatement | import("acorn").WithStatement | import("acorn").ReturnStatement | import("acorn").LabeledStatement | import("acorn").BreakStatement | import("acorn").ContinueStatement | import("acorn").IfStatement | SwitchStatement | import("acorn").ThrowStatement | import("acorn").TryStatement | import("acorn").WhileStatement | import("acorn").DoWhileStatement | ForStatement | ForInStatement | ForOfStatement | FunctionDeclaration | VariableDeclaration | ClassDeclaration | import("acorn").Literal | import("acorn").ThisExpression | import("acorn").ArrayExpression | import("acorn").ObjectExpression | FunctionExpression | import("acorn").UnaryExpression | import("acorn").UpdateExpression | import("acorn").BinaryExpression | import("acorn").AssignmentExpression | import("acorn").LogicalExpression | import("acorn").MemberExpression | import("acorn").ConditionalExpression | import("acorn").CallExpression | import("acorn").NewExpression | import("acorn").SequenceExpression | ArrowFunctionExpression | import("acorn").YieldExpression | import("acorn").TemplateLiteral | import("acorn").TaggedTemplateExpression | ClassExpression | import("acorn").MetaProperty | import("acorn").AwaitExpression | import("acorn").ChainExpression | import("acorn").ImportExpression | import("acorn").ParenthesizedExpression | import("acorn").ImportDeclaration | import("acorn").ExportNamedDeclaration | import("acorn").ExportDefaultDeclaration | import("acorn").ExportAllDeclaration | Program | import("acorn").SwitchCase | CatchClause | import("acorn").Property | import("acorn").Super | import("acorn").SpreadElement | import("acorn").TemplateElement | import("acorn").AssignmentProperty | import("acorn").ObjectPattern | import("acorn").ArrayPattern | import("acorn").RestElement | import("acorn").AssignmentPattern | import("acorn").ClassBody | MethodDefinition | import("acorn").ImportAttribute | import("acorn").ImportSpecifier | import("acorn").ImportDefaultSpecifier | import("acorn").ImportNamespaceSpecifier | import("acorn").ExportSpecifier | AnonymousFunctionDeclaration | AnonymousClassDeclaration | PropertyDefinition | PrivateIdentifier | StaticBlock | import("acorn").VariableDeclarator, FunctionScope>;
     /** Block-level function declarations that also assign a var of their name (Annex B.3.3). */
-    readonly annexB: SafeMap<FunctionDeclaration, Binding>;
-    readonly privateRefs: SafeMap<PrivateIdentifier, Reference>;
+    readonly annexB: import("./primordials.js").SafeMap<FunctionDeclaration, Binding>;
+    /** The block an if statement's function declaration clause is in (Annex B.3.4). */
+    readonly clauseBlocks: import("./primordials.js").SafeMap<FunctionDeclaration, Scope>;
+    readonly privateRefs: import("./primordials.js").SafeMap<PrivateIdentifier, Reference>;
     /** A module's own scope, which holds `%module` for import.meta. */
     moduleScope: FunctionScope | null;
     scopeOf(node: AnyNode): Scope;
@@ -176,6 +178,6 @@ export interface FunctionOptions {
     readonly derived: boolean;
     readonly ctor: boolean;
     /** A Function constructor's function: it is named `anonymous`, but the name binds nothing in it. */
-    readonly unbound?: boolean;
+    readonly unbound: boolean;
 }
 //# sourceMappingURL=scope.d.ts.map

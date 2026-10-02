@@ -20,6 +20,8 @@ export interface NodeFacetSources {
     ledger: string;
     /** A resident facet's SQLite-backed resident set: vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE. */
     residentStore: string;
+    /** The built-ins the interpreter calls, captured at the launch's start (core interpreter/primordials.ts), a module of the map. */
+    interpreterPrimordials: string;
     /** The runtime-code interpreter (core interpreter/), a module of the map. */
     interpreter: string;
     /** The interpreter's host module (core interpreter/host-ops.ts HOST_OPS_SOURCE), a module of the map. */

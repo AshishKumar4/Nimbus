@@ -1,4 +1,4 @@
-import { SafeMap, append, arrayIsArray, objectKeys, reflectGet, someItem } from './intrinsics.js';
+import { Error, SafeMap, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys, reflectGet, someItem, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 /**
  * Kinds that throw when read before their declaration runs: lexical
@@ -34,12 +34,12 @@ export class Scope {
     parent;
     bindings = new SafeMap();
     /** The scopes inside this one, for laying out slots; null once the analysis is released. */
-    children = [];
+    children = newSafeList();
     materialized = false;
     /** Slots of the environment this scope allocates, when materialized. */
     size = 1;
     /** Function declarations this scope instantiates on entry, in source order. */
-    functions = [];
+    functions = newSafeList();
     fn;
     /** Whether code in this scope is strict: its function's mode, or a class body's (always strict). */
     strict;
@@ -63,7 +63,7 @@ export class Scope {
     }
     /** The scope's bindings, in the order they were declared. */
     bindingList() {
-        const list = [];
+        const list = newSafeList();
         this.bindings.forEach((binding) => { append(list, binding); });
         return list;
     }
@@ -96,7 +96,7 @@ export class FunctionScope extends Scope {
     /** Whether this function is a method with a home object (for super.x). */
     method = false;
     /** A script's top-level var and function names: global object properties, not bindings. */
-    globalVars = [];
+    globalVars = newSafeList();
     constructor(functionKind, parent, strict, arrow, async, generator) {
         super(functionKind, parent, null, strict);
         this.functionKind = functionKind;
@@ -125,7 +125,7 @@ export function hasUseStrict(body) {
     return false;
 }
 /** The names a binding pattern declares, with the pattern identifiers. */
-export function patternIdentifiers(pattern, out = []) {
+export function patternIdentifiers(pattern, out = newSafeList()) {
     switch (pattern.type) {
         case 'Identifier':
             append(out, pattern);
@@ -155,7 +155,7 @@ export function patternIdentifiers(pattern, out = []) {
 }
 /** The child nodes of `node`, in a new array. */
 export function childNodes(node) {
-    const children = [];
+    const children = newSafeList();
     forEachChildNode(node, (child) => { append(children, child); });
     return children;
 }
@@ -210,7 +210,7 @@ export function forEachChildNode(node, visit) {
     }
 }
 function isNode(value) {
-    return typeof value === 'object' && value !== null && 'type' in value && typeof value.type === 'string' && 'start' in value;
+    return typeof value === 'object' && value !== null && objectHasOwn(value, 'type') && objectHasOwn(value, 'start');
 }
 /** The analysis of one compiled unit. */
 export class Analysis {
@@ -222,6 +222,8 @@ export class Analysis {
     receivers = new SafeMap();
     /** Block-level function declarations that also assign a var of their name (Annex B.3.3). */
     annexB = new SafeMap();
+    /** The block an if statement's function declaration clause is in (Annex B.3.4). */
+    clauseBlocks = new SafeMap();
     privateRefs = new SafeMap();
     /** A module's own scope, which holds `%module` for import.meta. */
     moduleScope = null;
@@ -300,8 +302,8 @@ export function analyzeLazyFunction(node, outer, options, moduleScope) {
 export function releaseScopes(scope) {
     const children = scope.children;
     scope.children = null;
-    scope.functions = [];
-    const dropped = [];
+    scope.functions = newSafeList();
+    const dropped = newSafeList();
     scope.bindings.forEach((binding, name) => {
         if (!binding.captured && binding.kind !== 'special')
             append(dropped, name);
@@ -514,8 +516,18 @@ class Analyzer {
      * initializing its binding: it never checks the TDZ.
      */
     resolve(id, scope, init = false) {
+        // The interpreter's own bindings ('%this', '*default*', '#field') have
+        // names no identifier can have. acorn runs on the realm's built-ins, which
+        // a program may have replaced to change the tree it returns; a tree
+        // naming one of those bindings is refused rather than given its slot.
+        const first = charCodeAt(id.name, 0);
+        if (first === 0x25 || first === 0x2a || first === 0x23)
+            throw new Error(`interpreter: the parser produced the identifier ${id.name}`);
+        this.resolveName(id, scope, init);
+    }
+    resolveName(id, scope, init) {
         const name = id.name;
-        const withs = [];
+        const withs = newSafeList();
         let s = scope;
         while (s) {
             let binding = s.bindings.get(name);
@@ -622,9 +634,9 @@ class Analyzer {
             case 'ContinueStatement': return;
             case 'IfStatement':
                 this.visitExpression(node.test, scope);
-                this.visitStatement(node.consequent, scope);
+                this.visitClause(node.consequent, scope);
                 if (node.alternate)
-                    this.visitStatement(node.alternate, scope);
+                    this.visitClause(node.alternate, scope);
                 return;
             case 'SwitchStatement':
                 this.visitSwitch(node, scope);
@@ -655,7 +667,7 @@ class Analyzer {
                 this.visitForInOf(node, scope);
                 return;
             case 'FunctionDeclaration': {
-                this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false });
+                this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false, unbound: false });
                 this.noteAnnexB(node, scope);
                 return;
             }
@@ -679,7 +691,7 @@ class Analyzer {
             case 'ExportDefaultDeclaration': {
                 const d = node.declaration;
                 if (d.type === 'FunctionDeclaration') {
-                    this.visitFunction(d, scope, { strict: true, method: false, derived: false, ctor: false });
+                    this.visitFunction(d, scope, { strict: true, method: false, derived: false, ctor: false, unbound: false });
                 }
                 else if (d.type === 'ClassDeclaration') {
                     this.visitClass(d, scope);
@@ -718,6 +730,20 @@ class Analyzer {
             if (d.init)
                 this.visitExpression(d.init, scope);
         }
+    }
+    /**
+     * An if statement's clause. Annex B.3.4: a sloppy function declaration
+     * there is as if it were the only statement of a block (Compiler.clause).
+     */
+    visitClause(node, scope) {
+        if (node.type !== 'FunctionDeclaration') {
+            this.visitStatement(node, scope);
+            return;
+        }
+        const block = new Scope('block', scope, scope.fn);
+        this.analysis.clauseBlocks.set(node, block);
+        this.declareLexical([node], block);
+        this.visitStatements([node], block);
     }
     visitBlock(node, scope) {
         const block = new Scope('block', scope, scope.fn);
@@ -909,7 +935,7 @@ class Analyzer {
         }
         let instanceFields = null;
         let staticFields = null;
-        const derived = Boolean(node.superClass);
+        const derived = !!node.superClass;
         for (let i = 0; i < node.body.body.length; i++) {
             const member = node.body.body[i];
             if (member.type === 'StaticBlock') {
@@ -945,7 +971,7 @@ class Analyzer {
     }
     visitMethod(member, classScope, derived) {
         const ctor = member.kind === 'constructor';
-        this.visitFunction(member.value, classScope, { strict: true, method: true, derived: ctor && derived, ctor });
+        this.visitFunction(member.value, classScope, { strict: true, method: true, derived: ctor && derived, ctor, unbound: false });
     }
     visitStaticBlock(block, classScope) {
         const fn = new FunctionScope('static', classScope, true, false, false, false);
@@ -958,7 +984,7 @@ class Analyzer {
     resolvePrivate(node, scope) {
         // Private names resolve like identifiers, under their '#'-prefixed name.
         const id = { type: 'Identifier', name: `#${node.name}`, start: node.start, end: node.end };
-        this.resolve(id, scope);
+        this.resolveName(id, scope, false);
         this.analysis.privateRefs.set(node, this.analysis.ref(id));
     }
     visitExpression(node, scope) {
@@ -989,11 +1015,8 @@ class Analyzer {
                     }
                     if (p.computed)
                         this.visitExpression(p.key, scope);
-                    if (p.computed && p.value.type === 'ClassExpression' && !p.value.id && p.value.superClass && suspendsHere(p.value.superClass)) {
-                        throw new UnsupportedSyntax('await or yield in the heritage of a class named by a computed key');
-                    }
                     if (p.value.type === 'FunctionExpression' && (p.method || p.kind !== 'init')) {
-                        this.visitFunction(p.value, scope, { strict: scope.strict, method: true, derived: false, ctor: false });
+                        this.visitFunction(p.value, scope, { strict: scope.strict, method: true, derived: false, ctor: false, unbound: false });
                     }
                     else {
                         this.visitExpression(p.value, scope);
@@ -1002,18 +1025,11 @@ class Analyzer {
                 return;
             case 'FunctionExpression':
             case 'ArrowFunctionExpression':
-                this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false });
+                this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false, unbound: false });
                 return;
-            case 'UnaryExpression': {
-                let target = node.argument;
-                while (target.type === 'ParenthesizedExpression' || target.type === 'ChainExpression')
-                    target = target.expression;
-                if (node.operator === 'delete' && target.type === 'MemberExpression' && target.computed && suspendsHere(target.property)) {
-                    throw new UnsupportedSyntax('await or yield in the key of a deleted member');
-                }
+            case 'UnaryExpression':
                 this.visitExpression(node.argument, scope);
                 return;
-            }
             case 'UpdateExpression':
                 this.visitExpression(node.argument, scope);
                 return;

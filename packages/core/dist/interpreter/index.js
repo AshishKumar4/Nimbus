@@ -21,13 +21,13 @@
  * natively too.
  */
 import { parse } from 'acorn';
-import { parseRuntimeFunction, runtimeFunctionSource } from '../_shared/runtime-function-source.js';
-import { Compiler, ROOT_ENV } from './compile.js';
-import { installHost, makeFunction } from './runtime.js';
+import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
+import { Compiler } from './compile.js';
+import { moduleCell } from './modules.js';
+import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
-import { SafeMap, charCodeAt, isWhitespaceCode, someItem, stringLastIndexOf, stringSlice } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
-export { HOST_OPS_SOURCE } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 /** The parameters of Node's CommonJS module wrapper. */
 const WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
@@ -90,27 +90,37 @@ function hasModuleSyntax(program) {
     return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
         || s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
 }
+/** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
+const REALM = {
+    SyntaxError,
+    messageOf(error) {
+        const message = isObject(error) ? reflectGet(error, 'message') : undefined;
+        return typeof message === 'string' ? message : stringOf(error);
+    },
+};
 let installed = null;
 function unitContext(source, module, host, moduleScope) {
     return { source, module, host, imports: new SafeMap(), moduleScope };
 }
 export function createInterpreter(hostOps, host) {
+    if (host.primordials !== LAUNCH_PRIMORDIALS)
+        throw new Error('interpreter: its built-ins were not captured at the launch start');
     if (installed !== hostOps) {
         installHost(hostOps);
         installed = hostOps;
     }
-    return {
+    const interpreter = {
         compileFunction(kind, params, body) {
             // A trailing source map is parsed only when the shortened body fails.
             const short = withoutTrailingLineComments(body);
             let parsed;
             try {
-                parsed = parseRuntimeFunction(kind, params, short);
+                parsed = parseRuntimeFunction(kind, params, short, REALM);
             }
             catch (error) {
                 if (short === body)
                     throw error;
-                parsed = parseRuntimeFunction(kind, params, body);
+                parsed = parseRuntimeFunction(kind, params, body, REALM);
             }
             const { node, text } = parsed;
             const analysis = analyzeFunction(node);
@@ -125,10 +135,10 @@ export function createInterpreter(hostOps, host) {
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
             const unitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
-            const moduleCell = (program) => {
+            const compileCell = (program) => {
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
                 const root = analysis.functionScopeOf(program);
-                const cell = new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).moduleCell(program, root);
+                const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
                 releaseScopes(root);
                 return cell;
             };
@@ -140,7 +150,7 @@ export function createInterpreter(hostOps, host) {
                 // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
             }
             if (module !== null && hasModuleSyntax(module))
-                return moduleCell(module);
+                return compileCell(module);
             let script;
             try {
                 script = parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true });
@@ -149,7 +159,7 @@ export function createInterpreter(hostOps, host) {
                 // Top-level await or import.meta without imports or exports: still a module.
                 if (module === null)
                     throw error;
-                return moduleCell(module);
+                return compileCell(module);
             }
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
@@ -157,6 +167,13 @@ export function createInterpreter(hostOps, host) {
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return makeFunction(fi, ROOT_ENV, undefined);
+        },
+        compileExpression(code) {
+            const at = scriptExpression(code, REALM);
+            if (at === null)
+                throw new UnsupportedSyntax('a vm script that is not one expression');
+            const body = expressionFunctionBody(stringSlice(code, 0, at.prologueEnd), stringSlice(code, at.start, at.end));
+            return interpreter.compileFunction('function', [], body);
         },
         runScript(text) {
             const program = parse(text, { ...PARSE, sourceType: 'script' });
@@ -167,9 +184,8 @@ export function createInterpreter(hostOps, host) {
             releaseScopes(root);
             if (body.g !== null)
                 throw new UnsupportedSyntax('await in a script');
-            const env = new Array(root.size);
-            env[0] = ROOT_ENV;
-            body.s(env);
+            body.s(withElement(frameTemplate(root.size, []), 0, ROOT_ENV));
         },
     };
+    return interpreter;
 }

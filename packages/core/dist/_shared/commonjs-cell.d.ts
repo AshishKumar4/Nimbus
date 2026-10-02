@@ -1,5 +1,7 @@
 import { type RuntimeFunctionKind } from './runtime-function-source.js';
-export { runtimeFunctionSyntaxError, type RuntimeFunctionKind } from './runtime-function-source.js';
+export type { RuntimeFunctionKind } from './runtime-function-source.js';
+/** Why V8's constructor would refuse these arguments, or null when it would build the function. */
+export declare function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null;
 /** The Worker Loader module name for the cell at VFS key `key` (a path without its leading slash). */
 export declare function commonJsCellModuleName(key: string): string;
 /** The module name of a process's entry code, `filename` being the script's path or `[eval]`. */
@@ -77,6 +79,11 @@ export type RuntimeCodeEntry = {
     kind: 'module';
     path: string;
     text: string;
+}
+/** vm.runInThisContext's code: a script whose value is its one expression's (scriptExpression). */
+ | {
+    kind: 'expression';
+    code: string;
 };
 /**
  * What of a file's path decides the module its text becomes: its directory
@@ -96,9 +103,14 @@ export declare function runtimeCodeKey(entry: RuntimeCodeEntry): string;
  * ledger charges the same (__nimbusRuntimeCodeCompile).
  */
 export declare function runtimeCodeCharge(entry: RuntimeCodeEntry): number;
-/** The module names, in every node launch's map, of the interpreter and the host module it runs on. */
+/**
+ * The module names, in every node launch's map, of the interpreter, the host
+ * module it runs on, and its primordials, which it requires from beside it as
+ * ./interpreter-primordials.js (worker scripts/interpreter-bundle.mjs).
+ */
 export declare const RUNTIME_INTERPRETER_MODULE = "nimbus/interpreter.js";
 export declare const RUNTIME_INTERPRETER_OPS_MODULE = "nimbus/interpreter-ops.js";
+export declare const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = "nimbus/interpreter-primordials.js";
 /** The module name of the runtime code with key `key`. */
 export declare function runtimeCodeModuleName(key: string): string;
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
@@ -116,6 +128,15 @@ export declare function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry 
  * to the global object's.
  */
 export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;
+/**
+ * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
+ * function returning the value of the one expression the script is (after
+ * its directive prologue, which the function keeps), in the global scope as
+ * a constructor's function is (runtimeFunctionModule); or
+ * it throws the SyntaxError V8 would, or, for a script of another shape,
+ * the error the interpreter answers it with in the first launch.
+ */
+export declare function runtimeExpressionModule(code: string): string;
 /** The main module's imports the runtime below reads through. */
 export declare const COMMONJS_CELL_IMPORTS: string;
 /**

@@ -20,6 +20,10 @@ export declare const VFS_WRITE_LEDGER_SHA256: string;
 export declare const RESIDENT_STORE_ENTRY: string;
 export declare const RESIDENT_STORE_BUILD_ID: string;
 export declare const RESIDENT_STORE_SHA256: string;
+/** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
+export declare const JS_INTERPRETER_PRIMORDIALS_ENTRY: string;
+export declare const JS_INTERPRETER_PRIMORDIALS_BUILD_ID: string;
+export declare const JS_INTERPRETER_PRIMORDIALS_SHA256: string;
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
 export declare const JS_INTERPRETER_ENTRY: string;
 export declare const JS_INTERPRETER_BUILD_ID: string;
