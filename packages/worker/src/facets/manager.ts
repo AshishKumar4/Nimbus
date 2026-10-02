@@ -62,7 +62,10 @@ import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
-import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, type BridgeRequireFs, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
+import {
+  prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError,
+  type BridgeRequireFs, type DeferredImport, type RequiredModuleRoot,
+} from '@nimbus-sh/core/runtime/require-resolver.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
 import {
@@ -2510,6 +2513,8 @@ export async function greedyAddMainEntries(
   if (!((await filesOf(vfs).exists(nmDir)) && (await filesOf(vfs).isDirectory(nmDir)))) return { added, groups };
 
   const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
+  // What the admitted groups defer with `import()`; a group does not walk them.
+  const deferred: DeferredImport[] = [];
 
   async function addOne(path: string): Promise<boolean> {
     const stripped = path.replace(/^\/+/, '');
@@ -2523,6 +2528,9 @@ export async function greedyAddMainEntries(
           maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
         });
       if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
+      for (const deferral of closure.deferred ?? []) {
+        if (deferral.alternatives === 1 && /^\.\.?\//.test(deferral.specifier)) deferred.push(deferral);
+      }
       for (const [member, cell] of Object.entries(closure.bundle)) {
         if (bundle[member] !== undefined) continue;
         bundle[member] = cell;
@@ -2692,6 +2700,25 @@ export async function greedyAddMainEntries(
   }
 
   for (const pkgDir of (await speculativePackageDirs(vfs, cwdStripped, bundle))) (await addPkgEntry(pkgDir));
+
+  // Then the one `import()` a guessed module defers, when it defers only one
+  // and it is a file of its own package, as a guess of its own with its static
+  // closure; what that defers joins the queue. That is how a package proxies
+  // or splits its own code, and it loads whenever the deferring code runs:
+  // vinext imports @vitejs/plugin-rsc by a computed URL (a guess here, as a
+  // project dependency); plugin-rsc imports vitefu, whose CommonJS entry loads
+  // its ESM build with `import('./index.js')`. A module that defers several
+  // chooses among them, and a deferral of another package is an optional
+  // dependency (@vercel/og's `import("sharp")`, caught when absent, whose
+  // 9.2 MB wasm image the launch would compile): a guess does not guess those.
+  const followed = new Set<string>();
+  for (let i = 0; i < deferred.length; i++) {
+    if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
+    const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer));
+    if (target === null || followed.has(target)) continue;
+    followed.add(target);
+    await addOne(target);
+  }
   return { added, groups };
 }
 

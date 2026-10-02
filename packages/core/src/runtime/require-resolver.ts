@@ -542,7 +542,12 @@ export interface PrefetchResult {
   speculative: Set<string>;
   /** Original entry reachability, before learned roots; preserves package-main discovery. */
   entryPaths?: ReadonlySet<string>;
+  /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
+  deferred?: DeferredImport[];
 }
+
+/** An `import()` a module defers, and how many its module defers (phase 2's order). */
+export interface DeferredImport { specifier: string; fromDir: string; alternatives: number }
 
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
@@ -686,10 +691,11 @@ export async function prefetchForRequire(
     if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
     queue.push({ specifier, fromDir });
   }
-  function nextDeferred(): { specifier: string; fromDir: string } | undefined {
+  function nextDeferred(): DeferredImport | undefined {
     let fewest = Infinity;
     for (const [alternatives, queue] of deferredDynamic) if (queue.length > 0 && alternatives < fewest) fewest = alternatives;
-    return fewest === Infinity ? undefined : deferredDynamic.get(fewest)!.shift();
+    if (fewest === Infinity) return undefined;
+    return { ...deferredDynamic.get(fewest)!.shift()!, alternatives: fewest };
   }
   // A package the code locates by its manifest (`require.resolve('vite/package.json')`)
   // is one it uses from where it is installed: vinext reads that manifest's
@@ -840,9 +846,10 @@ export async function prefetchForRequire(
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
     const deferrals = new Set<string>();
     for (const match of stripped.matchAll(DYNIMPORT_RE)) {
-      if (policy || declined) break;
+      if (declined) break;
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
+      // A dependency closure is never an entry: its deferrals are reported, not walked.
       if (!entry) { deferrals.add(specifier); continue; }
       const resolved = (await resolveDynamicImport(specifier, fromDir));
       if (closureExceeded) break;
@@ -855,22 +862,7 @@ export async function prefetchForRequire(
   // loader resolves it the same way, core/_shared/esm-resolver.ts): the
   // "import" conditions, no extension probing. The package.json files it
   // reads are staged too, since the loader reads the same ones.
-  const esm = createEsmResolver({
-    async kind(path) {
-      const key = strip(path);
-      if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
-      if (!(await vfs.exists(key))) return null;
-      return (await vfs.isDirectory(key)) ? 'directory' : 'file';
-    },
-    // The walk sees paths as the module map holds them.
-    realpath: (path) => path,
-    async readText(path) {
-      const key = strip(path);
-      return await addPkgJson(key);
-    },
-    isBuiltin: (specifier) => isFacetProvided(specifier),
-    cjsResolve: () => null,
-  });
+  const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(strip(path)));
   async function resolveStaticDependency(specifier: string, fromDir: string): Promise<ResolveSubpathResult | null> {
     // Vite's generated config names dependencies by absolute file URL.
     if (specifier.startsWith('file:')) {
@@ -882,14 +874,7 @@ export async function prefetchForRequire(
 
   /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
   async function resolveDynamicImport(specifier: string, fromDir: string): Promise<string | null> {
-    const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
-    try {
-      const resolution = await esm.resolve(specifier, parentUrl);
-      return resolution.path === undefined ? null : strip(resolution.path);
-    } catch (error) {
-      if (error instanceof WalkControlFailure) throw error;
-      return null;
-    }
+    return await resolveImportWith(esm, specifier, fromDir);
   }
 
   /**
@@ -949,7 +934,11 @@ export async function prefetchForRequire(
 
     if (declined) return declined;
     if (closureExceeded) return closureExceeded;
-    if (policy) return { bundle, speculative, entryPaths };
+    if (policy) {
+      const deferred: DeferredImport[] = [];
+      for (let next = nextDeferred(); next !== undefined; next = nextDeferred()) deferred.push(next);
+      return { bundle, speculative, entryPaths, deferred };
+    }
 
     // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
@@ -986,6 +975,58 @@ const BUILTINS = new Set([
 function isFacetProvided(id: string): boolean {
   if (id.startsWith('node:')) return true;
   return BUILTINS.has(id) || FACET_PROVIDED_PACKAGES.includes(id);
+}
+
+/**
+ * Node's ESM resolver over the walk's filesystem (the process's loader
+ * resolves the same way, core/_shared/esm-resolver.ts): the "import"
+ * conditions, no extension probing. The walk sees paths as the module map
+ * holds them; `readText` answers the package.json files it reads.
+ */
+function walkEsmResolver(vfs: RequireFs, progress: WalkProgress | undefined, readText: (path: string) => Promise<string | null>) {
+  return createEsmResolver({
+    async kind(path) {
+      const key = strip(path);
+      if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
+      if (!(await vfs.exists(key))) return null;
+      return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+    },
+    realpath: (path) => path,
+    readText,
+    isBuiltin: (specifier) => isFacetProvided(specifier),
+    cjsResolve: () => null,
+  });
+}
+
+async function resolveImportWith(esm: ReturnType<typeof walkEsmResolver>, specifier: string, fromDir: string): Promise<string | null> {
+  const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
+  try {
+    const resolution = await esm.resolve(specifier, parentUrl);
+    return resolution.path === undefined ? null : strip(resolution.path);
+  } catch (error) {
+    if (error instanceof WalkControlFailure) throw error;
+    return null;
+  }
+}
+
+/**
+ * The file a deferral a dependency closure reported (PrefetchResult.deferred)
+ * loads, or null; resolved as the walk resolves its own, staging nothing:
+ * the closure that admits the file stages the package.json files it needs.
+ */
+export async function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null> {
+  // A failed turn is the caller's failure, never an unresolved specifier.
+  const paced = progress && (async (work: number) => {
+    try { await progress(work); } catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
+  });
+  const esm = walkEsmResolver(vfs, paced, async (path) => {
+    try { return await vfs.readFileString(strip(path)); } catch { return null; }
+  });
+  try { return await resolveImportWith(esm, deferral.specifier, deferral.fromDir); }
+  catch (error) {
+    if (error instanceof WalkControlFailure) throw error.cause;
+    throw error;
+  }
 }
 
 /** Phase 2's last tier: the bins of a package the code located by its manifest. */
