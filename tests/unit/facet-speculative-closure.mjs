@@ -210,4 +210,23 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   assert.equal(bundle[nm+'/table/a.js'],undefined,'a module that defers several chooses among them');
   assert.equal(world.reads.includes(nm+'/sharp/index.js'),false);
 }
+
+// Own package means the deferral resolves inside the deferring module's
+// package, not that its specifier is relative: `import('../bar/index.cjs')`
+// from node_modules/foo reaches another package, an optional dependency.
+{
+  const nm=APP+'/node_modules';
+  const files={
+    [APP+'/package.json']:JSON.stringify({dependencies:{foo:'1'}}),
+    [nm+'/foo/package.json']:JSON.stringify({name:'foo',main:'index.js'}),
+    [nm+'/foo/index.js']:'module.exports=()=>import("../bar/index.cjs");',
+    [nm+'/bar/package.json']:JSON.stringify({name:'bar',main:'index.cjs'}),
+    [nm+'/bar/index.cjs']:'module.exports=1;',
+  };
+  const world=launchFs(files);
+  const bundle={};
+  await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0,fileCount:0});
+  assert.equal(bundle[nm+'/foo/index.js'],files[nm+'/foo/index.js']);
+  assert.equal(bundle[nm+'/bar/index.cjs'],undefined,'a relative import() into another package is not the guess\'s own');
+}
 console.log('facet-speculative-closure: atomic admission, shared ownership, real transform growth and control failures');

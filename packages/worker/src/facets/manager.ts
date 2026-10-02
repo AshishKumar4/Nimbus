@@ -2528,9 +2528,7 @@ export async function greedyAddMainEntries(
           maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
         });
       if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
-      for (const deferral of closure.deferred ?? []) {
-        if (deferral.alternatives === 1 && /^\.\.?\//.test(deferral.specifier)) deferred.push(deferral);
-      }
+      for (const deferral of closure.deferred ?? []) if (deferral.alternatives === 1) deferred.push(deferral);
       for (const [member, cell] of Object.entries(closure.bundle)) {
         if (bundle[member] !== undefined) continue;
         bundle[member] = cell;
@@ -2715,7 +2713,9 @@ export async function greedyAddMainEntries(
   for (let i = 0; i < deferred.length; i++) {
     if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
     const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer));
-    if (target === null || followed.has(target)) continue;
+    // Its own package: where the deferral lands, not how it is spelled.
+    const own = packageRootOf(deferred[i]!.fromDir.replace(/^\/+/, '') + '/_');
+    if (target === null || own === null || packageRootOf(target) !== own || followed.has(target)) continue;
     followed.add(target);
     await addOne(target);
   }
