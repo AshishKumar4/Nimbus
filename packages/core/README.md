@@ -85,6 +85,25 @@ root. The shell enforces the same permission model either way: a root-owned
 `/etc/passwd` refuses a write from `.fs`, and `id` resolves names through
 it.
 
+`.fs` takes a relative path from a working directory of its own, as a
+process does: the one the workspace starts in, which is `create`'s `cwd`,
+else `HOME`. A `cd` typed into the shell moves the shell, not `.fs`.
+`ws.fs.cwd` says where that is, and `ws.fs.resolve(path)` gives the
+absolute path an operation on `path` uses. `..` is taken after a link, as
+the kernel takes it. An empty path names nothing (`ENOENT`), and removing
+or renaming `.` or `..` is refused with Linux's code.
+
+```ts
+const ws = await NimbusWorkspace.create({ sql, transactions, cwd: '/home/user/app' });
+await ws.fs.writeFile('notes.txt', 'hi\n');   // /home/user/app/notes.txt
+ws.fs.resolve('src/main.ts');                 // '/home/user/app/src/main.ts'
+```
+
+The session shell's own view, `ws.shell.getVfs()`, is a `ProcessView`:
+it takes every relative path from `/`, because Nimbus's own code hands it
+keys such as `etc/passwd`. `.fs` is a `WorkspaceFs`. Neither type is
+assignable to the other, so neither kind of path can reach the other view.
+
 ## Real runtimes, off Cloudflare
 
 The wasm runtimes are separate npm packages, so nobody downloads a Python

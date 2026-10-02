@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+Breaking for embedders: `NimbusWorkspace.fs` is a `WorkspaceFs`, no
+longer a `ProcessView`, as described below.
+
+- `ws.fs` takes a relative path from a working directory of its own, as a
+  process does: the one the workspace starts in (`create`'s `cwd`, else
+  `HOME`), which a `cd` in the shell does not move. On 0.14.0 a workspace
+  created with `cwd: '/home/user'` answered `ws.fs.readFile('a.txt')` with
+  `ENOENT` while /home/user/a.txt existed, so every embedder resolved
+  paths itself. `ws.fs.cwd` and `ws.fs.resolve(path)` say where a path
+  leads. An empty path is `ENOENT` (`readdir('')` listed `/`), and
+  removing or renaming a last component of `.` or `..` is refused with
+  Linux's code (`remove('/a/b/.', { recursive: true })` removed /a/b).
+  `ws.fs` has every method it had except `process`, the root-relative
+  bridge. The session shell's `ProcessView`, which Nimbus's own code hands
+  root-relative keys such as `etc/passwd`, is still `ws.shell.getVfs()`;
+  the two types are not assignable to each other.
 - Fixed: a process's rename within one mount answered `EXDEV` even where the
   mounted backend renames, so `mv /m/a /m/b`, a node process's `fs.rename`
   and `ws.fs.rename` copied, or failed, where the namespace renames in
