@@ -389,7 +389,8 @@ export class Compiler {
             return (env, args) => bind(env, arraySliceFrom(args, index));
         }
         const bind = this.patternBinder(param, true);
-        return (env, args) => bind(env, args[index]);
+        // As enter() does for simple parameters: nothing past the last argument is read.
+        return (env, args) => bind(env, index < args.length ? args[index] : undefined);
     }
     /** A function or class expression evaluated to a new function object. */
     functionExpr(node, name) {
