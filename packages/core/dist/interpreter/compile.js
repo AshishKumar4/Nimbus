@@ -298,7 +298,7 @@ export class Compiler {
             }
             else {
                 fi.frame = frameTemplate(fs.size, tdzSlots(fs, true));
-                fi.bindParams = this.paramBinder(params);
+                fi.bindParams = this.paramBinder(params, fs.argumentsBinding !== null);
             }
             if (body.type !== 'BlockStatement') {
                 fi.expression = true;
@@ -373,13 +373,27 @@ export class Compiler {
             throw new Error(`interpreter: ${id.name} declares no binding`);
         return ref.binding;
     }
-    paramBinder(params) {
+    /**
+     * Binds a parameter list with expressions, in order. A default can change
+     * the arguments object (`arguments.length = 0`, `arguments[1] = x`), which
+     * natively binds nothing: parameters are bound from the arguments as
+     * passed. So a function that can reach its arguments object binds from a
+     * copy of them, made before any default runs.
+     */
+    paramBinder(params, argumentsReachable) {
         const binders = newSafeList();
         for (let i = 0; i < params.length; i++)
             append(binders, this.parameterBinder(params[i], i));
+        if (!argumentsReachable) {
+            return (env, args) => {
+                for (let i = 0; i < binders.length; i++)
+                    binders[i](env, args);
+            };
+        }
         return (env, args) => {
+            const passed = copyList(args);
             for (let i = 0; i < binders.length; i++)
-                binders[i](env, args);
+                binders[i](env, passed);
         };
     }
     /** Binds parameter `index` (or, a rest parameter, the arguments from it on). */

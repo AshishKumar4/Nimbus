@@ -419,7 +419,7 @@ export class Compiler {
         fi.frame = frameTemplate(fs.size, []);
       } else {
         fi.frame = frameTemplate(fs.size, tdzSlots(fs, true));
-        fi.bindParams = this.paramBinder(params);
+        fi.bindParams = this.paramBinder(params, fs.argumentsBinding !== null);
       }
       if (body.type !== 'BlockStatement') {
         fi.expression = true;
@@ -486,11 +486,24 @@ export class Compiler {
     return ref.binding;
   }
 
-  private paramBinder(params: readonly Pattern[]): (env: Env, args: ArrayLike<unknown>) => void {
+  /**
+   * Binds a parameter list with expressions, in order. A default can change
+   * the arguments object (`arguments.length = 0`, `arguments[1] = x`), which
+   * natively binds nothing: parameters are bound from the arguments as
+   * passed. So a function that can reach its arguments object binds from a
+   * copy of them, made before any default runs.
+   */
+  private paramBinder(params: readonly Pattern[], argumentsReachable: boolean): (env: Env, args: ArrayLike<unknown>) => void {
     const binders = newSafeList<(env: Env, args: ArrayLike<unknown>) => void>();
     for (let i = 0; i < params.length; i++) append(binders, this.parameterBinder(params[i], i));
+    if (!argumentsReachable) {
+      return (env, args) => {
+        for (let i = 0; i < binders.length; i++) binders[i](env, args);
+      };
+    }
     return (env, args) => {
-      for (let i = 0; i < binders.length; i++) binders[i](env, args);
+      const passed = copyList(args);
+      for (let i = 0; i < binders.length; i++) binders[i](env, passed);
     };
   }
 

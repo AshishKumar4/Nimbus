@@ -108,6 +108,13 @@ export declare class Compiler {
     /** Code that runs `body` in the environment `entry` makes. */
     private entered;
     private declaredBinding;
+    /**
+     * Binds a parameter list with expressions, in order. A default can change
+     * the arguments object (`arguments.length = 0`, `arguments[1] = x`), which
+     * natively binds nothing: parameters are bound from the arguments as
+     * passed. So a function that can reach its arguments object binds from a
+     * copy of them, made before any default runs.
+     */
     private paramBinder;
     /** Binds parameter `index` (or, a rest parameter, the arguments from it on). */
     private parameterBinder;

@@ -70,6 +70,16 @@ async function runCases(interpreterFile, opsFile) {
   check('per-iteration let', F('const fs = []; for (let i = 0; i < 3; i++) fs.push(() => i); return fs.map((f) => f())')(), [0, 1, 2]);
   check('destructuring', F('const { a, b: [x, ...r], c = 9 } = { a: 1, b: [2, 3, 4] }; return [a, x, r, c]')(), [1, 2, [3, 4], 9]);
   check('defaults and rest', F('function f(a, b = a + 1, ...r) { return [a, b, r] } return f(1)')(), [1, 2, []]);
+  {
+    // Compiled by V8 as part of this file, and interpreted from the same text.
+    const program = () => [
+      (function (a = (arguments.length = 0), b) { return b; })(undefined, 42),
+      (function (a = (arguments[1] = 7), b) { return [b, arguments[1]]; })(undefined, 42),
+      (function (a = (arguments.length = 4), ...rest) { return rest; })(undefined, 1, 2),
+      (function (a = (() => { arguments[2] = 'changed'; })(), b, { c } = { c: 3 }) { return [b, c]; })(undefined, 2, { c: 'passed' }),
+    ];
+    check('a default that changes the arguments object binds no parameter from it', F(`return (${program})()`)(), program());
+  }
   check('template and tag', F('const t = (s, ...v) => s.raw.join("|") + v.join(","); return [`x${1}y${2}`, t`a${1}b${2}c`]')(), ['x1y2', 'a|b|c1,2']);
   check('optional chains', F('const o = { a: { b: () => 5 } }; return [o?.a?.b(), o.x?.y.z, o.a.c?.()]')(), [5, undefined, undefined]);
   check('with', F('const o = { a: 1 }; with (o) { a = 2; var b = a + 1 } return [o.a, b]')(), [2, 3]);
