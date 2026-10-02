@@ -23,9 +23,11 @@ function routed(options) {
  */
 export function routeRunInThisContext(run) {
   const native = vm.runInThisContext;
+  // Taken before the program runs, which may replace Reflect.apply (node's own vm consults nothing it can replace).
+  const apply = Reflect.apply;
   vm.runInThisContext = function runInThisContext(code, options) {
-    if (!routed(options)) return Reflect.apply(native, vm, [code, options]);
-    return run(String(code), () => Reflect.apply(native, vm, [code, options]));
+    if (!routed(options)) return apply(native, vm, [code, options]);
+    return run(String(code), () => apply(native, vm, [code, options]));
   };
   syncBuiltinESMExports();
   return native;
