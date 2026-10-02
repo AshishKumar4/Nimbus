@@ -93,6 +93,20 @@ const FILES = {
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
+  // Module files written while the program runs (so interpreted), each with
+  // top-level await: import() resolves once the module has finished, and
+  // rejects with what its evaluation throws.
+  'tla.js': [
+    'const fs = require("fs");',
+    'const dir = "/home/user/w/.tmp-tla";',
+    'fs.mkdirSync(dir, { recursive: true });',
+    'const name = Date.now() + "-" + Math.random().toString(36).slice(2);',
+    'fs.writeFileSync(dir + "/late-" + name + ".mjs", "export const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
+    'fs.writeFileSync(dir + "/bad-" + name + ".mjs", "export const w = 1;\\nawait new Promise((r) => setTimeout(r, 5));\\nthrow new Error(\\"tla failed\\");\\n");',
+    'import(dir + "/late-" + name + ".mjs").then((m) => "late=" + m.v, (e) => "late!" + (e.code || e.message))',
+    '  .then((late) => import(dir + "/bad-" + name + ".mjs").then(() => late + " bad=resolved", (e) => late + " bad!" + e.message))',
+    '  .then((line) => console.log("TLA " + line));',
+  ].join('\n'),
   'events.js': [
     'const EventEmitter = require("events");',
     'function Legacy() { EventEmitter.call(this); }',
@@ -260,6 +274,9 @@ try {
 
     // One EventEmitter, workerd's: Node's function-constructor inheritance,
     // express's prototype mixin, native http servers and the static helpers.
+    const tla = await terminal.run(`cd ${W} && node tla.js`);
+    assert.match(tla.stdout, /TLA late=42 bad!tla failed/, tla.stdout);
+
     const events = await terminal.run(`cd ${W} && node events.js`);
     assert.equal(events.status, 0, events.stdout);
     assert.match(events.stdout,
