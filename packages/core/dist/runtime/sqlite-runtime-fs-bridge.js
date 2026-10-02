@@ -376,7 +376,7 @@ export class SqliteRuntimeFsBridge {
         if (located === null)
             throw fsError('ELOOP', 'open', path);
         if (located.mount)
-            return this.openMount(located.mount, located.path, path, normalizedFlags);
+            return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode);
         const p = located.path;
         if (p === '')
             return this.openRoot(path, normalizedFlags);
@@ -864,14 +864,15 @@ export class SqliteRuntimeFsBridge {
         this.scope.handles.set(handle.id, { handle, node, refs: 1 });
         return { ...handle };
     }
-    openMount(mount, name, path, flags) {
+    /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
+    openMount(mount, name, path, flags, mode) {
         const exists = mount.stat(name) !== null;
         if (flags.exclusive && flags.create && exists)
             throw fsError('EEXIST', 'open', path);
         if (!exists && !flags.create)
             throw fsError('ENOENT', 'open', path);
         if (!exists)
-            mount.writeFile(name, new Uint8Array(0));
+            mount.writeFile(name, new Uint8Array(0), mode === undefined ? undefined : { mode });
         const stat = this.virtualStat(mount, name);
         if (flags.directory && stat.type !== 'directory')
             throw fsError('ENOTDIR', 'open', path);

@@ -8,8 +8,12 @@
  * rename. Until that rename the destination keeps what it held. A failure at
  * any step puts back what of the source had gone and removes the staged
  * copy, so a failed move leaves both names as they were. A backend that
- * cannot rename in place is written over where it is, after what the
- * destination held is kept to put back.
+ * cannot rename in place has the destination replaced where it is, after
+ * what it held is kept to put back.
+ *
+ * Everything it creates is created private (the owner's bits only, as GNU
+ * cp creates a copy before it sets the mode) and given its own mode once its
+ * content is complete, so no one reads a copy its source would not let them.
  *
  * Neither atomic to a reader nor across a crash: from the source's removal
  * to the final rename, what is moving is only at the staged name,

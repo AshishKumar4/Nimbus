@@ -149,6 +149,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
     private openRoot;
+    /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
     private openMount;
     /**
      * A mount that cannot write in place (no writeRange): the handle buffers
