@@ -320,6 +320,11 @@ async function runCases(interpreterFile, opsFile) {
     check('a script that is one expression statement, jiti\'s wrapper', mod.exports, { v: 'function' });
     check('its value each time the function runs', interp.compileExpression('[1, 2].length // trailing')(), 2);
     check('after a directive prologue, which the function keeps (vite-node\'s)', interp.compileExpression("'use strict';(() => function () { return this; })")()()(), undefined);
+    // Against V8's own answer: node runs vm under --disallow-code-generation-from-strings.
+    const vm = require('node:vm');
+    for (const code of ['"hello"', '"use strict"', "'a';\n'b'", "'use strict'; 'value'"]) {
+      check(`a script of directives alone completes with the last one's value: ${code}`, interp.compileExpression(code)(), vm.runInThisContext(code));
+    }
     assert.throws(() => interp.compileExpression('(function () {'), SyntaxError);
     assert.throws(() => interp.compileExpression('var x = 1; x'), (e) => e.code === INTERPRETER_UNSUPPORTED);
   }

@@ -104,7 +104,9 @@ export function parseRuntimeFunction(kind, params, body, realm) {
  * returning that expression's value (the script's completion value), its
  * directives the function's own. jiti's module wrapper
  * (`(function (exports, require, ...) { ... });`, Nuxt's config loader) and
- * vite-node's (`'use strict';(...) => { ... }`) are such scripts. Throws the
+ * vite-node's (`'use strict';(...) => { ... }`) are such scripts. A script
+ * of directives alone (`"hello"`) completes with its last one's string: that
+ * is the expression, and those before it the prologue. Throws the
  * SyntaxError V8 would for code that does not parse; null for a script of
  * another shape, whose completion value no function can stand in for.
  */
@@ -120,6 +122,8 @@ export function scriptExpression(code, realm) {
     let first = 0;
     while (first < body.length && isDirective(body[first]))
         first++;
+    if (first === body.length && first > 0)
+        first--;
     if (first !== body.length - 1)
         return null;
     const statement = body[first];

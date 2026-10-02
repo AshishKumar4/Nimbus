@@ -199,6 +199,9 @@ console.log('facet-commonjs-cell OK');
   wrapper(mod.exports, () => {}, mod, '/w/nuxt.config.ts', '/w', () => {});
   assert.deepEqual(mod.exports, { answer: 42, args: 'function' }, 'the staged expression is jiti\'s wrapper');
   assert.equal(load(runtimeExpressionModule('1 + 2 // trailing'))(), 3);
+  // A script of directives alone completes with its last one's value, as V8's vm.runInThisContext answers.
+  assert.equal(load(runtimeExpressionModule('"hello"'))(), 'hello');
+  assert.equal(load(runtimeExpressionModule("'use strict'; 'a';\n'b'"))(), 'b');
   assert.equal(load(runtimeExpressionModule("'use strict';(() => function () { return this; })"))()()(), undefined, 'vite-node\'s prologue is kept');
   assert.throws(() => load(runtimeExpressionModule('(function () {')), SyntaxError);
   assert.throws(() => load(runtimeExpressionModule('var x = 1; x')), /one expression/);
