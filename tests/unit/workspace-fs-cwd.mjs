@@ -127,6 +127,7 @@ assert.equal(await code(() => inKeep.unlink('.')), 'EISDIR');
 assert.equal(await code(() => inKeep.remove('.', { recursive: true })), 'EINVAL');
 assert.equal(await code(() => inKeep.removeRecursive('..')), 'EINVAL');
 assert.equal(await code(() => inKeep.rename('.', '/home/user/moved')), 'EBUSY');
+assert.equal(await code(() => inKeep.move('/home/user/a.txt', '..')), 'EBUSY');
 assert.equal(await ws.fs.isDirectory('keep/inner'), true, 'nothing was removed');
 assert.equal(inKeep.resolve('x'), '/home/user/keep/inner/x', 'a view at another directory');
 

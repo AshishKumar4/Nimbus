@@ -21,6 +21,18 @@ longer a `ProcessView`, as described below.
   bridge. The session shell's `ProcessView`, which Nimbus's own code hands
   root-relative keys such as `etc/passwd`, is still `ws.shell.getVfs()`;
   the two types are not assignable to each other.
+- `ws.fs.move(from, to)` is mv's move, and `move(vfs, from, to)` in
+  `@nimbus-sh/core/vfs/move.js` is the same move over any `VFS`; the
+  shell's `mv` uses it. Within one filesystem it is one rename. Between
+  two, and on a backend that cannot rename in place, it stages a copy
+  beside the destination and confirms it, removes the source, and renames
+  the copy over the destination, which keeps its bytes until then. A
+  failure at any step puts the source back and leaves no copy behind;
+  `mv` copied straight onto the destination, so a failure mid-copy left
+  part of a tree there, or a destination file already overwritten.
+  Directories move too. `rename` still answers `EXDEV` between mounts. A
+  directory moved onto a file now answers `ENOTDIR`, where `mv` said
+  `ENOTEMPTY`, and `mv` no longer makes a missing destination directory.
 - Fixed: a process's rename within one mount answered `EXDEV` even where the
   mounted backend renames, so `mv /m/a /m/b`, a node process's `fs.rename`
   and `ws.fs.rename` copied, or failed, where the namespace renames in

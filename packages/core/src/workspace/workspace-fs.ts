@@ -15,6 +15,7 @@
  * that would read it from the root.
  */
 
+import { move, type MoveOptions } from '../vfs/move.js';
 import { syscallError, VfsError } from '../vfs/vfs-error.js';
 import type { VFS, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
@@ -75,8 +76,16 @@ export class WorkspaceFs implements VFS {
   async mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void> { return await this.view.mkdir(this.resolve(path), options); }
   async unlink(path: string): Promise<void> { return await this.view.unlink(this.entry(path, 'unlink')); }
   async rmdir(path: string): Promise<void> { return await this.view.rmdir(this.entry(path, 'rmdir')); }
-  /** rename(2): EXDEV across filesystems. */
+  /** rename(2): EXDEV across filesystems, where {@link move} copies. */
   async rename(from: string, to: string): Promise<void> { return await this.view.rename(this.entry(from, 'rename'), this.entry(to, 'rename')); }
+  /**
+   * mv: one rename, or across filesystems (and on one that cannot rename in
+   * place) a copy that happens whole or not at all, directories included.
+   * `to` is the new name, as rename's is. See vfs/move.ts.
+   */
+  async move(from: string, to: string, options?: MoveOptions): Promise<void> {
+    await move(this.view, this.entry(from, 'rename'), this.entry(to, 'rename'), options);
+  }
   async readRange(path: string, offset: number, length: number): Promise<Uint8Array> { return await this.view.readRange(this.resolve(path), offset, length); }
   /** A ranged read that neither consults nor fills the session's content cache. */
   async readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array> {
