@@ -13,7 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
-import { rolldownBuildHost, BUILD_FACET_WORKER_ID } from '../../packages/worker/src/facets/build-facet.ts';
+import { prewarmBuildFacet, rolldownBuildHost, BUILD_FACET_WORKER_ID } from '../../packages/worker/src/facets/build-facet.ts';
 import { STAGED_BINDING_ARTIFACTS } from '../../packages/worker/src/napi-wasm-artifacts.generated.ts';
 import { PROJECTS, WRANGLER_OPTIONS } from '../fixtures/build-differential/projects.mjs';
 import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
@@ -60,6 +60,29 @@ try {
       assert.deepEqual(outcomes[i].metafile, native.metafile);
     }
     console.log(`  ok  three overlapping builds: one facet, one binding (${(memories[0].buffer.byteLength / MiB).toFixed(1)} MiB), native rolldown's output`);
+  }
+
+  // ── A warm-up loads the facet and its binding; the first build reuses them ──
+  {
+    const { BuildFacet: Fresh, cleanup: release } = await freshFacetClass();
+    try {
+      const { ctx, env, counts } = durableObject(Fresh);
+      const before = memories.length;
+      prewarmBuildFacet(ctx, env);
+      prewarmBuildFacet(ctx, env);
+      for (let i = 0; i < 200 && memories.length === before; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(memories.length, before + 1, 'the warm-up creates the binding');
+      const project = PROJECTS['worker-routes'];
+      await new EsbuildService(memoryFs('worker-routes', project.files), { buildHost: rolldownBuildHost(ctx, env) })
+        .build([`/home/user/worker-routes/${project.entry}`], project.options);
+      assert.deepEqual([counts.loaderGets, counts.facetInstances, memories.length], [1, 1, before + 1], 'the build runs on the warmed facet and binding');
+      // Without a loader there is nothing to warm, and nothing is thrown or left rejected.
+      prewarmBuildFacet({ facets: ctx.facets }, {});
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      release();
+    }
+    console.log('  ok  a warm-up loads the facet and creates its binding; the first build reuses both');
   }
 
   // ── A failed build crosses RPC as esbuild's did ─────────────────────────────

@@ -7,6 +7,7 @@ import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
+import { prewarmBuildFacet } from '../facets/build-facet.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath } from '@nimbus-sh/core/runtime/runtime-registry.js';
@@ -596,6 +597,8 @@ export async function registerHostedCommands(self, workspace) {
             ctx.stderr.write(`Unknown command: ${args[0]}. Use "${invokedAs} dev" or "${invokedAs} --help".\n`);
             return 1;
         }
+        // Its first build waits on the build facet: start loading it now.
+        prewarmBuildFacet(self.ctx, self.env);
         // First-run banner — only when invoked as `wrangler`, and only once
         // per session. Makes it OBVIOUS to the user that they're not running
         // real wrangler, and that Nimbus is doing something different.

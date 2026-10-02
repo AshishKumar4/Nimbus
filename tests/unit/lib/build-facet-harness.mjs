@@ -84,6 +84,14 @@ export function durableObject(BuildFacet, classFor = async () => BuildFacet) {
         if (!facets.has(name)) facets.set(name, load().then(({ class: FacetClass }) => { counts.facetInstances++; return new FacetClass({}, {}); }));
         const instance = facets.get(name);
         return {
+          warm: async () => {
+            WebAssembly.Memory = class extends NativeMemory { constructor(d) { super(d); memories.push(this); } };
+            try {
+              await (await instance).warm();
+            } finally {
+              WebAssembly.Memory = NativeMemory;
+            }
+          },
           build: async (options, plugin) => {
             // While the facet runs, its own memories are counted: the binding's is created on the first build.
             WebAssembly.Memory = class extends NativeMemory { constructor(d) { super(d); memories.push(this); } };

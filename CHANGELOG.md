@@ -31,6 +31,8 @@ published independently in the `@nimbus-sh` npm scope.
   rebuilt by esbuild in the esbuild facet (as transforms too deep for Oxc
   are), and the next build gets a fresh build facet. A Node host is no
   longer kept alive by a dead binding.
+- The build facet starts loading when `wrangler dev` starts, while it
+  reads its config, rather than when its first build asks for it.
 - A `NimbusWorkspace` no longer holds a lazily built esbuild service: its
   only runtimes are bash, python and wasm-runner, which reads its `.wasm`
   itself, so nothing in it ever transformed source.

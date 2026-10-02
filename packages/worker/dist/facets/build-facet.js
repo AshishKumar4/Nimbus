@@ -54,6 +54,9 @@ const BUILD_FACET_BODY = [
     '  };',
     '}',
     'export class BuildFacet extends DurableObject {',
+    '  async warm() {',
+    '    if (!crashed) await rolldownRuntime();',
+    '  }',
     '  async build(options, plugin) {',
     '    if (crashed) return crashOutcome();',
     '    const { build } = await rolldownRuntime();',
@@ -164,6 +167,33 @@ function retireFacet(ctx, facet) {
     }
     catch {
         // already gone
+    }
+}
+/**
+ * Loads the Durable Object's build facet ahead of its first build: the staged
+ * parts fetched and verified, the binding instantiated and rolldown's
+ * JavaScript evaluated, which a fresh session's first build would otherwise
+ * wait on (a 13 MiB binding), while `wrangler dev` reads its config. (A
+ * warm-up as `vite build` starts measured no gain: that build's first
+ * seconds go to resolving through the VFS plugin.) Best effort: a failed
+ * warm-up only drops the stub, as a failed call does.
+ */
+export function prewarmBuildFacet(ctx, env) {
+    void warmBuildFacet(ctx, env);
+}
+// The stub call stays a direct call awaited by the frame that made it, as
+// every facet call must (see beginLoaderFetch).
+async function warmBuildFacet(ctx, env) {
+    const facet = sharedBuildFacet(ctx, env);
+    const endFetch = beginLoaderFetch(ctx, BUILD_FACET_WORKER_ID);
+    try {
+        await (await facet.stub).warm();
+    }
+    catch {
+        forgetBuildFacet(ctx, facet);
+    }
+    finally {
+        endFetch();
     }
 }
 /**
