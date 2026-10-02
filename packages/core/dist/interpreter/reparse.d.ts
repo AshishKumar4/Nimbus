@@ -1,4 +1,5 @@
 import { type FunctionNode } from './scope.js';
+import { type Owned } from './tree.js';
 /** What precedes a function's parameters, which decides how its text is wrapped. */
 export type FunctionSyntax = 
 /**
@@ -33,7 +34,7 @@ export interface FunctionSite {
     readonly strict: boolean;
 }
 export interface Reparsed {
-    readonly node: FunctionNode;
+    readonly node: Owned<FunctionNode>;
     /** The text that was parsed; node offsets index it. */
     readonly text: string;
     /** The offset in the unit's source of `text`'s first character. */

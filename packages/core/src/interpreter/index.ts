@@ -30,6 +30,7 @@ import { type ModuleCell, moduleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
+import { type Owned, ownTree } from './tree.js';
 import {
   Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf,
   stringOf, stringSlice, withElement,
@@ -166,7 +167,8 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
         if (short === body) throw error;
         parsed = parseRuntimeFunction(kind, params, body, REALM);
       }
-      const { node, text } = parsed;
+      const text = parsed.text;
+      const node = ownTree(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
       const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
@@ -179,23 +181,23 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
       const unitHost: UnitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
-      const compileCell = (program: Program): ModuleCell => {
+      const compileCell = (program: Owned<Program>): ModuleCell => {
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
         const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
         releaseScopes(root);
         return cell;
       };
-      let module: Program | null = null;
+      let module: Owned<Program> | null = null;
       try {
-        module = parseQuick(text, { ...PARSE, sourceType: 'module' });
+        module = ownTree(parseQuick(text, { ...PARSE, sourceType: 'module' }));
       } catch {
         // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
       }
       if (module !== null && hasModuleSyntax(module)) return compileCell(module);
-      let script: Program;
+      let script: Owned<Program>;
       try {
-        script = parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true });
+        script = ownTree(parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true }));
       } catch (error) {
         // Top-level await or import.meta without imports or exports: still a module.
         if (module === null) throw error;
@@ -217,7 +219,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     },
 
     runScript(text) {
-      const program = parse(text, { ...PARSE, sourceType: 'script' });
+      const program = ownTree(parse(text, { ...PARSE, sourceType: 'script' }));
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
       const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);

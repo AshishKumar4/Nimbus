@@ -25,6 +25,7 @@ import {
   Error, SafeMap, type SafeList, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys,
   reflectGet, someItem,
 } from './intrinsics.js';
+import type { Owned } from './tree.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
@@ -300,8 +301,9 @@ export interface UnitOptions {
  * Analyze a program. For a script, top-level var and function declarations
  * become global object properties (they declare no binding here); for a
  * module, every top-level declaration is a binding of the module scope.
+ * Every analysis reads only the interpreter's own copy of a tree (tree.ts).
  */
-export function analyzeProgram(program: Program, options: UnitOptions): Analysis {
+export function analyzeProgram(program: Owned<Program>, options: UnitOptions): Analysis {
   const analyzer = new Analyzer();
   const strict = options.strict || options.kind === 'module' || hasUseStrict(program.body);
   const root = new FunctionScope(options.kind, null, strict, false, options.kind === 'module', false);
@@ -320,7 +322,7 @@ export function analyzeProgram(program: Program, options: UnitOptions): Analysis
 }
 
 /** Analyze a function expression that closes over the global scope (a Function constructor's). */
-export function analyzeFunction(node: FunctionExpression): Analysis {
+export function analyzeFunction(node: Owned<FunctionExpression>): Analysis {
   const analyzer = new Analyzer();
   analyzer.visitFunction(node, null, { strict: false, method: false, derived: false, ctor: false, unbound: true });
   analyzer.finish(analyzer.analysis.functionScopeOf(node));
@@ -333,7 +335,7 @@ export function analyzeFunction(node: FunctionExpression): Analysis {
  * earlier analysis made and released. Their bindings and slots stand: this
  * analysis resolves the function's names to them as that one did.
  */
-export function analyzeLazyFunction(node: FunctionNode, outer: Scope, options: FunctionOptions, moduleScope: FunctionScope | null): Analysis {
+export function analyzeLazyFunction(node: Owned<FunctionNode>, outer: Scope, options: FunctionOptions, moduleScope: FunctionScope | null): Analysis {
   const analyzer = new Analyzer();
   analyzer.analysis.moduleScope = moduleScope;
   analyzer.finish(analyzer.visitFunction(node, outer, options));
@@ -365,7 +367,7 @@ export function releaseScopes(scope: Scope): void {
  * Analyze a CommonJS module body: a function of Node's five wrapper
  * parameters whose `this` is `exports`.
  */
-export function analyzeCommonJs(program: Program, params: readonly string[]): Analysis {
+export function analyzeCommonJs(program: Owned<Program>, params: readonly string[]): Analysis {
   const analyzer = new Analyzer();
   const strict = hasUseStrict(program.body);
   const root = new FunctionScope('function', null, strict, false, false, false);
@@ -538,15 +540,16 @@ class Analyzer {
   resolve(id: Identifier, scope: Scope, init = false): void {
     // The interpreter's own bindings ('%this', '*default*', '#field') have
     // names no identifier can have. acorn runs on the realm's built-ins, which
-    // a program may have replaced to change the tree it returns; a tree
-    // naming one of those bindings is refused rather than given its slot.
-    const first = charCodeAt(id.name, 0);
-    if (first === 0x25 || first === 0x2a || first === 0x23) throw new Error(`interpreter: the parser produced the identifier ${id.name}`);
-    this.resolveName(id, scope, init);
+    // a program may have replaced to change the tree it returns; ownTree
+    // refuses a tree naming one of those bindings, and so does this, on the
+    // one name it resolves.
+    const name = id.name;
+    const first = charCodeAt(name, 0);
+    if (first === 0x25 || first === 0x2a || first === 0x23) throw new Error(`interpreter: the parser produced the identifier ${name}`);
+    this.resolveName(id, name, scope, init);
   }
 
-  private resolveName(id: Identifier, scope: Scope, init: boolean): void {
-    const name = id.name;
+  private resolveName(id: Identifier, name: string, scope: Scope, init: boolean): void {
     const withs = newSafeList<Scope>();
     let s: Scope | null = scope;
     while (s) {
@@ -926,8 +929,9 @@ class Analyzer {
 
   resolvePrivate(node: PrivateIdentifier, scope: Scope): void {
     // Private names resolve like identifiers, under their '#'-prefixed name.
-    const id: Identifier = { type: 'Identifier', name: `#${node.name}`, start: node.start, end: node.end };
-    this.resolveName(id, scope, false);
+    const name = `#${node.name}`;
+    const id: Identifier = { type: 'Identifier', name, start: node.start, end: node.end };
+    this.resolveName(id, name, scope, false);
     this.analysis.privateRefs.set(node, this.analysis.ref(id));
   }
 

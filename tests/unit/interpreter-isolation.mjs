@@ -40,6 +40,9 @@ const PROGRAM = `
 const secret = { secret: true };
 globalThis.registerSecret(secret);
 const out = [];
+const probe = 'probe';
+// What a value read inside the class is: a private name it was handed could read the field.
+const describe = (v, box) => (v !== null && typeof v === 'object' && typeof v.get === 'function' ? (v.get(box) === secret ? 'the private field' : 'a private name') : v);
 class Box {
   #value = secret;
   static #count = 0;
@@ -47,12 +50,13 @@ class Box {
   get holds() { return this.#value === secret; }
   static get count() { return Box.#count; }
   *items() { yield this.n; yield this.#value === secret; }
+  static reveal(box) { return describe(probe, box); }
 }
 const boxes = [];
 for (let i = 0; i < 3; i++) boxes.push(new Box(i));
 const readers = [];
 for (let i = 0; i < 3; i++) readers.push(() => i + (secret ? 10 : 0));
-out.push(readers.map((r) => r()), boxes.map((b) => b.holds), Box.count);
+out.push(readers.map((r) => r()), boxes.map((b) => b.holds), Box.count, Box.reveal(boxes[0]));
 const [first, , third = 7, ...rest] = [1, 2, undefined, 4, 5];
 const { a, b: { c = 3 } = {}, ...others } = { a: 1, d: 4, e: 5 };
 out.push(first, third, rest, a, c, Object.keys(others));
@@ -103,7 +107,9 @@ const NAMES = [
  * the interpreter loads (and after the launch's start captured the
  * primordials) or `after`. Methods acorn (the parser, bundled with the
  * interpreter) calls are left alone: it parses with the realm's built-ins,
- * on the program's own source text.
+ * on the program's own source text. Except push-before-load: a replaced
+ * push receives the nodes acorn builds, which the interpreter reads only
+ * through its own copy (tree.ts).
  */
 const CASES = {
   // Array copies made with the receiver's species: a constructor that keeps what it is given.
@@ -122,6 +128,9 @@ const CASES = {
   'iteration-before-load': { when: 'before', install: (h) => h.iteration() },
   // Function.prototype.toString wrapped before the interpreter loads, as a program would wrap the native one.
   'tostring-before-load': { when: 'before', install: (h) => h.toString() },
+  // Array.prototype.push replaced before the interpreter loads: acorn pushes the nodes it builds, so the
+  // replacement can make an identifier's name an accessor that answers each read differently.
+  'push-before-load': { when: 'before', install: (h) => h.push() },
 };
 
 if (process.argv[2] !== '--case') {
@@ -322,6 +331,24 @@ async function runCase(name, mode, interpreterFile, opsFile) {
       const wrapper = { toString() { record('Function.prototype.toString', this, []); return `guest:${R.apply(native, this, [])}`; } }.toString;
       G.guestToString = wrapper;
       defineProperty(Function.prototype, 'toString', { __proto__: null, value: wrapper, writable: true, enumerable: false, configurable: true });
+    },
+    push() {
+      // The program's `probe`, as a node acorn pushes (a call's argument): read once it is `probe`,
+      // after that the name of Box's private name. Natively nothing pushes a node.
+      const push = Array.prototype.push;
+      const replaced = {
+        push(...items) {
+          record('Array.prototype.push', this, items);
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (item === null || typeof item !== 'object' || !hasOwn(item, 'type') || item.type !== 'Identifier' || item.name !== 'probe') continue;
+            let reads = 0;
+            defineProperty(item, 'name', { __proto__: null, get: () => (reads++ === 0 ? 'probe' : '#value'), enumerable: true, configurable: true });
+          }
+          return R.apply(push, this, items);
+        },
+      }.push;
+      defineProperty(Array.prototype, 'push', { __proto__: null, value: replaced, writable: true, enumerable: false, configurable: true });
     },
   };
 

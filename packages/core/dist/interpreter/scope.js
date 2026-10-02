@@ -247,6 +247,7 @@ export const MODULE_CELL_PARAMS = ['%exports', '%require', '%module', '%filename
  * Analyze a program. For a script, top-level var and function declarations
  * become global object properties (they declare no binding here); for a
  * module, every top-level declaration is a binding of the module scope.
+ * Every analysis reads only the interpreter's own copy of a tree (tree.ts).
  */
 export function analyzeProgram(program, options) {
     const analyzer = new Analyzer();
@@ -518,15 +519,16 @@ class Analyzer {
     resolve(id, scope, init = false) {
         // The interpreter's own bindings ('%this', '*default*', '#field') have
         // names no identifier can have. acorn runs on the realm's built-ins, which
-        // a program may have replaced to change the tree it returns; a tree
-        // naming one of those bindings is refused rather than given its slot.
-        const first = charCodeAt(id.name, 0);
-        if (first === 0x25 || first === 0x2a || first === 0x23)
-            throw new Error(`interpreter: the parser produced the identifier ${id.name}`);
-        this.resolveName(id, scope, init);
-    }
-    resolveName(id, scope, init) {
+        // a program may have replaced to change the tree it returns; ownTree
+        // refuses a tree naming one of those bindings, and so does this, on the
+        // one name it resolves.
         const name = id.name;
+        const first = charCodeAt(name, 0);
+        if (first === 0x25 || first === 0x2a || first === 0x23)
+            throw new Error(`interpreter: the parser produced the identifier ${name}`);
+        this.resolveName(id, name, scope, init);
+    }
+    resolveName(id, name, scope, init) {
         const withs = newSafeList();
         let s = scope;
         while (s) {
@@ -983,8 +985,9 @@ class Analyzer {
     }
     resolvePrivate(node, scope) {
         // Private names resolve like identifiers, under their '#'-prefixed name.
-        const id = { type: 'Identifier', name: `#${node.name}`, start: node.start, end: node.end };
-        this.resolveName(id, scope, false);
+        const name = `#${node.name}`;
+        const id = { type: 'Identifier', name, start: node.start, end: node.end };
+        this.resolveName(id, name, scope, false);
         this.analysis.privateRefs.set(node, this.analysis.ref(id));
     }
     visitExpression(node, scope) {

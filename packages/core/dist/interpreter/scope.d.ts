@@ -17,6 +17,7 @@
  */
 import type { AnonymousClassDeclaration, AnonymousFunctionDeclaration, AnyNode, ArrowFunctionExpression, BlockStatement, CatchClause, ClassDeclaration, ClassExpression, ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, MethodDefinition, ModuleDeclaration, Pattern, PrivateIdentifier, Program, PropertyDefinition, Statement, StaticBlock, SwitchStatement, VariableDeclaration } from 'acorn';
 import { type SafeList } from './intrinsics.js';
+import type { Owned } from './tree.js';
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
 export type ClassNode = ClassDeclaration | AnonymousClassDeclaration | ClassExpression;
 export type BindingKind = 'var' | 'let' | 'const' | 'class' | 'function' | 'param' | 'catch' | 'import'
@@ -146,17 +147,18 @@ export interface UnitOptions {
  * Analyze a program. For a script, top-level var and function declarations
  * become global object properties (they declare no binding here); for a
  * module, every top-level declaration is a binding of the module scope.
+ * Every analysis reads only the interpreter's own copy of a tree (tree.ts).
  */
-export declare function analyzeProgram(program: Program, options: UnitOptions): Analysis;
+export declare function analyzeProgram(program: Owned<Program>, options: UnitOptions): Analysis;
 /** Analyze a function expression that closes over the global scope (a Function constructor's). */
-export declare function analyzeFunction(node: FunctionExpression): Analysis;
+export declare function analyzeFunction(node: Owned<FunctionExpression>): Analysis;
 /**
  * Analyze a function compiled on its first call, parsed again on its own
  * (reparse.ts), inside the scopes of the function that defined it, which an
  * earlier analysis made and released. Their bindings and slots stand: this
  * analysis resolves the function's names to them as that one did.
  */
-export declare function analyzeLazyFunction(node: FunctionNode, outer: Scope, options: FunctionOptions, moduleScope: FunctionScope | null): Analysis;
+export declare function analyzeLazyFunction(node: Owned<FunctionNode>, outer: Scope, options: FunctionOptions, moduleScope: FunctionScope | null): Analysis;
 /**
  * Release an analysis once its function is compiled: what it keeps is what a
  * function compiled later needs of the scopes it sits in. Its scopes drop
@@ -171,7 +173,7 @@ export declare function releaseScopes(scope: Scope): void;
  * Analyze a CommonJS module body: a function of Node's five wrapper
  * parameters whose `this` is `exports`.
  */
-export declare function analyzeCommonJs(program: Program, params: readonly string[]): Analysis;
+export declare function analyzeCommonJs(program: Owned<Program>, params: readonly string[]): Analysis;
 export interface FunctionOptions {
     readonly strict: boolean;
     readonly method: boolean;

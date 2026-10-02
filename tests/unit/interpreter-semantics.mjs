@@ -166,6 +166,24 @@ async function runCases(interpreterFile, opsFile) {
     check('compiles and runs with built-ins replaced', result, [1, 2, 2, 3, 4, 5, [1, 'patched'], 't4', true, ['patched']]);
     check('async code with built-ins replaced', await asyncResult, { v: 9, w: ['patched'] });
   }
+  {
+    // acorn pushes the nodes it builds: a replaced push can rename an identifier, here a parameter,
+    // to the interpreter's own `this` binding. The tree is refused, not given that binding's slot.
+    const push = Array.prototype.push;
+    Array.prototype.push = function (...items) {
+      for (const item of items) if (item && item.type === 'Identifier' && item.name === 'a') item.name = '%this';
+      return Reflect.apply(push, this, items);
+    };
+    let refused;
+    try {
+      interp.compileFunction('function', [], 'function f(a) { return this; } return f.call(1, 2);')();
+    } catch (e) {
+      refused = e.message;
+    } finally {
+      Array.prototype.push = push;
+    }
+    check('a tree naming an interpreter binding is refused', refused, 'interpreter: the parser produced the identifier %this');
+  }
 
   // ── Calls ──
   check('a parenthesized optional chain keeps its receiver', F('const a = { b() { return this._b }, _b: 42 }; return [(a?.b)(), (a.b)?.()]')(), [42, 42]);

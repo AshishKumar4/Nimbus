@@ -12,6 +12,7 @@
 import { parse } from 'acorn';
 import { Error, reflectGetPrototypeOf, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
 import { forEachChildNode } from './scope.js';
+import { ownTree } from './tree.js';
 // acorn assigns each node's fields as it builds it. A program may since have
 // defined accessors on Object.prototype under those names (test262 defines
 // `callee`), which the assignments would run into; nodes inherit nothing.
@@ -51,7 +52,7 @@ export function reparseFunction(site) {
     const around = wrapper(site.syntax, site.strict, site.module);
     const before = around[0];
     const text = `${before}${stringSlice(site.source, site.start, site.end)}${around[1]}`;
-    const program = parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' });
+    const program = ownTree(parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' }));
     const start = before.length;
     const end = start + (site.end - site.start);
     const node = findFunction(program, start, end);
@@ -66,6 +67,7 @@ function findFunction(root, start, end) {
         return root;
     let found = null;
     forEachChildNode(root, (child) => {
+        // A node of an owned tree is owned.
         if (found === null && child.start <= start && child.end >= end)
             found = findFunction(child, start, end);
     });

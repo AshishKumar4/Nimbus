@@ -12,6 +12,7 @@
 import { parse, type AnyNode, type Options } from 'acorn';
 import { Error, reflectGetPrototypeOf, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
 import { type FunctionNode, forEachChildNode } from './scope.js';
+import { type Owned, ownTree } from './tree.js';
 
 // acorn assigns each node's fields as it builds it. A program may since have
 // defined accessors on Object.prototype under those names (test262 defines
@@ -49,7 +50,7 @@ export interface FunctionSite {
 }
 
 export interface Reparsed {
-  readonly node: FunctionNode;
+  readonly node: Owned<FunctionNode>;
   /** The text that was parsed; node offsets index it. */
   readonly text: string;
   /** The offset in the unit's source of `text`'s first character. */
@@ -86,7 +87,7 @@ export function reparseFunction(site: FunctionSite): Reparsed {
   const around = wrapper(site.syntax, site.strict, site.module);
   const before = around[0];
   const text = `${before}${stringSlice(site.source, site.start, site.end)}${around[1]}`;
-  const program = parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' });
+  const program = ownTree(parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' }));
   const start = before.length;
   const end = start + (site.end - site.start);
   const node = findFunction(program, start, end);
@@ -95,12 +96,13 @@ export function reparseFunction(site: FunctionSite): Reparsed {
 }
 
 /** The function node spanning exactly [start, end) under `root`. */
-function findFunction(root: AnyNode, start: number, end: number): FunctionNode | null {
+function findFunction(root: Owned<AnyNode>, start: number, end: number): Owned<FunctionNode> | null {
   const isFunction = root.type === 'FunctionExpression' || root.type === 'ArrowFunctionExpression' || root.type === 'FunctionDeclaration';
   if (isFunction && root.start === start && root.end === end) return root;
-  let found: FunctionNode | null = null;
+  let found: Owned<FunctionNode> | null = null;
   forEachChildNode(root, (child) => {
-    if (found === null && child.start <= start && child.end >= end) found = findFunction(child, start, end);
+    // A node of an owned tree is owned.
+    if (found === null && child.start <= start && child.end >= end) found = findFunction(child as Owned<AnyNode>, start, end);
   });
   return found;
 }
