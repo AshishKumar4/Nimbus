@@ -3793,7 +3793,8 @@ const TOOL_CONFIG = /^(.+)\.config\.(?:c|m)?(?:j|t)s$/;
  * names, and a first run would miss it. A config is the tool's when it is
  * named for the launched package or a package that one depends on (Astro
  * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
- * (eslint.config.js beside Vite) is not.
+ * (eslint.config.js beside Vite) is not. What a config names by a string
+ * (PostCSS's plugins) the tool loads by name: those join the walk's phase 2.
  */
 export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]> {
   if (scriptPath === undefined) return [];
@@ -3814,7 +3815,7 @@ export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: st
   const dir = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
   return entries.flatMap((entry) => {
     const tool = entry.type === 'file' ? TOOL_CONFIG.exec(entry.name)?.[1] : undefined;
-    return tool !== undefined && tools.has(tool) ? [{ path: (dir ? dir + '/' : '') + entry.name }] : [];
+    return tool !== undefined && tools.has(tool) ? [{ path: (dir ? dir + '/' : '') + entry.name, config: true }] : [];
   });
 }
 

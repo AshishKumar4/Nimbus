@@ -63,4 +63,31 @@ const script = await buildPrefetchBundle(launchFs(files).fs, {
 });
 assert.equal(script.bundle[`${NM}/ms/index.js`], undefined, 'a plain script roots no tool config');
 
+// What a config names by a string, the tool loads by name. Vite loads
+// postcss.config.js's plugins with createRequire(config).resolve(name), and a
+// Tailwind v3 app's dev server missed node_modules/tailwindcss/lib/index.js on
+// the launch after its first. Names that resolve to no installed package, and
+// a config of a tool the launch does not run, stage nothing.
+{
+  const named = {
+    ...files,
+    [`${APP}/postcss.config.js`]: "export default { plugins: { tailwindcss: {}, '@scope/fmt': {}, plugins: 1 }, parser: 'not-installed' };\n",
+    [`${APP}/eslint.config.js`]: "export default { plugins: ['eslint-plugin-big'] };\n",
+    [`${NM}/tailwindcss/package.json`]: JSON.stringify({ name: 'tailwindcss', main: 'lib/index.js' }),
+    [`${NM}/tailwindcss/lib/index.js`]: "module.exports = require('./plugin.js');\n",
+    [`${NM}/tailwindcss/lib/plugin.js`]: 'module.exports = () => ({});\n',
+    [`${NM}/@scope/fmt/package.json`]: JSON.stringify({ name: '@scope/fmt', exports: { require: './fmt.cjs', import: './fmt.mjs' } }),
+    [`${NM}/@scope/fmt/fmt.cjs`]: 'module.exports = 1;\n',
+    [`${NM}/@scope/fmt/fmt.mjs`]: 'export default 1;\n',
+  };
+  const state = await buildPrefetchBundle(launchFs(named).fs, {
+    scriptPath: `/${VITE}/bin/vite.js`, cwd: `/${APP}`, entryCode: named[`${VITE}/bin/vite.js`],
+  });
+  for (const path of [`${NM}/tailwindcss/lib/index.js`, `${NM}/tailwindcss/lib/plugin.js`, `${NM}/@scope/fmt/fmt.cjs`]) {
+    assert.ok(state.bundle[path] !== undefined, `a package postcss.config.js names is in the map, as require resolves it: ${path}`);
+  }
+  assert.equal(state.bundle[`${NM}/@scope/fmt/fmt.mjs`], undefined, 'resolved as the config\'s require resolves it');
+  assert.equal(state.bundle[`${NM}/eslint-plugin-big/index.js`], undefined, 'a config of a tool this launch does not run names nothing');
+}
+
 console.log('facet-bundle-tool-config: ok');
