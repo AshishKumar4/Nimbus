@@ -12,6 +12,7 @@ import { testBox } from './lib/test-box.mjs';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { move } from '../../packages/core/src/vfs/move.ts';
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000 };
 const text = (bytes) => new TextDecoder().decode(bytes);
@@ -21,32 +22,38 @@ const STAGED = /\.nimbus-move-/;
 /** A mounted volume that fails where it is told to, and lets a test watch each call. */
 class Faulty extends MemoryVFS {
   constructor() { super(USER); this.faults = []; this.watch = null; }
-  fault(op, match, { code = 'EIO', once = false } = {}) { this.faults.push({ op, match, code, once }); }
-  at(op, path) {
-    this.watch?.(op, path);
-    const index = this.faults.findIndex((f) => f.op === op && f.match.test(path));
+  /** `after`: the call changes the volume, then fails. */
+  fault(op, match, { code = 'EIO', once = false, after = false } = {}) { this.faults.push({ op, match, code, once, after }); }
+  at(op, path, after = false) {
+    if (!after) this.watch?.(op, path);
+    const index = this.faults.findIndex((f) => f.op === op && f.after === after && f.match.test(path));
     if (index < 0) return;
     const { code, once } = this.faults[index];
     if (once) this.faults.splice(index, 1);
     throw new VfsError(code, 'injected failure', path);
   }
-  writeFile(path, data, options) { this.at('writeFile', path); return super.writeFile(path, data, options); }
-  writeRange(path, offset, bytes) { this.at('writeRange', path); return super.writeRange(path, offset, bytes); }
-  truncate(path, size) { this.at('truncate', path); return super.truncate(path, size); }
-  mkdir(path, options) { this.at('mkdir', path); return super.mkdir(path, options); }
-  unlink(path) { this.at('unlink', path); return super.unlink(path); }
-  removeRecursive(path) { this.at('removeRecursive', path); return super.removeRecursive(path); }
-  rename(from, to) { this.at('rename', from); return super.rename(from, to); }
+  call(op, path, run) { this.at(op, path); const result = run(); this.at(op, path, true); return result; }
+  writeFile(path, data, options) { return this.call('writeFile', path, () => super.writeFile(path, data, options)); }
+  writeRange(path, offset, bytes) { return this.call('writeRange', path, () => super.writeRange(path, offset, bytes)); }
+  truncate(path, size) { return this.call('truncate', path, () => super.truncate(path, size)); }
+  mkdir(path, options) { return this.call('mkdir', path, () => super.mkdir(path, options)); }
+  unlink(path) { return this.call('unlink', path, () => super.unlink(path)); }
+  removeRecursive(path) { return this.call('removeRecursive', path, () => super.removeRecursive(path)); }
+  rename(from, to) { return this.call('rename', from, () => super.rename(from, to)); }
 }
 /** One that cannot rename in place (a device, a container), so even a move within it is a carry. */
 class NoRename extends Faulty { rename = undefined; }
 /** One that removes a tree only by walking it. */
 class Walked extends Faulty { removeRecursive = undefined; }
+/** Neither: a move into it writes in place, and its staged copy goes entry by entry. */
+class Bare extends Faulty { rename = undefined; removeRecursive = undefined; }
 
 const m = new Faulty();
 const dev = new NoRename();
 const walked = new Walked();
-const box = await testBox({ cwd: '/home/user', mounts: { '/m': m, '/dev2': dev, '/walked': walked } });
+const bare = new Bare();
+const harness = createSqliteVfsTestHarness();
+const box = await testBox({ harness, cwd: '/home/user', mounts: { '/m': m, '/dev2': dev, '/walked': walked, '/bare': bare } });
 const { workspace: ws } = box;
 const ns = box.files.vfs.sync;
 const read = (path) => text(ns.readFile(path));
@@ -207,6 +214,25 @@ await nothingMoved('writing over in place', () => ws.fs.move('to-held.txt', '/de
   check() { assert.equal(read('/dev2/held.txt'), 'OLD', 'what it held is put back'); assert.equal(read('/home/user/to-held.txt'), 'NEW'); },
 });
 assert.deepEqual(dev.faults, [], 'the injected failure was met');
+// A write over the destination that lands and then fails: what it held is put back.
+await ws.fs.writeFile('/dev2/landed.txt', 'OLD');
+await ws.fs.writeFile('to-landed.txt', 'NEW');
+dev.fault('writeFile', /^\/landed\.txt$/, { once: true, after: true });
+await nothingMoved('a write over the destination that lands, then fails', () => ws.fs.move('to-landed.txt', '/dev2/landed.txt'), {
+  source: '/home/user', destination: '/dev2',
+  check() { assert.equal(read('/dev2/landed.txt'), 'OLD', 'the bytes it held are back'); assert.equal(read('/home/user/to-landed.txt'), 'NEW'); },
+});
+assert.deepEqual(dev.faults, []);
+// The staged copy refuses to go after part of it has: the destination, the
+// whole copy, is what the source is put back from, and then it goes too.
+await tree('/home/user/bt');
+bare.fault('unlink', /\.nimbus-move-[^/]+\/sub\/b\.txt$/, { once: true });
+await nothingMoved('the staged copy goes only in part', () => ws.fs.move('bt', '/bare/bt'), {
+  source: '/home/user', destination: '/bare',
+  check() { assertTree('/home/user/bt', 'the staged copy goes only in part'); assert.equal(ns.stat('/bare/bt'), null); },
+});
+assert.deepEqual(bare.faults, []);
+
 // Where putting the destination back fails too, the answer is EIO naming
 // both, and the source is still put back.
 await ws.fs.writeFile('/dev2/stuck.txt', 'OLD');
@@ -219,6 +245,35 @@ assert.equal(read('/home/user/to-stuck.txt'), 'NEW', 'the source is put back');
 assert.equal(read('/dev2/stuck.txt'), 'OLD');
 assert.deepEqual([...leftovers('/dev2'), ...leftovers('/home/user')], []);
 dev.faults.length = 0;
+
+// ── A final rename that publishes the copy and then fails ───────────────
+// SqliteVFS moves a tree in bounded steps: the destination is published,
+// then the old name retired. A failure in the second step has moved the
+// whole copy, so the move has happened and the staged remainder goes.
+const retiring = (once) => {
+  let armed = true;
+  harness.setFaultInjector((statement) => {
+    if (!armed || !statement.sql.startsWith('DELETE FROM vfs_inodes') || !statement.params.some((p) => STAGED.test(String(p)))) return null;
+    if (once) armed = false;
+    return new Error('injected retirement failure');
+  });
+};
+await tree('/m/pub');
+retiring(true);
+await ws.fs.move('/m/pub', 'published');
+harness.clearFault();
+assertTree('/home/user/published', 'published, then the retirement failed');
+assert.equal(ns.stat('/m/pub'), null);
+assert.deepEqual(leftovers('/home/user'), [], 'the staged remainder went');
+// When the remainder cannot go either, the move has still happened, and the error says so.
+await tree('/m/pub2');
+retiring(false);
+const remainder = await ws.fs.move('/m/pub2', 'published2').then(() => null, (error) => error);
+harness.clearFault();
+assert.equal(remainder?.code, 'EIO');
+assert.match(remainder.message, /^EIO: moved to \/home\/user\/published2, but what was left at \/home\/user\/\.nimbus-move-[^ ]+ could not be removed/);
+assertTree('/home/user/published2', 'moved, with a remainder');
+for (const name of leftovers('/home/user')) await ws.fs.remove(name, { recursive: true });
 
 // ── The shell's mv is the same move ──────────────────────────────────────
 await ws.fs.mkdir('mvtree/sub', { recursive: true });
@@ -252,6 +307,62 @@ await move(plane, '/note.md', '/kept.md');
 assert.equal(text(plane.readFile('/kept.md')), 'NEW');
 assert.equal(plane.stat('/note.md'), null);
 assert.deepEqual(plane.readdir('/').map((e) => e.name).filter((n) => STAGED.test(n)), []);
+// Beneath itself through a link, on a VFS with no realpath: refused before anything is copied.
+plane.symlink('/archive/inner', '/into');
+assert.equal(await code(() => move(plane, '/archive', '/into/again')), 'EINVAL');
+assert.deepEqual(plane.readdir('/archive/inner').map((e) => e.name), ['x.md']);
+
+/**
+ * A VFS that numbers its entries, whose rename between two of its trees is
+ * EXDEV, and whose final rename can publish the copy (all of it, or part)
+ * before failing with the staged name still there.
+ */
+class Torn extends MemoryVFS {
+  constructor() { super(USER); this.numbers = new WeakMap(); this.next = 1; this.tear = null; }
+  stat(path, options) {
+    const stat = super.stat(path, options);
+    if (stat === null) return null;
+    const entry = this.find(path, { syscall: 'stat', path }, options?.follow !== false);
+    if (!this.numbers.has(entry)) this.numbers.set(entry, this.next++);
+    return { ...stat, ino: this.numbers.get(entry), dev: 7 };
+  }
+  rename(from, to) {
+    if (from.startsWith('/src')) throw new VfsError('EXDEV', 'another filesystem', from);
+    if (this.tear === null || !STAGED.test(from)) return super.rename(from, to);
+    const tear = this.tear;
+    this.tear = null;
+    super.rename(from, to);
+    this.clone(to, from);
+    if (tear === 'part') this.unlink(`${to}/sub/b.txt`);
+    throw new VfsError('EIO', 'injected tear', from);
+  }
+  clone(from, to) {
+    const stat = super.stat(from, { follow: false });
+    if (stat.type === 'directory') {
+      this.mkdir(to);
+      for (const entry of this.readdir(from)) this.clone(`${from}/${entry.name}`, `${to}/${entry.name}`);
+    } else if (stat.type === 'symlink') this.symlink(this.readlink(from), to);
+    else this.writeFile(to, this.readFile(from));
+  }
+}
+const torn = new Torn();
+const seed = (base) => {
+  torn.mkdir(`${base}/sub`, { recursive: true });
+  torn.writeFile(`${base}/a.txt`, new TextEncoder().encode('a'));
+  torn.writeFile(`${base}/sub/b.txt`, new TextEncoder().encode('b'));
+};
+torn.mkdir('/dst');
+seed('/src/whole');
+torn.tear = 'whole';
+await move(torn, '/src/whole', '/dst/whole');
+assert.equal(text(torn.readFile('/dst/whole/sub/b.txt')), 'b', 'a rename that published all of the copy has moved it');
+assert.equal(torn.stat('/src/whole'), null);
+assert.deepEqual(torn.readdir('/dst').map((e) => e.name), ['whole'], 'and its remainder is gone');
+seed('/src/part');
+torn.tear = 'part';
+assert.equal(await code(() => move(torn, '/src/part', '/dst/part')), 'EIO');
+assert.equal(text(torn.readFile('/src/part/sub/b.txt')), 'b', 'a rename that published part of the copy has not: the source is back');
+assert.deepEqual(torn.readdir('/dst').map((e) => e.name), ['whole'], 'and nothing of it is left');
 
 box.destroy();
 console.log('fs-move-across-mounts: ok');
