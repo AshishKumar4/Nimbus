@@ -22,7 +22,8 @@
  */
 import { parse, type FunctionExpression, type Options, type Program } from 'acorn';
 import {
-  type SourceRealm, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
+  type SourceRealm, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
+  scriptExpression,
 } from '../_shared/runtime-function-source.js';
 import { Compiler, type UnitContext, type UnitHost } from './compile.js';
 import { type ModuleCell, moduleCell } from './modules.js';
@@ -59,6 +60,12 @@ export interface Interpreter {
    * that function's body; an ES module as esbuild lowers it to one.
    */
   compileModule(path: string, text: string): ModuleCell;
+  /**
+   * A function returning the value of the script `code` when it is one
+   * expression (scriptExpression): vm.runInThisContext's code, as node-shims
+   * hands it over. Code of any other shape is refused (UnsupportedSyntax).
+   */
+  compileExpression(code: string): NativeFunction;
   /** Run a script at global scope: its vars and functions become global object properties. */
   runScript(text: string): void;
 }
@@ -148,7 +155,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     installHost(hostOps);
     installed = hostOps;
   }
-  return {
+  const interpreter: Interpreter = {
     compileFunction(kind, params, body) {
       // A trailing source map is parsed only when the shortened body fails.
       const short = withoutTrailingLineComments(body);
@@ -202,6 +209,13 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       return makeFunction(fi, ROOT_ENV, undefined);
     },
 
+    compileExpression(code) {
+      const at = scriptExpression(code, REALM);
+      if (at === null) throw new UnsupportedSyntax('a vm script that is not one expression');
+      const body = expressionFunctionBody(stringSlice(code, 0, at.prologueEnd), stringSlice(code, at.start, at.end));
+      return interpreter.compileFunction('function', [], body);
+    },
+
     runScript(text) {
       const program = parse(text, { ...PARSE, sourceType: 'script' });
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
@@ -213,4 +227,5 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       body.s(withElement(frameTemplate(root.size, []), 0, ROOT_ENV));
     },
   };
+  return interpreter;
 }

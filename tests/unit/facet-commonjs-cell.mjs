@@ -14,6 +14,7 @@ import {
   declaresWrapperBinding,
   runtimeCodeCharge,
   runtimeCodeKey,
+  runtimeExpressionModule,
   runtimeFunctionModule,
   runtimeFunctionSyntaxError,
   wrapCommonJsCell,
@@ -186,3 +187,21 @@ function run(cell, scope = 'function', requireImpl = () => 'required') {
 }
 
 console.log('facet-commonjs-cell OK');
+
+// vm.runInThisContext's code, staged: a function returning the value of the
+// one expression the script is. jiti's module wrapper is an expression
+// statement, semicolon included, which a body of `return (<code>)` cannot
+// hold.
+{
+  const jiti = '(function (exports, require, module, __filename, __dirname, jitiImport, jitiESMResolve) { module.exports = { answer: 42, args: typeof jitiImport };\n});';
+  const wrapper = load(runtimeExpressionModule(jiti))();
+  const mod = { exports: {} };
+  wrapper(mod.exports, () => {}, mod, '/w/nuxt.config.ts', '/w', () => {});
+  assert.deepEqual(mod.exports, { answer: 42, args: 'function' }, 'the staged expression is jiti\'s wrapper');
+  assert.equal(load(runtimeExpressionModule('1 + 2 // trailing'))(), 3);
+  assert.equal(load(runtimeExpressionModule("'use strict';(() => function () { return this; })"))()()(), undefined, 'vite-node\'s prologue is kept');
+  assert.throws(() => load(runtimeExpressionModule('(function () {')), SyntaxError);
+  assert.throws(() => load(runtimeExpressionModule('var x = 1; x')), /one expression/);
+  assert.notEqual(runtimeCodeKey({ kind: 'expression', code: jiti }), runtimeCodeKey({ kind: 'function', params: [], body: jiti }));
+}
+console.log('facet-commonjs-cell: vm expressions staged');

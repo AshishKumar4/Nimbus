@@ -1,23 +1,24 @@
 // The module files a shadowed run captured (shadow-preload.mjs): each one
 // imported natively and run as the interpreter's module cell, from the
 // directory it was written to, and their exports compared. Reads the run's
-// report (argv[2]) and writes the result back into it.
+// report (argv[2]) and appends the results to it (report.mjs).
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadInterpreter } from '../../unit/lib/interpreter-load.mjs';
+import { readReport, recordPart } from './report.mjs';
 import { same } from './same.mjs';
 
 const require = createRequire(import.meta.url);
 const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBUS_INTERPRETER_OPS, (parent, specifier) => import(String(specifier)));
 const reportFile = process.argv[2];
-const report = JSON.parse(readFileSync(reportFile, 'utf8'));
-report.moduleResults = [];
+const report = readReport(reportFile);
+const moduleResults = [];
 let n = 0;
-for (const { url, text } of report.modules) {
+for (const { url, text } of report.modules ?? []) {
   const original = fileURLToPath(url.split('?')[0]);
   const dir = dirname(original);
   mkdirSync(dir, { recursive: true });
@@ -36,11 +37,11 @@ for (const { url, text } of report.modules) {
     const difference = names.join(',') !== interpreted.join(',')
       ? `export names [${names}] vs [${interpreted}]`
       : names.map((k) => same(native[k], module.exports[k], k, 3, new Set())).find(Boolean) ?? null;
-    report.moduleResults.push({ url, difference });
+    moduleResults.push({ url, difference });
   } catch (e) {
-    report.moduleResults.push({ url, difference: `threw: ${e && e.stack}` });
+    moduleResults.push({ url, difference: `threw: ${e && e.stack}` });
   } finally {
     rmSync(file, { force: true });
   }
 }
-writeFileSync(reportFile, JSON.stringify(report));
+recordPart(reportFile, { moduleResults });

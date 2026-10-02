@@ -6403,12 +6403,14 @@ const __vmMod = (() => {
     isContext: real?.isContext ?? ((o) => !!o),
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
-    // jiti evaluates a parenthesized (async) CommonJS wrapper expression.
-    // Stage that expression as a zero-argument function returning its value;
-    // the wrapper itself executes only when the caller invokes it. This is
-    // not a vm context or a global-script evaluator: declarations/completion
-    // values spanning statements, execution deadlines and context mutation
-    // have no equivalent here and remain unsupported.
+    // jiti evaluates a parenthesized (async) CommonJS wrapper expression
+    // statement, \`(function (exports, require, ...) { ... });\`. The service
+    // stages a script that is one expression as a zero-argument function
+    // returning its value (the script's completion value); the wrapper
+    // itself executes only when the caller invokes it. This is not a vm
+    // context or a global-script evaluator: declarations/completion values
+    // spanning statements, execution deadlines and context mutation have no
+    // equivalent here and remain unsupported.
     runInThisContext: (code, options = {}) => {
       try { return wrapRuntimeEval('runInThisContext')(code, options); }
       catch (e) {
@@ -6416,7 +6418,7 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return service.compileFunction("function", [], "return (\\n" + String(code) + "\\n);")();
+        return service.compileExpression(String(code))();
       }
     },
     // A function of \`params\` and \`code\` is what the Function constructor

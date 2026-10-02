@@ -27,6 +27,7 @@ import { join } from 'node:path';
 
 import { buildInterpreterFiles } from '../unit/lib/interpreter-build.mjs';
 import { APPS, CACHE, LIB, ensureApp, withServer } from './lib/apps.mjs';
+import { readReport } from './lib/report.mjs';
 
 const only = new Set((process.argv[2] || 'astro,vite,nuxt,vinext').split(','));
 
@@ -96,12 +97,16 @@ try {
       if (mode === 'shadow') {
         const compared = spawnSync('node', [join(LIB, 'compare-modules.mjs'), report], { env: { ...process.env, ...nodeArgs(mode, files, report, corpus).env }, encoding: 'utf8' });
         if (compared.status !== 0) throw new Error(`comparing modules failed: ${compared.stderr}`);
-        reports[mode] = JSON.parse(readFileSync(report, 'utf8'));
       }
+      if (mode !== 'native') reports[mode] = readReport(report);
     }
-    const shadow = reports.shadow;
+    const shadow = { functions: 0, ssrModules: 0, vmExpressions: 0, compared: 0, equal: 0, mismatches: [], refused: [], moduleResults: [], ...reports.shadow };
     const moduleDiffs = shadow.moduleResults.filter((m) => m.difference);
-    console.log(`${name}: ${shadow.functions} functions built from strings (${shadow.ssrModules} Vite SSR modules), ${shadow.compared} runs compared, ${shadow.equal} equal; ${shadow.moduleResults.length} module files compared; corpus in .cache/interpreter-differential/corpus/${name}`);
+    const vm = reports.interpreted.vmExpressions ?? [];
+    console.log(`${name}: ${shadow.functions} functions built from strings (${shadow.ssrModules} Vite SSR modules), ${shadow.vmExpressions} vm.runInThisContext expressions, ${shadow.compared} runs compared, ${shadow.equal} equal; ${shadow.moduleResults.length} module files compared; corpus in .cache/interpreter-differential/corpus/${name}`);
+    console.log(`${name}: the interpreted run interpreted ${vm.length} vm.runInThisContext expressions`);
+    // Nuxt's config reaches the program only through jiti's vm path: the interpreted run must have interpreted it.
+    if (app.vmConfig && !vm.some((code) => app.vmConfig.test(code))) failures.push(`${name}: the interpreted run did not interpret its config through vm.runInThisContext`);
     for (const m of shadow.mismatches) failures.push(`${name}: ${m.label} ${m.key}: ${m.difference}`);
     for (const r of shadow.refused) failures.push(`${name}: refused ${r.kind} ${r.key}: ${r.error}`);
     for (const m of moduleDiffs) failures.push(`${name}: module ${m.url}: ${m.difference}`);

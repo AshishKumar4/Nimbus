@@ -27,6 +27,7 @@ import {
   RUNTIME_INTERPRETER_OPS_MODULE,
   RUNTIME_INTERPRETER_PRIMORDIALS_MODULE,
   runtimeCodeModuleName,
+  runtimeExpressionModule,
   runtimeFunctionModule,
   wrapCommonJsCell,
   type CommonJsCellRow,
@@ -5363,6 +5364,10 @@ export class FacetManager {
   private async _stagedRuntimeCode(learning: LaunchLearning, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of learning.code) {
+      if (entry.kind === 'expression') {
+        modules.set(codeKey, runtimeExpressionModule(entry.code));
+        continue;
+      }
       if (entry.kind !== 'module') {
         modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
         continue;

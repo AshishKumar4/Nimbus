@@ -106,8 +106,8 @@
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
 import {
-  RUNTIME_FUNCTION_HEADS, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, type RuntimeFunctionKind,
-  type SourceRealm,
+  RUNTIME_FUNCTION_HEADS, expressionFunctionBody, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn,
+  type RuntimeFunctionKind, type ScriptExpression, scriptExpression, type SourceRealm,
 } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 
@@ -335,7 +335,9 @@ export const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
 /** Code a launch could not compile, as its ledger reports it. */
 export type RuntimeCodeEntry =
   | { kind: RuntimeFunctionKind; params: string[]; body: string }
-  | { kind: 'module'; path: string; text: string };
+  | { kind: 'module'; path: string; text: string }
+  /** vm.runInThisContext's code: a script whose value is its one expression's (scriptExpression). */
+  | { kind: 'expression'; code: string };
 
 /**
  * What of a file's path decides the module its text becomes: its directory
@@ -363,9 +365,9 @@ export function runtimeModuleScope(path: string): [dir: string, ext: string] {
  * same function (its sync node:crypto), so both sides name the same module.
  */
 function runtimeCodeKeySource(entry: RuntimeCodeEntry): string {
-  return entry.kind === 'module'
-    ? JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text])
-    : JSON.stringify([entry.kind, entry.params, entry.body]);
+  if (entry.kind === 'module') return JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text]);
+  if (entry.kind === 'expression') return JSON.stringify(['expression', entry.code]);
+  return JSON.stringify([entry.kind, entry.params, entry.body]);
 }
 
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
@@ -401,11 +403,12 @@ export function runtimeCodeModuleName(key: string): string {
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
   if (typeof value !== 'object' || value === null) return null;
-  const v: { kind?: unknown; path?: unknown; text?: unknown; params?: unknown; body?: unknown } = value;
+  const v: { kind?: unknown; path?: unknown; text?: unknown; params?: unknown; body?: unknown; code?: unknown } = value;
   if (v.kind === 'module') {
     return typeof v.path === 'string' && typeof v.text === 'string'
       ? { kind: 'module', path: v.path, text: v.text } : null;
   }
+  if (v.kind === 'expression') return typeof v.code === 'string' ? { kind: 'expression', code: v.code } : null;
   if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind)) return null;
   if (!Array.isArray(v.params) || !v.params.every((p: unknown): p is string => typeof p === 'string') || typeof v.body !== 'string') return null;
   return { kind: v.kind, params: [...v.params], body: v.body };
@@ -430,6 +433,28 @@ export function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonl
     + `${runtimeFunctionSource(kind, params, body)}); })`
     + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname);';
 }
+
+/**
+ * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
+ * function returning the value of the one expression the script is (after
+ * its directive prologue, which the function keeps), in the global scope as
+ * a constructor's function is (runtimeFunctionModule); or
+ * it throws the SyntaxError V8 would, or, for a script of another shape,
+ * the error the interpreter answers it with in the first launch.
+ */
+export function runtimeExpressionModule(code: string): string {
+  let at: ScriptExpression | null;
+  try {
+    at = scriptExpression(code, REALM);
+  } catch (e) {
+    return `throw new SyntaxError(${JSON.stringify(REALM.messageOf(e))});`;
+  }
+  if (at === null) return `throw new Error(${JSON.stringify(VM_SCRIPT_UNSUPPORTED)});`;
+  return runtimeFunctionModule('function', [], expressionFunctionBody(code.slice(0, at.prologueEnd), code.slice(at.start, at.end)));
+}
+
+/** Why a vm script that is not one expression does not run in a Worker. */
+const VM_SCRIPT_UNSUPPORTED = 'vm.runInThisContext: a Worker runs code compiled after its launch only as one expression, whose value is the result';
 
 /** The main module's imports the runtime below reads through. */
 export const COMMONJS_CELL_IMPORTS = [
@@ -542,7 +567,9 @@ const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};
 function __nimbusRuntimeCodeKey(entry) {
   const __source = entry.kind === "module"
     ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
-    : JSON.stringify([entry.kind, entry.params, entry.body]);
+    : entry.kind === "expression"
+      ? JSON.stringify(["expression", entry.code])
+      : JSON.stringify([entry.kind, entry.params, entry.body]);
   return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };
 }
 // This launch's module for the code, or undefined when it was not staged (or
@@ -588,9 +615,9 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
   __nimbusRuntimeCodeRecord(__id, entry);
   const __interpreter = __nimbusRuntimeInterpreter();
   try {
-    return entry.kind === "module"
-      ? __interpreter.compileModule(entry.path, entry.text)
-      : __interpreter.compileFunction(entry.kind, entry.params, entry.body);
+    if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text);
+    if (entry.kind === "expression") return __interpreter.compileExpression(entry.code);
+    return __interpreter.compileFunction(entry.kind, entry.params, entry.body);
   } catch (e) {
     if (!e || e.code !== "${INTERPRETER_UNSUPPORTED}") throw e;
     const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")");
@@ -607,6 +634,10 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
   compileFunction(kind, params, body) {
     if (!${JSON.stringify(Object.keys(RUNTIME_FUNCTION_HEADS))}.includes(kind)) throw new TypeError("compileFunction: unknown kind " + String(kind));
     return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor");
+  },
+  // vm.runInThisContext's code (node-shims): a function returning its value.
+  compileExpression(code) {
+    return __nimbusRuntimeCodeCompile({ kind: "expression", code: String(code) }, "Code handed to vm.runInThisContext");
   },
   compileModule(path, text) {
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);

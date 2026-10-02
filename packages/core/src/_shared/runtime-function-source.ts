@@ -7,7 +7,7 @@
  * nothing here names one: the caller's SourceRealm supplies the two it needs
  * (the interpreter's, from the launch's start; commonjs-cell's, its own).
  */
-import { parse, type FunctionExpression, type Program } from 'acorn';
+import { parse, type FunctionExpression, type ModuleDeclaration, type Program, type Statement } from 'acorn';
 
 /** The constructors whose text a program can hand in at runtime. */
 export const RUNTIME_FUNCTION_HEADS = {
@@ -109,4 +109,48 @@ export function parseRuntimeFunction(
   const node = functionLiteral(text, `${head}${paramText}\n) `.length, false, realm);
   if (typeof node === 'string') throw new realm.SyntaxError(node);
   return { node, text };
+}
+
+/** Where a script's directive prologue ends and its one expression lies, in its text. */
+export interface ScriptExpression {
+  /** The end of the directive prologue (`'use strict';`), 0 when there is none. */
+  readonly prologueEnd: number;
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * The one expression a script is, after its directive prologue, for
+ * vm.runInThisContext: node-shims hands the runtime-code service code it
+ * cannot compile at request time, and the service runs it as a function
+ * returning that expression's value (the script's completion value), its
+ * directives the function's own. jiti's module wrapper
+ * (`(function (exports, require, ...) { ... });`, Nuxt's config loader) and
+ * vite-node's (`'use strict';(...) => { ... }`) are such scripts. Throws the
+ * SyntaxError V8 would for code that does not parse; null for a script of
+ * another shape, whose completion value no function can stand in for.
+ */
+export function scriptExpression(code: string, realm: SourceRealm): ScriptExpression | null {
+  let program: Program;
+  try {
+    program = parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+  } catch (e) {
+    throw new realm.SyntaxError(realm.messageOf(e));
+  }
+  const body = program.body;
+  let first = 0;
+  while (first < body.length && isDirective(body[first])) first++;
+  if (first !== body.length - 1) return null;
+  const statement = body[first];
+  if (statement.type !== 'ExpressionStatement') return null;
+  return { prologueEnd: first === 0 ? 0 : body[first - 1].end, start: statement.expression.start, end: statement.expression.end };
+}
+
+function isDirective(statement: Statement | ModuleDeclaration): boolean {
+  return statement.type === 'ExpressionStatement' && typeof statement.directive === 'string';
+}
+
+/** The body of the function that returns an expression's value, after a script's directive prologue. */
+export function expressionFunctionBody(prologue: string, expression: string): string {
+  return `${prologue}\nreturn (\n${expression}\n);`;
 }

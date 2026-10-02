@@ -86,6 +86,8 @@ export const APPS = {
     async observe(dir, port) {
       return { '/': await page(port, '/', '__nuxt') };
     },
+    // nuxt.config.ts, as jiti transpiles it and evaluates it with vm.runInThisContext.
+    vmConfig: /defineNuxtConfig\(/,
   },
   vinext: {
     make(dir) {

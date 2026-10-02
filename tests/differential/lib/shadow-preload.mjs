@@ -11,10 +11,15 @@
 //     twice), and the two exports objects are compared;
 //   - any other function: called with the same receiver and arguments, and
 //     the results compared.
+// vm.runInThisContext (jiti's, for Nuxt's config) is routed as node-shims
+// routes it in a Worker (vm-route.mjs): the native value goes to the
+// program, the interpreted one is compared; a CommonJS wrapper expression
+// (jiti's) is compared by what each run of it puts in module.exports, the
+// interpreted one on a shadow module object.
 // Every module file the program loads from a Vite temp directory (the
 // bundled config) is captured, to be compared after the run.
 // Mismatches, refusals and counts go to the report file named by
-// NIMBUS_DIFF_REPORT, written when the process exits.
+// NIMBUS_DIFF_REPORT as they happen (report.mjs).
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -22,7 +27,9 @@ import { createRequire, registerHooks } from 'node:module';
 import { join } from 'node:path';
 
 import { loadInterpreter } from '../../unit/lib/interpreter-load.mjs';
+import { recordPart } from './report.mjs';
 import { same } from './same.mjs';
+import { routeRunInThisContext } from './vm-route.mjs';
 
 const require = createRequire(import.meta.url);
 const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBUS_INTERPRETER_OPS, (parent, specifier) => (
@@ -30,7 +37,7 @@ const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBU
 ));
 const corpus = process.env.NIMBUS_DIFF_CORPUS;
 mkdirSync(corpus, { recursive: true });
-const report = { functions: 0, ssrModules: 0, compared: 0, equal: 0, mismatches: [], refused: [], modules: [] };
+const record = (part) => recordPart(process.env.NIMBUS_DIFF_REPORT, part);
 
 function settle(run) {
   try {
@@ -43,7 +50,6 @@ function settle(run) {
 }
 
 function compare(label, key, native, interpreted, exportsPair) {
-  report.compared++;
   let difference = null;
   if (native.ok !== interpreted.ok) {
     difference = `outcome: native ${native.ok ? 'returned' : `threw ${native.value && native.value.message}`}, interpreted ${interpreted.ok ? 'returned' : `threw ${interpreted.value && interpreted.value.message}`}`;
@@ -54,8 +60,7 @@ function compare(label, key, native, interpreted, exportsPair) {
   } else {
     difference = same(native.value, interpreted.value, 'result', 3, new Set());
   }
-  if (difference) report.mismatches.push({ label, key, difference });
-  else report.equal++;
+  record(difference ? { compared: 1, mismatches: [{ label, key, difference }] } : { compared: 1, equal: 1 });
 }
 
 const SSR_KEYS = ['__vite_ssr_exports__', '__vite_ssr_import_meta__', '__vite_ssr_import__', '__vite_ssr_dynamic_import__', '__vite_ssr_exportAll__', '__vite_ssr_exportName__'];
@@ -63,7 +68,7 @@ const SSR_KEYS = ['__vite_ssr_exports__', '__vite_ssr_import_meta__', '__vite_ss
 function shadowed(kind, native, interpreted, params, key) {
   const ssr = kind === 'async' && SSR_KEYS.every((k) => params.includes(k));
   if (ssr) {
-    report.ssrModules++;
+    record({ ssrModules: 1 });
     const at = Object.fromEntries(SSR_KEYS.map((k) => [k, params.indexOf(k)]));
     return async function (...args) {
       // The shadow exports object is made as the runner made the real one (its prototype and Symbol.toStringTag).
@@ -117,14 +122,14 @@ for (const [kind, Native] of kinds) {
     const native = new.target ? Reflect.construct(Native, args, new.target) : Reflect.apply(Native, undefined, args);
     const params = args.slice(0, -1).map(String);
     const body = args.length ? String(args[args.length - 1]) : '';
-    report.functions++;
+    record({ functions: 1 });
     const key = createHash('sha256').update(JSON.stringify([kind, params, body])).digest('hex').slice(0, 16);
     writeFileSync(join(corpus, `${key}.json`), JSON.stringify({ kind, params, body }));
     let interpreted;
     try {
       interpreted = interp.compileFunction(kind, params, body);
     } catch (e) {
-      report.refused.push({ key, kind, error: `${e && e.code} ${e && e.message}` });
+      record({ refused: [{ key, kind, error: `${e && e.code} ${e && e.message}` }] });
       return native;
     }
     return shadowed(kind, native, interpreted, params, key);
@@ -134,18 +139,51 @@ for (const [kind, Native] of kinds) {
   if (kind === 'function') globalThis.Function = routed;
 }
 
+routeRunInThisContext((code, native) => {
+  const value = native();
+  record({ vmExpressions: 1 });
+  const key = createHash('sha256').update(JSON.stringify(['vm', code])).digest('hex').slice(0, 16);
+  writeFileSync(join(corpus, `${key}.json`), JSON.stringify({ kind: 'expression', code }));
+  let interpreted;
+  try {
+    interpreted = interp.compileExpression(code)();
+  } catch (e) {
+    record({ refused: [{ key, kind: 'vm', error: `${e && e.code} ${e && e.message}` }] });
+    return value;
+  }
+  if (typeof value !== 'function' || typeof interpreted !== 'function') {
+    compare('vm', key, { ok: true, value }, { ok: true, value: interpreted }, null);
+    return value;
+  }
+  // A CommonJS wrapper, (exports, require, module, ...): run for real, then
+  // interpreted on a shadow module object, with the same require (its
+  // modules are cached, so nothing is evaluated twice).
+  return function (...args) {
+    const module = args[2];
+    const commonJs = module !== null && typeof module === 'object' && module.exports === args[0];
+    const shadowModule = { exports: {} };
+    const shadow = args.slice();
+    if (commonJs) { shadow[0] = shadowModule.exports; shadow[2] = shadowModule; }
+    const finish = (real, copy) => {
+      compare('vm-module', key, real, copy, commonJs && real.ok && copy.ok ? [module.exports, shadowModule.exports] : null);
+      if (!real.ok) throw real.value;
+      return real.value;
+    };
+    const real = settle(() => Reflect.apply(value, this, args));
+    const copy = settle(() => Reflect.apply(interpreted, this, shadow));
+    if (real instanceof Promise || copy instanceof Promise) return Promise.all([real, copy]).then(([r, c]) => finish(r, c));
+    return finish(real, copy);
+  };
+});
+
 // Module files written to a Vite temp directory (the bundled config): captured as loaded.
 registerHooks({
   load(url, context, nextLoad) {
     const result = nextLoad(url, context);
     if (/\/\.vite-temp\/|\.timestamp-/.test(url) && result.source) {
       const text = typeof result.source === 'string' ? result.source : new TextDecoder().decode(result.source);
-      report.modules.push({ url, text });
+      record({ modules: [{ url, text }] });
     }
     return result;
   },
-});
-
-process.on('exit', () => {
-  writeFileSync(process.env.NIMBUS_DIFF_REPORT, JSON.stringify(report));
 });

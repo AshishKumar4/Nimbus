@@ -294,6 +294,18 @@ async function runCases(interpreterFile, opsFile) {
     check('a module that imports its importer back finds its exports and functions', load('a').fromB, 'ready');
   }
 
+  // ── vm.runInThisContext's code (node-shims hands it over as compileExpression) ──
+  {
+    const wrapper = interp.compileExpression('(function (exports, require, module) { module.exports = { v: typeof require };\n});')();
+    const mod = { exports: {} };
+    wrapper(mod.exports, () => {}, mod);
+    check('a script that is one expression statement, jiti\'s wrapper', mod.exports, { v: 'function' });
+    check('its value each time the function runs', interp.compileExpression('[1, 2].length // trailing')(), 2);
+    check('after a directive prologue, which the function keeps (vite-node\'s)', interp.compileExpression("'use strict';(() => function () { return this; })")()()(), undefined);
+    assert.throws(() => interp.compileExpression('(function () {'), SyntaxError);
+    assert.throws(() => interp.compileExpression('var x = 1; x'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  }
+
   // ── Module cells ──
   {
     const cell = interp.compileModule('/w/m.mjs', [
