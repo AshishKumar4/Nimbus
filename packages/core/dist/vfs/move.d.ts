@@ -5,15 +5,26 @@
  *
  * The carry stages a copy beside the destination and confirms it, then
  * removes the source, then puts the copy in the destination's place with one
- * rename. Until that rename the destination keeps what it held. A failure at
- * any step puts back what of the source had gone and removes the staged
- * copy, so a failed move leaves both names as they were. A backend that
- * cannot rename in place has the destination replaced where it is, after
- * what it held is kept to put back.
+ * rename. Until that rename the destination keeps what it held. A failure
+ * before it puts back what of the source had gone and removes the staged
+ * copy, so the move leaves both names as they were. A backend that cannot
+ * rename in place has the destination replaced where it is, after what it
+ * held is kept to put back; another writer using the destination meanwhile
+ * can lose its write, as it can on any filesystem written in place.
  *
  * Everything it creates is created private (the owner's bits only, as GNU
  * cp creates a copy before it sets the mode) and given its own mode once its
  * content is complete, so no one reads a copy its source would not let them.
+ *
+ * The final rename's own answer says what happened, never what the names
+ * hold afterwards. A refusal (RENAME_REFUSALS: made before anything
+ * changed), or a filesystem saying it renamed nothing (renameOutcome), is
+ * clean: the source is put back from the staged copy, which goes, and the
+ * refusal is the answer. A filesystem saying it renamed all of it is a move
+ * that happened: the residue at the staged name goes. Anything else (EIO, no
+ * code at all) may have renamed the copy in whole or in part, and another
+ * writer may since have used the destination, so nothing is undone or
+ * removed: the answer is EIO, naming where what was moving may be.
  *
  * Neither atomic to a reader nor across a crash: from the source's removal
  * to the final rename, what is moving is only at the staged name,

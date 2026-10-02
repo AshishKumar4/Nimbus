@@ -1140,6 +1140,12 @@ export declare class SqliteVFS {
      */
     private unpublishRenameDestination;
     /**
+     * Whether `paths` hold, in the store, what they held before a rename onto
+     * them: nothing, or `occupant` alone (a moved entry keeps its inode, so the
+     * number tells the two apart). A store that cannot answer has not said so.
+     */
+    private renameTargetsUntouched;
+    /**
      * Copy a file by reference: one inode row naming the source's chunk or
      * manifest. No byte is read or written; a later write to either side
      * copies on write (rewriteFile's sharing probes).
