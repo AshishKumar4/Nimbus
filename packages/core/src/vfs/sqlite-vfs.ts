@@ -5104,8 +5104,9 @@ export class SqliteVFS {
     let builder = this.newPlan();
     if (destInode) {
       // Path uniqueness: the occupant goes in the same transaction as the
-      // inode replacing it. That is only ever the file-onto-file case, whose
-      // subtree is a single entry, so this group is the whole move.
+      // inode replacing it. A file onto a file is one entry, so this group is
+      // the whole move; a tree onto an empty directory can take several, and
+      // an unwind puts the directory back (unpublishRenameDestination).
       builder.addDeletedPath(newPath, destInode);
     }
     const renamed = moving.map((entry) => {
@@ -5155,7 +5156,7 @@ export class SqliteVFS {
       }
       flushPublished();
     } catch (error) {
-      this.unpublishRenameDestination(committed);
+      this.unpublishRenameDestination(committed, destInode);
       if (touchedPaths.size > 0) this.bumpRevision([...touchedPaths]);
       // Whether anything changed is read back from the store, never assumed
       // from the error: a commit can be durable and still throw, and the
@@ -5167,6 +5168,10 @@ export class SqliteVFS {
         const code = (error as { code?: unknown } | null)?.code;
         throw Object.assign(new Error(this.errorMessage(error), { cause: error }), code === undefined ? { renamed: 'none' } : { code, renamed: 'none' });
       }
+      // What this incarnation cached and counted for the destination is not
+      // what the store holds: the next read takes both from the store.
+      this.inodes.delete(newPath);
+      this._countersLoaded = false;
       throw Object.assign(new Error(`EIO: moving ${oldPath} to ${newPath} failed (${this.errorMessage(error)}) `
         + `with part of it at ${newPath}; all of it is still at ${oldPath}`, { cause: error }), { code: 'EIO' });
     }
@@ -5248,11 +5253,13 @@ export class SqliteVFS {
    * These rows name content the source still owns, so removing them collects
    * nothing — the point is only that a retry sees an empty destination rather
    * than a subtree conflict. Deepest-first in bounded groups, like any other
-   * removal. A failure here is swallowed: the caller is already unwinding, and
-   * the source tree — which is what the data lives in — is untouched either
-   * way.
+   * removal. The first group replaced `occupant` (an empty directory), so
+   * it comes back, as it was (its inode, mode, owner and times), in the
+   * transaction that takes the root away. A failure here is swallowed: the
+   * caller is already unwinding and reads back what the store holds, and the
+   * source tree — which is what the data lives in — is untouched either way.
    */
-  private unpublishRenameDestination(published: readonly StoredInodeEntry[]): void {
+  private unpublishRenameDestination(published: readonly StoredInodeEntry[], occupant: INode | undefined): void {
     if (published.length === 0) return;
     const deepestFirst = [...published].reverse();
     let builder = this.newPlan();
@@ -5269,24 +5276,51 @@ export class SqliteVFS {
         // The source still holds these references, so none is queued.
         builder.addDeletedPath(stored.path, undefined, false);
       }
+      if (occupant) {
+        if (builder.wouldExceedInode() !== null) flush();
+        builder.addInode({
+          path: occupant.path,
+          parentPath: occupant.parentPath,
+          kind: occupant.kind,
+          isDir: occupant.isDir,
+          size: occupant.size,
+          atime: occupant.atime,
+          mtime: occupant.mtime,
+          mode: occupant.mode,
+          uid: occupant.uid,
+          gid: occupant.gid,
+          content: { type: 'ref', chunkId: occupant.chunkId, contentId: occupant.contentId },
+          ino: occupant.ino,
+          ctime: occupant.ctime,
+          defaultAcl: occupant.defaultAcl,
+        });
+      }
       flush();
+      // The cached occupant is the row again, at the generation that wrote it.
+      if (occupant) {
+        const restored = this.loadInode(occupant.path);
+        if (restored !== undefined) occupant.gen = restored.gen;
+      }
     } catch { /* the source is intact; report the original failure */ }
   }
 
   /**
    * Whether `paths` hold, in the store, what they held before a rename onto
-   * them: nothing, or `occupant` alone (a moved entry keeps its inode, so the
-   * number tells the two apart). A store that cannot answer has not said so.
+   * them: nothing, or `occupant` alone, there (a moved entry keeps its inode,
+   * so the number tells the two apart). A store that cannot answer has not
+   * said so.
    */
   private renameTargetsUntouched(paths: readonly string[], occupant: INode | undefined): boolean {
     try {
+      let occupied = false;
       for (let i = 0; i < paths.length; i += KEYS_PER_SQL_EXEC) {
         const batch = paths.slice(i, i + KEYS_PER_SQL_EXEC);
         for (const row of this.sql.exec(`SELECT path, ino FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch)) {
           if (occupant === undefined || String(row.path) !== occupant.path || Number(row.ino) !== occupant.ino) return false;
+          occupied = true;
         }
       }
-      return true;
+      return occupant === undefined || occupied;
     } catch {
       return false;
     }

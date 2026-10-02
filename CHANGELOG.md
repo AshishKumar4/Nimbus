@@ -48,6 +48,12 @@ longer a `ProcessView`, as described below.
   still threw, or a tree published in part, is `EIO`; before, each of
   these rethrew the storage error unchanged, so a caller could not tell
   a rename that did nothing from one that did some of it.
+- Fixed: renaming a tree large enough to take several transactions onto
+  an empty directory, on the SQLite filesystem, removed that directory
+  when a later transaction failed: the unwind took away the published
+  root, and with it the directory the root had replaced, while the inode
+  cache and the file counts still had it. The unwind now puts the
+  directory back as it was, with its inode, mode, owner and times.
 - Fixed: a file a process creates on a synchronous mount with a mode
   (`open` with `O_CREAT`, `writeFile` with `mode`) was made at the
   backend's default mode. It is now made at the mode asked for, as on an

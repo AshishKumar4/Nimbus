@@ -372,6 +372,44 @@ for (const [kind, k] of Object.entries(kinds)) {
   assert.deepEqual(leftovers('/home/user'), [], `${kind}: and the staged remainder`);
 }
 
+// ── A big tree onto an empty directory, its second group failing ────────
+// SQLite publishes it in groups; the first replaced the empty directory.
+// The rename puts the directory back and says it changed nothing, so the
+// move puts the source back. Read from the database itself, so no cache can
+// stand in for the store.
+await ws.fs.mkdir('/m/big-src');
+for (let d = 0; d < 15; d++) {
+  await ws.fs.mkdir(`/m/big-src/d${d}`);
+  for (let f = 0; f < 17; f++) await ws.fs.writeFile(`/m/big-src/d${d}/f${f}`, `${d}.${f}`);
+}
+await ws.fs.mkdir('/home/user/big-dst');
+await ws.fs.chmod('/home/user/big-dst', 0o750);
+const bigBefore = ns.stat('/home/user/big-dst');
+{
+  let first = null;
+  let armed = true;
+  harness.setFaultInjector((statement) => {
+    if (!armed || !statement.sql.startsWith('INSERT OR REPLACE INTO vfs_inodes')) return null;
+    if (!statement.params.some((p) => String(p).startsWith('home/user/big-dst'))) return null;
+    first ??= statement.transaction;
+    if (statement.transaction === first) return null;
+    armed = false;
+    return new Error('injected: the second group');
+  });
+}
+const bigFailed = await ws.fs.move('/m/big-src', '/home/user/big-dst').then(() => null, (error) => error);
+harness.clearFault();
+assert.ok(bigFailed !== null, 'the move fails');
+assert.equal(renameOutcome(bigFailed), 'none', 'with the rename\'s word that it changed nothing');
+const [stored] = harness.sql.exec('SELECT ino, mode FROM vfs_inodes WHERE path = ?', 'home/user/big-dst');
+assert.ok(stored, 'the store holds the destination');
+assert.equal(Number(stored.ino), bigBefore.ino, 'the same directory');
+assert.equal(Number(stored.mode) & 0o777, 0o750);
+assert.equal(Number(harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE parent_path = ?', 'home/user/big-dst')[0].n), 0, 'empty, as it was');
+assert.equal(ns.stat('/home/user/big-dst').ino, bigBefore.ino, 'and the workspace sees what the store holds');
+assert.equal(read('/m/big-src/d14/f16'), '14.16', 'the source is back');
+assert.deepEqual([...leftovers('/home/user'), ...leftovers('/m')], [], 'no staged copy is left');
+
 // ── A backend that makes a rename and still fails it, or loses what it renamed ─
 // Neither says what it did, so nothing is undone and nothing is removed,
 // whatever the names then hold: another writer may have used them since.
