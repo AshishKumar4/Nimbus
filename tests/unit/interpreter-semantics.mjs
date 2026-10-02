@@ -118,6 +118,56 @@ async function runCases(interpreterFile, opsFile) {
     }
   }
 
+  // ── A program that replaced built-ins ──
+  {
+    // The interpreter compiles and runs without the built-ins a program can
+    // replace: test262 replaces the array iterator, a polyfill a method. acorn,
+    // which parses, still uses Array.prototype.push/pop/indexOf/slice and
+    // String.prototype.charCodeAt/slice/indexOf, so those stay.
+    const boom = () => { throw new Error('a replaced built-in was called'); };
+    const patches = [
+      [Array.prototype, Symbol.iterator, function* () { yield 'patched'; }],
+      ...['every', 'some', 'filter', 'find', 'findIndex', 'forEach', 'includes', 'join', 'flatMap', 'reduce', 'entries', 'keys', 'values'].map((k) => [Array.prototype, k, boom]),
+      ...['get', 'set', 'has', 'delete', 'forEach'].map((k) => [Map.prototype, k, boom]),
+      ...['add', 'has', 'delete', 'forEach'].map((k) => [Set.prototype, k, boom]),
+      ...['get', 'set', 'has'].map((k) => [WeakMap.prototype, k, boom]),
+      ...['add', 'has'].map((k) => [WeakSet.prototype, k, boom]),
+      [Symbol.prototype, 'toString', boom],
+      ...['entries', 'values', 'freeze', 'getPrototypeOf', 'setPrototypeOf', 'defineProperty', 'getOwnPropertyNames'].map((k) => [Object, k, boom]),
+      ...['get', 'set', 'has', 'apply', 'construct', 'ownKeys', 'defineProperty', 'getOwnPropertyDescriptor'].map((k) => [Reflect, k, boom]),
+    ];
+    const saved = patches.map(([target, key]) => Object.getOwnPropertyDescriptor(target, key));
+    // Patched or restored, nothing here may iterate an array or call what it replaces.
+    const define = Object.defineProperty;
+    let result;
+    let asyncResult;
+    try {
+      for (let i = 0; i < patches.length; i++) define(patches[i][0], patches[i][1], { value: patches[i][2], writable: true, configurable: true });
+      const body = `
+        label: for (let i = 0; i < 3; i++) { switch (i) { case 1: continue label; default: } }
+        class A { #x = 1; static s = 2; static { this.t = 3; } get x() { return this.#x; } }
+        class B extends A { constructor(...a) { super(); this.n = a.length; } }
+        const { p = 4, ...rest } = { q: 5 };
+        function* g() { yield 1; yield* [7]; }
+        let caught;
+        try { null.x; } catch (e) { caught = e instanceof TypeError; }
+        const b = new B(1, 2);
+        return [b.x, b.n, A.s, A.t, p, rest.q, [...g()], \`t\${p}\`, caught, [...[1, 2]]];`;
+      // The interpreter itself, not the routed constructors: those are this test's own code.
+      result = interp.compileFunction('function', [], body)();
+      // What runs before the first await runs here, with the built-ins replaced.
+      asyncResult = interp.compileFunction('async', [], 'const w = [...[1]]; const v = await Promise.resolve(9); return { v, w };')();
+    } finally {
+      for (let i = 0; i < patches.length; i++) {
+        if (saved[i]) define(patches[i][0], patches[i][1], saved[i]);
+        else delete patches[i][0][patches[i][1]];
+      }
+    }
+    // Spreading an array runs the program's iterator, as V8 does; nothing else does.
+    check('compiles and runs with built-ins replaced', result, [1, 2, 2, 3, 4, 5, [1, 'patched'], 't4', true, ['patched']]);
+    check('async code with built-ins replaced', await asyncResult, { v: 9, w: ['patched'] });
+  }
+
   // ── Calls ──
   check('a parenthesized optional chain keeps its receiver', F('const a = { b() { return this._b }, _b: 42 }; return [(a?.b)(), (a.b)?.()]')(), [42, 42]);
   check('not a function names the callee', F('const o = {}; try { o.m() } catch (e) { return e.message }')(), 'o.m is not a function');

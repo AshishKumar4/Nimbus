@@ -21,6 +21,7 @@ import type {
   Identifier, MethodDefinition, ModuleDeclaration, Pattern, PrivateIdentifier, Program, PropertyDefinition,
   Statement, StaticBlock, SwitchStatement, VariableDeclaration,
 } from 'acorn';
+import { SafeMap, append, arrayIsArray, objectKeys, reflectGet, someItem } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
@@ -68,7 +69,7 @@ export type ScopeKind =
   | 'block' | 'switch' | 'loop' | 'catch' | 'class' | 'with';
 
 export class Scope {
-  readonly bindings = new Map<string, Binding>();
+  readonly bindings = new SafeMap<string, Binding>();
   readonly children: Scope[] = [];
   materialized = false;
   /** Slots of the environment this scope allocates, when materialized. */
@@ -81,7 +82,7 @@ export class Scope {
   constructor(readonly kind: ScopeKind, readonly parent: Scope | null, fn: FunctionScope | null, strict?: boolean) {
     this.fn = fn ?? (this instanceof FunctionScope ? this : unreachable('scope without a function'));
     this.strict = strict ?? (kind === 'class' || (parent !== null && parent.fn === this.fn ? parent.strict : false));
-    if (parent) parent.children.push(this);
+    if (parent) append(parent.children, this);
   }
 
   /** The scope whose environment holds this scope's bindings at runtime. */
@@ -158,7 +159,8 @@ function unreachable(what: string): never {
 
 /** Whether a function body opens with a "use strict" directive. */
 export function hasUseStrict(body: readonly (Statement | ModuleDeclaration)[]): boolean {
-  for (const statement of body) {
+  for (let i = 0; i < body.length; i++) {
+    const statement = body[i];
     if (statement.type !== 'ExpressionStatement' || typeof statement.directive !== 'string') return false;
     if (statement.directive === 'use strict') return true;
   }
@@ -168,12 +170,12 @@ export function hasUseStrict(body: readonly (Statement | ModuleDeclaration)[]): 
 /** The names a binding pattern declares, with the pattern identifiers. */
 export function patternIdentifiers(pattern: Pattern, out: Identifier[] = []): Identifier[] {
   switch (pattern.type) {
-    case 'Identifier': out.push(pattern); break;
+    case 'Identifier': append(out, pattern); break;
     case 'ObjectPattern':
-      for (const p of pattern.properties) patternIdentifiers(p.type === 'RestElement' ? p.argument : p.value, out);
+      for (let i = 0; i < pattern.properties.length; i++) { const p = pattern.properties[i]; patternIdentifiers(p.type === 'RestElement' ? p.argument : p.value, out); }
       break;
     case 'ArrayPattern':
-      for (const e of pattern.elements) if (e) patternIdentifiers(e, out);
+      for (let i = 0; i < pattern.elements.length; i++) { const e = pattern.elements[i]; if (e) patternIdentifiers(e, out); }
       break;
     case 'RestElement': patternIdentifiers(pattern.argument, out); break;
     case 'AssignmentPattern': patternIdentifiers(pattern.left, out); break;
@@ -182,14 +184,15 @@ export function patternIdentifiers(pattern: Pattern, out: Identifier[] = []): Id
   return out;
 }
 
-const SKIP_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
-
 /** Each child node of `node`. */
 export function forEachChildNode(node: AnyNode, visit: (child: AnyNode) => void): void {
-  for (const [key, value] of Object.entries(node)) {
-    if (SKIP_KEYS.has(key)) continue;
-    if (Array.isArray(value)) {
-      for (const item of value) if (isNode(item)) visit(item);
+  const keys = objectKeys(node);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+    const value: unknown = reflectGet(node, key);
+    if (arrayIsArray(value)) {
+      for (let j = 0; j < value.length; j++) { const item = value[j]; if (isNode(item)) visit(item); }
     } else if (isNode(value)) {
       visit(value);
     }
@@ -210,15 +213,15 @@ export interface ClassScopes {
 
 /** The analysis of one compiled unit. */
 export class Analysis {
-  readonly refs = new Map<Identifier, Reference>();
+  readonly refs = new SafeMap<Identifier, Reference>();
   /** Scope of each scope-creating node (functions, blocks, loops, catch, switch, with, class). */
-  readonly scopes = new Map<AnyNode, Scope>();
-  readonly classes = new Map<ClassNode, ClassScopes>();
+  readonly scopes = new SafeMap<AnyNode, Scope>();
+  readonly classes = new SafeMap<ClassNode, ClassScopes>();
   /** For `this`, `super` and `new.target`: the function scope that provides them. */
-  readonly receivers = new Map<AnyNode, FunctionScope>();
+  readonly receivers = new SafeMap<AnyNode, FunctionScope>();
   /** Block-level function declarations that also assign a var of their name (Annex B.3.3). */
-  readonly annexB = new Map<FunctionDeclaration, Binding>();
-  readonly privateRefs = new Map<PrivateIdentifier, Reference>();
+  readonly annexB = new SafeMap<FunctionDeclaration, Binding>();
+  readonly privateRefs = new SafeMap<PrivateIdentifier, Reference>();
   /** A module's own scope, which holds `%module` for import.meta. */
   moduleScope: FunctionScope | null = null;
 
@@ -261,9 +264,9 @@ export function analyzeProgram(program: Program, options: UnitOptions): Analysis
   analyzer.analysis.scopes.set(program, root);
   if (options.kind === 'module') {
     // A module runs as a cell of the five CommonJS wrapper arguments.
-    for (const name of MODULE_CELL_PARAMS) root.special(name);
+    for (let i = 0; i < MODULE_CELL_PARAMS.length; i++) { const name = MODULE_CELL_PARAMS[i]; root.special(name); }
     analyzer.analysis.moduleScope = root;
-    for (const statement of program.body) analyzer.declareImports(statement, root);
+    for (let i = 0; i < program.body.length; i++) { const statement = program.body[i]; analyzer.declareImports(statement, root); }
   }
   analyzer.declareLexical(program.body, root);
   analyzer.hoistVars(program.body, root, true);
@@ -289,7 +292,7 @@ export function analyzeCommonJs(program: Program, params: readonly string[]): An
   const strict = hasUseStrict(program.body);
   const root = new FunctionScope('function', null, program, strict, false, false, false);
   analyzer.analysis.scopes.set(program, root);
-  for (const name of params) root.declare(name, 'param', -1);
+  for (let i = 0; i < params.length; i++) { const name = params[i]; root.declare(name, 'param', -1); }
   analyzer.declareLexical(program.body, root);
   analyzer.hoistVars(program.body, root, true);
   analyzer.visitStatements(program.body, root);
@@ -312,7 +315,8 @@ class Analyzer {
   /** Module imports: bindings of the module scope, live reads of what they import. */
   declareImports(statement: Statement | ModuleDeclaration, scope: Scope): void {
     if (statement.type !== 'ImportDeclaration') return;
-    for (const spec of statement.specifiers) {
+    for (let i = 0; i < statement.specifiers.length; i++) {
+      const spec = statement.specifiers[i];
       const binding = scope.declare(spec.local.name, 'import', -1);
       this.analysis.refs.set(spec.local, { binding, tdz: false, withs: [] });
     }
@@ -326,13 +330,18 @@ class Analyzer {
   hoistVars(body: readonly (Statement | ModuleDeclaration)[], target: Scope, topLevel: boolean): void {
     const script = target.fn.functionKind === 'script' && target === target.fn;
     const declareVar = (id: Identifier) => {
-      if (script) target.fn.globalVars.push(id.name);
+      if (script) append(target.fn.globalVars, id.name);
       else target.declare(id.name, 'var', -1);
     };
     const visit = (node: Statement | ModuleDeclaration, top: boolean): void => {
       switch (node.type) {
         case 'VariableDeclaration':
-          if (node.kind === 'var') for (const d of node.declarations) for (const id of patternIdentifiers(d.id)) declareVar(id);
+          if (node.kind === 'var') {
+            for (let i = 0; i < node.declarations.length; i++) {
+              const ids = patternIdentifiers(node.declarations[i].id);
+              for (let j = 0; j < ids.length; j++) declareVar(ids[j]);
+            }
+          }
           return;
         case 'FunctionDeclaration':
           if (top) {
@@ -354,7 +363,7 @@ class Analyzer {
             target.declare(node.declaration.id.name, 'function', -1);
           }
           return;
-        case 'BlockStatement': for (const s of node.body) visit(s, false); return;
+        case 'BlockStatement': for (let i = 0; i < node.body.length; i++) { const s = node.body[i]; visit(s, false); } return;
         case 'IfStatement': visit(node.consequent, false); if (node.alternate) visit(node.alternate, false); return;
         case 'ForStatement':
           if (node.init && node.init.type === 'VariableDeclaration') visit(node.init, false);
@@ -374,13 +383,13 @@ class Analyzer {
           if (node.finalizer) visit(node.finalizer, false);
           return;
         case 'SwitchStatement':
-          for (const c of node.cases) for (const s of c.consequent) visit(s, false);
+          for (let i = 0; i < node.cases.length; i++) { const c = node.cases[i]; for (let j = 0; j < c.consequent.length; j++) { const s = c.consequent[j]; visit(s, false); } }
           return;
         default:
           return;
       }
     };
-    for (const statement of body) visit(statement, topLevel);
+    for (let i = 0; i < body.length; i++) { const statement = body[i]; visit(statement, topLevel); }
   }
 
   /**
@@ -391,7 +400,8 @@ class Analyzer {
   declareLexical(body: readonly (Statement | ModuleDeclaration)[], scope: Scope): void {
     const functionLevel = scope === scope.fn.varScope || scope.kind === 'body';
     const script = scope.fn.functionKind === 'script' && scope === scope.fn;
-    for (const raw of body) {
+    for (let i = 0; i < body.length; i++) {
+      const raw = body[i];
       let node: Statement | ModuleDeclaration = raw;
       if (node.type === 'ExportNamedDeclaration' && node.declaration) node = node.declaration;
       if (node.type === 'ExportDefaultDeclaration') {
@@ -400,7 +410,7 @@ class Analyzer {
           scope.declare(d.id ? d.id.name : '*default*', 'class', d.end);
         } else if (d.type === 'FunctionDeclaration') {
           if (!d.id) scope.declare('*default*', 'function', -1);
-          scope.functions.push(d);
+          append(scope.functions, d);
         } else {
           scope.declare('*default*', 'const', node.end);
         }
@@ -410,8 +420,10 @@ class Analyzer {
         case 'VariableDeclaration':
           if (node.kind === 'using' || node.kind === 'await using') throw new UnsupportedSyntax(`${node.kind} declarations`);
           if (node.kind !== 'var') {
-            for (const d of node.declarations) {
-              for (const id of patternIdentifiers(d.id)) scope.declare(id.name, node.kind, d.end);
+            for (let j = 0; j < node.declarations.length; j++) {
+              const d = node.declarations[j];
+              const ids = patternIdentifiers(d.id);
+              for (let k = 0; k < ids.length; k++) scope.declare(ids[k].name, node.kind, d.end);
             }
           }
           break;
@@ -420,10 +432,10 @@ class Analyzer {
           break;
         case 'FunctionDeclaration':
           if (functionLevel || script) {
-            scope.functions.push(node);
+            append(scope.functions, node);
           } else {
             scope.declare(node.id.name, 'function', -1);
-            scope.functions.push(node);
+            append(scope.functions, node);
           }
           break;
         default:
@@ -433,7 +445,8 @@ class Analyzer {
   }
 
   declarePattern(pattern: Pattern, kind: BindingKind, scope: Scope, declEnd = -1): void {
-    for (const id of patternIdentifiers(pattern)) scope.declare(id.name, kind, declEnd);
+    const ids = patternIdentifiers(pattern);
+    for (let i = 0; i < ids.length; i++) scope.declare(ids[i].name, kind, declEnd);
   }
 
   // ── References ──
@@ -460,7 +473,7 @@ class Analyzer {
         this.analysis.refs.set(id, { binding, tdz, withs });
         return;
       }
-      if (s.kind === 'with') withs.push(s);
+      if (s.kind === 'with') append(withs, s);
       s = s.parent;
     }
     this.analysis.refs.set(id, { binding: null, tdz: false, withs });
@@ -511,7 +524,7 @@ class Analyzer {
   // ── Walk ──
 
   visitStatements(body: readonly (Statement | ModuleDeclaration)[], scope: Scope): void {
-    for (const statement of body) this.visitStatement(statement, scope);
+    for (let i = 0; i < body.length; i++) { const statement = body[i]; this.visitStatement(statement, scope); }
   }
 
   visitStatement(node: Statement | ModuleDeclaration, scope: Scope): void {
@@ -562,7 +575,7 @@ class Analyzer {
       case 'ImportDeclaration': return;
       case 'ExportNamedDeclaration':
         if (node.declaration) this.visitStatement(node.declaration, scope);
-        else if (!node.source) for (const spec of node.specifiers) if (spec.local.type === 'Identifier') this.resolve(spec.local, scope);
+        else if (!node.source) for (let i = 0; i < node.specifiers.length; i++) { const spec = node.specifiers[i]; if (spec.local.type === 'Identifier') this.resolve(spec.local, scope); }
         return;
       case 'ExportDefaultDeclaration': {
         const d = node.declaration;
@@ -597,7 +610,8 @@ class Analyzer {
   }
 
   visitVariableDeclaration(node: VariableDeclaration, scope: Scope): void {
-    for (const d of node.declarations) {
+    for (let i = 0; i < node.declarations.length; i++) {
+      const d = node.declarations[i];
       this.visitPattern(d.id, scope, true);
       if (d.init) this.visitExpression(d.init, scope);
     }
@@ -614,8 +628,9 @@ class Analyzer {
     this.visitExpression(node.discriminant, scope);
     const block = new Scope('switch', scope, scope.fn);
     this.analysis.scopes.set(node, block);
-    for (const c of node.cases) this.declareLexical(c.consequent, block);
-    for (const c of node.cases) {
+    for (let i = 0; i < node.cases.length; i++) { const c = node.cases[i]; this.declareLexical(c.consequent, block); }
+    for (let i = 0; i < node.cases.length; i++) {
+      const c = node.cases[i];
       if (c.test) this.visitExpression(c.test, block);
       this.visitStatements(c.consequent, block);
     }
@@ -653,18 +668,19 @@ class Analyzer {
       // The right side sees the loop's names in their TDZ (a separate scope in the spec).
       const tdzScope = new Scope('loop', scope, scope.fn);
       this.analysis.scopes.set(node.right, tdzScope);
-      for (const d of left.declarations) this.declarePattern(d.id, left.kind === 'const' ? 'const' : 'let', tdzScope, node.end);
+      for (let i = 0; i < left.declarations.length; i++) { const d = left.declarations[i]; this.declarePattern(d.id, left.kind === 'const' ? 'const' : 'let', tdzScope, node.end); }
       this.visitExpression(node.right, tdzScope);
       const inner = new Scope('loop', scope, scope.fn);
       this.analysis.scopes.set(node, inner);
       this.declareLexical([left], inner);
-      for (const d of left.declarations) this.visitPattern(d.id, inner, true);
+      for (let i = 0; i < left.declarations.length; i++) { const d = left.declarations[i]; this.visitPattern(d.id, inner, true); }
       this.visitStatement(node.body, inner);
       return;
     }
     this.visitExpression(node.right, scope);
     if (left.type === 'VariableDeclaration') {
-      for (const d of left.declarations) {
+      for (let i = 0; i < left.declarations.length; i++) {
+        const d = left.declarations[i];
         this.visitPattern(d.id, scope, true);
         if (d.init) this.visitExpression(d.init, scope);
       }
@@ -685,7 +701,8 @@ class Analyzer {
         return;
       case 'MemberExpression': this.visitExpression(pattern, scope); return;
       case 'ObjectPattern':
-        for (const p of pattern.properties) {
+        for (let i = 0; i < pattern.properties.length; i++) {
+          const p = pattern.properties[i];
           if (p.type === 'RestElement') {
             this.visitPattern(p.argument, scope, declaration);
           } else {
@@ -695,7 +712,7 @@ class Analyzer {
         }
         return;
       case 'ArrayPattern':
-        for (const e of pattern.elements) if (e) this.visitPattern(e, scope, declaration);
+        for (let i = 0; i < pattern.elements.length; i++) { const e = pattern.elements[i]; if (e) this.visitPattern(e, scope, declaration); }
         return;
       case 'RestElement': this.visitPattern(pattern.argument, scope, declaration); return;
       case 'AssignmentPattern':
@@ -714,8 +731,8 @@ class Analyzer {
     fn.derived = options.derived;
     this.analysis.scopes.set(node, fn);
     // With expressions in the list, each parameter is in its TDZ until bound.
-    const expressions = node.params.some((p) => p.type !== 'Identifier');
-    for (const param of node.params) this.declarePattern(param, 'param', fn, expressions ? param.end : -1);
+    const expressions = someItem(node.params, (p) => p.type !== 'Identifier');
+    for (let i = 0; i < node.params.length; i++) { const param = node.params[i]; this.declarePattern(param, 'param', fn, expressions ? param.end : -1); }
     if (body.type === 'BlockStatement') {
       // With parameter expressions the body's declarations are a scope of
       // their own, which the parameter list cannot see.
@@ -738,7 +755,7 @@ class Analyzer {
         fn.argumentsBinding = fn.special('arguments');
       }
     }
-    for (const param of node.params) this.visitPattern(param, fn, true);
+    for (let i = 0; i < node.params.length; i++) { const param = node.params[i]; this.visitPattern(param, fn, true); }
     if (body.type === 'BlockStatement') this.visitStatements(body.body, fn.varScope);
     else this.visitExpression(body, fn);
     return fn;
@@ -750,7 +767,8 @@ class Analyzer {
     if (node.id) classScope.declare(node.id.name, 'class', node.end);
     // The heritage sees the class's own name, uninitialized.
     if (node.superClass) this.visitExpression(node.superClass, classScope);
-    for (const member of node.body.body) {
+    for (let i = 0; i < node.body.body.length; i++) {
+      const member = node.body.body[i];
       if (member.type !== 'StaticBlock' && member.key.type === 'PrivateIdentifier') {
         classScope.declare(`#${member.key.name}`, 'private', -1);
       }
@@ -758,7 +776,8 @@ class Analyzer {
     let instanceFields: FunctionScope | null = null;
     let staticFields: FunctionScope | null = null;
     const derived = Boolean(node.superClass);
-    for (const member of node.body.body) {
+    for (let i = 0; i < node.body.body.length; i++) {
+      const member = node.body.body[i];
       if (member.type === 'StaticBlock') {
         this.visitStaticBlock(member, classScope);
         continue;
@@ -814,10 +833,11 @@ class Analyzer {
       case 'Literal': return;
       case 'ThisExpression': this.useThis(node, scope); return;
       case 'ArrayExpression':
-        for (const e of node.elements) if (e) this.visitExpression(e.type === 'SpreadElement' ? e.argument : e, scope);
+        for (let i = 0; i < node.elements.length; i++) { const e = node.elements[i]; if (e) this.visitExpression(e.type === 'SpreadElement' ? e.argument : e, scope); }
         return;
       case 'ObjectExpression':
-        for (const p of node.properties) {
+        for (let i = 0; i < node.properties.length; i++) {
+          const p = node.properties[i];
           if (p.type === 'SpreadElement') {
             this.visitExpression(p.argument, scope);
             continue;
@@ -860,19 +880,19 @@ class Analyzer {
       case 'CallExpression':
         if (node.callee.type === 'Super') this.useSuperCall(node.callee, scope);
         else this.visitExpression(node.callee, scope);
-        for (const a of node.arguments) this.visitExpression(a.type === 'SpreadElement' ? a.argument : a, scope);
+        for (let i = 0; i < node.arguments.length; i++) { const a = node.arguments[i]; this.visitExpression(a.type === 'SpreadElement' ? a.argument : a, scope); }
         return;
       case 'NewExpression':
         this.visitExpression(node.callee, scope);
-        for (const a of node.arguments) this.visitExpression(a.type === 'SpreadElement' ? a.argument : a, scope);
+        for (let i = 0; i < node.arguments.length; i++) { const a = node.arguments[i]; this.visitExpression(a.type === 'SpreadElement' ? a.argument : a, scope); }
         return;
-      case 'SequenceExpression': for (const e of node.expressions) this.visitExpression(e, scope); return;
+      case 'SequenceExpression': for (let i = 0; i < node.expressions.length; i++) { const e = node.expressions[i]; this.visitExpression(e, scope); } return;
       case 'YieldExpression': if (node.argument) this.visitExpression(node.argument, scope); return;
       case 'AwaitExpression': this.visitExpression(node.argument, scope); return;
-      case 'TemplateLiteral': for (const e of node.expressions) this.visitExpression(e, scope); return;
+      case 'TemplateLiteral': for (let i = 0; i < node.expressions.length; i++) { const e = node.expressions[i]; this.visitExpression(e, scope); } return;
       case 'TaggedTemplateExpression':
         this.visitExpression(node.tag, scope);
-        for (const e of node.quasi.expressions) this.visitExpression(e, scope);
+        for (let i = 0; i < node.quasi.expressions.length; i++) { const e = node.quasi.expressions[i]; this.visitExpression(e, scope); }
         return;
       case 'ClassExpression': this.visitClass(node, scope); return;
       case 'MetaProperty':
@@ -899,14 +919,15 @@ function layoutFunction(fn: FunctionScope): void {
 }
 
 function assignSlots(scope: Scope, holder: Scope): void {
-  for (const binding of scope.bindings.values()) binding.slot = holder.size++;
-  for (const child of scope.children) {
+  scope.bindings.forEach((binding) => { binding.slot = holder.size++; });
+  for (let i = 0; i < scope.children.length; i++) {
+    const child = scope.children[i];
     if (child instanceof FunctionScope) {
       layoutFunction(child);
       continue;
     }
     let captured = child.kind === 'with';
-    for (const binding of child.bindings.values()) if (binding.captured) captured = true;
+    child.bindings.forEach((binding) => { if (binding.captured) captured = true; });
     child.materialized = captured;
     if (captured) {
       // A with scope keeps its object in slot 1.

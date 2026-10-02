@@ -26,6 +26,7 @@ import { Compiler, ROOT_ENV, type ModuleCell } from './compile.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { installHost, makeFunction } from './runtime.js';
 import { FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram } from './scope.js';
+import { charCodeAt, isWhitespaceCode, someItem, stringLastIndexOf, stringSlice } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
 export { HOST_OPS_SOURCE, type HostOps } from './host-ops.js';
@@ -59,9 +60,9 @@ const UNPARSED_EXTENSIONS: Record<string, true> = { '.ts': true, '.mts': true, '
 const PARSE: Options = { ecmaVersion: 'latest', allowHashBang: true };
 
 function extensionOf(path: string): string {
-  const base = path.slice(path.lastIndexOf('/') + 1);
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(dot) : '';
+  const base = stringSlice(path, stringLastIndexOf(path, '/') + 1);
+  const dot = stringLastIndexOf(base, '.');
+  return dot > 0 ? stringSlice(base, dot) : '';
 }
 
 /**
@@ -78,9 +79,12 @@ function withoutTrailingLineComments(text: string): string {
   let end = text.length;
   for (;;) {
     let last = end;
-    while (last > 0 && /\s/.test(text[last - 1])) last--;
-    const lineStart = text.lastIndexOf('\n', last - 1) + 1;
-    if (lineStart === 0 || !text.slice(lineStart, last).trimStart().startsWith('//')) return end === text.length ? text : text.slice(0, end);
+    while (last > 0 && isWhitespaceCode(charCodeAt(text, last - 1))) last--;
+    const lineStart = stringLastIndexOf(text, '\n', last - 1) + 1;
+    let first = lineStart;
+    while (first < last && isWhitespaceCode(charCodeAt(text, first))) first++;
+    const comment = first + 1 < last && charCodeAt(text, first) === 0x2f && charCodeAt(text, first + 1) === 0x2f;
+    if (lineStart === 0 || !comment) return end === text.length ? text : stringSlice(text, 0, end);
     end = lineStart - 1;
   }
 }
@@ -98,9 +102,16 @@ function parseQuick(text: string, options: Options): Program {
   return parse(text, options);
 }
 
+/** The number of '/' characters `path` starts with. */
+function leadingSlashes(path: string): number {
+  let i = 0;
+  while (i < path.length && charCodeAt(path, i) === 0x2f) i++;
+  return i;
+}
+
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program: Program): boolean {
-  return program.body.some((s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
+  return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
     || s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
 }
 
@@ -132,7 +143,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
 
     compileModule(path, text) {
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
-      const parentUrl = path.startsWith('data:') ? 'data:text/javascript,' : `file:///${path.replace(/^\/+/, '')}`;
+      const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
       const unitHost = { dynamicImport: (specifier: unknown, options: unknown) => host.dynamicImport(parentUrl, specifier, options) };
       let module: Program | null = null;
       try {
