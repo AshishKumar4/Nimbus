@@ -22,12 +22,19 @@ function copyNode(source) {
         refuse('a node that is not an object');
     const keys = objectKeys(source);
     const copy = bare();
+    // The type first, whatever the order of the node's keys: it says how to copy the other fields.
+    const type = reflectGet(source, 'type');
+    if (typeof type !== 'string')
+        refuse('a node without a type');
+    copy.type = type;
     // acorn gives an import or export specifier's two names one node when they are the same name.
     let previous = null;
     let previousCopy = null;
     let objectValue = false;
     for (let i = 0; i < keys.length; i++) {
         const key = keys[i];
+        if (key === 'type')
+            continue;
         const value = reflectGet(source, key);
         if (typeof value === 'function')
             refuse(`a function as ${key}`);
@@ -35,10 +42,6 @@ function copyNode(source) {
             copy[key] = value;
             continue;
         }
-        // acorn sets a node's type before any other field.
-        const type = copy.type;
-        if (typeof type !== 'string')
-            refuse(`${key} before a node's type`);
         if (type === 'Literal' && key === 'value') {
             copy[key] = null;
             objectValue = true;
@@ -54,9 +57,8 @@ function copyNode(source) {
             copy[key] = previousCopy;
         }
     }
-    const type = copy.type;
-    if (typeof type !== 'string' || typeof copy.start !== 'number' || typeof copy.end !== 'number')
-        refuse('a node without a type and offsets');
+    if (typeof copy.start !== 'number' || typeof copy.end !== 'number')
+        refuse('a node without offsets');
     if (type === 'Identifier' || type === 'PrivateIdentifier') {
         const name = copy.name;
         if (typeof name !== 'string')

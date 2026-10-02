@@ -195,6 +195,28 @@ async function runCases(interpreterFile, opsFile) {
     check('a tree naming an interpreter binding is refused', refused, 'interpreter: the parser produced the identifier %this');
   }
   {
+    // A replaced push can also move a node's type after its other fields (delete it, add it back)
+    // without changing anything the node says.
+    const push = Array.prototype.push;
+    Array.prototype.push = function (...items) {
+      for (const item of items) {
+        if (item && typeof item.type === 'string') {
+          const type = item.type;
+          delete item.type;
+          item.type = type;
+        }
+      }
+      return Reflect.apply(push, this, items);
+    };
+    let result;
+    try {
+      result = interp.compileFunction('function', [], 'const o = { a: [1, 2] }; return o.a.length + 1;')();
+    } finally {
+      Array.prototype.push = push;
+    }
+    check('a node whose type is no longer its first field', result, 3);
+  }
+  {
     // acorn makes a regular expression literal's value with the realm's RegExp, and a bigint's with
     // BigInt, which a program may have replaced (here to decorate or box what they return). The
     // interpreter takes neither value from the parse. Compiled by V8 as part of this file, and
