@@ -24,9 +24,10 @@ import { parse, type FunctionExpression, type Options, type Program } from 'acor
 import {
   type SourceRealm, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
 } from '../_shared/runtime-function-source.js';
-import { Compiler, ROOT_ENV, type ModuleCell, type UnitContext, type UnitHost } from './compile.js';
+import { Compiler, type UnitContext, type UnitHost } from './compile.js';
+import { type ModuleCell, moduleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
-import { frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
+import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import {
   Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf,
@@ -36,7 +37,7 @@ import { UnsupportedSyntax } from './unsupported.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
-export type { ModuleCell } from './compile.js';
+export type { ModuleCell } from './modules.js';
 
 export interface InterpreterHost {
   /** `import(specifier, options)` from code whose module URL is `parentUrl`. */
@@ -171,10 +172,10 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
       const unitHost: UnitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
-      const moduleCell = (program: Program): ModuleCell => {
+      const compileCell = (program: Program): ModuleCell => {
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
-        const cell = new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).moduleCell(program, root);
+        const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
         releaseScopes(root);
         return cell;
       };
@@ -184,14 +185,14 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       } catch {
         // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
       }
-      if (module !== null && hasModuleSyntax(module)) return moduleCell(module);
+      if (module !== null && hasModuleSyntax(module)) return compileCell(module);
       let script: Program;
       try {
         script = parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true });
       } catch (error) {
         // Top-level await or import.meta without imports or exports: still a module.
         if (module === null) throw error;
-        return moduleCell(module);
+        return compileCell(module);
       }
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);

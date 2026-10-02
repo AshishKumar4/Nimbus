@@ -29,6 +29,9 @@ export function upN(env: Env, hops: number): Env {
   return e;
 }
 
+/** The environment above every unit's: nothing reads it. */
+export const ROOT_ENV: Env = [];
+
 /** The value of a lexical binding before its declaration has run. */
 export const TDZ: object = objectFreeze(objectCreate(null));
 

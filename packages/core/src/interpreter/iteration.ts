@@ -9,7 +9,7 @@
  */
 import {
   ArrayIteratorNext, ArrayIteratorPrototype, ArrayValues, type SafeList, TypeError, append, arrayIsArray, promiseReject,
-  promiseResolve, reflectApply, reflectGet, stringOf, symbolDescriptiveString, symbolIterator,
+  promiseResolve, reflectApply, reflectGet, safeGenerator, stringOf, symbolDescriptiveString, symbolIterator,
 } from './intrinsics.js';
 import { isObject, operators } from './runtime.js';
 
@@ -103,6 +103,17 @@ export function closeArrayIteration(value: readonly unknown[]): void {
   if (!isObject(iterator)) throw new TypeError('Result of the Symbol.iterator method is not an object');
   new IteratorRecord(iterator, undefined).close();
 }
+
+/** AsyncIteratorClose on a normal or return completion, awaiting as the enclosing body awaits. */
+export const asyncIteratorClose = safeGenerator(function* (
+  iterator: object, awaitValue: (x: unknown) => Generator<unknown, unknown, unknown>,
+): Generator<unknown, void, unknown> {
+  const ret: unknown = reflectGet(iterator, 'return');
+  if (ret === undefined || ret === null) return;
+  if (typeof ret !== 'function') throw new TypeError('iterator.return is not a function');
+  const closed = yield* awaitValue(reflectApply(ret, iterator, []));
+  if (!isObject(closed)) throw new TypeError(`Iterator result ${stringOf(closed)} is not an object`);
+});
 
 /**
  * AsyncFromSyncIteratorContinuation: a sync iterator's result as the
