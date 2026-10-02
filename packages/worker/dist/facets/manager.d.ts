@@ -972,9 +972,10 @@ export declare class FacetManager {
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
     private readonly residentProfileOffers;
     /**
-     * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
+     * The service the bundle's ESM→CJS pass transforms with. composeFacetManager
      * sets it: the host's own, or one whose transforms run in the session's
-     * esbuild facet. Never one of this isolate: esbuild-wasm's heap only grows.
+     * transform facet. Never one of this isolate: a transform engine's wasm
+     * memory only grows.
      */
     private esbuild;
     /**
@@ -1108,7 +1109,7 @@ export declare class FacetManager {
      * The entry script as the facet compiles it: each dynamic `import()` routed
      * to the process's ESM loader, with the entry's own URL as the parent (Node
      * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
-     * in the esbuild facet like every cell's, and its result is kept by content
+     * in the transform facet like every cell's, and its result is kept by content
      * in the session's transform store. The module-map walk reads the script as
      * written, before this.
      */

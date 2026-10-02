@@ -633,8 +633,25 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
     // On exit: the lowering's arrow function has no scope of its own to walk
     // into, and the source it wraps has had its own uses rewritten.
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
-        if matches!(expr, Expression::ImportExpression(_)) {
-            self.lower_dynamic_import(expr, ctx);
+        match expr {
+            Expression::ImportExpression(import) => {
+                // esbuild reads an import path written as a template with
+                // nothing substituted as the string it is, and prints it so;
+                // so does a CommonJS output's `require(`x`)`, below.
+                template_as_string(&mut import.source, ctx);
+                self.lower_dynamic_import(expr, ctx);
+            }
+            Expression::CallExpression(call)
+                if self.options.format == Format::Cjs
+                    && call.arguments.len() == 1
+                    && matches!(&call.callee, Expression::Identifier(id) if id.name == "require"
+                        && id.reference_id.get().is_some_and(|r| ctx.scoping().get_reference(r).symbol_id().is_none())) =>
+            {
+                if let Some(argument) = call.arguments[0].as_expression_mut() {
+                    template_as_string(argument, ctx);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -707,6 +724,17 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
         if decl.kind == VariableDeclarationKind::AwaitUsing && self.function_depth == 0 && self.top_level_await.is_none() {
             self.top_level_await = Some(decl.span);
         }
+    }
+}
+
+/// A template with nothing substituted, as the string literal it evaluates to.
+fn template_as_string<'a>(expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
+    if let Expression::TemplateLiteral(template) = expr
+        && template.expressions.is_empty()
+        && !template.quasis[0].lone_surrogates
+        && let Some(cooked) = template.quasis[0].value.cooked
+    {
+        *expr = Expression::new_string_literal(template.span, cooked, None, ctx);
     }
 }
 

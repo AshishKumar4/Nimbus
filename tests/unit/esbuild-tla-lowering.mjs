@@ -1,16 +1,18 @@
 #!/usr/bin/env bun
 // A module with top-level await becomes a CommonJS body that behaves as the
-// module: esbuild emits no CommonJS for it, so the transform emits ESM and
-// lowers the declarations. esbuild prints long import and export clauses
+// module: the transform (esbuild's contract, Oxc's engine, lib/oxc-engine.mjs)
+// emits no CommonJS for it, so it emits ESM and the service lowers the
+// declarations. A printer may print long import and export clauses
 // across lines (serve 14's build/main.js: `import {\n resolve as resolvePath,
 // ...} from "node:path"`), and each of them must still bind.
 
 import assert from 'node:assert/strict';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { oxcEngine } from './lib/oxc-engine.mjs';
 
 const service = new EsbuildService();
 service.ensureInit = async () => {};
-service._esbuild = await import('esbuild');
+service._esbuild = oxcEngine;
 
 const source = [
   '#!/usr/bin/env node',

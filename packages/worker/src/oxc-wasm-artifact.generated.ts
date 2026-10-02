@@ -13,8 +13,8 @@
  */
 
 export const OXC_VERSION: string = "0.152.0";
-export const OXC_WASM_ASSET_PATH: string = "/_assets/oxc/nimbus-oxc-797792705d96a977.wasm";
-export const OXC_WASM_BUILD_ID: string = "797792705d96a977";
-export const OXC_WASM_SHA256: string = "797792705d96a9774eb4e2d1480f0dbd84d316fd85f7655d751dfb92f30f4e9d";
-export const OXC_WASM_BYTES: number = 2251228;
+export const OXC_WASM_ASSET_PATH: string = "/_assets/oxc/nimbus-oxc-910fa6799970ce79.wasm";
+export const OXC_WASM_BUILD_ID: string = "910fa6799970ce79";
+export const OXC_WASM_SHA256: string = "910fa6799970ce79beabf48d6edab32ec6fe297b0bb35c590543b65183da59f5";
+export const OXC_WASM_BYTES: number = 2251830;
 export const OXC_WASM_MEMORY_PAGES: number = 67;

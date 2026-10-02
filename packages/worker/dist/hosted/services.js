@@ -114,7 +114,7 @@ export function ensureFacetManager(self, runtimeContext) {
     }
     const composed = self.facetManagerComposed;
     // The session may create its esbuild after the manager exists, so it is
-    // offered on every call. Either one runs in the session's esbuild facet.
+    // offered on every call. Either one transforms in the session's transform facet.
     if (self.esbuildService) {
         composed.manager.setEsbuildService(self.esbuildService);
     }

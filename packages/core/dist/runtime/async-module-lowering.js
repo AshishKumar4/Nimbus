@@ -10,7 +10,7 @@
  * lines when it is long (serve 14's `import {\n resolve as resolvePath, ... }
  * from "node:path"`), so no line or text pattern can stand in for it.
  *
- * Runs in the esbuild facet (installed by esbuild-cli/preamble.ts) and, for
+ * Runs in the transform facet (installed by oxc-facet/preamble.ts) and, for
  * in-process transforms, in esbuild-service.ts.
  */
 import { Parser } from 'acorn';

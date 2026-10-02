@@ -158,7 +158,7 @@ try {
     `export { processFiles } from '${new URL('./lib/process-bridge.mjs', import.meta.url).pathname}';`,
     `export { adoptCtxExports, composeFabric } from '${new URL('../../', import.meta.url).pathname}packages/fabric/src/composition.ts';`,
     // The facet's id hashes its code, and this graph's copy of that code is its own.
-    `export { ESBUILD_FACET_WORKER_ID } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/esbuild-transform.ts';`,
+    `export { OXC_FACET_WORKER_ID } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/oxc-transform.ts';`,
     '',
   ].join('\n'));
   const build = await Bun.build({
@@ -231,14 +231,14 @@ try {
   }));
   const sessionProbe = transformProbe();
   const sessionCtx = createFacetCtx(sessionWorld, 'session-do');
-  sessionCtx.facets = { ...sessionWorld.facets, get: (name, start) => (name === bundle.ESBUILD_FACET_WORKER_ID ? sessionProbe.facets.get(name) : sessionWorld.facets.get(name, start)) };
+  sessionCtx.facets = { ...sessionWorld.facets, get: (name, start) => (name === bundle.OXC_FACET_WORKER_ID ? sessionProbe.facets.get(name) : sessionWorld.facets.get(name, start)) };
   const sessionEvents = [];
   const sessionProcesses = new SessionProcessSupervisor();
   sessionProcesses.setPidBase(PID_GEN_STRIDE);
   const terminalWrites = [];
   const host = {
     ctx: sessionCtx,
-    env: { LOADER: { ...sessionWorld.loader, get: (id, config) => (id === bundle.ESBUILD_FACET_WORKER_ID ? sessionProbe.env.LOADER.get(id) : sessionWorld.loader.get(id, config)) }, ASSETS },
+    env: { LOADER: { ...sessionWorld.loader, get: (id, config) => (id === bundle.OXC_FACET_WORKER_ID ? sessionProbe.env.LOADER.get(id) : sessionWorld.loader.get(id, config)) }, ASSETS },
     processes: sessionProcesses,
     portRegistry: new PortRegistry(),
     sqliteFs: null,
@@ -266,13 +266,13 @@ try {
   }));
   const embedderProbe = transformProbe();
   const embedderCtx = createFacetCtx(embedderWorld, 'embedder-do');
-  embedderCtx.facets = { ...embedderWorld.facets, get: (name, start) => (name === bundle.ESBUILD_FACET_WORKER_ID ? embedderProbe.facets.get(name) : embedderWorld.facets.get(name, start)) };
+  embedderCtx.facets = { ...embedderWorld.facets, get: (name, start) => (name === bundle.OXC_FACET_WORKER_ID ? embedderProbe.facets.get(name) : embedderWorld.facets.get(name, start)) };
   const embedderEvents = [];
   const embedderProcesses = new SessionProcessSupervisor();
   embedderProcesses.setPidBase(PID_GEN_STRIDE);
   const composed = bundle.composeFacetManager({
     ctx: embedderCtx,
-    env: { LOADER: { ...embedderWorld.loader, get: (id, config) => (id === bundle.ESBUILD_FACET_WORKER_ID ? embedderProbe.env.LOADER.get(id) : embedderWorld.loader.get(id, config)) }, ASSETS },
+    env: { LOADER: { ...embedderWorld.loader, get: (id, config) => (id === bundle.OXC_FACET_WORKER_ID ? embedderProbe.env.LOADER.get(id) : embedderWorld.loader.get(id, config)) }, ASSETS },
     processes: embedderProcesses,
     portRegistry: new PortRegistry(),
     vfs,
@@ -303,8 +303,8 @@ try {
   assert.deepEqual(out1, [{ code: 'T(export const a = 1;)', map: '', warnings: [] }]);
   assert.deepEqual(sessionProbe.reached, embedderProbe.reached, 'both reached the same loader id, facet and payload');
   assert.deepEqual(sessionProbe.reached.map((r) => r[0]), ['loader.get', 'facets.get', 'transformMany']);
-  assert.equal(sessionProbe.reached[0][1], bundle.ESBUILD_FACET_WORKER_ID);
-  assert.equal(sessionProbe.reached[1][1], bundle.ESBUILD_FACET_WORKER_ID);
+  assert.equal(sessionProbe.reached[0][1], bundle.OXC_FACET_WORKER_ID);
+  assert.equal(sessionProbe.reached[1][1], bundle.OXC_FACET_WORKER_ID);
 
   // (d) and both carry the image-store fallback the factory owns.
   assert.equal(typeof sessionManager.hooks.resolveWorkerLaunchFallback, 'function');

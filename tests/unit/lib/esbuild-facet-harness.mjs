@@ -8,7 +8,7 @@
 // cap the memory the facet's esbuilds hold, or end the latest esbuild's Go
 // program (`exitGo`). `durableObject` is a Durable Object as
 // esbuild-transform.ts sees it (`env.LOADER`, `ctx.facets`), so a case drives
-// the same `esbuildTransformHost` a session does.
+// the same `esbuildBuildHost` a session does.
 
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -115,7 +115,7 @@ export async function freshFacetClass() {
  * on a sound stub answers without running esbuild (only the stub is in question).
  */
 export function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
-  const counts = { loaderGets: 0, facetInstances: 0, stubs: 0, transformCalls: 0 };
+  const counts = { loaderGets: 0, facetInstances: 0, stubs: 0 };
   const instances = new Map();
   const ctx = {
     id: { toString: () => 'shared-stub-do' },
@@ -129,16 +129,9 @@ export function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
         }
         const instance = instances.get(name);
         if (++counts.stubs <= brokenStubs) {
-          const broken = async () => { throw new Error(`stub ${counts.stubs} disconnected`); };
-          return { transformMany: broken, build: broken };
+          return { build: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
         }
-        return {
-          build: async () => ({ built: true }),
-          transformMany: async (requests) => {
-            counts.transformCalls++;
-            return structuredClone(await (await instance).transformMany(structuredClone(requests)));
-          },
-        };
+        return { build: async () => (await instance, { built: true }) };
       },
     },
   };

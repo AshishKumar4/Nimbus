@@ -10,7 +10,7 @@
  * ESBUILD_CLI_BUILD_ID is a content-hash prefix, ESBUILD_CLI_SHA256 the
  * digest every fetch is verified against.
  *
- * Size: 342.67 KiB
+ * Size: 32.50 KiB
  */
 export declare const ESBUILD_CLI_ASSET_PATH: string;
 export declare const ESBUILD_CLI_BUILD_ID: string;

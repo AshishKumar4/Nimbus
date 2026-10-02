@@ -9,11 +9,11 @@ import { createRequire } from 'node:module';
 import { posix } from 'node:path';
 import { transform } from 'esbuild';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
-import { esbuildTransformHost } from '../../packages/worker/src/facets/esbuild-transform.ts';
+import { oxcTransformHost } from '../../packages/worker/src/facets/oxc-transform.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { durableObject, esbuilds, freshFacetClass, releaseFacetHarness, resetEsbuilds } from './lib/esbuild-facet-harness.mjs';
+import { durableObject, freshFacetClass, instances, releaseFacetHarness, resetInstances } from './lib/oxc-facet-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const root = 'home/user/app';
@@ -40,11 +40,11 @@ export default function ${name}() {
 `);
 }
 
-resetEsbuilds();
-// Holds a shared transformer comfortably, but not thirteen simultaneous ones.
-esbuilds.memoryLimitBytes = 128 * 1024 * 1024;
+resetInstances();
+// Far less than a Worker has: the facet's one shared instance must fit it.
+instances.memoryLimitBytes = 16 * 1024 * 1024;
 const { ctx, env } = durableObject(await freshFacetClass());
-const esbuild = new EsbuildService(undefined, { transformHost: esbuildTransformHost(ctx, env) });
+const esbuild = new EsbuildService(undefined, { transformHost: oxcTransformHost(ctx, env) });
 const server = new ViteDevServer({ vfs, esbuild, root, onHmrMessage() {}, basePath: '/preview', port: 5173 });
 const names = ['Card', ...components];
 const responses = await Promise.all(names.map((name) => {
@@ -87,5 +87,6 @@ for (const name of components) {
   assert.equal(rendered.type, 'div');
   assert.deepEqual(rendered.props, { className: `card ${name}`, children: name });
 }
+assert.equal(instances.created, 1, 'the thirteen requests shared one instance');
 releaseFacetHarness();
-console.log('esbuild-preview-memory OK: thirteen concurrent requests render through Card under the wasm budget');
+console.log('transform-preview-memory OK: thirteen concurrent requests render through Card under the wasm budget');

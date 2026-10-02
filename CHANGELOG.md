@@ -3,6 +3,26 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Transforms run on Nimbus's own build of Oxc instead of esbuild-wasm: every
+  TypeScript, JSX and ES-module-to-CommonJS transform a session makes (a
+  launch's module cells and entry, the built-in Vite dev server's modules,
+  the Vite config read, the supervisor transform RPC). The engine is a
+  2.15 MiB wasm module (`packages/worker/scripts/oxc-wasm`: Oxc 0.152's
+  parser, TypeScript/JSX transformer and printer, plus a module pass that
+  writes CommonJS in esbuild's shape, helpers and `__esModule` included),
+  built reproducibly from a pinned toolchain, staged under `/_assets/oxc/`
+  and digest-checked like every staged artifact. It runs in a transform
+  facet of its own; the esbuild facet keeps builds and the `esbuild`
+  command. On pi 0.99.1's 66 bundle chunks plus 23 TypeScript sources, a
+  cold pass takes 280 ms where esbuild-wasm took 3,647 ms; the wasm starts
+  at 4.25 MiB where esbuild's starts at 28 MiB, and peaks at 62 MiB where
+  esbuild's reached 336 MiB. Stored launch transforms are redone once,
+  since the transform host's identity changed. Output is printed
+  differently (formatting only); `supervisorEsbuildService` keeps its name,
+  signature and contract.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,

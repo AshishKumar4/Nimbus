@@ -42,9 +42,5 @@ export type GoRuntimeFactory = (global: object, fs: object) => new () => GoProgr
 declare global {
     /** Runs the CLI once and resolves to its exit status. */
     var __esbuildCliRun: (args: EsbuildCliArgs, supervisor: WasiSupervisorStub, output: EsbuildCliOutput, module: WebAssembly.Module) => Promise<number>;
-    /** dynamic-import-rewrite.ts's rewrite, for the facet's transforms. */
-    var __nimbusRewriteDynamicImports: (code: string, parentUrl: string, moduleMetadata?: boolean) => string;
-    /** async-module-lowering.ts's lowering of a top-level-await module, for the facet's transforms. */
-    var __nimbusLowerAsyncModule: (esm: string) => string;
 }
 //# sourceMappingURL=types.d.ts.map

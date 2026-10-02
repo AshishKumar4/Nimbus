@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { transform } from 'esbuild';
+import { oxcEngine } from './lib/oxc-engine.mjs';
 import { prefetchForRequire, requireFsOverBridge } from '../../packages/core/src/runtime/require-resolver.ts';
 import { buildPrefetchBundle, greedyAddMainEntries } from '../../packages/worker/src/facets/manager.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
@@ -148,7 +148,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   };
   const bound=Object.values(files).reduce((n,s)=>n+bytes(s),0)+64;
   const esbuild=new EsbuildService(undefined,{transformHost:requests=>Promise.all(requests.map(({code,options})=>{
-    return transform(code,{loader:options.loader,format:options.format,target:options.target,platform:options.platform});
+    return oxcEngine.transform(code,{loader:options.loader,format:options.format,target:options.target});
   }))});
   const build=async(requiredShared)=>{
     const view=launchFs({...files,[APP+'/keep.cjs']:requiredShared?'module.exports=require("shared");':files[APP+'/keep.cjs']});
