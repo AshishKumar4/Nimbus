@@ -186,6 +186,17 @@ function arrayWithHoles(elements: SafeList<unknown>, holes: SafeList<number>): u
   return out;
 }
 
+/** AsyncIteratorClose on a normal or return completion, awaiting as the enclosing body awaits. */
+const asyncIteratorClose = safeGenerator(function* (
+  iterator: object, awaitValue: (x: unknown) => Generator<unknown, unknown, unknown>,
+): Generator<unknown, void, unknown> {
+  const ret: unknown = reflectGet(iterator, 'return');
+  if (ret === undefined || ret === null) return;
+  if (typeof ret !== 'function') throw new TypeError('iterator.return is not a function');
+  const closed = yield* awaitValue(reflectApply(ret, iterator, []));
+  if (!isObject(closed)) throw new TypeError(`Iterator result ${stringOf(closed)} is not an object`);
+});
+
 function requireObjectCoercible(value: unknown): void {
   if (value === null || value === undefined) throw new TypeError(`Cannot destructure '${stringOf(value)}' as it is ${stringOf(value)}.`);
 }
@@ -1396,36 +1407,52 @@ export class Compiler {
         iterator = it;
       }
       const next: unknown = reflectGet(iterator, 'next');
-      for (;;) {
-        if (typeof next !== 'function') throw new TypeError('iterator.next is not a function');
-        const result = yield* awaitValue(reflectApply(next, iterator, []));
-        if (!isObject(result)) throw new TypeError(`Iterator result ${stringOf(result)} is not an object`);
-        if (reflectGet(result, 'done')) return undefined;
-        const value: unknown = reflectGet(result, 'value');
-        let s: unknown;
-        try {
-          const e = entry ? entry(env) : env;
-          if (bindGen) yield* bindGen(e, value); else bind(e, value);
-          s = yield* body(e);
-        } catch (error) {
-          // AsyncIteratorClose with a throw completion: the original error wins.
+      // Whether leaving now must close the iterator: an async generator's
+      // return() while suspended in the body leaves through `finally` alone.
+      let open = true;
+      try {
+        for (;;) {
+          if (typeof next !== 'function') { open = false; throw new TypeError('iterator.next is not a function'); }
+          let result: unknown;
           try {
-            const ret: unknown = reflectGet(iterator, 'return');
-            if (typeof ret === 'function') yield* awaitValue(reflectApply(ret, iterator, []));
-          } catch { /* the body's error is what propagates */ }
-          throw error;
-        }
-        if (s instanceof Completion) {
-          const c = control(s);
-          if (c === 'next') continue;
-          const ret: unknown = reflectGet(iterator, 'return');
-          if (ret !== undefined && ret !== null) {
-            if (typeof ret !== 'function') throw new TypeError('iterator.return is not a function');
-            const closed = yield* awaitValue(reflectApply(ret, iterator, []));
-            if (!isObject(closed)) throw new TypeError(`Iterator result ${stringOf(closed)} is not an object`);
+            result = yield* awaitValue(reflectApply(next, iterator, []));
+          } catch (error) {
+            open = false;
+            throw error;
           }
-          return c === 'stop' ? undefined : s;
+          if (!isObject(result)) { open = false; throw new TypeError(`Iterator result ${stringOf(result)} is not an object`); }
+          let value: unknown;
+          try {
+            if (reflectGet(result, 'done')) { open = false; return undefined; }
+            value = reflectGet(result, 'value');
+          } catch (error) {
+            open = false;
+            throw error;
+          }
+          let s: unknown;
+          try {
+            const e = entry ? entry(env) : env;
+            if (bindGen) yield* bindGen(e, value); else bind(e, value);
+            s = yield* body(e);
+          } catch (error) {
+            open = false;
+            // AsyncIteratorClose with a throw completion: the original error wins.
+            try {
+              const ret: unknown = reflectGet(iterator, 'return');
+              if (typeof ret === 'function') yield* awaitValue(reflectApply(ret, iterator, []));
+            } catch { /* the body's error is what propagates */ }
+            throw error;
+          }
+          if (s instanceof Completion) {
+            const c = control(s);
+            if (c === 'next') continue;
+            open = false;
+            yield* asyncIteratorClose(iterator, awaitValue);
+            return c === 'stop' ? undefined : s;
+          }
         }
+      } finally {
+        if (open) yield* asyncIteratorClose(iterator, awaitValue);
       }
     });
   }

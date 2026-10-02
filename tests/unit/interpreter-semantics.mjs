@@ -260,6 +260,22 @@ async function runCases(interpreterFile, opsFile) {
   check('delete of a member whose key awaits', await new AsyncFunction('const o = { k: 1 }; const r = delete o[await "k"]; return [r, "k" in o]')(), [true, false]);
   check('a class named by a computed key, whose keys await', await new AsyncFunction('const o = { [1]: class { [await "x"]() { return 5 } } }; return [o[1].name, new o[1]().x()]')(), ['1', 5]);
   check('a class named by a computed key, whose heritage awaits', await new AsyncFunction('class B { b() { return 6 } } const o = { ["c"]: class extends (await B) {} }; return [o.c.name, new o.c().b()]')(), ['c', 6]);
+  {
+    const closed = [];
+    const source = { [Symbol.asyncIterator]() { return { next: async () => ({ value: 1, done: false }), return: async () => { closed.push('return'); return { done: true }; } }; } };
+    const gen = new AsyncGeneratorFunction('source', 'for await (const x of source) yield x;')(source);
+    await gen.next();
+    await gen.return();
+    check('return() of a generator suspended in for await closes its iterator', closed, ['return']);
+  }
+  {
+    const closed = [];
+    const source = { [Symbol.iterator]() { return { next: () => ({ value: 1, done: false }), return: () => { closed.push('return'); return {}; } }; } };
+    const gen = new GeneratorFunction('source', 'for (const x of source) yield x;')(source);
+    gen.next();
+    gen.return();
+    check('return() of a generator suspended in for-of closes its iterator', closed, ['return']);
+  }
 
   // ── Module cells ──
   {
