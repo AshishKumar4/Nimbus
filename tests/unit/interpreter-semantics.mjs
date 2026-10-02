@@ -320,10 +320,15 @@ async function runCases(interpreterFile, opsFile) {
     check('a script that is one expression statement, jiti\'s wrapper', mod.exports, { v: 'function' });
     check('its value each time the function runs', interp.compileExpression('[1, 2].length // trailing')(), 2);
     check('after a directive prologue, which the function keeps (vite-node\'s)', interp.compileExpression("'use strict';(() => function () { return this; })")()()(), undefined);
-    // Against V8's own answer: node runs vm under --disallow-code-generation-from-strings.
+    // Against V8's own answer: node runs vm under --disallow-code-generation-from-strings. Called
+    // as node-shims calls it: with the global object as `this`, a script's own at its top level.
     const vm = require('node:vm');
+    const asRun = (code) => Reflect.apply(interp.compileExpression(code), globalThis, []);
     for (const code of ['"hello"', '"use strict"', "'a';\n'b'", "'use strict'; 'value'"]) {
-      check(`a script of directives alone completes with the last one's value: ${code}`, interp.compileExpression(code)(), vm.runInThisContext(code));
+      check(`a script of directives alone completes with the last one's value: ${code}`, asRun(code), vm.runInThisContext(code));
+    }
+    for (const code of ["'use strict'; this", "'use strict'; (() => this)()", 'this']) {
+      check(`a script's top-level this is the global object: ${code}`, asRun(code) === globalThis, vm.runInThisContext(code) === globalThis);
     }
     assert.throws(() => interp.compileExpression('(function () {'), SyntaxError);
     assert.throws(() => interp.compileExpression('var x = 1; x'), (e) => e.code === INTERPRETER_UNSUPPORTED);

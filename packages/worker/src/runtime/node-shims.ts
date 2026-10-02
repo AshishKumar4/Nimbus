@@ -6407,7 +6407,9 @@ const __vmMod = (() => {
     // statement, \`(function (exports, require, ...) { ... });\`. The service
     // stages a script that is one expression as a zero-argument function
     // returning its value (the script's completion value); the wrapper
-    // itself executes only when the caller invokes it. This is not a vm
+    // itself executes only when the caller invokes it. The function is
+    // called with the global object as \`this\`, which is a script's
+    // \`this\` at its top level, strict or not. This is not a vm
     // context or a global-script evaluator: declarations/completion values
     // spanning statements, execution deadlines and context mutation have no
     // equivalent here and remain unsupported.
@@ -6418,7 +6420,7 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return service.compileExpression(String(code))();
+        return Reflect.apply(service.compileExpression(String(code)), globalThis, []);
       }
     },
     // A function of \`params\` and \`code\` is what the Function constructor

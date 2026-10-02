@@ -57,8 +57,11 @@ const FILES = {
     '  gen: () => new (Object.getPrototypeOf(function* () {}).constructor)("yield 7")().next().value,',
     '  vm: () => require("vm").compileFunction("return x * 3", ["x"])(5),',
     '  vmexpr: () => require("vm").runInThisContext("(function (x) { return x + 2 })", { filename: "jiti.cjs" })(3),',
-    // A script's value as V8 gives it: a lone string is a directive, and the script's value.
+    // A script's value as V8 gives it: a lone string is a directive, and the script's value;
+    // `this` at a script's top level is the global object, strict or not.
     '  vmstr: () => require("vm").runInThisContext("\\"hello\\""),',
+    '  vmthis: () => require("vm").runInThisContext("\'use strict\'; this") === globalThis,',
+    '  vmarrow: () => require("vm").runInThisContext("\'use strict\'; (() => this)()") === globalThis,',
     '  breakout: () => typeof new (Object.getPrototypeOf(async function () {}).constructor)("}, globalThis.__broke = 1, async function () {"),',
     '  where: () => (new Function("return new Error().stack")().includes("/gen/") ? "native" : "interpreted"),',
     '};',
@@ -287,13 +290,13 @@ try {
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,
-      /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello breakout!SyntaxError where=interpreted file=written broke=undefined\n/,
+      /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello vmthis=true vmarrow=true breakout!SyntaxError where=interpreted file=written broke=undefined\n/,
       first.stdout);
     const second = await terminal.run(`cd ${W} && node fn.js`);
-    assert.match(second.stdout, /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello breakout!SyntaxError where=native file=written broke=undefined\n/, second.stdout);
+    assert.match(second.stdout, /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello vmthis=true vmarrow=true breakout!SyntaxError where=native file=written broke=undefined\n/, second.stdout);
     // The diagnostic switch interprets what the launch staged: native and interpreted, side by side.
     const forced = await terminal.run(`cd ${W} && NIMBUS_RUNTIME_CODE=interpret node fn.js`);
-    assert.match(forced.stdout, /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello breakout!SyntaxError where=interpreted file=written broke=undefined\n/, forced.stdout);
+    assert.match(forced.stdout, /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello vmthis=true vmarrow=true breakout!SyntaxError where=interpreted file=written broke=undefined\n/, forced.stdout);
     // A module runner's whole SSR graph runs in the launch that produced it.
     const runnerFirst = await terminal.run(`cd ${W} && node runner.js`);
     assert.match(runnerFirst.stdout, /RUNNER value=111 imported=a,b,d,c\n/, runnerFirst.stdout);

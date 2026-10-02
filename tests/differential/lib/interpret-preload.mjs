@@ -29,5 +29,6 @@ globalThis.eval = function (source) {
 
 routeRunInThisContext((code) => {
   recordPart(process.env.NIMBUS_DIFF_REPORT, { vmExpressions: [code.slice(0, 2000)] });
-  return interp.compileExpression(code)();
+  // Called as node-shims calls it: with the global object as `this`, a script's own.
+  return Reflect.apply(interp.compileExpression(code), globalThis, []);
 });

@@ -132,7 +132,8 @@ export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params:
  * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
  * function returning the value of the one expression the script is (after
  * its directive prologue, which the function keeps), in the global scope as
- * a constructor's function is (runtimeFunctionModule); or
+ * a constructor's function is (runtimeFunctionModule), which node-shims
+ * calls with the global object as `this`, a script's own; or
  * it throws the SyntaxError V8 would, or, for a script of another shape,
  * the error the interpreter answers it with in the first launch.
  */

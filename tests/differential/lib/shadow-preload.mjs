@@ -146,7 +146,8 @@ routeRunInThisContext((code, native) => {
   writeFileSync(join(corpus, `${key}.json`), JSON.stringify({ kind: 'expression', code }));
   let interpreted;
   try {
-    interpreted = interp.compileExpression(code)();
+    // Called as node-shims calls it: with the global object as `this`, a script's own.
+    interpreted = Reflect.apply(interp.compileExpression(code), globalThis, []);
   } catch (e) {
     record({ refused: [{ key, kind: 'vm', error: `${e && e.code} ${e && e.message}` }] });
     return value;

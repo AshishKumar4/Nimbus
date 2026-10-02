@@ -438,7 +438,8 @@ export function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonl
  * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
  * function returning the value of the one expression the script is (after
  * its directive prologue, which the function keeps), in the global scope as
- * a constructor's function is (runtimeFunctionModule); or
+ * a constructor's function is (runtimeFunctionModule), which node-shims
+ * calls with the global object as `this`, a script's own; or
  * it throws the SyntaxError V8 would, or, for a script of another shape,
  * the error the interpreter answers it with in the first launch.
  */
@@ -635,7 +636,8 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
     if (!${JSON.stringify(Object.keys(RUNTIME_FUNCTION_HEADS))}.includes(kind)) throw new TypeError("compileFunction: unknown kind " + String(kind));
     return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor");
   },
-  // vm.runInThisContext's code (node-shims): a function returning its value.
+  // vm.runInThisContext's code (node-shims): a function returning its value,
+  // which node-shims calls with the global object as \`this\`, a script's own.
   compileExpression(code) {
     return __nimbusRuntimeCodeCompile({ kind: "expression", code: String(code) }, "Code handed to vm.runInThisContext");
   },

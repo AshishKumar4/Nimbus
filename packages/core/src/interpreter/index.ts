@@ -64,7 +64,9 @@ export interface Interpreter {
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
-   * hands it over. Code of any other shape is refused (UnsupportedSyntax).
+   * hands it over and calls it, with the global object as `this` (a script's
+   * `this` at its top level). Code of any other shape is refused
+   * (UnsupportedSyntax).
    */
   compileExpression(code: string): NativeFunction;
   /** Run a script at global scope: its vars and functions become global object properties. */
