@@ -14,6 +14,11 @@
  * the copy, a list of those, or a record of primitives (a template element's
  * `value`, a regular expression literal's `regex`). Every object of the copy
  * is frozen and inherits nothing, and no program code ever receives one.
+ *
+ * A literal's `value` is the one object acorn makes with a built-in a program
+ * can replace (a RegExp, or a bigint through BigInt), so it is not copied: a
+ * regular expression's is null (the compiler builds one from `regex` each
+ * time it runs), and a bigint's is made again from its `bigint` text.
  */
 import type { AnyNode } from 'acorn';
 declare const owned: unique symbol;

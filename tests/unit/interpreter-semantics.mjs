@@ -194,6 +194,30 @@ async function runCases(interpreterFile, opsFile) {
     }
     check('a tree naming an interpreter binding is refused', refused, 'interpreter: the parser produced the identifier %this');
   }
+  {
+    // acorn makes a regular expression literal's value with the realm's RegExp, and a bigint's with
+    // BigInt, which a program may have replaced (here to decorate or box what they return). The
+    // interpreter takes neither value from the parse. Compiled by V8 as part of this file, and
+    // interpreted from the same text while the replacements stand.
+    const program = () => [/a(b)/.exec('xab')[1], /x/g.flags, ({ 1n: 'one', [2n]: 'two' })[1], typeof 2n, String(10n ** 20n)];
+    const NativeRegExp = RegExp;
+    const NativeBigInt = BigInt;
+    let interpreted;
+    globalThis.RegExp = function RegExp(pattern, flags) {
+      const made = new NativeRegExp(pattern, flags);
+      made.decorated = () => {};
+      made.self = made;
+      return made;
+    };
+    globalThis.BigInt = function BigInt(value) { return Object(NativeBigInt(value)); };
+    try {
+      interpreted = F(`return (${program})()`)();
+    } finally {
+      globalThis.RegExp = NativeRegExp;
+      globalThis.BigInt = NativeBigInt;
+    }
+    check('literals take nothing from a replaced RegExp or BigInt', interpreted, program());
+  }
 
   // ── Calls ──
   check('a parenthesized optional chain keeps its receiver', F('const a = { b() { return this._b }, _b: 42 }; return [(a?.b)(), (a.b)?.()]')(), [42, 42]);
