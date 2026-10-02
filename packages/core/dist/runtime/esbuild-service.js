@@ -1,12 +1,13 @@
 /**
- * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
+ * EsbuildService — TypeScript/JSX transform + bundling.
  *
- * esbuild-wasm's linear memory starts at ~28 MiB, grows to fit the working
- * set of its transforms/builds, and cannot shrink. A host whose isolate is
- * memory-constrained passes a `transformHost` and a
- * `buildHost` so esbuild runs in another isolate (the session's is the
- * loader-backed esbuild facet); without them, esbuild runs here. build()'s
- * VFS resolver plugin always runs here, over this service's view.
+ * A host whose isolate is memory-constrained passes a `transformHost` and a
+ * `buildHost` so both run in another isolate: the session's transforms run in
+ * its transform facet on Nimbus's Oxc build (oxc-transform.ts, which keeps
+ * esbuild's transform contract), its builds in the esbuild facet. Without
+ * them, esbuild-wasm runs both here; its linear memory starts at ~28 MiB,
+ * grows to fit the working set and cannot shrink. build()'s VFS resolver
+ * plugin always runs here, over this service's view.
  */
 import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
@@ -16,7 +17,6 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { lowerAsyncModule } from './async-module-lowering.js';
-import { keepEsbuild, startObservedEsbuild } from './keep-esbuild.js';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
@@ -662,7 +662,7 @@ export async function loadEsbuild() {
 const __outputDecoder = new TextDecoder();
 /**
  * `lower` is async-module-lowering.ts's `lowerAsyncModule`, passed in because
- * this function is serialized into the esbuild facet.
+ * this function is serialized into the transform facet.
  */
 async function transformWithEsbuild(esbuildApi, code, options, lower) {
     const format = options?.format || 'esm';
@@ -753,7 +753,7 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
  * the process's, the rewrite that routes each one to the process's ESM loader.
  * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lower`
  * async-module-lowering.ts's `lowerAsyncModule`, passed in because this
- * function is serialized into the esbuild facet. `esbuildApi` is null only
+ * function is serialized into the transform facet. `esbuildApi` is null only
  * before esbuild is loaded, which a rewrite-only request does not wait for.
  */
 async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
@@ -849,20 +849,17 @@ async function buildWithEsbuild(esbuildApi, options, plugin) {
         metafile: result.metafile,
     };
 }
-/**
- * Source the esbuild facet evaluates next to esbuild: its transform and build
- * helpers, and the esbuild it keeps for transforms (keep-esbuild.ts).
- */
+/** Source the esbuild facet evaluates next to esbuild: its build helpers. */
 export function generateEsbuildFacetRuntimeSource() {
-    return [
-        transformWithEsbuild.toString(),
-        runTransformRequest.toString(),
-        isBuildFailure.toString(),
-        serializableMessage.toString(),
-        buildWithEsbuild.toString(),
-        keepEsbuild.toString(),
-        startObservedEsbuild.toString(),
-    ].join('\n');
+    return [isBuildFailure.toString(), serializableMessage.toString(), buildWithEsbuild.toString()].join('\n');
+}
+/**
+ * Source the transform facet evaluates next to its engine: one transform
+ * request, run against anything with esbuild's `transform()` contract
+ * (oxc-transform.ts's in the facet).
+ */
+export function generateTransformFacetRuntimeSource() {
+    return [transformWithEsbuild.toString(), runTransformRequest.toString()].join('\n');
 }
 /**
  * `plugin`, set up here, answering esbuild's resolve and load callbacks the

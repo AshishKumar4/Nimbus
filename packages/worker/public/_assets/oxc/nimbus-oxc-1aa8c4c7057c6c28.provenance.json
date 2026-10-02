@@ -1,0 +1,72 @@
+{
+  "artifact": "nimbus-oxc",
+  "oxc": "0.152.0",
+  "target": "wasm32-unknown-unknown",
+  "source": {
+    "crate": "packages/worker/scripts/oxc-wasm",
+    "manifestVersion": "0.1.0",
+    "inputs": {
+      "../napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "Cargo.lock": "d31688c6583e5c1403139c6b26e379442f4a6e41d45897bc608c00316cc82b89",
+      "Cargo.toml": "12e02dd3f9ae9ba0aa7f710ff58d77c1df8ada5454694f5c3e3c0b3ce6752b25",
+      "build.mjs": "e0448273318f684eee17ec7873be77f8810b330a376dab2c5dd83e889a383819",
+      "inputs.mjs": "a92a9eccc374aa5184b8df53475c188938baa19d5f40163e026948843e708d90",
+      "rust-toolchain.toml": "1f65896ce423e463d3278c0a9fbf946892f9e7c95ca680f27b7a337dd5065736",
+      "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
+      "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
+      "src/helpers.rs": "cf0da308d383ea902c44f55a9d1e04fcc991ce80d6c4f1c89a69901621be5d8f",
+      "src/lib.rs": "31d68d740f2621fa0da68abe5a5c14a4f917b3d18434b2c2cb888298f2a79b65",
+      "src/module.rs": "3173e956253e6b1cacedbe009a9aa0cc335347e1bd42fda8f13062bfec2df45b",
+      "src/names.rs": "4b475452c58d047f4536a255d5ee6871e3fd905fe21fc715b0e55b08e9f117d0",
+      "src/options.rs": "11a90f89d6cafc6a25e0786ef8d168469c42498d7ae09740387ad6957bf27bf2"
+    }
+  },
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cargo": {
+    "command": "cargo build --release --locked --lib --target wasm32-unknown-unknown",
+    "rustflags": [
+      "-Ctarget-feature=+simd128",
+      "-Clink-arg=-zstack-size=4194304"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)"
+  },
+  "wasmOpt": {
+    "binaryen": {
+      "version": "version_133",
+      "url": "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz",
+      "sha256": "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489"
+    },
+    "version": "wasm-opt version 133 (version_133)",
+    "args": [
+      "--enable-simd",
+      "--enable-bulk-memory",
+      "--enable-nontrapping-float-to-int",
+      "--enable-sign-ext",
+      "--enable-mutable-globals",
+      "--enable-reference-types",
+      "--enable-multivalue",
+      "--remove-exports",
+      "--pass-arg=remove-exports@__*",
+      "--remove-imports",
+      "-O3"
+    ]
+  },
+  "wasm": {
+    "imports": [],
+    "exports": [
+      "memory",
+      "nimbus_oxc_alloc",
+      "nimbus_oxc_realloc",
+      "nimbus_oxc_release",
+      "nimbus_oxc_transform"
+    ],
+    "memoryInitialPages": 67,
+    "stackBytes": 4194304
+  },
+  "outputs": {
+    "nimbus-oxc.wasm": {
+      "bytes": 2276933,
+      "sha256": "1aa8c4c7057c6c28c5f11b7b6cd4dd66daae5653d79e8d17fabfdd1e7d1447b8"
+    }
+  }
+}

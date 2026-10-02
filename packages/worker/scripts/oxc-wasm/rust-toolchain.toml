@@ -1,0 +1,5 @@
+# The exact rustc build.mjs builds with (it refuses any other).
+[toolchain]
+channel = "1.98.1"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

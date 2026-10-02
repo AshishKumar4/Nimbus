@@ -5,6 +5,42 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Transforms run on Nimbus's own build of Oxc instead of esbuild-wasm: every
+  TypeScript, JSX and ES-module-to-CommonJS transform a session makes (a
+  launch's module cells and entry, the built-in Vite dev server's modules,
+  the Vite config read, the supervisor transform RPC). The engine is a
+  2.15 MiB wasm module (`packages/worker/scripts/oxc-wasm`: Oxc 0.152's
+  parser, TypeScript/JSX transformer and printer, plus a module pass that
+  writes CommonJS in esbuild's shape, helpers and `__esModule` included),
+  built reproducibly from a pinned toolchain, staged under `/_assets/oxc/`
+  and digest-checked like every staged artifact. It runs in a transform
+  facet of its own; the esbuild facet keeps builds and the `esbuild`
+  command. On pi 0.99.1's 66 bundle chunks plus 23 TypeScript sources, a
+  cold pass takes 280 ms where esbuild-wasm took 3,647 ms; the wasm starts
+  at 4.25 MiB where esbuild's starts at 28 MiB, and peaks at 62 MiB where
+  esbuild's reached 336 MiB. Stored launch transforms are redone once,
+  since the transform host's identity changed. Output is printed
+  differently (formatting only); `supervisorEsbuildService` keeps its name,
+  signature and contract.
+- Lowering a module with top-level await (the transform's ESM output run as a
+  CommonJS cell) now evaluates every module the source requests before the
+  body, re-exports included, in source order, as Node does; and each export
+  is a live getter installed before the body runs, so `export let db; db =
+  await connect()` exports the connected value, wherever the transform
+  printed the export. The cell's top level holds only generated names, so a
+  module's own `import Object from "dep"` cannot reach the lowering's code.
+- A module nested deeper than Oxc's recursive passes can run on the host's
+  stack (under V8: about 4,800 concatenated terms, a 1,950-arm ternary, 1,400
+  chained calls or arrays 585 deep) is transformed by esbuild in the esbuild
+  facet, that module alone: every such module of a batch, in calls of at most
+  four, each call with a 30 s deadline, each module logged with its path and
+  reason. Only the driver's own RangeError marks a module so, never
+  message text. Stored launch transforms are keyed by both engines' code.
+  esbuild's own wasm grows with depth too (268 MiB for 5,000 concatenated
+  terms), so past its own limit neither transforms it.
+- `jsx: "preserve"` with `format: "cjs"` is refused: preserved JSX would name
+  imports that the conversion to CommonJS moved onto records.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

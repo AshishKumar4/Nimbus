@@ -20,6 +20,7 @@ import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.
 import { esbuildFacetWorkerCode } from '../../packages/worker/src/facets/esbuild-transform.ts';
 import { ESBUILD_JS_ASSET_PATH } from '../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
+import { OXC_FACET_ASSET_PATH } from '../../packages/worker/src/oxc-facet-artifact.generated.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
@@ -29,7 +30,7 @@ const staged = (path) => readFile(new URL(`../../packages/worker/public${path}`,
 // supply: the host's compiled esbuild module, handed over as is.
 const wasmModule = await WebAssembly.compile(wasmBytes);
 const facetSource = esbuildFacetWorkerCode(
-  wasmModule, await staged(ESBUILD_JS_ASSET_PATH), await staged(ESBUILD_CLI_ASSET_PATH),
+  wasmModule, await staged(ESBUILD_JS_ASSET_PATH), await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH),
 ).modules['worker.js'];
 globalThis.__facetImports = {
   DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
@@ -135,4 +136,21 @@ author.writeFile('home/user/app/src/leak.ts', 'export { default } from "/private
 }
 
 harness.db.close();
+// ── The facet answers what ran the transform facet out of stack ─────────────
+{
+  // runTransformRequest with the runtime staged for the transform facet: a
+  // module nested past the host stack Oxc runs on (arrays 5,000 deep; Oxc's
+  // passes stop near 600 under Node; esbuild's wasm grows to 76 MiB for it),
+  // and a top-level-await one.
+  const [deep, tla] = structuredClone(await facet.transformMany(structuredClone([
+    { code: `export const x = ${'['.repeat(5000)}"bottom"${']'.repeat(5000)};`, options: { loader: 'js', format: 'cjs', target: 'esnext' } },
+    { code: 'export let db; db = await Promise.resolve(7);', options: { loader: 'js', format: 'cjs', target: 'esnext' } },
+  ])));
+  assert.equal(deep.error, undefined, deep.error);
+  assert.match(deep.code, /"bottom"/);
+  assert.equal(tla.error, undefined, tla.error);
+  assert.match(tla.code, /^return \(async \(\) => \{/m);
+  console.log('  ok  transformMany answers a module too deep for Oxc, and lowers top-level await');
+}
+
 console.log('esbuild-build-host OK');

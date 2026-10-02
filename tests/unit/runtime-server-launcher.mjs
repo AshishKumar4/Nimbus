@@ -18,28 +18,21 @@
 // An ES module entry decides as its CommonJS equivalent does.
 //
 // Through the public entry: the runtime handler (buildRuntimeHandler) over the
-// real runFresh and the real esbuild transform an ES module entry takes, with a
-// FacetManager that records which facet it was asked for.
+// real runFresh and the real transform an ES module entry takes (the transform
+// facet's engine, lib/oxc-engine.mjs), with a FacetManager that records which
+// facet it was asked for.
 
 import assert from 'node:assert/strict';
-import { plugin } from 'bun';
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
 import { runFresh } from '../../packages/worker/src/runtime/node-runner.ts';
 import { runBunScript } from '../../packages/worker/src/runtime/bun-runner.ts';
 
-// The compiled esbuild asset the host bundler supplies in production.
-const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-const esbuildWasm = await WebAssembly.compile(await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')));
-plugin({
-  name: 'esbuild-wasm-asset',
-  setup(build) {
-    build.onLoad({ filter: /esbuild-wasm\/esbuild\.wasm$/ }, () => ({ exports: { default: esbuildWasm }, loader: 'object' }));
-  },
-});
-const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { oxcEngine } from './lib/oxc-engine.mjs';
+
 const esbuild = new EsbuildService();
+esbuild.ensureInit = async () => {};
+esbuild._esbuild = oxcEngine;
 
 function facetMgr() {
   const calls = { exec: 0, spawnNode: 0 };
