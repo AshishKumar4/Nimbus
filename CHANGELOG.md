@@ -3,6 +3,18 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Changed: a workspace's per-user defaults follow the `HOME` its host
+  configures (`NimbusWorkspace.create({ env: { HOME } })`). The home
+  directory and `~/.nimbusrc` are seeded there, `/etc/passwd` names it, and
+  `PATH`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are under it. So are gems
+  and pip packages, as runtimes already were. Before, all of these named
+  `/home/user` whatever HOME was. `/etc/profile` now spells the user's bins
+  as `$HOME/...`. A passwd or profile that is still exactly the one Nimbus
+  seeded follows the new home; one the user changed stays. A relative HOME
+  is refused. With no HOME configured, nothing changes.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,

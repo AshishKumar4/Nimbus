@@ -4,7 +4,6 @@ import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js'
 import { exists, isDirectory } from '../vfs/vfs.js';
 
 const RUBYGEMS_API = 'https://rubygems.org';
-const DEFAULT_GEM_HOME = 'home/user/.gem';
 
 export interface RubyGemRequest {
   name: string;
@@ -47,11 +46,12 @@ export interface InstalledRubyGemBin {
   path: string;
 }
 
-export function defaultGemHome(): string {
-  return DEFAULT_GEM_HOME;
+/** Where `gem install` puts gems for the user whose home is `home`, as `gem --user-install` does. */
+export function gemHomeFor(home: string): string {
+  return `${normalizeVfsPath(home)}/.gem`;
 }
 
-export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome = DEFAULT_GEM_HOME): Promise<string[]> {
+export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string): Promise<string[]> {
   const gemsRoot = `${gemHome}/gems`;
   if (!(await vfs.exists(gemsRoot))) return [];
   const out: string[] = [];
@@ -63,7 +63,7 @@ export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome = DEFAU
   return out.sort();
 }
 
-export async function installedGemBins(vfs: CredentialedVfs, gemHome = DEFAULT_GEM_HOME): Promise<InstalledRubyGemBin[]> {
+export async function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]> {
   const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
   if (!(await vfs.exists(binRoot)) || !(await vfs.isDirectory(binRoot))) return [];
   return (await vfs.readdir(binRoot))
@@ -75,9 +75,9 @@ export async function installedGemBins(vfs: CredentialedVfs, gemHome = DEFAULT_G
 export async function installRubyGems(
   vfs: CredentialedVfs,
   requests: RubyGemRequest[],
-  opts: { gemHome?: string; includeDependencies?: boolean } = {},
+  opts: { gemHome: string; includeDependencies?: boolean },
 ): Promise<RubyGemInstallReport> {
-  const gemHome = normalizeVfsPath(opts.gemHome || DEFAULT_GEM_HOME);
+  const gemHome = normalizeVfsPath(opts.gemHome);
   const includeDependencies = opts.includeDependencies !== false;
   const report: RubyGemInstallReport = { installed: [], alreadyInstalled: [] };
   const visiting = new Set<string>();
@@ -102,7 +102,7 @@ export async function installRubyGems(
 export async function installRubyBundle(
   vfs: CredentialedVfs,
   cwd: string,
-  opts: { gemHome?: string } = {},
+  opts: { gemHome: string },
 ): Promise<{ requests: RubyGemRequest[]; report: RubyGemInstallReport; lockfilePath: string }> {
   const gemfilePath = resolveVfsPath('Gemfile', cwd);
   if (!(await vfs.exists(gemfilePath))) {
@@ -118,7 +118,7 @@ export async function installRubyBundle(
     includeDependencies: true,
   });
   const lockfilePath = resolveVfsPath('Gemfile.lock', cwd);
-  const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome || DEFAULT_GEM_HOME)));
+  const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome)));
   const specs = all
     .sort((a, b) => a.name.localeCompare(b.name) || compareVersions(a.version, b.version))
     .map((g) => `    ${g.name} (${g.version})`)

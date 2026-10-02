@@ -85,6 +85,25 @@ root. The shell enforces the same permission model either way: a root-owned
 `/etc/passwd` refuses a write from `.fs`, and `id` resolves names through
 it.
 
+## The user's home
+
+`env.HOME` sets the session user's home directory, `/home/user` by default.
+Everything Nimbus keeps per user follows it:
+
+- the home directory itself, made for the user, with `~/.config` and `~/.nimbusrc`
+- the user's entry in `/etc/passwd`
+- `PATH` (`~/.local/bin`, `~/.gem/bin`), `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+- installed runtimes (`~/.nimbus/runtimes`), gems (`~/.gem`) and pip packages
+  (`~/.nimbus-python/site-packages`)
+
+```ts
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, env: { HOME: '/home/main' } });
+```
+
+HOME must be an absolute path. A workspace first seeded under another home
+keeps its files there. Nimbus updates `/etc/passwd` and `/etc/profile` only
+when they are still exactly what it seeded.
+
 ## Real runtimes, off Cloudflare
 
 The wasm runtimes are separate npm packages, so nobody downloads a Python

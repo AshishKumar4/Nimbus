@@ -129,7 +129,7 @@ try {
         '2.6.0': [file('urllib3', '2.6.0', 'urllib3-2.6.0-py3-none-any.whl')],
       }),
     ]);
-    const invocation = await buildPipInvocation(['install', 'requests'], 'pip', cwd, new FakeVfs());
+    const invocation = await buildPipInvocation(['install', 'requests'], 'pip', cwd, new FakeVfs(), { home: '/home/user' });
     assert.equal(invocation.mode, 'pip');
     for (const name of ['requests', 'certifi', 'charset-normalizer', 'idna', 'urllib3', 'emscripten-only']) {
       assert.match(invocation.code, new RegExp(`"canonicalName":"${name}"`));
@@ -148,7 +148,7 @@ try {
       'home/user/project/requirements.txt': 'packaging\n',
       'home/user/project/constraints.txt': 'packaging==24.2\n',
     });
-    const invocation = await buildPipInvocation(['install', '-r', 'requirements.txt', '-c', 'constraints.txt'], 'pip', cwd, vfs);
+    const invocation = await buildPipInvocation(['install', '-r', 'requirements.txt', '-c', 'constraints.txt'], 'pip', cwd, vfs, { home: '/home/user' });
     assert.equal(invocation.mode, 'pip');
     assert.match(invocation.code, /"canonicalName":"packaging","version":"24\.2"/);
     assert.doesNotMatch(invocation.code, /"canonicalName":"packaging","version":"25\.0"/);
@@ -161,6 +161,7 @@ try {
       'pip',
       cwd,
       new FakeVfs({}, [requirementsPath]),
+      { home: '/home/user' },
     );
     assert.equal(invocation.mode, 'none');
     assert.equal(invocation.exitCode, 1);
@@ -174,6 +175,7 @@ try {
       'pip',
       cwd,
       new FakeVfs({}, [constraintsPath]),
+      { home: '/home/user' },
     );
     assert.equal(invocation.mode, 'none');
     assert.equal(invocation.exitCode, 1);
@@ -187,6 +189,7 @@ try {
       'pip',
       cwd,
       new FakeVfs({}, [wheelPath]),
+      { home: '/home/user' },
     );
     assert.equal(invocation.mode, 'none');
     assert.equal(invocation.exitCode, 1);
@@ -197,7 +200,7 @@ try {
     const vfs = new FakeVfs({
       'home/user/project/local_pkg-0.1.0-py3-none-any.whl': new Uint8Array([1, 2, 3]),
     });
-    const invocation = await buildPipInvocation(['install', './local_pkg-0.1.0-py3-none-any.whl'], 'pip', cwd, vfs);
+    const invocation = await buildPipInvocation(['install', './local_pkg-0.1.0-py3-none-any.whl'], 'pip', cwd, vfs, { home: '/home/user' });
     assert.equal(invocation.mode, 'pip');
     assert.match(invocation.code, /"displayName":"local_pkg-0\.1\.0-py3-none-any"/);
     assert.match(invocation.code, /"path":"\/home\/user\/project\/local_pkg-0\.1\.0-py3-none-any\.whl"/);
@@ -212,6 +215,7 @@ try {
       'pip',
       cwd,
       vfs,
+      { home: '/home/user' },
     );
     assert.equal(invocation.mode, 'pip');
     assert.match(invocation.code, /"displayName":"direct-ref"/);
@@ -224,7 +228,7 @@ try {
         '1.0.0': [file('native-only', '1.0.0', 'native_only-1.0.0-cp313-cp313-manylinux_2_28_x86_64.whl')],
       }),
     ]);
-    const invocation = await buildPipInvocation(['install', 'native-only'], 'pip', cwd, new FakeVfs());
+    const invocation = await buildPipInvocation(['install', 'native-only'], 'pip', cwd, new FakeVfs(), { home: '/home/user' });
     assert.equal(invocation.mode, 'none');
     assert.match(invocation.error || '', /native platform wheels|native Linux wheels/);
   }
@@ -248,6 +252,7 @@ try {
       cwd,
       new FakeVfs(),
       {
+        home: '/home/user',
         pyodideLockfileText: numpyLockfile,
       },
     );
@@ -262,6 +267,7 @@ try {
       cwd,
       new FakeVfs(),
       {
+        home: '/home/user',
         pyodideLockfileText: numpyLockfile,
         runtimeArtifacts: [{
           path: 'share/pyodide/packages/numpy-2.2.5-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
@@ -300,7 +306,7 @@ try {
       'pip',
       cwd,
       new FakeVfs(),
-      { pyodideLockfileText: '{"packages":{"numpy":{}}}' },
+      { home: '/home/user', pyodideLockfileText: '{"packages":{"numpy":{}}}' },
     );
     assert.equal(invocation.mode, 'none');
     assert.match(invocation.error || '', /installed Pyodide lockfile is invalid/);
@@ -315,6 +321,7 @@ try {
       'pip',
       cwd,
       vfs,
+      { home: '/home/user' },
     );
     assert.equal(invocation.mode, 'none');
     assert.match(invocation.error || '', /Pyodide\/Emscripten extension wheel/);

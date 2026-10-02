@@ -90,10 +90,13 @@ function commandContext(filesystem, env, cred = USER) {
   ctx.args = ['-c', 'print(1)'];
   assert.equal(await run(ctx), 0);
   assert.equal(harness.calls[0].userEnv.HOME, '/home/pyodide');
+  // pip's packages are imported from the site-packages under that HOME.
+  assert.match(JSON.stringify(harness.calls[0]), /\/home\/pyodide\/\.nimbus-python\/site-packages/);
   const defaultCtx = commandContext(filesystem, {});
   defaultCtx.args = ['-c', 'print(1)'];
   assert.equal(await run(defaultCtx), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/user');
+  assert.match(JSON.stringify(harness.calls[1]), /\/home\/user\/\.nimbus-python\/site-packages/);
 }
 
 {
@@ -104,7 +107,11 @@ function commandContext(filesystem, env, cred = USER) {
   const manifest = {
     files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
   };
-  const run = await makeRubyRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx), filesystem })(
+  const run = await makeRubyRunnerFactory({
+    facets: loaderFacetHost(harness.env, harness.ctx),
+    filesystem,
+    getHome: () => '/home/session',
+  })(
     manifest,
     '/runtime/ruby',
     'ruby',
@@ -112,8 +119,12 @@ function commandContext(filesystem, env, cred = USER) {
   );
   assert.equal(await run(commandContext(filesystem, { HOME: '/home/ruby' })), 0);
   assert.equal(harness.calls[0].userEnv.HOME, '/home/ruby');
+  // Gems live under that HOME, as Ruby's own default (File.join(ENV["HOME"], ".gem")) says.
+  assert.equal(harness.calls[0].userEnv.GEM_HOME, '/home/ruby/.gem');
+  // With no HOME in the command's environment, the session user's home.
   assert.equal(await run(commandContext(filesystem, {})), 0);
-  assert.equal(harness.calls[1].userEnv.HOME, '/home/user');
+  assert.equal(harness.calls[1].userEnv.HOME, '/home/session');
+  assert.equal(harness.calls[1].userEnv.GEM_HOME, '/home/session/.gem');
 }
 
 console.log('runtime-home-env: ok');

@@ -302,7 +302,11 @@ export const DEFAULT_HOSTNAME = 'nimbus';
 export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';
-export const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin';
+/** A login's PATH: the system directories, then the user's own bins under `home`. */
+export function defaultPath(home: string): string {
+  return `/usr/local/bin:/usr/bin:/bin:${home}/.local/bin:${home}/.gem/bin`;
+}
+export const DEFAULT_PATH = defaultPath(DEFAULT_HOME);
 export const SEEDED_TOP_LEVEL_DIRS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 'opt'];
 
 // ── Worker Loader guests ────────────────────────────────────────────────
