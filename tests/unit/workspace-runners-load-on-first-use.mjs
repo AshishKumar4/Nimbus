@@ -25,5 +25,7 @@ const version = await ws.exec('wasm-runner --version');
 assert.equal(version.exitCode, 0, `wasm-runner runs on first use: ${version.stderr}`);
 assert.deepEqual(loaded(), ['runtime-registry.ts', 'wasm-runner.ts'], 'and loads only its own modules');
 assert.equal((await ws.exec('wasm-runner --version')).stdout, version.stdout, 'a second run reuses them');
+// wasm-runner takes a .wasm; a workspace has no JavaScript to transform, and no transformer loads.
+assert.deepEqual(Object.keys(require.cache).filter((key) => /runtime\/(esbuild-service|oxc-transform)\.ts$/.test(key)), [], 'no transformer is loaded');
 
 console.log('workspace-runners-load-on-first-use: runners load with the first command that needs them');

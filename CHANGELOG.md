@@ -16,6 +16,9 @@ published independently in the `@nimbus-sh` npm scope.
   are worded by Oxc's parser, and esbuild-wasm's spurious "Cannot read
   directory" error beside an unresolved import is gone. The built-in
   `vite build` still runs in the esbuild facet.
+- A `NimbusWorkspace` no longer holds a lazily built esbuild service: its
+  only runtimes are bash, python and wasm-runner, which reads its `.wasm`
+  itself, so nothing in it ever transformed source.
 
 - Transforms run on Nimbus's own build of Oxc instead of esbuild-wasm: every
   TypeScript, JSX and ES-module-to-CommonJS transform a session makes (a
