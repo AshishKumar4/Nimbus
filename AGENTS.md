@@ -114,8 +114,10 @@ session's own work: the launch-time bundle build, and a wasm engine's
 memory, which only grows. That is why every session-side transform runs in
 the loader-backed transform facet on Nimbus's Oxc build
 (`packages/worker/scripts/oxc-wasm`, whose memory starts at 4.25 MiB), and
-every `EsbuildService.build()` in the esbuild facet, whose esbuild-wasm heap
-starts at ~28 MiB (`supervisorEsbuildService` composes both). Nothing per-process chooses:
+every `EsbuildService.build()` in the build facet on rolldown's staged
+threadless binding (whose memory starts at 5.4 MiB) but the built-in
+`vite build`'s, which stays in the esbuild facet, whose esbuild-wasm heap
+starts at ~28 MiB (`supervisorEsbuildService` composes them). Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,

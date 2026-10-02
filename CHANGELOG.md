@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Builds run on rolldown 1.2.11 instead of esbuild-wasm: `wrangler dev`'s
+  Worker bundle, real Vite's config bundle, and the Vite dev server's
+  cold-module fallback. They run in a build facet of their own, on the
+  threadless rolldown binding Nimbus already stages for Vite 8, with
+  rolldown's JavaScript staged beside it; the session's VFS plugin and
+  every caller are unchanged (`EsbuildService.build`, `supervisorEsbuildService`
+  keep their contract), and a failed build still rejects with esbuild's
+  "Build failed with N errors:" message and its diagnostics. Parse errors
+  are worded by Oxc's parser, and esbuild-wasm's spurious "Cannot read
+  directory" error beside an unresolved import is gone. The built-in
+  `vite build` still runs in the esbuild facet.
+
 - Transforms run on Nimbus's own build of Oxc instead of esbuild-wasm: every
   TypeScript, JSX and ES-module-to-CommonJS transform a session makes (a
   launch's module cells and entry, the built-in Vite dev server's modules,

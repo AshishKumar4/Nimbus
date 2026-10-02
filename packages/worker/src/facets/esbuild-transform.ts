@@ -28,6 +28,7 @@ import { fetchOxcFacetRuntime } from '../runtime/oxc-wasm-bytes.js';
 import { esbuildWasmModule } from '../runtime/host-wasm.js';
 import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
 import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
+import { rolldownBuildHost } from './build-facet.js';
 
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
@@ -250,14 +251,16 @@ export const TRANSFORM_HOST_ID = `${OXC_FACET_WORKER_ID}+${ESBUILD_FACET_WORKER_
 
 /**
  * The transforms and builds a Durable Object's supervisor shares: transforms
- * run in its transform facet (oxc-transform.ts), builds in its esbuild
- * facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is the host's
- * identity, which the launch's transform store keys its results by.
+ * run in its transform facet (oxc-transform.ts), builds in its build facet
+ * (build-facet.ts, rolldown) but the built-in `vite build`, which stays in
+ * the esbuild facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
+ * the host's identity, which the launch's transform store keys its results by.
  */
 export function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService {
   return new EsbuildService(vfs, {
     transformHost: oxcTransformHost(ctx, env, esbuildStackFallbackHost(ctx, env)),
-    buildHost: esbuildBuildHost(ctx, env),
+    buildHost: rolldownBuildHost(ctx, env),
+    viteBuildHost: esbuildBuildHost(ctx, env),
     transformHostId: TRANSFORM_HOST_ID,
   });
 }

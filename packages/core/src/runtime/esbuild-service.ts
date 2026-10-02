@@ -1052,6 +1052,12 @@ export interface EsbuildServiceOptions {
   /** Where build() runs. Absent: this isolate. */
   buildHost?: EsbuildBuildHost;
   /**
+   * Where a build with `viteAssets` (the built-in `vite build`) runs, when not
+   * where every other build does: its stylesheets and emitted assets are
+   * esbuild's until Nimbus's bundler does them. Absent: buildHost.
+   */
+  viteBuildHost?: EsbuildBuildHost;
+  /**
    * The transform host's code identity, given with the host: equal ids
    * transform equal requests to equal outcomes. It is what lets a launch keep
    * its results (bundle-cell-transform.ts): a store bound to one id never
@@ -1157,6 +1163,7 @@ export class EsbuildService {
   private vfs: EsbuildReadFs | null;
   private readonly transformHost: EsbuildTransformHost | null;
   private readonly buildHost: EsbuildBuildHost | null;
+  private readonly viteBuildHost: EsbuildBuildHost | null;
   /** See EsbuildServiceOptions.transformHostId. */
   readonly transformHostId: string | null;
   private initialized = false;
@@ -1169,6 +1176,7 @@ export class EsbuildService {
     this.vfs = vfs ?? null;
     this.transformHost = options.transformHost ?? null;
     this.buildHost = options.buildHost ?? null;
+    this.viteBuildHost = options.viteBuildHost ?? null;
     this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
   }
 
@@ -1390,8 +1398,9 @@ export class EsbuildService {
     }), buildOptions);
 
     let outcome: EsbuildBuildOutcome;
-    if (this.buildHost) {
-      outcome = await this.buildHost(buildOptions, plugin);
+    const host = options?.viteAssets && this.viteBuildHost ? this.viteBuildHost : this.buildHost;
+    if (host) {
+      outcome = await host(buildOptions, plugin);
     } else {
       await this.ensureInit();
       outcome = await buildWithEsbuild(this._esbuild!, buildOptions, plugin);

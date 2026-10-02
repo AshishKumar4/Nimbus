@@ -169,6 +169,7 @@
     "isomorphic-git": "npm:@ashishkumar472/cf-git@1.0.5",
     "marked": "18.0.6",
     "preact": "10.29.7",
+    "rolldown": "1.2.11",
     "typescript": "^5.7.0"
   },
   "publishConfig": {

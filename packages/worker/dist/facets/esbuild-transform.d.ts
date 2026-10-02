@@ -43,9 +43,10 @@ export declare function runEsbuildCli(ctx: DurableObjectState, env: unknown, pid
 export declare const TRANSFORM_HOST_ID: string;
 /**
  * The transforms and builds a Durable Object's supervisor shares: transforms
- * run in its transform facet (oxc-transform.ts), builds in its esbuild
- * facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is the host's
- * identity, which the launch's transform store keys its results by.
+ * run in its transform facet (oxc-transform.ts), builds in its build facet
+ * (build-facet.ts, rolldown) but the built-in `vite build`, which stays in
+ * the esbuild facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
+ * the host's identity, which the launch's transform store keys its results by.
  */
 export declare function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService;
 //# sourceMappingURL=esbuild-transform.d.ts.map
