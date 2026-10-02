@@ -47,13 +47,31 @@ class NoRename extends Faulty { rename = undefined; }
 class Walked extends Faulty { removeRecursive = undefined; }
 /** Neither: a move into it writes in place, and its staged copy goes entry by entry. */
 class Bare extends Faulty { rename = undefined; removeRecursive = undefined; }
+/** One whose rename of a staged copy is made, and then fails anyway. */
+class AppliesThenThrows extends MemoryVFS {
+  rename(from, to) {
+    super.rename(from, to);
+    if (STAGED.test(from)) throw new VfsError('EIO', 'renamed, then failed', from);
+  }
+}
+/** One whose failed rename of a staged copy loses it. */
+class LosesIt extends MemoryVFS {
+  rename(from, to) {
+    if (!STAGED.test(from)) return super.rename(from, to);
+    super.removeRecursive(from);
+    throw new VfsError('EIO', 'lost it', from);
+  }
+}
 
 const m = new Faulty();
 const dev = new NoRename();
 const walked = new Walked();
 const bare = new Bare();
 const harness = createSqliteVfsTestHarness();
-const box = await testBox({ harness, cwd: '/home/user', mounts: { '/m': m, '/dev2': dev, '/walked': walked, '/bare': bare } });
+const box = await testBox({
+  harness, cwd: '/home/user',
+  mounts: { '/m': m, '/dev2': dev, '/walked': walked, '/bare': bare, '/applies': new AppliesThenThrows(USER), '/loses': new LosesIt(USER) },
+});
 const { workspace: ws } = box;
 const ns = box.files.vfs.sync;
 const read = (path) => text(ns.readFile(path));
@@ -234,17 +252,35 @@ await nothingMoved('the staged copy goes only in part', () => ws.fs.move('bt', '
 assert.deepEqual(bare.faults, []);
 
 // Where putting the destination back fails too, the answer is EIO naming
-// both, and the source is still put back.
+// both and saying so, and the source is still put back.
 await ws.fs.writeFile('/dev2/stuck.txt', 'OLD');
 await ws.fs.writeFile('to-stuck.txt', 'NEW');
 for (const op of ['writeFile', 'writeRange', 'truncate']) dev.fault(op, /^\/stuck\.txt$/);
 const stuck = await ws.fs.move('to-stuck.txt', '/dev2/stuck.txt').then(() => null, (error) => error);
 assert.equal(stuck?.code, 'EIO');
-assert.match(stuck.message, /the move failed \(EIO: injected failure.*\) and undoing it failed \(EIO: injected failure/);
+assert.match(stuck.message, /the move failed \(EIO: injected failure.*\) and undoing it failed \(EIO: injected failure.*\); \/dev2\/stuck\.txt could not be put back as it was/);
 assert.equal(read('/home/user/to-stuck.txt'), 'NEW', 'the source is put back');
-assert.equal(read('/dev2/stuck.txt'), 'OLD');
 assert.deepEqual([...leftovers('/dev2'), ...leftovers('/home/user')], []);
 dev.faults.length = 0;
+
+// ── Spelled through itself, but not beneath itself ──────────────────────
+// On a filesystem with no rename in place, so the carry makes rename(2)'s
+// refusals: it takes both names where the walk reaches them.
+await tree('/dev2/src');
+await ws.fs.move('/dev2/src', '/dev2/src/../dst');
+assertTree('/dev2/dst', 'out through ..');
+assert.equal(ns.stat('/dev2/src'), null);
+await tree('/dev2/src2');
+await ws.fs.mkdir('/dev2/elsewhere');
+await ws.fs.symlink('/dev2/elsewhere', '/dev2/src2/out');
+await ws.fs.move('/dev2/src2', '/dev2/src2/out/dst');
+assertTree('/dev2/elsewhere/dst', 'through a link in itself to elsewhere');
+assert.equal(ns.stat('/dev2/src2', { follow: false }), null);
+await tree('/dev2/src3');
+assert.equal(await code(() => ws.fs.move('/dev2/src3', '/dev2/src3/sub/inner')), 'EINVAL', 'beneath itself');
+await ws.fs.symlink('/dev2/src3/sub', '/dev2/into');
+assert.equal(await code(() => ws.fs.move('/dev2/src3', '/dev2/into/inner')), 'EINVAL', 'beneath itself through a link');
+assertTree('/dev2/src3', 'refused');
 
 // ── A final rename that publishes the copy and then fails ───────────────
 // SqliteVFS moves a tree in bounded steps: the destination is published,
@@ -274,6 +310,116 @@ assert.equal(remainder?.code, 'EIO');
 assert.match(remainder.message, /^EIO: moved to \/home\/user\/published2, but what was left at \/home\/user\/\.nimbus-move-[^ ]+ could not be removed/);
 assertTree('/home/user/published2', 'moved, with a remainder');
 for (const name of leftovers('/home/user')) await ws.fs.remove(name, { recursive: true });
+
+// ── Each kind of entry, with the final rename failing at each step ──────
+// Publication failing has moved nothing: the source is back and the
+// destination as it was. Retirement failing has moved it all.
+const atStatement = (match) => {
+  let armed = true;
+  harness.setFaultInjector((statement) => {
+    if (!armed || !match(statement)) return null;
+    armed = false;
+    return new Error('injected SQL fault');
+  });
+};
+const publishing = (key) => (statement) => statement.sql.startsWith('INSERT OR REPLACE INTO vfs_inodes') && statement.params.includes(key);
+const retiringStaged = (statement) => statement.sql.startsWith('DELETE FROM vfs_inodes') && statement.params.some((p) => STAGED.test(String(p)));
+const kinds = {
+  file: { make: (at) => ws.fs.writeFile(at, 'NEW'), old: (at) => ws.fs.writeFile(at, 'OLD'), moved: (at) => read(at) === 'NEW', kept: (at) => read(at) === 'OLD' },
+  symlink: { make: (at) => ws.fs.symlink('new-target', at), old: (at) => ws.fs.symlink('old-target', at), moved: (at) => ns.readlink(at) === 'new-target', kept: (at) => ns.readlink(at) === 'old-target' },
+  tree: { make: tree, old: (at) => ws.fs.mkdir(at), moved: (at) => { assertTree(at, 'a tree'); return true; }, kept: (at) => ns.readdir(at).length === 0 },
+};
+for (const [kind, k] of Object.entries(kinds)) {
+  await k.make(`/m/${kind}-p`);
+  await k.old(`/home/user/${kind}-p`);
+  atStatement(publishing(`home/user/${kind}-p`));
+  const failed = await code(() => ws.fs.move(`/m/${kind}-p`, `${kind}-p`));
+  harness.clearFault();
+  assert.notEqual(failed, 'ok', `${kind}: publication fails, so the move does`);
+  assert.ok(k.moved(`/m/${kind}-p`), `${kind}: the source is back`);
+  assert.ok(k.kept(`/home/user/${kind}-p`), `${kind}: the destination is as it was`);
+  assert.deepEqual([...leftovers('/home/user'), ...leftovers('/m')], [], `${kind}: no staged copy is left`);
+
+  await k.make(`/m/${kind}-r`);
+  await k.old(`/home/user/${kind}-r`);
+  atStatement(retiringStaged);
+  await ws.fs.move(`/m/${kind}-r`, `${kind}-r`);
+  harness.clearFault();
+  assert.ok(k.moved(`/home/user/${kind}-r`), `${kind}: retirement failed after the copy was published, so it moved`);
+  assert.equal(ns.stat(`/m/${kind}-r`, { follow: false }), null, `${kind}: the source is gone`);
+  assert.deepEqual(leftovers('/home/user'), [], `${kind}: and the staged remainder`);
+}
+
+// ── A backend that makes a rename and still fails it, or loses what it renamed ─
+await ws.fs.writeFile('/applies/dest.txt', 'OLD');
+await ws.fs.writeFile('applied.txt', 'NEW');
+await ws.fs.move('applied.txt', '/applies/dest.txt');
+assert.equal(read('/applies/dest.txt'), 'NEW', 'the rename was made, so the move happened');
+assert.equal(ns.stat('/home/user/applied.txt'), null);
+await tree('/home/user/at');
+await ws.fs.move('at', '/applies/at');
+assertTree('/applies/at', 'a tree the rename was made for');
+assert.deepEqual(leftovers('/applies'), []);
+
+await ws.fs.writeFile('/loses/dest.txt', 'OLD');
+await ws.fs.writeFile('lost.txt', 'NEW');
+const lost = await ws.fs.move('lost.txt', '/loses/dest.txt').then(() => null, (error) => error);
+assert.equal(lost?.code, 'EIO', 'never a silent success or a bare error');
+assert.match(lost.message, /the move failed \(EIO: lost it.*\), and neither \/loses\/dest\.txt nor \/loses\/\.nimbus-move-[^ ]+ holds the whole of \/home\/user\/lost\.txt, which is gone; in neither: \/home\/user\/lost\.txt,/);
+assert.equal(read('/loses/dest.txt'), 'OLD', 'what is there is left as it is');
+await tree('/home/user/lt');
+const lostTree = await ws.fs.move('lt', '/loses/lt').then(() => null, (error) => error);
+assert.equal(lostTree?.code, 'EIO');
+assert.match(lostTree.message, /in neither: \/home\/user\/lt, .*\/home\/user\/lt\/sub\/b\.txt/);
+
+// ── What it copies is private until it is complete ──────────────────────
+// Another user must not read a copy its source would not let them, at any
+// moment. Each entry is checked at the first call the move makes on it
+// after making it (its times, set before its mode), on SQLite: it enforces
+// a file's mode on reads, where a mounted MemoryVFS has one principal.
+const other = box.files.view({ pid: 4242, cred: { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 } });
+const exposed = [];
+const watched = new Proxy(ws.shell.getVfs(), {
+  get(target, name) {
+    const value = Reflect.get(target, name, target);
+    if (typeof value !== 'function') return value;
+    if (name !== 'utimes') return value.bind(target);
+    return async (path, ...rest) => {
+      if (!path.startsWith('/tmp/')) return await target.utimes(path, ...rest);
+      const stat = await target.stat(path, { follow: false });
+      const read = stat?.type === 'directory' ? () => other.readdir(path) : () => other.readFile(path);
+      if (await read().then(() => true, () => false)) exposed.push(path);
+      return await target.utimes(path, ...rest);
+    };
+  },
+});
+await ws.fs.writeFile('/m/secret.txt', 'secret');
+await ws.fs.chmod('/m/secret.txt', 0o600);
+await ws.fs.mkdir('/m/open-tree');
+await ws.fs.chmod('/m/open-tree', 0o755);
+await ws.fs.writeFile('/m/open-tree/secret.txt', 'secret');
+await ws.fs.chmod('/m/open-tree/secret.txt', 0o600);
+await ws.fs.writeFile('/m/open-tree/public.txt', 'public');
+await ws.fs.chmod('/m/open-tree/public.txt', 0o644);
+await move(watched, '/m/secret.txt', '/tmp/secret.txt');
+await move(watched, '/m/open-tree', '/tmp/open-tree');
+// A source on SQLite put back after a failed move is made the same way.
+await ws.fs.writeFile('/tmp/kept-secret.txt', 'secret');
+await ws.fs.chmod('/tmp/kept-secret.txt', 0o600);
+m.fault('rename', STAGED, { once: true });
+assert.equal(await code(() => move(watched, '/tmp/kept-secret.txt', '/m/kept-secret.txt')), 'EIO');
+assert.equal(read('/tmp/kept-secret.txt'), 'secret', 'the source is back');
+assert.deepEqual(exposed, [], 'no copy was readable by another user before it was complete');
+assert.equal(await code(() => other.readFile('/tmp/secret.txt')), 'EACCES', 'nor after: it has its own mode');
+assert.equal(ns.stat('/tmp/secret.txt').mode & 0o777, 0o600);
+assert.equal(await code(() => other.readFile('/tmp/open-tree/secret.txt')), 'EACCES');
+assert.equal(await other.readFileString('/tmp/open-tree/public.txt'), 'public', 'and what the source let others read, they can');
+assert.equal(ns.stat('/tmp/open-tree').mode & 0o777, 0o755);
+assert.equal(await code(() => other.readFile('/tmp/kept-secret.txt')), 'EACCES');
+assert.equal(ns.stat('/tmp/kept-secret.txt').mode & 0o777, 0o600);
+// A file made on a mount is made at the mode it was asked for, as on SQLite.
+await ws.fs.writeFile('/m/made.txt', 'x', { mode: 0o600 });
+assert.equal(ns.stat('/m/made.txt').mode & 0o777, 0o600, 'open(O_CREAT, mode) on a mount makes the file at that mode');
 
 // ── The shell's mv is the same move ──────────────────────────────────────
 await ws.fs.mkdir('mvtree/sub', { recursive: true });

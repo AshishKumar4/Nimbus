@@ -30,10 +30,19 @@ longer a `ProcessView`, as described below.
   the copy over the destination, which keeps its bytes until then. A
   failure at any step puts the source back and leaves no copy behind;
   `mv` copied straight onto the destination, so a failure mid-copy left
-  part of a tree there, or a destination file already overwritten.
-  Directories move too. `rename` still answers `EXDEV` between mounts. A
-  directory moved onto a file now answers `ENOTDIR`, where `mv` said
-  `ENOTEMPTY`, and `mv` no longer makes a missing destination directory.
+  part of a tree there, or a destination file already overwritten. A
+  failed final rename is judged by what each name then holds, so a rename
+  the filesystem made anyway is a move, and a copy held by neither name is
+  an `EIO` naming what is lost. What it makes is private until complete:
+  `mv` made a copy at the default mode and narrowed it after, so a 0600
+  file moved into /tmp was readable by other users meanwhile. Directories
+  move too. `rename` still answers `EXDEV` between mounts. A directory
+  moved onto a file now answers `ENOTDIR`, where `mv` said `ENOTEMPTY`,
+  and `mv` no longer makes a missing destination directory.
+- Fixed: a file a process creates on a synchronous mount with a mode
+  (`open` with `O_CREAT`, `writeFile` with `mode`) was made at the
+  backend's default mode. It is now made at the mode asked for, as on an
+  asynchronous mount.
 - Fixed: a process's rename within one mount answered `EXDEV` even where the
   mounted backend renames, so `mv /m/a /m/b`, a node process's `fs.rename`
   and `ws.fs.rename` copied, or failed, where the namespace renames in

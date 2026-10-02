@@ -413,7 +413,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open')
       : this.locate(path, normalizedFlags.followSymlinks);
     if (located === null) throw fsError('ELOOP', 'open', path);
-    if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags);
+    if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode);
     const p = located.path;
     if (p === '') return this.openRoot(path, normalizedFlags);
     // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
@@ -847,11 +847,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return { ...handle };
   }
 
-  private openMount(mount: SyncVFS, name: string, path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeFileHandle {
+  /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
+  private openMount(mount: SyncVFS, name: string, path: RuntimeFsPath, flags: RuntimeFileHandle['flags'], mode?: number): RuntimeFileHandle {
     const exists = mount.stat(name) !== null;
     if (flags.exclusive && flags.create && exists) throw fsError('EEXIST', 'open', path);
     if (!exists && !flags.create) throw fsError('ENOENT', 'open', path);
-    if (!exists) mount.writeFile(name, new Uint8Array(0));
+    if (!exists) mount.writeFile(name, new Uint8Array(0), mode === undefined ? undefined : { mode });
     const stat = this.virtualStat(mount, name);
     if (flags.directory && stat.type !== 'directory') throw fsError('ENOTDIR', 'open', path);
     if (stat.type === 'directory' && (flags.truncate || flags.append)) throw fsError('EISDIR', 'open', path);

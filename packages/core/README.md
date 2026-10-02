@@ -114,8 +114,14 @@ beside the destination and confirms the copy, then removes the source,
 then renames the copy over the destination, which keeps what it held
 until that rename. A failure at any step puts back what of the source had
 gone and removes the staged copy, so a move happens or leaves both names
-as they were. Mode and times are carried best effort, as GNU mv carries
-them. The same move works over any `VFS`, mounted or not:
+as they were. When the final rename fails, what each name then holds is
+compared with what was copied: a rename the filesystem made anyway is a
+move that happened, and a copy in neither place is an `EIO` that names
+what is lost. Each file and directory it makes is made private and given
+its own mode and times once it is complete, as GNU cp makes a copy, so no
+one reads a copy the source would not let them. Mode and times are
+carried best effort, as GNU mv carries them. The same move works over any
+`VFS`, mounted or not:
 
 ```ts
 import { move } from '@nimbus-sh/core/vfs/move.js';
@@ -127,7 +133,7 @@ await move(plane, '/a.txt', '/b.txt');      // a bare VFS, with or without renam
 It is not atomic to a reader, and a crash can interrupt it: between the
 source's removal and the final rename, what is moving is only at
 `.nimbus-move-<id>` in the destination's directory. A backend that cannot
-rename in place has its destination written where it is, after what it
+rename in place has its destination replaced where it is, after what it
 held is read so it can be put back.
 
 ## Real runtimes, off Cloudflare
