@@ -8,6 +8,9 @@
 // namespace itself renames. Between two filesystems, and on a backend with
 // no rename in place, EXDEV stays the answer.
 //
+// A mutation on a mount is checked against leases at the name it reaches,
+// not only at the name it was given, as one on SQLite is.
+//
 // rm -r on a mount whose backend has no removal of its own is walked; the
 // walk carries on past an entry it cannot remove and reports it, and the
 // namespace's synchronous face dropped that report, so `rm -r` exited 0 with
@@ -73,6 +76,20 @@ assert.equal(ns.stat('/n/x.txt').type, 'file');
 // The namespace's own refusals still come through the bridge.
 assert.equal(await code(() => view.rename('/m/missing', '/m/e.txt')), 'ENOENT');
 assert.equal(await code(() => view.rename('/m', '/m2')), 'EBUSY', 'a mount point is not renamed');
+
+// ── A lease holds at the name a link reaches, on a mount as on SQLite ───
+await view.mkdir('/m/leased');
+await view.writeFile('/m/leased/f.txt', 'f');
+await view.symlink('/m', '/home/user/alias');
+const lease = box.files.engine.acquireExclusiveMutation('m/leased');
+for (const [what, run] of [
+  ['rename by its own name', () => view.rename('/m/leased/f.txt', '/m/leased/g.txt')],
+  ['rename through a link', () => view.rename('/home/user/alias/leased/f.txt', '/home/user/alias/leased/g.txt')],
+  ['unlink through a link', () => view.unlink('/home/user/alias/leased/f.txt')],
+]) assert.equal(await code(run), 'EBUSY', what);
+box.files.engine.releaseExclusiveMutation(lease.owner);
+await view.rename('/home/user/alias/leased/f.txt', '/home/user/alias/leased/g.txt');
+assert.equal(ns.stat('/m/leased/g.txt').type, 'file', 'released, the rename goes through');
 
 // ── rm -r of a walked tree says what stayed ─────────────────────────────
 await view.mkdir('/w/t/sub', { recursive: true });

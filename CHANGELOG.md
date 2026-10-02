@@ -38,7 +38,9 @@ longer a `ProcessView`, as described below.
   and `ws.fs.rename` copied, or failed, where the namespace renames in
   place. Within one mount a rename is now that mount's own. Between two
   filesystems, and on a backend with no rename in place, it still answers
-  `EXDEV`; renaming a mount point answers `EBUSY`, as on Linux.
+  `EXDEV`; renaming a mount point answers `EBUSY`, as on Linux. A
+  mutation on a mount reached through a link is checked against leases at
+  the name it reaches, as one on SQLite is.
 - Fixed: `rm -r` of a tree on a mount whose backend has no removal of its
   own exited 0 when an entry in the tree could not be removed, and left the
   entry there. It now fails with that entry's error, as the asynchronous
