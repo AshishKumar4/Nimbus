@@ -14,6 +14,7 @@
  * The ring buffer keeps state for 10 min post-exit so a tab that's still
  * open after a crash continues to show the final output.
  */
+import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 /**
  * Send a structured JSON event to the main terminal WebSocket, if one is
  * attached. Used for out-of-band process lifecycle notifications
@@ -218,6 +219,7 @@ export function handleProcessesListRequest(processes) {
             hasLogs: !!snap && snap.chunks > 0,
             logBytes: snap?.bytes ?? 0,
             startTime: p.startTime,
+            ...execIdField(p),
         });
     }
     // Reaped processes with lingering log buffers (exited >60s ago, not

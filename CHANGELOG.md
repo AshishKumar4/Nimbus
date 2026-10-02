@@ -12,8 +12,9 @@ published independently in the `@nimbus-sh` npm scope.
   everything those processes spawn, so a port's listener names the call that
   started its server. `processes.list()`, `ports.list()`, `apps.list()`,
   `apps.expose()`, `ports.expose()` and `startProcess`'s `process` report it
-  as `execId`, over the SDK, the remote API and a hosted runtime's session; a
-  record about a process no call named is unchanged. A resident server keeps
+  as `execId`, over the SDK, the remote API and a hosted runtime's session,
+  as does the session's own `/api/processes` listing; a record about a
+  process no call named is unchanged. A resident server keeps
   it across a platform reset (its journal row carries it), and a `vite` dev
   server across a hibernation. An `execId` is 1 to 160 characters from
   `A-Z a-z 0-9 . _ : -`, starting with a letter or digit; anything else is

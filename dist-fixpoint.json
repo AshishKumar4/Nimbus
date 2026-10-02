@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b2e3f5d7101946420d60f2e689835d4d21a4292526193aa4886979dbde1b8511",
+  "fingerprint": "833076c57d713eab170e035585945bcbdb7d372665464864b422e5951876f3f1",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1821,8 +1821,8 @@
     "packages/worker/dist/runtime/package-manager.d.ts.map": "eb858aeec42688c6146a656113a1fca250619cd278ec2d6ae1f65da3335a4e11",
     "packages/worker/dist/runtime/package-manager.js": "f1af7214219814d4984e8028ef9deac51eb771f4cbe4ab8bda354656a970163e",
     "packages/worker/dist/runtime/process-logs-api.d.ts": "d234d5df1be05d278b29a772e43c76fded0ae4b5615f5233e790cc5d5cf46023",
-    "packages/worker/dist/runtime/process-logs-api.d.ts.map": "9b2bbdcf05964b52c617f05730f602680b1117d2c526c117c2841c29267a7e7c",
-    "packages/worker/dist/runtime/process-logs-api.js": "0e9ce663900cc6fa5428ea043eb1ac5d83faa101c59593fbe0c711177506bfc6",
+    "packages/worker/dist/runtime/process-logs-api.d.ts.map": "979b4432e2f91a05f89305f09d306d51c5ee64fd136049268f0d4e567703a507",
+    "packages/worker/dist/runtime/process-logs-api.js": "2c0642c934e498692b3a838ac67bb4d2f48884747e9748c41b40db4fd60f9fd0",
     "packages/worker/dist/runtime/project-fs.d.ts": "62f7df53000362ee74333a28800cdd1f0da55742b4745fc37965ced6318b6d27",
     "packages/worker/dist/runtime/project-fs.d.ts.map": "e9a4c8f680feb83fc1bdc9627ecb8a608e0b5262fe0474fb886b62a434471a0f",
     "packages/worker/dist/runtime/project-fs.js": "8d949bb3f9c0289273fe99d9ce28c59e1c4a216c5820356d2cf775cfa11cfbc8",
@@ -2185,7 +2185,7 @@
     "packages/worker/src/runtime/opentui-facet-backend.ts": "82021f48e8d6dbb3e0fe4de60e70170fdf753722a286dd912fc7ad8658114942",
     "packages/worker/src/runtime/opentui-wasm-bytes.ts": "4b70e21b796bab97b9584d895020136a539ac018e8d1ec5d38adfd23c50fcaa9",
     "packages/worker/src/runtime/package-manager.ts": "f78a5264023201edd55815b5960e125857b2fda5be1a228ab7529706b541506d",
-    "packages/worker/src/runtime/process-logs-api.ts": "6a51b69013e39eee508eafb35f2528a3d07aef1c5a2fa7cf8891b2c39e17e5b1",
+    "packages/worker/src/runtime/process-logs-api.ts": "f15c5b6834822db8cae856598bbe028a188c834c070ffcce835e735b4b887737",
     "packages/worker/src/runtime/project-fs.ts": "558b8a9a6d8ebcb739389d9b1383c16c129ed72511cda16b8c649cc6b029f7f6",
     "packages/worker/src/runtime/python-repl.ts": "3961cc965b786ef41537702f49531d76c008f9bb0bf8bd844bc99121f3b8ab83",
     "packages/worker/src/runtime/repl-session.ts": "0061665c6764bd91ab6043b5028f9273d41ae7bdfb19c023ce82dfc8fd7adbfa",

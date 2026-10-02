@@ -17,6 +17,7 @@
 
 import type { LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 
 /**
  * Parameters for `handleLogsWebSocketRequest`. The process supervisor
@@ -247,6 +248,8 @@ export function handleProcessesListRequest(
     hasLogs: boolean;
     logBytes: number;
     startTime: number;
+    /** The exec that started the process (`ProcessEntry.execId`); absent when none named one. */
+    execId?: string;
   }> = [];
 
   for (const p of processes.getAll()) {
@@ -261,6 +264,7 @@ export function handleProcessesListRequest(
       hasLogs: !!snap && snap.chunks > 0,
       logBytes: snap?.bytes ?? 0,
       startTime: p.startTime,
+      ...execIdField(p),
     });
   }
 
