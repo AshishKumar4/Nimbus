@@ -443,11 +443,17 @@ type ArrayPatternElement = { readonly kind: 'skip' }
 type PropertyPart =
   | { readonly kind: 'spread'; readonly value: Code }
   | { readonly kind: 'proto'; readonly value: Code }
-  | { readonly kind: 'data'; readonly key: KeyCode; readonly value: Code | null; readonly named: ((env: Env, name: string) => unknown) | null }
+  | { readonly kind: 'data'; readonly key: KeyCode; readonly value: Code | null; readonly named: NamedCode | null }
   | { readonly kind: 'method' | 'get' | 'set'; readonly key: KeyCode; readonly fi: FunctionInfo };
 
 /** An element of an argument list or array literal. */
 type ListPart = { readonly spread: boolean; readonly code: Code };
+
+/** Code of an anonymous function or class definition, given the name it gets when it runs (a computed key's). */
+type NamedCode = {
+  readonly s: (env: Env, name: string) => unknown;
+  readonly g: ((env: Env, name: string) => Generator<unknown, unknown, unknown>) | null;
+};
 
 /** A loop's verdict on its body's completion. */
 type LoopStep = 'next' | 'stop' | 'out';
@@ -796,18 +802,17 @@ export class Compiler {
   }
 
   /** Like named(), with the name known only when the code runs (a computed key). */
-  private namedAtRuntime(node: Expression): (env: Env, name: string) => unknown {
+  private namedAtRuntime(node: Expression): NamedCode {
     if (!isAnonymousFunctionDefinition(node)) {
-      const c = this.expr(node).s;
-      return (env) => c(env);
+      const c = this.expr(node);
+      const cs = c.s;
+      const cg = c.g;
+      return { s: (env) => cs(env), g: cg === null ? null : safeGenerator(function* (env: Env) { return yield* cg(env); }) };
     }
-    if (node.type === 'ClassExpression') {
-      const make = this.classMaker(node);
-      if (make.g !== null) throw new UnsupportedSyntax('await in the heritage of a class named by a computed key');
-      return make.s;
-    }
+    // A class whose heritage or keys await or yield makes its constructor in the generator flavor.
+    if (node.type === 'ClassExpression') return this.classMaker(node);
     const fi = this.functionInfo(node, '');
-    return (env, name) => makeFunction(fi, env, undefined, name);
+    return { s: (env, name) => makeFunction(fi, env, undefined, name), g: null };
   }
 
   // ── Statements ──
@@ -3138,7 +3143,8 @@ export class Compiler {
     for (let i = 0; i < node.properties.length; i++) append(parts, this.propertyPart(node.properties[i]));
     const suspends = someItem(parts, (p) => ((p.kind === 'spread' || p.kind === 'proto') && p.value.g !== null)
       || ((p.kind === 'data' || p.kind === 'method' || p.kind === 'get' || p.kind === 'set') && p.key.kind === 'computed' && p.key.computed.g !== null)
-      || (p.kind === 'data' && p.value !== null && p.value.g !== null));
+      || (p.kind === 'data' && p.value !== null && p.value.g !== null)
+      || (p.kind === 'data' && p.named !== null && p.named.g !== null));
     // Static keys and plain values only: a template copied with own data
     // properties (define semantics), then filled in.
     if (!suspends && everyItem(parts, (p) => p.kind === 'data' && p.key.kind === 'static' || p.kind === 'method' && p.key.kind === 'static' || p.kind === 'proto')) {
@@ -3215,7 +3221,7 @@ export class Compiler {
           if (p.kind === 'spread' || p.kind === 'proto') { apply(o, p, '', p.value.s(env), env); continue; }
           const k = keyOf(p.key, env);
           if (p.kind === 'data') {
-            const v = p.value !== null ? p.value.s(env) : p.named !== null ? p.named(env, functionName(k)) : undefined;
+            const v = p.value !== null ? p.value.s(env) : p.named !== null ? p.named.s(env, functionName(k)) : undefined;
             apply(o, p, k, v, env);
           } else {
             apply(o, p, k, undefined, env);
@@ -3240,7 +3246,8 @@ export class Compiler {
             const g = p.value.g;
             v = g ? yield* g(env) : p.value.s(env);
           } else if (p.named !== null) {
-            v = p.named(env, functionName(k));
+            const g = p.named.g;
+            v = g ? yield* g(env, functionName(k)) : p.named.s(env, functionName(k));
           }
           apply(o, p, k, v, env);
         } else {
@@ -3609,8 +3616,9 @@ export class Compiler {
       if (member.value) {
         if (!fieldScope) throw new Error('interpreter: field without a scope');
         const outer = this.enterFunction(fieldScope, 'method');
+        // A field initializer cannot await or yield (an early error), so its code is the plain flavor.
         if (staticName !== null) value = this.named(member.value, staticName).s;
-        else named = this.namedAtRuntime(member.value);
+        else named = this.namedAtRuntime(member.value).s;
         this.leave(outer);
       }
       append(elements, { kind: 'field', isStatic: member.static, key, value, named });

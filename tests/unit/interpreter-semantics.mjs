@@ -248,7 +248,6 @@ async function runCases(interpreterFile, opsFile) {
   // What the compiler refuses is refused before any of the code runs, though inner functions compile on first call.
   globalThis.__ran = false;
   assert.throws(() => interp.compileFunction('function', [], 'globalThis.__ran = true; return { m() { return async () => super[await k]; } };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
-  assert.throws(() => interp.compileFunction('function', [], 'return async function () { return { [k]: class extends (await B) {} }; };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
   check('nothing of a refused unit ran', globalThis.__ran, false);
   assert.throws(() => interp.compileModule('/w/m.ts', 'export const x: number = 1;'), (e) => e.code === INTERPRETER_UNSUPPORTED);
 
@@ -259,6 +258,8 @@ async function runCases(interpreterFile, opsFile) {
   check('a call evaluates its arguments before checking its callee', F('let f = 0, n = 0; try { f(++n); } catch {} return n')(), 1);
   check('delete through an optional chain that awaits', await new AsyncFunction('const o = { p: 1 }; const r = delete (await o)?.p; const q = delete (await null)?.p; return [r, q, "p" in o]')(), [true, true, false]);
   check('delete of a member whose key awaits', await new AsyncFunction('const o = { k: 1 }; const r = delete o[await "k"]; return [r, "k" in o]')(), [true, false]);
+  check('a class named by a computed key, whose keys await', await new AsyncFunction('const o = { [1]: class { [await "x"]() { return 5 } } }; return [o[1].name, new o[1]().x()]')(), ['1', 5]);
+  check('a class named by a computed key, whose heritage awaits', await new AsyncFunction('class B { b() { return 6 } } const o = { ["c"]: class extends (await B) {} }; return [o.c.name, new o.c().b()]')(), ['c', 6]);
 
   // ── Module cells ──
   {

@@ -931,9 +931,6 @@ class Analyzer {
             continue;
           }
           if (p.computed) this.visitExpression(p.key, scope);
-          if (p.computed && p.value.type === 'ClassExpression' && !p.value.id && p.value.superClass && suspendsHere(p.value.superClass)) {
-            throw new UnsupportedSyntax('await or yield in the heritage of a class named by a computed key');
-          }
           if (p.value.type === 'FunctionExpression' && (p.method || p.kind !== 'init')) {
             this.visitFunction(p.value, scope, { strict: scope.strict, method: true, derived: false, ctor: false, unbound: false });
           } else {
