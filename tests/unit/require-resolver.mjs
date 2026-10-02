@@ -329,4 +329,40 @@ console.log('require-resolver: createRequire ok');
   assert.equal(r.bundle['home/user/cli/lib/index.js'], files['home/user/cli/lib/index.js'], "a module's only deferral is staged before a table's");
   assert.deepEqual([...r.speculative], ['home/user/cli/lib/index.js'], 'and the table waits for what room is left');
 }
+
+// A package the code locates by its manifest has its bins staged, after every
+// deferral the code names. vinext finds the project's Vite with
+// `require.resolve("vite/package.json")`, reads its `bin`, and imports
+// vite/bin/vite.js by a computed URL; the first launch missed it.
+{
+  const files = {
+    'home/user/app/node_modules/vinext/bin.js': "import './dist/cli.js';",
+    'home/user/app/node_modules/vinext/dist/cli.js': [
+      'import { createRequire } from "node:module";',
+      'const require = createRequire(import.meta.url);',
+      'const manifest = require.resolve("vite/package.json");',
+      'const own = require.resolve("./package.json");',
+      'export const start = () => import("./server.js");',
+      'export const run = (bin) => import(bin);',
+    ].join('\n'),
+    'home/user/app/node_modules/vinext/dist/server.js': 'export const server = 1;',
+    'home/user/app/node_modules/vinext/dist/package.json': JSON.stringify({ bin: { own: 'own.js' } }),
+    'home/user/app/node_modules/vinext/dist/own.js': 'export {};',
+    'home/user/app/node_modules/vite/package.json': JSON.stringify({ name: 'vite', bin: { vite: 'bin/vite.js', up: '../outside.js' } }),
+    'home/user/app/node_modules/vite/bin/vite.js': "import '../dist/cli.js';",
+    'home/user/app/node_modules/vite/dist/cli.js': 'export const cli = 1;',
+    'home/user/app/node_modules/outside.js': 'export {};',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/vinext/bin.js';
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  assert.deepEqual([...r.speculative], [
+    'home/user/app/node_modules/vinext/dist/server.js',
+    'home/user/app/node_modules/vite/bin/vite.js',
+    'home/user/app/node_modules/vite/dist/cli.js',
+  ], "the located package's bin and its imports, after the code's own deferral");
+  assert.equal(r.bundle['home/user/app/node_modules/outside.js'], undefined, 'no bin outside its package');
+  assert.equal(r.bundle['home/user/app/node_modules/vinext/dist/own.js'], undefined, 'a relative manifest locates no package');
+}
 console.log('require-resolver: speculative dynamic imports ok');
