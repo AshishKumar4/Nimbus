@@ -5,23 +5,33 @@
  *
  * The carry stages a copy beside the destination and confirms it, then
  * removes the source, then puts the copy in the destination's place with one
- * rename. Until that rename the destination keeps what it held. A failure at
- * any step puts back what of the source had gone and removes the staged
- * copy, so a failed move leaves both names as they were. A backend that
- * cannot rename in place has the destination replaced where it is, after
- * what it held is kept to put back.
+ * rename. Until that rename the destination keeps what it held. A failure
+ * before it puts back what of the source had gone and removes the staged
+ * copy, so the move leaves both names as they were. A backend that cannot
+ * rename in place has the destination replaced where it is, after what it
+ * held is kept to put back; another writer using the destination meanwhile
+ * can lose its write, as it can on any filesystem written in place.
  *
  * Everything it creates is created private (the owner's bits only, as GNU
  * cp creates a copy before it sets the mode) and given its own mode once its
  * content is complete, so no one reads a copy its source would not let them.
+ *
+ * The final rename's own answer says what happened, never what the names
+ * hold afterwards. A refusal (RENAME_REFUSALS: made before anything
+ * changed), or a filesystem saying it renamed nothing (renameOutcome), is
+ * clean: the source is put back from the staged copy, which goes, and the
+ * refusal is the answer. A filesystem saying it renamed all of it is a move
+ * that happened: the residue at the staged name goes. Anything else (EIO, no
+ * code at all) may have renamed the copy in whole or in part, and another
+ * writer may since have used the destination, so nothing is undone or
+ * removed: the answer is EIO, naming where what was moving may be.
  *
  * Neither atomic to a reader nor across a crash: from the source's removal
  * to the final rename, what is moving is only at the staged name,
  * `.nimbus-move-<id>` in the destination's directory.
  */
 
-import { sha256Hex } from '../_shared/crypto.js';
-import { isVfsError, syscallError, type VfsError } from './vfs-error.js';
+import { isVfsError, RENAME_REFUSALS, renameOutcome, syscallError, type VfsError } from './vfs-error.js';
 import type { Awaitable, VFS, VfsStat } from './vfs.js';
 
 /** A namespace to move within: a VFS, and its realpath where it has one (links are otherwise walked with readlink). */
@@ -51,13 +61,7 @@ export async function move(fs: MoveFs, from: string, to: string, options: MoveOp
   await carry(fs, from, to, options.onPreserveFailure);
 }
 
-/**
- * What a copy holds, by path below its root ('' is the root): each entry's
- * kind, and a file's size and SHA-256 or a link's target.
- */
-type Manifest = Map<string, string>;
-
-/** One carry: its two names, what was at them when it began, where the copy is staged, and what it holds. */
+/** One carry: its two names, what was at them when it began, and where the copy is staged. */
 interface Carry {
   readonly fs: MoveFs;
   readonly from: string;
@@ -65,20 +69,15 @@ interface Carry {
   readonly staged: string;
   readonly source: VfsStat;
   readonly existing: VfsStat | null;
-  readonly manifest: Manifest;
-  readonly onPreserveFailure: PreserveFailure;
-  /**
-   * Set once the outcome is known and is not "nothing moved": the move
-   * happened, or the copy is nowhere whole to undo it from.
-   */
+  /** Set once nothing is to be undone: the move happened, or whether it did is not known. */
   settled: boolean;
   /** rename(2)'s error for the call, naming both paths as given. */
-  refused(code: VfsError['code'], detail?: string): VfsError;
+  refused(code: VfsError['code'], detail?: string, cause?: unknown): VfsError;
 }
 
 async function carry(fs: MoveFs, fromInput: string, toInput: string, onPreserveFailure: PreserveFailure): Promise<void> {
-  const refused = (code: VfsError['code'], detail?: string): VfsError =>
-    syscallError(code, 'rename', fromInput, { dest: toInput, detail });
+  const refused = (code: VfsError['code'], detail?: string, cause?: unknown): VfsError =>
+    syscallError(code, 'rename', fromInput, { dest: toInput, detail, cause });
   const from = withoutTrailingSlash(fromInput);
   const spelled = withoutTrailingSlash(toInput);
 
@@ -113,9 +112,9 @@ async function carry(fs: MoveFs, fromInput: string, toInput: string, onPreserveF
   if (directory && within(parent, at)) throw refused('EINVAL', 'a directory cannot move beneath itself');
 
   const staged = join(parent, `.nimbus-move-${crypto.randomUUID()}`);
-  const c: Carry = { fs, from, to, staged, source, existing, manifest: new Map(), onPreserveFailure, settled: false, refused };
+  const c: Carry = { fs, from, to, staged, source, existing, settled: false, refused };
   try {
-    await copyEntry(fs, from, source, staged, { named: to, onPreserveFailure, manifest: c.manifest });
+    await copyEntry(fs, from, source, staged, { named: to, onPreserveFailure });
     await confirm(c, staged);
   } catch (error) {
     throw await undone(c, error, () => discard(fs, staged), `${from} is as it was, and part of a copy is left at ${staged}`);
@@ -149,7 +148,7 @@ async function undone(c: Carry, error: unknown, undo: () => Promise<void>, left:
 
 /**
  * The staged copy into the destination's place: one rename over it. Where
- * the filesystem has no rename in place, the destination is written where
+ * the filesystem has no rename in place, the destination is replaced where
  * it is, and what it held is kept and put back on a failure.
  */
 async function place(c: Carry): Promise<void> {
@@ -159,9 +158,20 @@ async function place(c: Carry): Promise<void> {
       await fs.rename(staged, to);
       return;
     } catch (error) {
-      if (!isVfsError(error, 'EXDEV')) {
-        await settle(c, error);
-        return;
+      const outcome = renameOutcome(error);
+      const refused = outcome === 'none' || (outcome === undefined && isVfsError(error) && RENAME_REFUSALS.has(error.code));
+      // EXDEV: this filesystem cannot rename in place, and the copy goes there another way, below.
+      if (!(refused && isVfsError(error, 'EXDEV'))) {
+        // Refused before anything changed: the caller puts the source back and rethrows it.
+        if (refused) throw error;
+        c.settled = true;
+        // Said to have moved it all: the move happened, and the staged name holds residue.
+        if (outcome === 'all') return await dropResidue(c);
+        // Anything else may have renamed it in whole or in part, and another
+        // writer may since have used the destination: nothing is undone.
+        const cause = error instanceof Error ? error.message : String(error);
+        throw c.refused('EIO', `renaming ${staged} to ${to} failed (${cause}), and may have been done in whole or in part, `
+          + `so nothing was undone or removed: ${from} is gone, and what was moving is at ${staged}, at ${to}, or partly at each`, error);
       }
     }
   }
@@ -175,100 +185,19 @@ async function place(c: Carry): Promise<void> {
   } catch (error) {
     throw await undone(c, error, () => putBack(fs, to, kept), `${to} could not be put back as it was`);
   }
-  try {
-    await discard(fs, staged);
-  } catch (error) {
-    // The staged copy was the witness the source is put back from, and part
-    // of it may be gone now; the destination holds the whole copy.
-    throw await undone(c, error, async () => {
-      await restore(fs, to, from);
-      await putBack(fs, to, kept);
-    }, `what was moving is at ${to}`);
-  }
-}
-
-/**
- * After the final rename failed, where the copy is. A backend can fail a
- * rename it has made, in whole or in part: SqliteVFS moves a tree in bounded
- * steps, publishing it at the destination before it retires the staged name,
- * and a mounted backend can apply a rename and still throw. So the outcome is
- * read from what each name holds, against the copy's manifest; never from the
- * error, and never from inode numbers, which a namespace may derive from the
- * path.
- *
- * The destination holding the copy is a move that happened: the remainder at
- * the staged name goes. The staged name holding it is a move that did not:
- * a tree published in part is taken back, and the caller undoes the rest.
- * Neither holding it is the one loss a carry cannot undo, and it says so,
- * naming what is in neither.
- */
-async function settle(c: Carry, error: unknown): Promise<void> {
-  const { fs, to, staged, from, existing, source } = c;
-  const cause = error instanceof Error ? error.message : String(error);
-  const atDestination = await manifestOf(fs, to);
-  if (holdsCopy(atDestination, c.manifest)) {
-    c.settled = true;
-    try {
-      // Its own mode and times, should the destination have held these bytes all along.
-      await preserve(fs, source, to, to, c.onPreserveFailure);
-      await discard(fs, staged);
-    } catch (failure) {
-      const left = failure instanceof Error ? failure.message : String(failure);
-      throw c.refused('EIO', `moved to ${to}, but what was left at ${staged} could not be removed (${left})`);
-    }
-    return;
-  }
-  const atStaged = await manifestOf(fs, staged);
-  if (holdsCopy(atStaged, c.manifest)) {
-    // Only a tree is published in parts, and a tree replaces nothing or an empty directory.
-    if (source.type === 'directory') {
-      const now = await fs.stat(to, { follow: false });
-      const untouched = now === null
-        ? existing === null
-        : existing !== null && now.type === 'directory' && (await fs.readdir(to)).length === 0;
-      if (!untouched) await putBack(fs, to, existing === null ? null : { type: 'directory', stat: existing });
-    }
-    throw error;
-  }
+  // The destination holds the whole copy: the move has happened.
   c.settled = true;
-  const lost = [...c.manifest].filter(([rel, entry]) => atDestination?.get(rel) !== entry && atStaged?.get(rel) !== entry);
-  const named = lost.slice(0, 20).map(([rel]) => (rel === '' ? from : join(from, rel))).join(', ');
-  throw c.refused('EIO', `the move failed (${cause}), and neither ${to} nor ${staged} holds the whole of ${from}, which is gone; `
-    + (lost.length === 0 ? 'what was moving is split between them' : `in neither: ${named}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`));
+  await dropResidue(c);
 }
 
-/** The manifest of what is at `path` now, or null where it cannot be read. */
-async function manifestOf(fs: MoveFs, path: string): Promise<Manifest | null> {
-  const manifest: Manifest = new Map();
-  const walk = async (at: string, rel: string, stat: VfsStat): Promise<void> => {
-    if (stat.type === 'directory') {
-      manifest.set(rel, 'directory');
-      for (const entry of await fs.readdir(at)) {
-        const child = join(at, entry.name);
-        const childStat = await fs.stat(child, { follow: false });
-        if (childStat !== null) await walk(child, rel === '' ? entry.name : `${rel}/${entry.name}`, childStat);
-      }
-    } else if (stat.type === 'symlink') manifest.set(rel, `symlink ${await readlinkOf(fs, at)}`);
-    else manifest.set(rel, await fileEntry(await fs.readFile(at)));
-  };
+/** What is left at the staged name once the move has happened goes; EIO, saying the move happened, when it cannot. */
+async function dropResidue(c: Carry): Promise<void> {
   try {
-    const stat = await fs.stat(path, { follow: false });
-    if (stat === null) return null;
-    await walk(path, '', stat);
-    return manifest;
+    await discard(c.fs, c.staged);
   } catch (error) {
-    // What cannot be read is not known to hold anything.
-    if (isVfsError(error)) return null;
-    throw error;
+    const cause = error instanceof Error ? error.message : String(error);
+    throw c.refused('EIO', `moved to ${c.to}, but what was left at ${c.staged} could not be removed (${cause})`, error);
   }
-}
-
-function holdsCopy(found: Manifest | null, copy: Manifest): boolean {
-  return found !== null && found.size === copy.size && [...copy].every(([rel, entry]) => found.get(rel) === entry);
-}
-
-async function fileEntry(bytes: Uint8Array): Promise<string> {
-  return `file ${bytes.byteLength} ${await sha256Hex(bytes)}`;
 }
 
 /** What a destination held, to put back. */
@@ -302,8 +231,6 @@ interface CopyOptions {
   /** Where the entry ends up, for what is reported. */
   readonly named: string;
   readonly onPreserveFailure?: PreserveFailure;
-  /** Filled with what is copied. */
-  readonly manifest?: Manifest;
 }
 
 /**
@@ -311,33 +238,27 @@ interface CopyOptions {
  * links as links. Each file and directory is made private and given its own
  * mode and times, best effort, once what it holds is complete.
  */
-async function copyEntry(fs: MoveFs, from: string, stat: VfsStat, to: string, options: CopyOptions, rel = ''): Promise<void> {
-  const { named, onPreserveFailure, manifest } = options;
+async function copyEntry(fs: MoveFs, from: string, stat: VfsStat, to: string, options: CopyOptions): Promise<void> {
+  const { named, onPreserveFailure } = options;
   if (stat.type === 'symlink') {
     if (typeof fs.symlink !== 'function') throw syscallError('ENOTSUP', 'symlink', named, { detail: 'this filesystem cannot hold a link' });
-    const target = await readlinkOf(fs, from);
-    await fs.symlink(target, to);
-    manifest?.set(rel, `symlink ${target}`);
+    await fs.symlink(await readlinkOf(fs, from), to);
     return;
   }
   // A source with no mode has nothing to keep private: it is made as any new entry is.
   const own = permissions(stat) !== undefined;
   if (stat.type === 'directory') {
     await fs.mkdir(to, own ? { mode: 0o700 } : undefined);
-    manifest?.set(rel, 'directory');
     for (const entry of await fs.readdir(from)) {
       const child = join(from, entry.name);
       const childStat = entry.stat ?? await fs.stat(child, { follow: false });
       // Gone since the listing: nothing to carry.
       if (childStat === null) continue;
-      await copyEntry(fs, child, childStat, join(to, entry.name), { ...options, named: join(named, entry.name) },
-        rel === '' ? entry.name : `${rel}/${entry.name}`);
+      await copyEntry(fs, child, childStat, join(to, entry.name), { ...options, named: join(named, entry.name) });
     }
   } else {
     // Bytes, never the namespace's copy: across filesystems it makes the file without a mode.
-    const bytes = await fs.readFile(from);
-    await fs.writeFile(to, bytes, own ? { mode: 0o600 } : undefined);
-    manifest?.set(rel, await fileEntry(bytes));
+    await fs.writeFile(to, await fs.readFile(from), own ? { mode: 0o600 } : undefined);
   }
   await preserve(fs, stat, to, named, onPreserveFailure);
 }

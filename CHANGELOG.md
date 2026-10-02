@@ -31,9 +31,11 @@ longer a `ProcessView`, as described below.
   failure at any step puts the source back and leaves no copy behind;
   `mv` copied straight onto the destination, so a failure mid-copy left
   part of a tree there, or a destination file already overwritten. A
-  failed final rename is judged by what each name then holds, so a rename
-  the filesystem made anyway is a move, and a copy held by neither name is
-  an `EIO` naming what is lost. What it makes is private until complete:
+  failed final rename is decided by its own answer: a refusal made before
+  anything changed (`RENAME_REFUSALS`) puts the source back and is the
+  answer, a filesystem saying it renamed all of it (`renameOutcome`) has
+  moved it, and anything else is `EIO` with nothing undone or removed,
+  naming where what was moving is. What it makes is private until complete:
   `mv` made a copy at the default mode and narrowed it after, so a 0600
   file moved into /tmp was readable by other users meanwhile. Directories
   move too. `rename` still answers `EXDEV` between mounts. A directory
