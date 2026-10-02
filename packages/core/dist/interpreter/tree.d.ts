@@ -9,24 +9,35 @@
  * that answers each read differently: an identifier's name that passes the
  * check refusing the interpreter's own binding names, then names one of them
  * when read again to be resolved. The analysis and the compiler read a node's
- * fields many times, so they read only this copy (Owned): each field of
- * acorn's tree is read here exactly once, and kept as a primitive, a node of
- * the copy, a list of those, or a record of primitives (a template element's
- * `value`, a regular expression literal's `regex`). Every object of the copy
- * is frozen and inherits nothing, and no program code ever receives one.
+ * fields many times, so they read only this copy (Owned).
+ *
+ * The copy is made node by node, by the type acorn gave the node, which is
+ * read first: each field acorn's typings declare for that type is read
+ * exactly once and checked to be what they say (a string, a node of the
+ * kinds the field may hold, a list of those), and nothing else is read. Every
+ * object of the copy is frozen and inherits nothing, every list is a
+ * SafeList, and no program code ever receives one. So the copy is an Owned
+ * tree by construction, and the analysis takes nothing else.
  *
  * A literal's `value` is the one object acorn makes with a built-in a program
  * can replace (a RegExp, or a bigint through BigInt), so it is not copied: a
  * regular expression's is null (the compiler builds one from `regex` each
  * time it runs), and a bigint's is made again from its `bigint` text.
  */
-import type { AnyNode } from 'acorn';
-declare const owned: unique symbol;
-/** A node of a tree ownTree made: what the analysis takes. Its descendants are owned too. */
-export type Owned<T extends AnyNode> = T & {
-    readonly [owned]: true;
+import type { AnyNode, FunctionExpression, Program, SourceLocation } from 'acorn';
+import type { FunctionNode } from './scope.js';
+import { type SafeList } from './intrinsics.js';
+/**
+ * A node of the copy: acorn's typing of it, every node in it owned and every
+ * list a SafeList (so a tree acorn returned is not one).
+ */
+export type Owned<T extends AnyNode> = {
+    readonly [K in keyof T]: OwnedField<T[K]>;
 };
-/** The interpreter's copy of the tree at `root`. */
-export declare function ownTree<T extends AnyNode>(root: T): Owned<T>;
+type OwnedField<V> = V extends AnyNode ? Owned<V> : V extends SourceLocation | [number, number] ? V : V extends (infer E)[] ? SafeList<OwnedField<E>> : V;
+/** The interpreter's copy of a program acorn parsed. Each function in it is appended to `found`, if given. */
+export declare function ownProgram(program: Program, found?: SafeList<Owned<FunctionNode>> | null): Owned<Program>;
+/** The interpreter's copy of a function expression acorn parsed (a Function constructor's). */
+export declare function ownFunctionExpression(node: FunctionExpression): Owned<FunctionExpression>;
 export {};
 //# sourceMappingURL=tree.d.ts.map

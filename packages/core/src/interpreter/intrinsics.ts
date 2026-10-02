@@ -36,6 +36,7 @@ export const reflectSetPrototypeOf = primordials.reflectSetPrototypeOf;
 export const objectCreate = primordials.objectCreate;
 export const objectKeys = primordials.objectKeys;
 export const objectFreeze = primordials.objectFreeze;
+export const objectAssign = primordials.objectAssign;
 export const objectHasOwn = primordials.objectHasOwn;
 export const objectGetOwnPropertyNames = primordials.objectGetOwnPropertyNames;
 export const objectGetPrototypeOf = primordials.reflectGetPrototypeOf;

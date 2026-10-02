@@ -10,9 +10,8 @@
  * parse already accepted the text, so this parse fails only on a bug.
  */
 import { parse } from 'acorn';
-import { Error, reflectGetPrototypeOf, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
-import { forEachChildNode } from './scope.js';
-import { ownTree } from './tree.js';
+import { Error, newSafeList, reflectGetPrototypeOf, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
+import { ownProgram } from './tree.js';
 // acorn assigns each node's fields as it builds it. A program may since have
 // defined accessors on Object.prototype under those names (test262 defines
 // `callee`), which the assignments would run into; nodes inherit nothing.
@@ -52,24 +51,15 @@ export function reparseFunction(site) {
     const around = wrapper(site.syntax, site.strict, site.module);
     const before = around[0];
     const text = `${before}${stringSlice(site.source, site.start, site.end)}${around[1]}`;
-    const program = ownTree(parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' }));
+    // The copy of the program lists its functions; the one spanning the function's text is it.
+    const functions = newSafeList();
+    ownProgram(parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' }), functions);
     const start = before.length;
     const end = start + (site.end - site.start);
-    const node = findFunction(program, start, end);
-    if (node === null)
-        throw new Error(`interpreter: the function at ${site.start} did not parse back to itself`);
-    return { node, text, base: site.start - start };
-}
-/** The function node spanning exactly [start, end) under `root`. */
-function findFunction(root, start, end) {
-    const isFunction = root.type === 'FunctionExpression' || root.type === 'ArrowFunctionExpression' || root.type === 'FunctionDeclaration';
-    if (isFunction && root.start === start && root.end === end)
-        return root;
-    let found = null;
-    forEachChildNode(root, (child) => {
-        // A node of an owned tree is owned.
-        if (found === null && child.start <= start && child.end >= end)
-            found = findFunction(child, start, end);
-    });
-    return found;
+    for (let i = 0; i < functions.length; i++) {
+        const node = functions[i];
+        if (node.start === start && node.end === end)
+            return { node, text, base: site.start - start };
+    }
+    throw new Error(`interpreter: the function at ${site.start} did not parse back to itself`);
 }

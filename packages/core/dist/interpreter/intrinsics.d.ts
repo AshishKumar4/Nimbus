@@ -47,6 +47,12 @@ export declare const objectFreeze: {
     }, U extends string | bigint | number | boolean | symbol>(o: T): Readonly<T>;
     <T>(o: T): Readonly<T>;
 };
+export declare const objectAssign: {
+    <T extends {}, U>(target: T, source: U): T & U;
+    <T extends {}, U, V>(target: T, source1: U, source2: V): T & U & V;
+    <T extends {}, U, V, W>(target: T, source1: U, source2: V, source3: W): T & U & V & W;
+    (target: object, ...sources: any[]): any;
+};
 export declare const objectHasOwn: (o: object, v: PropertyKey) => boolean;
 export declare const objectGetOwnPropertyNames: (o: any) => string[];
 export declare const objectGetPrototypeOf: typeof Reflect.getPrototypeOf;

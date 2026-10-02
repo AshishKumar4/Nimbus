@@ -1,4 +1,4 @@
-import { type FunctionNode } from './scope.js';
+import type { FunctionNode } from './scope.js';
 import { type Owned } from './tree.js';
 /** What precedes a function's parameters, which decides how its text is wrapped. */
 export type FunctionSyntax = 

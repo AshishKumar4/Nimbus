@@ -26,7 +26,7 @@ import { Compiler } from './compile.js';
 import { moduleCell } from './modules.js';
 import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
-import { ownTree } from './tree.js';
+import { ownFunctionExpression, ownProgram } from './tree.js';
 import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
@@ -124,7 +124,7 @@ export function createInterpreter(hostOps, host) {
                 parsed = parseRuntimeFunction(kind, params, body, REALM);
             }
             const text = parsed.text;
-            const node = ownTree(parsed.node);
+            const node = ownFunctionExpression(parsed.node);
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
             const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
@@ -146,7 +146,7 @@ export function createInterpreter(hostOps, host) {
             };
             let module = null;
             try {
-                module = ownTree(parseQuick(text, { ...PARSE, sourceType: 'module' }));
+                module = ownProgram(parseQuick(text, { ...PARSE, sourceType: 'module' }));
             }
             catch {
                 // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
@@ -155,7 +155,7 @@ export function createInterpreter(hostOps, host) {
                 return compileCell(module);
             let script;
             try {
-                script = ownTree(parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true }));
+                script = ownProgram(parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true }));
             }
             catch (error) {
                 // Top-level await or import.meta without imports or exports: still a module.
@@ -178,7 +178,7 @@ export function createInterpreter(hostOps, host) {
             return interpreter.compileFunction('function', [], body);
         },
         runScript(text) {
-            const program = ownTree(parse(text, { ...PARSE, sourceType: 'script' }));
+            const program = ownProgram(parse(text, { ...PARSE, sourceType: 'script' }));
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
             const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);

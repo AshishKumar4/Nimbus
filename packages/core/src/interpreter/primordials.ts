@@ -34,6 +34,7 @@ export const reflectSetPrototypeOf = Reflect.setPrototypeOf;
 export const objectCreate = Object.create;
 export const objectKeys = Object.keys;
 export const objectFreeze = Object.freeze;
+export const objectAssign = Object.assign;
 export const objectHasOwn = Object.hasOwn;
 export const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
 export const arrayIsArray = Array.isArray;
