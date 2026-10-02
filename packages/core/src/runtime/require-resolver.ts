@@ -153,7 +153,13 @@ export interface PrefetchResult {
 }
 
 /** An `import()` a module defers, and how many its module defers (phase 2's order). */
-export interface DeferredImport { specifier: string; fromDir: string; alternatives: number }
+export interface DeferredImport {
+  specifier: string;
+  fromDir: string;
+  alternatives: number;
+  /** The file, when the walk resolved it already (a tool config and what it names). */
+  path?: string;
+}
 
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
@@ -201,9 +207,12 @@ export interface RequiredModuleRoot {
   path: string;
   text?: string;
   /**
-   * A tool's config file, which the tool runs: the installed packages it
-   * names by a string (postcss.config.js's `plugins: { tailwindcss: {} }`)
-   * are what the tool loads by name, and they join phase 2.
+   * A tool's config file the launch found (toolConfigRoots). The tool runs
+   * it unless the command needs no config (`vite --version`), so it is no
+   * required root: it is phase 2's first tier, staged within the bound and
+   * evictable. The installed packages it names by a string
+   * (postcss.config.js's `plugins: { tailwindcss: {} }`), which the tool
+   * loads by name, follow it.
    */
   config?: boolean;
 }
@@ -300,11 +309,11 @@ export async function prefetchForRequire(
   // that defers hundreds (Shiki's grammar table, one `import()` per language)
   // loads the few its input names. Walking a table first spent the bound on
   // grammars the program never loads, and cut the deferral it does.
-  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string }>>();
-  function defer({ specifier, fromDir, alternatives }: { specifier: string; fromDir: string; alternatives: number }): void {
+  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string }>>();
+  function defer({ specifier, fromDir, alternatives, path }: DeferredImport): void {
     let queue = deferredDynamic.get(alternatives);
     if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
-    queue.push({ specifier, fromDir });
+    queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
   }
   function nextDeferred(): DeferredImport | undefined {
     let fewest = Infinity;
@@ -340,8 +349,10 @@ export async function prefetchForRequire(
       const r = await resolveRequireEx(vfs, name, fromDir, undefined, progress);
       if (r) resolved.push(r.resolved);
     }
-    for (const target of resolved) defer({ specifier: '/' + target, fromDir, alternatives: resolved.length });
+    for (const target of resolved) defer({ specifier: target, fromDir, alternatives: resolved.length, path: target });
   }
+  /** Tool configs found for the launch; phase 2 stages them first. */
+  const configRoots = new Set<string>();
   let lazy = false;
 
   // `entry`: the entry file itself, whose own `import()` is a deferral of its
@@ -546,12 +557,17 @@ export async function prefetchForRequire(
     // Modules a previous launch actually tried to execute are required roots,
     // not speculative dynamic-import subtrees. Walk their static imports in
     // this same visited set and byte budget before any optional enrichment.
+    // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
     for (const root of requiredRoots ?? []) {
       const path = strip(root.path);
+      if (root.config && root.text === undefined) {
+        configRoots.add(path);
+        defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
+        continue;
+      }
       if (root.text === undefined) await addFile(path);
       else await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
       if (closureExceeded || declined) break;
-      if (root.config && typeof bundle[path] === 'string') await deferConfigNames(path);
     }
 
     // Also add cwd package.json if it exists (for npm scripts, main field etc).
@@ -572,9 +588,10 @@ export async function prefetchForRequire(
     // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
     for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
-      const { specifier, fromDir } = next;
-      const resolved = await resolveDynamicImport(specifier, fromDir);
-      if (resolved) await addFile(resolved);
+      const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+      if (!resolved) continue;
+      await addFile(resolved);
+      if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
     return { bundle, speculative, entryPaths };

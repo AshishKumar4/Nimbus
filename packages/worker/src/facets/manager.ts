@@ -3789,8 +3789,10 @@ const TOOL_CONFIG = /^(.+)\.config\.(?:c|m)?(?:j|t)s$/;
 /**
  * The working dir's config files of the tool a launch runs. The tool
  * executes them (Vite bundles vite.config.ts and imports the result), so
- * what they import is required code that nothing in the program's own graph
- * names, and a first run would miss it. A config is the tool's when it is
+ * what they import is code that nothing in the program's own graph names,
+ * and a first run would miss it. They are optional roots: a command may
+ * never read its config (`vite --version`), so a config graph past the
+ * map's bound is cut, never a refusal. A config is the tool's when it is
  * named for the launched package or a package that one depends on (Astro
  * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
  * (eslint.config.js beside Vite) is not. What a config names by a string
@@ -3879,7 +3881,8 @@ async function _buildPrefetchBundle(
   // executable map. A module that arrives with its text (Vite unlinks its
   // temporary config after loading it) is walked from that text. Files runs
   // only READ are observed reads below: data, never roots, whatever their
-  // extension (Tailwind scans .js/.ts content files as text).
+  // extension (Tailwind scans .js/.ts content files as text). The tool's
+  // configs ride along, as optional roots (RequiredModuleRoot.config).
   const requiredRoots = [...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
     pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined));

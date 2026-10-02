@@ -90,4 +90,24 @@ assert.equal(script.bundle[`${NM}/ms/index.js`], undefined, 'a plain script root
   assert.equal(state.bundle[`${NM}/eslint-plugin-big/index.js`], undefined, 'a config of a tool this launch does not run names nothing');
 }
 
+// A config the tool may never read is no mandatory part of the launch: a
+// `vite --version` whose vite.config.ts imports a graph past the map's bound
+// still launches. The config's graph is staged within the bound, evictable,
+// ahead of every other optional subtree.
+{
+  const heavy = {
+    ...files,
+    [`${APP}/vite.config.ts`]: "import big from 'big'\nexport default { plugins: [big()] }\n",
+    [`${NM}/big/package.json`]: JSON.stringify({ name: 'big', main: 'index.js' }),
+    [`${NM}/big/index.js`]: `module.exports = () => ${JSON.stringify('x'.repeat(64 * 1024))};\n`,
+  };
+  const bound = 32 * 1024;
+  const state = await buildPrefetchBundle(launchFs(heavy).fs, {
+    scriptPath: `/${VITE}/bin/vite.js`, cwd: `/${APP}`, entryCode: heavy[`${VITE}/bin/vite.js`], maxBundleBytes: bound,
+  });
+  assert.ok(state.bundle[`${VITE}/dist/cli.js`] !== undefined, "the tool's own closure launches");
+  assert.equal(state.bundle[`${NM}/big/index.js`], undefined, 'the part of the config graph past the bound is left out, not refused');
+  assert.ok(state.bundle[`${APP}/vite.config.ts`] !== undefined, 'what fits is staged');
+}
+
 console.log('facet-bundle-tool-config: ok');
