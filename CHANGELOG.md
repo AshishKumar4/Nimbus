@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: on the SQLite filesystem, renaming a directory over an empty
+  directory counted the replaced directory as a file, so `df` and the
+  filesystem's stats reported one file too few and one directory too many
+  until the counters were next reloaded from the store.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
