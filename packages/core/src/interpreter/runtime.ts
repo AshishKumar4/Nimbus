@@ -141,7 +141,11 @@ function enter(
   if (fi.funcSlot !== 0) env[fi.funcSlot] = fn;
   const params = fi.params;
   if (params !== null) {
-    for (let i = 0; i < params.length; i++) env[params[i]] = args[i];
+    // A parameter past the last argument is undefined: reading the index would
+    // consult the arguments object's (or rest array's) prototype, where a
+    // program may answer it.
+    const count = args.length;
+    for (let i = 0; i < params.length; i++) env[params[i]] = i < count ? args[i] : undefined;
   } else if (fi.bindParams !== null) {
     fi.bindParams(env, args);
   }

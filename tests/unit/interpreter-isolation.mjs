@@ -61,6 +61,10 @@ function* counter(n) { const keep = secret; for (let i = 0; i < n; i++) yield i 
 out.push([...counter(3)]);
 const sum = (...xs) => xs.reduce((s, x) => s + x, 0);
 out.push(sum(...[1, 2, 3], 4));
+// Fewer arguments than parameters: native binding reads none past the last argument.
+function pair(a, b, c = a, { d } = { d: 4 }, [e] = [5], ...f) { return [a, b, c, d, e, f]; }
+const twice = (x, y) => [x, y];
+out.push(pair(1), pair(1, 2, 3), twice(7), Reflect.construct(function (p, q) { this.v = [p, q]; }, [8]).v);
 label: for (const x of [1, 2, 3]) { for (const y of [1, 2]) { if (y === 2) continue label; if (x === 3) break label; out.push(x * 10 + y); } }
 const tagged = (s, ...v) => s.raw.join('|') + v.join(',');
 out.push(tagged\`x\${1}y\${secret ? 2 : 0}\`, \`t\${out.length}\`);
