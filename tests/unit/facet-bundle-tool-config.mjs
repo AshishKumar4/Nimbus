@@ -110,4 +110,22 @@ assert.equal(script.bundle[`${NM}/ms/index.js`], undefined, 'a plain script root
   assert.ok(state.bundle[`${APP}/vite.config.ts`] !== undefined, 'what fits is staged');
 }
 
+// A plugin a config names resolves as the config's require resolves it, and
+// the package.json files that resolution reads are staged with it: the
+// process repeats it from them.
+{
+  const nested = {
+    ...files,
+    [`${APP}/postcss.config.js`]: "export default { plugins: { 'deep-plugin': {} } };\n",
+    [`${NM}/deep-plugin/package.json`]: JSON.stringify({ name: 'deep-plugin', main: 'lib' }),
+    [`${NM}/deep-plugin/lib/package.json`]: JSON.stringify({ main: 'actual.cjs' }),
+    [`${NM}/deep-plugin/lib/actual.cjs`]: 'module.exports = () => ({});\n',
+  };
+  const state = await buildPrefetchBundle(launchFs(nested).fs, {
+    scriptPath: `/${VITE}/bin/vite.js`, cwd: `/${APP}`, entryCode: nested[`${VITE}/bin/vite.js`],
+  });
+  assert.ok(state.bundle[`${NM}/deep-plugin/lib/actual.cjs`] !== undefined, 'the plugin is staged');
+  assert.ok(state.bundle[`${NM}/deep-plugin/lib/package.json`] !== undefined, 'with the nested package.json its resolution read');
+}
+
 console.log('facet-bundle-tool-config: ok');
