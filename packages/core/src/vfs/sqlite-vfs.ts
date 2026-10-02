@@ -5157,7 +5157,18 @@ export class SqliteVFS {
     } catch (error) {
       this.unpublishRenameDestination(committed);
       if (touchedPaths.size > 0) this.bumpRevision([...touchedPaths]);
-      throw error;
+      // Whether anything changed is read back from the store, never assumed
+      // from the error: a commit can be durable and still throw, and the
+      // unwind can fail. Every destination row as it was before the move is
+      // a rename that changed nothing, whatever the error's code; anything
+      // else has part of the tree at newPath and all of it still at oldPath.
+      if (this.renameTargetsUntouched(renamed.map(({ stored }) => stored.path), destInode)) {
+        // The error as it was, saying so (vfs-error.ts renameOutcome).
+        const code = (error as { code?: unknown } | null)?.code;
+        throw Object.assign(new Error(this.errorMessage(error), { cause: error }), code === undefined ? { renamed: 'none' } : { code, renamed: 'none' });
+      }
+      throw Object.assign(new Error(`EIO: moving ${oldPath} to ${newPath} failed (${this.errorMessage(error)}) `
+        + `with part of it at ${newPath}; all of it is still at ${oldPath}`, { cause: error }), { code: 'EIO' });
     }
     // The superseded occupant goes first: it shares its path with the entry
     // published over it, exactly as the transaction deleted before inserting.
@@ -5217,7 +5228,11 @@ export class SqliteVFS {
     } catch (error) {
       // What committed is visible, so it is published before the error goes.
       this.bumpRevision([...touchedPaths]);
-      throw error;
+      // Publication committed whole: newPath holds the tree, and what is
+      // left at oldPath is residue. Never the refusal of a rename that
+      // changed nothing.
+      throw Object.assign(new Error(`EIO: ${newPath} holds all of ${oldPath}, but ${oldPath} could not all be removed `
+        + `(${this.errorMessage(error)})`, { cause: error }), { code: 'EIO', renamed: 'all' });
     }
 
     // Every source directory went from its old name, and a reader holding
@@ -5256,6 +5271,25 @@ export class SqliteVFS {
       }
       flush();
     } catch { /* the source is intact; report the original failure */ }
+  }
+
+  /**
+   * Whether `paths` hold, in the store, what they held before a rename onto
+   * them: nothing, or `occupant` alone (a moved entry keeps its inode, so the
+   * number tells the two apart). A store that cannot answer has not said so.
+   */
+  private renameTargetsUntouched(paths: readonly string[], occupant: INode | undefined): boolean {
+    try {
+      for (let i = 0; i < paths.length; i += KEYS_PER_SQL_EXEC) {
+        const batch = paths.slice(i, i + KEYS_PER_SQL_EXEC);
+        for (const row of this.sql.exec(`SELECT path, ino FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch)) {
+          if (occupant === undefined || String(row.path) !== occupant.path || Number(row.ino) !== occupant.ino) return false;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

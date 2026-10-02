@@ -39,6 +39,13 @@ longer a `ProcessView`, as described below.
   move too. `rename` still answers `EXDEV` between mounts. A directory
   moved onto a file now answers `ENOTDIR`, where `mv` said `ENOTEMPTY`,
   and `mv` no longer makes a missing destination directory.
+- A rename on the SQLite filesystem that fails says what it did: an error
+  carrying `renamed: 'none'` when its store shows the destination as it
+  was, and `EIO` with `renamed: 'all'` when the tree was published whole
+  and only removing the old name failed. A commit that was durable and
+  still threw, or a tree published in part, is `EIO`; before, each of
+  these rethrew the storage error unchanged, so a caller could not tell
+  a rename that did nothing from one that did some of it.
 - Fixed: a file a process creates on a synchronous mount with a mode
   (`open` with `O_CREAT`, `writeFile` with `mode`) was made at the
   backend's default mode. It is now made at the mode asked for, as on an

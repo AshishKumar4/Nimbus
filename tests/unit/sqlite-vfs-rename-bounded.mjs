@@ -24,6 +24,7 @@ import assert from 'node:assert/strict';
 import { MAX_TX_LOGICAL_ROWS } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { renameOutcome } from '../../packages/core/src/vfs/vfs-error.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
@@ -183,6 +184,11 @@ function treeShape(vfs, root) {
     const destinationComplete = reconstructed.exists('src/proteus')
       && treeShape(reconstructed, 'src/proteus').length === shape.before.length;
 
+    // And the rename says which, from what the store holds, never left to
+    // the caller to judge from what the names hold.
+    assert.equal(renameOutcome(threw), destinationComplete ? 'all' : 'none', `commit ${failAt}: the failure says what it did`);
+    if (destinationComplete) assert.equal(threw.code, 'EIO', `commit ${failAt}: a rename that moved it all is no refusal`);
+
     if (destinationComplete) {
       // Retirement was interrupted: the destination is already whole, and the
       // residue is a partial source the caller's cleanup removes.
@@ -214,6 +220,39 @@ function treeShape(vfs, root) {
   }
   assert.ok(unwound > 0, 'the sweep must cover a failure during publication');
   assert.ok(completed > 0, 'the sweep must cover a failure during retirement');
+}
+
+// ── A commit that is durable and still throws ─────────────────────────────
+// The rename cannot take its own failure as "nothing committed": the store
+// is read back, and a destination that holds the moved entry is EIO, saying
+// nothing of how far it got, never a refusal saying nothing changed.
+{
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('from.txt', 'NEW');
+  vfs.writeFile('to.txt', 'OLD');
+  harness.failAfterTransaction();
+  let threw = null;
+  try { vfs.rename('from.txt', 'to.txt'); } catch (error) { threw = error; }
+  harness.clearFault();
+  assert.equal(threw?.code, 'EIO', 'durable, then thrown: EIO');
+  assert.equal(renameOutcome(threw), undefined, 'and not said to have renamed nothing');
+  assert.match(threw.message, /^EIO: moving from\.txt to to\.txt failed \(injected reset after transaction \d+\) with part of it at to\.txt; all of it is still at from\.txt$/);
+  const reconstructed = reopenVfs(harness);
+  assert.equal(reconstructed.readFileString('to.txt'), 'NEW', 'the destination holds what committed');
+  assert.equal(reconstructed.readFileString('from.txt'), 'NEW', 'and the source is still whole');
+}
+// A refusal made before anything commits is the refusal, said to have renamed nothing.
+{
+  const { harness, vfs } = openVfs();
+  vfs.writeFile('a.txt', 'A');
+  harness.failOnTransactionStatement(1, { error: Object.assign(new Error('ENOSPC: injected full disk'), { code: 'ENOSPC' }) });
+  let threw = null;
+  try { vfs.rename('a.txt', 'b.txt'); } catch (error) { threw = error; }
+  harness.clearFault();
+  assert.equal(threw?.code, 'ENOSPC');
+  assert.equal(renameOutcome(threw), 'none');
+  assert.equal(vfs.readFileString('a.txt'), 'A');
+  assert.equal(vfs.exists('b.txt'), false);
 }
 
 // ── Every rename guarantee the single transaction gave, still given ───────
