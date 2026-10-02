@@ -276,6 +276,8 @@ async function runCases(interpreterFile, opsFile) {
     gen.return();
     check('return() of a generator suspended in for-of closes its iterator', closed, ['return']);
   }
+  check('a function declaration as an if clause (Annex B.3.4)',
+    F('if (true) function f() { return 1 } if (false) ; else function g() { return 2 } if (false) function h() {} return [f(), g(), typeof h]')(), [1, 2, 'undefined']);
 
   // ── Module cells ──
   {

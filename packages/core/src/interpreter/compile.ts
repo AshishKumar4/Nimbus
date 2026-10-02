@@ -962,7 +962,10 @@ export class Compiler {
   }
 
   private blockStatement(node: AnyNode, body: readonly Statement[]): Code {
-    const scope = this.analysis.scopeOf(node);
+    return this.blockIn(this.analysis.scopeOf(node), body);
+  }
+
+  private blockIn(scope: Scope, body: readonly Statement[]): Code {
     const entry = this.scopeEntry(scope);
     const outer = this.enter(scope);
     const list = this.statementList(body);
@@ -1024,8 +1027,8 @@ export class Compiler {
 
   private ifStatement(testNode: Expression, consequent: Statement, alternate: Statement | null): Code {
     const test = this.expr(testNode);
-    const then = this.stmt(consequent, []) ?? syncCode(() => undefined);
-    const otherwise = alternate ? this.stmt(alternate, []) ?? syncCode(() => undefined) : null;
+    const then = this.clause(consequent) ?? syncCode(() => undefined);
+    const otherwise = alternate ? this.clause(alternate) ?? syncCode(() => undefined) : null;
     if (test.g === null && then.g === null && (otherwise === null || otherwise.g === null)) {
       const t = test.s;
       const a = then.s;
@@ -1040,6 +1043,14 @@ export class Compiler {
       if (yield* tg(env)) return yield* ag(env);
       return bg ? yield* bg(env) : undefined;
     });
+  }
+
+  /** An if statement's clause: a function declaration there is a block of its own (Annex B.3.4, Analyzer.visitClause). */
+  private clause(node: Statement): Code | null {
+    if (node.type !== 'FunctionDeclaration') return this.stmt(node, []);
+    const block = this.analysis.clauseBlocks.get(node);
+    if (!block) throw new Error('interpreter: an if clause declaration without its block');
+    return this.blockIn(block, [node]);
   }
 
   private labeled(label: string, body: Statement, labels: Labels): Code | null {

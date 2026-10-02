@@ -263,6 +263,8 @@ export class Analysis {
   readonly receivers = new SafeMap<AnyNode, FunctionScope>();
   /** Block-level function declarations that also assign a var of their name (Annex B.3.3). */
   readonly annexB = new SafeMap<FunctionDeclaration, Binding>();
+  /** The block an if statement's function declaration clause is in (Annex B.3.4). */
+  readonly clauseBlocks = new SafeMap<FunctionDeclaration, Scope>();
   readonly privateRefs = new SafeMap<PrivateIdentifier, Reference>();
   /** A module's own scope, which holds `%module` for import.meta. */
   moduleScope: FunctionScope | null = null;
@@ -633,8 +635,8 @@ class Analyzer {
       case 'BreakStatement': case 'ContinueStatement': return;
       case 'IfStatement':
         this.visitExpression(node.test, scope);
-        this.visitStatement(node.consequent, scope);
-        if (node.alternate) this.visitStatement(node.alternate, scope);
+        this.visitClause(node.consequent, scope);
+        if (node.alternate) this.visitClause(node.alternate, scope);
         return;
       case 'SwitchStatement': this.visitSwitch(node, scope); return;
       case 'ThrowStatement': this.visitExpression(node.argument, scope); return;
@@ -703,6 +705,21 @@ class Analyzer {
       this.visitPattern(d.id, scope, true);
       if (d.init) this.visitExpression(d.init, scope);
     }
+  }
+
+  /**
+   * An if statement's clause. Annex B.3.4: a sloppy function declaration
+   * there is as if it were the only statement of a block (Compiler.clause).
+   */
+  visitClause(node: Statement, scope: Scope): void {
+    if (node.type !== 'FunctionDeclaration') {
+      this.visitStatement(node, scope);
+      return;
+    }
+    const block = new Scope('block', scope, scope.fn);
+    this.analysis.clauseBlocks.set(node, block);
+    this.declareLexical([node], block);
+    this.visitStatements([node], block);
   }
 
   visitBlock(node: BlockStatement, scope: Scope): void {
