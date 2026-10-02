@@ -63,6 +63,13 @@ export const APPS = {
       return { '/': first, '/ after an edit': edited };
     },
   },
+  ajv: {
+    make(dir) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'ajv-diff', private: true, dependencies: { ajv: '^8.17.0' } }));
+      sh(dir, 'npm install');
+    },
+  },
   vite: {
     make(dir) {
       sh(CACHE, 'npm create vite@8 vite -- --template react-ts --no-interactive');

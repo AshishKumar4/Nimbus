@@ -31,8 +31,10 @@ function loadInterpreter() {
   const before = used();
   const { createInterpreter } = require(interpreterFile);
   const interp = createInterpreter(require(opsFile), { dynamicImport: (parent, specifier) => import(String(specifier)) });
-  // The first compile builds the interpreter's own closures; it is part of loading it.
+  // A first function and module warm the interpreter's own code; that is part of loading it.
   interp.compileFunction('function', ['a'], 'return a + 1')(1);
+  const warm = { exports: {} };
+  interp.compileModule('/warm.mjs', 'import { a } from "w"; export const b = () => a; export default class {}')(warm.exports, () => ({ a: 1 }), warm, '/warm.mjs', '/');
   result.interpreterLoad = used() - before;
   return interp;
 }
