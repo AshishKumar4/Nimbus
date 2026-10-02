@@ -1,0 +1,63 @@
+{
+  "artifact": "nimbus-oxc",
+  "oxc": "0.152.0",
+  "target": "wasm32-unknown-unknown",
+  "source": {
+    "crate": "packages/worker/scripts/oxc-wasm",
+    "files": {
+      "Cargo.toml": "0bd175a6563411d7812e3ee3dfaae2395ec4c68c19c16889ee6a915d49b4c4cf",
+      "Cargo.lock": "cccf59f1347026180c13aaa73fc216e9a0e78ad6cf485acfcc56e8f5ad960d6e",
+      "rust-toolchain.toml": "1f65896ce423e463d3278c0a9fbf946892f9e7c95ca680f27b7a337dd5065736"
+    },
+    "manifestVersion": "0.1.0",
+    "src": "d0da2270789e154397bba79614b20736707d2e101364f842cf14930c2d3517a4"
+  },
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cargo": {
+    "command": "cargo build --release --locked --lib --target wasm32-unknown-unknown",
+    "rustflags": [
+      "-Ctarget-feature=+simd128",
+      "-Clink-arg=-zstack-size=4194304"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)"
+  },
+  "wasmOpt": {
+    "binaryen": {
+      "version": "version_133",
+      "url": "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz",
+      "sha256": "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489"
+    },
+    "version": "wasm-opt version 133 (version_133)",
+    "args": [
+      "--enable-simd",
+      "--enable-bulk-memory",
+      "--enable-nontrapping-float-to-int",
+      "--enable-sign-ext",
+      "--enable-mutable-globals",
+      "--enable-reference-types",
+      "--enable-multivalue",
+      "--remove-exports",
+      "--pass-arg=remove-exports@__*",
+      "--remove-imports",
+      "-O3"
+    ]
+  },
+  "wasm": {
+    "imports": [],
+    "exports": [
+      "memory",
+      "nimbus_oxc_alloc",
+      "nimbus_oxc_realloc",
+      "nimbus_oxc_release",
+      "nimbus_oxc_transform"
+    ],
+    "memoryInitialPages": 67,
+    "stackBytes": 4194304
+  },
+  "outputs": {
+    "nimbus-oxc.wasm": {
+      "bytes": 2251228,
+      "sha256": "797792705d96a9774eb4e2d1480f0dbd84d316fd85f7655d751dfb92f30f4e9d"
+    }
+  }
+}

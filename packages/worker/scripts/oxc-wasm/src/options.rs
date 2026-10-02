@@ -1,0 +1,146 @@
+//! Transform options, and their wire form.
+//!
+//! The JavaScript side sends options as NUL-separated fields: a key, then its
+//! value. `define` repeats, carrying `key\0value` pairs as two fields after
+//! its own key. Unknown keys are an error rather than ignored, so a caller
+//! that asks for something this engine does not do hears about it.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loader {
+    Js,
+    Jsx,
+    Ts,
+    Tsx,
+}
+
+/// The module format of the output. `Preserve` keeps the module's own syntax;
+/// `Esm` additionally wraps a CommonJS module as an ES module's default
+/// export; `Cjs` lowers ES module syntax to CommonJS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Preserve,
+    Esm,
+    Cjs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsxMode {
+    /// `React.createElement`, or `jsx_factory` / `jsx_fragment`.
+    Transform,
+    /// `react/jsx-runtime`.
+    Automatic,
+    Preserve,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceMapMode {
+    None,
+    /// Returned beside the code.
+    External,
+    /// Appended to the code as a data URL.
+    Inline,
+}
+
+#[derive(Clone, Debug)]
+pub struct Options {
+    pub loader: Loader,
+    pub format: Format,
+    pub jsx: JsxMode,
+    pub jsx_factory: Option<String>,
+    pub jsx_fragment: Option<String>,
+    /// `(expression, replacement)`, applied to unbound globals.
+    pub define: Vec<(String, String)>,
+    pub sourcemap: SourceMapMode,
+    /// The name diagnostics and source maps give the input (`<stdin>` when unset).
+    pub sourcefile: Option<String>,
+    /// Whether the output keeps `import()`; otherwise it becomes a `require`.
+    pub supported_dynamic_import: bool,
+    /// Whether the output keeps `import.meta`; otherwise it reads an empty object.
+    pub supported_import_meta: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            loader: Loader::Js,
+            format: Format::Preserve,
+            jsx: JsxMode::Transform,
+            jsx_factory: None,
+            jsx_fragment: None,
+            define: Vec::new(),
+            sourcemap: SourceMapMode::None,
+            sourcefile: None,
+            supported_dynamic_import: true,
+            supported_import_meta: true,
+        }
+    }
+}
+
+impl Options {
+    /// Parse the wire form described in the module documentation.
+    pub fn decode(wire: &str) -> Result<Self, String> {
+        let mut options = Self::default();
+        if wire.is_empty() {
+            return Ok(options);
+        }
+        let mut fields = wire.split('\0');
+        while let Some(key) = fields.next() {
+            let mut value = || fields.next().ok_or_else(|| format!("option {key:?} has no value"));
+            match key {
+                "loader" => {
+                    options.loader = match value()? {
+                        "js" => Loader::Js,
+                        "jsx" => Loader::Jsx,
+                        "ts" => Loader::Ts,
+                        "tsx" => Loader::Tsx,
+                        other => return Err(format!("unsupported loader {other:?}")),
+                    }
+                }
+                "format" => {
+                    options.format = match value()? {
+                        "preserve" => Format::Preserve,
+                        "esm" => Format::Esm,
+                        "cjs" => Format::Cjs,
+                        other => return Err(format!("unsupported format {other:?}")),
+                    }
+                }
+                "jsx" => {
+                    options.jsx = match value()? {
+                        "transform" => JsxMode::Transform,
+                        "automatic" => JsxMode::Automatic,
+                        "preserve" => JsxMode::Preserve,
+                        other => return Err(format!("unsupported jsx mode {other:?}")),
+                    }
+                }
+                "jsxFactory" => options.jsx_factory = Some(value()?.to_string()),
+                "jsxFragment" => options.jsx_fragment = Some(value()?.to_string()),
+                "define" => {
+                    let name = value()?.to_string();
+                    let replacement = value()?.to_string();
+                    options.define.push((name, replacement));
+                }
+                "sourcemap" => {
+                    options.sourcemap = match value()? {
+                        "none" => SourceMapMode::None,
+                        "external" => SourceMapMode::External,
+                        "inline" => SourceMapMode::Inline,
+                        other => return Err(format!("unsupported sourcemap mode {other:?}")),
+                    }
+                }
+                "sourcefile" => options.sourcefile = Some(value()?.to_string()),
+                "dynamicImport" => options.supported_dynamic_import = flag(value()?)?,
+                "importMeta" => options.supported_import_meta = flag(value()?)?,
+                other => return Err(format!("unknown option {other:?}")),
+            }
+        }
+        Ok(options)
+    }
+}
+
+fn flag(value: &str) -> Result<bool, String> {
+    match value {
+        "1" => Ok(true),
+        "0" => Ok(false),
+        other => Err(format!("expected 0 or 1, got {other:?}")),
+    }
+}
