@@ -840,8 +840,8 @@ export class SqliteRuntimeFsBridge {
         const located = this.locate(path, followSymlinks);
         if (located === null)
             throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
-        if (!located.mount)
-            this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.path));
+        // And the name it reaches, on a mount as on SQLite.
+        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.mount ? normalizeVfsPath(located.path) : located.path));
         return located;
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */

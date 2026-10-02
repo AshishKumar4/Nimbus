@@ -64,13 +64,14 @@ async function carry(fs, fromInput, toInput, onPreserveFailure) {
     }
     if (directory && await beneath(fs, parent, from))
         throw refused('EINVAL', 'a directory cannot move beneath itself');
-    const c = { fs, from, to, staged: join(parent, `.nimbus-move-${crypto.randomUUID()}`), source, existing, refused };
+    const staged = join(parent, `.nimbus-move-${crypto.randomUUID()}`);
+    const c = { fs, from, to, staged, source, existing, entries: 0, stagedIno: undefined, landed: false, refused };
     try {
-        await copyEntry(fs, from, source, c.staged, to, onPreserveFailure);
-        await confirm(c, c.staged);
+        c.entries = await copyEntry(fs, from, source, staged, to, onPreserveFailure);
+        c.stagedIno = (await confirm(c, staged)).ino;
     }
     catch (error) {
-        throw await undone(c, error, () => discard(fs, c.staged), true);
+        throw await undone(c, error, () => discard(fs, staged), true);
     }
     // The copy is confirmed: the source goes, then the copy takes the destination's place.
     try {
@@ -81,9 +82,13 @@ async function carry(fs, fromInput, toInput, onPreserveFailure) {
         await place(c);
     }
     catch (error) {
+        if (c.landed) {
+            const cause = error instanceof Error ? error.message : String(error);
+            throw refused('EIO', `moved to ${to}, but what was left at ${staged} could not be removed (${cause})`);
+        }
         throw await undone(c, error, async () => {
-            await restore(fs, c.staged, from);
-            await discard(fs, c.staged);
+            await restore(fs, staged, from);
+            await discard(fs, staged);
         }, true);
     }
 }
@@ -116,8 +121,10 @@ async function place(c) {
             return;
         }
         catch (error) {
-            if (!isVfsError(error, 'EXDEV'))
-                throw error;
+            if (!isVfsError(error, 'EXDEV')) {
+                await settle(c, error);
+                return;
+            }
         }
     }
     const kept = existing === null ? null : await keep(fs, to, existing);
@@ -143,9 +150,41 @@ async function place(c) {
         }, false);
     }
 }
+/**
+ * After the final rename failed, whether it moved the copy anyway. SqliteVFS
+ * moves a tree in bounded steps, publishing it at the destination before it
+ * retires the old name, so a failure in that second step leaves the whole
+ * copy at the destination: that move has happened, and what is left at the
+ * staged name goes. A destination only partly published is taken back, and
+ * the staged copy, still whole, is what the source is put back from.
+ */
+async function settle(c, error) {
+    const { fs, to, existing } = c;
+    if (c.stagedIno === undefined)
+        throw error;
+    const published = await fs.stat(to, { follow: false });
+    if (published === null || published.ino !== c.stagedIno)
+        throw error;
+    if (await countEntries(fs, to) === c.entries) {
+        c.landed = true;
+        await discard(fs, c.staged);
+        return;
+    }
+    // Only a tree is published in parts, and a tree replaces nothing or an empty directory.
+    await putBack(fs, to, existing === null ? null : { type: 'directory', stat: existing });
+    throw error;
+}
+async function countEntries(fs, path) {
+    let entries = 1;
+    for (const entry of await fs.readdir(path)) {
+        entries += entry.type === 'directory' ? await countEntries(fs, join(path, entry.name)) : 1;
+    }
+    return entries;
+}
 async function keep(fs, path, stat) {
+    // A copy: a backend may hand out its own buffer, which the overwrite then changes.
     if (stat.type === 'file')
-        return { type: 'file', bytes: await fs.readFile(path), stat };
+        return { type: 'file', bytes: (await fs.readFile(path)).slice(), stat };
     if (stat.type === 'symlink')
         return { type: 'symlink', target: await readlinkOf(fs, path) };
     return { type: 'directory', stat };
@@ -176,8 +215,9 @@ async function copyEntry(fs, from, stat, to, named, onPreserveFailure) {
         if (typeof fs.symlink !== 'function')
             throw syscallError('ENOTSUP', 'symlink', named, { detail: 'this filesystem cannot hold a link' });
         await fs.symlink(await readlinkOf(fs, from), to);
-        return;
+        return 1;
     }
+    let entries = 1;
     if (stat.type === 'directory') {
         // Writable while it fills; its own mode once it has.
         const mode = permissions(stat);
@@ -188,7 +228,7 @@ async function copyEntry(fs, from, stat, to, named, onPreserveFailure) {
             // Gone since the listing: nothing to carry.
             if (childStat === null)
                 continue;
-            await copyEntry(fs, child, childStat, join(to, entry.name), join(named, entry.name), onPreserveFailure);
+            entries += await copyEntry(fs, child, childStat, join(to, entry.name), join(named, entry.name), onPreserveFailure);
         }
     }
     else if (typeof fs.copy === 'function') {
@@ -199,6 +239,7 @@ async function copyEntry(fs, from, stat, to, named, onPreserveFailure) {
         await fs.writeFile(to, await fs.readFile(from), mode === undefined ? undefined : { mode });
     }
     await preserve(fs, stat, to, named, onPreserveFailure);
+    return entries;
 }
 async function preserve(fs, stat, path, named, onPreserveFailure) {
     const attempt = async (what, apply) => {
@@ -223,6 +264,7 @@ async function confirm(c, path) {
     if (landed === null || landed.type !== c.source.type || (c.source.type === 'file' && landed.size !== c.source.size)) {
         throw c.refused('EIO', `the copy at ${path} is not what was copied`);
     }
+    return landed;
 }
 /** rm -r of one entry, or its first failure. */
 async function removeEntry(fs, path, stat) {
@@ -272,13 +314,37 @@ async function readlinkOf(fs, path) {
         throw syscallError('ENOTSUP', 'readlink', path, { detail: 'this filesystem cannot read a link' });
     return await fs.readlink(path);
 }
-/** Whether `dir`, or a name beneath it, is `path`: lexically, and where the namespace has realpath, after every link. */
+/** Whether `path` is `dir` or a name beneath it, lexically or once every link is followed. */
 async function beneath(fs, path, dir) {
-    if (within(path, dir))
-        return true;
-    if (typeof fs.realpath !== 'function')
-        return false;
-    return within(await fs.realpath(path), await fs.realpath(dir));
+    return within(path, dir) || within(await physical(fs, path), await physical(fs, dir));
+}
+/** `path` with every link on it followed: the namespace's realpath, or a walk where it has none. */
+async function physical(fs, path) {
+    if (typeof fs.realpath === 'function')
+        return await fs.realpath(path);
+    const pending = path.split('/');
+    const resolved = [];
+    for (let hops = 0; pending.length > 0;) {
+        const name = pending.shift();
+        if (name === '' || name === '.')
+            continue;
+        if (name === '..') {
+            resolved.pop();
+            continue;
+        }
+        const at = `/${[...resolved, name].join('/')}`;
+        if (typeof fs.readlink !== 'function' || (await fs.stat(at, { follow: false }))?.type !== 'symlink') {
+            resolved.push(name);
+            continue;
+        }
+        if (++hops > 40)
+            throw syscallError('ELOOP', 'rename', path);
+        const target = await fs.readlink(at);
+        if (target.startsWith('/'))
+            resolved.length = 0;
+        pending.unshift(...target.split('/'));
+    }
+    return `/${resolved.join('/')}`;
 }
 function within(path, dir) {
     return path === dir || path.startsWith(dir.endsWith('/') ? dir : `${dir}/`);

@@ -17,7 +17,7 @@
  */
 import { type VfsError } from './vfs-error.js';
 import type { Awaitable, VFS } from './vfs.js';
-/** A namespace to move within: a VFS, with realpath where it has one (to refuse a tree moved beneath itself through a link). */
+/** A namespace to move within: a VFS, and its realpath where it has one (links are otherwise walked with readlink). */
 export type MoveFs = VFS & {
     realpath?(path: string): Awaitable<string>;
 };
