@@ -302,4 +302,31 @@ console.log('require-resolver: createRequire ok');
   assert.equal(r.bundle['home/user/cli/lib/binding.node'], undefined, 'native binary not staged');
   assert.equal(r.bundle['home/user/cli/lib/feature.js'], 'export const f = 1;', 'the lazy subtree after it is staged');
 }
+
+// Phase 2 takes the fewest alternatives first. Astro's dev server loads
+// vitefu's ESM through the one `import('./index.js')` in vitefu's CommonJS
+// proxy; Shiki's language table, discovered before it, defers one import per
+// grammar and loads the few a page names. Walked in discovery order the
+// grammars spent the bound and the first launch missed vitefu/src/index.js.
+{
+  const grammar = 'export default ' + JSON.stringify('x'.repeat(400)) + ';';
+  const files = {
+    'home/user/cli/bin.mjs': "import './lib/langs.js'; import './lib/proxy.cjs';",
+    'home/user/cli/lib/langs.js': "export const langs = { a: () => import('./g/a.js'), b: () => import('./g/b.js'), c: () => import('./g/c.js') };",
+    'home/user/cli/lib/proxy.cjs': "module.exports.crawl = () => import('./index.js').then((m) => m.crawl());",
+    'home/user/cli/lib/index.js': 'export const crawl = () => 1;',
+    'home/user/cli/lib/g/a.js': grammar,
+    'home/user/cli/lib/g/b.js': grammar,
+    'home/user/cli/lib/g/c.js': grammar,
+  };
+  const vfs = new FakeVfs(files);
+  const required = ['home/user/cli/bin.mjs', 'home/user/cli/lib/langs.js', 'home/user/cli/lib/proxy.cjs']
+    .reduce((n, path) => n + files[path].length, 0);
+  // Room for one grammar, or the proxy's target: not both.
+  const bound = required + grammar.length + 10;
+  const r = await prefetchForRequire(vfs, files['home/user/cli/bin.mjs'], '/home/user/cli', '/home/user/cli/bin.mjs', bound);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  assert.equal(r.bundle['home/user/cli/lib/index.js'], files['home/user/cli/lib/index.js'], "a module's only deferral is staged before a table's");
+  assert.deepEqual([...r.speculative], ['home/user/cli/lib/index.js'], 'and the table waits for what room is left');
+}
 console.log('require-resolver: speculative dynamic imports ok');

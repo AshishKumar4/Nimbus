@@ -673,8 +673,24 @@ export async function prefetchForRequire(
     if (progress) await progress(content.length);
     return content;
   }
-  // Followed after the static closure so a lazy subtree never spends its bound.
-  const deferredDynamic: Array<{ specifier: string; fromDir: string }> = [];
+  // Followed after the static closure so a lazy subtree never spends its
+  // bound: fewest alternatives first, then in discovery order.
+  // A module that defers one import (vitefu's CommonJS proxy, `import('./index.js')`
+  // inside each async function) loads it whenever that code runs; a module
+  // that defers hundreds (Shiki's grammar table, one `import()` per language)
+  // loads the few its input names. Walking a table first spent the bound on
+  // grammars the program never loads, and cut the deferral it does.
+  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string }>>();
+  function defer({ specifier, fromDir, alternatives }: { specifier: string; fromDir: string; alternatives: number }): void {
+    let queue = deferredDynamic.get(alternatives);
+    if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
+    queue.push({ specifier, fromDir });
+  }
+  function nextDeferred(): { specifier: string; fromDir: string } | undefined {
+    let fewest = Infinity;
+    for (const [alternatives, queue] of deferredDynamic) if (queue.length > 0 && alternatives < fewest) fewest = alternatives;
+    return fewest === Infinity ? undefined : deferredDynamic.get(fewest)!.shift();
+  }
   let lazy = false;
 
   // `entry`: the entry file itself, whose own `import()` is a deferral of its
@@ -804,15 +820,17 @@ export async function prefetchForRequire(
       if (r) (await addFile(r.resolved));
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
+    const deferrals = new Set<string>();
     for (const match of stripped.matchAll(DYNIMPORT_RE)) {
       if (policy || declined) break;
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
-      if (!entry) { deferredDynamic.push({ specifier, fromDir }); continue; }
+      if (!entry) { deferrals.add(specifier); continue; }
       const resolved = (await resolveDynamicImport(specifier, fromDir));
       if (closureExceeded) break;
       if (resolved) (await addFile(resolved));
     }
+    for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
@@ -915,10 +933,10 @@ export async function prefetchForRequire(
     if (closureExceeded) return closureExceeded;
     if (policy) return { bundle, speculative, entryPaths };
 
-    // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
+    // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
-    for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
-      const { specifier, fromDir } = deferredDynamic[i];
+    for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
+      const { specifier, fromDir } = next;
       const resolved = await resolveDynamicImport(specifier, fromDir);
       if (resolved) await addFile(resolved);
     }
