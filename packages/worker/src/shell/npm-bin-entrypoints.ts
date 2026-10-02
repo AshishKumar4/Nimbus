@@ -11,6 +11,7 @@ import {
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import type { ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { DEFAULT_PATH } from '@nimbus-sh/core/constants.js';
 import { z } from 'zod/v4';
 
@@ -35,7 +36,7 @@ type NodeCommandHandler = (ctx: CommandContext) => Promise<number> | number;
 type HintableCommandHandler = FallbackCommandHandler & { __nimbusRuntimeInstallHint?: boolean };
 
 type RegistryLike = {
-  resolve(name: string): Promise<unknown> | unknown;
+  resolve(name: string, from?: ResolveContext): Promise<unknown> | unknown;
 };
 
 type RuntimeCommandHint = { installSpec: string } | null;
@@ -79,20 +80,19 @@ export function installNpmBinFallbackResolver(
     try { return await lookup(); } catch { return null; }
   };
 
-  registry.resolve = async function resolveWithNpmBins(name: string): Promise<unknown> {
+  registry.resolve = async function resolveWithNpmBins(name: string, from?: ResolveContext): Promise<unknown> {
+    const cwd = from?.cwd || deps.getCwd() || '/home/user';
     // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
     // same program as the bare name: same runtime choice, TTY and lifecycle.
     if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
-      const cwd = deps.getCwd() || '/home/user';
       const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
-      if (!bin) return await upstreamResolve(name);
+      if (!bin) return await upstreamResolve(name, from);
       return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
     }
 
-    const upstream = await upstreamResolve(name);
+    const upstream = await upstreamResolve(name, from);
     if (upstream) return upstream;
 
-    const cwd = deps.getCwd() || '/home/user';
     if (!await probe(() => resolveNpmBinForInvocation(inspector, cwd, DEFAULT_PATH, name))) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }

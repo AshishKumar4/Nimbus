@@ -3,8 +3,58 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
-## Unreleased
+## 2026-10-01
 
+Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
+sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
+are minor-strict, so every range on core, worker, fabric, platform and sdk
+moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
+message shape, VFS export schema 3 (its pages carry `source`), and the
+`enhanced_error_serialization` requirement; each is described below.
+
+- Fixed: a programmatic exec without a `shellId` ran on the session's one
+  shared shell, so an `export`, function, alias or `set` option in one call
+  reached the next unnamed call, from any caller, and two unnamed calls
+  running at once read and overwrote each other's variables mid-run. Each
+  unnamed call now runs in a shell of its own, built from the session
+  shell's cwd and environment and discarded when it ends, as the SDK
+  documents. Named shells are unchanged.
+- Fixed: in a named shell, `./task.sh`, a relative script path, an npm bin
+  and `command -v` resolved from the session shell's directory, not the
+  named shell's, so `cd build` then `./task.sh` ran the wrong file or none.
+  Commands now resolve from the cwd of the shell that runs them.
+- Fixed: in the shell, `exec 3>file` or `exec 3>&-` inside a subshell
+  closed the parent's fd 3, so the parent's next write through it failed
+  with `EBADF`. A background job lost an inherited descriptor, or the file
+  its enclosing redirection opened, when the parent let go of it first. A
+  file a subshell opened with `exec`, or one opened before a redirection
+  that failed to open or to expand (`( : ) >out <${X:?}`), was never
+  closed. Every file a redirection opens is now
+  counted the way the kernel counts an open file: by the command, by each
+  descriptor `exec` keeps on it, and by each child shell that inherited it.
+  It closes when the last of them lets go. A programmatic call's shell ends
+  with the call, so a file an `exec` left open in it is closed too.
+- Fixed: `git clone <url> /tmp/x` by a principal with a private `/tmp`
+  failed with `EPERM: … is outside exclusive mutation root tmp/x`. The
+  clone held the shared name while its writes landed in the private `/tmp`.
+  An exclusive lease taken through a credential now holds where that
+  credential's writes land, and every write is checked against leases at
+  the path it reaches: a write to a private `/tmp/x` is no longer refused by
+  a lease on the shared `tmp/x`, and a `cp -r` through a symlink into a held
+  tree is refused.
+- `npm install` no longer installs optional peer dependencies the project
+  does not list, as npm, pnpm and bun do not. A fresh Vite 8 react-ts app
+  installed ~456 packages (sass, less, stylus, terser, tsx, Babel and their
+  trees) where npm installs 70. A project that uses one of those tools
+  lists it, as it would on a real machine (`npm i -D sass`).
+- `npm install` removes packages the project no longer needs, as npm does:
+  a dependency dropped from package.json, what only it needed, and its
+  bins. This also clears the optional peers earlier installs added.
+- A package's `bin` names and targets are normalized as npm normalizes
+  them: a key links under its last path component (`../../x` links `x`) and
+  a target stays inside its package. Linking and pruning read installed
+  `package.json` files and the bin manifest only through that rule, so no
+  bin map can write or remove a file outside `node_modules/.bin`.
 - An async `fs.promises.writeFile` in a node process is one call to the
   session where it was two: the session answers the write with the file's
   stat (`writeFileStat`), which the synchronous view keeps. A session
@@ -27,16 +77,6 @@ published independently in the `@nimbus-sh` npm scope.
   link is `EEXIST`.
 - Fixed: a symlink a node process renamed was a regular file to `lstat`
   under its new name until the rename was reported back.
-
-## 2026-10-01
-
-Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,
-sdk 0.10.0, config 0.2.3, cli 0.2.1, loom 0.2.1, react 0.2.1; the carets
-are minor-strict, so every range on core, worker, fabric, platform and sdk
-moves. Breaking for embedders: `toVfsError`'s signature and the `VfsError`
-message shape, VFS export schema 3 (its pages carry `source`), and the
-`enhanced_error_serialization` requirement; each is described below.
-
 - An async `fs.promises.readFile`, `stat` or `lstat` in a node process is one
   call to the session where it was two or three: the read takes its
   consistency barrier with it (`fsAcquired`), and a file's stat for the

@@ -21,6 +21,7 @@ import { sha256Incremental } from '../_shared/crypto.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
+import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import {
   BASH_RUNNER,
   CRED_KERNEL,
@@ -40,7 +41,7 @@ export interface MinShellRegistry {
   register(name: string, handler: Command): void;
   unregister?(name: string): void;
   has?(name: string): boolean;
-  resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
+  resolve?(name: string, from?: ResolveContext): Promise<Command | null | undefined> | Command | null | undefined;
 }
 
 /** Runner-factory contract. Each registered runner produces a shell-

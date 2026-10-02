@@ -40,6 +40,7 @@ import { type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
+import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -183,7 +184,7 @@ export interface RuntimeSpec {
  * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
-    resolve(name: string): Promise<Command | null | undefined> | Command | null | undefined;
+    resolve(name: string, from?: ResolveContext): Promise<Command | null | undefined> | Command | null | undefined;
 }
 /**
  * Build a shell-handler function for a runtime. The returned function

@@ -53,7 +53,7 @@ async function install(registry, deps) {
   const resultFor = (name, spec) => {
     const versions = registry[name] ?? {};
     const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
-    const base = { deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {}, cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
+    const base = { deps: {}, peerDeps: {}, optionalDeps: {}, cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     if (!version) return { ...base, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
     const pkg = {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,

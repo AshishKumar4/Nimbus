@@ -239,6 +239,12 @@ export interface CredentialedVfs {
      */
     storageKey(path: string): string;
     /**
+     * SqliteVFS.acquireExclusiveMutation on the file this credential's name
+     * means, which is where its writes land: a confined caller's /tmp/x is
+     * var/agents/<p>/tmp/x. The lease's `root` is the caller's own name.
+     */
+    acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
+    /**
      * Watch `path` and everything under it, in this credential's view: the
      * watch is on the file its name means (a confined caller's /tmp/x is its
      * own), and an event is delivered under the caller's name for its path,
@@ -888,7 +894,15 @@ export declare class SqliteVFS {
      * where a reconcile against list() is cheaper than the delta.
      */
     private invalidatedFromSql;
+    /**
+     * Hold `path`'s subtree for one owner: a write there by anyone else is
+     * EBUSY, and the owner's writes outside it are EPERM. `path` is a storage
+     * key; a principal's name for a file goes through its view
+     * (`as(cred).acquireExclusiveMutation`), so a confined caller's /tmp is
+     * held where its writes land.
+     */
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
+    private acquireExclusiveMutationAt;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
     hasExclusiveMutation(): boolean;

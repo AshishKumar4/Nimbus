@@ -45,6 +45,7 @@ export interface ProgrammaticShell {
   getEnv(): Record<string, string>;
   getCwd(): string;
   execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{ exitCode: number }>;
+  closeDescriptors(): Promise<void>;
 }
 
 /**
@@ -65,7 +66,6 @@ interface ProgrammaticShellExecuteOptions {
   onStderr?: (data: Uint8Array) => void | Promise<void>;
   signal?: AbortSignal;
   stdin?: string;
-  isolateShellState?: boolean;
   commandContext?: Record<string, unknown>;
 }
 
@@ -418,9 +418,15 @@ function startShellJob(
     longRunning: job.background,
     cred: options.cred,
   });
-  // The scoped shell is built around the pid, so its `$` and its credential
-  // are the ones this command actually runs under.
-  const shell = scoped?.create(entry.pid) ?? parentShell;
+  // Every call runs on a shell of its own, built around the pid so its `$`
+  // and its credential are the ones this command runs under. A named shell
+  // starts from its durable state; an unnamed call from the session shell's
+  // cwd and environment, and what it changes goes nowhere: the session shell
+  // is shared by every unnamed call (and the terminal), and two calls running
+  // on it at once would read and overwrite each other's variables mid-run.
+  // The shell ends with the call, closing the descriptors an `exec` left open.
+  const shell = scoped?.create(entry.pid)
+    ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
   const pid = entry.pid;
   if (job.background) self.processes.openInput(pid);
 
@@ -437,18 +443,15 @@ function startShellJob(
   };
 
   const run = shell.execute(line, {
-    // A named shell already holds its own cwd and env; passing them again
-    // would pin it to the values this call started with and `cd` would not
-    // survive the call, which is the whole point of naming one.
-    cwd: scoped ? options.cwd : cwd,
-    env: scoped ? options.env : { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
+    // The shell already starts from this call's cwd and env. Passing them to
+    // a named shell again would pin it to the values the call started with,
+    // and its `cd` would not survive the call.
+    cwd: scoped ? options.cwd : undefined,
+    env: scoped ? options.env : undefined,
     onStdout: emit('stdout', job.onStdout),
     onStderr: emit('stderr', job.onStderr),
     signal: controller.signal,
     stdin: options.stdin,
-    // A background job must not mutate the interactive shell's cwd, env, or
-    // options; a foreground exec stays stateful, as it always has been.
-    isolateShellState: job.background,
     commandContext: {
       pid,
       cred: entry.cred,
@@ -464,7 +467,7 @@ function startShellJob(
         }
         : {}),
     },
-  });
+  }).finally(() => shell.closeDescriptors());
 
   return { pid, entry, run, abort: () => { try { controller.abort(); } catch {} } };
 }

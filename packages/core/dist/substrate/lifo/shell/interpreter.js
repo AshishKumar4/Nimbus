@@ -167,6 +167,8 @@ export class Interpreter {
         child.persistentTerminalInputFds = new Set(this.persistentTerminalInputFds);
         child.persistentOutputHandles = new Map(this.persistentOutputHandles);
         child.persistentInputHandles = new Map(this.persistentInputHandles);
+        for (const handle of child.persistentHandles())
+            handle.refs++;
         child.localFrames = this.localFrames.map((frame) => new Map(frame));
         child.errexitSuppressionDepth = this.errexitSuppressionDepth;
         return child;
@@ -652,7 +654,15 @@ export class Interpreter {
         const child = this.fork();
         const subshellIo = this.createCommandIo(io);
         subshellIo.positionals = this.forkPositionals(io);
-        const exitCode = await child.executeWithRedirections(node.redirections, subshellIo, async (redirIo) => (await child.finishChild(async () => (await child.executeCompoundList(node.body, redirIo)), redirIo)));
+        let exitCode;
+        try {
+            exitCode = await child.executeWithRedirections(node.redirections, subshellIo, async (redirIo) => (await child.finishChild(async () => (await child.executeCompoundList(node.body, redirIo)), redirIo)));
+        }
+        finally {
+            // A redirection that fails ends the child before its body, and so
+            // before finishChild, runs.
+            await child.closeDescriptors();
+        }
         this.lastExitCode = exitCode;
         return exitCode;
     }
@@ -733,6 +743,7 @@ export class Interpreter {
             (await redirStderr.write(error instanceof RedirectionOpenError
                 ? redirectionDiagnostic(error)
                 : `${error instanceof Error ? error.message : String(error)}\n`));
+            await this.flushFds(fds);
             this.lastExitCode = 1;
             return 1;
         }
@@ -798,7 +809,7 @@ export class Interpreter {
                     }
                     else {
                         // Check registry
-                        const command = await this.config.registry.resolve(name);
+                        const command = await this.config.registry.resolve(name, { cwd: this.config.getCwd() });
                         if (!command) {
                             (await stderr.write(`${name}: command not found\n`));
                             exitCode = 127;
@@ -1070,18 +1081,32 @@ export class Interpreter {
         const script = parse(tokens);
         return (await this.executeScriptWithIo(script, io));
     }
-    /** A child shell's end: its EXIT trap runs, and an `exit` inside it ends only it. */
+    /**
+     * A child shell's run and end: it holds the files its io inherited while it
+     * runs, its EXIT trap runs, an `exit` inside it ends only it, and its
+     * descriptors close.
+     */
     async finishChild(run, io) {
-        let exitCode;
+        // Taken before the first await: a background child starts here while its
+        // parent goes on to close what it opened.
+        const inherited = [...(io.openFiles?.values() ?? [])];
+        for (const file of inherited)
+            file.refs++;
         try {
-            exitCode = await run();
+            let exitCode;
+            try {
+                exitCode = await run();
+            }
+            catch (e) {
+                if (!(e instanceof ExitSignal))
+                    throw e;
+                exitCode = e.exitCode;
+            }
+            return (await this.runExitTrap(exitCode, io, true));
         }
-        catch (e) {
-            if (!(e instanceof ExitSignal))
-                throw e;
-            exitCode = e.exitCode;
+        finally {
+            await this.release([...this.takeDescriptors(), ...inherited]);
         }
-        return (await this.runExitTrap(exitCode, io, true));
     }
     async runExitTrap(exitCode, io, enabled) {
         if (!enabled || this.exitTrapDepth > 0)
@@ -1145,6 +1170,8 @@ export class Interpreter {
             next.vfs = io.vfs;
         if (io.interactive)
             next.interactive = true;
+        if (io.openFiles)
+            next.openFiles = io.openFiles;
         return next;
     }
     /** Per-execution direct-terminal write, isolated from a nested capture. */
@@ -1184,6 +1211,8 @@ export class Interpreter {
             stdout: fds.terminalOutputFds.has(1),
             stderr: fds.terminalOutputFds.has(2),
         };
+        if (fds.opened.size > 0)
+            next.openFiles = new Map([...(io.openFiles ?? []), ...fds.opened]);
         return next;
     }
     readPositionals(io) {
@@ -1240,6 +1269,7 @@ export class Interpreter {
             changedOutputFds: new Set(),
             changedInputFds: new Set(),
             opened: new Map(),
+            enclosing: io.openFiles ?? new Map(),
         };
     }
     async executeWithRedirections(redirections, io, execute) {
@@ -1250,18 +1280,22 @@ export class Interpreter {
         const stdout = io.stdout ?? this.terminalSink(io);
         const stderr = io.stderr ?? this.terminalSink(io);
         const fds = this.createCommandFds(stdout, stderr, io.stdin, io);
-        try {
-            await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
-        }
-        catch (error) {
-            if (!(error instanceof RedirectionOpenError))
-                throw error;
-            const redirStderr = fds.outputFds.get(2) ?? stderr;
-            (await redirStderr.write(redirectionDiagnostic(error)));
-            this.lastExitCode = 1;
-            return 1;
-        }
-        return (await this.withFdFlush(fds, async () => (await execute(this.createIoFromFds(io, fds)))));
+        // The flush owns every file the redirections open, including those opened
+        // before one that fails to open or to expand.
+        return (await this.withFdFlush(fds, async () => {
+            try {
+                await this.applyRedirections(redirections, fds, expandCtx, io, io.terminalStdin);
+            }
+            catch (error) {
+                if (!(error instanceof RedirectionOpenError))
+                    throw error;
+                const redirStderr = fds.outputFds.get(2) ?? stderr;
+                (await redirStderr.write(redirectionDiagnostic(error)));
+                this.lastExitCode = 1;
+                return 1;
+            }
+            return (await execute(this.createIoFromFds(io, fds)));
+        }));
     }
     async applyRedirections(redirections, fds, expandCtx, io, terminalStdin) {
         for (const redir of redirections) {
@@ -1306,14 +1340,14 @@ export class Interpreter {
         }
     }
     async persistFdState(fds) {
-        const retired = [];
+        const released = [];
         for (const fd of fds.changedOutputFds) {
             const stream = fds.outputFds.get(fd);
             if (stream)
                 this.persistentOutputFds.set(fd, stream);
             else
                 this.persistentOutputFds.delete(fd);
-            this.repointPersistentHandle(this.persistentOutputHandles, fd, stream, fds, retired);
+            this.repointPersistentHandle(this.persistentOutputHandles, fd, stream, fds, released);
             if (fds.terminalOutputFds.has(fd))
                 this.persistentTerminalOutputFds.add(fd);
             else
@@ -1328,53 +1362,71 @@ export class Interpreter {
             else {
                 this.persistentInputFds.delete(fd);
             }
-            this.repointPersistentHandle(this.persistentInputHandles, fd, stream, fds, retired);
+            this.repointPersistentHandle(this.persistentInputHandles, fd, stream, fds, released);
             if (isTerminal)
                 this.persistentTerminalInputFds.add(fd);
             else
                 this.persistentTerminalInputFds.delete(fd);
         }
-        // A handle two descriptors share (`exec 4>&3`) closes with the last of them.
-        const held = new Set([
-            ...this.persistentOutputHandles.values(),
-            ...this.persistentInputHandles.values(),
-        ].map((handle) => handle.stream));
-        for (const handle of retired) {
-            if (!held.has(handle.stream))
-                await handle.close();
-        }
+        // Every new reference is taken before any old one is let go, so a file
+        // this `exec` moves to another descriptor (`exec 4>&3 3>&-`) stays open.
+        await this.release(released);
     }
     /**
-     * `exec N>file` keeps a descriptor past the command that opened it, so its
-     * bridge handle outlives the per-command flush and nothing there may close
-     * it. The close travels with the descriptor instead and runs when that
-     * descriptor is closed (`exec N>&-`) or repointed at another target.
+     * The shell's end: its descriptors close, as a process's do at exit(2). A
+     * file closes with them unless something else still holds it.
      */
-    repointPersistentHandle(handles, fd, stream, fds, retired) {
+    async closeDescriptors() {
+        await this.release(this.takeDescriptors());
+    }
+    /** Empty the descriptor table, returning one file per descriptor it held. */
+    takeDescriptors() {
+        const files = this.persistentHandles();
+        this.persistentOutputFds.clear();
+        this.persistentInputFds.clear();
+        this.persistentTerminalOutputFds.clear();
+        this.persistentTerminalInputFds.clear();
+        this.persistentOutputHandles.clear();
+        this.persistentInputHandles.clear();
+        return files;
+    }
+    /** Let go of one reference per entry; a file nothing holds any more closes. */
+    async release(files) {
+        for (const file of files)
+            file.refs--;
+        const closing = new Set(files.filter((file) => file.refs === 0));
+        const results = await Promise.allSettled([...closing].map((file) => file.close()));
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure)
+            throw failure.reason;
+    }
+    /** One entry per descriptor, so a file `exec 4>&3` shares appears twice. */
+    persistentHandles() {
+        return [...this.persistentOutputHandles.values(), ...this.persistentInputHandles.values()];
+    }
+    /**
+     * Point a descriptor `exec` keeps past its command at `stream`, holding a
+     * reference on the file behind it: one this `exec` opened, one an enclosing
+     * redirection holds (`{ exec 3>&1; } >f`), or one another descriptor names
+     * (`exec 4>&3`). The file it named before goes to `released`.
+     */
+    repointPersistentHandle(handles, fd, stream, fds, released) {
         const held = handles.get(fd);
         if (held?.stream === stream)
             return;
         if (held) {
             handles.delete(fd);
-            retired.push(held);
+            released.push(held);
         }
         if (stream === undefined)
             return;
-        // `exec 4>&3` opens nothing: fd 4 takes over the handle fd 3 already holds.
-        const close = fds.opened.get(stream) ?? this.trackedClose(stream);
-        if (close)
-            handles.set(fd, { stream, close });
-    }
-    trackedClose(stream) {
-        for (const handle of this.persistentOutputHandles.values()) {
-            if (handle.stream === stream)
-                return handle.close;
-        }
-        for (const handle of this.persistentInputHandles.values()) {
-            if (handle.stream === stream)
-                return handle.close;
-        }
-        return undefined;
+        const file = [...this.persistentHandles(), ...released].find((open) => open.stream === stream)
+            ?? fds.opened.get(stream)
+            ?? fds.enclosing.get(stream);
+        if (!file)
+            return;
+        file.refs++;
+        handles.set(fd, file);
     }
     setOutputFd(fds, fd, target) {
         fds.outputFds.set(fd, target.stream);
@@ -1437,7 +1489,7 @@ export class Interpreter {
                 }
             };
             const stream = { write: text => push(encode(text)), writeBytes: push };
-            fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+            fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
             return { stream, terminal: false };
         }
         catch (error) {
@@ -1467,7 +1519,7 @@ export class Interpreter {
             const bridge = vfs.process;
             const handle = await bridge.open(targetPath, { read: true });
             const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)), true);
-            fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+            fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
             return { stream, terminal: false };
         }
         catch (error) {
@@ -1534,17 +1586,13 @@ export class Interpreter {
     }
     async flushFds(fds) {
         const results = await Promise.allSettled([...new Set(fds.outputFds.values())].map(async (stream) => (await stream.flush?.())));
-        const persistent = new Set([...this.persistentInputFds.values(), ...this.persistentOutputFds.values()]);
-        for (const [stream, close] of fds.opened) {
-            if (persistent.has(stream))
-                continue;
-            try {
-                await close();
-            }
-            catch (reason) {
-                results.push({ status: 'rejected', reason });
-            }
-            fds.opened.delete(stream);
+        const opened = [...fds.opened.values()];
+        fds.opened.clear();
+        try {
+            await this.release(opened);
+        }
+        catch (reason) {
+            results.push({ status: 'rejected', reason });
         }
         const failure = results.find((result) => result.status === 'rejected');
         if (failure)

@@ -61,6 +61,7 @@ export interface NpmCommandDeps {
  * shares one cache namespace downstream.
  */
 export declare function npmRegistryOrigin(configured: string | undefined): string;
+/** A package's bins, name -> target inside the package, as npm installs them (npmBinMap). */
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;

@@ -136,7 +136,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
       dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
     };
     return {
-      pkg, deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+      pkg, deps: {}, peerDeps: {}, optionalDeps: {},
       cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
     };
   });
@@ -169,7 +169,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
       dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
     };
     return {
-      pkg, deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+      pkg, deps: {}, peerDeps: {}, optionalDeps: {},
       cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
     };
   });

@@ -26,6 +26,7 @@ export interface ProgrammaticShell {
     execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{
         exitCode: number;
     }>;
+    closeDescriptors(): Promise<void>;
 }
 interface ProgrammaticShellExecuteOptions {
     cwd?: string;
@@ -35,7 +36,6 @@ interface ProgrammaticShellExecuteOptions {
     onStderr?: (data: Uint8Array) => void | Promise<void>;
     signal?: AbortSignal;
     stdin?: string;
-    isolateShellState?: boolean;
     commandContext?: Record<string, unknown>;
 }
 type ProgrammaticContext = DurableObjectState;

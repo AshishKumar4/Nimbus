@@ -101,8 +101,10 @@ export interface NimbusSandboxOptions {
 export interface NimbusExecOptions {
   /**
    * Run in a named shell whose cwd and environment persist between calls, the
-   * way a terminal tab does. Omitted, the call runs on the session's one shell
-   * and remembers nothing — the behaviour every programmatic exec has had.
+   * way a terminal tab does; calls on one name run one at a time. Omitted,
+   * the call runs in a shell of its own that starts from the session shell's
+   * cwd and environment and remembers nothing: no variable, function, alias
+   * or option it sets reaches another call, and unnamed calls run at once.
    */
   shellId?: string;
   cwd?: string;

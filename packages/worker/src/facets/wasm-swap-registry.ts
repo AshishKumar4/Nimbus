@@ -668,11 +668,6 @@ export function getSinkThrowCount(): number {
 // X.5-G adds:
 //   - `isOptionalNativeBinding(packument)`: heuristic to detect platform-
 //     native bindings (used to silent-skip from `optionalDependencies`).
-//   - `selectAutoInstallPeers(pkg)`: returns the subset of `peerDependencies`
-//     to auto-install (filters out optional-marked-in-meta, EXCEPT when
-//     called with `topLevel:true` per X5F R2.5 npm CLI default behaviour).
-//     Peer-meta-only entries (in `peerDependenciesMeta` but NOT in
-//     `peerDependencies`) are NEVER auto-installed.
 //   - `classifyInstallError(e, ctx)`: distinguishes recoverable
 //     optional-dep skip from real resolve failures and registry-rejects.
 
@@ -845,45 +840,6 @@ export function policyNativePlatformReject(
 
 export function isOptionalNativeBinding(p: MinimalPackument): boolean {
   return policyIsOptionalNativeBinding(PACKAGE_ABI_POLICY, p);
-}
-
-
-
-/**
- * Select which entries in `peerDependencies` should be auto-installed.
- *
- * npm v7+ default behaviour:
- *   - All `peerDependencies` entries auto-install.
- *   - Entries marked `optional: true` in `peerDependenciesMeta` STILL
- *     auto-install (with `--include=peer` default-on) — but tools may
- *     opt-out with `--no-include=peer`.
- *   - Entries that exist ONLY in `peerDependenciesMeta` (NOT in
- *     `peerDependencies`) are NEVER auto-installed (they're feature-
- *     detect signals, e.g. ts-jest's `esbuild`).
- *
- * X.5-G strict mode (the default here): we only iterate `peerDependencies`
- * keys. peer-meta-only entries are excluded by construction.
- *
- * The `requiredOnly` flag, when true, also filters out entries marked
- * optional in meta — used for transitive (depth>0) enqueue per X5F R2.
- * When false (top-level / X5F R2.5), all `peerDependencies` entries are
- * returned including optional-marked-in-meta ones (npm CLI default).
- */
-export function selectAutoInstallPeers(
-  pkg: {
-    peerDependencies?: Record<string, string>;
-    peerDependenciesMeta?: Record<string, { optional?: boolean }>;
-  },
-  opts: { requiredOnly?: boolean } = {},
-): string[] {
-  const peers = pkg.peerDependencies || {};
-  const meta = pkg.peerDependenciesMeta || {};
-  const out: string[] = [];
-  for (const name of Object.keys(peers)) {
-    if (opts.requiredOnly && meta[name]?.optional) continue;
-    out.push(name);
-  }
-  return out;
 }
 
 

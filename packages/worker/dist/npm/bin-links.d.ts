@@ -7,6 +7,8 @@ import type { ResolvedPackage } from './resolver.js';
  */
 export declare function isStagedArtifactTarget(target: string): boolean;
 export declare function stagedArtifactId(target: string): string;
+/** The bin manifest a `.nimbus-bin-map.json` holds; null when it is not one, or names a file outside `.bin`. */
+export declare function parseNpmBinManifest(text: string): NpmBinManifest | null;
 export declare const NPM_BIN_MANIFEST_VERSION = 1;
 export declare const NPM_BIN_MANIFEST_NAME = ".nimbus-bin-map.json";
 export interface NpmBinEntry {

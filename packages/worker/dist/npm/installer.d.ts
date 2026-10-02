@@ -121,9 +121,9 @@ export declare class NpmInstaller {
      *
      * The supervisor still owns:
      *   - placement (`placed` / `pending` / `settled`, by placement path),
-     *   - X.5-F top-level / required-peer policy,
+     *   - required peers (an optional peer installs only when the project
+     *     lists it, as npm does),
      *   - X.5-G G1 optional-native silent-skip,
-     *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
      *     per-package task ALSO checks these for transitive correctness).
      *     A package is required iff it is reachable from a required root
@@ -209,6 +209,22 @@ export declare class NpmInstaller {
      * Check if a lockfile is still valid against current package.json specs.
      */
     private isLockfileValid;
+    /**
+     * The placements of `lockfile` the project's specs reach through Node's
+     * walk: dependencies, optionalDependencies and required peers, each met
+     * by the placement nearest its dependent. A valid lockfile has every
+     * entry's registry record (isLockfileValid).
+     */
+    private reachableFromSpecs;
+    /**
+     * Remove the placements `previous` (the last install's lockfile) holds and
+     * `plan` does not, with the bins they linked, as the invoking principal.
+     * A placement inside another removed one goes with it. Answers how many
+     * were removed.
+     */
+    private pruneExtraneous;
+    /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
+    private declaredBins;
     /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
      * records, checked against package.json first. The ABI policy the resolver

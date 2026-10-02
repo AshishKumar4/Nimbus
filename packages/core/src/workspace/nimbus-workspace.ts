@@ -380,8 +380,8 @@ export class NimbusWorkspace {
         // stub when something could satisfy it. Registered last so every real
         // command and the PATH resolver still win.
         const baseResolve = registry.resolve.bind(registry);
-        registry.resolve = async (name) => {
-          const found = await baseResolve(name);
+        registry.resolve = async (name, from) => {
+          const found = await baseResolve(name, from);
           if (found) return found;
           if (!name || name.includes('/')) return undefined;
           try {
@@ -390,7 +390,7 @@ export class NimbusWorkspace {
             return undefined;
           }
           runtimes.registerInstallStub(name);
-          return baseResolve(name);
+          return baseResolve(name, from);
         };
       } else {
         // Before the runners are wired, because registration reads what the

@@ -35,6 +35,7 @@ import type {
 } from '@nimbus-sh/platform/w7-frame.js';
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -115,6 +116,7 @@ import {
   createNpmBinShim,
   npmBinManifestPath,
   packageBinEntries,
+  parseNpmBinManifest,
   type NpmBinEntry,
 } from './bin-links.js';
 
@@ -332,11 +334,16 @@ export class NpmInstaller {
     const packageLock = opts?.fromLockfile
       ? await this.treeFromPackageLock(projDir, project, principal, opts.production === true, log, registry)
       : null;
+    const lockfile = this.cache.readLockfile(projDir);
     if (packageLock === null && Object.keys(specs).length === 0) {
+      // The project needs nothing, so whatever an earlier install placed is extraneous.
+      if (lockfile && !opts?.packages) {
+        const empty: HoistPlan = { root: new Map(), nested: new Map() };
+        if (await this.pruneExtraneous(lockfile, empty, nmDir, project, log) > 0) this.writeLockfile(projDir, empty, nmDir);
+      }
       log('No dependencies to install.');
       return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases: {} };
     }
-    const lockfile = this.cache.readLockfile(projDir);
     let resolved: Map<string, ResolvedPackage>;
     let nested: Map<string, ResolvedPackage>;
     let usedLockfile = false;
@@ -352,7 +359,7 @@ export class NpmInstaller {
       phases['lock-check'] = Date.now() - phaseStart;
     } else if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs)) {
       log(`Lockfile valid (${lockfile.size} packages). Skipping resolution.`);
-      ({ resolved, nested } = this.lockfileToResolved(lockfile));
+      ({ resolved, nested } = this.lockfileToResolved(this.reachableFromSpecs(lockfile, specs)));
       usedLockfile = true;
       phases['lock-check'] = Date.now() - phaseStart;
     } else {
@@ -410,6 +417,16 @@ export class NpmInstaller {
     setInstallPhase('hoist');
     const hoistPlan = computeHoistPlan(resolved, nested);
     phases['hoist'] = Date.now() - phaseStart;
+
+    // ── Prune ────────────────────────────────────────────────────────
+    // What an earlier install placed that this tree no longer holds is
+    // extraneous (a dependency the project dropped), and npm removes it on
+    // install. `npm install <pkg>` resolves only what it adds, so it prunes
+    // nothing; and a tree the resolver could not finish is no evidence that
+    // what it lacks is unwanted (a declared package it failed to resolve).
+    const pruned = lockfile && !opts?.packages && failed.length === 0
+      ? await this.pruneExtraneous(lockfile, hoistPlan, nmDir, project, log)
+      : 0;
 
     // ── Phase 3: Diff (cache check) ─────────────────────────────────
     // Per placement: a nested copy is checked at its own directory.
@@ -489,12 +506,19 @@ export class NpmInstaller {
     // ── Phase 6: Link bins ──────────────────────────────────────────
     phaseStart = Date.now();
     setInstallPhase('link-bins');
-    await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` });
+    // `npm install <pkg>` adds bins; the ones already linked stay in the manifest.
+    const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
+      ? Object.values(parseNpmBinManifest(await project.readFileString(npmBinManifestPath(nmDir)))?.bins ?? {})
+      : [];
+    await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
-    if (!usedLockfile || opts?.packages) {
-      this.writeLockfile(projDir, hoistPlan, nmDir);
+    if (!usedLockfile || opts?.packages || pruned > 0) {
+      // The lockfile is the inventory pruning reads, so it keeps what is
+      // still on disk: `npm install <pkg>` adds to the installed tree, and a
+      // failed install removed nothing.
+      this.writeLockfile(projDir, hoistPlan, nmDir, opts?.packages || failed.length > 0 ? lockfile : null);
     }
 
     // ── Update package.json if explicit packages were added ─────────
@@ -681,9 +705,9 @@ export class NpmInstaller {
    *
    * The supervisor still owns:
    *   - placement (`placed` / `pending` / `settled`, by placement path),
-   *   - X.5-F top-level / required-peer policy,
+   *   - required peers (an optional peer installs only when the project
+   *     lists it, as npm does),
    *   - X.5-G G1 optional-native silent-skip,
-   *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
    *   - W6 swap / warn / reject decisions (top-level enforcement; the
    *     per-package task ALSO checks these for transitive correctness).
    *     A package is required iff it is reachable from a required root
@@ -735,9 +759,7 @@ export class NpmInstaller {
     // Announced as `[skip]` lines at record time; required-vs-optional is
     // classified at end of walk, when every required edge has been seen.
     const refusals = new Map<string, string>();
-    const topLevelNames = new Set<string>(Object.keys(specs));
     const optionalNames = new Set<string>();   // X.5-G G1
-    const bestEffortNames = new Set<string>(); // X.5-drizzle
     // `from` is the dependent's placement, '' for the project. A peer edge
     // is provided by whatever the host's walk finds and never nests: a
     // duplicate is worse than a mismatch (two Reacts break hooks), and npm
@@ -942,30 +964,21 @@ export class NpmInstaller {
         // w6-reject: an os/cpu/libc platform-gate refusal — npm's
         // EBADPLATFORM. Announced as a [skip] line now and classified
         // required-vs-optional at end of walk, when the required-edge
-        // closure is final; best-effort optional-peer subtrees still
-        // skip silently. Table rejects are advisories handled above and
+        // closure is final. Table rejects are advisories handled above and
         // never reach this branch.
         if (res.error && res.error.type === 'w6-reject') {
-          if (bestEffortNames.has(taskName)) {
-            // X.5-drizzle: silent-skip inside best-effort optional-peer
-            // subtree.
-            const reason = `inside best-effort optional-peer subtree (X.5-drizzle): ${res.error.reason}`;
-            log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
-            emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
-            continue;
-          }
           refusals.set(taskName, res.error.reason);
           const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
           log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
           emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
           continue;
         }
-        // Resolution failure. Optional (X.5-G G1) and best-effort
-        // optional-peer (X.5-drizzle) edges are allowed to disappear;
-        // anything else is a dependency the project asked for and did
-        // not get, so it is recorded and surfaced as an install failure.
+        // Resolution failure. Optional (X.5-G G1) edges are allowed to
+        // disappear; anything else is a dependency the project asked for
+        // and did not get, so it is recorded and surfaced as an install
+        // failure.
         if (res.error && res.error.type === 'unresolved') {
-          if (optionalNames.has(taskName) || bestEffortNames.has(taskName)) {
+          if (optionalNames.has(taskName)) {
             const reason = `optional dep unresolved: ${res.error.reason}`;
             log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
             emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
@@ -1012,39 +1025,21 @@ export class NpmInstaller {
         if (isRoot) resolved.set(pkg.name, pkg);
         else nested.set(actual, pkg);
 
-        // Edge extraction, from this package's own placement.
-        const inheritBestEffort = bestEffortNames.has(pkg.name);
+        // Edge extraction, from this package's own placement. Peers are
+        // the required ones only (resolve-one-facet drops the optional).
         for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
-          if (inheritBestEffort) bestEffortNames.add(depName);
           queue.push({ name: depName, range: depRange as string, from: actual, kind: 'dep' });
         }
         const optDeps = pkg.optionalDependencies;
         if (optDeps) {
           for (const [depName, depRange] of Object.entries(optDeps)) {
             optionalNames.add(depName);
-            if (inheritBestEffort) bestEffortNames.add(depName);
             queue.push({ name: depName, range: depRange as string, from: actual, kind: 'dep' });
           }
         }
         if (pkg.peerDependencies) {
           for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
-            topLevelNames.add(peerName);
-            if (inheritBestEffort) bestEffortNames.add(peerName);
             queue.push({ name: peerName, range: peerRange as string, from: actual, kind: 'peer' });
-          }
-        }
-        // X.5-F R2.5 + X.5-J: optional peers when THIS pkg is the
-        // user's top-level. They resolve best-effort; a policy-listed
-        // name that resolves installs with an advisory like any
-        // package, and one that does not is skipped quietly.
-        if (topLevelNames.has(pkg.name)) {
-          const allPeers = (pkg as any).__allPeerDependencies as Record<string, string> | undefined;
-          if (allPeers) {
-            for (const [peerName, peerRange] of Object.entries(allPeers)) {
-              topLevelNames.add(peerName);
-              bestEffortNames.add(peerName);
-              queue.push({ name: peerName, range: peerRange as string, from: actual, kind: 'peer' });
-            }
           }
         }
       }
@@ -1660,6 +1655,90 @@ export class NpmInstaller {
   }
 
   /**
+   * The placements of `lockfile` the project's specs reach through Node's
+   * walk: dependencies, optionalDependencies and required peers, each met
+   * by the placement nearest its dependent. A valid lockfile has every
+   * entry's registry record (isLockfileValid).
+   */
+  private reachableFromSpecs(lockfile: Map<string, LockfileEntry>, specs: Record<string, string>): Map<string, LockfileEntry> {
+    const reached = new Map<string, LockfileEntry>();
+    const pending = Object.keys(specs).filter((name) => lockfile.has(name));
+    for (let i = 0; i < pending.length; i++) {
+      const placement = pending[i];
+      const entry = lockfile.get(placement);
+      if (entry === undefined || reached.has(placement)) continue;
+      reached.set(placement, entry);
+      const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+      const edges = new Set([
+        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.depsJson ?? entry.depsJson, {})),
+        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.optionalDepsJson || '{}', {})),
+        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.peerDepsJson || '{}', {})),
+      ]);
+      for (const name of edges) {
+        const found = visiblePlacements(placement, name).find((candidate) => lockfile.has(candidate));
+        if (found !== undefined) pending.push(found);
+      }
+    }
+    return reached;
+  }
+
+  /**
+   * Remove the placements `previous` (the last install's lockfile) holds and
+   * `plan` does not, with the bins they linked, as the invoking principal.
+   * A placement inside another removed one goes with it. Answers how many
+   * were removed.
+   */
+  private async pruneExtraneous(
+    previous: Map<string, LockfileEntry>,
+    plan: HoistPlan,
+    nmDir: string,
+    project: ProjectFs,
+    log: (msg: string) => void,
+  ): Promise<number> {
+    const kept = new Set(hoistPlacements(plan).map(({ placement }) => placement));
+    const extraneous = [...previous.keys()].filter((placement) => !kept.has(placement)).sort();
+    if (extraneous.length === 0) return 0;
+    const removed: string[] = [];
+    // The bins a removed package links: what its own package.json names
+    // (read before it goes) and what the bin manifest credits to it.
+    const unlinked = new Set<string>();
+    for (const placement of extraneous) {
+      const key = `${nmDir}/${placement}`;
+      const inRemoved = removed.some((parent) => placement.startsWith(parent + '/node_modules/'));
+      if (!inRemoved && await project.exists(key)) {
+        if (!placement.includes('/node_modules/')) for (const name of await this.declaredBins(project, key)) unlinked.add(name);
+        await project.removeRecursive(key);
+      }
+      removed.push(placement);
+    }
+    const manifestPath = npmBinManifestPath(nmDir);
+    const manifest = await project.exists(manifestPath)
+      ? parseNpmBinManifest(await project.readFileString(manifestPath))
+      : null;
+    for (const [name, bin] of Object.entries(manifest?.bins ?? {})) if (removed.includes(bin.packageName)) unlinked.add(name);
+    // Unless a package that stays links the same name.
+    for (const pkg of plan.root.values()) for (const entry of packageBinEntries(pkg, nmDir)) unlinked.delete(entry.name);
+    for (const name of unlinked) {
+      const shim = `${nmDir}/.bin/${name}`;
+      if (await project.exists(shim)) await project.unlink(shim);
+    }
+    if (manifest !== null && [...unlinked].some((name) => name in manifest.bins)) {
+      for (const name of unlinked) delete manifest.bins[name];
+      await project.writeFile(manifestPath, enc.encode(JSON.stringify(manifest, null, 2) + '\n'), { mode: 0o644 });
+    }
+    log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
+    return removed.length;
+  }
+
+  /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
+  private async declaredBins(project: ProjectFs, dir: string): Promise<string[]> {
+    let manifest: Record<string, unknown> | null = null;
+    try { manifest = safeJsonParse<Record<string, unknown> | null>(await project.readFileString(`${dir}/package.json`), null); } catch { return []; }
+    if (manifest === null || typeof manifest.name !== 'string') return [];
+    return [...npmBinMap(manifest.name, manifest.bin).keys()];
+  }
+
+  /**
    * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
    * records, checked against package.json first. The ABI policy the resolver
    * applies still holds: platform-native optional shards are skipped, a
@@ -1833,8 +1912,9 @@ export class NpmInstaller {
     projDir: string,
     hoistPlan: HoistPlan,
     nmDir: string,
+    base: Map<string, LockfileEntry> | null = null,
   ): void {
-    const entries = new Map<string, LockfileEntry>();
+    const entries = new Map<string, LockfileEntry>(base ?? []);
     for (const { placement, pkg } of hoistPlacements(hoistPlan)) {
       entries.set(placement, {
         name: pkg.name,
@@ -1858,6 +1938,7 @@ export class NpmInstaller {
   private async linkBins(
     resolved: Map<string, ResolvedPackage>,
     target: { nmDir: string } & ({ engine: CredentialedVfs } | { fs: ProjectFs }),
+    kept: readonly NpmBinEntry[] = [],
   ): Promise<void> {
     const { nmDir } = target;
     const binDir = nmDir + '/.bin';
@@ -1871,8 +1952,10 @@ export class NpmInstaller {
 
     if (manifestEntries.length === 0) return;
 
-    const manifest = createNpmBinManifest(manifestEntries);
-    const files = Object.values(manifest.bins).map((binEntry) => ({
+    // `kept`: bins already linked that this install does not relink; the
+    // manifest still lists them, and their shims stay as they are.
+    const manifest = createNpmBinManifest([...kept, ...manifestEntries]);
+    const files = Object.values(createNpmBinManifest(manifestEntries).bins).map((binEntry) => ({
       path: binDir + '/' + binEntry.name,
       data: enc.encode(createNpmBinShim(binEntry, binDir)),
       mode: 0o755,
