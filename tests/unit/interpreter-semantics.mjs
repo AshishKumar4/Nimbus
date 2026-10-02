@@ -278,6 +278,21 @@ async function runCases(interpreterFile, opsFile) {
   }
   check('a function declaration as an if clause (Annex B.3.4)',
     F('if (true) function f() { return 1 } if (false) ; else function g() { return 2 } if (false) function h() {} return [f(), g(), typeof h]')(), [1, 2, 'undefined']);
+  {
+    const cells = {
+      a: interp.compileModule('/w/a.mjs', 'import { b } from "b"; export function ready() { return "ready"; } export const fromB = b;'),
+      b: interp.compileModule('/w/b.mjs', 'import { ready } from "a"; export const b = ready();'),
+    };
+    const cache = {};
+    const load = (id) => {
+      if (cache[id]) return cache[id].exports;
+      const m = { exports: {} };
+      cache[id] = m;
+      cells[id](m.exports, load, m, `/w/${id}.mjs`, '/w');
+      return m.exports;
+    };
+    check('a module that imports its importer back finds its exports and functions', load('a').fromB, 'ready');
+  }
 
   // ── Module cells ──
   {

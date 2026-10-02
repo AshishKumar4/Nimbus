@@ -3714,19 +3714,7 @@ export class Compiler {
   programBody(program: Program, root: FunctionScope): Code {
     const entry = this.scopeEntry(root, true);
     const globals = listOf(root.globalVars);
-    let list: Code;
-    if (root.functionKind === 'module') {
-      const saved = this.shape;
-      this.shape = 'async';
-      try {
-        list = this.statementList(program.body);
-      } finally {
-        this.shape = saved;
-      }
-    } else {
-      list = this.statementList(program.body);
-    }
-    const body = this.entered(entry, list);
+    const body = this.entered(entry, this.statementList(program.body));
     if (globals.length === 0) return body;
     // A script's vars are properties of the global object, created before it runs.
     const declare = (env: Env): Env => {
@@ -3852,7 +3840,8 @@ export class Compiler {
         append(getters, ['default', this.rootRead(root, local)]);
       }
     }
-    const body = this.programBody(program, root);
+    const instantiate = this.scopeEntry(root, true);
+    const body = this.moduleStatements(program);
     const template = frameTemplate(root.size, []);
     const bs = body.s;
     const bg = body.g;
@@ -3865,7 +3854,9 @@ export class Compiler {
       env[dirnameSlot] = dirname;
       if (typeof requireArg !== 'function') throw new TypeError('require is not a function');
       const require = (id: string): unknown => reflectApply(requireArg, undefined, [id]);
-      for (let i = 0; i < loads.length; i++) loads[i](env, require);
+      // Instantiation, before any import is evaluated: an import that
+      // imports this module back (a cycle) finds its exports published and
+      // its function declarations made, as a module's linking provides.
       const facade = {};
       defineOrThrow(facade, '__esModule', dataDescriptor(true, false, false, false));
       for (let i = 0; i < getters.length; i++) {
@@ -3873,6 +3864,9 @@ export class Compiler {
         const read = getters[i][1];
         if (!objectHasOwn(facade, name)) defineOrThrow(facade, name, accessorDescriptor('get', () => read(env), true, false));
       }
+      ops.set(moduleArg, 'exports', facade);
+      if (instantiate !== null) instantiate(env);
+      for (let i = 0; i < loads.length; i++) loads[i](env, require);
       for (let i = 0; i < starSources.length; i++) {
         const m = starSources[i](env);
         if (!isObject(m)) continue;
@@ -3883,13 +3877,23 @@ export class Compiler {
           defineOrThrow(facade, key, accessorDescriptor('get', () => ops.get(m, key), isEnumerableOwn(m, key), false));
         }
       }
-      ops.set(moduleArg, 'exports', facade);
       if (bg === null) {
         bs(env);
         return undefined;
       }
       return drive(bg(env));
     };
+  }
+
+  /** A module's statements, compiled as an async function body (top-level await). */
+  private moduleStatements(program: Program): Code {
+    const saved = this.shape;
+    this.shape = 'async';
+    try {
+      return this.statementList(program.body);
+    } finally {
+      this.shape = saved;
+    }
   }
 
   /** A live read of a module-scope binding, for an export getter. */
