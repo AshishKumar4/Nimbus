@@ -944,15 +944,7 @@ class Analyzer {
       case 'FunctionExpression': case 'ArrowFunctionExpression':
         this.visitFunction(node, scope, { strict: scope.strict, method: false, derived: false, ctor: false, unbound: false });
         return;
-      case 'UnaryExpression': {
-        let target: Expression = node.argument;
-        while (target.type === 'ParenthesizedExpression' || target.type === 'ChainExpression') target = target.expression;
-        if (node.operator === 'delete' && target.type === 'MemberExpression' && target.computed && suspendsHere(target.property)) {
-          throw new UnsupportedSyntax('await or yield in the key of a deleted member');
-        }
-        this.visitExpression(node.argument, scope);
-        return;
-      }
+      case 'UnaryExpression': this.visitExpression(node.argument, scope); return;
       case 'UpdateExpression': this.visitExpression(node.argument, scope); return;
       case 'BinaryExpression':
         this.visitExpression(node.left, scope);

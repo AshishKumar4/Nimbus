@@ -247,8 +247,7 @@ async function runCases(interpreterFile, opsFile) {
   assert.throws(() => interp.compileFunction('function', [], '{ using x = null; }'), (e) => e.code === INTERPRETER_UNSUPPORTED);
   // What the compiler refuses is refused before any of the code runs, though inner functions compile on first call.
   globalThis.__ran = false;
-  assert.throws(() => interp.compileFunction('function', [], 'globalThis.__ran = true; return async function () { delete o[await k]; };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
-  assert.throws(() => interp.compileFunction('function', [], 'return { m() { return async () => super[await k]; } };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  assert.throws(() => interp.compileFunction('function', [], 'globalThis.__ran = true; return { m() { return async () => super[await k]; } };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
   assert.throws(() => interp.compileFunction('function', [], 'return async function () { return { [k]: class extends (await B) {} }; };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
   check('nothing of a refused unit ran', globalThis.__ran, false);
   assert.throws(() => interp.compileModule('/w/m.ts', 'export const x: number = 1;'), (e) => e.code === INTERPRETER_UNSUPPORTED);
@@ -258,6 +257,8 @@ async function runCases(interpreterFile, opsFile) {
     F('let reads = 0; const it = { get [Symbol.iterator]() { reads++; return function* () { yield 1; yield 2 } } }; for (const x of it) {} const s = [...it]; const [a] = it; (function () {})(...it); const d = [...(function* () { yield* it })()]; return [reads, s, a, d]')(),
     [5, [1, 2], 1, [1, 2]]);
   check('a call evaluates its arguments before checking its callee', F('let f = 0, n = 0; try { f(++n); } catch {} return n')(), 1);
+  check('delete through an optional chain that awaits', await new AsyncFunction('const o = { p: 1 }; const r = delete (await o)?.p; const q = delete (await null)?.p; return [r, q, "p" in o]')(), [true, true, false]);
+  check('delete of a member whose key awaits', await new AsyncFunction('const o = { k: 1 }; const r = delete o[await "k"]; return [r, "k" in o]')(), [true, false]);
 
   // ── Module cells ──
   {

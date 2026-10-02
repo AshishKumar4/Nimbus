@@ -2417,6 +2417,17 @@ export class Compiler {
     while (target.type === 'ParenthesizedExpression') target = target.expression;
     if (target.type === 'ChainExpression' && target.expression.type === 'MemberExpression') {
       const m = target.expression;
+      if (this.suspends(m)) {
+        const object = this.chainGen(m.object);
+        const optional = m.optional;
+        const key = m.computed ? asGen(this.expr(m.property)) : null;
+        const name = !m.computed && m.property.type === 'Identifier' ? m.property.name : '';
+        return genCode(function* (env) {
+          const o = yield* object(env);
+          if (o === SHORT || (optional && (o === null || o === undefined))) return true;
+          return remove(o, key ? yield* key(env) : name);
+        });
+      }
       const object = this.chainObject(m);
       const key = this.memberKey(m);
       return syncCode((env) => {
@@ -2434,6 +2445,14 @@ export class Compiler {
         });
       }
       const object = this.expr(target.object);
+      if (target.computed && this.suspends(target.property)) {
+        const og = asGen(object);
+        const kg = asGen(this.expr(target.property));
+        return genCode(function* (env) {
+          const o = yield* og(env);
+          return remove(o, yield* kg(env));
+        });
+      }
       const key = this.memberKey(target);
       if (object.g === null) {
         const os = object.s;
