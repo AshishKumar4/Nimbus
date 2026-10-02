@@ -15,7 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, runtimeCodeModuleName, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, execIdOf } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -538,6 +538,19 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
     `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
     generateSqliteFacetPreamble();
 /**
+ * The runtime-code interpreter, its primordials and its host module, in every
+ * launch's map: the primordials load at the launch's start, the other two
+ * only when the program first produces code no launch staged
+ * (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ */
+function interpreterModules(sources) {
+    return {
+        [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
+        [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
+        [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+    };
+}
+/**
  * The entry code as a module of the map, named for the script it came from so
  * its stack frames carry that path; `-e` code is `[eval]`. The runtime may
  * have lowered it from ESM (runtime-registry.ts), which nothing here records,
@@ -707,7 +720,6 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
-        globalThis.__nimbusRuntimeCode.noteFailure(e);
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
@@ -746,14 +758,6 @@ ${RESIDENCY_MISS_REPORT}
       if (exitCode === 0) exitCode = 1;
       if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
     }
-    // A failed launch stages the Function-constructor text its failure is
-    // attributable to (commonjs-cell.ts, stageFailedLaunch).
-    const __stagedCode = exitCode !== 0 ? globalThis.__nimbusRuntimeCode.stageFailedLaunch() : "";
-    if (__stagedCode) {
-      stderr += __stagedCode + "\\n";
-      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__stagedCode + "\\n"));
-    }
-
     await __drainPendingIO();
 
     if (__supervisor) {
@@ -811,7 +815,7 @@ ${RESIDENCY_MISS_REPORT}
 };
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, [entry.name]: entry.text },
+        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), [entry.name]: entry.text },
     };
 }
 /**
@@ -1175,7 +1179,6 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
-        globalThis.__nimbusRuntimeCode.noteFailure(e);
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
@@ -1210,13 +1213,6 @@ ${RESIDENCY_MISS_REPORT}
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
-      }
-      // A failed launch stages the Function-constructor text its failure is
-      // attributable to (commonjs-cell.ts, stageFailedLaunch).
-      const __stagedCode = Number(code ?? 0) !== 0 ? globalThis.__nimbusRuntimeCode.stageFailedLaunch() : "";
-      if (__stagedCode) {
-        stderr += __stagedCode + "\\n";
-        try { await __supervisor.stderr(__nimbusOutEnc.encode(__stagedCode + "\\n")); } catch {}
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -1337,7 +1333,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, [entry.name]: entry.text },
+        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), [entry.name]: entry.text },
     };
 }
 /**
@@ -4654,6 +4650,10 @@ export class FacetManager {
     async _stagedRuntimeCode(learning, pacer) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
+            if (entry.kind === 'expression') {
+                modules.set(codeKey, runtimeExpressionModule(entry.code));
+                continue;
+            }
             if (entry.kind !== 'module') {
                 modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
                 continue;

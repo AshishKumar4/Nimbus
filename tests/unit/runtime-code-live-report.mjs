@@ -6,8 +6,11 @@
 // stage a file that does not exist. The parts stay apart: modules the
 // program executed and files it read are separate lists.
 import assert from 'node:assert/strict';
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import {
+  COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE,
+} from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const { flush } = await importModuleSet({
   'main.js': `${COMMONJS_CELL_IMPORTS}
@@ -15,6 +18,8 @@ const __NIMBUS_CODE_CELLS = [];
 const __NIMBUS_RUNTIME_CODE = [];
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 export const flush = __nimbusFlushRuntimeCode;`,
+  // The runtime loads the interpreter's primordials at its start.
+  [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: { cjs: nodeFacetSources('').interpreterPrimordials },
 }, 'main.js');
 
 // The shims' residency ledger and its settle, as node-shims.ts publishes them:

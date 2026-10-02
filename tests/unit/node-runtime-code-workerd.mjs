@@ -9,21 +9,21 @@
 //     names.
 //   - Cells whose paths differ only where URL parsing is lossy (a trailing
 //     space, a tab) are distinct modules, and the map loads.
-//   - Code generation is refused at request time, so the async and generator
-//     Function constructors, vm.compileFunction and a file written then
-//     imported go to the runtime-code service: refused with
-//     ERR_NIMBUS_CODE_NEXT_LAUNCH in the launch that produced them, compiled
-//     in the next launch of the same command — a one-shot's envelope and a
-//     resident process's exit report alike. Text the constructor would refuse
-//     throws its SyntaxError there and never runs.
-//   - The plain Function constructor keeps the native refusal for text no
-//     launch staged, and stages what it refused only when the launch fails:
-//     a probe of it (TypeBox's CanEvaluate, `Function("null")()`) in a
-//     successful launch answers "no" every time, so code that probes once and
-//     then compiles everything keeps its fallback, while a module that builds
-//     a function as it loads (depd, under express 4) or a program that exits
-//     1 after a refusal (serve's ajv) fails once and runs from the next
-//     launch on.
+//   - Code generation is refused at request time, so the Function
+//     constructors, vm.compileFunction and a file written then imported go
+//     to the runtime-code service: the launch that produced the code runs it
+//     in the interpreter, and records it for the next launch of the same
+//     command — a one-shot's envelope and a resident process's exit report
+//     alike — which runs it natively from its module map. Each fixture says
+//     where its code ran: a stack taken inside it names the staged `gen/`
+//     module only when it ran natively, and NIMBUS_RUNTIME_CODE=interpret
+//     makes a launch interpret what it staged. Text the constructor would
+//     refuse throws its SyntaxError in both launches and never runs.
+//   - The plain Function constructor is answered the same way, so a probe of
+//     it (TypeBox's CanEvaluate, `Function("null")()`) says yes in every
+//     launch, a module that builds a function as it loads (depd, under
+//     express 4) and a program that compiles a schema at request time
+//     (serve's ajv) work from their first launch.
 //   - A SyntaxError in an entry names the file.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
@@ -57,7 +57,13 @@ const FILES = {
     '  gen: () => new (Object.getPrototypeOf(function* () {}).constructor)("yield 7")().next().value,',
     '  vm: () => require("vm").compileFunction("return x * 3", ["x"])(5),',
     '  vmexpr: () => require("vm").runInThisContext("(function (x) { return x + 2 })", { filename: "jiti.cjs" })(3),',
+    // A script's value as V8 gives it: a lone string is a directive, and the script's value;
+    // `this` at a script's top level is the global object, strict or not.
+    '  vmstr: () => require("vm").runInThisContext("\\"hello\\""),',
+    '  vmthis: () => require("vm").runInThisContext("\'use strict\'; this") === globalThis,',
+    '  vmarrow: () => require("vm").runInThisContext("\'use strict\'; (() => this)()") === globalThis,',
     '  breakout: () => typeof new (Object.getPrototypeOf(async function () {}).constructor)("}, globalThis.__broke = 1, async function () {"),',
+    '  where: () => (new Function("return new Error().stack")().includes("/gen/") ? "native" : "interpreted"),',
     '};',
     'for (const [label, run] of Object.entries(make)) {',
     '  try { out.push(label + "=" + run()); } catch (e) { out.push(label + "!" + (e.code || e.name)); }',
@@ -77,7 +83,7 @@ const FILES = {
     'require("http").createServer((q, s) => s.end("ok")).listen(7071);',
     'setTimeout(() => {',
     '  let r;',
-    '  try { r = new (Object.getPrototypeOf(function* () {}).constructor)("yield \\"resident-ok\\"")().next().value; } catch (e) { r = e.code || e.name; }',
+    '  try { r = new (Object.getPrototypeOf(function* () {}).constructor)("yield \\"resident-ok \\" + (new Error().stack.includes(\\"/gen/\\") ? \\"native\\" : \\"interpreted\\")")().next().value; } catch (e) { r = e.code || e.name; }',
     '  require("fs").writeFileSync("/home/user/w/resident.txt", String(r));',
     '  process.exit(0);',
     '}, 300);',
@@ -92,6 +98,31 @@ const FILES = {
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
+  // Module files written while the program runs (so interpreted), each with
+  // top-level await: import() resolves once the module has finished, and
+  // rejects with what its evaluation throws. require() returns the exports
+  // at once, by design: static imports are lowered to require, which cannot
+  // wait (Node's own require of such a module throws ERR_REQUIRE_ASYNC_MODULE,
+  // which a lowered import cannot be told apart from). An export the module
+  // has not reached is in its TDZ until it does, and so is what a module
+  // that imports it statically reads (`transitive`; Node: 42).
+  'tla.js': [
+    'const fs = require("fs");',
+    'const dir = "/home/user/w/.tmp-tla";',
+    'fs.mkdirSync(dir, { recursive: true });',
+    'const name = Date.now() + "-" + Math.random().toString(36).slice(2);',
+    'fs.writeFileSync(dir + "/late-" + name + ".mjs", "export const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
+    'fs.writeFileSync(dir + "/bad-" + name + ".mjs", "export const w = 1;\\nawait new Promise((r) => setTimeout(r, 5));\\nthrow new Error(\\"tla failed\\");\\n");',
+    'fs.writeFileSync(dir + "/req-" + name + ".mjs", "export const early = 1;\\nexport const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
+    'fs.writeFileSync(dir + "/dep-" + name + ".mjs", "export const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
+    'fs.writeFileSync(dir + "/top-" + name + ".mjs", "import { v } from \\"./dep-" + name + ".mjs\\";\\nexport const read = () => { try { return v; } catch (e) { return e.name; } };\\n");',
+    'const req = require(dir + "/req-" + name + ".mjs");',
+    'let reqNow; try { reqNow = req.early + "," + req.v; } catch (e) { reqNow = req.early + "," + e.name; }',
+    'import(dir + "/late-" + name + ".mjs").then((m) => "late=" + m.v, (e) => "late!" + (e.code || e.message))',
+    '  .then((late) => import(dir + "/bad-" + name + ".mjs").then(() => late + " bad=resolved", (e) => late + " bad!" + e.message))',
+    '  .then((line) => import(dir + "/top-" + name + ".mjs").then((m) => line + " transitive=" + m.read()))',
+    '  .then((line) => console.log("TLA " + line + " req=" + reqNow + " later=" + req.v));',
+  ].join('\n'),
   'events.js': [
     'const EventEmitter = require("events");',
     'function Legacy() { EventEmitter.call(this); }',
@@ -259,6 +290,9 @@ try {
 
     // One EventEmitter, workerd's: Node's function-constructor inheritance,
     // express's prototype mixin, native http servers and the static helpers.
+    const tla = await terminal.run(`cd ${W} && node tla.js`);
+    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=ReferenceError req=1,ReferenceError later=42/, tla.stdout);
+
     const events = await terminal.run(`cd ${W} && node events.js`);
     assert.equal(events.status, 0, events.stdout);
     assert.match(events.stdout,
@@ -267,43 +301,41 @@ try {
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,
-      /FN fn!EvalError probe=false async!ERR_NIMBUS_CODE_NEXT_LAUNCH gen!ERR_NIMBUS_CODE_NEXT_LAUNCH vm!ERR_NIMBUS_CODE_NEXT_LAUNCH vmexpr!ERR_NIMBUS_CODE_NEXT_LAUNCH breakout!ERR_NIMBUS_CODE_NEXT_LAUNCH file!ERR_NIMBUS_CODE_NEXT_LAUNCH broke=undefined\n/,
+      /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello vmthis=true vmarrow=true breakout!SyntaxError where=interpreted file=written broke=undefined\n/,
       first.stdout);
     const second = await terminal.run(`cd ${W} && node fn.js`);
-    assert.match(second.stdout, /FN fn!EvalError probe=false async=function gen=7 vm=15 vmexpr=5 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
-    // One launch learns the whole static SSR graph, not one module per launch.
+    assert.match(second.stdout, /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello vmthis=true vmarrow=true breakout!SyntaxError where=native file=written broke=undefined\n/, second.stdout);
+    // The diagnostic switch interprets what the launch staged: native and interpreted, side by side.
+    const forced = await terminal.run(`cd ${W} && NIMBUS_RUNTIME_CODE=interpret node fn.js`);
+    assert.match(forced.stdout, /FN fn=42 probe=true async=function gen=7 vm=15 vmexpr=5 vmstr=hello vmthis=true vmarrow=true breakout!SyntaxError where=interpreted file=written broke=undefined\n/, forced.stdout);
+    // A module runner's whole SSR graph runs in the launch that produced it.
     const runnerFirst = await terminal.run(`cd ${W} && node runner.js`);
-    assert.match(runnerFirst.stdout, /RUNNER!ERR_NIMBUS_CODE_NEXT_LAUNCH imported=a,b,d,c\n/, runnerFirst.stdout);
+    assert.match(runnerFirst.stdout, /RUNNER value=111 imported=a,b,d,c\n/, runnerFirst.stdout);
     const runnerSecond = await terminal.run(`cd ${W} && node runner.js`);
     assert.match(runnerSecond.stdout, /RUNNER value=111 imported=a,b,d,c\n/, runnerSecond.stdout);
     const lexer = await terminal.run(`cd ${W} && node lexer-buffer.js`);
     assert.match(lexer.stdout, /LEXER 16 import é 255 255\n/, lexer.stdout);
     const dataFirst = await terminal.run('cd ' + W + ' && node data.js');
-    assert.match(dataFirst.stdout, /DATA!ERR_NIMBUS_CODE_NEXT_LAUNCH/, dataFirst.stdout);
+    assert.match(dataFirst.stdout, /DATA \["café","\/",true,true,true,true,true\]/, dataFirst.stdout);
     const dataSecond = await terminal.run('cd ' + W + ' && node data.js');
     assert.match(dataSecond.stdout, /DATA \["café","\/",true,true,true,true,true\]/, dataSecond.stdout);
 
-    const refused = await terminal.run(`cd ${W} && node plain.js`);
-    assert.notEqual(refused.status, 0, refused.stdout);
-    assert.match(refused.stdout, /EvalError: Code generation from strings disallowed/, refused.stdout);
-    assert.match(refused.stdout, /ERR_NIMBUS_CODE_NEXT_LAUNCH/, 'the crash says the text is staged');
-    const staged = await terminal.run(`cd ${W} && node plain.js`);
-    assert.equal(staged.status, 0, staged.stdout);
-    assert.match(staged.stdout, /^PLAIN 15$/m, 'the next launch runs the staged function');
-    assert.match(staged.stdout, /^PROBE no$/m, 'a probe in a successful launch is never staged');
-    const reported = await terminal.run(`cd ${W} && node reported.js`);
-    assert.equal(reported.status, 1, reported.stdout);
-    assert.match(reported.stdout, /^REPORTED Code generation from strings disallowed/m, reported.stdout);
-    const recovered = await terminal.run(`cd ${W} && node reported.js`);
-    assert.equal(recovered.status, 0, recovered.stdout);
-    assert.match(recovered.stdout, /^REPORTED 7$/m, 'a refusal the program reported before exiting 1 is staged');
-
-    // A probe, then an unrelated failure, then a clean next launch.
+    for (const launch of ['first', 'next']) {
+      const plain = await terminal.run(`cd ${W} && node plain.js`);
+      assert.equal(plain.status, 0, plain.stdout);
+      assert.match(plain.stdout, /^PLAIN 15$/m, `a function built as a module loads runs in the ${launch} launch`);
+      assert.match(plain.stdout, /^PROBE yes$/m, `a probe answers yes in the ${launch} launch`);
+      const reported = await terminal.run(`cd ${W} && node reported.js`);
+      assert.equal(reported.status, 0, reported.stdout);
+      assert.match(reported.stdout, /^REPORTED 7$/m, `request-time code runs in the ${launch} launch`);
+    }
+    // A probe, then an unrelated failure, then a clean next launch: the
+    // probe and the check it guards answer alike in both.
     const unrelated = await terminal.run(`cd ${W} && touch fail.flag && node probe-fail.js`);
-    assert.match(unrelated.stdout, /^PROBEFAIL false true$/m, unrelated.stdout);
+    assert.match(unrelated.stdout, /^PROBEFAIL true true$/m, unrelated.stdout);
     const clean = await terminal.run(`cd ${W} && rm fail.flag && node probe-fail.js`);
     assert.equal(clean.status, 0, clean.stdout);
-    assert.match(clean.stdout, /^PROBEFAIL false true$/m, 'an unrelated failure never stages a silent probe');
+    assert.match(clean.stdout, /^PROBEFAIL true true$/m, clean.stdout);
 
     const stdin = await terminal.run(`cd ${W} && node stdin.js < /dev/null`);
     const hostStdin = spawnSync('node', ['-e', FILES['stdin.js']], { encoding: 'utf8', input: '' });
@@ -452,11 +484,11 @@ try {
       return '(no result)';
     };
     await terminal.run(`cd ${W} && node server.js`);
-    assert.equal(await residentResult(), 'ERR_NIMBUS_CODE_NEXT_LAUNCH', 'a resident process is refused in the launch that produced the code');
+    assert.equal(await residentResult(), 'resident-ok interpreted', 'a resident process runs the code in the launch that produced it');
     await terminal.run(`rm -f ${W}/resident.txt`);
     await Bun.sleep(1000);
     await terminal.run(`cd ${W} && node server.js`);
-    assert.equal(await residentResult(), 'resident-ok', 'and its exit report staged it for the next launch');
+    assert.equal(await residentResult(), 'resident-ok native', 'and its exit report staged it for the next launch');
     // An SSR server can catch a missing module without exiting. Persist that
     // file miss before acknowledging startup, so killing it does not lose
     // the dependency and make every subsequent launch repeat the same error.

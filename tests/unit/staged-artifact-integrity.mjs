@@ -39,6 +39,9 @@ import { fetchOpencodeWasmBytes } from '../../packages/worker/src/runtime/openco
 import {
   NODE_SHIMS_ENTRY,
   RESIDENT_STORE_ENTRY,
+  JS_INTERPRETER_ENTRY,
+  JS_INTERPRETER_OPS_ENTRY,
+  JS_INTERPRETER_PRIMORDIALS_ENTRY,
   VFS_WRITE_LEDGER_ENTRY,
 } from '../../packages/worker/src/node-shims-artifact.generated.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
@@ -187,7 +190,7 @@ try {
     );
   }
 
-  // The node-compat layer's three sources arrive in one per-isolate fetch, and
+  // The node-compat layer's sources arrive in one per-isolate fetch, and
   // each is verified on its own. The colo cache here keeps what it is given,
   // as caches.default does: an entry is served to every later fetch in the
   // colo for the build, so only verified bytes may ever be put, and a bad
@@ -196,6 +199,9 @@ try {
     ['node-shims', NODE_SHIMS_ENTRY, 'shims'],
     ['vfs-write-ledger', VFS_WRITE_LEDGER_ENTRY, 'ledger'],
     ['resident-store', RESIDENT_STORE_ENTRY, 'residentStore'],
+    ['js-interpreter-primordials', JS_INTERPRETER_PRIMORDIALS_ENTRY, 'interpreterPrimordials'],
+    ['js-interpreter', JS_INTERPRETER_ENTRY, 'interpreter'],
+    ['js-interpreter-ops', JS_INTERPRETER_OPS_ENTRY, 'interpreterOps'],
   ];
   const stagedText = (entry) => readFileSync(path.join(workerRoot, 'public', entry.slice(1)), 'utf8');
   // A truncated body, as an interrupted read or a short 200 would give.

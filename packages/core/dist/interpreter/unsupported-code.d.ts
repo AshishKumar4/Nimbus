@@ -1,0 +1,6 @@
+/**
+ * unsupported-code.ts — the error code of code the interpreter will not run
+ * (UnsupportedSyntax, unsupported.ts), without the interpreter.
+ */
+export declare const INTERPRETER_UNSUPPORTED = "ERR_NIMBUS_INTERPRETER_UNSUPPORTED";
+//# sourceMappingURL=unsupported-code.d.ts.map

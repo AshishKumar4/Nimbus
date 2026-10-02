@@ -1,0 +1,438 @@
+// The runtime-code interpreter (packages/core/src/interpreter) runs code the
+// way V8 would have compiled it: functions of each kind, classes, modules,
+// with the semantics a program can observe, in a process that refuses string
+// code generation as a Worker does at request time.
+//
+// Under bun this builds the interpreter from source and runs itself under
+// `node --disallow-code-generation-from-strings`, where the cases run: each
+// interpreted function is made by the routed Function constructors, as in a
+// guest. Regressions found while bringing the interpreter up have a case each.
+
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+if (process.argv[2] !== '--cases') {
+  const { buildInterpreterFiles } = await import('./lib/interpreter-build.mjs');
+  const { dir, interpreterFile, opsFile } = await buildInterpreterFiles();
+  let run;
+  try {
+    run = spawnSync('node', ['--disallow-code-generation-from-strings', fileURLToPath(import.meta.url), '--cases', interpreterFile, opsFile], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  process.stdout.write(run.stdout);
+  process.stderr.write(run.stderr);
+  assert.equal(run.status, 0, 'the interpreter cases failed under node');
+  assert.match(run.stdout, /\bcases passed\b/);
+} else {
+  await runCases(process.argv[3], process.argv[4]);
+}
+
+async function runCases(interpreterFile, opsFile) {
+  const require = createRequire(import.meta.url);
+  const { loadInterpreter } = await import('./lib/interpreter-load.mjs');
+  const { ROUTE_FUNCTION_CONSTRUCTORS } = await import('./lib/interpreter-build.mjs');
+  const imports = [];
+  const interp = loadInterpreter(interpreterFile, opsFile, (parent, specifier) => {
+    imports.push([parent, specifier]);
+    return Promise.resolve({ specifier });
+  });
+  const { INTERPRETER_UNSUPPORTED } = require(interpreterFile);
+  assert.throws(() => Function('return 1'), EvalError, 'the process refuses string code generation');
+  // A program's own Function, as node-shims installs it: routed to the interpreter.
+  const route = interp.compileFunction('function', [], `return ${ROUTE_FUNCTION_CONSTRUCTORS};`)();
+  route(interp);
+
+  const F = (body, ...params) => new Function(...params, body);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const GeneratorFunction = Object.getPrototypeOf(function* () {}).constructor;
+  const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor;
+  let count = 0;
+  const check = (label, actual, expected) => {
+    assert.deepEqual(actual, expected, label);
+    count++;
+  };
+
+  // ── Functions, closures, control flow ──
+  check('parameters', F('return a + b', 'a', 'b')(2, 3), 5);
+  check('closure', F('let n = 0; return () => ++n')()(), 1);
+  check('recursion', F('function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2) } return fib(20)')(), 6765);
+  check('labels', F('const out = []; outer: for (const i of [1, 2, 3]) { for (const j of [1, 2, 3]) { if (j === 2) continue outer; if (i === 3) break outer; out.push(i * 10 + j) } } return out')(), [11, 21]);
+  check('finally', F('const out = []; function f() { try { return 1 } finally { out.push("f") } } return [f(), out]')(), [1, ['f']]);
+  check('break in finally overrides return', F('function f() { for (;;) { try { return 1 } finally { break } } return 2 } return f()')(), 2);
+  check('switch fallthrough', F('const r = []; for (const x of [1, 2, 5]) { switch (x) { case 1: r.push("one"); case 2: r.push("two"); break; default: r.push("d") } } return r')(), ['one', 'two', 'two', 'd']);
+  check('per-iteration let', F('const fs = []; for (let i = 0; i < 3; i++) fs.push(() => i); return fs.map((f) => f())')(), [0, 1, 2]);
+  check('destructuring', F('const { a, b: [x, ...r], c = 9 } = { a: 1, b: [2, 3, 4] }; return [a, x, r, c]')(), [1, 2, [3, 4], 9]);
+  check('defaults and rest', F('function f(a, b = a + 1, ...r) { return [a, b, r] } return f(1)')(), [1, 2, []]);
+  {
+    // Compiled by V8 as part of this file, and interpreted from the same text.
+    const program = () => [
+      (function (a = (arguments.length = 0), b) { return b; })(undefined, 42),
+      (function (a = (arguments[1] = 7), b) { return [b, arguments[1]]; })(undefined, 42),
+      (function (a = (arguments.length = 4), ...rest) { return rest; })(undefined, 1, 2),
+      (function (a = (() => { arguments[2] = 'changed'; })(), b, { c } = { c: 3 }) { return [b, c]; })(undefined, 2, { c: 'passed' }),
+    ];
+    check('a default that changes the arguments object binds no parameter from it', F(`return (${program})()`)(), program());
+  }
+  check('template and tag', F('const t = (s, ...v) => s.raw.join("|") + v.join(","); return [`x${1}y${2}`, t`a${1}b${2}c`]')(), ['x1y2', 'a|b|c1,2']);
+  check('optional chains', F('const o = { a: { b: () => 5 } }; return [o?.a?.b(), o.x?.y.z, o.a.c?.()]')(), [5, undefined, undefined]);
+  check('with', F('const o = { a: 1 }; with (o) { a = 2; var b = a + 1 } return [o.a, b]')(), [2, 3]);
+  check('bigint and regexp', F('return [String(2n ** 64n), /a(b+)/.exec("xabbb")[1]]')(), ['18446744073709551616', 'bbb']);
+  check('names', F('const f = function g() {}; const h = () => {}; const o = { [Symbol("q")]() {}, k: () => 1 }; return [f.name, h.name, Object.values(o)[0].name, Object.getOwnPropertySymbols(o).map((s) => o[s].name)[0]]')(), ['g', 'h', 'k', '[q]']);
+  check('a parenthesized target does not name', F('let f; (f) = function () {}; return f.name')(), '');
+
+  // ── Sloppy and strict ──
+  check('sloppy this is the global object', F('function f() { return this === globalThis } return f()')(), true);
+  check('strict this is undefined', F('"use strict"; function f() { return this } return f()')(), undefined);
+  check('arguments.callee', F('function f() { return arguments.callee === f } return f()')(), true);
+  check('var arguments keeps the arguments object', F('function f() { return typeof arguments; var arguments = 1 } return f(1)')(), 'object');
+  check('sloppy write to frozen is ignored', F('const o = Object.freeze({ a: 1 }); o.a = 2; return o.a')(), 1);
+  check('strict write to frozen throws', F('"use strict"; try { Object.freeze({ a: 1 }).a = 2 } catch (e) { return e instanceof TypeError }')(), true);
+  check('class heritage is strict code', F('const D = class extends function () { return arguments.callee } {}; try { new D(); return "no" } catch (e) { return e instanceof TypeError }')(), true);
+
+  // ── TDZ ──
+  check('let before declaration', F('try { x; let x = 1 } catch (e) { return e instanceof ReferenceError }')(), true);
+  check('parameter read before its binding', F('function f(a = b, b) {} try { f() } catch (e) { return e instanceof ReferenceError }')(), true);
+  check('for-of head sees its own names in TDZ', F('try { for (const x of [x]) {} } catch (e) { return e instanceof ReferenceError }')(), true);
+  check('const assignment', F('const x = 1; try { x = 2 } catch (e) { return e.message }')(), 'Assignment to constant variable.');
+
+  // ── Classes ──
+  check('class features', F(`
+    class A { #x = 1; static s = 2; get x() { return this.#x } inc() { this.#x += 1; return this } static has(o) { return #x in o } static { A.t = 3 } }
+    class B extends A { constructor() { super(); this.y = 5 } m() { return super.inc() } }
+    const b = new B().m();
+    return [b.x, b.y, A.s, A.t, b instanceof A, B.name, A.has(b), A.has({})]`)(), [2, 5, 2, 3, true, 'B', true, false]);
+  check('private names in computed keys', F('let r; class C { #f = 1; [(r = (() => { try { return ({}).#f } catch (e) { return e.constructor.name } })(), "k")]() {} } return r')(), 'TypeError');
+  check('derived constructor returning an object', F('let o; class C extends null { constructor() { return o = {} } } return new C() === o')(), true);
+  check('fields run after super binds this', F('class A {} class B extends A { f = this; constructor() { super(); } } const b = new B(); return b.f === b')(), true);
+  check('subclassing Function', F('class G extends Function {} return new G("return 7") instanceof G')(), true);
+  check('class toString', String(F('return class K { m() {} }')()), 'class K { m() {} }');
+
+  // ── Same realm, and a realm the program has changed ──
+  check('identity', F('return [new Map() instanceof Map, [] instanceof Array, Object.getPrototypeOf({}) === Object.prototype]')(), [true, true, true]);
+  {
+    const make = F('return () => { const [x, y, z] = [1, 2, 3]; class C { #p = 1; get p() { return this.#p } } return [x, y, z, new C().p] }')();
+    const saved = Array.prototype[Symbol.iterator];
+    Array.prototype[Symbol.iterator] = function* () { yield 'patched'; };
+    try {
+      check('internal arrays ignore a replaced array iterator', make(), ['patched', undefined, undefined, 1]);
+    } finally {
+      Array.prototype[Symbol.iterator] = saved;
+    }
+  }
+
+  // ── A program that replaced built-ins ──
+  {
+    // The interpreter compiles and runs without the built-ins a program can
+    // replace: test262 replaces the array iterator, a polyfill a method. acorn,
+    // which parses, still uses Array.prototype.push/pop/indexOf/slice and
+    // String.prototype.charCodeAt/slice/indexOf, so those stay.
+    const boom = () => { throw new Error('a replaced built-in was called'); };
+    const patches = [
+      [Array.prototype, Symbol.iterator, function* () { yield 'patched'; }],
+      ...['every', 'some', 'filter', 'find', 'findIndex', 'forEach', 'includes', 'join', 'flatMap', 'reduce', 'entries', 'keys', 'values'].map((k) => [Array.prototype, k, boom]),
+      ...['get', 'set', 'has', 'delete', 'forEach'].map((k) => [Map.prototype, k, boom]),
+      ...['add', 'has', 'delete', 'forEach'].map((k) => [Set.prototype, k, boom]),
+      ...['get', 'set', 'has'].map((k) => [WeakMap.prototype, k, boom]),
+      ...['add', 'has'].map((k) => [WeakSet.prototype, k, boom]),
+      [Symbol.prototype, 'toString', boom],
+      ...['entries', 'values', 'freeze', 'getPrototypeOf', 'setPrototypeOf', 'defineProperty', 'getOwnPropertyNames'].map((k) => [Object, k, boom]),
+      ...['get', 'set', 'has', 'apply', 'construct', 'ownKeys', 'defineProperty', 'getOwnPropertyDescriptor'].map((k) => [Reflect, k, boom]),
+    ];
+    const saved = patches.map(([target, key]) => Object.getOwnPropertyDescriptor(target, key));
+    // Patched or restored, nothing here may iterate an array or call what it replaces.
+    const define = Object.defineProperty;
+    let result;
+    let asyncResult;
+    try {
+      for (let i = 0; i < patches.length; i++) define(patches[i][0], patches[i][1], { value: patches[i][2], writable: true, configurable: true });
+      const body = `
+        label: for (let i = 0; i < 3; i++) { switch (i) { case 1: continue label; default: } }
+        class A { #x = 1; static s = 2; static { this.t = 3; } get x() { return this.#x; } }
+        class B extends A { constructor(...a) { super(); this.n = a.length; } }
+        const { p = 4, ...rest } = { q: 5 };
+        function* g() { yield 1; yield* [7]; }
+        let caught;
+        try { null.x; } catch (e) { caught = e instanceof TypeError; }
+        const b = new B(1, 2);
+        return [b.x, b.n, A.s, A.t, p, rest.q, [...g()], \`t\${p}\`, caught, [...[1, 2]]];`;
+      // The interpreter itself, not the routed constructors: those are this test's own code.
+      result = interp.compileFunction('function', [], body)();
+      // What runs before the first await runs here, with the built-ins replaced.
+      asyncResult = interp.compileFunction('async', [], 'const w = [...[1]]; const v = await Promise.resolve(9); return { v, w };')();
+    } finally {
+      for (let i = 0; i < patches.length; i++) {
+        if (saved[i]) define(patches[i][0], patches[i][1], saved[i]);
+        else delete patches[i][0][patches[i][1]];
+      }
+    }
+    // Spreading an array runs the program's iterator, as V8 does; nothing else does.
+    check('compiles and runs with built-ins replaced', result, [1, 2, 2, 3, 4, 5, [1, 'patched'], 't4', true, ['patched']]);
+    check('async code with built-ins replaced', await asyncResult, { v: 9, w: ['patched'] });
+  }
+  {
+    // acorn pushes the nodes it builds: a replaced push can rename an identifier, here a parameter,
+    // to the interpreter's own `this` binding. The tree is refused, not given that binding's slot.
+    const push = Array.prototype.push;
+    Array.prototype.push = function (...items) {
+      for (const item of items) if (item && item.type === 'Identifier' && item.name === 'a') item.name = '%this';
+      return Reflect.apply(push, this, items);
+    };
+    let refused;
+    try {
+      interp.compileFunction('function', [], 'function f(a) { return this; } return f.call(1, 2);')();
+    } catch (e) {
+      refused = e.message;
+    } finally {
+      Array.prototype.push = push;
+    }
+    check('a tree naming an interpreter binding is refused', refused, 'interpreter: the parser produced the identifier %this');
+  }
+  {
+    // A replaced push can also move a node's type after its other fields (delete it, add it back)
+    // without changing anything the node says.
+    const push = Array.prototype.push;
+    Array.prototype.push = function (...items) {
+      for (const item of items) {
+        if (item && typeof item.type === 'string') {
+          const type = item.type;
+          delete item.type;
+          item.type = type;
+        }
+      }
+      return Reflect.apply(push, this, items);
+    };
+    let result;
+    try {
+      result = interp.compileFunction('function', [], 'const o = { a: [1, 2] }; return o.a.length + 1;')();
+    } finally {
+      Array.prototype.push = push;
+    }
+    check('a node whose type is no longer its first field', result, 3);
+  }
+  {
+    // acorn makes a regular expression literal's value with the realm's RegExp, and a bigint's with
+    // BigInt, which a program may have replaced (here to decorate or box what they return). The
+    // interpreter takes neither value from the parse. Compiled by V8 as part of this file, and
+    // interpreted from the same text while the replacements stand.
+    const program = () => [/a(b)/.exec('xab')[1], /x/g.flags, ({ 1n: 'one', [2n]: 'two' })[1], typeof 2n, String(10n ** 20n)];
+    const NativeRegExp = RegExp;
+    const NativeBigInt = BigInt;
+    let interpreted;
+    globalThis.RegExp = function RegExp(pattern, flags) {
+      const made = new NativeRegExp(pattern, flags);
+      made.decorated = () => {};
+      made.self = made;
+      return made;
+    };
+    globalThis.BigInt = function BigInt(value) { return Object(NativeBigInt(value)); };
+    try {
+      interpreted = F(`return (${program})()`)();
+    } finally {
+      globalThis.RegExp = NativeRegExp;
+      globalThis.BigInt = NativeBigInt;
+    }
+    check('literals take nothing from a replaced RegExp or BigInt', interpreted, program());
+  }
+
+  // ── Calls ──
+  check('a parenthesized optional chain keeps its receiver', F('const a = { b() { return this._b }, _b: 42 }; return [(a?.b)(), (a.b)?.()]')(), [42, 42]);
+  check('not a function names the callee', F('const o = {}; try { o.m() } catch (e) { return e.message }')(), 'o.m is not a function');
+  check('not a constructor names the callee', F('const f = () => 1; try { new f() } catch (e) { return e.message }')(), 'f is not a constructor');
+  check('base checked before the key converts', F('const k = { toString() { throw new Error("key") } }; try { null[k]++ } catch (e) { return e.constructor.name }')(), 'TypeError');
+  check('compound assignment to a private field', F('class C { #n = 1; inc() { this.#n += 2; return this.#n } } return new C().inc()')(), 3);
+
+  // ── Generators ──
+  check('generator', F('function* g() { const x = yield 1; yield x * 2 } const it = g(); return [it.next().value, it.next(21).value, it.next().done]')(), [1, 42, true]);
+  check('generator constructor', new GeneratorFunction('a', 'yield a; yield a + 1')(5).next().value, 5);
+  check('return() closes an iterator mid-destructuring', F(`
+    let closed = 0;
+    const iterable = { [Symbol.iterator]() { return { next: () => ({ done: false }), return() { closed++; return {} } } } };
+    function* g() { let x; [x = yield] = iterable; }
+    const it = g(); it.next(); it.return();
+    return closed`)(), 1);
+  check('yield inside a destructuring target', F('function* g() { const o = {}; [o[yield "k"]] = [7]; return o } const it = g(); it.next(); return it.next("key").value')(), { key: 7 });
+
+  // ── Async ──
+  check('await', await new AsyncFunction('const a = await Promise.resolve(1); return a + await 2')(), 3);
+  check('await rejection', await new AsyncFunction('try { await Promise.reject(new Error("x")) } catch (e) { return e.message }')(), 'x');
+  check('optional chain over await', await new AsyncFunction('return [(await Promise.resolve({ a: 1 }))?.a, (await null)?.a]')(), [1, undefined]);
+  check('class keys that await', await new AsyncFunction('class C { [await Promise.resolve("m")]() { return 1 } } return new C().m()')(), 1);
+  check('for await', await new AsyncFunction('async function* g() { yield 1; await null; yield 2 } const r = []; for await (const x of g()) r.push(x); return r')(), [1, 2]);
+  check('async generator return runs finally', await new AsyncGeneratorFunction('log', 'try { yield 1; yield 2 } finally { log.push("fin") }')([]).return(7), { value: 7, done: true });
+  {
+    const log = [];
+    const gen = new AsyncGeneratorFunction('log', 'try { yield 1 } finally { log.push("fin") }')(log);
+    await gen.next();
+    check('async generator return() after a yield', [await gen.return(9), log], [{ value: 9, done: true }, ['fin']]);
+  }
+  check('microtask order', await new AsyncFunction('const log = []; const p = (async () => { log.push(1); await null; log.push(3) })(); log.push(2); await p; return log')(), [1, 2, 3]);
+  {
+    const native = [];
+    const nativeRun = (async () => { native.push('a'); await null; native.push('c'); await null; native.push('e'); })();
+    Promise.resolve().then(() => native.push('b')).then(() => native.push('d'));
+    await nativeRun;
+    const interpreted = [];
+    const run = new AsyncFunction('log', 'log.push("a"); await null; log.push("c"); await null; log.push("e")')(interpreted);
+    Promise.resolve().then(() => interpreted.push('b')).then(() => interpreted.push('d'));
+    await run;
+    check('await interleaves with other promises as natively', interpreted, native);
+  }
+
+  // ── Function source ──
+  const fn = F('return 1', 'a');
+  check('Function.prototype.toString', String(fn), 'function anonymous(a\n) {\nreturn 1\n}');
+  check('toString of an inner function', String(F('return function inner(x) { return x }')()), 'function inner(x) { return x }');
+  check('toString of methods', F('const o = { validate(input) { return 1 }, get g() { return 1 }, async *ag() {}, ["c" + 1]() {} }; class A { static m(a) {} static get s() { return 1 } #p() {} q() { return this.#p } } return [o.validate, Object.getOwnPropertyDescriptor(o, "g").get, o.ag, o.c1, A.m, Object.getOwnPropertyDescriptor(A, "s").get, new A().q()].map(String)')(),
+    ['validate(input) { return 1 }', 'get g() { return 1 }', 'async *ag() {}', '["c" + 1]() {}', 'm(a) {}', 'get s() { return 1 }', '#p() {}']);
+  check('toString keeps a trailing source map', String(F('return 2\n//# sourceMappingURL=data:application/json;base64,e30=\n')), 'function anonymous(\n) {\nreturn 2\n//# sourceMappingURL=data:application/json;base64,e30=\n\n}');
+  check('a trailing comment that is not one', F('return `\n//# x`')(), '\n//# x');
+  check('native functions still answer natively', Function.prototype.toString.call(Math.max), 'function max() { [native code] }');
+
+  // ── Compiled on first call ──
+  // A function's body compiles the first time it runs, parsed again from its unit's text.
+  check('a constructor\'s function does not bind `anonymous`', F('return typeof anonymous')(), 'undefined');
+  check('a sloppy generator declaration named yield', F('function* yield() { yield 3; } return yield().next().value')(), 3);
+  check('an async function declaration named await', F('async function await() { return 4; } return typeof await')(), 'function');
+  check('an arrow using super, new.target and super() in a derived constructor',
+    F('class A { m() { return 1 } } class B extends A { constructor() { const f = () => super(); f(); this.t = (() => new.target)(); } m() { return (() => super.m() + 1)() } } const b = new B(); return [b.m(), b.t === B]')(), [2, true]);
+  check('a sloppy method arrow using super', F('const o = { __proto__: { v: 5 }, m() { return () => super.v } }; return o.m()()')(), 5);
+  check('getters, setters and generator methods', F('const o = { get g() { return 1 }, set s(v) { this.v = v }, *gen() { yield 2 }, async am() { return 3 } }; o.s = 4; return [o.g, o.v, o.gen().next().value]')(), [1, 4, 2]);
+  {
+    // Defined on Object.prototype before the inner function first runs, where the compile builds its AST.
+    const defined = Object.defineProperty(Object.prototype, 'callee', { get() { throw new Error('read Object.prototype.callee'); }, configurable: true });
+    try {
+      check('Object.prototype accessors do not reach the compile', F('return () => f(1); function f(x) { return x + 1 }')()(), 2);
+    } finally {
+      delete defined.callee;
+    }
+  }
+
+  // ── Refusals ──
+  assert.throws(() => F('}'), SyntaxError);
+  assert.throws(() => F('}, globalThis.__broke = 1, function () {'), SyntaxError);
+  check('a body cannot break out of its function', globalThis.__broke, undefined);
+  assert.throws(() => interp.compileFunction('function', [], '{ using x = null; }'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  // What the compiler refuses is refused before any of the code runs, though inner functions compile on first call.
+  globalThis.__ran = false;
+  assert.throws(() => interp.compileFunction('function', [], 'globalThis.__ran = true; return { m() { return async () => super[await k]; } };'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  check('nothing of a refused unit ran', globalThis.__ran, false);
+  assert.throws(() => interp.compileModule('/w/m.ts', 'export const x: number = 1;'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+
+  // ── Found in review ──
+  check('an iterable\'s @@iterator is read once per use',
+    F('let reads = 0; const it = { get [Symbol.iterator]() { reads++; return function* () { yield 1; yield 2 } } }; for (const x of it) {} const s = [...it]; const [a] = it; (function () {})(...it); const d = [...(function* () { yield* it })()]; return [reads, s, a, d]')(),
+    [5, [1, 2], 1, [1, 2]]);
+  check('a call evaluates its arguments before checking its callee', F('let f = 0, n = 0; try { f(++n); } catch {} return n')(), 1);
+  check('delete through an optional chain that awaits', await new AsyncFunction('const o = { p: 1 }; const r = delete (await o)?.p; const q = delete (await null)?.p; return [r, q, "p" in o]')(), [true, true, false]);
+  check('delete of a member whose key awaits', await new AsyncFunction('const o = { k: 1 }; const r = delete o[await "k"]; return [r, "k" in o]')(), [true, false]);
+  check('a class named by a computed key, whose keys await', await new AsyncFunction('const o = { [1]: class { [await "x"]() { return 5 } } }; return [o[1].name, new o[1]().x()]')(), ['1', 5]);
+  check('a class named by a computed key, whose heritage awaits', await new AsyncFunction('class B { b() { return 6 } } const o = { ["c"]: class extends (await B) {} }; return [o.c.name, new o.c().b()]')(), ['c', 6]);
+  {
+    const closed = [];
+    const source = { [Symbol.asyncIterator]() { return { next: async () => ({ value: 1, done: false }), return: async () => { closed.push('return'); return { done: true }; } }; } };
+    const gen = new AsyncGeneratorFunction('source', 'for await (const x of source) yield x;')(source);
+    await gen.next();
+    await gen.return();
+    check('return() of a generator suspended in for await closes its iterator', closed, ['return']);
+  }
+  {
+    const closed = [];
+    const source = { [Symbol.iterator]() { return { next: () => ({ value: 1, done: false }), return: () => { closed.push('return'); return {}; } }; } };
+    const gen = new GeneratorFunction('source', 'for (const x of source) yield x;')(source);
+    gen.next();
+    gen.return();
+    check('return() of a generator suspended in for-of closes its iterator', closed, ['return']);
+  }
+  check('a function declaration as an if clause (Annex B.3.4)',
+    F('if (true) function f() { return 1 } if (false) ; else function g() { return 2 } if (false) function h() {} return [f(), g(), typeof h]')(), [1, 2, 'undefined']);
+  {
+    const cells = {
+      a: interp.compileModule('/w/a.mjs', 'import { b } from "b"; export function ready() { return "ready"; } export const fromB = b;'),
+      b: interp.compileModule('/w/b.mjs', 'import { ready } from "a"; export const b = ready();'),
+    };
+    const cache = {};
+    const load = (id) => {
+      if (cache[id]) return cache[id].exports;
+      const m = { exports: {} };
+      cache[id] = m;
+      cells[id](m.exports, load, m, `/w/${id}.mjs`, '/w');
+      return m.exports;
+    };
+    check('a module that imports its importer back finds its exports and functions', load('a').fromB, 'ready');
+  }
+
+  // ── vm.runInThisContext's code (node-shims hands it over as compileExpression) ──
+  {
+    const wrapper = interp.compileExpression('(function (exports, require, module) { module.exports = { v: typeof require };\n});')();
+    const mod = { exports: {} };
+    wrapper(mod.exports, () => {}, mod);
+    check('a script that is one expression statement, jiti\'s wrapper', mod.exports, { v: 'function' });
+    check('its value each time the function runs', interp.compileExpression('[1, 2].length // trailing')(), 2);
+    check('after a directive prologue, which the function keeps (vite-node\'s)', interp.compileExpression("'use strict';(() => function () { return this; })")()()(), undefined);
+    // Against V8's own answer: node runs vm under --disallow-code-generation-from-strings. Called
+    // as node-shims calls it: with the global object as `this`, a script's own at its top level.
+    const vm = require('node:vm');
+    const asRun = (code) => Reflect.apply(interp.compileExpression(code), globalThis, []);
+    for (const code of ['"hello"', '"use strict"', "'a';\n'b'", "'use strict'; 'value'"]) {
+      check(`a script of directives alone completes with the last one's value: ${code}`, asRun(code), vm.runInThisContext(code));
+    }
+    for (const code of ["'use strict'; this", "'use strict'; (() => this)()", 'this']) {
+      check(`a script's top-level this is the global object: ${code}`, asRun(code) === globalThis, vm.runInThisContext(code) === globalThis);
+    }
+    assert.throws(() => interp.compileExpression('(function () {'), SyntaxError);
+    assert.throws(() => interp.compileExpression('var x = 1; x'), (e) => e.code === INTERPRETER_UNSUPPORTED);
+  }
+
+  // ── Module cells ──
+  {
+    const cell = interp.compileModule('/w/m.mjs', [
+      'import { join } from "node:path";',
+      'import d from "./esm.js";',
+      'import cjs from "./cjs.js";',
+      'import * as ns from "./cjs.js";',
+      'export * from "./star.js";',
+      'export { v as renamed } from "./star.js";',
+      'export const x = join("a", "b");',
+      'export let n = 1;',
+      'export function inc() { n++; }',
+      'export default class {}',
+      'export const meta = import.meta.url;',
+      'export const load = () => import("./later.js");',
+      'export const seen = [d, cjs.k, ns.default.k, ns.k];',
+    ].join('\n'));
+    const modules = {
+      'node:path': require('node:path'),
+      './esm.js': { __esModule: true, default: 'D' },
+      './cjs.js': { k: 'K' },
+      './star.js': { v: 'V', w: 'W', default: 'not re-exported' },
+    };
+    const mod = { exports: {}, __nimbusImportMeta: { url: 'file:///w/m.mjs' } };
+    cell(mod.exports, (id) => modules[id], mod, '/w/m.mjs', '/w');
+    const e = mod.exports;
+    check('esm exports', [e.x, e.n, e.seen, e.v, e.w, e.renamed, 'default' in e && typeof e.default, e.meta, e.__esModule], ['a/b', 1, ['D', 'K', 'K', 'K'], 'V', 'W', 'V', 'function', 'file:///w/m.mjs', true]);
+    e.inc();
+    check('esm export bindings are live', e.n, 2);
+    check('esm default class is named default', e.default.name, 'default');
+    await e.load();
+    check('dynamic import from the module url', imports.at(-1), ['file:///w/m.mjs', './later.js']);
+  }
+  {
+    const cjs = interp.compileModule('/w/c.js', 'exports.a = 1; module.exports.b = typeof require; if (true) return; exports.c = 1');
+    const mod = { exports: {} };
+    cjs(mod.exports, require, mod, '/w/c.js', '/w');
+    check('commonjs cell', mod.exports, { a: 1, b: 'function' });
+    const tla = interp.compileModule('/w/t.mjs', 'export const v = await Promise.resolve(42);');
+    const m = { exports: {} };
+    await tla(m.exports, require, m, '', '');
+    check('top-level await', m.exports.v, 42);
+  }
+
+  console.log(`${count} cases passed`);
+}
