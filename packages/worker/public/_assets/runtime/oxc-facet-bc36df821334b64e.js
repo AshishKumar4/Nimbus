@@ -1,6 +1,5 @@
 "use strict";
 (() => {
-  var OXC_STACK_EXHAUSTED = "the Oxc transform ran out of stack";
   function bindExports(instance) {
     const exports = instance.exports;
     const memory = exports.memory;
@@ -156,9 +155,14 @@ ${lines.join("\n")}`), { errors, warnings });
           if (error instanceof Error && Reflect.get(error, "errors") !== void 0) throw error;
           instance = null;
           const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-          const what = error instanceof RangeError && /Maximum call stack size exceeded/.test(error.message) ? OXC_STACK_EXHAUSTED : "the Oxc transform crashed";
+          if (error instanceof RangeError && /^Maximum call stack size exceeded\.?$/.test(error.message)) {
+            throw Object.assign(new Error(`Transform failed with 1 error:
+error: the Oxc transform ran out of stack (${reason})`), {
+              stackExhausted: true
+            });
+          }
           throw new Error(`Transform failed with 1 error:
-error: ${what} (${reason})`);
+error: the Oxc transform crashed (${reason})`);
         } finally {
           if (instance && instance.memory.buffer.byteLength > retireAboveBytes) instance = null;
         }
@@ -8677,8 +8681,10 @@ const ${binding} = arguments[2];
     const sourceOf = (node) => JSON.stringify(String(node.value));
     const exportsRef = temp();
     const exportGetter = temp();
+    const defineProperty = temp();
     const live = (exported, value) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`;
     const requires = [];
+    const imported = [];
     const getters = [];
     const edits = [];
     let exportsAnything = false;
@@ -8692,15 +8698,14 @@ const ${binding} = arguments[2];
             break;
           }
           const mod = temp();
-          const bindings = [`const ${mod} = require(${sourceOf(node.source)});`];
+          requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
           for (const specifier of node.specifiers) {
             const local = specifier.local.name;
-            if (specifier.type === "ImportNamespaceSpecifier") bindings.push(`const ${local} = ${mod};`);
+            if (specifier.type === "ImportNamespaceSpecifier") imported.push(`const ${local} = ${mod};`);
             else if (specifier.type === "ImportDefaultSpecifier") {
-              bindings.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
-            } else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
+              imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+            } else imported.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
           }
-          requires.push(bindings.join(" "));
           break;
         }
         case "ExportNamedDeclaration": {
@@ -8755,12 +8760,12 @@ const ${binding} = arguments[2];
     }
     parts.push(esm.slice(at2));
     const header = exportsAnything ? [
-      `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true;`,
-      `const ${exportGetter} = (name, get) => Object.defineProperty(${exportsRef}, name, { enumerable: true, configurable: true, get });`
+      `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true; const ${defineProperty} = Object.defineProperty;`,
+      `const ${exportGetter} = (name, get) => ${defineProperty}(${exportsRef}, name, { enumerable: true, configurable: true, get });`
     ] : [];
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => live(exported, value));
     return `${[...header, ...requires].join("\n")}
-return (async () => { ${installed.join(" ")}
+return (async () => { ${[...imported, ...installed].join(" ")}
 ${parts.join("")}
 })();
 `;

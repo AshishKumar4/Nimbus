@@ -27,12 +27,17 @@ published independently in the `@nimbus-sh` npm scope.
   body, re-exports included, in source order, as Node does; and each export
   is a live getter installed before the body runs, so `export let db; db =
   await connect()` exports the connected value, wherever the transform
-  printed the export.
+  printed the export. The cell's top level holds only generated names, so a
+  module's own `import Object from "dep"` cannot reach the lowering's code.
 - A module nested deeper than Oxc's recursive passes can run on the host's
   stack (under V8: about 4,800 concatenated terms, a 1,950-arm ternary, 1,400
   chained calls or arrays 585 deep) is transformed by esbuild in the esbuild
-  facet, that module alone. esbuild's own wasm grows with depth too (268 MiB
-  for 5,000 concatenated terms), so past its own limit neither transforms it.
+  facet, that module alone: one call per module, logged with its path and
+  reason, with a 30 s deadline, at most four per batch (the rest retry in a
+  later one). Only the driver's own RangeError marks a module so, never
+  message text. Stored launch transforms are keyed by both engines' code.
+  esbuild's own wasm grows with depth too (268 MiB for 5,000 concatenated
+  terms), so past its own limit neither transforms it.
 - `jsx: "preserve"` with `format: "cjs"` is refused: preserved JSX would name
   imports that the conversion to CommonJS moved onto records.
 

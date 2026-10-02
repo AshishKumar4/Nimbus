@@ -93,26 +93,64 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
 {
   resetInstances();
   const { ctx, env } = durableObject(await freshFacetClass());
-  const deep = { code: `export const x = ${'['.repeat(200000)}${']'.repeat(200000)};`, options: { loader: 'js', format: 'cjs' } };
-  // Without a fallback the exhaustion is that module's answer.
-  const [alone, sibling] = await oxcTransformHost(ctx, env)([deep, request]);
-  assert.match(alone.error, /the Oxc transform ran out of stack \(RangeError: Maximum call stack size exceeded\.?\)/);
-  assert.equal(sibling.error, undefined, sibling.error);
-  // With one, only that module goes to it, and its answer stands.
-  const sent = [];
-  const fallback = async (requests) => { sent.push(...requests); return requests.map(() => ({ code: 'answered by the fallback' })); };
-  const [nested, after] = await oxcTransformHost(ctx, env, fallback)([deep, request]);
-  assert.deepEqual(sent, [deep]);
-  assert.equal(nested.code, 'answered by the fallback');
-  assert.match(after.code, /const n = 1;/);
-  // A fallback that cannot be reached leaves the module's answer transient.
-  const [unreached] = await oxcTransformHost(ctx, env, async () => { throw new Error('esbuild facet reset'); })([deep]);
-  assert.equal(unreached.transient, true);
-  assert.match(unreached.error, /esbuild facet unavailable: esbuild facet reset/);
-  // An error that is not a stack exhaustion never goes to the fallback.
+  const deepCode = `export const x = ${'['.repeat(200000)}${']'.repeat(200000)};`;
+  const deep = { code: deepCode, options: { loader: 'js', format: 'cjs', dynamicImportParent: 'file:///app/deep.mjs' } };
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    // Without a fallback the exhaustion is that module's answer, typed as such.
+    const [alone, sibling] = await oxcTransformHost(ctx, env)([deep, request]);
+    assert.match(alone.error, /the Oxc transform ran out of stack \(RangeError: Maximum call stack size exceeded\.?\)/);
+    assert.equal(alone.stackExhausted, true);
+    assert.equal(sibling.error, undefined, sibling.error);
+    // With one, only that module goes to it, one call per module, logged, and its answer stands.
+    const calls = [];
+    const fallback = async (requests) => { calls.push(requests); return requests.map(() => ({ code: 'answered by the fallback', map: '', warnings: [] })); };
+    const [nested, after] = await oxcTransformHost(ctx, env, fallback)([deep, request]);
+    assert.deepEqual(calls, [[deep]]);
+    assert.equal(nested.code, 'answered by the fallback');
+    assert.match(after.code, /const n = 1;/);
+    assert.ok(warnings.some((w) => /\[oxc-transform\] file:\/\/\/app\/deep\.mjs: .*ran out of stack.*; transforming it with esbuild/.test(w)), warnings.join('\n'));
+    // A batch sends at most four; the rest answer transient, for a later batch.
+    calls.length = 0;
+    const six = await oxcTransformHost(ctx, env, fallback)(Array(6).fill(deep));
+    assert.equal(calls.length, 4);
+    assert.deepEqual(six.map((o) => o.transient === true), [false, false, false, false, true, true]);
+    assert.match(six[5].error, /deferred to a later batch \(at most 4 per batch go to esbuild\)/);
+    // A fallback that cannot be reached, or does not answer in time, leaves it transient.
+    const [unreached] = await oxcTransformHost(ctx, env, async () => { throw new Error('esbuild facet reset'); })([deep]);
+    assert.equal(unreached.transient, true);
+    assert.match(unreached.error, /esbuild facet unavailable: esbuild facet reset/);
+    const [late] = await oxcTransformHost(ctx, env, () => new Promise(() => {}), { fallbackDeadlineMs: 50 })([deep]);
+    assert.equal(late.transient, true);
+    assert.match(late.error, /esbuild facet unavailable: no answer within 50 ms/);
+  } finally {
+    console.warn = warn;
+  }
+  // Only the driver's own RangeError counts: a module whose diagnostics say
+  // the words (a duplicate export named so) is a verdict, never forwarded.
+  const named = { code: 'const x = 1; export { x as "the Oxc transform ran out of stack", x as "the Oxc transform ran out of stack" };', options: { loader: 'js', format: 'cjs' } };
+  const [duplicate] = await oxcTransformHost(ctx, env, async () => assert.fail('a duplicate export is a verdict'))([named]);
+  assert.match(duplicate.error, /ran out of stack/);
+  assert.equal(duplicate.stackExhausted, undefined);
   const [syntax] = await oxcTransformHost(ctx, env, async () => assert.fail('a syntax error is a verdict'))([{ code: 'let a = ;', options: { loader: 'js' } }]);
   assert.match(syntax.error, /Transform failed with 1 error/);
-  console.log('  ok  nesting past the host stack goes to the fallback, that module alone');
+  console.log('  ok  nesting past the host stack goes to the fallback: that module, typed, bounded, timed, logged');
+}
+
+// ── The host's identity names both engines ──────────────────────────────────
+{
+  // The launch's transform store keys results by it: a new esbuild (which
+  // answers the deep modules) must miss them as a new Oxc does.
+  const { TRANSFORM_HOST_ID, ESBUILD_FACET_WORKER_ID, supervisorEsbuildService } = await import('../../packages/worker/src/facets/esbuild-transform.ts');
+  const { OXC_FACET_WORKER_ID } = await import('../../packages/worker/src/facets/oxc-transform.ts');
+  const { ctx, env } = durableObject(await freshFacetClass());
+  const hostId = supervisorEsbuildService(ctx, env, undefined).transformHostId;
+  assert.equal(hostId, TRANSFORM_HOST_ID);
+  assert.ok(hostId.includes(OXC_FACET_WORKER_ID) && hostId.includes(ESBUILD_FACET_WORKER_ID), hostId);
+  assert.match(ESBUILD_FACET_WORKER_ID, /^nimbus-esbuild:0\.24\.2:/);
+  console.log('  ok  the transform host\'s identity names the Oxc facet and the esbuild facet');
 }
 
 // ── A stub that threw is dropped: the retry mints a fresh one ───────────────

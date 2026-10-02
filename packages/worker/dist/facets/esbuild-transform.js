@@ -195,16 +195,23 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
     return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
 }
 /**
+ * What a transform from supervisorEsbuildService's host is a function of:
+ * the transform facet's code (OXC_FACET_WORKER_ID) and, for a module too deep
+ * for it, the esbuild facet's (ESBUILD_FACET_WORKER_ID, which carries the
+ * esbuild version). The launch's transform store keys results by it, so a new
+ * build of either engine misses every stored result.
+ */
+export const TRANSFORM_HOST_ID = `${OXC_FACET_WORKER_ID}+${ESBUILD_FACET_WORKER_ID}`;
+/**
  * The transforms and builds a Durable Object's supervisor shares: transforms
  * run in its transform facet (oxc-transform.ts), builds in its esbuild
- * facet, and build() reads `vfs` from here. The transform facet's code
- * (OXC_FACET_WORKER_ID: the Oxc wasm, the facet's runtime and its body) is
- * the host's identity, which the launch's transform store keys its results by.
+ * facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is the host's
+ * identity, which the launch's transform store keys its results by.
  */
 export function supervisorEsbuildService(ctx, env, vfs) {
     return new EsbuildService(vfs, {
         transformHost: oxcTransformHost(ctx, env, esbuildStackFallbackHost(ctx, env)),
         buildHost: esbuildBuildHost(ctx, env),
-        transformHostId: OXC_FACET_WORKER_ID,
+        transformHostId: TRANSFORM_HOST_ID,
     });
 }

@@ -22,17 +22,16 @@
  *
  * Oxc's passes recurse once per level of nesting, on the host's native stack.
  * A module nested deeper than that stack holds (a concatenation of some ten
- * thousand terms under workerd) fails with OXC_STACK_EXHAUSTED in its message;
- * the transform facet's host sends such a module to esbuild instead
- * (facets/oxc-transform.ts).
+ * thousand terms under workerd) fails with an error whose `stackExhausted` is
+ * true, set here from the RangeError the wasm call threw and from nothing
+ * else; the transform facet carries it in the outcome, and its host sends such
+ * a module to esbuild instead (facets/oxc-transform.ts).
  *
  * No imports: the transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
-/** In the message of a transform that ran out of native stack, and only there. */
-export const OXC_STACK_EXHAUSTED = 'the Oxc transform ran out of stack';
-/** Whether a transform outcome's error is a stack exhaustion, which esbuild may still answer. */
+/** Whether `error` is a transform's report that it ran out of native stack. */
 export function isOxcStackExhaustion(error) {
-    return error.includes(OXC_STACK_EXHAUSTED);
+    return error instanceof Error && Reflect.get(error, 'stackExhausted') === true;
 }
 /** The wasm's exports, checked against the ABI scripts/oxc-wasm/src/abi.rs defines. */
 function bindExports(instance) {
@@ -210,10 +209,14 @@ export function createOxcTransform(module, { retireAboveBytes = 64 * 1024 * 1024
                 // module, leaves the instance mid-call: never call it again.
                 instance = null;
                 const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-                const what = error instanceof RangeError && /Maximum call stack size exceeded/.test(error.message)
-                    ? OXC_STACK_EXHAUSTED
-                    : 'the Oxc transform crashed';
-                throw new Error(`Transform failed with 1 error:\nerror: ${what} (${reason})`);
+                // V8 and JavaScriptCore both throw a RangeError of this text when
+                // the native stack runs out; the module's own text never reaches here.
+                if (error instanceof RangeError && /^Maximum call stack size exceeded\.?$/.test(error.message)) {
+                    throw Object.assign(new Error(`Transform failed with 1 error:\nerror: the Oxc transform ran out of stack (${reason})`), {
+                        stackExhausted: true,
+                    });
+                }
+                throw new Error(`Transform failed with 1 error:\nerror: the Oxc transform crashed (${reason})`);
             }
             finally {
                 if (instance && instance.memory.buffer.byteLength > retireAboveBytes)

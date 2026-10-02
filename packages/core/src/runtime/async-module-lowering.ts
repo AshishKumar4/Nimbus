@@ -33,14 +33,19 @@ export function lowerAsyncModule(esm: string): string {
   const nameOf = (node: { type: string; name?: string; value?: unknown }) =>
     node.type === 'Identifier' ? String(node.name) : String(node.value);
   const sourceOf = (node: { value?: unknown }) => JSON.stringify(String(node.value));
-  // Names the module cannot shadow: its declarations are inside the IIFE.
+  // The cell's top level holds only generated names (its records and these):
+  // the module's own bindings, its imports' included, are inside the IIFE, so
+  // nothing it declares (`import Object from "dep"`) reaches what these read.
   const exportsRef = temp();
   const exportGetter = temp();
+  const defineProperty = temp();
   const live = (exported: string, value: string) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`;
 
   const requires: string[] = [];
-  // Inside the IIFE, before the body: a getter per export name, installed in
-  // name order (a module namespace's), whichever order the transform printed.
+  // Inside the IIFE, before the body: the imports' bindings, read off their
+  // records, then a getter per export name, installed in name order (a module
+  // namespace's), whichever order the transform printed.
+  const imported: string[] = [];
   const getters: [string, string][] = [];
   const edits: Edit[] = [];
   let exportsAnything = false;
@@ -57,15 +62,14 @@ export function lowerAsyncModule(esm: string): string {
           break;
         }
         const mod = temp();
-        const bindings = [`const ${mod} = require(${sourceOf(node.source)});`];
+        requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
         for (const specifier of node.specifiers) {
           const local = specifier.local.name;
-          if (specifier.type === 'ImportNamespaceSpecifier') bindings.push(`const ${local} = ${mod};`);
+          if (specifier.type === 'ImportNamespaceSpecifier') imported.push(`const ${local} = ${mod};`);
           else if (specifier.type === 'ImportDefaultSpecifier') {
-            bindings.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
-          } else bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
+            imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+          } else imported.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
         }
-        requires.push(bindings.join(' '));
         break;
       }
       case 'ExportNamedDeclaration': {
@@ -122,14 +126,14 @@ export function lowerAsyncModule(esm: string): string {
   parts.push(esm.slice(at));
   const header = exportsAnything
     ? [
-      `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true;`,
-      `const ${exportGetter} = (name, get) => Object.defineProperty(${exportsRef}, name, { enumerable: true, configurable: true, get });`,
+      `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true; const ${defineProperty} = Object.defineProperty;`,
+      `const ${exportGetter} = (name, get) => ${defineProperty}(${exportsRef}, name, { enumerable: true, configurable: true, get });`,
     ]
     : [];
   const installed = getters
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([exported, value]) => live(exported, value));
-  return `${[...header, ...requires].join('\n')}\nreturn (async () => { ${installed.join(' ')}\n${parts.join('')}\n})();\n`;
+  return `${[...header, ...requires].join('\n')}\nreturn (async () => { ${[...imported, ...installed].join(' ')}\n${parts.join('')}\n})();\n`;
 }
 
 /** The bindings an exported declaration introduces. */

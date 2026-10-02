@@ -171,6 +171,14 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
     assert.deepEqual(seen.requires, ['y', 'z', 'w', 'trace:body'], `${name}: ${JSON.stringify(seen)}`);
     assert.ok(seen.exports.some((e) => e.startsWith('x=')), `${name}: ${JSON.stringify(seen.exports)}`);
   }
+  // The module's own bindings, an import named `Object` included, cannot
+  // reach what the lowering's generated code reads.
+  const shadowing = "import Object from 'dep'; export const answer = 7; await 0;";
+  for (const [name, engine] of Object.entries(engines)) {
+    const seen = await outcomes.cell(engine, 'tla-shadow-object.mjs', shadowing);
+    assert.equal(seen.threw, null, `${name}: ${JSON.stringify(seen)}`);
+    assert.ok(seen.exports.includes('answer=number:7'), `${name}: ${JSON.stringify(seen.exports)}`);
+  }
   console.log('  ok  a top-level-await module requires its dependencies before its body runs');
 }
 
@@ -200,7 +208,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
     try {
       outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, rewriteDynamicImports, lowerAsyncModule);
     } catch (error) {
-      outcome = { error: String(error.message) };
+      outcome = isOxcStackExhaustion(error) ? { error: String(error.message), stackExhausted: true } : { error: String(error.message) };
     }
     return { cell, outcome };
   };
@@ -209,7 +217,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   for (const [name, source] of Object.entries(deep)) {
     const expected = await outcomes.cell(esbuild, name, source);
     let { cell, outcome } = await settle(oxcEngine, name, source);
-    if ('error' in outcome && isOxcStackExhaustion(outcome.error)) {
+    if (outcome.stackExhausted === true) {
       viaEsbuild++;
       ({ cell, outcome } = await settle(esbuild, name, source));
     } else viaOxc++;

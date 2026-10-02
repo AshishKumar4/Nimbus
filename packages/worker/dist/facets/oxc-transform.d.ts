@@ -15,10 +15,15 @@ export declare function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): 
  * fails answers each of its requests with a transient error, which is no
  * verdict on the source, and the other slices keep their answers.
  *
- * A module nested deeper than the host's native stack lets Oxc's recursive
- * passes run (OXC_STACK_EXHAUSTED) goes to `stackFallback`, the esbuild
- * facet in production, and its answer stands; if that call fails, the
- * module's answer is transient. Without a fallback the exhaustion stands.
+ * A module whose outcome says Oxc ran out of native stack on it
+ * (`stackExhausted`, set by the driver from the RangeError, never read off
+ * message text) goes to `stackFallback`, the esbuild facet in production: one
+ * call per module, each with a deadline, at most STACK_FALLBACK_MODULES per
+ * batch, each logged. Its answer stands; a call that fails or misses its
+ * deadline, and a module past the bound, answer transient. Without a
+ * fallback the exhaustion stands.
  */
-export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown, stackFallback?: EsbuildTransformHost): EsbuildTransformHost;
+export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown, stackFallback?: EsbuildTransformHost, { fallbackDeadlineMs }?: {
+    fallbackDeadlineMs?: number;
+}): EsbuildTransformHost;
 //# sourceMappingURL=oxc-transform.d.ts.map

@@ -156,9 +156,17 @@ export interface EsbuildTransformRequest {
  * module. A `transient` error is no verdict on the source: the host could not
  * run the transform this time.
  */
+/**
+ * A transform's answer. `transient` marks a failure that is no verdict on the
+ * source (retry); `stackExhausted` one where the engine ran out of native
+ * stack on the module's nesting, which another engine may still answer
+ * (oxc-transform.ts's driver sets it from the RangeError it caught, never
+ * from message text).
+ */
 export type EsbuildTransformOutcome = TransformResult | {
     error: string;
     transient?: true;
+    stackExhausted?: true;
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.

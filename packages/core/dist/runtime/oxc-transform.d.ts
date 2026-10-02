@@ -22,16 +22,15 @@
  *
  * Oxc's passes recurse once per level of nesting, on the host's native stack.
  * A module nested deeper than that stack holds (a concatenation of some ten
- * thousand terms under workerd) fails with OXC_STACK_EXHAUSTED in its message;
- * the transform facet's host sends such a module to esbuild instead
- * (facets/oxc-transform.ts).
+ * thousand terms under workerd) fails with an error whose `stackExhausted` is
+ * true, set here from the RangeError the wasm call threw and from nothing
+ * else; the transform facet carries it in the outcome, and its host sends such
+ * a module to esbuild instead (facets/oxc-transform.ts).
  *
  * No imports: the transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
-/** In the message of a transform that ran out of native stack, and only there. */
-export declare const OXC_STACK_EXHAUSTED = "the Oxc transform ran out of stack";
-/** Whether a transform outcome's error is a stack exhaustion, which esbuild may still answer. */
-export declare function isOxcStackExhaustion(error: string): boolean;
+/** Whether `error` is a transform's report that it ran out of native stack. */
+export declare function isOxcStackExhaustion(error: unknown): boolean;
 export interface OxcTransformOptions {
     loader?: string;
     format?: string;

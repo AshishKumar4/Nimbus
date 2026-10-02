@@ -14,8 +14,8 @@
  * a function of: the pipeline's code (TRANSFORM_PIPELINE_ID, which core's
  * build pins from the bundled closure of bundle-cell-transform.ts and
  * EsbuildService and ships with that code), the transform host's code (the
- * store is bound to one host — for the session, its transform facet, whose id
- * carries the Oxc wasm's build id, the facet's staged runtime and its body),
+ * store is bound to one host — for the session, its transform facet and the
+ * esbuild facet that answers what is too deep for it: TRANSFORM_HOST_ID),
  * what is transformed (a module cell or an entry script), where it is staged
  * (its path or URL: the loader, format, TypeScript-ness and import.meta all
  * follow from it), and the source. The old in-heap key was a 32-bit hash of
@@ -201,8 +201,8 @@ export class TransformStore implements BundleCellResultStore {
 
   /**
    * @param host The identity of the transform host whose results this store
-   *   holds: EsbuildService.transformHostId, for the session its transform
-   *   facet's OXC_FACET_WORKER_ID.
+   *   holds: EsbuildService.transformHostId, for the session
+   *   esbuild-transform.ts's TRANSFORM_HOST_ID (both engines' code).
    * @param ledger The session's storage ledger, which admits every write.
    */
   constructor(
