@@ -44,6 +44,7 @@ import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contr
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
+import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
@@ -194,13 +195,16 @@ export interface NimbusWorkspaceOptions {
  */
 export class NimbusWorkspace {
   /**
-   * The namespace as the session user sees it: a `VFS` (absolute paths), the
-   * shell process's own view, so every write passes the same lease check a
-   * command's does. Never the kernel's authority (see CRED_SESSION_USER in
-   * os-contracts.ts). Helpers such as readText, writeText and exists are
-   * vfs.ts free functions over it.
+   * The namespace as the session user sees it: the shell process's own view,
+   * so every write passes the same lease check a command's does. Never the
+   * kernel's authority (see CRED_SESSION_USER in os-contracts.ts). A relative
+   * path is taken from its own working directory, the one the shell starts
+   * in (create's `cwd`, else HOME), which a `cd` in the shell does not move.
+   * `move` is mv's: a rename, or across mounts a copy that happens whole or
+   * not at all. Helpers such as readText, writeText and exists are vfs.ts
+   * free functions over it.
    */
-  readonly fs: ProcessView;
+  readonly fs: WorkspaceFs;
   /** The raw durable filesystem, for hosts that need uid-aware operations. */
   readonly vfs: SqliteVFS;
   readonly kernel: Kernel;
@@ -249,8 +253,9 @@ export class NimbusWorkspace {
     this.shellProcessPid = shellProcessPid;
     this.commands = new SandboxCommandsImpl(shell, registry);
     // The shell's own process view: a host calling `.fs` acts as the
-    // session user, never as the kernel.
-    this.fs = shell.getVfs();
+    // session user, never as the kernel. Its working directory is the
+    // shell's before anything has run: create's `cwd`, else HOME.
+    this.fs = new WorkspaceFs(shell.getVfs(), shell.getCwd());
   }
 
   static async create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace> {

@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+Breaking for embedders: `NimbusWorkspace.fs` is a `WorkspaceFs`, no
+longer a `ProcessView`, as described below.
+
 - Changed: a workspace's per-user defaults follow the `HOME` its host
   configures (`NimbusWorkspace.create({ env: { HOME } })`). The home
   directory and `~/.nimbusrc` are seeded there, `/etc/passwd` names it, and
@@ -38,6 +41,68 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a real-vite dev server restored after a hibernation was given an
   empty argv at its root instead of the identity persisted with its config,
   so the app verbs could derive a different owner for it.
+- `ws.fs` takes a relative path from a working directory of its own, as a
+  process does: the one the workspace starts in (`create`'s `cwd`, else
+  `HOME`), which a `cd` in the shell does not move. On 0.14.0 a workspace
+  created with `cwd: '/home/user'` answered `ws.fs.readFile('a.txt')` with
+  `ENOENT` while /home/user/a.txt existed, so every embedder resolved
+  paths itself. `ws.fs.cwd` and `ws.fs.resolve(path)` say where a path
+  leads: the cwd, then the path as spelled, with `.` and `..` left to the
+  walk. An empty path is `ENOENT` (`readdir('')` listed `/`), and
+  removing or renaming a last component of `.` or `..` is refused with
+  Linux's code (`remove('/a/b/.', { recursive: true })` removed /a/b).
+  `ws.fs` has every method it had except `process`, the root-relative
+  bridge. The session shell's `ProcessView`, which Nimbus's own code hands
+  root-relative keys such as `etc/passwd`, is still `ws.shell.getVfs()`;
+  the two types are not assignable to each other.
+- `ws.fs.move(from, to)` is mv's move, and `move(vfs, from, to)` in
+  `@nimbus-sh/core/vfs/move.js` is the same move over any `VFS`; the
+  shell's `mv` uses it. Within one filesystem it is one rename. Between
+  two, and on a backend that cannot rename in place, it stages a copy
+  beside the destination and confirms it, removes the source, and renames
+  the copy over the destination, which keeps its bytes until then. A
+  failure at any step puts the source back and leaves no copy behind;
+  `mv` copied straight onto the destination, so a failure mid-copy left
+  part of a tree there, or a destination file already overwritten. A
+  failed final rename is decided by its own answer: a refusal made before
+  anything changed (`RENAME_REFUSALS`) puts the source back and is the
+  answer, a filesystem saying it renamed all of it (`renameOutcome`) has
+  moved it, and anything else is `EIO` with nothing undone or removed,
+  naming where what was moving is. What it makes is private until complete:
+  `mv` made a copy at the default mode and narrowed it after, so a 0600
+  file moved into /tmp was readable by other users meanwhile. Directories
+  move too. `rename` still answers `EXDEV` between mounts. A directory
+  moved onto a file now answers `ENOTDIR`, where `mv` said `ENOTEMPTY`,
+  and `mv` no longer makes a missing destination directory.
+- A rename on the SQLite filesystem that fails says what it did: an error
+  carrying `renamed: 'none'` when its store shows the destination as it
+  was, and `EIO` with `renamed: 'all'` when the tree was published whole
+  and only removing the old name failed. A commit that was durable and
+  still threw, or a tree published in part, is `EIO`; before, each of
+  these rethrew the storage error unchanged, so a caller could not tell
+  a rename that did nothing from one that did some of it.
+- Fixed: renaming a tree large enough to take several transactions onto
+  an empty directory, on the SQLite filesystem, removed that directory
+  when a later transaction failed: the unwind took away the published
+  root, and with it the directory the root had replaced, while the inode
+  cache and the file counts still had it. The unwind now puts the
+  directory back as it was, with its inode, mode, owner and times.
+- Fixed: a file a process creates on a synchronous mount with a mode
+  (`open` with `O_CREAT`, `writeFile` with `mode`) was made at the
+  backend's default mode. It is now made at the mode asked for, as on an
+  asynchronous mount.
+- Fixed: a process's rename within one mount answered `EXDEV` even where the
+  mounted backend renames, so `mv /m/a /m/b`, a node process's `fs.rename`
+  and `ws.fs.rename` copied, or failed, where the namespace renames in
+  place. Within one mount a rename is now that mount's own. Between two
+  filesystems, and on a backend with no rename in place, it still answers
+  `EXDEV`; renaming a mount point answers `EBUSY`, as on Linux. A
+  mutation on a mount reached through a link is checked against leases at
+  the name it reaches, as one on SQLite is.
+- Fixed: `rm -r` of a tree on a mount whose backend has no removal of its
+  own exited 0 when an entry in the tree could not be removed, and left the
+  entry there. It now fails with that entry's error, as the asynchronous
+  path already did.
 
 ## 2026-10-01
 

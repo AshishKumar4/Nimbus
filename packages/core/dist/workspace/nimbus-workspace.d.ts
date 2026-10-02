@@ -28,7 +28,7 @@ import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
-import { ProcessView } from '../runtime/process-files.js';
+import { WorkspaceFs } from './workspace-fs.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -170,13 +170,16 @@ export declare class NimbusWorkspace {
     readonly filesystem: ProcessFiles;
     private readonly runtimeLease;
     /**
-     * The namespace as the session user sees it: a `VFS` (absolute paths), the
-     * shell process's own view, so every write passes the same lease check a
-     * command's does. Never the kernel's authority (see CRED_SESSION_USER in
-     * os-contracts.ts). Helpers such as readText, writeText and exists are
-     * vfs.ts free functions over it.
+     * The namespace as the session user sees it: the shell process's own view,
+     * so every write passes the same lease check a command's does. Never the
+     * kernel's authority (see CRED_SESSION_USER in os-contracts.ts). A relative
+     * path is taken from its own working directory, the one the shell starts
+     * in (create's `cwd`, else HOME), which a `cd` in the shell does not move.
+     * `move` is mv's: a rename, or across mounts a copy that happens whole or
+     * not at all. Helpers such as readText, writeText and exists are vfs.ts
+     * free functions over it.
      */
-    readonly fs: ProcessView;
+    readonly fs: WorkspaceFs;
     /** The raw durable filesystem, for hosts that need uid-aware operations. */
     readonly vfs: SqliteVFS;
     readonly kernel: Kernel;

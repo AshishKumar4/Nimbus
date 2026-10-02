@@ -1134,11 +1134,20 @@ export declare class SqliteVFS {
      * These rows name content the source still owns, so removing them collects
      * nothing — the point is only that a retry sees an empty destination rather
      * than a subtree conflict. Deepest-first in bounded groups, like any other
-     * removal. A failure here is swallowed: the caller is already unwinding, and
-     * the source tree — which is what the data lives in — is untouched either
-     * way.
+     * removal. The first group replaced `occupant` (an empty directory), so
+     * it comes back, as it was (its inode, mode, owner and times), in the
+     * transaction that takes the root away. A failure here is swallowed: the
+     * caller is already unwinding and reads back what the store holds, and the
+     * source tree — which is what the data lives in — is untouched either way.
      */
     private unpublishRenameDestination;
+    /**
+     * Whether `paths` hold, in the store, what they held before a rename onto
+     * them: nothing, or `occupant` alone, there (a moved entry keeps its inode,
+     * so the number tells the two apart). A store that cannot answer has not
+     * said so.
+     */
+    private renameTargetsUntouched;
     /**
      * Copy a file by reference: one inode row naming the source's chunk or
      * manifest. No byte is read or written; a later write to either side

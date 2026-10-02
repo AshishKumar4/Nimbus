@@ -111,7 +111,12 @@ export interface VFS {
 
   /** Removes an empty directory. Absent: the composite checks emptiness and unlinks. */
   rmdir?(path: string): Awaitable<void>;
-  /** Within this backend. Absent: the composite answers EXDEV, which mv already handles by copying. */
+  /**
+   * Within this backend. Absent: the composite answers EXDEV, which mv
+   * already handles by copying. A refusal (RENAME_REFUSALS, vfs-error.ts)
+   * says nothing changed; a rename that fails after making part of itself
+   * answers EIO, and may say how far it got (renameOutcome).
+   */
   rename?(from: string, to: string): Awaitable<void>;
   /** At most `length` bytes from `offset`, clamped at end of file. */
   readRange?(path: string, offset: number, length: number): Awaitable<Uint8Array>;

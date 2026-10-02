@@ -1,7 +1,8 @@
-import { resolve, basename, dirname } from '../../utils/path.js';
+import { resolve, basename } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { isVfsError, syscallError } from '../../../../vfs/vfs-error.js';
-import { lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
+import { move } from '../../../../vfs/move.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     force: { type: 'boolean', short: 'f' },
     'no-clobber': { type: 'boolean', short: 'n' },
@@ -45,15 +46,12 @@ const command = async (ctx) => {
         if (flags['no-clobber'] && (await ctx.vfs.exists(target)))
             continue;
         try {
-            try {
-                await ctx.vfs.rename(src, target);
-            }
-            catch (error) {
-                if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EXDEV'))
-                    throw error;
-                await copyAcrossMounts(ctx, src, target);
-                await ctx.vfs.remove(src, { recursive: true });
-            }
+            // Across mounts, a copy that lands whole or not at all (vfs/move.ts).
+            await move(ctx.vfs, src, target, {
+                onPreserveFailure: async ({ what, path, error }) => {
+                    await ctx.stderr.write(`mv: preserving ${what} for '${path}': ${error.message}\n`);
+                },
+            });
             if (flags.verbose)
                 await ctx.stdout.write(`renamed '${source}' -> '${rawDest}'\n`);
         }
@@ -79,54 +77,3 @@ async function isDirectory(ctx, path) {
     }
 }
 export default command;
-async function copyAcrossMounts(ctx, source, target) {
-    const stat = await lstatOrThrow(ctx.vfs, source);
-    const exists = await ctx.vfs.exists(target);
-    if (exists) {
-        const destination = await lstatOrThrow(ctx.vfs, target);
-        if (stat.ino !== undefined && stat.dev !== undefined && stat.ino === destination.ino && stat.dev === destination.dev) {
-            throw syscallError('EINVAL', 'rename', source, { dest: target, detail: 'source and destination are the same file' });
-        }
-        if (stat.type === 'directory' && (destination.type !== 'directory' || (await ctx.vfs.readdir(target)).length > 0)) {
-            throw syscallError('ENOTEMPTY', 'rename', source, { dest: target });
-        }
-    }
-    if (stat.type === 'directory') {
-        if (!exists)
-            await ctx.vfs.mkdir(target, { mode: stat.mode | 0o700 });
-        for (const entry of await ctx.vfs.readdir(source)) {
-            await copyAcrossMounts(ctx, resolve(source, entry.name), resolve(target, entry.name));
-        }
-    }
-    else if (stat.type === 'symlink') {
-        await ensureParentDir(ctx, target);
-        const link = await ctx.vfs.readlink(source);
-        if (exists)
-            await ctx.vfs.unlink(target);
-        await ctx.vfs.symlink(link, target);
-        return;
-    }
-    else {
-        await ensureParentDir(ctx, target);
-        await ctx.vfs.copy(source, target);
-    }
-    // GNU mv preserves attributes best effort (mv.c: require_preserve = false).
-    await preserve(ctx, 'times', target, () => ctx.vfs.utimes(target, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs));
-    await preserve(ctx, 'permissions', target, () => ctx.vfs.chmod(target, stat.mode));
-}
-async function preserve(ctx, what, target, apply) {
-    try {
-        await apply();
-    }
-    catch (error) {
-        if (!(isVfsError(error)))
-            throw error;
-        await ctx.stderr.write(`mv: preserving ${what} for '${target}': ${error.message}\n`);
-    }
-}
-/** A leaf copied across mounts arrives before the destination holds its parent. */
-async function ensureParentDir(ctx, target) {
-    const parent = dirname(target);
-    if (!(await ctx.vfs.exists(parent)))
-        await ctx.vfs.mkdir(parent, { recursive: true });
-}
