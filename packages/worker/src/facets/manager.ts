@@ -29,7 +29,7 @@ import {
   type CommonJsCellRow,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdOf, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, execIdOf, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -4367,6 +4367,8 @@ export interface ResidentAppSummary {
   restart: ResidentRestartPolicy;
   /** Set with status 'failed': what went wrong, in the user's terms. */
   diagnostic: string | null;
+  /** The exec id of `pid` (`ProcessEntry.execId`); absent when it has none. */
+  execId?: string;
 }
 
 /** What a pid's journal row says about who it is. */
@@ -7545,7 +7547,8 @@ export class FacetManager {
       if (app.status === 'stopped') app.status = 'running';
       apps.set(identity.owner, app);
     }
-    return [...apps.values()];
+    // The live pid's exec id, read from its process: the one place it lives.
+    return [...apps.values()].map((app) => (app.pid === null ? app : { ...app, ...execIdField(this.processes.get(app.pid)) }));
   }
 
   async registerPort(pid: number, port: number): Promise<void> {

@@ -145,6 +145,8 @@ try {
   await listen(server.pid, 8080);
   assert.equal((await portRecord(8080))?.execId, 'j1', `the listener on 8080 reports j1: ${JSON.stringify(await runtime.listPorts())}`);
   assert.equal((await processRecord(server.pid))?.execId, 'j1', 'and so does the server process');
+  const summary = (await fm().listResidentApps()).find((app) => app.pid === server.pid);
+  assert.equal(summary?.execId, 'j1', `and the manager's own app summary: ${JSON.stringify(summary)}`);
 
   const { childPid } = await spawnChild(server.pid, 'node', ['-e', '1']);
   assert.equal(processes.get(childPid)?.parentPid, server.pid, 'the child is the server\'s');
@@ -159,6 +161,8 @@ try {
   const otherProcess = await processRecord(other.pid);
   assert.equal('execId' in otherProcess, false, `an untagged process reports no execId: ${JSON.stringify(otherProcess)}`);
   assert.equal(processes.get(other.pid).execId, undefined);
+  const otherSummary = (await fm().listResidentApps()).find((app) => app.pid === other.pid);
+  assert.equal('execId' in otherSummary, false, `an untagged app summary is unchanged: ${JSON.stringify(otherSummary)}`);
   console.log('  [1] exec j1 → node server.js on 8080 reports j1, its child reports j1, no execId is unchanged');
 
   // ── [2] a background job, a named shell, a child shell ─────────────────

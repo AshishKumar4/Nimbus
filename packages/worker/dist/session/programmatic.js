@@ -810,7 +810,6 @@ export async function rpcListApps(self) {
     return apps.map((app) => ({
         ...app,
         url: app.port === null ? null : appUrl(self, { ...app, port: app.port }),
-        ...execIdField(app.pid === null ? undefined : self.processes.get(app.pid)),
     }));
 }
 /**

@@ -895,6 +895,8 @@ export interface ResidentAppSummary {
     restart: ResidentRestartPolicy;
     /** Set with status 'failed': what went wrong, in the user's terms. */
     diagnostic: string | null;
+    /** The exec id of `pid` (`ProcessEntry.execId`); absent when it has none. */
+    execId?: string;
 }
 /** What a pid's journal row says about who it is. */
 export interface ResidentIdentity {

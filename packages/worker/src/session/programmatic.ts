@@ -895,8 +895,6 @@ export interface ExposedAppResult {
 
 export interface ListedApp extends ResidentAppSummary {
   url: string | null;
-  /** The exec id of `pid` (`SerializedProcess.execId`). */
-  execId?: string;
 }
 
 /** An app target as every app verb takes it: a port, a pid, or a name/owner. */
@@ -1161,7 +1159,6 @@ export async function rpcListApps(self: ProgrammaticHost): Promise<ListedApp[]> 
   return apps.map((app) => ({
     ...app,
     url: app.port === null ? null : appUrl(self, { ...app, port: app.port }),
-    ...execIdField(app.pid === null ? undefined : self.processes.get(app.pid)),
   }));
 }
 
