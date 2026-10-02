@@ -790,8 +790,10 @@ export function seedBaseFilesystem(vfs: SqliteVFS, home: string = DEFAULT_HOME):
     rootFs.mkdir(homeDir, { recursive: true, mode: 0o755 });
     rootFs.chown(homeDir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   }
+  // HOME=/ is root's directory, not one Nimbus populates for the user.
+  const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
   for (const dir of [
-    `${homeDir}/.config`, `${homeDir}/projects`,
+    ...homeChildren,
     'tmp', 'var/log',
     'usr/bin', 'usr/lib', 'usr/lib/node_modules',
     'usr/share', 'usr/share/pkg', 'usr/share/pkg/node_modules',
@@ -831,13 +833,14 @@ export function seedBaseFilesystem(vfs: SqliteVFS, home: string = DEFAULT_HOME):
     if (stat.uid !== 0 || stat.gid !== 0) rootFs.chown(path, 0, 0);
     if ((stat.mode & 0o7777) !== 0o644) rootFs.chmod(path, 0o644);
   };
-  const passwd = `root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:${home}:/bin/sh\n`;
-  accountFile('etc/passwd', passwd);
-  // A passwd that is exactly the one Nimbus seeded, for another home, is
-  // ours to follow the configured HOME; anything else is the user's.
-  const seededPasswd = /^root:x:0:0:root:\/root:\/bin\/sh\nuser:x:1000:1000:Nimbus User:[^:\n]*:\/bin\/sh\n$/;
-  const current = rootFs.readFileString('etc/passwd');
-  if (current !== passwd && seededPasswd.test(current)) rootFs.writeFile('etc/passwd', passwd);
+  const passwdFor = (dir: string) => `root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:${dir}:/bin/sh\n`;
+  accountFile('etc/passwd', passwdFor(home));
+  // The passwd every workspace got before its home was configurable named
+  // /home/user. Exactly that file is Nimbus's to move to the configured home;
+  // any other content is the user's.
+  if (home !== DEFAULT_HOME && rootFs.readFileString('etc/passwd') === passwdFor(DEFAULT_HOME)) {
+    rootFs.writeFile('etc/passwd', passwdFor(home));
+  }
   accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
 
   // `$HOME` is expanded when the profile is sourced, so one profile serves
@@ -857,7 +860,7 @@ export function seedBaseFilesystem(vfs: SqliteVFS, home: string = DEFAULT_HOME):
     rootFs.writeFile('etc/profile', defaultProfile);
   }
 
-  if (!fs.exists(`${homeDir}/.nimbusrc`)) {
+  if (homeDir !== '' && !fs.exists(`${homeDir}/.nimbusrc`)) {
     fs.writeFile(`${homeDir}/.nimbusrc`,
       '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n',
     );

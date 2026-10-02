@@ -12,8 +12,11 @@ published independently in the `@nimbus-sh` npm scope.
   and pip packages, as runtimes already were. Before, all of these named
   `/home/user` whatever HOME was. `/etc/profile` now spells the user's bins
   as `$HOME/...`. A passwd or profile that is still exactly the one Nimbus
-  seeded follows the new home; one the user changed stays. A relative HOME
-  is refused. With no HOME configured, nothing changes.
+  seeded before (naming `/home/user`) moves to the configured home; one the
+  user changed stays. A gem's command runs the script under the invoking
+  HOME's gem home, and the Python prompt chooses its interpreter from the
+  invoking HOME's packages. A relative HOME is refused. With no HOME
+  configured, nothing changes.
 
 ## 2026-10-01
 

@@ -79,10 +79,25 @@ const out = async (ws, line) => {
   assert.equal(kernel.readFileString('etc/profile'), 'export PATH=/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$HOME/.gem/bin\nexport EDITOR=nano\n');
   assert.match(await out(ws, 'echo "$PATH"'), /\/home\/main\/\.gem\/bin\n$/);
 
-  const edited = 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Main:/home/user:/bin/bash\n';
-  kernel.writeFile('etc/passwd', edited);
-  const again = await open(db, { HOME: '/home/main' });
-  assert.equal(again.vfs.as(CRED_KERNEL).readFileString('etc/passwd'), edited, 'a passwd the user changed is left alone');
+  for (const edited of [
+    'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Main:/home/user:/bin/bash\n',
+    // Only the home field changed: still the user's choice, not Nimbus's seed.
+    'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:/srv/private:/bin/sh\n',
+  ]) {
+    kernel.writeFile('etc/passwd', edited);
+    const again = await open(db, { HOME: '/home/other' });
+    assert.equal(again.vfs.as(CRED_KERNEL).readFileString('etc/passwd'), edited, 'a passwd the user changed is left alone');
+  }
+  db.close();
+}
+
+// ── HOME=/ is root's directory: nothing is seeded into it ─────────────────
+{
+  const db = new Database(':memory:');
+  const ws = await open(db, { HOME: '/' });
+  assert.equal(await out(ws, 'echo "$HOME|$XDG_CONFIG_HOME"'), '/|//.config\n');
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  assert.deepEqual([kernel.exists('.config'), kernel.exists('.nimbusrc')], [false, false]);
   db.close();
 }
 

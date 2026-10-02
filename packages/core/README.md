@@ -101,8 +101,8 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, env:
 ```
 
 HOME must be an absolute path. A workspace first seeded under another home
-keeps its files there. Nimbus updates `/etc/passwd` and `/etc/profile` only
-when they are still exactly what it seeded.
+keeps its files there. Nimbus moves `/etc/passwd` and `/etc/profile` to the
+new home only while they are still exactly what it seeded for `/home/user`.
 
 ## Real runtimes, off Cloudflare
 

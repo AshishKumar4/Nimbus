@@ -165,6 +165,7 @@ workspace.runtimes.registerRunner(
         authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
+        home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
         manifest,
         // REPL-R7-1: thread the shell so ReplSession can drain
         // shell.pasteQueue on attach (multi-line WS frames like
@@ -310,6 +311,7 @@ workspace.runtimes.registerRunner(
           facetMgr,
           authority: workspace.filesystem,
           installRoot: target.root,
+          home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
           manifest: target.manifest,
         });
         ctx.stdout.write('[python] ready\n');

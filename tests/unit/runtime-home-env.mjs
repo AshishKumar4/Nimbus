@@ -127,4 +127,39 @@ function commandContext(filesystem, env, cred = USER) {
   assert.equal(harness.calls[1].userEnv.GEM_HOME, '/home/session/.gem');
 }
 
+// A gem's command is registered once per session, and runs the script under
+// the invoking HOME's gem home: a gem installed under another HOME does not
+// take the name over for everyone.
+{
+  const harness = loaderHarness();
+  const filesystem = installedRuntime({
+    '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
+    '/home/session/.gem/bin/rake': new TextEncoder().encode('# session rake\n'),
+    '/home/other/.gem/bin/rake': new TextEncoder().encode('# other rake\n'),
+  });
+  const commands = new Map();
+  const ran = [];
+  commands.set('ruby', async (ctx) => { ran.push(ctx.args[0]); return 0; });
+  const registry = {
+    register: (name, handler) => { if (name !== 'ruby') commands.set(name, handler); },
+    resolve: (name) => commands.get(name) ?? null,
+  };
+  await makeRubyRunnerFactory({
+    facets: loaderFacetHost(harness.env, harness.ctx),
+    filesystem,
+    registry,
+    getHome: () => '/home/session',
+  })({ files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] }, '/runtime/ruby', 'ruby', undefined);
+  const rake = commands.get('rake');
+  assert.ok(rake, 'the session home\'s gem bins are registered when the runtime loads');
+  assert.equal(await rake(commandContext(filesystem, {})), 0);
+  assert.equal(await rake(commandContext(filesystem, { HOME: '/home/other' })), 0);
+  assert.deepEqual(ran, ['/home/session/.gem/bin/rake', '/home/other/.gem/bin/rake']);
+  const missing = commandContext(filesystem, { HOME: '/home/nobody' });
+  let err = '';
+  missing.stderr = { write: (s) => { err += s; } };
+  assert.equal(await rake(missing), 127, 'a HOME with no such gem has no such command');
+  assert.match(err, /rake: command not found/);
+}
+
 console.log('runtime-home-env: ok');
