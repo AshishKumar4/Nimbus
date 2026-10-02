@@ -546,8 +546,20 @@ export class SqliteRuntimeFsBridge {
     rename(from, to) {
         // Every refusal names the call's own two paths, whichever lookup met it.
         const call = { syscall: 'rename', path: from, dest: to };
-        const oldPath = this.sqlitePath(from, false, call);
-        const newPath = this.sqlitePath(to, false, call);
+        const source = this.locateMutation(from, false, call);
+        const target = this.locateMutation(to, false, call);
+        // A name on a mount is renamed by the namespace: within one mount by that
+        // mount, and otherwise refused in the namespace's order (EBUSY for a
+        // mount point, then EXDEV between two filesystems and on a backend with
+        // no rename in place).
+        if (source.mount || target.mount) {
+            const fromPath = source.mount ? source.path : `/${source.path}`;
+            const toPath = target.mount ? target.path : `/${target.path}`;
+            mountOp((source.mount ?? target.mount).rename, call)(fromPath, toPath);
+            return;
+        }
+        const oldPath = source.path;
+        const newPath = target.path;
         const oldKey = this.legacyKey(oldPath);
         const newKey = this.legacyKey(newPath);
         if (this.vfs.exists(oldPath)) {
@@ -649,10 +661,15 @@ export class SqliteRuntimeFsBridge {
             const located = this.locateMutation(path, false, 'remove');
             if (located.mount) {
                 const mount = located.mount;
-                if (mount.removeRecursive)
-                    mount.removeRecursive(located.path);
-                else
+                if (!mount.removeRecursive)
                     removeTree(mount, located.path);
+                else {
+                    // A walked removal carries on past an entry it cannot remove and
+                    // reports it; rm -r fails with the first.
+                    const failed = mount.removeRecursive(located.path)?.failures[0];
+                    if (failed)
+                        throw failed.error;
+                }
             }
             else
                 this.vfs.removeRecursive(located.path);
