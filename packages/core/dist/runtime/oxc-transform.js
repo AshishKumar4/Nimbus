@@ -60,6 +60,9 @@ export function createOxcTransform(module, { retireAboveBytes = 64 * 1024 * 1024
         const jsx = options.jsx ?? 'transform';
         if (jsx !== 'transform' && jsx !== 'automatic' && jsx !== 'preserve')
             throw new Error(`oxc transform: jsx "${jsx}" is not supported`);
+        if (jsx === 'preserve' && format === 'cjs' && (loader === 'jsx' || loader === 'tsx')) {
+            throw new Error('oxc transform: jsx "preserve" is not supported with format "cjs"');
+        }
         const fields = ['loader', loader, 'format', format, 'jsx', jsx, 'sourcemap', sourcemap];
         if (options.jsxFactory)
             fields.push('jsxFactory', options.jsxFactory);

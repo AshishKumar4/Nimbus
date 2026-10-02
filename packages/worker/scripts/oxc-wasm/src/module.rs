@@ -50,8 +50,10 @@ pub struct ModuleOptions {
     pub format: Format,
     pub dynamic_import: bool,
     pub import_meta: bool,
+    /// The module is an ES module (lib.rs decides).
+    pub is_esm: bool,
     pub has_export_syntax: bool,
-    pub has_import_syntax: bool,
+    pub has_import_meta: bool,
     pub has_dynamic_import: bool,
 }
 
@@ -100,9 +102,11 @@ pub struct ModulePass<'a> {
     bindings: FxHashMap<SymbolId, ImportBinding<'a>>,
     exports_name: Option<String>,
     wrapper_name: Option<String>,
+    /// The wrapper's `exports` and `module` parameters: renamed where the
+    /// module declares its own.
+    wrapper_params: [String; 2],
     import_meta_name: Option<Ident<'a>>,
     function_depth: u32,
-    this_depth: u32,
     top_level_await: Option<Span>,
     errors: Vec<OxcDiagnostic>,
     warnings: Vec<OxcDiagnostic>,
@@ -122,9 +126,9 @@ impl<'a> ModulePass<'a> {
             bindings: FxHashMap::default(),
             exports_name: None,
             wrapper_name: None,
+            wrapper_params: ["exports".into(), "module".into()],
             import_meta_name: None,
             function_depth: 0,
-            this_depth: 0,
             top_level_await: None,
             errors: Vec::new(),
             warnings: Vec::new(),
@@ -155,13 +159,14 @@ impl<'a> ModulePass<'a> {
         if self.options.format == Format::Esm {
             Self::drop_empty_exports(program, allocator);
         }
-        let has_module_syntax = self.options.has_import_syntax
-            || self.options.has_export_syntax
-            || program.body.iter().any(Statement::is_module_declaration);
-        self.is_esm = has_module_syntax;
-        self.to_cjs = self.options.format == Format::Cjs && has_module_syntax;
+        self.is_esm = self.options.is_esm;
+        self.to_cjs = self.options.format == Format::Cjs && self.is_esm;
+        // esbuild's rule: a module that reads `module` or `exports` and has no
+        // export syntax, `import.meta` or top-level await is CommonJS, even
+        // with imports (they stay in front of the wrapper).
         self.wrap_commonjs = self.options.format == Format::Esm
             && !self.options.has_export_syntax
+            && !self.options.has_import_meta
             && ["module", "exports"].iter().any(|n| scoping.root_unresolved_references().contains_key(*n));
         let lowers_dynamic_import = !self.options.dynamic_import && self.options.has_dynamic_import;
 
@@ -176,6 +181,11 @@ impl<'a> ModulePass<'a> {
             if self.wrap_commonjs {
                 claimed.add(Helper::CommonJs);
                 self.wrapper_name = Some(names.generate("require_stdin", &mut scoping, allocator));
+                for (param, name) in self.wrapper_params.iter_mut().zip(["exports", "module"]) {
+                    if scoping.get_root_binding(name.into()).is_some() {
+                        *param = names.claim_fresh(name);
+                    }
+                }
             }
             if lowers_dynamic_import {
                 self.helpers.add(Helper::ToEsm);
@@ -196,11 +206,15 @@ impl<'a> ModulePass<'a> {
             if lowers_dynamic_import {
                 names.reserve_global("Promise", &mut scoping, allocator);
             }
-            if lowers_dynamic_import || !self.records.is_empty() {
+            // CommonJS's own names, which the module's code now runs beside:
+            // esbuild renames a module's `require`, `module` and `exports`
+            // whenever it converts one, used or not.
+            if self.to_cjs {
+                for name in ["require", "module", "exports"] {
+                    names.reserve_global(name, &mut scoping, allocator);
+                }
+            } else if lowers_dynamic_import {
                 names.reserve_global("require", &mut scoping, allocator);
-            }
-            if self.exports_name.is_some() {
-                names.reserve_global("module", &mut scoping, allocator);
             }
             self.names = Some(names);
             if !self.errors.is_empty() {
@@ -209,6 +223,9 @@ impl<'a> ModulePass<'a> {
         }
 
         let scoping = traverse_mut(&mut self, allocator, program, scoping, ());
+        if !self.to_cjs && self.names.is_some() {
+            Self::alias_renamed_exports(program, &scoping, allocator);
+        }
         if self.options.format == Format::Cjs
             && let Some(span) = self.top_level_await
         {
@@ -219,6 +236,57 @@ impl<'a> ModulePass<'a> {
         }
         self.finish(allocator, program, &scoping);
         (scoping, Ok(self.warnings))
+    }
+
+    /// `export const Promise = 1`, its binding renamed out of the way of a
+    /// global the output reads: `const Promise2 = 1; export { Promise2 as
+    /// Promise }`, so the module's exports keep their names.
+    fn alias_renamed_exports(program: &mut Program<'a>, scoping: &Scoping, allocator: &'a Allocator) {
+        let renamed = |decl: &Declaration<'a>| {
+            let mut pairs = Vec::new();
+            decl.bound_names(&mut |ident: &BindingIdentifier<'a>| {
+                if let Some(symbol) = ident.symbol_id.get()
+                    && scoping.symbol_name(symbol) != ident.name.as_str()
+                {
+                    pairs.push((Ident::from(scoping.symbol_name(symbol)), ident.name));
+                }
+            });
+            pairs
+        };
+        let needs = program.body.iter().any(|s| matches!(s, Statement::ExportDeclaration(e) if !renamed(&e.declaration).is_empty()));
+        if !needs {
+            return;
+        }
+        let ast = AstBuilder::new(allocator);
+        let body = program.body.take_in(&allocator);
+        let mut kept = ArenaVec::with_capacity_in(body.len() + 1, &allocator);
+        for statement in body {
+            let Statement::ExportDeclaration(export) = statement else {
+                kept.push(statement);
+                continue;
+            };
+            let pairs = renamed(&export.declaration);
+            if pairs.is_empty() {
+                kept.push(Statement::ExportDeclaration(export));
+                continue;
+            }
+            let ExportDeclaration { span, declaration, .. } = export.unbox();
+            let specifiers = ArenaVec::from_iter_in(
+                pairs.into_iter().map(|(local, exported)| {
+                    let local = ModuleExportName::IdentifierReference(IdentifierReference::new(
+                        SPAN,
+                        Ident::from_str_in(&local, &allocator),
+                        &ast,
+                    ));
+                    let exported = ModuleExportName::IdentifierName(IdentifierName::new(SPAN, exported, &ast));
+                    ExportSpecifier::new(SPAN, local, exported, ImportOrExportKind::Value, &ast)
+                }),
+                &allocator,
+            );
+            kept.push(Statement::from(declaration));
+            kept.push(Statement::new_export_named_declaration(span, specifiers, ImportOrExportKind::Value, &ast));
+        }
+        program.body = kept;
     }
 
     /// An ES module printed as one has no empty export lists: `export {}` goes,
@@ -411,7 +479,11 @@ impl<'a> ModulePass<'a> {
             _ => None,
         });
         let to_esm = namespace.is_some()
-            || specifiers.iter().any(|s| matches!(s, ImportDeclarationSpecifier::ImportDefaultSpecifier(_)));
+            || specifiers.iter().any(|s| match s {
+                ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => true,
+                ImportDeclarationSpecifier::ImportSpecifier(s) => s.imported.name() == "default",
+                ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => false,
+            });
         let (record, record_ident) = match namespace {
             Some(symbol) => (RecordName::Symbol(symbol), Ident::from_str_in(scoping.symbol_name(symbol), &allocator)),
             None => {
@@ -470,7 +542,15 @@ impl<'a> ModulePass<'a> {
                         ExportValue::Generated(name) => name.clone(),
                         ExportValue::Member(record, property) => member_text(&record_name(record), property),
                     };
-                    let key = if is_identifier_name(exported) { exported.clone() } else { js_string(exported) };
+                    // `__proto__: ...` would set the getters object's prototype
+                    // (esbuild prints it so, and loses the export).
+                    let key = if exported == "__proto__" {
+                        "[\"__proto__\"]".to_string()
+                    } else if is_identifier_name(exported) {
+                        exported.clone()
+                    } else {
+                        js_string(exported)
+                    };
                     let comma = if i + 1 < self.exports.len() { "," } else { "" };
                     text.push_str(&format!("  {key}: () => {getter}{comma}\n"));
                 }
@@ -519,8 +599,9 @@ impl<'a> ModulePass<'a> {
             .partition(|s| matches!(s, Statement::ImportDeclaration(_)));
         let mut text = prologue.to_string();
         let name = self.wrapper_name.as_deref().expect("a wrapped module has a wrapper name");
+        let [exports, module] = &self.wrapper_params;
         text.push_str(&format!(
-            "var {name} = __commonJS({{\n  \"<stdin>\"(exports, module) {{\n  }}\n}});\nexport default {name}();\n"
+            "var {name} = __commonJS({{\n  \"<stdin>\"({exports}, {module}) {{\n  }}\n}});\nexport default {name}();\n"
         ));
         let mut generated = parse_statements(allocator, text);
         // The wrapper's `var` is the second-to-last statement.
@@ -543,6 +624,30 @@ impl<'a> ModulePass<'a> {
         program.body = statements;
     }
 
+    /// An assignment to an imported binding writes its record's property,
+    /// which throws as the assignment would have; esbuild warns, and so do we.
+    fn import_target(
+        &mut self,
+        ident: &IdentifierReference<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) -> Option<SimpleAssignmentTarget<'a>> {
+        let binding = ident
+            .reference_id
+            .get()
+            .and_then(|id| ctx.scoping().get_reference(id).symbol_id())
+            .and_then(|symbol| self.bindings.get(&symbol))
+            .cloned()?;
+        self.warnings.push(
+            OxcDiagnostic::warn(format!("This assignment will throw because \"{}\" is an import", ident.name))
+                .with_label(ident.span),
+        );
+        match binding_member(ident.span, &binding, ctx) {
+            Expression::StaticMemberExpression(member) => Some(SimpleAssignmentTarget::StaticMemberExpression(member)),
+            Expression::ComputedMemberExpression(member) => Some(SimpleAssignmentTarget::ComputedMemberExpression(member)),
+            _ => None,
+        }
+    }
+
     fn rewrite_identifier(&mut self, expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
         let Expression::Identifier(ident) = expr else { return };
         let Some(binding) = ident
@@ -555,7 +660,9 @@ impl<'a> ModulePass<'a> {
         };
         let span = ident.span;
         let member = binding_member(span, binding, ctx);
-        *expr = if matches!(ctx.parent(), Ancestor::CallExpressionCallee(_)) {
+        // Called as a function or a tag, the binding is read off its record
+        // without becoming the receiver: `this` stays undefined, as in ESM.
+        *expr = if matches!(ctx.parent(), Ancestor::CallExpressionCallee(_) | Ancestor::TaggedTemplateExpressionTag(_)) {
             let zero = Expression::new_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal, ctx);
             Expression::new_sequence_expression(span, [zero, member], ctx)
         } else {
@@ -621,7 +728,7 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
         match expr {
             Expression::Identifier(_) if !self.bindings.is_empty() => self.rewrite_identifier(expr, ctx),
             Expression::ImportMeta(_) => self.import_meta(expr, ctx),
-            Expression::ThisExpression(this) if self.is_esm && self.this_depth == 0 => {
+            Expression::ThisExpression(this) if self.is_esm && this_is_module_level(ctx) => {
                 let span = this.span;
                 let zero = Expression::new_numeric_literal(SPAN, 0.0, None, NumberBase::Decimal, ctx);
                 *expr = Expression::new_unary_expression(span, UnaryOperator::Void, zero, ctx);
@@ -661,35 +768,34 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
         ctx: &mut TraverseCtx<'a>,
     ) {
         let SimpleAssignmentTarget::AssignmentTargetIdentifier(ident) = target else { return };
-        let Some(binding) = ident
-            .reference_id
-            .get()
-            .and_then(|id| ctx.scoping().get_reference(id).symbol_id())
-            .and_then(|symbol| self.bindings.get(&symbol))
-            .cloned()
-        else {
-            return;
-        };
-        self.warnings.push(
-            OxcDiagnostic::warn(format!("This assignment will throw because \"{}\" is an import", ident.name))
-                .with_label(ident.span),
-        );
-        let span = ident.span;
-        if let Expression::StaticMemberExpression(member) = binding_member(span, &binding, ctx) {
-            *target = SimpleAssignmentTarget::StaticMemberExpression(member);
-        } else if let Expression::ComputedMemberExpression(member) = binding_member(span, &binding, ctx) {
-            *target = SimpleAssignmentTarget::ComputedMemberExpression(member);
+        if let Some(member) = self.import_target(ident, ctx) {
+            *target = member;
         }
+    }
+
+    /// `({ a } = o)` with `a` imported: `({ a: import_x.a } = o)`.
+    fn enter_assignment_target_property(
+        &mut self,
+        property: &mut AssignmentTargetProperty<'a>,
+        ctx: &mut TraverseCtx<'a>,
+    ) {
+        let AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(shorthand) = property else { return };
+        let Some(member) = self.import_target(&shorthand.binding, ctx) else { return };
+        let span = shorthand.span;
+        let name = PropertyKey::new_static_identifier(shorthand.binding.span, shorthand.binding.name, ctx);
+        let binding = match shorthand.init.take() {
+            Some(init) => AssignmentTargetMaybeDefault::new_assignment_target_with_default(span, member.into(), init, ctx),
+            None => member.into(),
+        };
+        *property = AssignmentTargetProperty::new_assignment_target_property_property(span, name, binding, false, ctx);
     }
 
     fn enter_function(&mut self, _: &mut Function<'a>, _: &mut TraverseCtx<'a>) {
         self.function_depth += 1;
-        self.this_depth += 1;
     }
 
     fn exit_function(&mut self, _: &mut Function<'a>, _: &mut TraverseCtx<'a>) {
         self.function_depth -= 1;
-        self.this_depth -= 1;
     }
 
     fn enter_arrow_function_expression(&mut self, _: &mut ArrowFunctionExpression<'a>, _: &mut TraverseCtx<'a>) {
@@ -698,14 +804,6 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
 
     fn exit_arrow_function_expression(&mut self, _: &mut ArrowFunctionExpression<'a>, _: &mut TraverseCtx<'a>) {
         self.function_depth -= 1;
-    }
-
-    fn enter_class_body(&mut self, _: &mut ClassBody<'a>, _: &mut TraverseCtx<'a>) {
-        self.this_depth += 1;
-    }
-
-    fn exit_class_body(&mut self, _: &mut ClassBody<'a>, _: &mut TraverseCtx<'a>) {
-        self.this_depth -= 1;
     }
 
     fn enter_await_expression(&mut self, expr: &mut AwaitExpression<'a>, _: &mut TraverseCtx<'a>) {
@@ -725,6 +823,45 @@ impl<'a> Traverse<'a, ()> for ModulePass<'a> {
             self.top_level_await = Some(decl.span);
         }
     }
+}
+
+/// Whether the program awaits at its top level (outside every function).
+pub fn has_top_level_await(program: &Program<'_>) -> bool {
+    struct Finder(bool);
+    impl<'a> oxc::ast_visit::Visit<'a> for Finder {
+        fn visit_function(&mut self, _: &Function<'a>, _: oxc::semantic::ScopeFlags) {}
+        fn visit_arrow_function_expression(&mut self, _: &ArrowFunctionExpression<'a>) {}
+        fn visit_await_expression(&mut self, _: &AwaitExpression<'a>) {
+            self.0 = true;
+        }
+        fn visit_for_of_statement(&mut self, it: &ForOfStatement<'a>) {
+            self.0 |= it.r#await;
+            oxc::ast_visit::walk::walk_for_of_statement(self, it);
+        }
+        fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+            self.0 |= it.kind == VariableDeclarationKind::AwaitUsing;
+            oxc::ast_visit::walk::walk_variable_declaration(self, it);
+        }
+    }
+    let mut finder = Finder(false);
+    oxc::ast_visit::Visit::visit_program(&mut finder, program);
+    finder.0
+}
+
+/// Whether `this` here is the module's: no function, class field
+/// initializer or static block lies between it and the top level (a class's
+/// computed keys, `extends` and decorators evaluate outside the class).
+fn this_is_module_level(ctx: &TraverseCtx<'_>) -> bool {
+    !ctx.ancestors().any(|ancestor| {
+        matches!(
+            ancestor,
+            Ancestor::FunctionParams(_)
+                | Ancestor::FunctionBody(_)
+                | Ancestor::PropertyDefinitionValue(_)
+                | Ancestor::AccessorPropertyValue(_)
+                | Ancestor::StaticBlockBody(_)
+        )
+    })
 }
 
 /// A template with nothing substituted, as the string literal it evaluates to.

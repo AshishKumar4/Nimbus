@@ -133,6 +133,14 @@ impl Options {
                 other => return Err(format!("unknown option {other:?}")),
             }
         }
+        if options.format == Format::Cjs
+            && options.jsx == JsxMode::Preserve
+            && matches!(options.loader, Loader::Jsx | Loader::Tsx)
+        {
+            // A preserved `<C />` names an import that CommonJS output moves
+            // onto a record; module.rs does not rewrite JSX names.
+            return Err("jsx \"preserve\" is not supported with format \"cjs\"".into());
+        }
         Ok(options)
     }
 }

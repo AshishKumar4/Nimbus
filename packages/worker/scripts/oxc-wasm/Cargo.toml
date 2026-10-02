@@ -18,6 +18,7 @@ doctest = false
 oxc = { version = "=0.152.0", default-features = false, features = ["transformer", "semantic", "codegen", "ast_visit"] }
 oxc_ecmascript = "=0.152.0"
 oxc_traverse = "=0.152.0"
+memchr = "2"
 rustc-hash = "2"
 
 [profile.release]

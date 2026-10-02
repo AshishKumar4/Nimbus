@@ -352,6 +352,7 @@ dependencies = [
 name = "nimbus_oxc"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "oxc",
  "oxc_ecmascript",
  "oxc_traverse",

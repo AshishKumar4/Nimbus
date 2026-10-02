@@ -5,12 +5,12 @@
   "source": {
     "crate": "packages/worker/scripts/oxc-wasm",
     "files": {
-      "Cargo.toml": "0bd175a6563411d7812e3ee3dfaae2395ec4c68c19c16889ee6a915d49b4c4cf",
-      "Cargo.lock": "cccf59f1347026180c13aaa73fc216e9a0e78ad6cf485acfcc56e8f5ad960d6e",
+      "Cargo.toml": "12e02dd3f9ae9ba0aa7f710ff58d77c1df8ada5454694f5c3e3c0b3ce6752b25",
+      "Cargo.lock": "d31688c6583e5c1403139c6b26e379442f4a6e41d45897bc608c00316cc82b89",
       "rust-toolchain.toml": "1f65896ce423e463d3278c0a9fbf946892f9e7c95ca680f27b7a337dd5065736"
     },
     "manifestVersion": "0.1.0",
-    "src": "05480f233871a6da5edddae3792d12b09a277780e0c5a6c845829a59affeedca"
+    "src": "ae32879ad8ec78b3dbe3c872bfaf37450c2286508cbdd70db4b516c7e855ad77"
   },
   "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
   "cargo": {
@@ -56,8 +56,8 @@
   },
   "outputs": {
     "nimbus-oxc.wasm": {
-      "bytes": 2251830,
-      "sha256": "910fa6799970ce79beabf48d6edab32ec6fe297b0bb35c590543b65183da59f5"
+      "bytes": 2273727,
+      "sha256": "59cd65a72c5dff4d8edd5e15b71949fa85db42e82430e8c4022f8b33224865e4"
     }
   }
 }

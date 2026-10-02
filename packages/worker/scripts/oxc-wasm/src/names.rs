@@ -12,6 +12,7 @@ use rustc_hash::{FxHashSet, FxHasher};
 use oxc::allocator::Allocator;
 use oxc::semantic::{Scoping, SymbolId};
 use oxc::str::Ident;
+use oxc::syntax::keyword::is_reserved_keyword;
 
 /// esbuild's `GenerateNonUniqueNameFromPath`: the file name without its
 /// extension, or the directory's name for an `index` file, as an identifier.
@@ -63,6 +64,10 @@ pub fn ensure_valid_identifier(base: &str) -> String {
     out
 }
 
+/// Globals the generated code reads (the helpers' names are reserved as they
+/// are used). A generated binding never takes one of these names.
+const READ_BY_OUTPUT: [&str; 5] = ["Object", "Promise", "require", "module", "exports"];
+
 /// The module's names, and the renames that keep generated names free.
 ///
 /// What is in use is kept as hashes: a module of a hundred thousand symbols
@@ -92,7 +97,14 @@ impl Names {
 
     /// Claim `name` for a generated binding and return the spelling to use.
     pub fn generate(&mut self, name: &str, scoping: &mut Scoping, allocator: &Allocator) -> String {
-        let name = if self.unresolved.contains(name) || self.generated.contains(name) {
+        // `export * as default from "x"` names its record after a reserved
+        // word, `export * as Object from "x"` after a global the output reads:
+        // `default2`, `Object2`.
+        let name = if self.unresolved.contains(name)
+            || self.generated.contains(name)
+            || is_reserved_keyword(name)
+            || READ_BY_OUTPUT.contains(&name)
+        {
             self.fresh(name)
         } else {
             self.evict(name, scoping, allocator);
@@ -125,6 +137,15 @@ impl Names {
         for symbol in symbols {
             scoping.set_symbol_name(symbol, ident);
         }
+    }
+
+    /// A name no symbol of the module has, for a binding only generated code
+    /// sees (a wrapper's parameter): `name` itself, or `name2`, ….
+    pub fn claim_fresh(&mut self, name: &str) -> String {
+        let name = if self.taken.contains(&hash(name)) { self.fresh(name) } else { name.to_string() };
+        self.taken.insert(hash(&name));
+        self.generated.insert(name.clone());
+        name
     }
 
     /// `name2`, `name3`, … : the first not in use.

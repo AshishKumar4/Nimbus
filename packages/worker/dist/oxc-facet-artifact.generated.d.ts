@@ -6,10 +6,11 @@
  * src/runtime/oxc-facet/preamble.ts as an IIFE (the Oxc wasm's driver, the
  * dynamic-import rewrite and the top-level-await lowering). Only the
  * transform facet evaluates it, so src/runtime/oxc-wasm-bytes.ts fetches it
- * from ASSETS when that facet is built. OXC_FACET_BUILD_ID is a content-hash
- * prefix, OXC_FACET_SHA256 the digest every fetch is verified against.
+ * from ASSETS when that facet is built.
+ * OXC_FACET_BUILD_ID is a content-hash prefix, OXC_FACET_SHA256 the
+ * digest every fetch is verified against.
  *
- * Size: 317.03 KiB
+ * Size: 317.22 KiB
  */
 export declare const OXC_FACET_ASSET_PATH: string;
 export declare const OXC_FACET_BUILD_ID: string;

@@ -65,6 +65,7 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             .parse()
     };
     let mut parsed = parse(source_type);
+    let mut parsed_as_module = false;
     if parsed.diagnostics.has_errors() || parsed.fatal_error {
         // Unambiguous parsing reads top-level `await` as a module's, but not
         // `for await`: a source only a module can be is parsed as one.
@@ -73,13 +74,14 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             return Output::failed(diagnostics::convert(source, sourcefile, parsed.diagnostics.into_vec()));
         }
         parsed = as_module;
+        parsed_as_module = true;
     }
     let has_dynamic_import = !parsed.module_record.dynamic_imports.is_empty();
+    let has_import_meta = !parsed.module_record.import_metas.is_empty();
     let mut program = parsed.program;
     // Export syntax decides whether the module gets an exports object, even
     // when all of it is TypeScript types the transformer is about to erase.
     let has_export_syntax = program.body.iter().any(is_export_statement);
-    let has_import_syntax = program.body.iter().any(|s| matches!(s, Statement::ImportDeclaration(_)));
 
     let semantic = SemanticBuilder::new().with_check_syntax_error(true).with_enum_eval(true).build(&program);
     if semantic.diagnostics.has_errors() {
@@ -106,12 +108,25 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
         scoping = ReplaceGlobalDefines::new(allocator, config).build(scoping, &mut program).scoping;
     }
 
+    // An ES module, as esbuild decides it: export syntax (types included), an
+    // import that survived TypeScript's elision, `import.meta`, or top-level
+    // await (what made a parse as a module the only one that succeeds).
+    let mut is_esm = has_export_syntax
+        || has_import_meta
+        || parsed_as_module
+        || program.body.iter().any(|s| matches!(s, Statement::ImportDeclaration(_)));
+    // Unambiguous parsing accepts `await` at the top of a script; only `this`
+    // reads the difference, so only a source with both is walked for it.
+    if !is_esm && memchr::memmem::find(source.as_bytes(), b"await").is_some() && memchr::memmem::find(source.as_bytes(), b"this").is_some() {
+        is_esm = module::has_top_level_await(&program);
+    }
     let pass = module::ModulePass::new(module::ModuleOptions {
         format: options.format,
         dynamic_import: options.supported_dynamic_import,
         import_meta: options.supported_import_meta,
+        is_esm,
         has_export_syntax,
-        has_import_syntax,
+        has_import_meta,
         has_dynamic_import,
     });
     let (scoping, outcome) = pass.run(allocator, &mut program, scoping);

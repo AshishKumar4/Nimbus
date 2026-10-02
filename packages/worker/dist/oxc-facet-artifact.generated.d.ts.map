@@ -1,1 +1,1 @@
-{"version":3,"file":"oxc-facet-artifact.generated.d.ts","sourceRoot":"","sources":["../src/oxc-facet-artifact.generated.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;GAYG;AAEH,eAAO,MAAM,oBAAoB,EAAE,MAAyD,CAAC;AAC7F,eAAO,MAAM,kBAAkB,EAAE,MAA2B,CAAC;AAC7D,eAAO,MAAM,gBAAgB,EAAE,MAA2E,CAAC"}
+{"version":3,"file":"oxc-facet-artifact.generated.d.ts","sourceRoot":"","sources":["../src/oxc-facet-artifact.generated.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;GAaG;AAEH,eAAO,MAAM,oBAAoB,EAAE,MAAyD,CAAC;AAC7F,eAAO,MAAM,kBAAkB,EAAE,MAA2B,CAAC;AAC7D,eAAO,MAAM,gBAAgB,EAAE,MAA2E,CAAC"}

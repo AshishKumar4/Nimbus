@@ -164,6 +164,10 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   assert.match(code, /var import_b = require\("b"\);/);
   assert.match(code, /module\.exports = __toCommonJS\(stdin_exports\);/);
   assert.match(code, /\(0, import_b\.x\)\(import_a\.default\)/);
+  // An imported tag is called without its record as receiver, as an ES
+  // module calls it (esbuild 0.24 passes the record; the mock above cannot tell).
+  const { code: tagged } = await oxcEngine.transform("import { tag } from 't'; tag`a`;", { loader: 'js', format: 'cjs' });
+  assert.match(tagged, /\(0, import_t\.tag\)`a`/);
   console.log('  ok  CommonJS output keeps the helper and record names Nimbus reads');
 }
 
@@ -174,6 +178,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   await assert.rejects(oxcEngine.transform('let a = ;', { loader: 'js', format: 'cjs' }), /Transform failed with 1 error:\n<stdin>:1:8: ERROR: /);
   await assert.rejects(oxcEngine.transform('x', { loader: 'css' }), /oxc transform: loader "css" is not supported/);
   await assert.rejects(oxcEngine.transform('x', { target: 'es2020' }), /oxc transform: target "es2020" is not supported/);
+  await assert.rejects(oxcEngine.transform('<C />', { loader: 'jsx', jsx: 'preserve', format: 'cjs' }), /jsx "preserve" is not supported with format "cjs"/);
   console.log('  ok  refusals read as esbuild\'s, and unsupported options are refused, not ignored');
 }
 

@@ -181,8 +181,15 @@ const rust = toolchain(crateDir, toolchainText);
 const optimizer = await wasmOpt();
 
 const cargoHome = process.env.CARGO_HOME ?? path.join(process.env.HOME ?? '/', '.cargo');
+// Cargo and rustc read settings from the environment that Cargo.toml and the
+// flags below pin (CARGO_PROFILE_RELEASE_*, CARGO_BUILD_*, RUSTFLAGS,
+// RUSTC_WRAPPER, …): the build sees none of them but where its caches live.
+const KEPT = new Set(['CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN']);
+const ambient = Object.fromEntries(
+  Object.entries(rust.env).filter(([name]) => KEPT.has(name) || !/^(CARGO|RUST|RUSTC|RUSTDOC)_|^RUSTFLAGS$|^RUSTDOCFLAGS$/.test(name)),
+);
 const env = {
-  ...rust.env,
+  ...ambient,
   CARGO_TARGET_DIR: path.join(WORK, 'target'),
   CARGO_ENCODED_RUSTFLAGS: RUSTFLAGS.join('\x1f'),
   // Machine paths out of panic messages without entering cargo's metadata
@@ -192,7 +199,6 @@ const env = {
   NIMBUS_REMAP_CARGO_HOME: cargoHome,
   SOURCE_DATE_EPOCH: '0',
 };
-delete env.RUSTFLAGS;
 const jobs = Number(process.env.NIMBUS_CARGO_JOBS ?? '4');
 if (!Number.isInteger(jobs) || jobs < 1 || jobs > 12) throw new Error('oxc-wasm: NIMBUS_CARGO_JOBS must be an integer from 1 to 12');
 const cargoArgs = ['build', '--release', '--locked', '--lib', '--target', TARGET, '-j', String(jobs)];

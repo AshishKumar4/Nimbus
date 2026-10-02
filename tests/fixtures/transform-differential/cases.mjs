@@ -76,11 +76,26 @@ export const CASES = [
   ["tsx-component.tsx", "import { useState } from 'react'; import type { FC } from 'react'; export const A: FC<{ n: number }> = ({ n }) => { const [s] = useState<number>(n); return <span data-n={s}>{s}</span>; }; export default A;"],
   ["use-strict.mjs", "'use strict'; export const a = 1; console.log(this);"],
   ["template-specifiers.mjs", "import { x } from './x.js'; export const y = () => import(`./y.js`); export const z = require(`z`) + `${x}` + String.raw`a\\b`;"],
+  ["assign-import-patterns.mjs", "import { a, b, c, d } from 'x'; class K { static { ({ a } = { a: 1 }); ({ b = 2 } = {}); [c] = [3]; ({ k: d } = { k: 4 }); } } export { K };"],
+  ["this-computed-keys.mjs", "export class A { [this === undefined ? 'u' : 'd'] = 1; static s = this; m(p = this) { return p; } } export const key = Object.keys(new A())[0];"],
+  ["export-star-reserved.mjs", "export * as default from 'x'; export * as class from 'y';"],
+  ["proto-export.mjs", "const x = 1; export { x as __proto__ };"],
+  ["esm-renamed-exports.mjs", "export const Promise = 1; export function require() {} export let import_meta = import.meta; export const f = () => import('x');"],
+  ["export-star-globals.mjs", "export * as Object from 'x'; export * as Promise from 'y'; export * as require from 'z'; import d from 'w'; export const v = d;"],
+  ["named-default-import.mjs", "import { default as value, x } from 'x'; export const v = [value, x];"],
+  ["imported-tag.mjs", "import { tag } from 't'; export const r = tag`a${1}b`;"],
+  ["cjs-own-exports.js", "const exports = { x: 1 }; module.exports = exports;"],
+  ["cjs-own-module.js", "let module = 1; exports.a = module;"],
+  ["tla-this.mjs", "await 0; export const seen = this;"],
+  ["tla-script-this.js", "await Promise.resolve(); globalThis.seenThis = this === undefined;"],
+  ["import-meta-this.js", "console.log(import.meta.url); module.exports = this;"],
+  ["ts-elided-import-this.ts", "import { A } from 'a'; let x: A; module.exports = { self: this === module.exports };"],
   ["ambient-default.ts", "declare const _default: { a: number }; export default _default;"],
 ];
 
 /** Where the engines answer differently on purpose, and why. */
 export const DIVERGENT = {
   'strict-violation.js': 'esbuild refuses `var await` in a script, which Node and Oxc accept',
+  'proto-export.mjs': 'esbuild writes the getter as `__proto__: () => x`, which sets the getters object\'s prototype and loses the export; Oxc writes `["__proto__"]`',
   'ambient-default.ts': 'a `declare const` has no value: esbuild exports it and the module throws a ReferenceError when it runs; Oxc elides the export (nuxt ships such files as *.d.vue.ts)',
 };
