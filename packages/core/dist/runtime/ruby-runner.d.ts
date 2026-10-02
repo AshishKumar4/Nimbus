@@ -95,6 +95,8 @@ export type RubyResidentStart = (spawn: {
     startArgs: RubyFacetCallArgs;
     cwd: string;
     command: string;
+    /** The launching command's process: the resident carries its exec id. */
+    invokerPid: number;
     /** The launching command: what the program prints until it binds or exits, and its interrupt. */
     signal: AbortSignal;
     write(stream: 'stdout' | 'stderr', text: string): void;

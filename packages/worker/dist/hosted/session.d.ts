@@ -122,6 +122,7 @@ export declare class HostedSession extends RpcTarget {
     }>;
     _rpcListPorts(): Promise<operations.SerializedPort[]>;
     _rpcExposePort(port: number, options?: Visibility): Promise<{
+        execId?: string;
         port: number;
         listening: boolean;
         pid: number | null;

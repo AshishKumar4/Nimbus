@@ -17,6 +17,7 @@
  */
 
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
@@ -41,14 +42,34 @@ export interface StartRealViteOptions {
    * pid's own (or the argv it was invoked with); restore passes what was
    * persisted, so the restored server is the same application. Absent for
    * configs written before identity was persisted: those keep the bare
-   * `[]` at the root, the same across every restore.
+   * `[]` at the root, the same across every restore. `execId` is the exec id
+   * the pid carries: the `vite` command's, or what restore persisted.
    */
-  identity?: { cwd: string; argv: string[] };
+  identity?: { cwd: string; argv: string[]; execId?: string };
   /** Optional abort signal threaded into the heavy-alloc gate. */
   signal?: AbortSignal;
   /** Called with a human message if vite.config pre-bundling fails (so the
    *  `vite` builtin can surface it on stderr). Restore passes nothing. */
   onConfigError?: (message: string) => void;
+}
+
+/**
+ * What a dev server's pid is persisted as, and given back on restore: the
+ * cwd+argv its identity derives from, and its exec id when it has one.
+ */
+export function devServerIdentity(entry: ProcessEntry): { cwd: string; argv: string[]; execId?: string } {
+  return { cwd: entry.cwd, argv: entry.argv, ...execIdField(entry) };
+}
+
+/** A persisted dev-server identity, read back; undefined for a config written before it was persisted. */
+export function persistedIdentity(value: unknown): { cwd: string; argv: string[]; execId?: string } | undefined {
+  const identity = value as { cwd?: unknown; argv?: unknown; execId?: unknown } | null | undefined;
+  if (typeof identity?.cwd !== 'string' || !Array.isArray(identity.argv)) return undefined;
+  return {
+    cwd: identity.cwd,
+    argv: identity.argv.map(String),
+    ...(typeof identity.execId === 'string' ? { execId: identity.execId } : {}),
+  };
 }
 
 export interface StartRealViteResult {
@@ -140,7 +161,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     // Reserve a PID so `ps`/logs show it like any other facet.
     const entry = self.processes.spawn(
       'vite (real, ' + opts.root + ')', opts.identity?.argv ?? [], opts.identity?.cwd ?? opts.root,
-      { longRunning: true },
+      { longRunning: true, execId: opts.identity?.execId },
     );
     // start() is async — it ASSETS-fetches the Vite/plugin-react bundles on
     // first invocation (cached per-isolate after).
@@ -163,7 +184,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
         port: opts.port,
         basePath: opts.basePath,
         configDir: opts.configDir,
-        identity: { cwd: entry.cwd, argv: entry.argv },
+        identity: devServerIdentity(entry),
       });
     } catch { /* persistence is best-effort; the server still serves now */ }
 

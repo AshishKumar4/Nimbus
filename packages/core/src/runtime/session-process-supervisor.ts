@@ -40,10 +40,12 @@ export interface ProcessSpawnOptions {
   longRunning?: boolean;
   /** Output and stdin are owned by an attached process terminal, not the parent shell. */
   attachedTty?: boolean;
-  /** Inherit the parent process credential, including its current umask. */
+  /** Inherit the parent process credential, including its current umask, and its exec id. */
   parentPid?: number;
   /** Explicit credential for a deliberate identity transition such as sudo. */
   cred?: VfsCred;
+  /** The exec id of a process that does not take its parent's (`ProcessEntry.execId`). */
+  execId?: string;
 }
 
 /**

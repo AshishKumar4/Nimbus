@@ -117,6 +117,16 @@ export interface NimbusExecOptions {
    */
   cred?: VfsCred;
   /**
+   * A name for this call. Every process the command starts carries it, and
+   * so does everything those processes spawn: `processes.list()`,
+   * `ports.list()` and `apps.list()` report it as `execId`, so a listening
+   * port names the call that started its server. A resident server keeps it
+   * across a session reset. 1 to 160 characters from `A-Z a-z 0-9 . _ : -`,
+   * starting with a letter or digit; anything else is refused before the
+   * command runs. Omitted, nothing is tagged.
+   */
+  execId?: string;
+  /**
    * `startProcess` only: what to do when the process exits on its own with
    * a non-zero code. 'never' (default) leaves it stopped; 'on-failure'
    * restarts it under the session's restart budget with backoff. A platform
@@ -177,6 +187,8 @@ export interface NimbusExposedApp {
   visibility: NimbusAppVisibility;
   /** Browser-facing URL, built the way `ports.url` builds one; undefined when the deployment is not addressable. */
   url: string | undefined;
+  /** The `execId` of the call that started `pid`; absent when none named one. */
+  execId?: string;
 }
 
 export interface NimbusApp {
@@ -191,6 +203,8 @@ export interface NimbusApp {
   /** With status 'failed': what went wrong, e.g. `listened on 3000, owns 5173`. */
   diagnostic: string | null;
   url: string | undefined;
+  /** The `execId` of the call that started `pid`; absent when none named one. */
+  execId?: string;
 }
 
 /** A slice of a command's stdout or stderr, as the bytes it wrote. */
@@ -250,6 +264,8 @@ export interface NimbusProcess {
   endTime: number | null;
   longRunning: boolean;
   attachedTty: boolean;
+  /** The `execId` of the call that started this process or an ancestor; absent when none named one. */
+  execId?: string;
 }
 
 export interface NimbusProcessLogChunk {
@@ -299,6 +315,8 @@ export interface NimbusPort {
    * session. A new registration on the port retires it.
    */
   capability: string;
+  /** The `execId` of the call that started the listening process; absent when none named one. */
+  execId?: string;
 }
 
 export interface NimbusFileStat {
@@ -361,7 +379,7 @@ export interface NimbusSessionSurface {
   _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
   _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
   _rpcListPorts(): Promise<NimbusPort[]>;
-  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null; visibility?: 'scoped' | 'public'; owner?: string | null; name?: string | null }>;
+  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null; visibility?: 'scoped' | 'public'; owner?: string | null; name?: string | null; execId?: string }>;
   _rpcExposeApp(target: NimbusAppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<Omit<NimbusExposedApp, 'url'> & { url: string | null }>;
   _rpcListApps(): Promise<Array<Omit<NimbusApp, 'url'> & { url: string | null }>>;
   _rpcRotateLink(target: NimbusAppTarget): Promise<Omit<NimbusExposedApp, 'url'> & { url: string | null }>;
@@ -479,6 +497,7 @@ const ProcessSchema = z.object({
   endTime: z.number().nullable(),
   longRunning: z.boolean(),
   attachedTty: z.boolean().optional().default(false),
+  execId: z.string().optional(),
 });
 
 const PortSchema = z.object({
@@ -486,6 +505,7 @@ const PortSchema = z.object({
   pid: z.number(),
   registeredAt: z.number(),
   capability: z.string(),
+  execId: z.string().optional(),
 });
 
 const StartResultSchema = z.object({
@@ -572,6 +592,7 @@ const ExposedPortSchema = z.object({
   visibility: z.enum(['scoped', 'public']).optional(),
   owner: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
+  execId: z.string().optional(),
 });
 
 const ExposedAppSchema = z.object({
@@ -582,6 +603,7 @@ const ExposedAppSchema = z.object({
   capability: z.string().nullable(),
   visibility: z.enum(['scoped', 'public']),
   url: z.string().nullable(),
+  execId: z.string().optional(),
 });
 
 const AppSchema = z.object({
@@ -595,6 +617,7 @@ const AppSchema = z.object({
   restart: z.enum(['never', 'on-failure']),
   diagnostic: z.string().nullable(),
   url: z.string().nullable(),
+  execId: z.string().optional(),
 });
 
 const EnsureDurableAppSchema = z.object({

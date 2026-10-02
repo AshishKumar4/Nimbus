@@ -10,9 +10,10 @@
 //     and a client that does not name it is refused, streaming or not;
 //   - a file written through the session is the embedder's file, and a
 //     command reads it;
-//   - a session scoped to an identity acts as that identity for commands and
-//     files, and refuses a caller that names another shell or identity; a
-//     shell-only scope acts as the session user, never the kernel;
+//   - a session scoped to an identity acts as that identity for commands,
+//     package scripts (`npm run`, `bun run`) and files, and refuses a caller
+//     that names another shell or identity; a shell-only scope acts as the
+//     session user, never the kernel;
 //   - a scope that names no shell runs no command, so it can neither read
 //     nor plant the embedder's workspace shell environment, yet reads files;
 //   - a scoped session cannot destroy the workspace.
@@ -154,6 +155,13 @@ try {
   await kernel.writeFile('/rootonly/f', 'kernel');
   await assert.rejects(a.files.delete('/rootonly/f'), /EACCES/, 'a shell-only scope deletes as the session user, not the kernel');
   assert.equal(await runtime.files.exists('/rootonly/f'), true, 'and the kernel\'s file stays');
+  // A package script runs as the command that ran it, by npm or by bun.
+  await kernel.mkdir('/srv/scripts', { recursive: true, mode: 0o755 });
+  await kernel.writeFile('/srv/scripts/package.json', JSON.stringify({ name: 'scripts', scripts: { who: 'id' } }), { mode: 0o644 });
+  for (const runner of ['npm', 'bun']) {
+    const ran = await stranger.exec(`cd /srv/scripts && ${runner} run who`);
+    assert.match(ran.stdout, /^uid=2001\(/m, `a ${runner} script acts as the scope's identity: ${JSON.stringify(ran)}`);
+  }
   console.log('  [3] a session scoped to an identity acts as it and refuses another');
 
   // ── no shell named, no command: the workspace shell is the embedder's ──

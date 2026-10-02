@@ -515,6 +515,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         visibility?: 'scoped' | 'public';
         name?: string;
     }): Promise<{
+        execId?: string;
         port: number;
         listening: boolean;
         pid: number | null;

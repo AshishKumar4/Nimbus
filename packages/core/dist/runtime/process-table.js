@@ -1,4 +1,32 @@
 import { CRED_SESSION_USER } from './os-contracts.js';
+/**
+ * What an `execId` may be: 1 to 160 characters from `A-Z a-z 0-9 . _ : -`,
+ * starting with a letter or digit, the rule a shell's name follows.
+ */
+const EXEC_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+/** An exec id from a caller, or an error that names the rule it broke. */
+export function parseExecId(value) {
+    if (typeof value === 'string' && EXEC_ID.test(value))
+        return value;
+    throw new Error('execId must be 1 to 160 characters from A-Z a-z 0-9 . _ : - and start with a letter or digit, got '
+        + (typeof value === 'string' ? `${value.length} characters` : typeof value));
+}
+/**
+ * The exec id process `pid` carries, if `pid` names a process that has one:
+ * what a process a runtime starts for a command takes from the command's
+ * process, which is not its parent in the table.
+ */
+export function execIdOf(processes, pid) {
+    return pid === undefined ? undefined : processes.get(pid)?.execId;
+}
+/**
+ * A process's exec id as a field of a record that reports it (a process, or
+ * the pid listening on a port): absent when the process has none, so a
+ * record about a process no exec named is what it was before exec ids.
+ */
+export function execIdField(entry) {
+    return entry?.execId === undefined ? {} : { execId: entry.execId };
+}
 function immutableCred(cred) {
     return Object.freeze({
         uid: cred.uid,
@@ -41,6 +69,8 @@ export class ProcessTable {
         const inheritedCred = options.parentPid === undefined
             ? CRED_SESSION_USER
             : this.credOf(options.parentPid);
+        const execId = options.execId
+            ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
         const pid = this.nextPid++;
         const entry = {
             pid,
@@ -53,6 +83,7 @@ export class ProcessTable {
             endTime: null,
             cred: immutableCred(options.cred ?? inheritedCred),
             parentPid: options.parentPid,
+            ...(execId === undefined ? {} : { execId }),
         };
         this.processes.set(pid, entry);
         return entry;

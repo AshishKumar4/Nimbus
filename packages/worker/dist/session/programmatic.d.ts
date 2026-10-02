@@ -133,6 +133,14 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
     /** @internal Initial cwd for a shellId with no durable state yet. */
     shellRoot?: string;
     /**
+     * A name for this call, which every process it starts carries, and every
+     * process those spawn: `listProcesses` and `listPorts` report it, and a
+     * resident keeps it across a reset. 1 to 160 characters from
+     * `A-Z a-z 0-9 . _ : -`, starting with a letter or digit (`parseExecId`).
+     * Not unique: two calls may share one.
+     */
+    execId?: string;
+    /**
      * What to do when the started process exits on its own with a non-zero
      * code: 'never' (the default) leaves it stopped; 'on-failure' restarts it
      * under the restart budget with backoff. A platform reset re-drives it
@@ -184,12 +192,16 @@ export interface SerializedProcess {
     endTime: number | null;
     longRunning: boolean;
     attachedTty: boolean;
+    /** The exec that started the process (`ProgrammaticExecOptions.execId`); absent when none named one. */
+    execId?: string;
 }
 export interface SerializedPort {
     port: number;
     pid: number;
     registeredAt: number;
     capability: string;
+    /** The exec id of the process listening (`SerializedProcess.execId`). */
+    execId?: string;
 }
 export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?: ProgrammaticReadyOptions): Promise<{
     ok: true;
@@ -269,6 +281,8 @@ export interface ExposedAppResult {
     visibility: PortVisibility;
     /** Built from the deployment's preview suffix or the session's last-seen origin; null when neither is known. */
     url: string | null;
+    /** The exec id of `pid` (`SerializedProcess.execId`). */
+    execId?: string;
 }
 export interface ListedApp extends ResidentAppSummary {
     url: string | null;
@@ -309,6 +323,7 @@ export declare function rpcExposePort(self: ProgrammaticHost, port: number, opti
     visibility?: 'scoped' | 'public';
     name?: string;
 }): Promise<{
+    execId?: string;
     port: number;
     listening: boolean;
     pid: number | null;

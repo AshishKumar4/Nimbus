@@ -17,6 +17,7 @@ import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
+import { execIdField, execIdOf } from '@nimbus-sh/core/runtime/process-table.js';
 import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { handKernelArtifact, projectFs as viewFs } from '../runtime/project-fs.js';
@@ -33,7 +34,7 @@ import {
   withLoudTimeout,
   VITE_BUILD_TIMEOUT_MS,
 } from './helpers.js';
-import { startRealVite } from './start-real-vite.js';
+import { devServerIdentity, startRealVite } from './start-real-vite.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { registerServingPort } from './serving-port.js';
@@ -342,7 +343,7 @@ export function createViteCommand(self: ViteHost) {
       const previewPort = viteConfig.port || 4173; // vite preview default
       const previewProcEntry = self.processes.spawn(
         'vite preview (' + distRoot + ')', ['vite', ...args], distRoot,
-        { longRunning: true },
+        { longRunning: true, execId: execIdOf(self.processes, ctx.pid) },
       );
       self.viteDevServer = new ViteDevServer({
         vfs: self.sqliteFs, esbuild: self.esbuildService, root: servedDist,
@@ -367,7 +368,7 @@ export function createViteCommand(self: ViteHost) {
       try {
         await self.ctx.storage.put(VITE_CONFIG_KEY, {
           root: servedDist, basePath: previewBasePath, port: previewPort,
-          identity: { cwd: previewProcEntry.cwd, argv: previewProcEntry.argv },
+          identity: devServerIdentity(previewProcEntry),
         });
       } catch {}
       ctx.stdout.write('Serving at ' + previewBasePath + '/ \x1b[2m(pid=' + previewProcEntry.pid + ', port=' + previewPort + ')\x1b[0m\n');
@@ -486,8 +487,8 @@ export function createViteCommand(self: ViteHost) {
         : undefined;
     const handedOff = adoptedEntry != null;
     const identity = adoptedEntry
-      ? { cwd: adoptedEntry.cwd, argv: adoptedEntry.argv }
-      : { cwd: vfsRoot, argv: expandedArgs };
+      ? { cwd: adoptedEntry.cwd, argv: adoptedEntry.argv, ...execIdField(adoptedEntry) }
+      : { cwd: vfsRoot, argv: expandedArgs, ...execIdField(self.processes.get(ctx.pid)) };
     if (useReal) {
       const vitePort = resolvedPort;
       const previewBasePath = self.viteBasePath;
@@ -574,7 +575,7 @@ export function createViteCommand(self: ViteHost) {
       'vite (' + vfsRoot + ')',
       identity.argv,
       identity.cwd,
-      { longRunning: true },
+      { longRunning: true, execId: identity.execId },
     );
     if (handedOff) self.processes.setLongRunning(viteProcEntry.pid);
 
@@ -609,7 +610,7 @@ export function createViteCommand(self: ViteHost) {
         root: servedRoot, aliases: viteConfig.alias, define: viteDefine,
         injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
         port: resolvedPort,
-        identity: { cwd: viteProcEntry.cwd, argv: viteProcEntry.argv },
+        identity: devServerIdentity(viteProcEntry),
       });
     } catch {}
 

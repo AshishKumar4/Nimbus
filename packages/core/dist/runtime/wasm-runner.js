@@ -46,6 +46,7 @@
  *   - NO direct WebAssembly.instantiate(bytes) at request time — workerd
  *     CSP rejects that path, and the facet host exists to make it moot.
  */
+import { execIdOf } from './process-table.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
@@ -507,7 +508,7 @@ export function makeWasmRunner(deps) {
             (opts.filename || '').replace(/^\/+/, '/') +
             ' ' +
             argv.join(' ');
-        const procEntry = deps.processes.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user');
+        const procEntry = deps.processes.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user', { execId: execIdOf(deps.processes, opts.invokerPid) });
         const pid = procEntry.pid;
         // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
         // runtime-registry's RuntimeRunOpts carries env on the way in; we

@@ -15,6 +15,7 @@
  * rather than the shim. Before this, cirrus-real wrote nothing at all and every
  * such session was unrecoverable after eviction.
  */
+import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 export interface StartRealViteOptions {
     /** VFS root the dev server serves from. */
@@ -32,11 +33,13 @@ export interface StartRealViteOptions {
      * pid's own (or the argv it was invoked with); restore passes what was
      * persisted, so the restored server is the same application. Absent for
      * configs written before identity was persisted: those keep the bare
-     * `[]` at the root, the same across every restore.
+     * `[]` at the root, the same across every restore. `execId` is the exec id
+     * the pid carries: the `vite` command's, or what restore persisted.
      */
     identity?: {
         cwd: string;
         argv: string[];
+        execId?: string;
     };
     /** Optional abort signal threaded into the heavy-alloc gate. */
     signal?: AbortSignal;
@@ -44,6 +47,21 @@ export interface StartRealViteOptions {
      *  `vite` builtin can surface it on stderr). Restore passes nothing. */
     onConfigError?: (message: string) => void;
 }
+/**
+ * What a dev server's pid is persisted as, and given back on restore: the
+ * cwd+argv its identity derives from, and its exec id when it has one.
+ */
+export declare function devServerIdentity(entry: ProcessEntry): {
+    cwd: string;
+    argv: string[];
+    execId?: string;
+};
+/** A persisted dev-server identity, read back; undefined for a config written before it was persisted. */
+export declare function persistedIdentity(value: unknown): {
+    cwd: string;
+    argv: string[];
+    execId?: string;
+} | undefined;
 export interface StartRealViteResult {
     cirrusReal: CirrusReal;
     /** The bundled vite.config source, or null when there was none / it failed. */

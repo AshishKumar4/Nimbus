@@ -89,6 +89,8 @@ export interface RunFreshOpts {
      */
     skipSpawn?: boolean;
     callerPid?: number;
+    /** The invoking process (RuntimeRunOpts.invokerPid): a pid this run spawns carries its exec id. */
+    invokerPid?: number;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
     bundleProfile?: FacetBundleProfile;

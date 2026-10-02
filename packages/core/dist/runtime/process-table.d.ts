@@ -19,6 +19,14 @@ export interface ProcessEntry {
     cred: VfsCred;
     /** Spawning process, when the spawn declared one. Roots have none. */
     parentPid?: number;
+    /**
+     * The caller's name for the exec that started this process (`execId` on
+     * exec, execStream and startProcess), taken at spawn from the parent, or,
+     * for a process a runtime starts for a command, from the command's process
+     * (`execIdOf`), so everything an exec starts carries it. Absent when no
+     * exec named one.
+     */
+    execId?: string;
     /** Explicit long-running flag set when a command is handed to a
      *  long-lived Worker Loader or shell execution path. */
     longRunning?: boolean;
@@ -30,7 +38,31 @@ export interface ProcessEntry {
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
     parentPid?: number;
+    /**
+     * The exec id of a process that does not take its parent's: an exec's own
+     * job, a process a runtime starts for a command, or a resident re-driven
+     * after a reset. Otherwise the parent's is inherited.
+     */
+    execId?: string;
 }
+/** An exec id from a caller, or an error that names the rule it broke. */
+export declare function parseExecId(value: unknown): string;
+/**
+ * The exec id process `pid` carries, if `pid` names a process that has one:
+ * what a process a runtime starts for a command takes from the command's
+ * process, which is not its parent in the table.
+ */
+export declare function execIdOf(processes: {
+    get(pid: number): ProcessEntry | undefined;
+}, pid: number | undefined): string | undefined;
+/**
+ * A process's exec id as a field of a record that reports it (a process, or
+ * the pid listening on a port): absent when the process has none, so a
+ * record about a process no exec named is what it was before exec ids.
+ */
+export declare function execIdField(entry: ProcessEntry | undefined): {
+    execId?: string;
+};
 /**
  * Pid-space stride per DO instance generation. Pids are allocated as
  * `generation * PID_GEN_STRIDE + seq`, so pid-keyed state that OUTLIVES an

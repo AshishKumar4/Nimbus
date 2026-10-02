@@ -190,7 +190,8 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, dispositi
     const fm = deps.getFacetManager();
     // Piped stdin is not yet wired for staged artifacts; the interactive TUI reads
     // keystrokes from the live ProcessInputStore via the attached-TTY stdin pump.
-    const base = { argv, env: ctx.env ?? {}, cwd, command: shellLine };
+    // The program carries the exec id of the command that runs it.
+    const base = { argv, env: ctx.env ?? {}, cwd, command: shellLine, invokerPid: ctx.pid };
     let result;
     try {
         // Same contract as the node-bin path: a user-invoked program runs to

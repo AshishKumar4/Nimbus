@@ -18,8 +18,9 @@
 //      resolver answers the row, not the table;
 //   3. the Cirrus dev server started through `/api/start-vite`, exposed under
 //      a name, survives a hibernation: the restored pid derives the same
-//      identity from the persisted cwd+argv, re-adopts the shared link at
-//      registration, and rotates as the same application;
+//      identity from the persisted cwd+argv, keeps the persisted execId,
+//      re-adopts the shared link at registration, and rotates as the same
+//      application;
 //   4. a pid that is neither running nor journalled is refused by name;
 //   5. the SDK's own launch: `startProcess('npx vite …')` allocates the wrapper
 //      pid the builtin adopts and registers the port under — the shell line
@@ -302,6 +303,8 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   const exposed = await rpcExposeApp(first.self, 5173, { visibility: 'public', name: 'web' });
   assert.equal(exposed.owner, identity.owner);
   assert.equal((await rpcListApps(first.self)).find((app) => app.name === 'web')?.status, 'running');
+  // What the `vite` builtin persists when an exec named `j1` started it.
+  await first.ctx.storage.put('vite-config', { ...persisted, identity: { ...persisted.identity, execId: 'j1' } });
 
   // Hibernation: a new instance over the same storage, nothing in memory.
   const next = setup({ storage: first.storage, world: first.world, sessionFs: fakeSessionFs(ROOT), directory });
@@ -317,6 +320,8 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   const listed = (await rpcListApps(next.self)).find((app) => app.name === 'web');
   assert.equal(listed?.status, 'running');
   assert.equal(listed?.pid, restoredPid);
+  assert.equal(next.processes.get(restoredPid).execId, 'j1', 'the restored server keeps the execId it was started under');
+  assert.equal(listed?.execId, 'j1', 'and the app reports it');
   const rotated = await rpcRotateLink(next.self, 'web');
   assert.equal(rotated.owner, identity.owner);
   assert.equal(rotated.pid, restoredPid);

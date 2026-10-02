@@ -29,7 +29,7 @@ import {
   type CommonJsCellRow,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, execIdOf, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -4193,6 +4193,8 @@ export interface LongRunningWorkerSpawnOptions {
   foreground?: ForegroundLaunch;
   restart?: ResidentRestartPolicy;
   port?: number;
+  /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+  invokerPid?: number;
   /** Inline modules: source text, or small wasm carried by value. */
   modules?: Record<string, string | { wasm: ArrayBuffer }>;
   /**
@@ -4272,6 +4274,8 @@ export interface ResidentSpawnOptions {
   attachedTty?: boolean;
   skipSpawn?: boolean;
   callerPid?: number;
+  /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+  invokerPid?: number;
   bundleProfile?: FacetBundleProfile;
 }
 
@@ -4333,6 +4337,12 @@ interface ResidentLaunchRecord extends FencedWorkRecord {
   injectedPort?: number;
   /** The resident bound a different port than its reservation holds while `$PORT` was injected. */
   portMismatch?: { listened: number; reserved: number };
+  /**
+   * The process's exec id (`ProcessEntry.execId`). A re-drive has no
+   * invoking process to take it from, so the row carries it to the process
+   * it spawns.
+   */
+  execId?: string;
 }
 
 export type ResidentRestartPolicy = 'never' | 'on-failure';
@@ -4357,6 +4367,8 @@ export interface ResidentAppSummary {
   restart: ResidentRestartPolicy;
   /** Set with status 'failed': what went wrong, in the user's terms. */
   diagnostic: string | null;
+  /** The exec id of `pid` (`ProcessEntry.execId`); absent when it has none. */
+  execId?: string;
 }
 
 /** What a pid's journal row says about who it is. */
@@ -5578,6 +5590,8 @@ export class FacetManager {
       skipSpawn?: boolean;
       /** G4: when skipSpawn is true, the PID the caller allocated. */
       callerPid?: number;
+      /** The process whose command runs the program: its exec id is the program's. */
+      invokerPid?: number;
       bundleProfile?: FacetBundleProfile;
       /** Return stdout/stderr in the result while keeping supervisor RPC
        *  available for VFS and child_process operations. */
@@ -5622,7 +5636,7 @@ export class FacetManager {
       entry = found;
     } else {
       this.processes.reap();
-      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user');
+      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { execId: execIdOf(this.processes, opts.invokerPid) });
       // Short foreground `node -e ...` helpers are quiet by design — only
       // notify for user-facing `node <file>` invocations, which covers the
       // real user intent (running scripts, wrangler, etc.).
@@ -5979,7 +5993,7 @@ export class FacetManager {
    */
   async execStagedArtifact(
     artifact: string,
-    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & { command?: string; attachedTty?: boolean },
+    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & { command?: string; attachedTty?: boolean; invokerPid?: number },
   ): Promise<StagedArtifactExecResult> {
     const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
     const staged = await this._stageOpencodeFacet(artifact, opts, mode);
@@ -6034,7 +6048,7 @@ export class FacetManager {
    */
   private async _stageOpencodeFacet(
     artifact: string,
-    opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin?: string; command?: string },
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin?: string; command?: string; invokerPid?: number },
     mode: OpencodeRunnerMode,
   ): Promise<{ pid: number; command: string; stageSpec: OpencodeStageSpec }> {
     if (artifact !== 'opencode') {
@@ -6049,7 +6063,7 @@ export class FacetManager {
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
     const attached = mode === 'attached';
-    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd);
+    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { execId: execIdOf(this.processes, opts.invokerPid) });
     const pid = entry.pid;
     // attached TUI + headless serve are resident long-running processes; only the
     // attached TUI grabs the terminal (raw-mode stdin + live geometry).
@@ -6174,7 +6188,7 @@ export class FacetManager {
    */
   async execStagedArtifactServer(
     artifact: string,
-    opts: { argv: string[]; env: Record<string, string>; cwd: string; command?: string; port?: number },
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; command?: string; port?: number; invokerPid?: number },
   ): Promise<StagedArtifactExecResult> {
     const explicit = parsePortFromArgv(opts.argv);
     const port = opts.port
@@ -6199,7 +6213,7 @@ export class FacetManager {
    */
   async execStagedArtifactDual(
     artifact: string,
-    opts: { argv: string[]; env: Record<string, string>; cwd: string; command?: string },
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; command?: string; invokerPid?: number },
   ): Promise<StagedArtifactExecResult> {
     const port = this._allocateLoopbackPort();
     // (a) resident serve facet on the allocated loopback port.
@@ -6210,6 +6224,7 @@ export class FacetManager {
         env: opts.env,
         cwd: opts.cwd,
         command: `opencode serve --port ${port}`,
+        invokerPid: opts.invokerPid,
       },
       'server',
     );
@@ -6234,6 +6249,9 @@ export class FacetManager {
         stdin: '',
         command: opts.command || 'opencode',
         attachedTty: true,
+        // The pair's exec id, from the serve: the command that ran `opencode`
+        // may have ended while the serve booted, and been reaped since.
+        invokerPid: servePid,
       });
     } catch (e) {
       try { this.kill(servePid); } catch {}
@@ -6552,7 +6570,7 @@ export class FacetManager {
   private async _redrive(record: ResidentLaunchRecord, attempt: number): Promise<unknown> {
     const { recipe } = record;
     switch (recipe.kind) {
-      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
+      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, record.execId);
       case 'worker': {
         // Which resolver a worker recipe re-drives through is decided by
         // `recipe.resident`, and it is not a flag: it is the interpreter
@@ -6581,7 +6599,7 @@ export class FacetManager {
           vfsTextModules: resolved.vfsTextModules,
           mainModule,
           durable: { owner: residentOwner(record) ?? recipe.owner, image: recipe.image },
-        }, attempt);
+        }, attempt, record.execId);
       }
     }
   }
@@ -6604,12 +6622,15 @@ export class FacetManager {
   /**
    * `attempt` distinguishes the launch the user asked for from the one re-drive
    * an instance reset earns it, and is carried in the journal rather than in
-   * the caller's options because no caller has an opinion about it.
+   * the caller's options because no caller has an opinion about it. So is a
+   * re-drive's `execId`, from the row: the process that invoked the launch
+   * went with the instance.
    */
   private async _spawnResident(
     code: string,
     opts: ResidentSpawnOptions,
     attempt: number,
+    execId?: string,
   ): Promise<{ pid: number }> {
     this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
@@ -6622,7 +6643,7 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      entry = this.processes.spawn(command, opts.argv || [], cwd);
+      entry = this.processes.spawn(command, opts.argv || [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
     }
     this.processes.setLongRunning(entry.pid);
     if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
@@ -6713,10 +6734,16 @@ export class FacetManager {
         owner = declared.owner;
       }
     }
+    // The recipe is the launch's inputs; the invoker is a pid of this
+    // instance, which a re-drive outlives, so the row carries the exec id.
+    const { invokerPid: _invokerPid, ...inputs } = opts;
+    const recipe: NodeRecipe = { kind: 'node', code, opts: { ...inputs, skipSpawn: undefined, callerPid: undefined } };
+    const execId = entry.execId === undefined ? {} : { execId: entry.execId };
     const initial: ResidentLaunchRecord = {
       pid: entry.pid, command, attempt, phase: 'starting', owner,
-      recipe: { kind: 'node', code, opts: { ...opts, skipSpawn: undefined, callerPid: undefined } },
+      recipe,
       restart: residentRestartPolicy(opts.env),
+      ...execId,
     };
     let duplicateOf: number | null;
     try {
@@ -6756,10 +6783,11 @@ export class FacetManager {
       command,
       attempt,
       phase: 'starting',
-      recipe: { kind: 'node', code, opts: { ...opts, skipSpawn: undefined, callerPid: undefined } },
+      recipe,
       owner,
       ...(held !== null ? { port: held.port, injectedPort: held.port } : {}),
       restart: residentRestartPolicy(opts.env),
+      ...execId,
     };
     try {
       if (!ephemeral) await this.launchJournal.journal(record);
@@ -7084,13 +7112,14 @@ export class FacetManager {
     return this._spawnWorker(workerCode, command, cwd, opts, 0);
   }
 
-  /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
+  /** `attempt` is the journal's re-drive budget, and `execId` a re-drive's exec id, as `_spawnResident` carries them. */
   private async _spawnWorker(
     workerCode: string,
     command: string,
     cwd: string,
     opts: LongRunningWorkerSpawnOptions,
     attempt: number,
+    execId?: string,
   ): Promise<SpawnedWorker> {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
@@ -7098,7 +7127,7 @@ export class FacetManager {
     this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
-    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd);
+    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
     // Stamp the process-table entry so /api/processes exposes this as a
     // long-running process.
     this.processes.setLongRunning(entry.pid);
@@ -7189,6 +7218,7 @@ export class FacetManager {
           owner: opts.durable.owner,
           restart: opts.restart ?? 'never',
           ...(opts.port !== undefined && opts.port > 0 ? { port: opts.port } : {}),
+          ...(entry.execId !== undefined ? { execId: entry.execId } : {}),
         };
         // The durable facet name is claimed once, ever, from DO storage — a
         // re-drive after a reset, an eviction's re-attach and a relaunch all
@@ -7517,7 +7547,8 @@ export class FacetManager {
       if (app.status === 'stopped') app.status = 'running';
       apps.set(identity.owner, app);
     }
-    return [...apps.values()];
+    // The live pid's exec id, read from its process: the one place it lives.
+    return [...apps.values()].map((app) => (app.pid === null ? app : { ...app, ...execIdField(this.processes.get(app.pid)) }));
   }
 
   async registerPort(pid: number, port: number): Promise<void> {

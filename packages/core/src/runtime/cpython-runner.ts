@@ -220,6 +220,8 @@ export type CPythonResidentStart = (spawn: {
   startArgs: Record<string, unknown>;
   cwd: string;
   command: string;
+  /** The launching command's process: the resident carries its exec id. */
+  invokerPid: number;
 }) => Promise<CPythonFacetResult>;
 
 export function makeCPythonRunnerFactory(deps: {
@@ -399,7 +401,7 @@ export function makeCPythonRunnerFactory(deps: {
         const command = [binName, ...argv].map((part) =>
           (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
         const spawnResult = await deps.startResident(
-          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv] });
+          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid });
         if (spawnResult.stdout) ctx.stdout.write(spawnResult.stdout);
         if (spawnResult.stderr) ctx.stderr.write(spawnResult.stderr);
         return spawnResult.exitCode;
