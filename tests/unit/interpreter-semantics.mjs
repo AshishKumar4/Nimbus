@@ -222,6 +222,25 @@ async function runCases(interpreterFile, opsFile) {
   check('a trailing comment that is not one', F('return `\n//# x`')(), '\n//# x');
   check('native functions still answer natively', Function.prototype.toString.call(Math.max), 'function max() { [native code] }');
 
+  // ── Compiled on first call ──
+  // A function's body compiles the first time it runs, parsed again from its unit's text.
+  check('a constructor\'s function does not bind `anonymous`', F('return typeof anonymous')(), 'undefined');
+  check('a sloppy generator declaration named yield', F('function* yield() { yield 3; } return yield().next().value')(), 3);
+  check('an async function declaration named await', F('async function await() { return 4; } return typeof await')(), 'function');
+  check('an arrow using super, new.target and super() in a derived constructor',
+    F('class A { m() { return 1 } } class B extends A { constructor() { const f = () => super(); f(); this.t = (() => new.target)(); } m() { return (() => super.m() + 1)() } } const b = new B(); return [b.m(), b.t === B]')(), [2, true]);
+  check('a sloppy method arrow using super', F('const o = { __proto__: { v: 5 }, m() { return () => super.v } }; return o.m()()')(), 5);
+  check('getters, setters and generator methods', F('const o = { get g() { return 1 }, set s(v) { this.v = v }, *gen() { yield 2 }, async am() { return 3 } }; o.s = 4; return [o.g, o.v, o.gen().next().value]')(), [1, 4, 2]);
+  {
+    // Defined on Object.prototype before the inner function first runs, where the compile builds its AST.
+    const defined = Object.defineProperty(Object.prototype, 'callee', { get() { throw new Error('read Object.prototype.callee'); }, configurable: true });
+    try {
+      check('Object.prototype accessors do not reach the compile', F('return () => f(1); function f(x) { return x + 1 }')()(), 2);
+    } finally {
+      delete defined.callee;
+    }
+  }
+
   // ── Refusals ──
   assert.throws(() => F('}'), SyntaxError);
   assert.throws(() => F('}, globalThis.__broke = 1, function () {'), SyntaxError);

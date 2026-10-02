@@ -13,10 +13,16 @@
  *
  * A Code is both flavors: `s` runs it directly, `g` (when it suspends) as a
  * generator whose return value is the result.
+ *
+ * A function's body is compiled on its first call, as V8 compiles lazily: a
+ * program calls a fraction of the functions it loads. Until then the
+ * function keeps no AST: its text is parsed again (reparse.ts) and analyzed
+ * inside the scopes of the function that defined it, which the earlier
+ * analysis left with what a later one needs (scope.ts releaseScopes).
  */
 import type {
   AnyNode, ArrayExpression, ArrayPattern, ArrowFunctionExpression, AssignmentExpression, AwaitExpression,
-  BinaryExpression, BlockStatement, CallExpression, ClassBody, ClassExpression, ExportDefaultDeclaration, Expression,
+  BinaryExpression, BlockStatement, CallExpression, CatchClause, ClassBody, ClassExpression, ExportDefaultDeclaration, Expression,
   ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, ImportExpression,
   Literal, LogicalExpression, MemberExpression, MetaProperty, ModuleDeclaration, NewExpression,
   ObjectExpression, ObjectPattern, Pattern, PrivateIdentifier, Program, SpreadElement, Statement, StaticBlock, Super,
@@ -24,9 +30,10 @@ import type {
   VariableDeclaration, WithStatement, YieldExpression,
 } from 'acorn';
 import type { HostOperators, NativeFunction } from './host-ops.js';
+import { type FunctionSite, type FunctionSyntax, reparseFunction } from './reparse.js';
 import {
-  type Analysis, type Binding, type ClassNode, type FunctionNode, FunctionScope, type Reference, type Scope,
-  forEachChildNode, patternIdentifiers,
+  type Analysis, type Binding, type ClassNode, type FunctionNode, type FunctionOptions, FunctionScope, type Reference,
+  type Scope, analyzeLazyFunction, childNodes, patternIdentifiers, releaseScopes,
 } from './scope.js';
 import {
   SafeMap, SafeSet, SafeWeakMap, append, arrayIsArray, arraySliceFrom, contains, defineOrThrow, everyItem, indexWhere,
@@ -79,6 +86,45 @@ const SHORT: object = objectFreeze({ short: true });
 export interface UnitHost {
   /** The unit's `import(specifier, options)`. */
   readonly dynamicImport: ((specifier: unknown, options: unknown) => Promise<unknown>) | null;
+}
+
+/** An import binding's source: the slot holds the module (named, default) or the namespace object. */
+type ImportInfo = { readonly kind: 'named' | 'default' | 'namespace'; readonly name: string };
+
+/** What every function of one unit (a module, script or constructed function) shares, compiled now or later. */
+export interface UnitContext {
+  /** The text the unit was parsed from; functions compiled later are parsed from it again. */
+  readonly source: string;
+  readonly module: boolean;
+  readonly host: UnitHost;
+  /** A module's import bindings. */
+  readonly imports: SafeMap<Binding, ImportInfo>;
+  /** A module's own scope, which holds `%module` for import.meta. */
+  readonly moduleScope: FunctionScope | null;
+}
+
+/** What compiling a function on its first call needs, without its AST. */
+interface LazySite {
+  readonly unit: UnitContext;
+  readonly reparse: FunctionSite;
+  /** The scope the function is defined in. */
+  readonly outer: Scope;
+  readonly options: FunctionOptions;
+}
+
+/** Compile `fi`'s body from `site`: called by the runtime on the function's first call. */
+function compileLater(fi: FunctionInfo, site: LazySite): void {
+  const { node, text, base } = reparseFunction(site.reparse);
+  const analysis = analyzeLazyFunction(node, site.outer, site.options, site.unit.moduleScope);
+  const fs = analysis.functionScopeOf(node);
+  new Compiler(analysis, site.unit, text, base, fs).compileFunctionInto(fi, fs, node.params, node.body);
+  releaseScopes(fs);
+  fi.lazy = null;
+}
+
+/** The runtime's hook for `fi`: compile it from `site` on its first call. */
+function lazily(fi: FunctionInfo, site: LazySite): () => void {
+  return () => compileLater(fi, site);
 }
 
 type Labels = readonly string[];
@@ -294,8 +340,221 @@ interface ElementGen {
   assign(env: Env, set: ((value: unknown) => void) | null, value: unknown): Generator<unknown, void, unknown>;
 }
 
+/** A catch clause's code, given the error it caught. */
+type CatchHandler = {
+  readonly s: (env: Env, error: unknown) => Signal;
+  readonly g: ((env: Env, error: unknown) => Generator<unknown, Signal, unknown>) | null;
+};
+
+/** A class's making at runtime: its scope entered, private names made, heritage and keys evaluated, then defined. */
+function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | null, plan: ClassPlan): ClassMaker {
+  const define = classDefiner(plan);
+  const keys = plan.computedKeys;
+  const privateNames = plan.privateNames;
+  // The class's private names exist from its scope's start: its heritage and keys can name them.
+  const enter = (env: Env): Env => {
+    const classEnv = entry ? entry(env) : env;
+    for (let i = 0; i < privateNames.length; i++) {
+      const p = privateNames[i];
+      const pn = new PrivateName(p.description);
+      pn.kind = p.kind;
+      classEnv[p.slot] = pn;
+    }
+    return classEnv;
+  };
+  if ((heritage === null || heritage.g === null) && everyItem(keys, (k) => k.g === null)) {
+    const h = heritage ? heritage.s : null;
+    const ks = mapList(keys, (k) => k.s);
+    return {
+      s: (env, name) => {
+        const classEnv = enter(env);
+        const parent = h ? h(classEnv) : undefined;
+        const computed = new Array<PropertyKey>(ks.length);
+        for (let i = 0; i < ks.length; i++) computed[i] = toPropertyKey(ks[i](classEnv));
+        return define(classEnv, parent, name, computed);
+      },
+      g: null,
+    };
+  }
+  const hg = heritage ? asGen(heritage) : null;
+  const kgs = mapList(keys, asGen);
+  return {
+    s: suspendedSync,
+    g: function* (env, name) {
+      const classEnv = enter(env);
+      const parent = hg ? yield* hg(classEnv) : undefined;
+      const computed = new Array<PropertyKey>(kgs.length);
+      for (let i = 0; i < kgs.length; i++) computed[i] = toPropertyKey(yield* kgs[i](classEnv));
+      return define(classEnv, parent, name, computed);
+    },
+  };
+}
+
+/** ClassDefinitionEvaluation, with the class's name given when it runs. */
+type ClassMaker = {
+  readonly s: (env: Env, name: string) => unknown;
+  readonly g: ((env: Env, name: string) => Generator<unknown, unknown, unknown>) | null;
+};
+
+/** One element of a class, compiled. */
+type ClassElement =
+  | { readonly kind: 'method'; readonly isStatic: boolean; readonly key: ElementKey; readonly fi: FunctionInfo; readonly accessor: 'get' | 'set' | null }
+  | { readonly kind: 'field'; readonly isStatic: boolean; readonly key: ElementKey; readonly value: Sync | null; readonly named: ((env: Env, name: string) => unknown) | null }
+  | { readonly kind: 'static'; readonly fi: FunctionInfo };
+
+type ClassPrivateName = { readonly slot: number; readonly kind: 'field' | 'method' | 'accessor'; readonly description: string };
+
+/** A class definition, compiled (Compiler.classPlan): what classDefiner needs, and nothing of the AST. */
+interface ClassPlan {
+  readonly ctorInfo: FunctionInfo;
+  /** Writes the class's own name binding (a named class), in its scope. */
+  readonly writeInner: ((env: Env, value: unknown) => void) | null;
+  readonly elements: readonly ClassElement[];
+  readonly privateNames: readonly ClassPrivateName[];
+  /** The computed keys, evaluated in order before the elements are defined. */
+  readonly computedKeys: readonly Code[];
+  readonly instanceFi: FunctionInfo | null;
+  readonly staticFi: FunctionInfo | null;
+}
+
+/** A field initializer's (or static block's) frame: `this` and the home object. */
+function fieldFrame(fi: FunctionInfo, scope: Env, thisArg: unknown, home: object): Env {
+  const env: Env = new Array<unknown>(fi.size);
+  env[0] = scope;
+  if (fi.thisSlot !== 0) env[fi.thisSlot] = thisArg;
+  if (fi.homeSlot !== 0) env[fi.homeSlot] = home;
+  return env;
+}
+
+/** ClassDefinitionEvaluation's runtime half, from a compiled plan. */
+function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]) => Function {
+  const { ctorInfo, writeInner, elements, instanceFi, staticFi } = plan;
+  return (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]): Function => {
+    const record = new ClassRecord();
+    const C = makeClass(ctorInfo, classEnv, parent, name, record);
+    const protoValue: unknown = reflectGet(C, 'prototype');
+    if (!isObject(protoValue)) throw new Error('interpreter: class without a prototype');
+    const proto = protoValue;
+    type FieldRecord = { key: PropertyKey | PrivateName; value: Sync | null; named: ((env: Env, name: string) => unknown) | null };
+    const instanceFieldList: FieldRecord[] = [];
+    const instancePrivateMethods: PrivateName[] = [];
+    const staticWork: Array<{ field: FieldRecord } | { block: FunctionInfo }> = [];
+    const staticPrivateMethods: PrivateName[] = [];
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      if (el.kind === 'static') { staticWork[staticWork.length] = { block: el.fi }; continue; }
+      const target = el.isStatic ? C : proto;
+      let key: PropertyKey | PrivateName;
+      if ('private' in el.key) key = el.key.private(classEnv);
+      else if ('static' in el.key) key = el.key.static;
+      else key = computed[el.key.computed];
+      if (el.kind === 'method') {
+        const fname = key instanceof PrivateName ? (el.accessor ? `${el.accessor} ${key.description}` : key.description)
+          : functionName(key, el.accessor ?? undefined);
+        const fn = makeFunction(el.fi, classEnv, target, fname);
+        if (key instanceof PrivateName) {
+          if (el.accessor === 'get') key.getter = fn;
+          else if (el.accessor === 'set') key.setter = fn;
+          else key.method = fn;
+          const list = el.isStatic ? staticPrivateMethods : instancePrivateMethods;
+          if (!contains(list, key)) list[list.length] = key;
+        } else if (el.accessor) {
+          defineAccessor(target, key, el.accessor, fn, false);
+        } else {
+          defineMethod(target, key, fn, false);
+        }
+        continue;
+      }
+      const record: FieldRecord = { key, value: el.value, named: el.named };
+      if (el.isStatic) staticWork[staticWork.length] = { field: record };
+      else instanceFieldList[instanceFieldList.length] = record;
+    }
+    const defineField = (fieldEnv: Env | null, receiver: object, f: FieldRecord) => {
+      let v: unknown;
+      if (fieldEnv !== null) {
+        if (f.value !== null) v = f.value(fieldEnv);
+        else if (f.named !== null) v = f.named(fieldEnv, f.key instanceof PrivateName ? f.key.description : functionName(f.key));
+      }
+      if (f.key instanceof PrivateName) f.key.add(receiver, v);
+      else createDataProperty(receiver, f.key, v);
+    };
+    const initialize = instanceFieldList.length === 0 && instancePrivateMethods.length === 0 ? null : (instance: object) => {
+      for (let i = 0; i < instancePrivateMethods.length; i++) instancePrivateMethods[i].add(instance, undefined);
+      if (instanceFieldList.length === 0) return;
+      const fieldEnv = instanceFi ? fieldFrame(instanceFi, classEnv, instance, proto) : null;
+      for (let i = 0; i < instanceFieldList.length; i++) defineField(fieldEnv, instance, instanceFieldList[i]);
+    };
+    record.initialize = initialize;
+    record.home = proto;
+    if (writeInner) writeInner(classEnv, C);
+    for (let i = 0; i < staticPrivateMethods.length; i++) staticPrivateMethods[i].add(C, undefined);
+    const staticEnv = staticFi ? fieldFrame(staticFi, classEnv, C, C) : null;
+    for (let i = 0; i < staticWork.length; i++) {
+      const work = staticWork[i];
+      if ('block' in work) {
+        const fi = work.block;
+        if (fi.body) fi.body(fieldFrame(fi, classEnv, C, C));
+      } else {
+        defineField(staticEnv, C, work.field);
+      }
+    }
+    return C;
+  };
+}
+
+type ObjectPatternStep = (env: Env, source: unknown, used: PropertyKey[] | null) => void;
+type ObjectPatternStepGen = { readonly key: ((env: Env) => Generator<unknown, PropertyKey, unknown>) | null; readonly el: ElementGen };
+
+/** A member expression target's reference: evaluated before the value it is set to is read. */
+type MemberTargetCode = ((env: Env) => (value: unknown) => void) | null;
+type ArrayPatternElement = { readonly kind: 'skip' }
+  | { readonly kind: 'rest'; readonly bind: (env: Env, value: unknown) => void; readonly member: MemberTargetCode }
+  | { readonly kind: 'one'; readonly bind: (env: Env, value: unknown) => void; readonly dflt: Sync | null; readonly member: MemberTargetCode };
+
+/** A property of an object literal, compiled. */
+type PropertyPart =
+  | { readonly kind: 'spread'; readonly value: Code }
+  | { readonly kind: 'proto'; readonly value: Code }
+  | { readonly kind: 'data'; readonly key: KeyCode; readonly value: Code | null; readonly named: ((env: Env, name: string) => unknown) | null }
+  | { readonly kind: 'method' | 'get' | 'set'; readonly key: KeyCode; readonly fi: FunctionInfo };
+
+/** An element of an argument list or array literal. */
+type ListPart = { readonly spread: boolean; readonly code: Code };
+
 /** A loop's verdict on its body's completion. */
 type LoopStep = 'next' | 'stop' | 'out';
+
+/** The [parameter slot, body var slot] pairs of body vars that start with a parameter's value. */
+function parameterCopies(fs: FunctionScope, varScope: Scope): Array<[from: number, to: number]> {
+  const copies: Array<[from: number, to: number]> = [];
+  const bindings = varScope.bindingList();
+  for (let i = 0; i < bindings.length; i++) {
+    const b = bindings[i];
+    if (b.kind !== 'var') continue;
+    const param = fs.bindings.get(b.name);
+    if (param && param.kind === 'param') append(copies, [param.slot, b.slot]);
+    else if (b.name === 'arguments' && fs.argumentsBinding) append(copies, [fs.argumentsBinding.slot, b.slot]);
+  }
+  return copies;
+}
+
+/** The slots of `scope`'s bindings that start in their TDZ when it is entered (parameters, or the rest). */
+function tdzSlots(scope: Scope, params: boolean): number[] {
+  const slots: number[] = [];
+  const bindings = scope.bindingList();
+  for (let i = 0; i < bindings.length; i++) {
+    const b = bindings[i];
+    if (b.tdz && (b.kind === 'param') === params) append(slots, b.slot);
+  }
+  return slots;
+}
+
+/** The slot of `scope`'s binding `name`, which the unit's own analysis declared. */
+function bindingSlot(scope: Scope, name: string): number {
+  const b = scope.bindings.get(name);
+  if (!b) throw new Error(`interpreter: no binding ${name}`);
+  return b.slot;
+}
 
 /** A key read and then written converts once, as the reference does. */
 function keyOnce(key: unknown): unknown {
@@ -319,16 +578,27 @@ export class Compiler {
   private shape: FunctionShape = 'plain';
   private readonly suspendCache = new SafeWeakMap<AnyNode, boolean>();
   private readonly functionInfos = new SafeMap<AnyNode, FunctionInfo>();
-  /** Module import bindings: the slot holds the module (named, default) or the namespace object. */
-  readonly imports = new SafeMap<Binding, { kind: 'named' | 'default' | 'namespace'; name: string }>();
 
   constructor(
     readonly analysis: Analysis,
-    readonly source: string,
-    readonly host: UnitHost,
+    readonly unit: UnitContext,
+    /** The text this compile's AST was parsed from: the unit's, or one function's (reparse.ts). */
+    readonly text: string,
+    /** The offset in the unit's source of `text`'s first character. */
+    readonly base: number,
     root: FunctionScope,
   ) {
     this.scope = root;
+  }
+
+  /** The unit's source text at [start, end) of this compile's text: what a function's toString answers. */
+  private sourceOf(start: number, end: number): string {
+    return stringSlice(this.unit.source, start + this.base, end + this.base);
+  }
+
+  /** This compile's text at [start, end): an expression as an error message quotes it. */
+  private textOf(start: number, end: number): string {
+    return stringSlice(this.text, start, end);
   }
 
   // ── Suspension ──
@@ -345,14 +615,19 @@ export class Compiler {
       case 'AwaitExpression': case 'YieldExpression': result = true; break;
       case 'ForOfStatement': result = node.await || this.suspends(node.left) || this.suspends(node.right) || this.suspends(node.body); break;
       case 'FunctionExpression': case 'FunctionDeclaration': case 'ArrowFunctionExpression': result = false; break;
-      case 'ClassExpression': case 'ClassDeclaration':
-        result = this.suspends(node.superClass)
-          || someItem(node.body.body, (m) => m.type !== 'StaticBlock' && m.computed && this.suspends(m.key));
+      case 'ClassExpression': case 'ClassDeclaration': {
+        result = this.suspends(node.superClass);
+        const members = node.body.body;
+        for (let i = 0; i < members.length && !result; i++) {
+          const m = members[i];
+          if (m.type !== 'StaticBlock' && m.computed && this.suspends(m.key)) result = true;
+        }
         break;
-      default:
-        forEachChildNode(node, (child) => {
-          if (!result && this.suspends(child)) result = true;
-        });
+      }
+      default: {
+        const children = childNodes(node);
+        for (let i = 0; i < children.length && !result; i++) if (this.suspends(children[i])) result = true;
+      }
     }
     this.suspendCache.set(node, result);
     return result;
@@ -360,14 +635,17 @@ export class Compiler {
 
   // ── Scopes ──
 
-  private withScope<T>(scope: Scope, f: () => T): T {
-    const saved = this.scope;
+  /**
+   * Make `scope` the current scope; returns the one to restore after. No
+   * closure here captures `this`, an AST node or an analysis object: V8 keeps
+   * whatever any closure of a function captures alive for all its closures,
+   * and the runtime's closures must not keep the AST or the compiler.
+   * (An error abandons the compile, so a scope left set does not matter.)
+   */
+  private enter(scope: Scope): Scope {
+    const outer = this.scope;
     this.scope = scope;
-    try {
-      return f();
-    } finally {
-      this.scope = saved;
-    }
+    return outer;
   }
 
   /** Environment levels from the current scope's environment up to `target`'s. */
@@ -408,14 +686,17 @@ export class Compiler {
    * own scope, whose environment the call already allocated.
    */
   private scopeEntry(scope: Scope, frame = false): ((env: Env) => Env) | null {
-    const tdz: number[] = [];
-    scope.bindings.forEach((b) => { if (b.tdz && b.kind !== 'param') append(tdz, b.slot); });
+    const tdz = tdzSlots(scope, false);
     const script = scope.fn.functionKind === 'script' && scope === scope.fn;
-    const functions = mapList(scope.functions, (decl) => {
-      const fi = this.withScope(scope, () => this.functionInfo(decl, decl.id ? decl.id.name : 'default'));
+    const functions: Array<{ readonly fi: FunctionInfo; readonly slot: number; readonly global: string | null }> = [];
+    const outer = this.enter(scope);
+    for (let i = 0; i < scope.functions.length; i++) {
+      const decl = scope.functions[i];
+      const fi = this.functionInfo(decl, decl.id ? decl.id.name : 'default');
       const binding = decl.id ? scope.bindings.get(decl.id.name) : scope.bindings.get('*default*');
-      return { fi, slot: binding ? binding.slot : 0, global: script && decl.id ? decl.id.name : null };
-    });
+      append(functions, { fi, slot: binding ? binding.slot : 0, global: script && decl.id ? decl.id.name : null });
+    }
+    this.scope = outer;
     const instantiate = (env: Env) => {
       for (let i = 0; i < tdz.length; i++) env[tdz[i]] = TDZ;
       for (let i = 0; i < functions.length; i++) {
@@ -456,13 +737,32 @@ export class Compiler {
       node.type === 'ArrowFunctionExpression' ? (node.async ? 'asyncArrow' : 'arrow')
         : node.async ? (node.generator ? 'asyncGenerator' : 'async')
           : node.generator ? 'generator' : fs.method ? 'method' : 'plain');
-    const fi = new FunctionInfo(shape, name, expectedArgumentCount(node.params), fs.strict, source ?? stringSlice(this.source, node.start, node.end));
+    const fi = new FunctionInfo(shape, name, expectedArgumentCount(node.params), fs.strict, source ?? this.sourceOf(node.start, node.end));
     this.functionInfos.set(node, fi);
+    const outer = fs.parent;
+    if (outer === null) throw new Error('interpreter: a nested function without a scope around it');
+    const syntax: FunctionSyntax = node.type === 'ArrowFunctionExpression' ? { kind: 'arrow' }
+      : fs.method ? { kind: 'method', async: node.async, generator: node.generator, derivedConstructor: fs.derived }
+        : { kind: 'keyword', declaration: node.type === 'FunctionDeclaration' && node.id !== null };
+    fi.lazy = lazily(fi, {
+      unit: this.unit,
+      reparse: { source: this.unit.source, module: this.unit.module, start: node.start + this.base, end: node.end + this.base, syntax, strict: outer.strict },
+      outer,
+      options: { strict: outer.strict, method: fs.method, derived: fs.derived, ctor: shape === 'classBase' || shape === 'classDerived' },
+    });
+    return fi;
+  }
+
+  /** Compile `node` as the unit's own function now (a Function constructor's), not on its first call. */
+  rootFunction(node: FunctionExpression, name: string, source: string): FunctionInfo {
+    const fs = this.analysis.functionScopeOf(node);
+    const shape: FunctionShape = node.async ? (node.generator ? 'asyncGenerator' : 'async') : node.generator ? 'generator' : 'plain';
+    const fi = new FunctionInfo(shape, name, expectedArgumentCount(node.params), fs.strict, source);
     this.compileFunctionInto(fi, fs, node.params, node.body);
     return fi;
   }
 
-  private compileFunctionInto(fi: FunctionInfo, fs: FunctionScope, params: readonly Pattern[], body: BlockStatement | Expression): void {
+  compileFunctionInto(fi: FunctionInfo, fs: FunctionScope, params: readonly Pattern[], body: BlockStatement | Expression): void {
     const saved = { scope: this.scope, shape: this.shape };
     this.scope = fs;
     this.shape = fi.shape;
@@ -475,9 +775,11 @@ export class Compiler {
       if (fs.homeBinding) fi.homeSlot = fs.homeBinding.slot;
       if (fs.funcBinding) fi.funcSlot = fs.funcBinding.slot;
       if (everyItem(params, (p) => p.type === 'Identifier')) {
-        fi.params = mapList(params, (p) => this.declaredBinding(p).slot);
+        const slots: number[] = [];
+        for (let i = 0; i < params.length; i++) append(slots, this.declaredBinding(params[i]).slot);
+        fi.params = slots;
       } else {
-        fs.bindings.forEach((b) => { if (b.kind === 'param' && b.tdz) append(fi.tdzSlots, b.slot); });
+        fi.tdzSlots = tdzSlots(fs, true);
         fi.bindParams = this.paramBinder(params);
       }
       if (body.type !== 'BlockStatement') {
@@ -498,35 +800,36 @@ export class Compiler {
   /** A function body: its var scope's entry, then its statements. */
   private functionBody(fs: FunctionScope, body: BlockStatement): { code: Code; expression: boolean } {
     const varScope = fs.varScope;
-    let entry: ((env: Env) => Env) | null;
-    if (varScope === fs) {
-      entry = this.scopeEntry(fs, true);
+    const entry = varScope === fs ? this.scopeEntry(fs, true) : this.bodyScopeEntry(fs, varScope);
+    const outer = this.enter(varScope);
+    const statements = body.body;
+    let result: { code: Code; expression: boolean };
+    // A body that is one `return <expr>` evaluates to the expression itself.
+    if (entry === null && statements.length === 1 && statements[0].type === 'ReturnStatement') {
+      const arg = statements[0].argument;
+      result = { code: arg ? this.expr(arg) : syncCode(() => undefined), expression: true };
     } else {
-      // A separate var environment: body vars named like parameters start with the parameter's value.
-      const copies: Array<[from: number, to: number]> = [];
-      varScope.bindings.forEach((b) => {
-        const param = fs.bindings.get(b.name);
-        if (b.kind !== 'var') return;
-        if (param && param.kind === 'param') append(copies, [param.slot, b.slot]);
-        else if (b.name === 'arguments' && fs.argumentsBinding) append(copies, [fs.argumentsBinding.slot, b.slot]);
-      });
-      const inner = this.withScope(varScope, () => this.scopeEntry(varScope));
-      entry = (env) => {
-        const e = inner ? inner(env) : env;
-        for (let i = 0; i < copies.length; i++) e[copies[i][1]] = env[copies[i][0]];
-        return e;
-      };
+      result = { code: this.entered(entry, this.statementList(statements)), expression: false };
     }
-    return this.withScope(varScope, () => {
-      const statements = body.body;
-      // A body that is one `return <expr>` evaluates to the expression itself.
-      if (entry === null && statements.length === 1 && statements[0].type === 'ReturnStatement') {
-        const arg = statements[0].argument;
-        return { code: arg ? this.expr(arg) : syncCode(() => undefined), expression: true };
-      }
-      const list = this.statementList(statements);
-      return { code: this.entered(entry, list), expression: false };
-    });
+    this.scope = outer;
+    return result;
+  }
+
+  /**
+   * Entering a function body that has a var environment of its own (its
+   * parameter list has expressions): body vars named like parameters, and
+   * `var arguments`, start with the parameter's value.
+   */
+  private bodyScopeEntry(fs: FunctionScope, varScope: Scope): (env: Env) => Env {
+    const copies = parameterCopies(fs, varScope);
+    const outer = this.enter(varScope);
+    const inner = this.scopeEntry(varScope);
+    this.scope = outer;
+    return (env) => {
+      const e = inner ? inner(env) : env;
+      for (let i = 0; i < copies.length; i++) e[copies[i][1]] = env[copies[i][0]];
+      return e;
+    };
   }
 
   /** Code that runs `body` in the environment `entry` makes. */
@@ -545,17 +848,21 @@ export class Compiler {
   }
 
   private paramBinder(params: readonly Pattern[]): (env: Env, args: ArrayLike<unknown>) => void {
-    const binders = mapList(params, (p, i) => {
-      if (p.type === 'RestElement') {
-        const bind = this.patternBinder(p.argument, true);
-        return (env: Env, args: ArrayLike<unknown>) => bind(env, arraySliceFrom(args, i));
-      }
-      const bind = this.patternBinder(p, true);
-      return (env: Env, args: ArrayLike<unknown>) => bind(env, args[i]);
-    });
+    const binders: Array<(env: Env, args: ArrayLike<unknown>) => void> = [];
+    for (let i = 0; i < params.length; i++) append(binders, this.parameterBinder(params[i], i));
     return (env, args) => {
       for (let i = 0; i < binders.length; i++) binders[i](env, args);
     };
+  }
+
+  /** Binds parameter `index` (or, a rest parameter, the arguments from it on). */
+  private parameterBinder(param: Pattern, index: number): (env: Env, args: ArrayLike<unknown>) => void {
+    if (param.type === 'RestElement') {
+      const bind = this.patternBinder(param.argument, true);
+      return (env, args) => bind(env, arraySliceFrom(args, index));
+    }
+    const bind = this.patternBinder(param, true);
+    return (env, args) => bind(env, args[index]);
   }
 
   /** A function or class expression evaluated to a new function object. */
@@ -725,7 +1032,9 @@ export class Compiler {
   private blockStatement(node: AnyNode, body: readonly Statement[]): Code {
     const scope = this.analysis.scopeOf(node);
     const entry = this.scopeEntry(scope);
-    const list = this.withScope(scope, () => this.statementList(body));
+    const outer = this.enter(scope);
+    const list = this.statementList(body);
+    this.scope = outer;
     return this.entered(entry, list);
   }
 
@@ -913,11 +1222,11 @@ export class Compiler {
     }
     // let/const in the head: a scope of its own, copied per iteration when captured.
     const entry = this.scopeEntry(loopScope);
-    return this.withScope(loopScope, () => {
-      const init = node.init && node.init.type === 'VariableDeclaration' ? this.variableDeclaration(node.init) : null;
-      if (!loopScope.materialized) return this.entered(entry, this.loop(labels, init, node.test ?? null, node.update ?? null, node.body, false));
-      return this.entered(entry, this.perIterationLoop(labels, init, node));
-    });
+    const outer = this.enter(loopScope);
+    const init = node.init && node.init.type === 'VariableDeclaration' ? this.variableDeclaration(node.init) : null;
+    const loop = loopScope.materialized ? this.perIterationLoop(labels, init, node) : this.loop(labels, init, node.test ?? null, node.update ?? null, node.body, false);
+    this.scope = outer;
+    return this.entered(entry, loop);
   }
 
   /** for (let ...) whose bindings a closure captures: each iteration gets a copy of the environment. */
@@ -981,11 +1290,12 @@ export class Compiler {
     if (left.type === 'VariableDeclaration') {
       const pattern = left.declarations[0].id;
       const lexical = left.kind !== 'var';
-      const compileBind = () => (this.suspends(pattern)
-        ? { bind: suspendedBind, bindGen: this.patternBinderGen(pattern, lexical) }
-        : { bind: this.patternBinder(pattern, lexical), bindGen: null });
-      if (loopScope) return { scope: loopScope, ...this.withScope(loopScope, compileBind) };
-      return { scope: null, ...compileBind() };
+      const outer = loopScope ? this.enter(loopScope) : this.scope;
+      const head = this.suspends(pattern)
+        ? { scope: loopScope, bind: suspendedBind, bindGen: this.patternBinderGen(pattern, lexical) }
+        : { scope: loopScope, bind: this.patternBinder(pattern, lexical), bindGen: null };
+      this.scope = outer;
+      return head;
     }
     return this.suspends(left)
       ? { scope: null, bind: suspendedBind, bindGen: this.patternBinderGen(left, false) }
@@ -997,7 +1307,7 @@ export class Compiler {
     const right = this.rightOfForInOf(node);
     const head = this.forHead(node);
     const entry = head.scope ? this.scopeEntry(head.scope) : null;
-    const body = (head.scope ? this.withScope(head.scope, () => this.stmt(node.body, [])) : this.stmt(node.body, [])) ?? syncCode(() => undefined);
+    const body = this.stmtIn(head.scope, node.body);
     const bind = head.bind;
     if (body.g === null && right.g === null && head.bindGen === null) {
       const r = right.s;
@@ -1039,11 +1349,21 @@ export class Compiler {
   }
 
   /** The iterated expression, evaluated where the loop's own names are in their TDZ. */
+  /** A statement compiled in `scope` (or the current one), as code that does nothing if it compiles to nothing. */
+  private stmtIn(scope: Scope | null, node: Statement): Code {
+    const outer = scope ? this.enter(scope) : this.scope;
+    const c = this.stmt(node, []);
+    this.scope = outer;
+    return c ?? syncCode(() => undefined);
+  }
+
   private rightOfForInOf(node: ForInStatement | ForOfStatement): Code {
     const tdzScope = this.analysis.scopes.get(node.right);
     if (!tdzScope) return this.expr(node.right);
     const entry = this.scopeEntry(tdzScope);
-    const c = this.withScope(tdzScope, () => this.expr(node.right));
+    const outer = this.enter(tdzScope);
+    const c = this.expr(node.right);
+    this.scope = outer;
     if (entry === null) return c;
     const cs = c.s;
     const cg = c.g;
@@ -1056,7 +1376,7 @@ export class Compiler {
     const right = this.rightOfForInOf(node);
     const head = this.forHead(node);
     const entry = head.scope ? this.scopeEntry(head.scope) : null;
-    const body = (head.scope ? this.withScope(head.scope, () => this.stmt(node.body, [])) : this.stmt(node.body, [])) ?? syncCode(() => undefined);
+    const body = this.stmtIn(head.scope, node.body);
     const bind = head.bind;
     if (body.g === null && right.g === null && head.bindGen === null) {
       const r = right.s;
@@ -1111,7 +1431,7 @@ export class Compiler {
     const right = asGen(this.rightOfForInOf(node));
     const head = this.forHead(node);
     const entry = head.scope ? this.scopeEntry(head.scope) : null;
-    const body = asGen((head.scope ? this.withScope(head.scope, () => this.stmt(node.body, [])) : this.stmt(node.body, [])) ?? syncCode(() => undefined));
+    const body = asGen(this.stmtIn(head.scope, node.body));
     const bind = head.bind;
     const bindGen = head.bindGen;
     const awaitValue = this.awaiter();
@@ -1167,50 +1487,48 @@ export class Compiler {
     });
   }
 
-  private tryStatement(node: TryStatement): Code {
-    type Handler = {
-      readonly s: (env: Env, error: unknown) => Signal;
-      readonly g: ((env: Env, error: unknown) => Generator<unknown, Signal, unknown>) | null;
+  /** A catch clause: its parameter bound in its own scope, then its block. */
+  private catchClause(clause: CatchClause): CatchHandler {
+    const catchScope = this.analysis.scopeOf(clause);
+    const entry = this.scopeEntry(catchScope);
+    const outer = this.enter(catchScope);
+    const param = clause.param ?? null;
+    const body = this.blockStatement(clause.body, clause.body.body);
+    const suspendingParam = param !== null && this.suspends(param);
+    const bindGen = param !== null && suspendingParam ? this.patternBinderGen(param, true) : null;
+    const bind = param !== null && !suspendingParam ? this.patternBinder(param, true) : null;
+    this.scope = outer;
+    const bs = body.s;
+    if (bindGen !== null) {
+      const run = asGen(body);
+      return {
+        s: suspendedSync,
+        g: function* (env, error) {
+          const e = entry ? entry(env) : env;
+          yield* bindGen(e, error);
+          return signalOf(yield* run(e));
+        },
+      };
+    }
+    const bg = body.g;
+    return {
+      s: (env, error) => {
+        const e = entry ? entry(env) : env;
+        if (bind) bind(e, error);
+        return signalOf(bs(e));
+      },
+      g: bg === null ? null : function* (env, error) {
+        const e = entry ? entry(env) : env;
+        if (bind) bind(e, error);
+        return signalOf(yield* bg(e));
+      },
     };
+  }
+
+  private tryStatement(node: TryStatement): Code {
     const block = this.blockStatement(node.block, node.block.body);
     // The catch clause: its parameter bound in its own scope, then its block.
-    let handler: Handler | null = null;
-    if (node.handler) {
-      const clause = node.handler;
-      const catchScope = this.analysis.scopeOf(clause);
-      const entry = this.scopeEntry(catchScope);
-      handler = this.withScope(catchScope, (): Handler => {
-        const param = clause.param ?? null;
-        const body = this.blockStatement(clause.body, clause.body.body);
-        const bs = body.s;
-        if (param && this.suspends(param)) {
-          const bind = this.patternBinderGen(param, true);
-          const run = asGen(body);
-          return {
-            s: suspendedSync,
-            g: function* (env, error) {
-              const e = entry ? entry(env) : env;
-              yield* bind(e, error);
-              return signalOf(yield* run(e));
-            },
-          };
-        }
-        const bind = param ? this.patternBinder(param, true) : null;
-        const bg = body.g;
-        return {
-          s: (env, error) => {
-            const e = entry ? entry(env) : env;
-            if (bind) bind(e, error);
-            return signalOf(bs(e));
-          },
-          g: bg === null ? null : function* (env, error) {
-            const e = entry ? entry(env) : env;
-            if (bind) bind(e, error);
-            return signalOf(yield* bg(e));
-          },
-        };
-      });
-    }
+    const handler = node.handler ? this.catchClause(node.handler) : null;
     const finalizer = node.finalizer ? this.blockStatement(node.finalizer, node.finalizer.body) : null;
     const h = handler;
     if (block.g === null && (h === null || h.g === null) && (finalizer === null || finalizer.g === null)) {
@@ -1268,11 +1586,18 @@ export class Compiler {
     const discriminant = this.expr(node.discriminant);
     const scope = this.analysis.scopeOf(node);
     const entry = this.scopeEntry(scope);
-    const { tests, bodies, defaultIndex } = this.withScope(scope, () => ({
-      tests: mapList(node.cases, (c) => (c.test ? this.expr(c.test) : null)),
-      bodies: mapList(node.cases, (c) => this.statementList(c.consequent)),
-      defaultIndex: indexWhere(node.cases, (c) => !c.test),
-    }));
+    const outer = this.enter(scope);
+    const cases = node.cases;
+    const tests: Array<Code | null> = [];
+    const bodies: Code[] = [];
+    let defaultIndex = -1;
+    for (let i = 0; i < cases.length; i++) {
+      const test = cases[i].test;
+      append(tests, test ? this.expr(test) : null);
+      append(bodies, this.statementList(cases[i].consequent));
+      if (!test && defaultIndex < 0) defaultIndex = i;
+    }
+    this.scope = outer;
     const finish = (s: unknown): unknown => {
       if (s === undefined) return undefined;
       if (s === BREAK) return undefined;
@@ -1326,7 +1651,7 @@ export class Compiler {
     if (this.scope.strict) throw new UnsupportedSyntax('with in strict mode');
     const object = this.expr(node.object);
     const withScope = this.analysis.scopeOf(node);
-    const body = this.withScope(withScope, () => this.stmt(node.body, []) ?? syncCode(() => undefined));
+    const body = this.stmtIn(withScope, node.body);
     const enter = (env: Env, target: unknown): Env => {
       if (target === null || target === undefined) throw new TypeError('Cannot convert undefined or null to object');
       const e: Env = new Array<unknown>(2);
@@ -1371,7 +1696,7 @@ export class Compiler {
     const hops = this.hops(b.scope);
     const slot = b.slot;
     const raw = this.slotReader(hops, slot);
-    const imported = this.imports.get(b);
+    const imported = this.unit.imports.get(b);
     if (imported) {
       const ops = operators();
       const name = imported.name;
@@ -1422,11 +1747,11 @@ export class Compiler {
     };
   }
 
+  /** Readers of the objects of the `with` statements between a reference and its binding, innermost first. */
   private withObjects(ref: Reference): Array<(env: Env) => unknown> {
-    return mapList(ref.withs, (w) => {
-      const at = this.slotReader(this.hops(w), 1);
-      return at;
-    });
+    const readers: Array<(env: Env) => unknown> = [];
+    for (let i = 0; i < ref.withs.length; i++) append(readers, this.slotReader(this.hops(ref.withs[i]), 1));
+    return readers;
   }
 
   private withRead(ref: Reference, name: string, fallback: Sync): Sync {
@@ -1562,44 +1887,9 @@ export class Compiler {
   }
 
   private objectPatternBinder(pattern: ObjectPattern, init: boolean): (env: Env, value: unknown) => void {
-    const ops = operators();
-    type Step = (env: Env, source: unknown, used: PropertyKey[] | null) => void;
     const hasRest = someItem(pattern.properties, (p) => p.type === 'RestElement');
-    const steps: Step[] = mapList(pattern.properties, (p): Step => {
-      if (p.type === 'RestElement') {
-        const bind = this.patternBinder(p.argument, init);
-        if (p.argument.type === 'MemberExpression') {
-          const target = this.memberTarget(p.argument);
-          return (env, source, used) => {
-            const set = target(env);
-            const rest = {};
-            copyDataProperties(rest, source, used);
-            set(rest);
-          };
-        }
-        return (env, source, used) => {
-          const rest = {};
-          copyDataProperties(rest, source, used);
-          bind(env, rest);
-        };
-      }
-      const key = this.propertyKey(p.key, p.computed);
-      const value = p.value;
-      const bind = this.patternBinder(value.type === 'AssignmentPattern' ? value.left : value, init);
-      const target = value.type === 'AssignmentPattern' ? value.left : value;
-      const dflt = value.type === 'AssignmentPattern'
-        ? (value.left.type === 'Identifier' ? this.named(value.right, value.left.name).s : this.expr(value.right).s)
-        : null;
-      const member = target.type === 'MemberExpression' ? this.memberTarget(target) : null;
-      return (env, source, used) => {
-        const k = key(env);
-        if (used !== null) used[used.length] = k;
-        const set = member ? member(env) : null;
-        let v = ops.get(source, k);
-        if (v === undefined && dflt !== null) v = dflt(env);
-        if (set) set(v); else bind(env, v);
-      };
-    });
+    const steps: ObjectPatternStep[] = [];
+    for (let i = 0; i < pattern.properties.length; i++) append(steps, this.objectPatternStep(pattern.properties[i], init));
     return (env, value) => {
       requireObjectCoercible(value);
       const used = hasRest ? [] : null;
@@ -1607,22 +1897,60 @@ export class Compiler {
     };
   }
 
-  private arrayPatternBinder(pattern: ArrayPattern, init: boolean): (env: Env, value: unknown) => void {
-    type Target = ((env: Env) => (value: unknown) => void) | null;
-    type Element = { kind: 'skip' }
-      | { kind: 'rest'; bind: (env: Env, value: unknown) => void; member: Target }
-      | { kind: 'one'; bind: (env: Env, value: unknown) => void; dflt: Sync | null; member: Target };
-    const elements: Element[] = mapList(pattern.elements, (e): Element => {
-      if (e === null) return { kind: 'skip' };
-      if (e.type === 'RestElement') {
-        return { kind: 'rest', bind: this.patternBinder(e.argument, init), member: e.argument.type === 'MemberExpression' ? this.memberTarget(e.argument) : null };
+  /** One property of an object pattern: reads its key from the source and binds the value. */
+  private objectPatternStep(p: ObjectPattern['properties'][number], init: boolean): ObjectPatternStep {
+    const ops = operators();
+    if (p.type === 'RestElement') {
+      const bind = this.patternBinder(p.argument, init);
+      if (p.argument.type === 'MemberExpression') {
+        const target = this.memberTarget(p.argument);
+        return (env, source, used) => {
+          const set = target(env);
+          const rest = {};
+          copyDataProperties(rest, source, used);
+          set(rest);
+        };
       }
-      const target = e.type === 'AssignmentPattern' ? e.left : e;
-      const dflt = e.type === 'AssignmentPattern'
-        ? (e.left.type === 'Identifier' ? this.named(e.right, e.left.name).s : this.expr(e.right).s)
-        : null;
-      return { kind: 'one', bind: this.patternBinder(target, init), dflt, member: target.type === 'MemberExpression' ? this.memberTarget(target) : null };
-    });
+      return (env, source, used) => {
+        const rest = {};
+        copyDataProperties(rest, source, used);
+        bind(env, rest);
+      };
+    }
+    const key = this.propertyKey(p.key, p.computed);
+    const value = p.value;
+    const bind = this.patternBinder(value.type === 'AssignmentPattern' ? value.left : value, init);
+    const target = value.type === 'AssignmentPattern' ? value.left : value;
+    const dflt = value.type === 'AssignmentPattern'
+      ? (value.left.type === 'Identifier' ? this.named(value.right, value.left.name).s : this.expr(value.right).s)
+      : null;
+    const member = target.type === 'MemberExpression' ? this.memberTarget(target) : null;
+    return (env, source, used) => {
+      const k = key(env);
+      if (used !== null) used[used.length] = k;
+      const set = member ? member(env) : null;
+      let v = ops.get(source, k);
+      if (v === undefined && dflt !== null) v = dflt(env);
+      if (set) set(v); else bind(env, v);
+    };
+  }
+
+  /** One element of an array pattern, compiled. */
+  private arrayPatternElement(e: ArrayPattern['elements'][number], init: boolean): ArrayPatternElement {
+    if (e === null) return { kind: 'skip' };
+    if (e.type === 'RestElement') {
+      return { kind: 'rest', bind: this.patternBinder(e.argument, init), member: e.argument.type === 'MemberExpression' ? this.memberTarget(e.argument) : null };
+    }
+    const target = e.type === 'AssignmentPattern' ? e.left : e;
+    const dflt = e.type === 'AssignmentPattern'
+      ? (e.left.type === 'Identifier' ? this.named(e.right, e.left.name).s : this.expr(e.right).s)
+      : null;
+    return { kind: 'one', bind: this.patternBinder(target, init), dflt, member: target.type === 'MemberExpression' ? this.memberTarget(target) : null };
+  }
+
+  private arrayPatternBinder(pattern: ArrayPattern, init: boolean): (env: Env, value: unknown) => void {
+    const elements: ArrayPatternElement[] = [];
+    for (let i = 0; i < pattern.elements.length; i++) append(elements, this.arrayPatternElement(pattern.elements[i], init));
     return (env, value) => {
       if (plainArray(value)) {
         for (let i = 0; i < elements.length; i++) {
@@ -1685,19 +2013,8 @@ export class Compiler {
         return function* (env, value) { yield* el.assign(env, yield* el.reference(env), value); };
       }
       case 'ObjectPattern': {
-        type Step = { readonly key: ((env: Env) => Generator<unknown, PropertyKey, unknown>) | null; readonly el: ElementGen };
-        const steps = mapList(pattern.properties, (p): Step => {
-          if (p.type === 'RestElement') return { key: null, el: this.elementGen(p.argument, init) };
-          let key: (env: Env) => Generator<unknown, PropertyKey, unknown>;
-          if (p.computed) {
-            const k = asGen(this.expr(p.key));
-            key = function* (env) { return toPropertyKey(yield* k(env)); };
-          } else {
-            const k = this.staticKey(p.key);
-            key = function* () { return k; };
-          }
-          return { key, el: this.elementGen(p.value, init) };
-        });
+        const steps: ObjectPatternStepGen[] = [];
+        for (let i = 0; i < pattern.properties.length; i++) append(steps, this.objectPatternStepGen(pattern.properties[i], init));
         return function* (env, value) {
           requireObjectCoercible(value);
           const used: PropertyKey[] = [];
@@ -1718,7 +2035,11 @@ export class Compiler {
         };
       }
       case 'ArrayPattern': {
-        const elements = mapList(pattern.elements, (e) => (e === null ? null : { rest: e.type === 'RestElement', el: this.elementGen(e.type === 'RestElement' ? e.argument : e, init) }));
+        const elements: Array<{ readonly rest: boolean; readonly el: ElementGen } | null> = [];
+        for (let i = 0; i < pattern.elements.length; i++) {
+          const e = pattern.elements[i];
+          append(elements, e === null ? null : { rest: e.type === 'RestElement', el: this.elementGen(e.type === 'RestElement' ? e.argument : e, init) });
+        }
         return function* (env, value) {
           const it = getIterator(value);
           // A generator's return() while suspended in here is a return
@@ -1751,6 +2072,17 @@ export class Compiler {
         };
       }
     }
+  }
+
+  /** One property of a suspending object pattern: its key (null for a rest element), and its element. */
+  private objectPatternStepGen(p: ObjectPattern['properties'][number], init: boolean): ObjectPatternStepGen {
+    if (p.type === 'RestElement') return { key: null, el: this.elementGen(p.argument, init) };
+    if (p.computed) {
+      const k = asGen(this.expr(p.key));
+      return { key: function* (env) { return toPropertyKey(yield* k(env)); }, el: this.elementGen(p.value, init) };
+    }
+    const name = this.staticKey(p.key);
+    return { key: function* () { return name; }, el: this.elementGen(p.value, init) };
   }
 
   /**
@@ -1861,7 +2193,7 @@ export class Compiler {
       case 'CallExpression': return this.call(node, false);
       case 'NewExpression': return this.newExpr(node);
       case 'SequenceExpression': {
-        const parts = mapList(node.expressions, (e) => this.expr(e));
+        const parts = this.exprs(node.expressions);
         if (everyItem(parts, (p) => p.g === null)) {
           const fns = mapList(parts, (p) => p.s);
           return syncCode((env) => {
@@ -1896,6 +2228,34 @@ export class Compiler {
       case 'Super': throw new Error('interpreter: super outside a member or call');
       case 'SpreadElement': throw new Error('interpreter: spread outside a list');
     }
+  }
+
+  /** Each expression's code, in order. */
+  private exprs(nodes: readonly Expression[]): Code[] {
+    const codes: Code[] = [];
+    for (let i = 0; i < nodes.length; i++) append(codes, this.expr(nodes[i]));
+    return codes;
+  }
+
+  /** An element of an argument list or array literal: a spread, or a value. */
+  private listPart(node: Expression | SpreadElement): ListPart {
+    return node.type === 'SpreadElement' ? { spread: true, code: this.expr(node.argument) } : { spread: false, code: this.expr(node) };
+  }
+
+  private argumentParts(args: readonly (Expression | SpreadElement)[]): ListPart[] {
+    const parts: ListPart[] = [];
+    for (let i = 0; i < args.length; i++) append(parts, this.listPart(args[i]));
+    return parts;
+  }
+
+  /** An array literal's parts: null for a hole. */
+  private elementParts(elements: readonly (Expression | SpreadElement | null)[]): Array<ListPart | null> {
+    const parts: Array<ListPart | null> = [];
+    for (let i = 0; i < elements.length; i++) {
+      const e = elements[i];
+      append(parts, e === null ? null : this.listPart(e));
+    }
+    return parts;
   }
 
   private literal(node: Literal): Sync {
@@ -1944,7 +2304,7 @@ export class Compiler {
       return this.slotReader(this.hops(fs.newTargetBinding.scope), fs.newTargetBinding.slot);
     }
     // import.meta is the metadata the loader put on the module object (node-shims __loadModule).
-    const moduleScope = this.analysis.moduleScope;
+    const moduleScope = this.unit.moduleScope;
     const binding = moduleScope ? moduleScope.bindings.get('%module') : undefined;
     if (!moduleScope || !binding) throw new UnsupportedSyntax('import.meta outside a module');
     const read = this.slotReader(this.hops(moduleScope), binding.slot);
@@ -1953,7 +2313,7 @@ export class Compiler {
   }
 
   private importExpr(node: ImportExpression): Code {
-    const load = this.host.dynamicImport;
+    const load = this.unit.host.dynamicImport;
     const specifier = this.expr(node.source);
     const options = node.options ? this.expr(node.options) : null;
     const run = (spec: unknown, opts: unknown): Promise<unknown> => {
@@ -2024,7 +2384,7 @@ export class Compiler {
 
   private template(node: TemplateLiteral): Code {
     const quasis = mapList(node.quasis, (q) => q.value.cooked ?? '');
-    const parts = mapList(node.expressions, (e) => this.expr(e));
+    const parts = this.exprs(node.expressions);
     if (parts.length === 0) {
       const text = quasis[0];
       return syncCode(() => text);
@@ -2061,7 +2421,7 @@ export class Compiler {
     };
     const callee = this.callee(node.tag, false);
     const args = this.argumentList(node.quasi.expressions);
-    const text = stringSlice(this.source, node.tag.start, node.tag.end);
+    const text = this.textOf(node.tag.start, node.tag.end);
     if (callee.g === null && args.g === null) {
       const c = callee.s;
       const a = args.s;
@@ -2380,7 +2740,7 @@ export class Compiler {
       const callee = node.callee;
       const optional = node.optional;
       const args = asGen(this.argumentList(node.arguments));
-      const text = stringSlice(this.source, callee.start, callee.end);
+      const text = this.textOf(callee.start, callee.end);
       if (callee.type === 'MemberExpression' && callee.object.type !== 'Super') {
         const object = this.chainGen(callee.object);
         const memberOptional = callee.optional;
@@ -2414,7 +2774,7 @@ export class Compiler {
     if (node.type !== 'Identifier') return null;
     const ref = this.analysis.ref(node);
     const b = ref.binding;
-    if (!b || ref.tdz || ref.withs.length > 0 || this.imports.has(b) || this.hops(b.scope) !== 0) return null;
+    if (!b || ref.tdz || ref.withs.length > 0 || this.unit.imports.has(b) || this.hops(b.scope) !== 0) return null;
     return b.slot;
   }
 
@@ -2524,7 +2884,7 @@ export class Compiler {
 
   /** Arguments evaluated into an array (spreads iterate). */
   private argumentList(args: readonly (Expression | SpreadElement)[]): CodeOf<unknown[]> {
-    const parts = mapList(args, (a) => (a.type === 'SpreadElement' ? { spread: true, code: this.expr(a.argument) } : { spread: false, code: this.expr(a) }));
+    const parts = this.argumentParts(args);
     if (everyItem(parts, (p) => p.code.g === null)) {
       const fns = mapList(parts, (p) => p.code.s);
       if (!someItem(parts, (p) => p.spread)) {
@@ -2562,17 +2922,33 @@ export class Compiler {
     });
   }
 
+  /** Whether no argument spreads or suspends. */
+  private plainArguments(args: readonly (Expression | SpreadElement)[]): boolean {
+    for (let i = 0; i < args.length; i++) if (args[i].type === 'SpreadElement' || this.suspends(args[i])) return false;
+    return true;
+  }
+
+  /** The arguments' values, for a list plainArguments accepts. */
+  private argumentValues(args: readonly (Expression | SpreadElement)[]): Sync[] {
+    const fns: Sync[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      append(fns, a.type === 'SpreadElement' ? suspendedSync : this.expr(a).s);
+    }
+    return fns;
+  }
+
   private call(node: CallExpression, inChain: boolean): Code {
     if (node.callee.type === 'Super') return this.superCallExpr(node);
     if (inChain && this.suspends(node)) return genCode(this.chainGen(node));
-    const text = stringSlice(this.source, node.callee.start, node.callee.end);
+    const text = this.textOf(node.callee.start, node.callee.end);
     const argNodes = node.arguments;
     // A plain `f(a, b)` through a binding: no callee pair, no argument array.
     if (!inChain && node.callee.type === 'Identifier' && argNodes.length <= 3
-      && everyItem(argNodes, (x) => x.type !== 'SpreadElement' && !this.suspends(x))
+      && this.plainArguments(argNodes)
       && this.analysis.ref(node.callee).withs.length === 0) {
       const read = this.read(node.callee);
-      const fns = mapList(argNodes, (x) => (x.type === 'SpreadElement' ? suspendedSync : this.expr(x).s));
+      const fns = this.argumentValues(argNodes);
       const check = (f: unknown): Function => {
         if (typeof f !== 'function') throw new TypeError(`${text} is not a function`);
         return f;
@@ -2623,7 +2999,7 @@ export class Compiler {
     const os = this.expr(callee.object).s;
     const key = callee.computed ? this.expr(callee.property).s : null;
     const name = !callee.computed && callee.property.type === 'Identifier' ? callee.property.name : '';
-    const fns = mapList(node.arguments, (a) => (a.type === 'SpreadElement' ? suspendedSync : this.expr(a).s));
+    const fns = this.argumentValues(node.arguments);
     const method = (o: unknown, env: Env): unknown => ops.get(o, key ? key(env) : name);
     const notFunction = () => new TypeError(`${text} is not a function`);
     switch (fns.length) {
@@ -2696,7 +3072,7 @@ export class Compiler {
   private newExpr(node: NewExpression): Code {
     const callee = this.expr(node.callee);
     const args = this.argumentList(node.arguments);
-    const text = stringSlice(this.source, node.callee.start, node.callee.end);
+    const text = this.textOf(node.callee.start, node.callee.end);
     if (callee.g === null && args.g === null) {
       const c = callee.s;
       const a = args.s;
@@ -2714,7 +3090,7 @@ export class Compiler {
   }
 
   private arrayExpr(node: ArrayExpression): Code {
-    const parts = mapList(node.elements, (e) => (e === null ? null : e.type === 'SpreadElement' ? { spread: true, code: this.expr(e.argument) } : { spread: false, code: this.expr(e) }));
+    const parts = this.elementParts(node.elements);
     if (everyItem(parts, (p) => p === null || p.code.g === null)) {
       if (everyItem(parts, (p) => p !== null && !p.spread)) {
         const fns = mapList(parts, (p) => (p ? p.code.s : suspendedSync));
@@ -2757,28 +3133,28 @@ export class Compiler {
     });
   }
 
+  /** One property of an object literal, compiled. */
+  private propertyPart(p: ObjectExpression['properties'][number]): PropertyPart {
+    if (p.type === 'SpreadElement') return { kind: 'spread', value: this.expr(p.argument) };
+    const key: KeyCode = p.computed ? { computed: this.expr(p.key) } : { static: this.staticKey(p.key) };
+    if (!p.computed && !p.shorthand && !p.method && p.kind === 'init' && 'static' in key && key.static === '__proto__') {
+      return { kind: 'proto', value: this.expr(p.value) };
+    }
+    if (p.kind !== 'init' || p.method) {
+      if (p.value.type !== 'FunctionExpression') throw new Error('interpreter: method without a function');
+      const name = 'static' in key ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
+      // A method's source text is its whole definition, key included.
+      return { kind: p.kind === 'init' ? 'method' : p.kind, key, fi: this.functionInfo(p.value, name, undefined, this.sourceOf(p.start, p.value.end)) };
+    }
+    if ('static' in key) return { kind: 'data', key, value: this.named(p.value, functionName(key.static)), named: null };
+    if (isAnonymousFunctionDefinition(p.value)) return { kind: 'data', key, value: null, named: this.namedAtRuntime(p.value) };
+    return { kind: 'data', key, value: this.expr(p.value), named: null };
+  }
+
   private objectExpr(node: ObjectExpression): Code {
-    type Part =
-      | { kind: 'spread'; value: Code }
-      | { kind: 'proto'; value: Code }
-      | { kind: 'data'; key: KeyCode; value: Code | null; named: ((env: Env, name: string) => unknown) | null }
-      | { kind: 'method' | 'get' | 'set'; key: KeyCode; fi: FunctionInfo };
-    const parts: Part[] = mapList(node.properties, (p): Part => {
-      if (p.type === 'SpreadElement') return { kind: 'spread', value: this.expr(p.argument) };
-      const key: KeyCode = p.computed ? { computed: this.expr(p.key) } : { static: this.staticKey(p.key) };
-      if (!p.computed && !p.shorthand && !p.method && p.kind === 'init' && 'static' in key && key.static === '__proto__') {
-        return { kind: 'proto', value: this.expr(p.value) };
-      }
-      if (p.kind !== 'init' || p.method) {
-        if (p.value.type !== 'FunctionExpression') throw new Error('interpreter: method without a function');
-        const name = 'static' in key ? functionName(key.static, p.kind === 'init' ? undefined : p.kind) : '';
-        // A method's source text is its whole definition, key included.
-        return { kind: p.kind === 'init' ? 'method' : p.kind, key, fi: this.functionInfo(p.value, name, undefined, stringSlice(this.source, p.start, p.value.end)) };
-      }
-      if ('static' in key) return { kind: 'data', key, value: this.named(p.value, functionName(key.static)), named: null };
-      if (isAnonymousFunctionDefinition(p.value)) return { kind: 'data', key, value: null, named: this.namedAtRuntime(p.value) };
-      return { kind: 'data', key, value: this.expr(p.value), named: null };
-    });
+    type Part = PropertyPart;
+    const parts: Part[] = [];
+    for (let i = 0; i < node.properties.length; i++) append(parts, this.propertyPart(node.properties[i]));
     const suspends = someItem(parts, (p) => ((p.kind === 'spread' || p.kind === 'proto') && p.value.g !== null)
       || ((p.kind === 'data' || p.kind === 'method' || p.kind === 'get' || p.kind === 'set') && 'computed' in p.key && p.key.computed.g !== null)
       || (p.kind === 'data' && p.value !== null && p.value.g !== null));
@@ -3175,70 +3551,28 @@ export class Compiler {
   }
 
   /** ClassDefinitionEvaluation, with the class's name given when it runs. */
-  private classMaker(node: ClassNode): {
-    readonly s: (env: Env, name: string) => unknown;
-    readonly g: ((env: Env, name: string) => Generator<unknown, unknown, unknown>) | null;
-  } {
+  private classMaker(node: ClassNode): ClassMaker {
     const scopes = this.analysis.classes.get(node);
     if (!scopes) throw new Error('interpreter: class without analysis');
     const classScope = scopes.scope;
     const entry = this.scopeEntry(classScope);
     // The heritage runs in the class's scope, where its name is in its TDZ.
-    const heritage = node.superClass ? this.withScope(classScope, () => (node.superClass ? this.expr(node.superClass) : null)) : null;
-    const { define, keys, privateNames } = this.withScope(classScope, () => this.classDefinition(node, scopes.instanceFields, scopes.staticFields, classScope));
-    // The class's private names exist from its scope's start: its heritage and keys can name them.
-    const enter = (env: Env): Env => {
-      const classEnv = entry ? entry(env) : env;
-      for (let i = 0; i < privateNames.length; i++) {
-        const p = privateNames[i];
-        const pn = new PrivateName(p.description);
-        pn.kind = p.kind;
-        classEnv[p.slot] = pn;
-      }
-      return classEnv;
-    };
-    if ((heritage === null || heritage.g === null) && everyItem(keys, (k) => k.g === null)) {
-      const h = heritage ? heritage.s : null;
-      const ks = mapList(keys, (k) => k.s);
-      return {
-        s: (env, name) => {
-          const classEnv = enter(env);
-          const parent = h ? h(classEnv) : undefined;
-          const computed = new Array<PropertyKey>(ks.length);
-          for (let i = 0; i < ks.length; i++) computed[i] = toPropertyKey(ks[i](classEnv));
-          return define(classEnv, parent, name, computed);
-        },
-        g: null,
-      };
-    }
-    const hg = heritage ? asGen(heritage) : null;
-    const kgs = mapList(keys, asGen);
-    return {
-      s: suspendedSync,
-      g: function* (env, name) {
-        const classEnv = enter(env);
-        const parent = hg ? yield* hg(classEnv) : undefined;
-        const computed = new Array<PropertyKey>(kgs.length);
-        for (let i = 0; i < kgs.length; i++) computed[i] = toPropertyKey(yield* kgs[i](classEnv));
-        return define(classEnv, parent, name, computed);
-      },
-    };
+    const outer = this.enter(classScope);
+    const heritage = node.superClass ? this.expr(node.superClass) : null;
+    const plan = this.classPlan(node, scopes.instanceFields, scopes.staticFields, classScope);
+    this.scope = outer;
+    return classMaking(entry, heritage, plan);
   }
 
-  private classDefinition(
-    node: ClassNode, instanceFields: FunctionScope | null, staticFields: FunctionScope | null, classScope: Scope,
-  ): {
-    readonly define: (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]) => Function;
-    readonly keys: readonly Code[];
-    readonly privateNames: ReadonlyArray<{ readonly slot: number; readonly kind: 'field' | 'method' | 'accessor'; readonly description: string }>;
-  } {
+  /** What defining a class does, compiled: its constructor, elements and private names (classDefiner runs it). */
+  private classPlan(node: ClassNode, instanceFields: FunctionScope | null, staticFields: FunctionScope | null, classScope: Scope): ClassPlan {
     const body: ClassBody = node.body;
     const derived = Boolean(node.superClass);
     const ctorIndex = indexWhere(body.body, (m) => m.type === 'MethodDefinition' && m.kind === 'constructor');
     const ctorMember = ctorIndex < 0 ? null : body.body[ctorIndex];
     const ctorNode = ctorMember !== null && ctorMember.type === 'MethodDefinition' ? ctorMember : null;
     const className = node.id ? node.id.name : '';
-    const classSource = stringSlice(this.source, node.start, node.end);
+    const classSource = this.sourceOf(node.start, node.end);
     let ctorInfo: FunctionInfo;
     if (ctorNode) {
       ctorInfo = this.functionInfo(ctorNode.value, className, derived ? 'classDerived' : 'classBase', classSource);
@@ -3249,13 +3583,9 @@ export class Compiler {
 
     const innerBinding = node.id ? classScope.bindings.get(node.id.name) ?? null : null;
     const writeInner = innerBinding ? this.slotWriter(0, innerBinding.slot) : null;
-    type Element =
-      | { kind: 'method'; isStatic: boolean; key: ElementKey; fi: FunctionInfo; accessor: 'get' | 'set' | null }
-      | { kind: 'field'; isStatic: boolean; key: ElementKey; value: Sync | null; named: ((env: Env, name: string) => unknown) | null }
-      | { kind: 'static'; fi: FunctionInfo };
     const computedKeys: Code[] = [];
-    const elements: Element[] = [];
-    const privateNames: Array<{ slot: number; kind: 'field' | 'method' | 'accessor'; description: string }> = [];
+    const elements: ClassElement[] = [];
+    const privateNames: ClassPrivateName[] = [];
     const declaredPrivate = new SafeSet<string>();
     for (let j = 0; j < body.body.length; j++) {
       const member = body.body[j];
@@ -3288,7 +3618,7 @@ export class Compiler {
         const accessor = member.kind === 'get' || member.kind === 'set' ? member.kind : null;
         const fname = staticName === null ? '' : accessor ? `${accessor} ${staticName}` : staticName;
         // A method's source text is its definition without `static`.
-        const source = stringSlice(this.source, member.static ? this.afterStatic(member.start) : member.start, member.value.end);
+        const source = this.sourceOf(member.static ? this.afterStatic(member.start) : member.start, member.value.end);
         append(elements, { kind: 'method', isStatic: member.static, key, fi: this.functionInfo(member.value, fname, undefined, source), accessor });
         continue;
       }
@@ -3297,114 +3627,36 @@ export class Compiler {
       let named: ((env: Env, name: string) => unknown) | null = null;
       if (member.value) {
         if (!fieldScope) throw new Error('interpreter: field without a scope');
-        const init = member.value;
-        this.withFunctionScope(fieldScope, 'method', () => {
-          if (staticName !== null) value = this.named(init, staticName).s;
-          else named = this.namedAtRuntime(init);
-        });
+        const outer = this.enterFunction(fieldScope, 'method');
+        if (staticName !== null) value = this.named(member.value, staticName).s;
+        else named = this.namedAtRuntime(member.value);
+        this.leave(outer);
       }
       append(elements, { kind: 'field', isStatic: member.static, key, value, named });
     }
-    const instanceFi = instanceFields ? this.fieldInfo(instanceFields) : null;
-    const staticFi = staticFields ? this.fieldInfo(staticFields) : null;
-    const runtimeEnter = (fi: FunctionInfo, scope: Env, thisArg: unknown, home: object): Env => {
-      const env: Env = new Array<unknown>(fi.size);
-      env[0] = scope;
-      if (fi.thisSlot !== 0) env[fi.thisSlot] = thisArg;
-      if (fi.homeSlot !== 0) env[fi.homeSlot] = home;
-      return env;
+    return {
+      ctorInfo, writeInner, elements, privateNames, computedKeys,
+      instanceFi: instanceFields ? this.fieldInfo(instanceFields) : null,
+      staticFi: staticFields ? this.fieldInfo(staticFields) : null,
     };
-
-    const define = (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]): Function => {
-      const record = new ClassRecord();
-      const C = makeClass(ctorInfo, classEnv, parent, name, record);
-      const protoValue: unknown = reflectGet(C, 'prototype');
-      if (!isObject(protoValue)) throw new Error('interpreter: class without a prototype');
-      const proto = protoValue;
-      type FieldRecord = { key: PropertyKey | PrivateName; value: Sync | null; named: ((env: Env, name: string) => unknown) | null };
-      const instanceFieldList: FieldRecord[] = [];
-      const instancePrivateMethods: PrivateName[] = [];
-      const staticWork: Array<{ field: FieldRecord } | { block: FunctionInfo }> = [];
-      const staticPrivateMethods: PrivateName[] = [];
-      for (let i = 0; i < elements.length; i++) {
-        const el = elements[i];
-        if (el.kind === 'static') { staticWork[staticWork.length] = { block: el.fi }; continue; }
-        const target = el.isStatic ? C : proto;
-        let key: PropertyKey | PrivateName;
-        if ('private' in el.key) key = el.key.private(classEnv);
-        else if ('static' in el.key) key = el.key.static;
-        else key = computed[el.key.computed];
-        if (el.kind === 'method') {
-          const fname = key instanceof PrivateName ? (el.accessor ? `${el.accessor} ${key.description}` : key.description)
-            : functionName(key, el.accessor ?? undefined);
-          const fn = makeFunction(el.fi, classEnv, target, fname);
-          if (key instanceof PrivateName) {
-            if (el.accessor === 'get') key.getter = fn;
-            else if (el.accessor === 'set') key.setter = fn;
-            else key.method = fn;
-            const list = el.isStatic ? staticPrivateMethods : instancePrivateMethods;
-            if (!contains(list, key)) list[list.length] = key;
-          } else if (el.accessor) {
-            defineAccessor(target, key, el.accessor, fn, false);
-          } else {
-            defineMethod(target, key, fn, false);
-          }
-          continue;
-        }
-        const record: FieldRecord = { key, value: el.value, named: el.named };
-        if (el.isStatic) staticWork[staticWork.length] = { field: record };
-        else instanceFieldList[instanceFieldList.length] = record;
-      }
-      const defineField = (fieldEnv: Env | null, receiver: object, f: FieldRecord) => {
-        let v: unknown;
-        if (fieldEnv !== null) {
-          if (f.value !== null) v = f.value(fieldEnv);
-          else if (f.named !== null) v = f.named(fieldEnv, f.key instanceof PrivateName ? f.key.description : functionName(f.key));
-        }
-        if (f.key instanceof PrivateName) f.key.add(receiver, v);
-        else createDataProperty(receiver, f.key, v);
-      };
-      const initialize = instanceFieldList.length === 0 && instancePrivateMethods.length === 0 ? null : (instance: object) => {
-        for (let i = 0; i < instancePrivateMethods.length; i++) instancePrivateMethods[i].add(instance, undefined);
-        if (instanceFieldList.length === 0) return;
-        const fieldEnv = instanceFi ? runtimeEnter(instanceFi, classEnv, instance, proto) : null;
-        for (let i = 0; i < instanceFieldList.length; i++) defineField(fieldEnv, instance, instanceFieldList[i]);
-      };
-      record.initialize = initialize;
-      record.home = proto;
-      if (writeInner) writeInner(classEnv, C);
-      for (let i = 0; i < staticPrivateMethods.length; i++) staticPrivateMethods[i].add(C, undefined);
-      const staticEnv = staticFi ? runtimeEnter(staticFi, classEnv, C, C) : null;
-      for (let i = 0; i < staticWork.length; i++) {
-        const work = staticWork[i];
-        if ('block' in work) {
-          const fi = work.block;
-          if (fi.body) fi.body(runtimeEnter(fi, classEnv, C, C));
-        } else {
-          defineField(staticEnv, C, work.field);
-        }
-      }
-      return C;
-    };
-    return { define, keys: computedKeys, privateNames };
   }
 
   /** The offset after a class member's `static` keyword (and the whitespace after it). */
   private afterStatic(start: number): number {
-    return skipTrivia(this.source, start + 'static'.length);
+    return skipTrivia(this.text, start + 'static'.length);
   }
 
-  /** Compile with `fs` as the current function (field initializers, static blocks). */
-  private withFunctionScope<T>(fs: FunctionScope, shape: FunctionShape, f: () => T): T {
-    const saved = { scope: this.scope, shape: this.shape };
+  /** Make `fs` the current function (field initializers, static blocks); returns what leave() restores. */
+  private enterFunction(fs: FunctionScope, shape: FunctionShape): { readonly scope: Scope; readonly shape: FunctionShape } {
+    const outer = { scope: this.scope, shape: this.shape };
     this.scope = fs;
     this.shape = shape;
-    try {
-      return f();
-    } finally {
-      this.scope = saved.scope;
-      this.shape = saved.shape;
-    }
+    return outer;
+  }
+
+  private leave(outer: { readonly scope: Scope; readonly shape: FunctionShape }): void {
+    this.scope = outer.scope;
+    this.shape = outer.shape;
   }
 
   /** The frame layout of a class's field initializer scope. */
@@ -3419,14 +3671,13 @@ export class Compiler {
   private staticBlockInfo(block: StaticBlock): FunctionInfo {
     const fs = this.analysis.functionScopeOf(block);
     const fi = new FunctionInfo('method', '', 0, true, '');
-    this.withFunctionScope(fs, 'method', () => {
-      fi.size = fs.size;
-      if (fs.thisBinding) fi.thisSlot = fs.thisBinding.slot;
-      if (fs.homeBinding) fi.homeSlot = fs.homeBinding.slot;
-      const entry = this.scopeEntry(fs, true);
-      const list = this.statementList(block.body);
-      fi.body = this.entered(entry, list).s;
-    });
+    const outer = this.enterFunction(fs, 'method');
+    fi.size = fs.size;
+    if (fs.thisBinding) fi.thisSlot = fs.thisBinding.slot;
+    if (fs.homeBinding) fi.homeSlot = fs.homeBinding.slot;
+    const entry = this.scopeEntry(fs, true);
+    fi.body = this.entered(entry, this.statementList(block.body)).s;
+    this.leave(outer);
     return fi;
   }
 
@@ -3463,15 +3714,13 @@ export class Compiler {
 
   /** A CommonJS body: a function of the wrapper's parameters. */
   commonJsFunction(program: Program, root: FunctionScope, params: readonly string[]): FunctionInfo {
-    const fi = new FunctionInfo('plain', '', params.length, root.strict, this.source);
+    const fi = new FunctionInfo('plain', '', params.length, root.strict, this.unit.source);
     fi.size = root.size;
     if (root.thisBinding) fi.thisSlot = root.thisBinding.slot;
     if (root.argumentsBinding) fi.argumentsSlot = root.argumentsBinding.slot;
-    fi.params = mapList(params, (name) => {
-      const b = root.bindings.get(name);
-      if (!b) throw new Error('interpreter: wrapper parameter');
-      return b.slot;
-    });
+    const slots: number[] = [];
+    for (let i = 0; i < params.length; i++) append(slots, bindingSlot(root, params[i]));
+    fi.params = slots;
     const code = this.programBody(program, root);
     if (code.g !== null) throw new UnsupportedSyntax('await at the top level of a CommonJS module');
     fi.body = code.s;
@@ -3490,16 +3739,11 @@ export class Compiler {
    */
   moduleCell(program: Program, root: FunctionScope): ModuleCell {
     const ops = operators();
-    const slotOf = (name: string): number => {
-      const b = root.bindings.get(name);
-      if (!b) throw new Error(`interpreter: module binding ${name}`);
-      return b.slot;
-    };
-    const exportsSlot = slotOf('%exports');
-    const requireSlot = slotOf('%require');
-    const moduleSlot = slotOf('%module');
-    const filenameSlot = slotOf('%filename');
-    const dirnameSlot = slotOf('%dirname');
+    const exportsSlot = bindingSlot(root, '%exports');
+    const requireSlot = bindingSlot(root, '%require');
+    const moduleSlot = bindingSlot(root, '%module');
+    const filenameSlot = bindingSlot(root, '%filename');
+    const dirnameSlot = bindingSlot(root, '%dirname');
     type Load = (env: Env, require: (id: string) => unknown) => void;
     const loads: Load[] = [];
     const getters: Array<[name: string, read: (env: Env) => unknown]> = [];
@@ -3518,9 +3762,9 @@ export class Compiler {
           const spec = statement.specifiers[k];
           const binding = root.bindings.get(spec.local.name);
           if (!binding) throw new Error('interpreter: import binding');
-          if (spec.type === 'ImportDefaultSpecifier') this.imports.set(binding, { kind: 'default', name: 'default' });
-          else if (spec.type === 'ImportNamespaceSpecifier') this.imports.set(binding, { kind: 'namespace', name: '*' });
-          else this.imports.set(binding, { kind: 'named', name: exportedName(spec.imported) });
+          if (spec.type === 'ImportDefaultSpecifier') this.unit.imports.set(binding, { kind: 'default', name: 'default' });
+          else if (spec.type === 'ImportNamespaceSpecifier') this.unit.imports.set(binding, { kind: 'namespace', name: '*' });
+          else this.unit.imports.set(binding, { kind: 'named', name: exportedName(spec.imported) });
           append(slots, { slot: binding.slot, namespace: spec.type === 'ImportNamespaceSpecifier' });
         }
         append(loads, (env, require) => {
@@ -3629,7 +3873,10 @@ export class Compiler {
     if (!binding) throw new Error(`interpreter: export of undeclared ${name}`);
     // A getter can run before the declaration does (a cycle): it reads the TDZ.
     if (binding.declEnd >= 0) binding.tdz = true;
-    return this.withScope(root, () => this.bindingRead(binding, binding.tdz));
+    const outer = this.enter(root);
+    const read = this.bindingRead(binding, binding.tdz);
+    this.scope = outer;
+    return read;
   }
 }
 

@@ -99,6 +99,8 @@ export class FunctionInfo implements FactoryFunctionInfo {
   derived = false;
   /** A class constructor with no constructor in its source. */
   implicit = false;
+  /** Compiles the body, on the function's first call (compile.ts); null once compiled. */
+  lazy: (() => void) | null = null;
   constructor(
     readonly shape: FunctionShape,
     readonly name: string,
@@ -125,6 +127,7 @@ function enter(
   fi: FunctionInfo, scope: Env, fn: Function | undefined, thisArg: unknown, args: ArrayLike<unknown>,
   newTarget: Function | undefined, home: object | undefined,
 ): Env {
+  if (fi.lazy !== null) fi.lazy();
   const env: Env = new Array<unknown>(fi.size);
   env[0] = scope;
   if (fi.thisSlot !== 0) env[fi.thisSlot] = fi.derived ? TDZ : thisArg;

@@ -22,11 +22,11 @@
  */
 import { parse, type FunctionExpression, type Options, type Program } from 'acorn';
 import { parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
-import { Compiler, ROOT_ENV, type ModuleCell } from './compile.js';
+import { Compiler, ROOT_ENV, type ModuleCell, type UnitContext, type UnitHost } from './compile.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { installHost, makeFunction } from './runtime.js';
-import { FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram } from './scope.js';
-import { charCodeAt, isWhitespaceCode, someItem, stringLastIndexOf, stringSlice } from './intrinsics.js';
+import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
+import { SafeMap, charCodeAt, isWhitespaceCode, someItem, stringLastIndexOf, stringSlice } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
 export { HOST_OPS_SOURCE, type HostOps } from './host-ops.js';
@@ -117,6 +117,10 @@ function hasModuleSyntax(program: Program): boolean {
 
 let installed: HostOps | null = null;
 
+function unitContext(source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
+  return { source, module, host, imports: new SafeMap(), moduleScope };
+}
+
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
   if (installed !== hostOps) {
     installHost(hostOps);
@@ -136,39 +140,42 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const { node, text } = parsed;
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const compiler = new Compiler(analysis, text, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, root);
-      const fi = compiler.functionInfo(node, 'anonymous', undefined, runtimeFunctionSource(kind, params, body));
+      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+      const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
+      releaseScopes(root);
       return makeFunction(fi, ROOT_ENV, undefined);
     },
 
     compileModule(path, text) {
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
-      const unitHost = { dynamicImport: (specifier: unknown, options: unknown) => host.dynamicImport(parentUrl, specifier, options) };
+      const unitHost: UnitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
+      const moduleCell = (program: Program): ModuleCell => {
+        const analysis = analyzeProgram(program, { kind: 'module', strict: true });
+        const root = analysis.functionScopeOf(program);
+        const cell = new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).moduleCell(program, root);
+        releaseScopes(root);
+        return cell;
+      };
       let module: Program | null = null;
       try {
         module = parseQuick(text, { ...PARSE, sourceType: 'module' });
       } catch {
         // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
       }
-      if (module !== null && hasModuleSyntax(module)) {
-        const analysis = analyzeProgram(module, { kind: 'module', strict: true });
-        const root = analysis.functionScopeOf(module);
-        return new Compiler(analysis, text, unitHost, root).moduleCell(module, root);
-      }
+      if (module !== null && hasModuleSyntax(module)) return moduleCell(module);
       let script: Program;
       try {
         script = parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true });
       } catch (error) {
         // Top-level await or import.meta without imports or exports: still a module.
         if (module === null) throw error;
-        const analysis = analyzeProgram(module, { kind: 'module', strict: true });
-        const root = analysis.functionScopeOf(module);
-        return new Compiler(analysis, text, unitHost, root).moduleCell(module, root);
+        return moduleCell(module);
       }
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);
-      const fi = new Compiler(analysis, text, unitHost, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      const fi = new Compiler(analysis, unitContext(text, false, unitHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
       return makeFunction(fi, ROOT_ENV, undefined);
     },
@@ -177,9 +184,9 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const program = parse(text, { ...PARSE, sourceType: 'script' });
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
-      if (!(root instanceof FunctionScope)) throw new Error('interpreter: script without a scope');
-      const body = new Compiler(analysis, text, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, root)
-        .programBody(program, root);
+      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+      const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
+      releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');
       const env: unknown[] = new Array<unknown>(root.size);
       env[0] = ROOT_ENV;

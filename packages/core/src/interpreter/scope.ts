@@ -70,19 +70,20 @@ export type ScopeKind =
 
 export class Scope {
   readonly bindings = new SafeMap<string, Binding>();
-  readonly children: Scope[] = [];
+  /** The scopes inside this one, for laying out slots; null once the analysis is released. */
+  children: Scope[] | null = [];
   materialized = false;
   /** Slots of the environment this scope allocates, when materialized. */
   size = 1;
   /** Function declarations this scope instantiates on entry, in source order. */
-  readonly functions: Array<FunctionDeclaration | AnonymousFunctionDeclaration> = [];
+  functions: Array<FunctionDeclaration | AnonymousFunctionDeclaration> = [];
   readonly fn: FunctionScope;
   /** Whether code in this scope is strict: its function's mode, or a class body's (always strict). */
   readonly strict: boolean;
   constructor(readonly kind: ScopeKind, readonly parent: Scope | null, fn: FunctionScope | null, strict?: boolean) {
     this.fn = fn ?? (this instanceof FunctionScope ? this : unreachable('scope without a function'));
     this.strict = strict ?? (kind === 'class' || (parent !== null && parent.fn === this.fn ? parent.strict : false));
-    if (parent) append(parent.children, this);
+    if (parent !== null && parent.children !== null) append(parent.children, this);
   }
 
   /** The scope whose environment holds this scope's bindings at runtime. */
@@ -93,6 +94,13 @@ export class Scope {
       s = s.parent;
     }
     return s;
+  }
+
+  /** The scope's bindings, in the order they were declared. */
+  bindingList(): Binding[] {
+    const list: Binding[] = [];
+    this.bindings.forEach((binding) => { append(list, binding); });
+    return list;
   }
 
   declare(name: string, kind: BindingKind, declEnd: number): Binding {
@@ -126,7 +134,6 @@ export class FunctionScope extends Scope {
   constructor(
     readonly functionKind: FunctionKind,
     parent: Scope | null,
-    readonly node: FunctionNode | Program | StaticBlock | null,
     readonly strict: boolean,
     arrow: boolean,
     readonly async: boolean,
@@ -182,6 +189,13 @@ export function patternIdentifiers(pattern: Pattern, out: Identifier[] = []): Id
     case 'MemberExpression': break;
   }
   return out;
+}
+
+/** The child nodes of `node`, in a new array. */
+export function childNodes(node: AnyNode): AnyNode[] {
+  const children: AnyNode[] = [];
+  forEachChildNode(node, (child) => { append(children, child); });
+  return children;
 }
 
 /** Each child node of `node`. */
@@ -260,7 +274,7 @@ export interface UnitOptions {
 export function analyzeProgram(program: Program, options: UnitOptions): Analysis {
   const analyzer = new Analyzer();
   const strict = options.strict || options.kind === 'module' || hasUseStrict(program.body);
-  const root = new FunctionScope(options.kind, null, program, strict, false, options.kind === 'module', false);
+  const root = new FunctionScope(options.kind, null, strict, false, options.kind === 'module', false);
   analyzer.analysis.scopes.set(program, root);
   if (options.kind === 'module') {
     // A module runs as a cell of the five CommonJS wrapper arguments.
@@ -278,9 +292,43 @@ export function analyzeProgram(program: Program, options: UnitOptions): Analysis
 /** Analyze a function expression that closes over the global scope (a Function constructor's). */
 export function analyzeFunction(node: FunctionExpression): Analysis {
   const analyzer = new Analyzer();
-  analyzer.visitFunction(node, null, { strict: false, method: false, derived: false, ctor: false });
+  analyzer.visitFunction(node, null, { strict: false, method: false, derived: false, ctor: false, unbound: true });
   analyzer.finish(analyzer.analysis.functionScopeOf(node));
   return analyzer.analysis;
+}
+
+/**
+ * Analyze a function compiled on its first call, parsed again on its own
+ * (reparse.ts), inside the scopes of the function that defined it, which an
+ * earlier analysis made and released. Their bindings and slots stand: this
+ * analysis resolves the function's names to them as that one did.
+ */
+export function analyzeLazyFunction(node: FunctionNode, outer: Scope, options: FunctionOptions, moduleScope: FunctionScope | null): Analysis {
+  const analyzer = new Analyzer();
+  analyzer.analysis.moduleScope = moduleScope;
+  analyzer.finish(analyzer.visitFunction(node, outer, options));
+  return analyzer.analysis;
+}
+
+/**
+ * Release an analysis once its function is compiled: what it keeps is what a
+ * function compiled later needs of the scopes it sits in. Its scopes drop
+ * their links to inner scopes and the declarations they held, and each keeps
+ * only the bindings a nested function refers to (captured) and the implicit
+ * ones (this, arguments, the module), which is all a later analysis can
+ * resolve a name to. Scopes no function compiled later sits in are then
+ * garbage.
+ */
+export function releaseScopes(scope: Scope): void {
+  const children = scope.children;
+  scope.children = null;
+  scope.functions = [];
+  const dropped: string[] = [];
+  scope.bindings.forEach((binding, name) => {
+    if (!binding.captured && binding.kind !== 'special') append(dropped, name);
+  });
+  for (let i = 0; i < dropped.length; i++) scope.bindings.delete(dropped[i]);
+  if (children !== null) for (let i = 0; i < children.length; i++) releaseScopes(children[i]);
 }
 
 /**
@@ -290,7 +338,7 @@ export function analyzeFunction(node: FunctionExpression): Analysis {
 export function analyzeCommonJs(program: Program, params: readonly string[]): Analysis {
   const analyzer = new Analyzer();
   const strict = hasUseStrict(program.body);
-  const root = new FunctionScope('function', null, program, strict, false, false, false);
+  const root = new FunctionScope('function', null, strict, false, false, false);
   analyzer.analysis.scopes.set(program, root);
   for (let i = 0; i < params.length; i++) { const name = params[i]; root.declare(name, 'param', -1); }
   analyzer.declareLexical(program.body, root);
@@ -300,11 +348,13 @@ export function analyzeCommonJs(program: Program, params: readonly string[]): An
   return analyzer.analysis;
 }
 
-interface FunctionOptions {
+export interface FunctionOptions {
   readonly strict: boolean;
   readonly method: boolean;
   readonly derived: boolean;
   readonly ctor: boolean;
+  /** A Function constructor's function: it is named `anonymous`, but the name binds nothing in it. */
+  readonly unbound?: boolean;
 }
 
 class Analyzer {
@@ -726,7 +776,7 @@ class Analyzer {
     const arrow = node.type === 'ArrowFunctionExpression';
     const body = node.body;
     const strict = options.strict || (body.type === 'BlockStatement' && hasUseStrict(body.body));
-    const fn = new FunctionScope('function', scope, node, strict, arrow, node.async, node.generator);
+    const fn = new FunctionScope('function', scope, strict, arrow, node.async, node.generator);
     fn.method = options.method;
     fn.derived = options.derived;
     this.analysis.scopes.set(node, fn);
@@ -741,7 +791,7 @@ class Analyzer {
       this.declareLexical(body.body, fn.varScope);
       this.hoistVars(body.body, fn.varScope, true);
     }
-    if (node.type === 'FunctionExpression' && node.id && !fn.bindings.has(node.id.name) && !fn.varScope.bindings.has(node.id.name)) {
+    if (!options.unbound && node.type === 'FunctionExpression' && node.id && !fn.bindings.has(node.id.name) && !fn.varScope.bindings.has(node.id.name)) {
       fn.funcBinding = fn.declare(node.id.name, 'callee', -1);
     }
     if (options.ctor && !fn.funcBinding) fn.funcBinding = fn.special('%func');
@@ -791,7 +841,7 @@ class Analyzer {
       if (member.value) {
         let fieldScope: FunctionScope | null = member.static ? staticFields : instanceFields;
         if (!fieldScope) {
-          fieldScope = new FunctionScope('field', classScope, null, true, false, false, false);
+          fieldScope = new FunctionScope('field', classScope, true, false, false, false);
           fieldScope.method = true;
           if (member.static) staticFields = fieldScope; else instanceFields = fieldScope;
         }
@@ -811,7 +861,7 @@ class Analyzer {
   }
 
   visitStaticBlock(block: StaticBlock, classScope: Scope): void {
-    const fn = new FunctionScope('static', classScope, block, true, false, false, false);
+    const fn = new FunctionScope('static', classScope, true, false, false, false);
     fn.method = true;
     this.analysis.scopes.set(block, fn);
     this.declareLexical(block.body, fn);
@@ -920,8 +970,10 @@ function layoutFunction(fn: FunctionScope): void {
 
 function assignSlots(scope: Scope, holder: Scope): void {
   scope.bindings.forEach((binding) => { binding.slot = holder.size++; });
-  for (let i = 0; i < scope.children.length; i++) {
-    const child = scope.children[i];
+  const children = scope.children;
+  if (children === null) throw new Error('interpreter scope analysis: layout of a released scope');
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
     if (child instanceof FunctionScope) {
       layoutFunction(child);
       continue;
