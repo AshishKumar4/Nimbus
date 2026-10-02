@@ -45,7 +45,8 @@ import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
 import { gateSyncLaunch, requireVfsCred } from './os-contracts.js';
-import { buildPipInvocation, PYTHON_SITE_PACKAGES_ROOT, sessionUsesSciVariant, } from './python-pip.js';
+import { buildPipInvocation, pythonSitePackages, sessionUsesSciVariant, } from './python-pip.js';
+import { DEFAULT_HOME } from '../constants.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
@@ -178,12 +179,14 @@ export function makeCPythonRunnerFactory(deps) {
             const vfs = ctx.vfs;
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
+            const home = ctx.env?.HOME || DEFAULT_HOME;
             const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
             if (notHydrated !== null) {
                 ctx.stderr.write(`${binName}: ${notHydrated}\n`);
                 return 1;
             }
             const pipRuntimeContext = {
+                home,
                 // No Pyodide lockfile: there is no curated wheel index behind this
                 // interpreter, so pip resolves against PyPI like anywhere else.
                 pyodideLockfileText: null,
@@ -214,7 +217,7 @@ export function makeCPythonRunnerFactory(deps) {
             // also right for `python -c` naming a module in a variable. Falling back
             // when the variant is absent keeps a session installed before the variant
             // shipped working, on the base interpreter, rather than failing to start.
-            const wantsSci = await sessionUsesSciVariant(vfs)
+            const wantsSci = await sessionUsesSciVariant(vfs, home)
                 && sciWasmVfs !== null && (await vfs.exists(sciWasmVfs));
             const wasmVfs = wantsSci ? sciWasmVfs : baseWasmVfs;
             const sciPackagesPath = wantsSci && sciPackagesVfs && (await vfs.exists(sciPackagesVfs))
@@ -276,7 +279,7 @@ export function makeCPythonRunnerFactory(deps) {
                 ...(sciPackagesPath
                     ? [`sys.path.insert(0, ${JSON.stringify(`/${sciPackagesPath.replace(/^\/+/, '')}`)})`]
                     : []),
-                `sys.path.insert(0, ${JSON.stringify(`/${PYTHON_SITE_PACKAGES_ROOT}`)})`,
+                `sys.path.insert(0, ${JSON.stringify(`/${pythonSitePackages(home)}`)})`,
                 `sys.path.insert(0, ${JSON.stringify(cwd)})`,
                 // WASI has no process cwd, so wasi-libc starts every guest at '/'.
                 // Leaving it there silently reroutes every relative path a program
@@ -291,7 +294,7 @@ export function makeCPythonRunnerFactory(deps) {
             const cacertVfs = findFile(CPYTHON_CACERT_REL);
             const userEnv = { ...(ctx.env || {}) };
             if (!userEnv.HOME)
-                userEnv.HOME = '/home/user';
+                userEnv.HOME = home;
             if (!userEnv.PYTHONUNBUFFERED)
                 userEnv.PYTHONUNBUFFERED = '1';
             // Without this OpenSSL has no trust anchors at all — there is no

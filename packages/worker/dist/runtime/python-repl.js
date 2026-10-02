@@ -3,6 +3,7 @@ import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
+import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { buildCPythonPreamble } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -166,7 +167,7 @@ class PythonReplAdapter {
     }
     async ensurePoolFrom(vfs) {
         const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
-        const wantsSci = (await sessionUsesSciVariant(vfs)) && (await vfs.exists(sciPath));
+        const wantsSci = (await sessionUsesSciVariant(vfs, DEFAULT_HOME)) && (await vfs.exists(sciPath));
         // A prompt that was open before `pip install numpy` is holding the
         // interpreter that does not have it. Dropping the pool rebuilds on the next
         // statement, which is the facet restart EXTENSIONS.md says this costs.

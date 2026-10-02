@@ -24,7 +24,7 @@ import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../sessi
 import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
-import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
+import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { VITE_CONFIG_KEY } from '../session/keys.js';
 import { isJsonObject } from '../npm/package-lock.js';
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
@@ -187,6 +187,7 @@ export async function registerHostedCommands(self, workspace) {
             filesystem: workspace.filesystem,
             registry,
             startResident: rubyResidentStart(facetMgr),
+            getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
         })(manifest, installRoot, binName, binKind);
         return runner(ctx);
     });

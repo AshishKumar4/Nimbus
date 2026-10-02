@@ -1,6 +1,6 @@
 import { type RuntimeArtifactMetadata, type RuntimePythonPackageArtifactMetadata } from './runtime-manifest.js';
-export declare const PYTHON_SITE_PACKAGES_ROOT = "home/user/.nimbus-python/site-packages";
-export declare const PYTHON_PYODIDE_PACKAGE_MANIFEST = "home/user/.nimbus-python/site-packages/.nimbus-pyodide-packages.json";
+/** Where `pip install` puts packages for the user whose home is `home`. */
+export declare function pythonSitePackages(home: string): string;
 interface PythonPipVfs {
     exists(path: string): boolean | Promise<boolean>;
     readFile(path: string): Uint8Array | Promise<Uint8Array>;
@@ -14,8 +14,10 @@ interface PythonPipVfs {
  * is right for `python -c` reading a module name out of a variable, which a
  * per-program classifier cannot be.
  */
-export declare function sessionUsesSciVariant(vfs: PythonPipVfs): Promise<boolean>;
+export declare function sessionUsesSciVariant(vfs: PythonPipVfs, home: string): Promise<boolean>;
 export interface PythonPipRuntimeContext {
+    /** The installing user's home: packages go to its {@link pythonSitePackages}. */
+    home: string;
     pyodideLockfileText?: string | null;
     runtimeArtifacts?: RuntimeArtifactMetadata[];
 }
@@ -26,6 +28,6 @@ export interface PipInvocation {
     exitCode: number;
     pyodidePackages?: RuntimePythonPackageArtifactMetadata[];
 }
-export declare function buildPipInvocation(argv: string[], binName: string, cwd: string, vfs: PythonPipVfs, runtimeContext?: PythonPipRuntimeContext): Promise<PipInvocation>;
+export declare function buildPipInvocation(argv: string[], binName: string, cwd: string, vfs: PythonPipVfs, runtimeContext: PythonPipRuntimeContext): Promise<PipInvocation>;
 export {};
 //# sourceMappingURL=python-pip.d.ts.map

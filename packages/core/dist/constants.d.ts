@@ -52,7 +52,9 @@ export declare const DEFAULT_HOSTNAME = "nimbus";
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";
 export declare const DEFAULT_SHELL = "/bin/sh";
-export declare const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin";
+/** A login's PATH: the system directories, then the user's own bins under `home`. */
+export declare function defaultPath(home: string): string;
+export declare const DEFAULT_PATH: string;
 export declare const SEEDED_TOP_LEVEL_DIRS: string[];
 export declare const GUEST_COMPAT_FLAGS: readonly string[];
 export declare const FACET_PROVIDED_PACKAGE_ENTRYPOINTS: Readonly<Record<string, string>>;

@@ -247,6 +247,9 @@ export declare class NimbusWorkspace {
  * and it is exported because a host may need the filesystem before it needs a
  * shell: the Nimbus session seeds its starter project for a browser that hits
  * `/preview` without ever opening a terminal.
+ *
+ * `home` is the session user's home directory: it is made and owned by the
+ * user, and /etc/passwd names it.
  */
-export declare function seedBaseFilesystem(vfs: SqliteVFS): void;
+export declare function seedBaseFilesystem(vfs: SqliteVFS, home?: string): void;
 //# sourceMappingURL=nimbus-workspace.d.ts.map
