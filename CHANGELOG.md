@@ -3,6 +3,29 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- `exec`, `execStream`, `startProcess` and `runCode` take an `execId`: a
+  name for the call. Every process the command starts carries it in the
+  process table (`node`, `bun`, npm bins and `opencode`, python and ruby
+  servers, wasm programs, the `vite` builtin, package scripts), and so does
+  everything those processes spawn, so a port's listener names the call that
+  started its server. `processes.list()`, `ports.list()`, `apps.list()`,
+  `apps.expose()`, `ports.expose()` and `startProcess`'s `process` report it
+  as `execId`, over the SDK, the remote API and a hosted runtime's session; a
+  record about a process no call named is unchanged. A resident server keeps
+  it across a platform reset (its journal row carries it), and a `vite` dev
+  server across a hibernation. An `execId` is 1 to 160 characters from
+  `A-Z a-z 0-9 . _ : -`, starting with a letter or digit; anything else is
+  refused before the command runs, as `400 E_ARG_SHAPE` over the remote API.
+- Fixed: a package script run by `bun run <script>` ran as the workspace
+  shell rather than as the process that ran `bun`, so under a hosted session
+  scoped to an identity it acted as the session user. It now runs as the
+  command that ran it, as an `npm run` script does.
+- Fixed: a real-vite dev server restored after a hibernation was given an
+  empty argv at its root instead of the identity persisted with its config,
+  so the app verbs could derive a different owner for it.
+
 ## 2026-10-01
 
 Published as core 0.14.0, worker 0.12.0, fabric 0.9.0, platform 0.7.0,

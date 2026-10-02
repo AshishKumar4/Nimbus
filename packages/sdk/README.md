@@ -267,6 +267,25 @@ same app, and a shared link is bound to that program rather than to the port.
 the default restarts only after a reset. An app target can be a port, a pid, a
 name, or an owner.
 
+To tell which call started a server, name the call with `execId`. Every
+process the command starts carries it, and so does everything those
+processes spawn, so the listener on a port names the call that started it:
+
+```ts
+await box.exec('npm run dev', { execId: 'job-42' });   // or execStream, startProcess
+const listener = (await box.ports.list()).find((p) => p.port === 5173);
+listener?.execId;   // 'job-42'
+```
+
+`processes.list()`, `ports.list()`, `apps.list()`, `apps.expose()`,
+`ports.expose()` and `startProcess`'s `process` report it as `execId`, and a
+server keeps it across a platform reset. A record about a process that no
+call named has no `execId` field. An `execId` is 1 to 160 characters from
+`A-Z a-z 0-9 . _ : -` and starts with a letter or digit; anything else is
+refused before the command runs (a `400 E_ARG_SHAPE` over `Nimbus.connect`).
+It names the call, not the shell: the next call on the same `shellId` tags
+nothing unless it names itself too.
+
 On deployments with a preview host suffix configured (the hosted product sets
 `NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev`), URLs take the hostname form:
 `https://<port>--<session-id>.<suffix>/` for the private preview,
