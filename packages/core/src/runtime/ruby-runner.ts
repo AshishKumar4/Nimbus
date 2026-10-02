@@ -236,6 +236,7 @@ export function makeRubyRunnerFactory(deps: {
           cwd,
           command: formatRubyCommand(binName, argv),
           argv: [binName, ...argv],
+          invokerPid: ctx.pid,
           signal: ctx.signal,
           write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
         });
@@ -594,6 +595,8 @@ export type RubyResidentStart = (spawn: {
   startArgs: RubyFacetCallArgs;
   cwd: string;
   command: string;
+  /** The launching command's process: the resident carries its exec id. */
+  invokerPid: number;
   /** The launching command: what the program prints until it binds or exits, and its interrupt. */
   signal: AbortSignal;
   write(stream: 'stdout' | 'stderr', text: string): void;

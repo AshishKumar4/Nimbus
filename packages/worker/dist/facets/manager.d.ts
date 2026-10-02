@@ -16,7 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
-import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -760,6 +760,8 @@ export interface LongRunningWorkerSpawnOptions {
     foreground?: ForegroundLaunch;
     restart?: ResidentRestartPolicy;
     port?: number;
+    /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+    invokerPid?: number;
     /** Inline modules: source text, or small wasm carried by value. */
     modules?: Record<string, string | {
         wasm: ArrayBuffer;
@@ -838,6 +840,8 @@ export interface ResidentSpawnOptions {
     attachedTty?: boolean;
     skipSpawn?: boolean;
     callerPid?: number;
+    /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+    invokerPid?: number;
     bundleProfile?: FacetBundleProfile;
 }
 /** The launch inputs a re-drive rebuilds a worker from: content digests and
@@ -1336,6 +1340,8 @@ export declare class FacetManager {
         skipSpawn?: boolean;
         /** G4: when skipSpawn is true, the PID the caller allocated. */
         callerPid?: number;
+        /** The process whose command runs the program: its exec id is the program's. */
+        invokerPid?: number;
         bundleProfile?: FacetBundleProfile;
         /** Return stdout/stderr in the result while keeping supervisor RPC
          *  available for VFS and child_process operations. */
@@ -1397,6 +1403,7 @@ export declare class FacetManager {
     execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & {
         command?: string;
         attachedTty?: boolean;
+        invokerPid?: number;
     }): Promise<StagedArtifactExecResult>;
     /**
      * Prepare a staged-opencode spawn: spawn the process-table entry, snapshot
@@ -1431,6 +1438,7 @@ export declare class FacetManager {
         cwd: string;
         command?: string;
         port?: number;
+        invokerPid?: number;
     }): Promise<StagedArtifactExecResult>;
     /**
      * Bare `opencode` (the interactive TUI) as a MULTI-ISOLATE process pair: a
@@ -1445,6 +1453,7 @@ export declare class FacetManager {
         env: Record<string, string>;
         cwd: string;
         command?: string;
+        invokerPid?: number;
     }): Promise<StagedArtifactExecResult>;
     private _runOpencodeServerFacet;
     /**

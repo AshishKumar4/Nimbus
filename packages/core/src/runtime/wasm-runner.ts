@@ -50,6 +50,7 @@
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { execIdOf } from './process-table.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
@@ -658,6 +659,7 @@ export function makeWasmRunner(deps: {
       cmdLabel.trim(),
       ['wasm-runner', ...argv],
       opts.cwd || '/home/user',
+      { execId: execIdOf(deps.processes, opts.invokerPid) },
     );
     const pid = procEntry.pid;
 

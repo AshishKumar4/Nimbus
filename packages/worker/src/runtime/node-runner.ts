@@ -97,6 +97,8 @@ export interface RunFreshOpts {
    */
   skipSpawn?: boolean;
   callerPid?: number;
+  /** The invoking process (RuntimeRunOpts.invokerPid): a pid this run spawns carries its exec id. */
+  invokerPid?: number;
   forceLongRunning?: boolean;
   attachedTty?: boolean;
   bundleProfile?: FacetBundleProfile;
@@ -200,6 +202,7 @@ export async function runFresh(
       attachedTty: opts.attachedTty,
       skipSpawn: opts.skipSpawn,
       callerPid: opts.callerPid,
+      invokerPid: opts.invokerPid,
       bundleProfile: opts.bundleProfile,
     });
   } catch (e: any) {

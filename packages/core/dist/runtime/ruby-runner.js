@@ -201,6 +201,7 @@ export function makeRubyRunnerFactory(deps) {
                     cwd,
                     command: formatRubyCommand(binName, argv),
                     argv: [binName, ...argv],
+                    invokerPid: ctx.pid,
                     signal: ctx.signal,
                     write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
                 });

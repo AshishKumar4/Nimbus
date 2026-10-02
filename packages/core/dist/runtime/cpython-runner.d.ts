@@ -70,6 +70,8 @@ export type CPythonResidentStart = (spawn: {
     startArgs: Record<string, unknown>;
     cwd: string;
     command: string;
+    /** The launching command's process: the resident carries its exec id. */
+    invokerPid: number;
 }) => Promise<CPythonFacetResult>;
 export declare function makeCPythonRunnerFactory(deps: {
     facets: FacetHost;

@@ -73,6 +73,11 @@ export interface RuntimeRunOpts {
     bundleProfile?: FacetBundleProfile;
     /** Invoking process credentials for credential-bound runtime snapshots. */
     cred?: VfsCred;
+    /**
+     * The process whose command runs the program. A process the runner spawns
+     * for the run carries its exec id (`ProcessEntry.execId`).
+     */
+    invokerPid?: number;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
     /**

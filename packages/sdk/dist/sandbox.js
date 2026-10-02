@@ -87,12 +87,14 @@ const ProcessSchema = z.object({
     endTime: z.number().nullable(),
     longRunning: z.boolean(),
     attachedTty: z.boolean().optional().default(false),
+    execId: z.string().optional(),
 });
 const PortSchema = z.object({
     port: z.number(),
     pid: z.number(),
     registeredAt: z.number(),
     capability: z.string(),
+    execId: z.string().optional(),
 });
 const StartResultSchema = z.object({
     command: z.string(),
@@ -168,6 +170,7 @@ const ExposedPortSchema = z.object({
     visibility: z.enum(['scoped', 'public']).optional(),
     owner: z.string().nullable().optional(),
     name: z.string().nullable().optional(),
+    execId: z.string().optional(),
 });
 const ExposedAppSchema = z.object({
     owner: z.string(),
@@ -177,6 +180,7 @@ const ExposedAppSchema = z.object({
     capability: z.string().nullable(),
     visibility: z.enum(['scoped', 'public']),
     url: z.string().nullable(),
+    execId: z.string().optional(),
 });
 const AppSchema = z.object({
     owner: z.string(),
@@ -189,6 +193,7 @@ const AppSchema = z.object({
     restart: z.enum(['never', 'on-failure']),
     diagnostic: z.string().nullable(),
     url: z.string().nullable(),
+    execId: z.string().optional(),
 });
 const EnsureDurableAppSchema = z.object({
     port: z.number(),

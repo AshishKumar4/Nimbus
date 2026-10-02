@@ -13,7 +13,7 @@
  * duplicating the interactive terminal boot path.
  */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
-import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
+import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -177,6 +177,7 @@ function startShellJob(self, command, options, job, scoped) {
     const entry = self.processes.spawn(line, [line], cwd, {
         longRunning: job.background,
         cred: options.cred,
+        execId: options.execId,
     });
     // Every call runs on a shell of its own, built around the pid so its `$`
     // and its credential are the ones this command runs under. A named shell
@@ -249,6 +250,11 @@ function assertAbsoluteExecCwd(options) {
         throw new Error(`cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(cwd)}`);
     }
 }
+/** A caller's string that every process the call starts carries: refused before anything runs unless it is a name. */
+function assertExecId(options) {
+    if (options.execId !== undefined)
+        parseExecId(options.execId);
+}
 /** Buffered exec: the exec stream collected into strings by the caller of this function. */
 export async function rpcExec(self, command, options = {}) {
     return collectExecStream(await rpcExecStream(self, command, options));
@@ -260,6 +266,7 @@ export async function rpcExec(self, command, options = {}) {
  */
 export async function rpcExecStream(self, command, options = {}) {
     assertAbsoluteExecCwd(options);
+    assertExecId(options);
     await ensureProgrammaticReady(self, options);
     let writer = null;
     return new Promise((resolve, reject) => {
@@ -368,6 +375,7 @@ function collectJobOutput(self, pid) {
  */
 export async function rpcStartProcess(self, command, options = {}) {
     assertAbsoluteExecCwd(options);
+    assertExecId(options);
     await ensureProgrammaticReady(self, options);
     if (options.restart !== undefined && options.restart !== 'never' && options.restart !== 'on-failure') {
         throw new Error(`startProcess: restart must be 'never' or 'on-failure', got ${String(options.restart)}`);
@@ -413,7 +421,7 @@ async function startOnShell(self, command, options, scoped) {
         command: line,
         pid: job.pid,
         process: serializeProcess(job.entry),
-        ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map(serializePort),
+        ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map((p) => serializePort(self, p)),
         startedAt: job.entry.startTime,
     };
 }
@@ -616,6 +624,7 @@ export async function rpcExposePort(self, port, options) {
         visibility: exposed.visibility,
         owner: exposed.owner,
         name: exposed.name,
+        ...execIdField(entry && self.processes.get(entry.pid)),
     };
 }
 /**
@@ -646,6 +655,7 @@ export async function rpcExposeApp(self, target, options = {}) {
         capability: exposed.capability,
         visibility: exposed.visibility,
         url: appUrl(self, { port: resolved.port, ...exposed }),
+        ...execIdField(live && self.processes.get(live.pid)),
     };
 }
 /**
@@ -774,6 +784,7 @@ export async function rpcRotateLink(self, target) {
         capability,
         visibility: previous.visibility,
         url: appUrl(self, { port: resolved.port, name: previous.name, capability, visibility: previous.visibility }),
+        ...execIdField(live && self.processes.get(live.pid)),
     };
 }
 /** A name or owner identifies a reservation, never whoever happens to occupy its port. */
@@ -799,6 +810,7 @@ export async function rpcListApps(self) {
     return apps.map((app) => ({
         ...app,
         url: app.port === null ? null : appUrl(self, { ...app, port: app.port }),
+        ...execIdField(app.pid === null ? undefined : self.processes.get(app.pid)),
     }));
 }
 /**
@@ -1284,14 +1296,16 @@ function serializeProcess(p) {
         endTime: p.endTime,
         longRunning: p.longRunning === true,
         attachedTty: p.attachedTty === true,
+        ...execIdField(p),
     };
 }
-function serializePort(p) {
+function serializePort(self, p) {
     return {
         port: Number(p.port),
         pid: Number(p.pid),
         registeredAt: Number(p.registeredAt),
         capability: String(p.capability),
+        ...execIdField(self.processes.get(p.pid)),
     };
 }
 function shellQuote(s) {

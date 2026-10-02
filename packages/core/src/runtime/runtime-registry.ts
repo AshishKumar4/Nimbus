@@ -83,6 +83,11 @@ export interface RuntimeRunOpts {
   bundleProfile?: FacetBundleProfile;
   /** Invoking process credentials for credential-bound runtime snapshots. */
   cred?: VfsCred;
+  /**
+   * The process whose command runs the program. A process the runner spawns
+   * for the run carries its exec id (`ProcessEntry.execId`).
+   */
+  invokerPid?: number;
   /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
   signal?: AbortSignal;
   /**
@@ -392,6 +397,7 @@ export function buildRuntimeHandler(
       const stdin = await programStdin(code, null, ctx.cwd || '/home/user', launchesServer);
       const result = await spec.run(code, {
         cred: ctx.cred,
+        invokerPid: ctx.pid,
         signal: ctx.signal,
         argv: args.slice(evalIdx + 2),
         env: ctx.env,
@@ -431,6 +437,7 @@ export function buildRuntimeHandler(
       const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
       const result = await spec.run(code, {
         cred: ctx.cred,
+        invokerPid: ctx.pid,
         signal: ctx.signal,
         argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
         env: ctx.env,
@@ -463,6 +470,7 @@ export function buildRuntimeHandler(
       // [exportName, intArg1, intArg2, ...] for wasm-runner).
       const result = await spec.run('', {
         cred: ctx.cred,
+        invokerPid: ctx.pid,
         signal: ctx.signal,
         argv: args.slice(scriptIdx + 1),
         env: ctx.env,
@@ -598,6 +606,7 @@ export function buildRuntimeHandler(
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(code, {
       cred: ctx.cred,
+      invokerPid: ctx.pid,
       signal: ctx.signal,
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       env: ctx.env,
