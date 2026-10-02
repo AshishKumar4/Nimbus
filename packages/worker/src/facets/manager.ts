@@ -4337,6 +4337,12 @@ interface ResidentLaunchRecord extends FencedWorkRecord {
   injectedPort?: number;
   /** The resident bound a different port than its reservation holds while `$PORT` was injected. */
   portMismatch?: { listened: number; reserved: number };
+  /**
+   * The process's exec id (`ProcessEntry.execId`). A re-drive has no
+   * invoking process to take it from, so the row carries it to the process
+   * it spawns.
+   */
+  execId?: string;
 }
 
 export type ResidentRestartPolicy = 'never' | 'on-failure';
@@ -6560,7 +6566,7 @@ export class FacetManager {
   private async _redrive(record: ResidentLaunchRecord, attempt: number): Promise<unknown> {
     const { recipe } = record;
     switch (recipe.kind) {
-      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
+      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, record.execId);
       case 'worker': {
         // Which resolver a worker recipe re-drives through is decided by
         // `recipe.resident`, and it is not a flag: it is the interpreter
@@ -6589,7 +6595,7 @@ export class FacetManager {
           vfsTextModules: resolved.vfsTextModules,
           mainModule,
           durable: { owner: residentOwner(record) ?? recipe.owner, image: recipe.image },
-        }, attempt);
+        }, attempt, record.execId);
       }
     }
   }
@@ -6612,12 +6618,15 @@ export class FacetManager {
   /**
    * `attempt` distinguishes the launch the user asked for from the one re-drive
    * an instance reset earns it, and is carried in the journal rather than in
-   * the caller's options because no caller has an opinion about it.
+   * the caller's options because no caller has an opinion about it. So is a
+   * re-drive's `execId`, from the row: the process that invoked the launch
+   * went with the instance.
    */
   private async _spawnResident(
     code: string,
     opts: ResidentSpawnOptions,
     attempt: number,
+    execId?: string,
   ): Promise<{ pid: number }> {
     this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
@@ -6630,7 +6639,7 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      entry = this.processes.spawn(command, opts.argv || [], cwd, { execId: execIdOf(this.processes, opts.invokerPid) });
+      entry = this.processes.spawn(command, opts.argv || [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
     }
     this.processes.setLongRunning(entry.pid);
     if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
@@ -6722,13 +6731,15 @@ export class FacetManager {
       }
     }
     // The recipe is the launch's inputs; the invoker is a pid of this
-    // instance, which a re-drive outlives.
+    // instance, which a re-drive outlives, so the row carries the exec id.
     const { invokerPid: _invokerPid, ...inputs } = opts;
     const recipe: NodeRecipe = { kind: 'node', code, opts: { ...inputs, skipSpawn: undefined, callerPid: undefined } };
+    const execId = entry.execId === undefined ? {} : { execId: entry.execId };
     const initial: ResidentLaunchRecord = {
       pid: entry.pid, command, attempt, phase: 'starting', owner,
       recipe,
       restart: residentRestartPolicy(opts.env),
+      ...execId,
     };
     let duplicateOf: number | null;
     try {
@@ -6772,6 +6783,7 @@ export class FacetManager {
       owner,
       ...(held !== null ? { port: held.port, injectedPort: held.port } : {}),
       restart: residentRestartPolicy(opts.env),
+      ...execId,
     };
     try {
       if (!ephemeral) await this.launchJournal.journal(record);
@@ -7096,13 +7108,14 @@ export class FacetManager {
     return this._spawnWorker(workerCode, command, cwd, opts, 0);
   }
 
-  /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
+  /** `attempt` is the journal's re-drive budget, and `execId` a re-drive's exec id, as `_spawnResident` carries them. */
   private async _spawnWorker(
     workerCode: string,
     command: string,
     cwd: string,
     opts: LongRunningWorkerSpawnOptions,
     attempt: number,
+    execId?: string,
   ): Promise<SpawnedWorker> {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
@@ -7110,7 +7123,7 @@ export class FacetManager {
     this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
-    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { execId: execIdOf(this.processes, opts.invokerPid) });
+    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
     // Stamp the process-table entry so /api/processes exposes this as a
     // long-running process.
     this.processes.setLongRunning(entry.pid);
@@ -7201,6 +7214,7 @@ export class FacetManager {
           owner: opts.durable.owner,
           restart: opts.restart ?? 'never',
           ...(opts.port !== undefined && opts.port > 0 ? { port: opts.port } : {}),
+          ...(entry.execId !== undefined ? { execId: entry.execId } : {}),
         };
         // The durable facet name is claimed once, ever, from DO storage — a
         // re-drive after a reset, an eviction's re-attach and a relaunch all
