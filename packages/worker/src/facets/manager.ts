@@ -6247,7 +6247,9 @@ export class FacetManager {
         stdin: '',
         command: opts.command || 'opencode',
         attachedTty: true,
-        invokerPid: opts.invokerPid,
+        // The pair's exec id, from the serve: the command that ran `opencode`
+        // may have ended while the serve booted, and been reaped since.
+        invokerPid: servePid,
       });
     } catch (e) {
       try { this.kill(servePid); } catch {}
