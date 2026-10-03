@@ -48,7 +48,7 @@ const box = await testBox({ harness, vfs: raw });
 registerUnixCommands(box.commands.registry, raw);
 const shell = new Shell(new HeadlessTerminal(), remote, box.commands.registry,
   { HOME: '/remote', PATH: '/bin', USER: 'user' }, box.shell.getProcessRegistry(),
-  { pid: 77, cred: user, setUmask() {}, runAs: async () => 126 });
+  { pid: 77, cred: user, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) });
 try {
   const result = await shell.execute('cd /remote; cat first; printf changed > second; cat < second; [ -f second ] && echo FILE; [ -d second ] || echo NOTDIR; printf "%s\n" /remote/s*');
   assert.equal(result.exitCode, 0, result.stderr);

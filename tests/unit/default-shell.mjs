@@ -36,7 +36,7 @@ function commandContext(vfs, args = []) {
     stderrOutput: stderr,
     signal: new AbortController().signal,
     setUmask() {},
-    async runAs() { return 0; },
+    async runAs() { return { status: 0, signal: null }; },
   };
 }
 

@@ -35,7 +35,7 @@ function makeHarness(files = {}, existingCommands = new Map()) {
     cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     vfs,
     setUmask() {},
-    async runAs() { return 0; },
+    async runAs() { return { status: 0, signal: null }; },
   };
   registerShellEntrypointCommands(
     {

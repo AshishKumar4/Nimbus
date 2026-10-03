@@ -57,7 +57,7 @@ try {
       stderr: { write: () => {} },
       signal: new AbortController().signal,
       setUmask: () => {},
-      runAs: async () => 0,
+      runAs: async () => ({ status: 0, signal: null }),
     });
     assert.equal(code, 0, `echo ${args.join(' ')} exited ${code}`);
     return out;

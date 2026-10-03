@@ -76,7 +76,7 @@ async function runXargs(args, stdin) {
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,
     setUmask: () => {},
-    runAs: async () => 126,
+    runAs: async () => ({ status: 126, signal: null }),
   });
   assert.equal(stderr, '', `xargs ${args.join(' ')} wrote to stderr: ${stderr}`);
   return exitCode;

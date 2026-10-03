@@ -40,7 +40,7 @@ function outputContext(args, vfs) {
       stdout: { write: (value) => { stdout += String(value); } },
       stderr: { write: (value) => { stderr += String(value); } },
       setUmask() {},
-      async runAs() { return 1; },
+      async runAs() { return { status: 1, signal: null }; },
     },
     output: () => ({ stdout, stderr }),
   };

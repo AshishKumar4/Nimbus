@@ -604,7 +604,7 @@ for (const cmd of ['xxd -l0 /nonexistent', 'od -N0 /nonexistent', 'hexdump -n0 /
     stderr: { write: (t) => { errText += t; } },
     signal: new AbortController().signal,
     setUmask: () => {},
-    runAs: async () => 0,
+    runAs: async () => ({ status: 0, signal: null }),
   });
   check('read()-only embedders stream multibyte input without loss or duplication',
     exitCode === 0 && outText === ' c3 a9 41\n',
@@ -744,7 +744,7 @@ for (const [format, file, expected, name] of [
     stderr: { write: () => {} },
     signal: new AbortController().signal,
     setUmask: () => {},
-    runAs: async () => 0,
+    runAs: async () => ({ status: 0, signal: null }),
   });
   const deadline = Date.now() + 2000;
   while (outText === '' && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -777,7 +777,7 @@ for (const [format, file, expected, name] of [
       stderr: { write: () => {} },
       signal: new AbortController().signal,
       setUmask: () => {},
-      runAs: async () => 0,
+      runAs: async () => ({ status: 0, signal: null }),
     }),
     guard,
   ]);

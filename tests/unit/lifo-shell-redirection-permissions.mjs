@@ -111,7 +111,7 @@ try {
   const shell = new Shell(
     new HeadlessTerminal(), remote, asyncBox.commands.registry,
     { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.shell.getProcessRegistry(),
-    { pid: 91, cred: USER, setUmask() {}, runAs: async () => 126 },
+    { pid: 91, cred: USER, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) },
   );
   try {
     const result = await shell.execute(

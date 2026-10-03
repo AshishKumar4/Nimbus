@@ -141,7 +141,7 @@ async function run(name, args, cred, invocationVfs = filesystemFor(cred), stdin 
       const result = await run(targetArgv[0], targetArgv.slice(1), targetCred);
       stdout += result.stdout;
       stderr += result.stderr;
-      return result.exitCode;
+      return { status: result.exitCode, signal: null };
     },
   };
   const exitCode = await command(context);
@@ -163,7 +163,7 @@ async function runWithoutCred(name, args) {
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,
     setUmask: () => {},
-    runAs: async () => 126,
+    runAs: async () => ({ status: 126, signal: null }),
   });
   return { exitCode, stdout, stderr };
 }

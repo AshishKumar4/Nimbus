@@ -23,7 +23,7 @@ const box = await testBox();
 registerUnixCommands(box.commands.registry, raw);
 const shell = new Shell(new HeadlessTerminal(), authority, box.commands.registry,
   { HOME: '/w', PATH: '/bin', USER: 'user' }, box.shell.getProcessRegistry(),
-  { pid: 78, cred: user, setUmask() {}, runAs: async () => 126 });
+  { pid: 78, cred: user, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) });
 
 async function status(command) {
   const result = await shell.execute(command);

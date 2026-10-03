@@ -46,7 +46,7 @@ async function run(name, args, pid, overrides = {}) {
     cred,
     vfs: rawVfs.as(cred),
     setUmask: (mask) => processes.setUmask(pid, mask),
-    runAs: overrides.runAs ?? (async () => 0),
+    runAs: overrides.runAs ?? (async () => ({ status: 0, signal: null })),
     stdout: { write: (value) => { stdout += String(value); } },
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,

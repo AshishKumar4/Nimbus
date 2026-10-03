@@ -37,7 +37,7 @@ async function lifo(name, args) {
   const status = await command({
     pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, args, env: {}, cwd: '/home/user', vfs: view,
     stdout: sink((s) => { out += s; }), stderr: sink((s) => { err += s; }), signal: new AbortController().signal,
-    setUmask() {}, runAs: async () => 1,
+    setUmask() {}, runAs: async () => ({ status: 1, signal: null }),
   });
   assert.doesNotMatch(err, /binary file, skipping/, `lifo ${name}`);
   return { status, out, err };
