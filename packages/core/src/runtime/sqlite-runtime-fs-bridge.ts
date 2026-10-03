@@ -779,7 +779,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         if (step.done) return step.value;
         const lookup = step.value;
         step = walk.next('readlink' in lookup
-          ? this.leadsTo(lookup.readlink, this.readlink(lookup.readlink) ?? '')
+          ? this.linkLeadsTo(lookup.readlink, this.readlink(lookup.readlink) ?? '')
           : lookup.stat === '/' ? this.rootStat() : this.stat(lookup.stat, { followSymlinks: false }));
       }
     }
@@ -860,11 +860,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       throw error;
     }
     if (stat === null || stat.type !== 'symlink' || typeof this.mounted!.readlink !== 'function') return null;
-    return this.leadsTo(path, this.mounted!.readlink(path));
+    return this.linkLeadsTo(path, this.mounted!.readlink(path));
   }
 
-  /** Where the link at `path`, reading `link`, leads for this walk: the namespace's link-root rule (CompositeVFS.linkLeadsTo). */
-  private leadsTo(path: string, link: string): string {
+  /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
+  linkLeadsTo(path: string, link: string): string {
     return this.namespace === undefined ? link : this.namespace.linkLeadsTo(path, link);
   }
 

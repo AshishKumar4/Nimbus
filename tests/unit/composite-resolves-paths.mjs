@@ -255,6 +255,17 @@ async function only(backend, expected, label, run) {
   // The namespace's own copy across mounts copies the text as written too.
   assert.equal(await ws.filesystem.vfs.copy('/pc/d', '/qc/d', { recursive: true }), 2);
   assert.equal(qcBacking.readlink('/d/l'), '/f', 'a tree copied across mounts keeps its links\' text');
+  // The shell's own link walks (realpath, readlink -f) follow a link as
+  // the namespace does, where cat reads it (review of the consumers: they
+  // read the text as rooted at the namespace's /).
+  for (const decoy of [false, true]) {
+    if (decoy) await ws.filesystem.vfs.writeFile('/f', enc.encode('sqlite f\n'));
+    const label = decoy ? 'with an /f of SQLite\'s' : 'with no /f outside the mount';
+    assert.equal(await run('realpath -e /pc/l'), '/pc/f\n', `realpath -e, ${label}`);
+    assert.equal(await run('realpath /pc/d/l'), '/pc/f\n', `realpath, ${label}`);
+    assert.equal(await run('readlink -f /pc/l'), '/pc/f\n', `readlink -f, ${label}`);
+    assert.equal(await run('cat "$(realpath -e /pc/l)"'), 'pc f\n', `and what it names is what cat reads, ${label}`);
+  }
   await ws.close();
 }
 

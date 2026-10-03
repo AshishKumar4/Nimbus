@@ -223,7 +223,7 @@ export interface SupervisorOpHost {
 export const SUPERVISOR_OPS = [
   'readFile', 'readFileBytes', 'writeFile', 'writeFileStat', 'stat', 'lstat',
   'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
-  'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink',
+  'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink', 'fsLinkLeadsTo',
   'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
   'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
   'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
@@ -382,6 +382,7 @@ const NATIVE_OPS = {
   exists: async (e, t) => (await fsFor(e, t).stat(stringArg(e, 0))) !== null,
   readdir: (e, t) => fsFor(e, t).readdir(FsPath.parse(e.args?.[0])),
   readlink: (e, t) => fsFor(e, t).readlink(FsPath.parse(e.args?.[0])),
+  fsLinkLeadsTo: (e, t) => fsFor(e, t).linkLeadsTo(stringArg(e, 0), stringArg(e, 1)),
   fsReadRange: (e, t) => readRange(e, t, {}),
   // Boot-spec members only: a 34 MiB image read through the LRU would evict the session's hot set.
   fsReadRangeUncached: (e, t) => readRange(e, t, { cached: false }),

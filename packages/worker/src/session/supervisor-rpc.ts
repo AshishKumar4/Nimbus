@@ -544,6 +544,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async fsRealpath(...args: Parameters<RuntimeFsBridge['realpath']>): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>> {
     return this._call(this._fsRead('fsRealpath', args));
   }
+  async fsLinkLeadsTo(...args: Parameters<RuntimeFsBridge['linkLeadsTo']>): Promise<Awaited<ReturnType<RuntimeFsBridge['linkLeadsTo']>>> {
+    return this._call(this._fsRead('fsLinkLeadsTo', args));
+  }
   async fsRemove(...args: Parameters<RuntimeFsBridge['remove']>): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>> {
     return this._call(this._fsMutation('fsRemove', args));
   }

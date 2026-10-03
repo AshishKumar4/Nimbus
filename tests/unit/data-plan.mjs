@@ -3,8 +3,13 @@
 // rule, over a namespace — and what it leaves out.
 
 import assert from 'node:assert/strict';
-import { planFacetData, PACKAGE_DATA_MAX_BYTES } from '../../packages/worker/src/facets/data-plan.ts';
+import { linkTargetOf, planFacetData, PACKAGE_DATA_MAX_BYTES } from '../../packages/worker/src/facets/data-plan.ts';
 import { findStaticFsReferences } from '../../packages/core/src/runtime/static-fs-refs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 /** An in-memory namespace: path → { kind, size, text?, target? }. */
 function namespace(files) {
@@ -28,9 +33,9 @@ function namespace(files) {
       : { entries: entries.slice(40), next: null },
     readText: async (p) => all.get(p.replace(/^\/+/, ''))?.text ?? null,
     stat: async (p) => { const e = all.get(p.replace(/^\/+/, '')); return e ? { kind: e.kind, size: e.size } : null; },
-    readlinks: 0,
-    async readlink(p) {
-      this.readlinks++;
+    linkLookups: 0,
+    async linkTarget(p) {
+      this.linkLookups++;
       const e = all.get(p.replace(/^\/+/, ''));
       return e?.kind === 'symlink' ? e.target : null;
     },
@@ -109,7 +114,7 @@ for (const path of expectLeft) assert.ok(!held.has(path), `left out: ${path}`);
 assert.equal(plan.rules.static.files, 1, 'the subpath literal resolved through exports');
 assert.equal(plan.rules.home.files, 2);
 assert.equal(plan.paths.length, new Set(plan.paths).size, 'no path twice');
-assert.equal(source.readlinks, 0, 'a plan with no synchronous reads resolves no links');
+assert.equal(source.linkLookups, 0, 'a plan with no synchronous reads resolves no links');
 
 // Without typescript in the closure, its role adds nothing.
 const noTs = await planFacetData(source, { cwd: '/home/user/app', home: '/home/user', closure: closure.slice(0, 1), refs: [] });
@@ -190,7 +195,7 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.deepEqual(plan.paths.sort(), ['opt/releases/v2/conf.bin', 'opt/releases/v2/data.bin', 'opt/releases/v2/data2.bin'],
     `the link targets are held: ${JSON.stringify(plan.paths)}`);
   assert.equal(plan.bytes, 2 * huge + PACKAGE_DATA_MAX_BYTES);
-  assert.ok(ns.readlinks > 0 && ns.readlinks < 40 * 5, `only the sync reads' own components are asked: ${ns.readlinks}`);
+  assert.ok(ns.linkLookups > 0 && ns.linkLookups < 40 * 5, `only the sync reads' own components are asked: ${ns.linkLookups}`);
 }
 
 // A path folded to `'/' + <unknown>` names anything in the filesystem: it
@@ -242,7 +247,7 @@ assert.equal(noTs.rules.typescript.files, 0);
   })).paths.sort();
   assert.deepEqual(await plan(`require('fs').readFileSync('/h' + process.argv[2]);`), ['hfile'],
     'a root prefix names only matching names in /');
-  assert.equal(ns.readlinks, 0, 'no synchronous exact read: no link is resolved');
+  assert.equal(ns.linkLookups, 0, 'no synchronous exact read: no link is resolved');
   assert.deepEqual(await plan(`require('fs').readFileSync('/home/' + process.argv[2]);`),
     ['home/bob/.config/app.json', 'home/user/notes.txt'], 'a bare hole under /home skips VCS, caches and dependencies');
   assert.deepEqual(await plan(`require('fs').readdirSync('/srv/app/locale-' + process.argv[2]);`), ['srv/app/locale-en/a.json'],
@@ -302,6 +307,42 @@ assert.equal(noTs.rules.typescript.files, 0);
   const planned = new Set(plan.paths);
   assert.ok(planned.has('home/user/app/node_modules/nested/lib/actual.cjs'), "a directory main through its own package.json's main");
   assert.ok(planned.has('home/user/app/node_modules/cjs/dist/entry.cjs'), 'an extensionless main as Node probes it');
+}
+
+// A link on a mount whose backend resolves its own paths leads where that
+// backend reads it, re-rooted at the mount point: the plan holds the mount's
+// file, not one of SQLite's at the link's text (review of the consumers). The
+// source is the manager's: a process's bridge, linkTargetOf.
+{
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const device = new MemoryVFS();
+  device.mkdir('/releases/v2', { recursive: true });
+  device.writeFile('/releases/v2/data.bin', new Uint8Array(3));
+  device.symlink('/releases/v2', '/current');
+  files.vfs.mount('/pc', device, { resolvesPaths: true });
+  // A file of SQLite's at the link's text, which the plan must not take.
+  const kernel = files.bind({ pid: 8, cred: CRED_KERNEL });
+  await kernel.mkdir('/releases/v2', { recursive: true });
+  await kernel.writeFile('/releases/v2/data.bin', new Uint8Array(5));
+  const bridge = files.bind({ pid: 7, cred: CRED_KERNEL });
+  const view = new ProcessView(bridge);
+  assert.equal(await linkTargetOf(bridge, '/pc/current'), '/pc/releases/v2', 'the link leads within the mount');
+  assert.equal(await linkTargetOf(bridge, '/pc/releases'), null, 'a directory is no link');
+  const plan = await planFacetData({
+    list: async () => ({ entries: [], next: null }),
+    readText: async (path) => view.readFileString(path).catch(() => null),
+    linkTarget: (path) => linkTargetOf(bridge, path),
+    stat: async (path) => { const st = await view.stat(path).catch(() => null); return st && { kind: st.type, size: st.size }; },
+  }, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(`require('fs').readFileSync('/pc/current/data.bin');`, '/home/user/app/reader.js')],
+  });
+  assert.deepEqual(plan.paths, ['pc/releases/v2/data.bin'], `the mount's file is held: ${JSON.stringify(plan.paths)}`);
+  assert.equal(plan.bytes, 3);
+  await files.releaseProcess(7);
+  await files.releaseProcess(8);
+  harness.db.close();
 }
 
 console.log('data-plan: ok');

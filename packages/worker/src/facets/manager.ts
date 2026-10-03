@@ -67,7 +67,7 @@ import {
   type BridgeRequireFs, type DeferredImport, type RequiredModuleRoot,
 } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { packageRootOf, planFacetData } from './data-plan.js';
+import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
@@ -5158,10 +5158,7 @@ export class FacetManager {
       readText: async (path) => {
         try { return await filesOf(vfs).readFileString(path); } catch { return null; }
       },
-      // A missing or unreadable component is not a link: the lookup ends there.
-      readlink: async (path) => {
-        try { return await vfs.readlink(path); } catch { return null; }
-      },
+      linkTarget: (path) => linkTargetOf(vfs, path),
       stat: async (path) => {
         const st = await filesOf(vfs).stat(path).catch(() => null);
         return st && { kind: st.type, size: st.size };

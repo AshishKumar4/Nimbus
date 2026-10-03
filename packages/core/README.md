@@ -471,9 +471,10 @@ any mount nested inside it (the way to one is looked up and searched here,
 since the backend never sees that path). Permissions inside the mount are
 the backend's: a view's credential reaches it through its `as`. `readlink`
 answers a link's text as written; where the namespace follows a link
-itself (a node program's staged view, a process's walks),
-`CompositeVFS.linkLeadsTo` re-roots an absolute target at the mount point,
-as the backend reads it. A WASI program (`python3`, `ruby`, the shell's
+itself (a node program's staged view and data plan, a process's walks, the
+shell's `realpath` and `readlink -f`), `CompositeVFS.linkLeadsTo` re-roots
+an absolute target at the mount point, as the backend reads it; a process's
+bridge answers the same as `linkLeadsTo`. A WASI program (`python3`, `ruby`, the shell's
 wasm commands) reaches the mount through a preopen the same way, one call
 per lookup, when the preopen holds the mount point; beneath a preopen
 inside the mount every component is looked up, so the backend cannot

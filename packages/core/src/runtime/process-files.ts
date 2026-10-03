@@ -177,6 +177,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   rmdir(path: RuntimeFsPath): void { this.guard(); return this.target.rmdir(path); }
   rename(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.rename(from, to); }
   readlink(path: RuntimeFsPath): string | null { this.guard(); return this.target.readlink(path); }
+  linkLeadsTo(path: string, link: string): string { this.guard(); return this.target.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
   fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
   revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
@@ -817,6 +818,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   readlink(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.namespace.readlink((await this.path(path, false)))));
   }
+  linkLeadsTo(path: string, link: string): string { return this.namespace.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
   }
@@ -1162,6 +1164,8 @@ export class ProcessView implements VFS {
     if (target === null) throw syscallError('EINVAL', 'readlink', path);
     return target;
   }
+  /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
+  async linkLeadsTo(path: string, link: string): Promise<string> { return await this.process.linkLeadsTo(path, link); }
   async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.process.chmod(path, mode)); }
   /** chown(2): a null side keeps what the file has (chown -1). */
   async chown(path: string, uid: number | null, gid: number | null): Promise<void> {
