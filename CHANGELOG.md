@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `vite build` printed its entry as a storage key ("Entry:
+  home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
+  and `vite`'s "Root:" and "Config:" lines did too. They print the path
+  ("/home/user/app/src/main.tsx").
+
 ## 2026-10-03
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

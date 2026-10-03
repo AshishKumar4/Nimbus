@@ -140,7 +140,7 @@ export function createViteCommand(self: ViteHost) {
       }
 
       ctx.stdout.write('Building for production...\n');
-      ctx.stdout.write('  Entry: ' + entryPoint + '\n');
+      ctx.stdout.write('  Entry: /' + entryPoint + '\n');
       const t0 = Date.now();
 
       try {
@@ -181,7 +181,7 @@ export function createViteCommand(self: ViteHost) {
         // Bounded (G5): an esbuild stall must surface as a loud timeout
         // naming the entry, never a silent hang. The existing catch below
         // renders the timeout as `Build error: …`.
-        ctx.stdout.write('  Bundling ' + entryPoint + ' …\n');
+        ctx.stdout.write('  Bundling /' + entryPoint + ' …\n');
         const result: any = await withLoudTimeout(
           self.esbuildService.build([entryPoint], {
             bundle: true, format: 'esm', target: 'es2020', platform: 'browser',
@@ -195,7 +195,7 @@ export function createViteCommand(self: ViteHost) {
             fs: projectFs,
           }),
           VITE_BUILD_TIMEOUT_MS,
-          `vite build of ${entryPoint}`,
+          `vite build of /${entryPoint}`,
         );
         if (result.errors?.length) {
           for (const e of result.errors) ctx.stderr.write('  error: ' + e.text + '\n');
@@ -518,7 +518,7 @@ export function createViteCommand(self: ViteHost) {
         ctx.stdout.write('\n\x1b[1;36m  Nimbus: real-vite mode\x1b[0m \x1b[2m(experimental, Phase 1-4)\x1b[0m\n\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Preview:    \x1b[36m' + previewBasePath + '/\x1b[0m\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Vite:       ' + (cirrusReal.stats as any).viteVersion + ' (bundled)\n');
-        ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       ' + vfsRoot + '\n');
+        ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       /' + vfsRoot + '\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Port:       ' + vitePort + ' \x1b[2m(virtual routing key)\x1b[0m\n');
         if (snap) {
           const kb = (snap.totalBytes / 1024).toFixed(1);
@@ -528,7 +528,7 @@ export function createViteCommand(self: ViteHost) {
             (pkgJson ? '\x1b[2m(incl. ' + pkgJson + ' package.json, rest lazy)\x1b[0m' : '') + '\n');
         }
         if (userConfigBundle) {
-          ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Config:     ' + cfgPath + ' \x1b[2m(' +
+          ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Config:     /' + cfgPath + ' \x1b[2m(' +
             (userConfigBundle.length / 1024).toFixed(0) + ' KB bundled)\x1b[0m\n');
         }
         ctx.stdout.write('\n  \x1b[2mWorks:\x1b[0m @vitejs/plugin-react, JSX/TSX transforms, SPA fallback, HMR.\n');
@@ -656,7 +656,7 @@ export function createViteCommand(self: ViteHost) {
       ctx.stdout.write('  \x1b[2m(also: ' + previewBasePath + '/?port=' + resolvedPort + ')\x1b[0m');
     }
     ctx.stdout.write('\n');
-    ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       ' + vfsRoot + '\n');
+    ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       /' + vfsRoot + '\n');
     ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Port:       ' + resolvedPort + ' \x1b[2m(pid=' + viteProcEntry.pid + ')\x1b[0m\n');
     ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Transforms: .ts .tsx .jsx (React JSX automatic)\n');
     if (viteConfig.alias) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Aliases:    ' + Object.keys(viteConfig.alias).join(', ') + '\n');

@@ -110,7 +110,7 @@ const buildOk = {
 
 // ── outDir inside the project is honoured and emptied cleanly ────────────
 {
-  const { registry, ctx, kernelFs, stderr } = makeHostAndCtx({
+  const { registry, ctx, kernelFs, stdout, stderr } = makeHostAndCtx({
     viteConfigSource: 'export default { build: { outDir: "public/build" } }',
     buildResult: buildOk,
   });
@@ -118,6 +118,9 @@ const buildOk = {
   const code = await vite(ctx);
   assert.equal(code, 0, `vite build succeeds: ${stderr.join('')}`);
   assert.ok(kernelFs.exists(`${CWD}/public/build/index.html`), 'entry html lands in the configured outDir');
+  // Kinu ask 9: the entry is named by its path, not the storage key ('home/user/src/main.tsx').
+  const printed = stdout.join('');
+  assert.ok(printed.includes(`  Entry: ${CWD}/src/main.tsx\n`) && printed.includes(`  Bundling ${CWD}/src/main.tsx`), printed);
   console.log('  inside-root outDir builds into it');
 }
 
