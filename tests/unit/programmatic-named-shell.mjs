@@ -196,4 +196,33 @@ try {
   }
 }
 
+// More than one storage delete can take (128 keys).
+{
+  const many = await programmaticHost();
+  try {
+    for (let i = 0; i < 300; i++) many.rows.set(`nimbus_programmatic_shell:old-${i}`, { cwd: '/tmp', env: { N: String(i) } });
+    assert.equal((await rpcExec(many.host, 'pwd; echo "$N"', { shellId: 'old-299' })).stdout, '/tmp\n299\n', 'all 300 were adopted');
+    assert.equal((await rpcExec(many.host, 'echo "$N"', { shellId: 'old-0' })).stdout, '0\n');
+    assert.equal(many.rows.size, 0, 'and storage let every one go');
+  } finally {
+    many.close();
+  }
+}
+
+// An adoption that failed is tried again by the next named call, rather than
+// failing every named call after it.
+{
+  const once = await programmaticHost();
+  try {
+    once.rows.set('nimbus_programmatic_shell:old', { cwd: '/tmp', env: {} });
+    const storage = once.host.ctx.storage;
+    const list = storage.list;
+    storage.list = async () => { storage.list = list; throw new Error('storage is unavailable'); };
+    await assert.rejects(() => rpcExec(once.host, 'pwd', { shellId: 'old' }), /storage is unavailable/);
+    assert.equal((await rpcExec(once.host, 'pwd', { shellId: 'old' })).stdout, '/tmp\n', 'the next call adopted it');
+  } finally {
+    once.close();
+  }
+}
+
 console.log('programmatic named shell: ok');

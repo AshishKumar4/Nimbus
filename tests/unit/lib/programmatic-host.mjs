@@ -38,7 +38,11 @@ export async function programmaticHost(options = {}) {
       storage: {
         get: async (key) => rows.get(key),
         put: async (key, value) => { rows.set(key, value); },
-        delete: async (keys) => { for (const key of [keys].flat()) rows.delete(key); },
+        // A Durable Object's delete takes up to 128 keys at a time.
+        delete: async (keys) => {
+          if (Array.isArray(keys) && keys.length > 128) throw new RangeError(`delete() of ${keys.length} keys: at most 128 at a time`);
+          for (const key of [keys].flat()) rows.delete(key);
+        },
         list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
       },
     },

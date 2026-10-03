@@ -180,7 +180,11 @@ async function withShellState<T>(
   if (options.shellId === undefined) return run(null);
   const workspace = self.runtimeWorkspace;
   if (!workspace) throw new Error('Nimbus shell did not initialize');
-  self._storedShellsAdopted ??= adoptStoredShells(self, workspace);
+  // Once; a failed adoption is not kept, so the next named call tries again.
+  self._storedShellsAdopted ??= adoptStoredShells(self, workspace).catch((error: unknown) => {
+    self._storedShellsAdopted = undefined;
+    throw error;
+  });
   await self._storedShellsAdopted;
   const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
     ? options.shellRoot
@@ -192,16 +196,22 @@ async function withShellState<T>(
  * The named shells this object's storage holds from before they were the
  * workspace's (worker 0.13 and earlier kept each under
  * `SHELL_STATE_KEY_PREFIX`). Each becomes the workspace's shell of that name,
- * unless the workspace already has one, and leaves storage.
+ * unless the workspace already has one, and leaves storage. Run again after a
+ * failure, it finishes the job: a name already adopted is kept as it is.
  */
 async function adoptStoredShells(self: ProgrammaticHost, workspace: NimbusWorkspace): Promise<void> {
   const stored = await self.ctx.storage.list({ prefix: SHELL_STATE_KEY_PREFIX });
-  if (stored.size === 0) return;
   for (const [key, state] of stored) {
     await workspace.withNamedShell(key.slice(SHELL_STATE_KEY_PREFIX.length), { start: parseShellState(state) }, async () => {});
   }
-  await self.ctx.storage.delete([...stored.keys()]);
+  const keys = [...stored.keys()];
+  for (let at = 0; at < keys.length; at += STORAGE_DELETE_KEYS) {
+    await self.ctx.storage.delete(keys.slice(at, at + STORAGE_DELETE_KEYS));
+  }
 }
+
+/** The most keys one Durable Object storage `delete` takes. */
+const STORAGE_DELETE_KEYS = 128;
 
 export interface ProgrammaticDestroyOptions {
   reason?: string;
