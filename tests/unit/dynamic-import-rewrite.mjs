@@ -115,6 +115,21 @@ for (const spelling of ['__nimbusDynamicImport', '__nimbus\\u0044ynamicImport'])
   } finally { delete globalThis.__nimbusDynamicImport; }
 }
 
+// Spelled only in text, the name binds nothing: the loader is not renamed,
+// so a cell's own globalThis binding is never read before its declaration.
+{
+  const source = `const globalThis = {};\nconst marker = "__nimbusDynamicImport";\n// __nimbusDynamicImport\nreturn [import('./z.js'), marker];`;
+  const calls = [];
+  const loader = (from, specifier) => { calls.push([from, specifier]); return 'loaded'; };
+  globalThis.__nimbusDynamicImport = loader;
+  try {
+    const rewritten = rewriteDynamicImports(source, parent);
+    assert.doesNotMatch(rewritten, /__nimbusDynamicImport_/);
+    assert.deepEqual(new Function(rewritten)(), ['loaded', '__nimbusDynamicImport']);
+    assert.deepEqual(calls, [[parent, './z.js']]);
+  } finally { delete globalThis.__nimbusDynamicImport; }
+}
+
 // routeImports false binds import.meta alone: a transform routes import()
 // once lowering has turned the cell's imports into member reads.
 {

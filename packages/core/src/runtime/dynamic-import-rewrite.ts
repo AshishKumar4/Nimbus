@@ -427,11 +427,31 @@ function freeName(name: string, code: string, names: ReadonlySet<string>): strin
 }
 
 /**
+ * Whether the cell names an identifier with the loader's name: an import or
+ * a declaration that lowering keeps, or a reference to one. A string or a
+ * comment that spells it names nothing.
+ */
+function namesLoader(code: string, names: ReadonlySet<string>): boolean {
+  if (names.has(DYNAMIC_IMPORT_HELPER)) return true;
+  if (!code.includes(DYNAMIC_IMPORT_HELPER)) return false;
+  try {
+    for (const token of tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true })) {
+      if (token.type === tokTypes.name && Reflect.get(token, 'value') === DYNAMIC_IMPORT_HELPER) return true;
+    }
+  } catch (error) {
+    // Text the tokenizer cannot read: assume the name may be bound.
+    if (!(error instanceof SyntaxError)) throw error;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Apply the import() edits (each a call to DYNAMIC_IMPORT_HELPER) and bind
- * the metadata spans. A name the cell itself uses cannot be captured: the
- * module binding takes a free name, and so does the loader, bound from the
- * global where the cell spells the loader's own name (an import, or a
- * declaration that lowering keeps).
+ * the metadata spans. A name the cell itself binds cannot capture them: the
+ * module binding takes a free name, and so does the loader where the cell
+ * names the loader's own, bound from the global object. (A cell that binds
+ * the loader's name and also shadows globalThis is not supported.)
  */
 function applyEdits(code: string, edits: Edit[], metas: Span[], names: ReadonlySet<string>, insertion: () => number): string {
   let prologue = '';
@@ -440,9 +460,9 @@ function applyEdits(code: string, edits: Edit[], metas: Span[], names: ReadonlyS
     for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
     prologue += `\n"use strict";\nconst ${binding} = arguments[2];\n`;
   }
-  const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
   const calls = edits.filter((edit) => edit.text.startsWith(DYNAMIC_IMPORT_HELPER + '('));
-  if (calls.length && loader !== DYNAMIC_IMPORT_HELPER) {
+  if (calls.length && namesLoader(code, names)) {
+    const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
     for (const call of calls) call.text = loader + call.text.slice(DYNAMIC_IMPORT_HELPER.length);
     prologue += `\nconst ${loader} = globalThis.${DYNAMIC_IMPORT_HELPER};\n`;
   }
