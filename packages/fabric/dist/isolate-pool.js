@@ -28,17 +28,18 @@ import { supervisorEntrypoint } from './composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { beginLoaderFetch, withDynamicWorkerCapNamed } from './budgets.js';
+import { beginLoaderFetch, beginLoaderFetchWhenFree, withDynamicWorkerCapNamed, } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
 import { hostWasmIdentity } from './host-wasm.js';
 /**
- * How long one call waits, in all, for the platform to admit it after
- * "Dynamic worker concurrency limit exceeded" (doubling from 50 ms, at most
- * 2 s a wait). A deployed Durable Object admitted the refused batch after a
- * 6 s pause; 15 s bounds a call that would never be admitted.
+ * How long one call waits, in all, on the Dynamic Worker ledger after
+ * "Dynamic worker concurrency limit exceeded" before the refusal surfaces
+ * (beginLoaderFetchWhenFree: let in when a hold ends or the refusal's pause
+ * passes). A deployed Durable Object admitted the refused batch after a 6 s
+ * pause; 15 s bounds a call that would never be admitted.
  */
 const CAP_REFUSAL_WAIT_MS = 15_000;
 /**
@@ -120,6 +121,8 @@ export class IsolatePool {
     loader;
     /** The hosting actor, as the loader budget ledger's per-DO key. */
     ctx;
+    /** The width this pool's dispatches are held inside (IsolatePoolOptions.claim). */
+    claim;
     concurrency;
     defaultTimeoutMs;
     defaultRetries;
@@ -183,6 +186,7 @@ export class IsolatePool {
         }
         this.loader = loader;
         this.ctx = ctx;
+        this.claim = opts?.claim;
         this.concurrency = Math.max(1, opts?.concurrency ?? 1);
         this.defaultTimeoutMs = opts?.timeoutMs ?? 60_000;
         this.defaultRetries = Math.max(0, opts?.retries ?? 0);
@@ -455,7 +459,7 @@ export class IsolatePool {
      * the attempt index lets a fetch invoke mint a fresh clone for retries,
      * since a Request's body is consumed once.
      */
-    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, wasAborted) {
+    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, signal) {
         // A warm slot executes one dispatch at a time: queue behind the
         // previous owner, then record this dispatch as the new tail. The
         // tail outlives the caller's outcome: a timeout rejects the
@@ -472,7 +476,7 @@ export class IsolatePool {
         }
         const inFlight = [];
         try {
-            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, wasAborted);
+            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, signal);
         }
         finally {
             // Do not delay the caller's own outcome — the tail releases when
@@ -480,7 +484,7 @@ export class IsolatePool {
             void Promise.allSettled(inFlight).then(() => release());
         }
     }
-    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, wasAborted) {
+    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, signal) {
         // Per-call wasm fingerprint. Mixed into the cache key so two calls
         // with different bytes hit different slots (no cache poisoning).
         // For the common case (no per-call wasm) the fingerprint is '0',
@@ -502,6 +506,9 @@ export class IsolatePool {
             setLastFacetId(id, slotIndex);
         }
         catch { /* best-effort */ }
+        // A hold the ledger already took for the next attempt, when a refused
+        // call waited on it for room; otherwise the attempt begins its own.
+        let admitted;
         const runOnce = async () => {
             // loader.get() is synchronous from the caller's POV; the callback
             // is only invoked on cache miss. We wrap the callback tightly so a
@@ -531,11 +538,14 @@ export class IsolatePool {
             const entrypoint = stub.getEntrypoint();
             // Direct property call, awaited by this frame — bracketed, never
             // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
-            const endFetch = beginLoaderFetch(this.ctx, id);
+            const endFetch = admitted ?? beginLoaderFetch(this.ctx, id, this.claim);
+            admitted = undefined;
             try {
                 return await invoke(entrypoint, attempt);
             }
             catch (err) {
+                // The ledger learns a limit refusal from the hold it ends.
+                endFetch(err);
                 if (err instanceof Error) {
                     throw new ExecutionError(err.message, err.stack);
                 }
@@ -548,8 +558,8 @@ export class IsolatePool {
         const maxAttempts = 1 + resilience.retries;
         let lastError;
         let retriedCloneRefusal = false;
-        let capRefusals = 0;
-        let capWaitedMs = 0;
+        // When this call's waits for room after a limit refusal run out.
+        let capDeadline;
         let attempt = 0;
         while (attempt < maxAttempts) {
             try {
@@ -609,7 +619,7 @@ export class IsolatePool {
                     });
                 }
                 catch { /* fail-soft */ }
-                if (wasAborted?.()) {
+                if (signal?.aborted) {
                     // The caller aborted this dispatch's Request. workerd cancelled
                     // the isolate's execution context wherever it was suspended —
                     // mid-syscall, mid-stream — so the interpreter's heap may hold
@@ -635,16 +645,31 @@ export class IsolatePool {
                     // reverse direction. This refresh targets the stale-loader case.
                     continue;
                 }
-                if (cause === 'dynamic_worker_cap' && capWaitedMs < CAP_REFUSAL_WAIT_MS) {
-                    // The platform refused to start this call: it still counts a
-                    // worker this Durable Object's ledger has already given back (a
-                    // fan-out's workers stay counted for a moment after their calls
-                    // return). Nothing ran, so the call waits, as the platform asks,
-                    // and is sent again; it does not spend an attempt.
-                    const delay = Math.min(CAP_REFUSAL_WAIT_MS - capWaitedMs, 50 * 2 ** capRefusals++, 2000);
-                    capWaitedMs += delay;
-                    await new Promise((resolve) => setTimeout(resolve, delay));
-                    continue;
+                if (cause === 'dynamic_worker_cap') {
+                    // The platform refused to start this call. Nothing ran, so the
+                    // call waits, as the platform asks, and is sent again without
+                    // spending an attempt: on the ledger, which lets it in when a
+                    // hold ends, or when the pause this refusal started has passed
+                    // (the platform still counts a worker the ledger has given back:
+                    // a fan-out's workers stay counted for a moment after their
+                    // calls return).
+                    capDeadline ??= Date.now() + CAP_REFUSAL_WAIT_MS;
+                    const remainingMs = capDeadline - Date.now();
+                    if (remainingMs > 0) {
+                        // The deadline's timer is cleared once the wait settles: a
+                        // pending timer keeps the hosting object from hibernating.
+                        const deadline = new AbortController();
+                        const timer = setTimeout(() => deadline.abort(), remainingMs);
+                        const waitFor = signal ? AbortSignal.any([deadline.signal, signal]) : deadline.signal;
+                        admitted = await beginLoaderFetchWhenFree(this.ctx, id, { claim: this.claim, signal: waitFor })
+                            .catch(() => undefined)
+                            .finally(() => clearTimeout(timer));
+                        if (admitted)
+                            continue;
+                        // The caller aborted while waiting: surface its abort as above.
+                        if (signal?.aborted)
+                            throw lastError;
+                    }
                 }
                 if (attempt < maxAttempts - 1) {
                     // 100 * 2^attempt, capped at 2s so retries don't compound waiting.
@@ -696,7 +721,7 @@ export class IsolatePool {
         // Every attempt fetches a clone: a Request's body is consumed once,
         // so the caller's original stays unspent and retries get a fresh
         // body that follows the same signal.
-        return this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, () => request.signal.aborted);
+        return this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,

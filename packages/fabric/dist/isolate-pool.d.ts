@@ -24,6 +24,7 @@
  * and binding types used by this implementation.
  */
 import { type HostRoute } from './composition.js';
+import { type DynamicWorkerClaim } from './budgets.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
 /**
@@ -50,6 +51,12 @@ export interface IsolatePoolOptions {
      * caller that wants more sizes it against that budget (Fanout does).
      */
     concurrency?: number;
+    /**
+     * The width the caller claimed for this pool's dispatches
+     * (`claimDynamicWorkers`): they are held inside it rather than on top of
+     * it, and a refused one waits for a slot of the claim.
+     */
+    claim?: DynamicWorkerClaim;
     /** Per-task timeout in ms. Default 60_000. */
     timeoutMs?: number;
     /**
@@ -254,6 +261,8 @@ export declare class IsolatePool {
     private readonly loader;
     /** The hosting actor, as the loader budget ledger's per-DO key. */
     private readonly ctx;
+    /** The width this pool's dispatches are held inside (IsolatePoolOptions.claim). */
+    private readonly claim;
     private readonly concurrency;
     private readonly defaultTimeoutMs;
     private readonly defaultRetries;

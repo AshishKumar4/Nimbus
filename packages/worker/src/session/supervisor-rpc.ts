@@ -65,6 +65,12 @@ import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import {
+  isSupervisorAnsweredMethod,
+  supervisorAnswer,
+  type SupervisorAnswer,
+  type SupervisorAnsweredMethod,
+} from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
@@ -306,6 +312,21 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   // ── Filesystem RPC ────────────────────────────────────────────────────
+
+  /**
+   * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
+   * refusal answered as a value: a facet's client (core vfs-supervisor.ts
+   * answeringSupervisor) rethrows it as the error a throw would have
+   * delivered. A refusal thrown from here was recorded by the platform as an
+   * exception, "canceled ... your Worker's code had hung", although its
+   * caller was answered at once. Anything without a code still throws.
+   */
+  async answer(method: SupervisorAnsweredMethod, args: unknown[]): Promise<SupervisorAnswer> {
+    if (!isSupervisorAnsweredMethod(method) || !Array.isArray(args)) {
+      throw new TypeError(`SupervisorRPC.answer: ${JSON.stringify(method)} is not a filesystem call`);
+    }
+    return supervisorAnswer(() => Reflect.apply(this[method], this, args));
+  }
 
   async readFile(path: string): Promise<string | null> {
     return this._call(this._fsRead('readFile', [path]));

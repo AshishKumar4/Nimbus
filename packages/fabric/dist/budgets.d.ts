@@ -15,7 +15,9 @@
  * the width fan-outs have claimed and not yet released. A fan-out spends only
  * the {@link dynamicWorkerHeadroom} that leaves, so work a Durable Object
  * already has in flight — a resident process, the esbuild facet, a git
- * network op, another fan-out — keeps its slots.
+ * network op, another fan-out — keeps its slots. Work that would rather wait
+ * than be refused waits on the ledger ({@link beginLoaderFetchWhenFree}) and
+ * is let in, in the order it asked, by whichever release makes room.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
  * limit is per Durable Object, and dynamic workers die with the isolate that
@@ -30,10 +32,28 @@
  */
 export declare const DO_DYNAMIC_WORKER_LIMIT = 10;
 /**
+ * Ends one hold, idempotently. Pass the error the call failed with, if it
+ * did: a "Dynamic worker concurrency limit exceeded" refusal pauses the
+ * ledger's admissions (see {@link beginLoaderFetchWhenFree}); anything else,
+ * or nothing, just ends the hold.
+ */
+export type EndLoaderFetch = (failure?: unknown) => void;
+/**
+ * A width one fan-out reserved with {@link claimDynamicWorkers}. Holds taken
+ * under it (`beginLoaderFetch(ctx, key, claim)`) count inside that width, not
+ * on top of it, until `release` (idempotent).
+ */
+export interface DynamicWorkerClaim {
+    release(): void;
+}
+/**
  * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
  * returned function ends the hold (idempotently), from the caller's own
  * `finally`. Holds on one key nest: the worker counts once until the last
- * one ends, as the platform counts it.
+ * one ends, as the platform counts it. Under a `claim`, the hold counts
+ * inside the claim's width. This never waits: it is for work the actor
+ * starts regardless (a resident process); {@link beginLoaderFetchWhenFree}
+ * waits for room.
  *
  * A begin/end pair rather than a wrapper on purpose, and the shape is
  * load-bearing: wrapping the stub call in a ledger-owned async frame
@@ -46,22 +66,50 @@ export declare const DO_DYNAMIC_WORKER_LIMIT = 10;
  * workers: an RPC stub call must stay a direct property call awaited by the
  * frame that made it, so the ledger only brackets it.
  */
-export declare function beginLoaderFetch(ctx: object, workerKey: string): () => void;
+export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?: DynamicWorkerClaim): EndLoaderFetch;
+/**
+ * {@link beginLoaderFetch} once the ledger has room: resolves, holding
+ * `workerKey`, as soon as that worker is already in flight (holds on it
+ * count once) or a distinct worker more fits — within the `claim`'s width,
+ * or the actor's headroom. Waits are let in in the order they asked, by
+ * whoever's release makes the room: a hold's end, a claim's release, a
+ * pause's end. The hold is taken as the wait is let in, so a freed slot
+ * wakes one waiter and no other caller can take it first; once resolved, it
+ * is the caller's to end.
+ *
+ * A call refused with "Dynamic worker concurrency limit exceeded" ends its
+ * hold with the refusal (`end(error)`) and waits again: the refusal pauses
+ * admission (50 ms, doubling to 2 s while refusals continue), because the
+ * platform counts a worker for a moment after its call returns and no
+ * release can show that.
+ *
+ * `signal` abandons the wait: it rejects with the signal's reason and holds
+ * nothing. A wait outlives nothing on its own: bound it with a signal when
+ * room may never come (a resident process holds its worker for as long as
+ * it runs).
+ *
+ *   const end = await beginLoaderFetchWhenFree(ctx, key, { signal });
+ *   try { return await worker.getEntrypoint().run(); }
+ *   catch (error) { end(error); throw error; }
+ *   finally { end(); }
+ */
+export declare function beginLoaderFetchWhenFree(ctx: object, workerKey: string, options?: {
+    signal?: AbortSignal;
+    claim?: DynamicWorkerClaim;
+}): Promise<EndLoaderFetch>;
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit
- * less what is held and claimed right now. Never negative.
+ * less what is held and claimed right now, and none while a limit refusal's
+ * pause lasts. Never negative.
  */
 export declare function dynamicWorkerHeadroom(ctx: object): number;
 /**
  * Claim `width` distinct Dynamic Workers for one fan-out, or null when the
  * headroom cannot hold it. The claim counts until `release` (idempotent), so
  * a second fan-out sizing itself meanwhile sees it; the claimant's own
- * dispatches are held as well while they run, which only ever over-counts
- * toward sending that second fan-out elsewhere.
+ * dispatches, held under the claim, count inside it.
  */
-export declare function claimDynamicWorkers(ctx: object, width: number): {
-    release(): void;
-} | null;
+export declare function claimDynamicWorkers(ctx: object, width: number): DynamicWorkerClaim | null;
 /** Snapshot for the diag surface. Pure read; no I/O. */
 export declare function loaderLedgerStats(ctx: object): {
     limit: number;
@@ -69,6 +117,10 @@ export declare function loaderLedgerStats(ctx: object): {
     claimed: number;
     headroom: number;
     peak: number;
+    /** Waits not yet admitted. */
+    waiting: number;
+    /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */
+    pauseMs: number;
 };
 /**
  * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"

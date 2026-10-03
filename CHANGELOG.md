@@ -60,6 +60,45 @@ published independently in the `@nimbus-sh` npm scope.
   that started them, and a refused file answers 403. A dev server
   persisted for a hibernation restore records who it ran as; one an
   earlier release persisted is not restored, and `vite` starts it again.
+- `@nimbus-sh/fabric`: a caller can wait for room on the Dynamic Worker
+  ledger instead of polling for it. `beginLoaderFetchWhenFree(ctx, key,
+  { signal, claim })` resolves with the end function `beginLoaderFetch`
+  returns, once `key` is already in flight or one more distinct worker
+  fits. Waits are let in in the order they asked, one per freed slot, by
+  any hold's end, a claim's release or the end of a refusal's pause, so a
+  wait sees Nimbus's releases as well as its own; an aborted `signal`
+  rejects the wait, which then holds nothing. The end function takes the
+  error a call failed with: a "Dynamic worker concurrency limit exceeded"
+  refusal stops the ledger admitting new workers for 50 ms, doubling to
+  2 s while refusals continue, because the platform counts a worker for a
+  moment after its call returns. `IsolatePool` now waits this way: a
+  refused call is sent again as soon as a hold ends or the pause passes,
+  where it used to sleep on a timer of its own (50 ms doubling to 2 s), so
+  a call refused behind ten busy workers no longer waits up to 2 s past the
+  release that would let it in. The 15 s bound is unchanged. A fan-out's
+  own dispatches count inside its claim (`beginLoaderFetch(ctx, key,
+  claim)`, `IsolatePool`'s `claim` option) rather than on top of it, so a
+  5-wide fan-out leaves 5 slots free, not 0. `loaderLedgerStats` adds
+  `waiting` and `pauseMs`, and `dynamicWorkerHeadroom` is 0 while a pause
+  lasts.
+- A filesystem call a process makes and the host refuses (an error with a
+  `code`: ENOENT, ENOTDIR, EEXIST) is answered by `SupervisorRPC` as a
+  value and rethrown in the process, instead of being thrown across the
+  entrypoint. The platform recorded every thrown refusal as an invocation
+  with outcome "exception" and "The Workers runtime canceled this request
+  because it detected that your Worker's code had hung", though its caller
+  was answered at once, so the noise hid real hangs. Node and opencode
+  processes, bash, and the WASI runtimes (python, ruby, clang, wasm) make
+  their filesystem calls through the new `SupervisorRPC.answer(method,
+  args)`, which resolves `{ value }` or `{ refusal }`, and core's
+  `answeringSupervisor` rethrows a refusal as exactly the error the program
+  got before: the same class, name, message and own properties (`code`,
+  `errno`, `syscall`, `path`, `dest`, `detail`, `cause`). A failure without
+  a code, such as a dropped connection, still throws. npm's and git's
+  facets still call the methods directly, which throw as before. A
+  supervisor entrypoint written from scratch (composeFabric's
+  `supervisorEntrypoint`) must implement `answer`; one that extends
+  `SupervisorRPC` inherits it.
 
 ## 2026-10-02
 

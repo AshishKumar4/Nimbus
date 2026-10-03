@@ -29,7 +29,13 @@ import { supervisorEntrypoint, type HostRoute } from './composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { beginLoaderFetch, withDynamicWorkerCapNamed } from './budgets.js';
+import {
+  beginLoaderFetch,
+  beginLoaderFetchWhenFree,
+  withDynamicWorkerCapNamed,
+  type DynamicWorkerClaim,
+  type EndLoaderFetch,
+} from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -69,6 +75,12 @@ export interface IsolatePoolOptions {
    * caller that wants more sizes it against that budget (Fanout does).
    */
   concurrency?: number;
+  /**
+   * The width the caller claimed for this pool's dispatches
+   * (`claimDynamicWorkers`): they are held inside it rather than on top of
+   * it, and a refused one waits for a slot of the claim.
+   */
+  claim?: DynamicWorkerClaim;
   /** Per-task timeout in ms. Default 60_000. */
   timeoutMs?: number;
   /**
@@ -250,10 +262,11 @@ interface ResolvedResilience {
 }
 
 /**
- * How long one call waits, in all, for the platform to admit it after
- * "Dynamic worker concurrency limit exceeded" (doubling from 50 ms, at most
- * 2 s a wait). A deployed Durable Object admitted the refused batch after a
- * 6 s pause; 15 s bounds a call that would never be admitted.
+ * How long one call waits, in all, on the Dynamic Worker ledger after
+ * "Dynamic worker concurrency limit exceeded" before the refusal surfaces
+ * (beginLoaderFetchWhenFree: let in when a hold ends or the refusal's pause
+ * passes). A deployed Durable Object admitted the refused batch after a 6 s
+ * pause; 15 s bounds a call that would never be admitted.
  */
 const CAP_REFUSAL_WAIT_MS = 15_000;
 
@@ -396,6 +409,8 @@ export class IsolatePool {
   private readonly loader: WorkerLoader;
   /** The hosting actor, as the loader budget ledger's per-DO key. */
   private readonly ctx: DurableObjectState;
+  /** The width this pool's dispatches are held inside (IsolatePoolOptions.claim). */
+  private readonly claim: DynamicWorkerClaim | undefined;
   private readonly concurrency: number;
   private readonly defaultTimeoutMs: number;
   private readonly defaultRetries: number;
@@ -474,6 +489,7 @@ export class IsolatePool {
     }
     this.loader = loader;
     this.ctx = ctx;
+    this.claim = opts?.claim;
     this.concurrency = Math.max(1, opts?.concurrency ?? 1);
     this.defaultTimeoutMs = opts?.timeoutMs ?? 60_000;
     this.defaultRetries = Math.max(0, opts?.retries ?? 0);
@@ -778,7 +794,7 @@ export class IsolatePool {
     invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, ArrayBuffer>,
-    wasAborted?: () => boolean,
+    signal?: AbortSignal,
   ): Promise<T> {
     // A warm slot executes one dispatch at a time: queue behind the
     // previous owner, then record this dispatch as the new tail. The
@@ -796,7 +812,7 @@ export class IsolatePool {
     }
     const inFlight: Promise<unknown>[] = [];
     try {
-      return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, wasAborted);
+      return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, signal);
     } finally {
       // Do not delay the caller's own outcome — the tail releases when
       // the RPCs the body launched have actually settled.
@@ -813,7 +829,7 @@ export class IsolatePool {
     resilience: ResolvedResilience,
     perCallWasm: Record<string, ArrayBuffer> | undefined,
     inFlight: Promise<unknown>[],
-    wasAborted?: () => boolean,
+    signal?: AbortSignal,
   ): Promise<T> {
     // Per-call wasm fingerprint. Mixed into the cache key so two calls
     // with different bytes hit different slots (no cache poisoning).
@@ -837,6 +853,9 @@ export class IsolatePool {
     // slot updated on every dispatch.
     try { setLastFacetId(id, slotIndex); } catch { /* best-effort */ }
 
+    // A hold the ledger already took for the next attempt, when a refused
+    // call waited on it for room; otherwise the attempt begins its own.
+    let admitted: EndLoaderFetch | undefined;
     const runOnce = async (): Promise<T> => {
       // loader.get() is synchronous from the caller's POV; the callback
       // is only invoked on cache miss. We wrap the callback tightly so a
@@ -862,14 +881,20 @@ export class IsolatePool {
       // fine and stays — it only tears down the long-lived SUPERVISOR
       // binding stub once the whole pool is done, which does NOT
       // invalidate any in-flight slot's entrypoint reference.
-      const stub = this.loader.get(id, async () => code);
-      const entrypoint = stub.getEntrypoint();
-      // Direct property call, awaited by this frame — bracketed, never
-      // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
-      const endFetch = beginLoaderFetch(this.ctx, id);
+      //
+      // The hold comes first, so it ends whatever setup throws: a retry's
+      // was taken when the ledger let it in.
+      const endFetch = admitted ?? beginLoaderFetch(this.ctx, id, this.claim);
+      admitted = undefined;
       try {
+        const stub = this.loader.get(id, async () => code);
+        const entrypoint = stub.getEntrypoint();
+        // Direct property call, awaited by this frame — bracketed, never
+        // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
         return await invoke(entrypoint, attempt);
       } catch (err) {
+        // The ledger learns a limit refusal from the hold it ends.
+        endFetch(err);
         if (err instanceof Error) {
           throw new ExecutionError(err.message, err.stack);
         }
@@ -882,8 +907,8 @@ export class IsolatePool {
     const maxAttempts = 1 + resilience.retries;
     let lastError: Error | undefined;
     let retriedCloneRefusal = false;
-    let capRefusals = 0;
-    let capWaitedMs = 0;
+    // When this call's waits for room after a limit refusal run out.
+    let capDeadline: number | undefined;
     let attempt = 0;
     while (attempt < maxAttempts) {
       try {
@@ -942,7 +967,7 @@ export class IsolatePool {
             message: lastError.message,
           });
         } catch { /* fail-soft */ }
-        if (wasAborted?.()) {
+        if (signal?.aborted) {
           // The caller aborted this dispatch's Request. workerd cancelled
           // the isolate's execution context wherever it was suspended —
           // mid-syscall, mid-stream — so the interpreter's heap may hold
@@ -965,16 +990,29 @@ export class IsolatePool {
           // reverse direction. This refresh targets the stale-loader case.
           continue;
         }
-        if (cause === 'dynamic_worker_cap' && capWaitedMs < CAP_REFUSAL_WAIT_MS) {
-          // The platform refused to start this call: it still counts a
-          // worker this Durable Object's ledger has already given back (a
-          // fan-out's workers stay counted for a moment after their calls
-          // return). Nothing ran, so the call waits, as the platform asks,
-          // and is sent again; it does not spend an attempt.
-          const delay = Math.min(CAP_REFUSAL_WAIT_MS - capWaitedMs, 50 * 2 ** capRefusals++, 2000);
-          capWaitedMs += delay;
-          await new Promise<void>((resolve) => setTimeout(resolve, delay));
-          continue;
+        if (cause === 'dynamic_worker_cap') {
+          // The platform refused to start this call. Nothing ran, so the
+          // call waits, as the platform asks, and is sent again without
+          // spending an attempt: on the ledger, which lets it in when a
+          // hold ends, or when the pause this refusal started has passed
+          // (the platform still counts a worker the ledger has given back:
+          // a fan-out's workers stay counted for a moment after their
+          // calls return).
+          capDeadline ??= Date.now() + CAP_REFUSAL_WAIT_MS;
+          const remainingMs = capDeadline - Date.now();
+          if (remainingMs > 0) {
+            // The deadline's timer is cleared once the wait settles: a
+            // pending timer keeps the hosting object from hibernating.
+            const deadline = new AbortController();
+            const timer = setTimeout(() => deadline.abort(), remainingMs);
+            const waitFor = signal ? AbortSignal.any([deadline.signal, signal]) : deadline.signal;
+            admitted = await beginLoaderFetchWhenFree(this.ctx, id, { claim: this.claim, signal: waitFor })
+              .catch(() => undefined)
+              .finally(() => clearTimeout(timer));
+            if (admitted) continue;
+            // The caller aborted while waiting: surface its abort as above.
+            if (signal?.aborted) throw lastError;
+          }
         }
         if (attempt < maxAttempts - 1) {
           // 100 * 2^attempt, capped at 2s so retries don't compound waiting.
@@ -1053,7 +1091,7 @@ export class IsolatePool {
       (entrypoint) => entrypoint.fetch(request.clone()),
       resilience,
       opts?.wasmModules,
-      () => request.signal.aborted,
+      request.signal,
     );
   }
 

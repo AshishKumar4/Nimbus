@@ -38,6 +38,7 @@
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { getRealNodeSharedImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import type { NodeFacetSources } from './node-shims-artifact.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
@@ -773,6 +774,9 @@ let stdout = "";
 let stderr = "";
 let exitCode = 0;
 let __supervisor = null;
+// The SUPERVISOR binding's filesystem calls answer a refusal as a value
+// (core vfs-supervisor.ts answeringSupervisor).
+${SUPERVISOR_ANSWERING_SRC}
 // The process's view of the filesystem: the same store and namespace a node
 // process boots on (vfs/facet-resident-store.ts), in this facet's heap and
 // bounded there. An opencode facet has no storage allowance of the session's
@@ -1283,7 +1287,7 @@ async function __ocBootStore() {
 
 export class NimbusProcess extends __NimbusDurableObject {
   async startProcess() {
-    __supervisor = (this.env && this.env.SUPERVISOR) || null;
+    __supervisor = this.env && this.env.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(this.env.SUPERVISOR) : null;
     const __bootFailure = await __ocBootStore();
     if (__bootFailure) throw new Error(__bootFailure);
     // Run the resident lifecycle and hold THIS RPC open until it exits — the
@@ -1367,7 +1371,7 @@ async function __ocRunServe() {
 }
 
 async function __ocOneShotFetch(request, workerEnv) {
-    __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;
+    __supervisor = workerEnv && workerEnv.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
     const __bootFailure = await __ocBootStore();
     if (__bootFailure) {
       return __ocHostResponse.json({ exitCode: 1, stdout: "", stderr: __bootFailure + "\\n" });

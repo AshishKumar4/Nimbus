@@ -135,7 +135,7 @@ export class Fanout {
         if (!claim)
             return this._dispatchPeerDo(tasks, fn);
         try {
-            return await this._dispatchInDo(tasks, fn);
+            return await this._dispatchInDo(tasks, fn, claim);
         }
         finally {
             claim.release();
@@ -159,11 +159,12 @@ export class Fanout {
         return `nbf:${this.opts.tag}:${this.coordDoIdShort}:${shard}`;
     }
     // ── Private: in-DO dispatch (in-DO fanout) ──────────────────────────────
-    async _dispatchInDo(tasks, fn) {
+    async _dispatchInDo(tasks, fn, claim) {
         // One slot — one Dynamic Worker — per task; submitMany has claimed
-        // that width on the ledger.
+        // that width on the ledger, and the pool's dispatches are held inside it.
         const pool = new IsolatePool(this.env, this.ctx, {
             concurrency: tasks.length,
+            claim,
             timeoutMs: this.opts.timeoutMs,
             tag: this.opts.tag,
             preamble: this.opts.preamble,
