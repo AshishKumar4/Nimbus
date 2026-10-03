@@ -33,6 +33,17 @@ published independently in the `@nimbus-sh` npm scope.
   key-value storage to the workspace's `vfs_shells` table. A named shell an
   earlier release saved is moved there by the first named call, unless the
   workspace already has a shell of that name.
+- Fixed: a wasm program, or a node program (one-shot, resident, worker or
+  opencode), started by a principal other than the session user ran as the
+  session user. Its process was entered at the top of the process table,
+  which gave it the table's default credential, and a Durable Object host
+  answers a program's file syscalls under the credential the table holds
+  for its pid, so `sudo -u agent ./prog.wasm` or `sudo -u agent node x.js`
+  could write where only the session user may. Each is now a child of the
+  command that ran it, under that command's credential, and in its process
+  tree, so an unnamed `ws.exec` also removes an ended wasm run with the
+  call. A resident re-driven after an instance reset has no invoker to take
+  a credential from and still starts as the session user.
 
 ## 2026-10-02
 
