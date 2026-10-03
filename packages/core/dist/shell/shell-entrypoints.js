@@ -71,11 +71,20 @@ function makeShellEntrypoint(shellName, shell) {
         return result.exitCode;
     };
 }
+/**
+ * What the program's commands read as their stdin: the shell's own, as a
+ * shell's commands inherit its fd 0. A stream is handed on as it is, so a
+ * command reads what arrives while it runs (a script's `cat` echoes a pipe
+ * live) and each reads what the one before it left. Commands read from
+ * stdin have none left; a terminal is the terminal's.
+ */
 async function resolveInheritedStdin(shellName, program, ctx) {
     if (program.kind === 'stdin')
         return { stdin: '' };
     if (ctx.isFdTerminal?.(0) !== false)
         return {};
+    if (isInputStream(ctx.stdin))
+        return { stdin: ctx.stdin };
     try {
         return { stdin: await readContextStdin(ctx.stdin) };
     }
@@ -191,6 +200,9 @@ function hasReadAll(value) {
 }
 function hasRead(value) {
     return 'read' in value && typeof value.read === 'function';
+}
+function isInputStream(value) {
+    return typeof value === 'object' && value !== null && hasRead(value) && hasReadAll(value);
 }
 function stdinChunkToString(chunk) {
     if (typeof chunk === 'string')

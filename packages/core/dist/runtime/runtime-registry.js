@@ -113,10 +113,12 @@ export function buildRuntimeHandler(spec, ctx0) {
         // is a file, a pipe, a command substitution, or the capture sink of a
         // programmatic exec, the bytes have to come back in the result and be
         // written through ctx.stdout instead. A context with no fd table of its own
-        // — the child_process broker synthesizes one — says so directly.
-        const captureOutput = !!nimbusCtx.__nimbusCaptureOutput
-            || ctx.isFdTerminal?.(1) === false
-            || ctx.isFdTerminal?.(2) === false;
+        // — the child_process broker synthesizes one — says so directly, and that
+        // wins: a broker child's fds are pipes, and its live output reaches the
+        // parent through them (the broker routes a child pid's output to its queue).
+        const captureOutput = typeof nimbusCtx.__nimbusCaptureOutput === 'boolean'
+            ? nimbusCtx.__nimbusCaptureOutput
+            : ctx.isFdTerminal?.(1) === false || ctx.isFdTerminal?.(2) === false;
         // fd 0 the same way: a pipe or redirect is the program's stdin. It used
         // to be dropped, so `echo hi | node x.js` read nothing.
         const pipedStdin = ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
