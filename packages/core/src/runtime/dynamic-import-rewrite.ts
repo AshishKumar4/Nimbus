@@ -62,40 +62,50 @@ function isLexerError(error: unknown): boolean {
   return error instanceof Error && typeof Reflect.get(error, 'idx') === 'number';
 }
 
-export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false): string {
+/**
+ * Route the cell's import() calls to the process's loader and, with
+ * `moduleMetadata`, bind its import.meta to the module's own. `routeImports`
+ * false binds metadata alone: a transform that lowers module syntax binds
+ * import.meta before lowering (CommonJS output would make it {}) and routes
+ * import() after, once the cell's import bindings are member reads that
+ * cannot capture the loader's name.
+ */
+export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false, routeImports = true): string {
   const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
-  if (!mayHaveDynamicImport(code) && !metadata) return code;
+  const imports = routeImports && mayHaveDynamicImport(code);
+  if (!imports && !metadata) return code;
   let lexed: string | null;
   try {
-    lexed = rewriteFromLexer(code, parentUrl, metadata);
+    lexed = rewriteFromLexer(code, parentUrl, metadata, imports);
   } catch (error) {
     // A lexing or a probe that cannot finish settles nothing; the grammar decides.
     if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
     lexed = null;
   }
-  return lexed ?? rewriteWithGrammar(code, parentUrl, metadata);
+  return lexed ?? rewriteWithGrammar(code, parentUrl, metadata, imports);
 }
 
 interface CallSite { ss: number; se: number; d: number; lexed: boolean }
 
 /** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
-function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean): string | null {
+function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, imports: boolean): string | null {
   // The lexer reads a hashbang line as code. Blank it: lengths, and so
   // every position, stay the cell's.
   const hashbang = code.startsWith('#!') ? lineEnd(code, 0) : 0;
   const source = hashbang ? ' '.repeat(hashbang) + code.slice(hashbang) : code;
-  const imports = lexImports(source);
+  const lexed = lexImports(source);
   const lines = new Lines(source);
-  const passed = passedOver(source, imports, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
+  const passed = passedOver(source, lexed, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
   if (passed === null) return null;
 
   const calls: CallSite[] = [];
   const metas: Span[] = [];
-  for (const entry of imports) {
+  for (const entry of lexed) {
     if (entry.t === DYNAMIC_IMPORT) calls.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
     else if (metadata && entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
   }
-  for (const at of passed) {
+  if (!imports) calls.length = 0;
+  for (const at of imports ? passed : []) {
     const open = skipTrivia(source, at + 'import'.length).at;
     const end = source[open] === '(' ? parenthesisEnd(source, open) : null;
     if (end === null) return null;
@@ -377,7 +387,7 @@ class MetadataCollector extends ImportCollector {
  * The grammar's reading of the cell. A cell it cannot parse in either goal is
  * returned as written, for its compile to report.
  */
-function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean): string {
+function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, imports: boolean): string {
   const collected: Collected = {
     call: DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ',
     edits: [],
@@ -397,6 +407,7 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean):
     } catch {
       continue;
     }
+    if (!imports) collected.edits.length = 0;
     if (!collected.edits.length && !collected.metas.length) return code;
     let insertion = program.body[0]?.start ?? code.length;
     for (const statement of program.body) {

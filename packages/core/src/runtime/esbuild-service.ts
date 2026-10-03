@@ -800,7 +800,7 @@ async function runTransformRequest(
   esbuildApi: EsbuildTransformApi | null,
   code: string,
   options: EsbuildTransformOptions | undefined,
-  rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean) => string,
+  rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean) => string,
   lower: (esm: string) => string,
 ): Promise<TransformResult> {
   const parent = options?.dynamicImportParent;
@@ -818,15 +818,18 @@ async function runTransformRequest(
     // in __commonJS and exports that as `default`, so the lowered cell's
     // module.exports would stop being the one the source assigned. The
     // single CommonJS pass below is what binds such a cell, as it does for
-    // every cell that takes no metadata pass.
+    // every cell that takes no metadata pass. import() is routed after it,
+    // as for every other cell: before lowering, a name the cell imports
+    // could capture the loader's.
     const javascript = await esbuildApi.transform(code, {
       loader: options.loader ?? 'js', target: 'esnext',
       jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
       tsconfigRaw: options.tsconfigRaw, define: options.define,
       supported: { 'dynamic-import': true, 'import-meta': true },
     });
-    const routed = rewrite(javascript.code, parent, true);
-    return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false }, lower);
+    const bound = rewrite(javascript.code, parent, true, false);
+    const lowered = await transformWithEsbuild(esbuildApi, bound, { ...options, loader: 'js', moduleMetadata: false }, lower);
+    return { ...lowered, code: rewrite(lowered.code, parent) };
   }
   const result = await transformWithEsbuild(esbuildApi, code, options, lower);
   return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };

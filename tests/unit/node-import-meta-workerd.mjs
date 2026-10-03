@@ -4,7 +4,7 @@
 // launch with no package.json in its cwd must still find the CLI's package.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -15,9 +15,11 @@ const PACKAGE = 'node_modules/fixture-cli';
 const SOURCE = [
   'import fs from "node:fs";',
   'import path from "node:path";',
-  'import { fileURLToPath } from "node:url";',
+  'import { fileURLToPath, pathToFileURL } from "node:url";',
   'const root = process.argv[2];',
-  'const normalize = (v) => typeof v === "string" ? v.replace(root, "<root>") : null;',
+  // A URL spells the root percent-encoded, so it is matched as a URL.
+  'const rootUrl = pathToFileURL(root).href;',
+  'const normalize = (v) => typeof v !== "string" ? null : v.startsWith(rootUrl) ? "file://<root>" + v.slice(rootUrl.length) : v.startsWith(root) ? "<root>" + v.slice(root.length) : v;',
   'const meta = import.meta;',
   'const { dirname: extractedDirname, filename: extractedFilename } = import.meta;',
   'console.log("RAW dirname=" + String(import.meta.dirname) + " type=" + typeof import.meta.dirname);',
@@ -46,8 +48,17 @@ const FILES = {
   [`${PACKAGE}/package.json`]: '{"name":"fixture-cli","type":"module","version":"1.0.0"}',
   [`${PACKAGE}/dist/bin.mjs`]: SOURCE,
   'load.cjs': 'import("./node_modules/fixture-cli/dist/bin.mjs");',
+  // An entry whose own import binding is spelled like Nimbus's loader: its
+  // import() must still reach the module, not the binding.
+  'collide.mjs': [
+    'import { createHash as __nimbusDynamicImport } from "node:crypto";',
+    'void __nimbusDynamicImport;',
+    'const path = await import("node:path");',
+    'console.log("COLLIDE " + typeof path.join + " " + import.meta.filename.endsWith("collide.mjs"));',
+  ].join('\n'),
 };
-const hostRoot = mkdtempSync(join(tmpdir(), 'node-import-meta-host-'));
+// Canonical, so Node's filename and dirname spell the same root.
+const hostRoot = realpathSync(mkdtempSync(join(tmpdir(), 'node-import-meta-host-')));
 for (const [name, source] of Object.entries(FILES)) {
   mkdirSync(dirname(join(hostRoot, name)), { recursive: true });
   writeFileSync(join(hostRoot, name), source);
@@ -97,6 +108,10 @@ try {
     assert.equal(line(dependencyGuest.stdout, 'META'), line(dependencyHost.stdout, 'META'));
     assert.equal(line(dependencyGuest.stdout, 'PACKAGE'), line(dependencyHost.stdout, 'PACKAGE'));
     console.log('DEPENDENCY METADATA CONTROL PASS ' + line(dependencyGuest.stdout, 'META'));
+
+    const collideHost = hostRun('collide.mjs');
+    const collideGuest = await terminal.run(`cd ${W} && node collide.mjs ${W}`);
+    assert.equal(line(collideGuest.stdout, 'COLLIDE'), line(collideHost.stdout, 'COLLIDE'), 'an import binding cannot capture import()');
 
     assert.equal(line(nativeGuest.stdout, 'META'), line(nativeHost.stdout, 'META'), 'ES module entry import.meta matches real Node');
     assert.equal(line(nativeGuest.stdout, 'PACKAGE'), line(nativeHost.stdout, 'PACKAGE'), 'entry dirname locates its own package from a package-free cwd');
