@@ -878,7 +878,9 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if (flags.directory && stat !== null && stat.type !== 'directory') throw syscallError('ENOTDIR', 'open', p);
       if (stat === null || flags.truncate) await this.namespace.writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
       return this.issue({
-        path: p,
+        // The file it opened, by the name the namespace resolved for it: a
+        // link on the way repointed later does not move the descriptor.
+        path: await this.namespace.realpathAsync(p),
         flags: {
           read: !!flags.read, write: !!flags.write, append: !!flags.append, create: !!flags.create,
           exclusive: !!flags.exclusive, directory: !!flags.directory, truncate: !!flags.truncate,

@@ -161,6 +161,9 @@ engine.releaseExclusiveMutation(lease.owner);
     ['truncate', () => bridge.truncate('/home/user/swing/v.txt', 0)],
     ['unlink', () => bridge.unlink('/home/user/swing/v.txt')],
     ['rename', () => bridge.rename('/home/user/swing/v.txt', '/home/user/swing/w.txt')],
+    // Only its source through the alias: checked where it was resolved, it
+    // used to go where the alias pointed by the time it ran.
+    ['rename to a fixed name', () => bridge.rename('/home/user/swing/v.txt', '/m/top/free/w.txt')],
     ['a view\'s write', () => view.writeFile('/home/user/swing/v.txt', 'moved')],
   ];
   const held = engine.acquireExclusiveMutation('m/top/leased');
@@ -182,6 +185,34 @@ engine.releaseExclusiveMutation(lease.owner);
     const leased = (await m.readdir('/top/leased')).map((entry) => entry.name).sort();
     const v = await Promise.resolve().then(() => m.readFile('/top/leased/v.txt')).then((bytes) => new TextDecoder().decode(bytes), () => '(gone)');
     landed.push([what, outcome, leased.join(','), v]);
+  }
+  // Repointed while the call is under way, from the caller's side, with no
+  // timing: a write whose source repoints the alias as it yields its bytes,
+  // and a descriptor opened through the alias before it is repointed (it
+  // writes the file it opened).
+  {
+    await seed();
+    for (const dir of ['/top/leased', '/top/free']) await m.writeFile(`${dir}/v.txt`, enc.encode('v'));
+    point('/m/top/free');
+    const source = (async function* () { point('/m/top/leased'); yield enc.encode('moved'); })();
+    const outcome = await code(() => bridge.writeFileFrom('/home/user/swing/v.txt', 5, source));
+    const leased = (await m.readdir('/top/leased')).map((entry) => entry.name).sort();
+    const v = await Promise.resolve().then(() => m.readFile('/top/leased/v.txt')).then((bytes) => new TextDecoder().decode(bytes), () => '(gone)');
+    landed.push(['writeFileFrom, its source repointing the alias', outcome, leased.join(','), v]);
+  }
+  {
+    await seed();
+    for (const dir of ['/top/leased', '/top/free']) await m.writeFile(`${dir}/v.txt`, enc.encode('v'));
+    point('/m/top/free');
+    const fd = await bridge.open('/home/user/swing/v.txt', { read: true, write: true });
+    point('/m/top/leased');
+    const outcome = await code(() => bridge.write(fd.id, 0, enc.encode('d')));
+    await bridge.close(fd.id);
+    const leased = (await m.readdir('/top/leased')).map((entry) => entry.name).sort();
+    const v = new TextDecoder().decode(await m.readFile('/top/leased/v.txt'));
+    landed.push(['a descriptor\'s write after the alias moved', outcome, leased.join(','), v]);
+    assert.deepEqual([outcome, new TextDecoder().decode(await m.readFile('/top/free/v.txt'))], ['ok', 'd'],
+      'the descriptor writes the file it opened');
   }
   engine.releaseExclusiveMutation(held.owner);
   for (const [what, outcome, leased, v] of landed) {
