@@ -46,8 +46,20 @@ published independently in the `@nimbus-sh` npm scope.
   could write where only the session user may. Each is now a child of the
   command that ran it, under that command's credential, and in its process
   tree, so an unnamed `ws.exec` also removes an ended wasm run with the
-  call. A resident re-driven after an instance reset has no invoker to take
-  a credential from and still starts as the session user.
+  call.
+- Fixed: a resident server re-driven after an instance reset came back as
+  the session user, whoever had started it. Its journal entry now records
+  the credential it ran under, with its exec id, and the re-drive runs
+  under it. An entry an earlier release wrote names no credential and is
+  not re-driven; the terminal says why ("could not be restarted"), and the
+  server starts again when its command is run again.
+- Fixed: `vite` and `vite preview` served every file as root, whoever ran
+  them, so a file the principal who started the server may not read was
+  served to anyone with the preview URL. The in-process servers, and the
+  real-vite server's snapshot reads, now read and write as the command
+  that started them, and a refused file answers 403. A dev server
+  persisted for a hibernation restore records who it ran as; one an
+  earlier release persisted is not restored, and `vite` starts it again.
 
 ## 2026-10-02
 
