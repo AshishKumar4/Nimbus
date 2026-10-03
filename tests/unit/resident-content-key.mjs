@@ -34,16 +34,12 @@ async function boot() {
   authority.kfs.writeFile('home/user/app/b.txt', SAME);
   authority.kfs.writeFile('home/user/app/c.txt', 'c-bytes');
   const fetched = [];
-  const handle = facetSupervisor(authority);
-  const { supervisor, forward, log } = handle;
-  const counting = new Proxy(supervisor, {
-    get(target, name) {
-      if (name === 'fsReadBatch') {
-        return async (requests) => { for (const r of requests) fetched.push(r.path); return forward('fsReadBatch', [requests]); };
-      }
-      return target[name];
-    },
+  let forward;
+  const handle = facetSupervisor(authority, {
+    fsReadBatch: async (requests) => { for (const r of requests) fetched.push(r.path); return forward('fsReadBatch', [requests]); },
   });
+  forward = handle.forward;
+  const { supervisor: counting, log } = handle;
   // Run from outside the app and hold it by plan, so changes reach the rows
   // through the delta rather than as pushed bytes.
   await launchResident({

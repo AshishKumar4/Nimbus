@@ -162,6 +162,21 @@ export function supervisorRefusal(error: unknown): SupervisorRefusal | undefined
   return { name: error.name, message: error.message, properties };
 }
 
+/**
+ * `call`'s outcome as `answer` resolves it: its value, or its refusal. A
+ * failure without a code is thrown. SupervisorRPC.answer runs its method
+ * through this, and so does any double of it.
+ */
+export async function supervisorAnswer(call: () => unknown): Promise<SupervisorAnswer> {
+  try {
+    return { value: await call() };
+  } catch (error) {
+    const refusal = supervisorRefusal(error);
+    if (refusal === undefined) throw error;
+    return { refusal };
+  }
+}
+
 /** Standard constructors the receiver of a thrown error rebuilds it with; any other is an Error bearing its name. */
 const STANDARD_ERRORS: Readonly<Record<string, ErrorConstructor>> = {
   EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,

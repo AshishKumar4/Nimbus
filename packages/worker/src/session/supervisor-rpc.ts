@@ -67,7 +67,7 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   isSupervisorAnsweredMethod,
-  supervisorRefusal,
+  supervisorAnswer,
   type SupervisorAnswer,
   type SupervisorAnsweredMethod,
 } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
@@ -325,13 +325,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     if (!isSupervisorAnsweredMethod(method) || !Array.isArray(args)) {
       throw new TypeError(`SupervisorRPC.answer: ${JSON.stringify(method)} is not a filesystem call`);
     }
-    try {
-      return { value: await Reflect.apply(this[method], this, args) };
-    } catch (error) {
-      const refusal = supervisorRefusal(error);
-      if (refusal === undefined) throw error;
-      return { refusal };
-    }
+    return supervisorAnswer(() => Reflect.apply(this[method], this, args));
   }
 
   async readFile(path: string): Promise<string | null> {

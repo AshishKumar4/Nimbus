@@ -11,14 +11,10 @@
 // returned too, for a test that seeds files.
 
 import { createAuthority, facetSupervisor } from './resident-body.mjs';
+import { supervisorDouble } from './supervisor-double.mjs';
 
 export function withNamespace(stub = {}, authority = createAuthority()) {
   const { forward } = facetSupervisor(authority);
-  const merged = new Proxy(stub, {
-    get(target, name) {
-      if (name in target || typeof name !== 'string' || name === 'then') return target[name];
-      return (...args) => forward(name, args);
-    },
-  });
+  const merged = supervisorDouble((name, args) => (name in stub ? stub[name](...args) : forward(name, args)));
   return { supervisor: merged, authority };
 }
