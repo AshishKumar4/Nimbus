@@ -116,7 +116,9 @@ def device : Json :=
      (kernel, [], false, false, ["pc", "locked", "inner", "al"]),
      -- From a root inside the device its links are read as it reads them, re-rooted at /pc.
      (u2, ["pc", "home", "me"], true, false, ["up", "f"]), (u2, ["pc", "home", "me"], true, false, ["climb", "f"]),
-     (u2, ["pc", "home", "me"], true, false, ["up"])]
+     (u2, ["pc", "home", "me"], true, false, ["up"]),
+     -- A link the device reads to a name the nested mount covers has no name here.
+     (kernel, ["pc", "locked"], true, false, ["l"]), (kernel, ["pc", "locked"], true, false, ["inner", "x"])]
   .obj [("mounts", .arr (S.mounts.map fun m =>
       .obj [("point", .str (key m.point)), ("backend", .str s!"b{m.bk}"), ("resolvesPaths", .bool (m.point == ["pc"]))])),
     ("backends", .obj [("b0", backendJson (S.bks 0)), ("b1", backendJson (S.bks 1)), ("b2", backendJson (S.bks 2))]),
