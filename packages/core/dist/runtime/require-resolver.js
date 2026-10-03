@@ -418,8 +418,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // The process runs such a module lowered to CommonJS, and its require
         // takes a package's "require" branch. A module runner that evaluates the
         // same source itself (Vite's, under Astro) imports a package with
-        // import(), which takes the "import" branch: phase 2 resolves it as one
-        // deferral (the same file as the require branch adds nothing).
+        // import(), which takes the "import" branch: phase 2 resolves it (the
+        // same file as the require branch adds nothing), behind every deferral
+        // the code names, tables included (IMPORT_BRANCHES).
         for (const match of stripped.matchAll(IMPORT_RE)) {
             const specifier = match[2];
             if (isFacetProvided(specifier))
@@ -431,7 +432,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 (await addFile(r.resolved));
             // Resolved in phase 2, where what it reads is optional too.
             if (!policy && !/^[./#]|^file:/.test(specifier))
-                defer({ specifier, fromDir, alternatives: 1 });
+                defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES });
         }
         // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
         const deferrals = new Set();
@@ -679,6 +680,14 @@ export function configPackageNames(source) {
     });
     return [...names];
 }
+/**
+ * Phase 2's tier for a package's "import" branch beside the "require" branch
+ * the process loads: a module runner may import it, the code's own import()
+ * calls certainly run. Ahead of a deferral table it shed 118 of Astro's Shiki
+ * grammars (jsx.mjs and markdown.mjs among them), which a page's code block
+ * loads with import().
+ */
+const IMPORT_BRANCHES = Number.MAX_SAFE_INTEGER - 1;
 /** Phase 2's last tier: the bins of a package the code located by its manifest. */
 const LOCATED_PACKAGE_BINS = Number.MAX_SAFE_INTEGER;
 /** `pkg/package.json` or `@scope/pkg/package.json`: an installed package's manifest, by name. */
