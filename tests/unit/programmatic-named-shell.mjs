@@ -150,16 +150,40 @@ try {
   await assert.rejects(() => rpcExec(host, 'pwd', { shellId: '../escape' }), /Invalid|expected|string/i);
   await assert.rejects(() => rpcExec(host, 'pwd', { shellId: '' }), /Invalid|expected|string|small/i);
 
-  assert.ok(
-    [...rows.keys()].every((key) => key.startsWith('nimbus_programmatic_shell:')),
-    'state is stored under the declared prefix and nothing else',
-  );
+  // ── The names are the workspace's: one shell, whichever door it is used by ─
+  await rpcExec(host, 'cd /home/user/build; export DOOR=session', { shellId: 'shared' });
+  assert.equal((await ws.exec('pwd; echo "$DOOR"', { shellId: 'shared' })).stdout, '/home/user/build\nsession\n',
+    'the workspace\'s exec is in the shell the session left');
+  await ws.exec('cd /tmp; export DOOR=workspace', { shellId: 'shared' });
+  assert.equal((await rpcExec(host, 'pwd; echo "$DOOR"', { shellId: 'shared' })).stdout, '/tmp\nworkspace\n', 'and back');
+  assert.equal(rows.size, 0, 'no named shell is kept in the object\'s own storage');
+  assert.equal(sql.exec("SELECT id FROM vfs_shells WHERE id = 'shared'").length, 1, 'it is a row of the workspace');
 
   ws.shell.getEnv().PWD = '/stale';
   await ws.shell.execute(':', { isolateShellState: true });
   assert.equal(ws.shell.getEnv().PWD, ws.shell.getCwd(), 'restoring a shell frame synchronizes PWD with cwd');
 } finally {
   box.close();
+}
+
+// ── Named shells a session stored before they were the workspace's ────────
+// Worker 0.13 kept each in the object's own storage. The first named call
+// adopts every one, except a name the workspace already has, and storage
+// lets them go.
+{
+  const legacy = await programmaticHost();
+  try {
+    await legacy.ws.exec('mkdir -p /home/user/old');
+    legacy.rows.set('nimbus_programmatic_shell:kept', { cwd: '/home/user/old', env: { OLD: '1' } });
+    legacy.rows.set('nimbus_programmatic_shell:taken', { cwd: '/home/user/old', env: {} });
+    await legacy.ws.exec('cd /tmp', { shellId: 'taken' });
+    const kept = await rpcExec(legacy.host, 'pwd; echo "$OLD"', { shellId: 'kept' });
+    assert.equal(kept.stdout, '/home/user/old\n1\n', 'a stored shell is where it was left');
+    assert.equal((await rpcExec(legacy.host, 'pwd', { shellId: 'taken' })).stdout, '/tmp\n', 'the workspace\'s own shell of a name stays');
+    assert.equal(legacy.rows.size, 0, 'storage no longer holds them');
+  } finally {
+    legacy.close();
+  }
 }
 
 console.log('programmatic named shell: ok');

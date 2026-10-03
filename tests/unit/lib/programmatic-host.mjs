@@ -34,9 +34,11 @@ export async function programmaticHost(options = {}) {
       storage: {
         get: async (key) => rows.get(key),
         put: async (key, value) => { rows.set(key, value); },
-        delete: async (key) => { rows.delete(key); },
+        delete: async (keys) => { for (const key of [keys].flat()) rows.delete(key); },
+        list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
       },
     },
+    runtimeWorkspace: ws,
     shell: ws.shell,
     shellProcessPid: ws.shellProcessPid,
     sqliteFs: ws.vfs,
