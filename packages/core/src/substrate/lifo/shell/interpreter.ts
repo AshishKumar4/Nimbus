@@ -1192,7 +1192,7 @@ export class Interpreter {
       isFdPipe: spec.isFdPipe,
       setUmask: identity.setUmask,
       runAs: async (cred, argv, options) => spec.runAs
-        ? (await spec.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
+        ? (await spec.runAs(options?.parent ?? ctx, cred, argv))
         : 126,
     };
 

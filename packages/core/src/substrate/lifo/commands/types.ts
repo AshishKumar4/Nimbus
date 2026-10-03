@@ -39,9 +39,15 @@ export interface TerminalInputStream extends CommandInputStream {
   rawMode: boolean;
 }
 
-/** Where a child process `runAs` starts runs, when not in its parent's directory (find -execdir). */
+/**
+ * What a child process `runAs` starts inherits besides its credential: its
+ * descriptors, environment and directory come from `parent`, which is the
+ * calling command's own context unless given. A script interpreter passes the
+ * context its script's command runs in (that line's redirections and pipes);
+ * find -execdir passes its own with the matched file's directory.
+ */
 export interface RunAsOptions {
-  readonly cwd?: string;
+  readonly parent?: CommandContext;
 }
 
 export interface CommandContext {

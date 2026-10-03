@@ -434,7 +434,7 @@ class FindRun {
    */
   private async launch(argv: string[], directory: string): Promise<number> {
     try {
-      return await this.ctx.runAs(this.ctx.cred, argv, { cwd: directory });
+      return await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
     } catch (error) {
       if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
       await this.diagnose(`${quote(argv[0] ?? '')}: ${VFS_STRERROR[error.code]}`);
