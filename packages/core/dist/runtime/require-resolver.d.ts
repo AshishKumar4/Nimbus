@@ -56,6 +56,8 @@ export interface DeferredImport {
     specifier: string;
     fromDir: string;
     alternatives: number;
+    /** The file, when the walk resolved it already (a tool config and what it names). */
+    path?: string;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
@@ -92,9 +94,12 @@ export interface RequiredModuleRoot {
     path: string;
     text?: string;
     /**
-     * A tool's config file, which the tool runs: the installed packages it
-     * names by a string (postcss.config.js's `plugins: { tailwindcss: {} }`)
-     * are what the tool loads by name, and they join phase 2.
+     * A tool's config file the launch found (toolConfigRoots). The tool runs
+     * it unless the command needs no config (`vite --version`), so it is no
+     * required root: it is phase 2's first tier, staged within the bound and
+     * evictable. The installed packages it names by a string
+     * (postcss.config.js's `plugins: { tailwindcss: {} }`), which the tool
+     * loads by name, follow it.
      */
     config?: boolean;
 }

@@ -222,11 +222,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loads the few its input names. Walking a table first spent the bound on
     // grammars the program never loads, and cut the deferral it does.
     const deferredDynamic = new Map();
-    function defer({ specifier, fromDir, alternatives }) {
+    function defer({ specifier, fromDir, alternatives, path }) {
         let queue = deferredDynamic.get(alternatives);
         if (queue === undefined)
             deferredDynamic.set(alternatives, queue = []);
-        queue.push({ specifier, fromDir });
+        queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
     }
     function nextDeferred() {
         let fewest = Infinity;
@@ -273,8 +273,10 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 resolved.push(r.resolved);
         }
         for (const target of resolved)
-            defer({ specifier: '/' + target, fromDir, alternatives: resolved.length });
+            defer({ specifier: target, fromDir, alternatives: resolved.length, path: target });
     }
+    /** Tool configs found for the launch; phase 2 stages them first. */
+    const configRoots = new Set();
     let lazy = false;
     // `entry`: the entry file itself, whose own `import()` is a deferral of its
     // main module, not an optional feature, and is followed as required.
@@ -498,16 +500,20 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // Modules a previous launch actually tried to execute are required roots,
         // not speculative dynamic-import subtrees. Walk their static imports in
         // this same visited set and byte budget before any optional enrichment.
+        // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
         for (const root of requiredRoots ?? []) {
             const path = strip(root.path);
+            if (root.config && root.text === undefined) {
+                configRoots.add(path);
+                defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
+                continue;
+            }
             if (root.text === undefined)
                 await addFile(path);
             else
                 await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
             if (closureExceeded || declined)
                 break;
-            if (root.config && typeof bundle[path] === 'string')
-                await deferConfigNames(path);
         }
         // Also add cwd package.json if it exists (for npm scripts, main field etc).
         const cwdPkg = cwdStripped + '/package.json';
@@ -529,10 +535,12 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
         lazy = true;
         for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
-            const { specifier, fromDir } = next;
-            const resolved = await resolveDynamicImport(specifier, fromDir);
-            if (resolved)
-                await addFile(resolved);
+            const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+            if (!resolved)
+                continue;
+            await addFile(resolved);
+            if (configRoots.has(resolved) && typeof bundle[resolved] === 'string')
+                await deferConfigNames(resolved);
         }
         return { bundle, speculative, entryPaths };
     }
