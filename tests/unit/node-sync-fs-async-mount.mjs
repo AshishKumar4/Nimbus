@@ -447,5 +447,40 @@ function launched(named = []) {
   ws.filesystem.vfs.unmount('/pc');
 }
 
+// ── A link on a mount that resolves its own paths is the backend's ─────────
+// Its backend reads an absolute target from its own root. Node's staged
+// view, its live calls and the namespace must agree: /ro/link -> /home/user/x
+// is the mount's /home/user/x, never SQLite's, and the read-only mount
+// refuses the write.
+{
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await backend.mkdir('/home/user', { recursive: true });
+  await backend.writeFile('/home/user/x', enc.encode('backend'));
+  await backend.symlink('/home/user/x', '/link');
+  await backend.symlink('../../../home/user/x', '/climb');
+  ws.filesystem.vfs.mount('/ro', remote(backend), { resolvesPaths: true, readOnly: true });
+  await ws.fs.writeFile('/home/user/x', 'sqlite');
+  assert.equal(await ws.fs.readlink('/ro/link'), '/ro/home/user/x', 'an absolute target re-roots at the mount');
+  assert.equal(await ws.fs.readlink('/ro/climb'), '/ro/home/user/x', 'a relative one climbs no higher than its root');
+  const through = (argv, write) => node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  read: code(() => fs.readFileSync(process.argv[2], 'utf8')),
+  size: code(() => fs.statSync(process.argv[2]).size),
+  live: await fs.promises.readFile(process.argv[2], 'utf8').catch((e) => 'ERR:' + e.code),
+  ${write ? "write: await fs.promises.writeFile(process.argv[2], 'changed').then(() => 'written', (e) => 'ERR:' + e.code)," : ''}
+})))();`, { filename: '/home/user/ro-link.js', cwd: '/home/user', argv });
+  // Naming the link and the file it leads to, both are staged as the mount's.
+  const named = JSON.parse(await through(['/ro/link', '/ro/home/user/x'], false));
+  assert.equal(named.size, 7, `the stat through the link is the mount's file (${JSON.stringify(named)})`);
+  assert.ok(named.read === 'backend' || named.read === 'ERR:EAGAIN', `and so is the read, or the mount's refusal (${JSON.stringify(named)})`);
+  assert.equal(named.live, 'backend', 'fs.promises reads the mount\'s file');
+  // Naming only the link, the file it leads to is not staged: the mount's refusal, never SQLite's file.
+  assert.deepEqual(JSON.parse(await through(['/ro/link'], true)), { read: 'ERR:EAGAIN', size: 'ERR:EAGAIN', live: 'backend', write: 'ERR:EAGAIN' },
+    'a target the launch did not list is the mount\'s refusal');
+  await assert.rejects(ws.fs.writeFile('/ro/link', 'changed'), { code: 'EROFS' }, 'the namespace refuses the write on the mount');
+  assert.equal(await ws.fs.readFileString('/home/user/x'), 'sqlite', 'SQLite\'s file is untouched');
+  ws.filesystem.vfs.unmount('/ro');
+}
+
 await ws.close();
 console.log('node-sync-fs-async-mount: hosted node\'s synchronous fs and require see an asynchronous mount, bounded where the launch names it');

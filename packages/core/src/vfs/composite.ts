@@ -170,7 +170,11 @@ export interface MountOptions {
    * mount. The backend follows its own links, in its own tree, and answers
    * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
    * will not show, or a parent it makes on write. A `..` inside the mount is
-   * taken lexically, so it leaves the mount only past its root.
+   * taken lexically, so it leaves the mount only past its root. readlink
+   * answers where a link leads in this namespace (`linkTarget`: an absolute
+   * target re-rooted at the mount point, a relative one climbing no higher
+   * than it), so a walk over the namespace that follows it (a launch's
+   * staged view) lands where the backend does.
    *
    * The namespace still owns everything up to and including the mount
    * point: root links that lead into it, ENXIO with `absentReason` while the
@@ -695,6 +699,19 @@ export class CompositeVFS implements VFS {
    * rest is spelled as given (normalized), and the one stat that proves it
    * is there follows them.
    */
+  /**
+   * A link's target as this namespace resolves it: the one link-root rule
+   * for a mount whose backend resolves its own paths. Such a backend reads
+   * its links from its own root, so an absolute target re-roots at the mount
+   * point and a relative one climbs no higher than it; either comes back as
+   * the namespace path it leads to. Any other backend's link is its target.
+   */
+  private linkTarget(mount: Mount, rel: string, link: string): string {
+    if (!mount.options.resolvesPaths) return link;
+    const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(rel)}/${link}`);
+    return inBackend === ROOT_POINT ? mount.point : `${mount.point}${inBackend}`;
+  }
+
   private realpathAt(input: string, sync: boolean): Awaitable<string> {
     return then(this.resolve(input, true, sync), (resolved) => {
       const follow = this.route(resolved).mount.options.resolvesPaths === true;
@@ -1402,21 +1419,25 @@ export class CompositeVFS implements VFS {
             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
               return sourceOps.copy(source.rel, target.rel, options);
             }
-            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel);
+            // A link copied out of its filesystem keeps where it led there.
+            const relink = (rel: string, link: string): string => (source.mount === target.mount ? link : this.linkTarget(source.mount, rel, link));
+            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel, relink);
           });
         });
       });
     }); });
   }
 
-  /** Copy an entry (a tree when it is a directory) between backends, links as links. */
-  private copyBytes(from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string): Awaitable<number> {
+  /** Copy an entry (a tree when it is a directory) between backends, links as links (`relink` gives a copied link's target). */
+  private copyBytes(
+    from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string, relink: (rel: string, link: string) => string,
+  ): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
     if (stat.type === 'symlink') {
       if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
         throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
       }
-      return then(from.readlink(fromRel), (target) => then(to.symlink!(target, toRel), () => 1));
+      return then(from.readlink(fromRel), (target) => then(to.symlink!(relink(fromRel, target), toRel), () => 1));
     }
     if (stat.type === 'file') {
       return then(from.readFile(fromRel), (bytes) => then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1));
@@ -1427,7 +1448,7 @@ export class CompositeVFS implements VFS {
         const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
         return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
           ? n
-          : then(this.copyBytes(from, child, childStat, to, dest), (m) => n + m)));
+          : then(this.copyBytes(from, child, childStat, to, dest, relink), (m) => n + m)));
       }), 1)));
   }
 
@@ -1629,7 +1650,8 @@ export class CompositeVFS implements VFS {
   }
 
   async readlink(path: string): Promise<string> {
-    return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
+    return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) =>
+      then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))));
   }
 
   async chmod(path: string, mode: number): Promise<void> {
@@ -1685,7 +1707,7 @@ export class CompositeVFS implements VFS {
       symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () =>
         this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
       readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () =>
-        this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
+        this.onFile(path, false, true, (ops, rel, at) => then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))))),
       chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () =>
         this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),
       chown: (path, uid, gid) => syncValue(reported({ syscall: 'chown', path }, () =>

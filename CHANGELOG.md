@@ -17,7 +17,12 @@ published independently in the `@nimbus-sh` npm scope.
   above the one its user consented to (EACCES) could serve none of its
   files, and a backend that makes a write's missing parents got ENOENT from
   the walk's parent check. Now the backend follows its own links and answers
-  for each component itself; `..` inside the mount is lexical. The namespace
+  for each component itself; `..` inside the mount is lexical. Its links are
+  read as it resolves them: `readlink` answers the namespace path a link
+  leads to, an absolute target re-rooted at the mount point and a relative
+  one climbing no higher than it, and a link copied off the mount keeps
+  that. So a node launch that stages `/ro/link -> /home/user/x` reads the
+  mount's `/home/user/x`; it used to read, and write, SQLite's. The namespace
   still owns the way in: root links into the mount, ENXIO with
   `absentReason`, the mount point (EBUSY, EISDIR, `mkdir -p` has nothing to
   do), EROFS under `readOnly`, EXDEV across mounts (so `mv`, `cp` and
