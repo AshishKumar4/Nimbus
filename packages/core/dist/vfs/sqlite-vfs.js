@@ -1476,7 +1476,7 @@ export class SqliteVFS {
         if (mode === entry.mode && entry.gid === registration.gid && acl === entry.defaultAcl)
             return;
         if (cred.uid !== 0 && (owner !== cred.uid || (cred.gid !== registration.gid && !cred.groups.includes(registration.gid)))) {
-            throw vfsError('EPERM', entry.path + ': shared metadata requires owner and group membership');
+            throw vfsError('EPERM', entry.path, 'shared metadata requires owner and group membership');
         }
         entry.mode = mode;
         entry.gid = registration.gid;
@@ -1517,7 +1517,7 @@ export class SqliteVFS {
         const unstuck = current & ~mode & 0o1000;
         if (granted === 0 && unstuck === 0)
             return;
-        throw vfsError('EPERM', `${path}: mode change would grant permission outside your own principal; use u+x`);
+        throw vfsError('EPERM', path, 'mode change would grant permission outside your own principal; use u+x');
     }
     /**
      * Permission bits a new inode is created with. umask never masks 07000, so
@@ -1551,7 +1551,7 @@ export class SqliteVFS {
         const shared = this.sharedDirectory(key);
         if (shared) {
             if (cred.uid !== 0 && cred.gid !== shared.gid && !cred.groups.includes(shared.gid))
-                throw vfsError('EPERM', key + ': shared group membership required');
+                throw vfsError('EPERM', key, 'shared group membership required');
             mode = this.sharedMode(mode, directory);
             gid = shared.gid;
             return { mode, gid, defaultAcl: directory ? shared.acl : null };
@@ -2364,7 +2364,7 @@ export class SqliteVFS {
         }
         for (const lockedRoot of this.exclusiveMutationLeases.values()) {
             if (pathsOverlap(root, lockedRoot)) {
-                throw vfsError('EBUSY', `${root} overlaps exclusive mutation at ${lockedRoot || '/'}`);
+                throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lockedRoot}`);
             }
         }
         const owner = crypto.randomUUID();
@@ -2412,17 +2412,17 @@ export class SqliteVFS {
             if (this.activeMutationOwner === null &&
                 normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
                 this.exclusiveMutationLeases.size > 0) {
-                throw vfsError('EBUSY', `${normalized} is locked while an exclusive mutation is active`);
+                throw vfsError('EBUSY', normalized, 'locked while an exclusive mutation is active');
             }
             for (const [owner, root] of this.exclusiveMutationLeases) {
                 if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                     continue;
-                throw vfsError('EBUSY', `${normalized} is locked by exclusive mutation at ${root || '/'}`);
+                throw vfsError('EBUSY', normalized, `locked by an exclusive mutation at /${root}`);
             }
             if (this.activeMutationOwner !== null) {
                 const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
                 if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
-                    throw vfsError('EPERM', `${normalized} is outside exclusive mutation root ${ownedRoot ?? ''}`);
+                    throw vfsError('EPERM', normalized, `outside the exclusive mutation root /${ownedRoot ?? ''}`);
                 }
             }
         }
@@ -2486,7 +2486,7 @@ export class SqliteVFS {
             if (resolved.inode.kind === 'directory')
                 throw vfsKeyError('EISDIR', effectivePath);
             if (resolved.inode.kind !== 'file')
-                throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+                throw vfsError('EINVAL', effectivePath, 'not a regular file');
             if (!this.accessInode(resolved.inode, 0o2, cred))
                 throw vfsKeyError('EACCES', effectivePath);
         }
@@ -2572,7 +2572,7 @@ export class SqliteVFS {
     readlink(path, cred) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
         if (resolved.inode?.kind !== 'symlink')
-            throw vfsError('EINVAL', `${path} is not a symlink`);
+            throw vfsError('EINVAL', path, 'not a symlink');
         return dec.decode(this.readInodeBytes(resolved.path, resolved.inode));
     }
     /** Where `path` leads, in the caller's names, or null for a loop. */
@@ -2595,7 +2595,7 @@ export class SqliteVFS {
         if (inode.kind === 'directory')
             throw vfsKeyError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
-            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+            throw vfsError('EINVAL', resolved.path, 'not a regular file');
         return this.readInodeBytes(resolved.path, inode);
     }
     readInodeBytes(_path, inode, cached = true) {
@@ -2618,7 +2618,7 @@ export class SqliteVFS {
         if (inode.kind === 'directory')
             throw vfsKeyError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
-            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+            throw vfsError('EINVAL', resolved.path, 'not a regular file');
         return this.readInodeBytes(resolved.path, inode, false);
     }
     /**
@@ -2646,7 +2646,7 @@ export class SqliteVFS {
         if (inode.kind === 'directory')
             throw vfsKeyError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
-            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+            throw vfsError('EINVAL', resolved.path, 'not a regular file');
         const start = clampNonNegativeInt(offset);
         const end = Math.min(inode.size, start + clampNonNegativeInt(length));
         if (start >= end)
@@ -2660,14 +2660,14 @@ export class SqliteVFS {
         if (ref.chunkId !== null) {
             const data = this.readChunk(ref.chunkId, cached, ref.path);
             if (data.byteLength !== ref.size) {
-                throw vfsError('EIO', `${ref.path}: chunk ${ref.chunkId} has ${data.byteLength} bytes; inode says ${ref.size}`);
+                throw vfsError('EIO', ref.path, `chunk ${ref.chunkId} has ${data.byteLength} bytes; inode says ${ref.size}`);
             }
             // A whole-file read hands back its own buffer: a cached chunk must not
             // be mutable through what a caller was given.
             return cached || start !== 0 || end !== data.byteLength ? data.slice(start, end) : data;
         }
         if (ref.contentId === null)
-            throw vfsError('EIO', `${ref.path}: ${ref.size} bytes with no content`);
+            throw vfsError('EIO', ref.path, `${ref.size} bytes with no content`);
         const rows = this.manifestRange(ref.contentId, ref.size, start, end);
         const out = new Uint8Array(end - start);
         let covered = start;
@@ -2696,7 +2696,7 @@ export class SqliteVFS {
             for (const row of rows) {
                 const data = found.get(row.chunkId);
                 if (!data)
-                    throw vfsError('EIO', `${ref.path}: missing chunk ${row.chunkId} at ${row.off}`);
+                    throw vfsError('EIO', ref.path, `missing chunk ${row.chunkId} at ${row.off}`);
                 covered = this.copyManifestRow(ref.path, out, start, end, row, data, covered);
             }
         }
@@ -2714,18 +2714,18 @@ export class SqliteVFS {
                 for (const row of page) {
                     const data = byId.get(row.chunkId);
                     if (!data)
-                        throw vfsError('EIO', `${ref.path}: missing chunk ${row.chunkId} at ${row.off}`);
+                        throw vfsError('EIO', ref.path, `missing chunk ${row.chunkId} at ${row.off}`);
                     covered = this.copyManifestRow(ref.path, out, start, end, row, data, covered);
                 }
             }
         }
         if (covered < end)
-            throw vfsError('EIO', `${ref.path}: manifest ends at ${covered}, file at ${end}`);
+            throw vfsError('EIO', ref.path, `manifest ends at ${covered}, file at ${end}`);
         return out;
     }
     copyManifestRow(path, out, start, end, row, data, covered) {
         if (data.byteLength !== row.len || row.off > covered) {
-            throw vfsError('EIO', `${path}: manifest row at ${row.off} does not continue ${covered}`);
+            throw vfsError('EIO', path, `manifest row at ${row.off} does not continue ${covered}`);
         }
         const from = Math.max(start, row.off);
         const to = Math.min(end, row.off + row.len);
@@ -2799,7 +2799,7 @@ export class SqliteVFS {
         this._sqlReads++;
         const row = [...this.sql.exec('SELECT data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
         if (!row)
-            throw vfsError('EIO', `${path}: missing chunk ${chunkId}`);
+            throw vfsError('EIO', path, `missing chunk ${chunkId}`);
         if (Number(row.state) !== CHUNK_LOCAL)
             throw unreadableChunkError(Number(row.state), path);
         const data = this.blobToUint8Array(row.data);
@@ -2817,14 +2817,14 @@ export class SqliteVFS {
         if (ref.chunkId !== null) {
             const row = [...this.sql.exec('SELECT hash FROM vfs_chunks WHERE id = ?', ref.chunkId)][0];
             if (!row)
-                throw vfsError('EIO', `${ref.path}: missing chunk ${ref.chunkId}`);
+                throw vfsError('EIO', ref.path, `missing chunk ${ref.chunkId}`);
             return hex(this.blobToUint8Array(row.hash));
         }
         if (ref.contentId === null)
             return hex(EMPTY_CONTENT_KEY);
         const content = [...this.sql.exec('SELECT digest FROM vfs_contents WHERE id = ?', ref.contentId)][0];
         if (!content)
-            throw vfsError('EIO', `${ref.path}: missing content ${ref.contentId}`);
+            throw vfsError('EIO', ref.path, `missing content ${ref.contentId}`);
         if (content.digest !== null && content.digest !== undefined)
             return hex(this.blobToUint8Array(content.digest));
         const memo = this.contentKeyMemo.get(ref.contentId);
@@ -2884,7 +2884,7 @@ export class SqliteVFS {
         if (prior?.kind === 'directory')
             throw vfsKeyError('EISDIR', effectivePath);
         if (prior && prior.kind !== 'file')
-            throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+            throw vfsError('EINVAL', effectivePath, 'not a regular file');
         if (prior && !this.accessInode(prior, 0o2, cred))
             throw vfsKeyError('EACCES', effectivePath);
         if (!prior)
@@ -2975,7 +2975,7 @@ export class SqliteVFS {
         if (inode?.kind === 'directory')
             throw vfsKeyError('EISDIR', effectivePath);
         if (inode && inode.kind !== 'file') {
-            throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+            throw vfsError('EINVAL', effectivePath, 'not a regular file');
         }
         if (inode && !this.accessInode(inode, 0o2, cred))
             throw vfsKeyError('EACCES', effectivePath);
@@ -3222,7 +3222,7 @@ export class SqliteVFS {
         if (inode.kind === 'directory')
             throw vfsKeyError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
-            throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+            throw vfsError('EINVAL', resolved.path, 'not a regular file');
         const newSize = clampNonNegativeInt(size);
         if (newSize === inode.size)
             return;
@@ -3612,10 +3612,10 @@ export class SqliteVFS {
     }
     chmodInode(inode, mode, cred, path) {
         if (cred.uid !== 0 && cred.uid !== inode.uid)
-            throw vfsError('EPERM', path ?? 'detached inode');
+            throw vfsKeyError('EPERM', path ?? 'detached inode');
         const shared = path === null ? undefined : this.sharedDirectory(path);
         if (shared && cred.uid !== 0 && cred.gid !== shared.gid && !cred.groups.includes(shared.gid))
-            throw vfsError('EPERM', path + ': shared group membership required');
+            throw vfsError('EPERM', path ?? 'detached inode', 'shared group membership required');
         let gid = inode.gid;
         if (shared) {
             const delegated = 0o070 | (inode.isDir ? 0o2000 : 0);
@@ -3993,7 +3993,7 @@ export class SqliteVFS {
         if (oldPath === newPath)
             return;
         if (newPath.startsWith(`${oldPath}/`))
-            throw vfsError('EINVAL', `cannot move ${oldPath} inside itself`);
+            throw vfsError('EINVAL', oldPath, 'cannot move a directory inside itself');
         this.checkParentAccess(oldPath, cred);
         this.checkParentAccess(newPath, cred);
         this.checkStickyParentMutation(oldPath, inode, cred);
@@ -4034,7 +4034,7 @@ export class SqliteVFS {
             if (movingPaths.has(existing.path) || existing.path === destInode?.path)
                 continue;
             if (targetPaths.has(existing.path) || existing.path.startsWith(`${newPath}/`)) {
-                throw vfsError('ENOTEMPTY', `rename target subtree conflicts at ${existing.path}`);
+                throw vfsError('ENOTEMPTY', existing.path, 'the rename target subtree conflicts here');
             }
         }
         // `moving` is shallowest-first, which is the order publication needs: a
@@ -4331,14 +4331,14 @@ export class SqliteVFS {
         if (inode.kind === 'directory')
             throw vfsKeyError('EISDIR', source.path);
         if (inode.kind !== 'file')
-            throw vfsError('EINVAL', `${source.path} is not a regular file`);
+            throw vfsError('EINVAL', source.path, 'not a regular file');
         const target = this.checkAccess(dest, 0, cred, { allowMissingLeaf: true });
         this.assertMutationsAllowed([this.storageKey(dest, cred), target.path]);
         const prior = target.inode;
         if (prior?.kind === 'directory')
             throw vfsKeyError('EISDIR', target.path);
         if (prior && prior.kind !== 'file')
-            throw vfsError('EINVAL', `${target.path} is not a regular file`);
+            throw vfsError('EINVAL', target.path, 'not a regular file');
         if (prior && !this.accessInode(prior, 0o2, cred))
             throw vfsKeyError('EACCES', target.path);
         if (!prior)
@@ -4395,9 +4395,9 @@ export class SqliteVFS {
         this.checkParentAccess(target.path, cred);
         const sharing = this.sharedDirectory(target.path);
         if (sharing && cred.uid !== 0 && cred.gid !== sharing.gid && !cred.groups.includes(sharing.gid))
-            throw vfsError('EPERM', target.path + ': shared group membership required');
+            throw vfsError('EPERM', target.path, 'shared group membership required');
         if (target.path === source.path || target.path.startsWith(`${source.path}/`)) {
-            throw vfsError('EINVAL', `cannot copy ${source.path} into itself`);
+            throw vfsError('EINVAL', source.path, 'cannot copy a directory into itself');
         }
         if (cred.uid !== 0 && root.isDir) {
             const entries = atGen === undefined
@@ -4896,7 +4896,7 @@ export class SqliteVFS {
             if (inode.kind === 'directory')
                 throw vfsKeyError('EISDIR', resolved.path);
             if (inode.kind !== 'file')
-                throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+                throw vfsError('EINVAL', resolved.path, 'not a regular file');
             return inode;
         };
         const range = (path, offset, length) => {
@@ -4908,7 +4908,7 @@ export class SqliteVFS {
         const readlink = (path) => {
             const inode = resolve(path, 0, false).inode;
             if (inode.kind !== 'symlink')
-                throw vfsError('EINVAL', `${path} is not a symlink`);
+                throw vfsError('EINVAL', path, 'not a symlink');
             return dec.decode(this.readContent(inode, 0, inode.size, true));
         };
         return {
@@ -5390,7 +5390,7 @@ export class SqliteVFS {
             const fragment = this.exportRow(inode, relative, offset, EXPORT_PAGE_PIECES - pieces, allowance);
             if (fragment === null) {
                 if (rows.length === 0)
-                    throw vfsError('E2BIG', `${inode.path}: export metadata cannot fit one frame`);
+                    throw vfsError('E2BIG', inode.path, 'export metadata cannot fit one frame');
                 return false;
             }
             rowBytes += fragment.bytes + (rows.length > 0 ? 1 : 0);
@@ -5460,7 +5460,7 @@ export class SqliteVFS {
                 throw vfsError('EINVAL', 'chunk cursor must start at zero');
             const chunk = [...this.sql.exec('SELECT hash, size FROM vfs_chunks WHERE id = ?', inode.chunkId)][0];
             if (!chunk)
-                throw vfsError('EIO', `${inode.path}: missing chunk`);
+                throw vfsError('EIO', inode.path, 'missing chunk');
             if (!append(hex(this.blobToUint8Array(chunk.hash)), Number(chunk.size)))
                 return null;
         }
@@ -5476,7 +5476,7 @@ export class SqliteVFS {
                 return null;
         }
         if (position > inode.size)
-            throw vfsError('EIO', `${inode.path}: manifest exceeds file size`);
+            throw vfsError('EIO', inode.path, 'manifest exceeds file size');
         return { row, bytes, offset: position };
     }
     /**
@@ -5632,7 +5632,7 @@ export class SqliteVFS {
         // Every page of an import comes from the export its first page did. A job
         // no page has written yet (importChunks began it) takes the first page's.
         if (job !== undefined && job.source !== page.source && (job.source !== undefined || job.cursor !== '')) {
-            throw vfsError('EINVAL', `${target}: an import of another export is open here; remove it to import again`);
+            throw vfsError('EINVAL', target, 'an import of another export is open here; remove it to import again');
         }
         const storedCursor = job === undefined && page.after === null ? null : this.importCursor(target);
         const cursor = readExportCursor(storedCursor);
@@ -5654,7 +5654,7 @@ export class SqliteVFS {
         // a finished import (whose replay writes nothing) or whatever replaced an
         // abandoned one, which is not that import's to write into.
         if (job === undefined && page.after !== null && rows.length > 0)
-            throw vfsError('EINVAL', `${target}: no import is open here to continue`);
+            throw vfsError('EINVAL', target, 'no import is open here to continue');
         if (job === undefined && page.after === null)
             this.assertImportTarget(target);
         const identity = this.importIdentity(target, page, job, rows);
@@ -5674,23 +5674,23 @@ export class SqliteVFS {
             lastPath = row.path;
             if (!Number.isSafeInteger(row.size) || row.size < 0 || !Number.isSafeInteger(row.pieceOffset) || row.pieceOffset < 0
                 || row.pieceOffset > row.size || (row.kind === 'directory' ? row.contentKey !== null : !/^[0-9a-f]{64}$/.test(row.contentKey ?? ''))) {
-                throw vfsError('EINVAL', `${row.path}: invalid manifest metadata`);
+                throw vfsError('EINVAL', row.path, 'invalid manifest metadata');
             }
             let end = row.pieceOffset;
             for (const [hash, length] of row.pieces) {
                 const known = lengths.get(hash), supplied = given.get(hash);
                 if (!/^[0-9a-f]{64}$/.test(hash) || !Number.isSafeInteger(length) || length <= 0
                     || (known !== undefined && known !== length))
-                    throw vfsError('EINVAL', `${row.path}: invalid chunk reference`);
+                    throw vfsError('EINVAL', row.path, 'invalid chunk reference');
                 if (supplied !== undefined && supplied.byteLength !== length)
-                    throw vfsError('EINVAL', `${row.path}: chunk size differs`);
+                    throw vfsError('EINVAL', row.path, 'chunk size differs');
                 lengths.set(hash, length);
                 end += length;
             }
             if (!Number.isSafeInteger(end) || end > row.size || (end === row.pieceOffset && end !== row.size)
                 || (row.kind === 'directory' && (row.size !== 0 || row.pieces.length !== 0 || row.manifest))
                 || (!row.manifest && (row.pieceOffset !== 0 || end !== row.size || row.pieces.length > 1 || row.size > CHUNK_SIZE))) {
-                throw vfsError('EINVAL', `${row.path}: invalid manifest extent`);
+                throw vfsError('EINVAL', row.path, 'invalid manifest extent');
             }
             const already = cursor !== null && (SqliteVFS.comparePaths(row.path, cursor[0]) < 0 || (row.path === cursor[0] && cursor[1] === -1));
             if (already) {
@@ -5699,7 +5699,7 @@ export class SqliteVFS {
                 if (!inode || inode.kind !== row.kind || inode.size !== row.size || (inode.mode & 0o7777) !== (expected.mode & 0o7777)
                     || inode.uid !== row.uid || inode.gid !== expected.gid || inode.mtime !== row.mtime
                     || (inode.defaultAcl ?? null) !== expected.defaultAcl || (row.kind !== 'directory' && this.contentKeyOf(inode) !== row.contentKey)) {
-                    throw vfsError('EINVAL', `${row.path}: replay metadata differs`);
+                    throw vfsError('EINVAL', row.path, 'replay metadata differs');
                 }
                 continue;
             }
@@ -5707,7 +5707,7 @@ export class SqliteVFS {
                 throw vfsError('EINVAL', 'pending manifest metadata changed');
             const committed = pending?.offset ?? 0;
             if (row.pieceOffset > committed)
-                throw vfsError('EINVAL', `${row.path}: manifest fragment is out of order`);
+                throw vfsError('EINVAL', row.path, 'manifest fragment is out of order');
             let position = row.pieceOffset;
             if (pending !== undefined && position < committed) {
                 const old = [...this.sql.exec(`SELECT cc.off, cc.len, c.hash FROM vfs_content_chunks cc JOIN vfs_chunks c ON c.id = cc.chunk_id
@@ -5719,11 +5719,11 @@ export class SqliteVFS {
                     const prior = old[index++];
                     if (!prior || Number(prior.off) !== position || Number(prior.len) !== length || hex(this.blobToUint8Array(prior.hash)) !== hash
                         || position + length > committed)
-                        throw vfsError('EINVAL', `${row.path}: replayed manifest differs`);
+                        throw vfsError('EINVAL', row.path, 'replayed manifest differs');
                     position += length;
                 }
                 if (index !== old.length)
-                    throw vfsError('EINVAL', `${row.path}: replay extent differs`);
+                    throw vfsError('EINVAL', row.path, 'replay extent differs');
             }
             if (end === row.size) {
                 if (row.manifest) {
@@ -5736,11 +5736,11 @@ export class SqliteVFS {
                     }
                     const bytes = digest.digest(row.size);
                     if (hex(bytes) !== row.contentKey)
-                        throw vfsError('EINVAL', `${row.path}: manifest digest differs`);
+                        throw vfsError('EINVAL', row.path, 'manifest digest differs');
                     finalDigests.set(row.path, bytes);
                 }
                 else if (row.kind !== 'directory' && (row.pieces[0]?.[0] ?? hex(EMPTY_CONTENT_KEY)) !== row.contentKey) {
-                    throw vfsError('EINVAL', `${row.path}: content key differs`);
+                    throw vfsError('EINVAL', row.path, 'content key differs');
                 }
                 pending = undefined;
             }
@@ -5821,7 +5821,7 @@ export class SqliteVFS {
             const path = full(row.path);
             const occupied = this.inodes.get(path);
             if (occupied && row.path !== '' && (!identity.preserveInos || occupied.ino !== row.ino))
-                throw vfsError('EEXIST', `${path}: import path became occupied`);
+                throw vfsError('EEXIST', path, 'import path became occupied');
             const previous = state.pending;
             const already = previous?.offset ?? 0;
             let position = row.pieceOffset;
@@ -5834,7 +5834,7 @@ export class SqliteVFS {
             const complete = position === row.size;
             const digest = finalDigests.get(row.path);
             if (row.manifest && complete && digest === undefined)
-                throw vfsError('EIO', `${row.path}: completed manifest has no verified digest`);
+                throw vfsError('EIO', row.path, 'completed manifest has no verified digest');
             const blobBytes = pieces.reduce((n, piece) => n + (piece.data?.byteLength ?? 0), 0);
             if (row.manifest && (previous !== undefined || !complete || pieces.length > IMPORT_INLINE_PIECES || blobBytes > MAX_TX_BLOB_BYTES / 2)) {
                 const staging = { id: previous?.content ?? 0, size: previous?.offset ?? 0,
@@ -5938,11 +5938,11 @@ export class SqliteVFS {
         const ids = new Set();
         for (const row of page.rows) {
             if (row.defaultAcl !== null && (row.kind !== 'directory' || !Number.isSafeInteger(row.defaultAcl) || row.defaultAcl < 0 || row.defaultAcl > 0o777)) {
-                throw vfsError('EINVAL', `${row.path}: invalid default ACL`);
+                throw vfsError('EINVAL', row.path, 'invalid default ACL');
             }
             if (!Number.isSafeInteger(row.ino) || row.ino <= ROOT_INODE || row.ino >= sourceNextIno || ids.has(row.ino)
                 || (preserveInos && row.path === ''))
-                throw vfsError('EINVAL', `${row.path}: invalid or duplicate import inode`);
+                throw vfsError('EINVAL', row.path, 'invalid or duplicate import inode');
             ids.add(row.ino);
         }
         if (preserveInos) {
@@ -5969,7 +5969,7 @@ export class SqliteVFS {
             for (const row of rows) {
                 const existing = this.inodes.get(full(row.path));
                 if (existing !== undefined && existing.ino !== row.ino)
-                    throw vfsError('EEXIST', `${row.path}: another inode occupies the import path`);
+                    throw vfsError('EEXIST', row.path, 'another inode occupies the import path');
             }
         }
         if (!Number.isSafeInteger(Math.max(stateNextIno, preserveInos ? sourceNextIno : 2) + rows.length + 1)) {
@@ -6252,9 +6252,9 @@ export class SqliteVFS {
     importedEntry(path, row, content, ino) {
         const kind = row.kind;
         if (kind !== 'file' && kind !== 'directory' && kind !== 'symlink')
-            throw vfsError('EINVAL', `${row.path}: kind ${String(kind)}`);
+            throw vfsError('EINVAL', row.path, `kind ${String(kind)}`);
         if (kind === 'directory' && (content.type !== 'none' || row.size !== 0)) {
-            throw vfsError('EINVAL', `${row.path}: a directory with content`);
+            throw vfsError('EINVAL', row.path, 'a directory with content');
         }
         const entry = {
             path,
@@ -6489,7 +6489,7 @@ export class SqliteVFS {
         // (links followed) comes after.
         const namedParent = this.storageKey(entry.parentPath, cred);
         if (namedParent !== this.parentPath(literal)) {
-            throw vfsError('EINVAL', `${literal}: parentPath ${namedParent} does not match ${this.parentPath(literal)}`);
+            throw vfsError('EINVAL', literal, `parentPath ${namedParent} does not match ${this.parentPath(literal)}`);
         }
         const path = this.createdPath(literal, cred, memo);
         const prior = this.inodes.get(path);
@@ -6528,7 +6528,7 @@ export class SqliteVFS {
         // target and put the row under the link, in a directory the caller may
         // not be able to write, and where no lookup ever reaches it. Deletions
         // keep the rule they had: they remove rows, wherever they were left.
-        const unplaceable = (key) => vfsError('ENOTDIR', `${key} is not a directory the entry can be placed in`);
+        const unplaceable = (key) => vfsError('ENOTDIR', key, 'not a directory the entry can be placed in');
         const checkedParents = new Set();
         const placedParents = new Set();
         const checkParent = (path, placing) => {
@@ -6631,7 +6631,7 @@ export class SqliteVFS {
     replaceFileWithStagedContent(inode, data, onCommit) {
         this.validateInodeContentShape(inode);
         if (inode.size !== data.byteLength) {
-            throw vfsError('EINVAL', `${inode.path}: ${data.byteLength} bytes for size ${inode.size}`);
+            throw vfsError('EINVAL', inode.path, `${data.byteLength} bytes for size ${inode.size}`);
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
         let builder = this.newPlan();
@@ -6709,7 +6709,7 @@ export class SqliteVFS {
      */
     async writeFileFrom(path, size, source, options, cred, mutationOwner) {
         if (!Number.isSafeInteger(size) || size < 0)
-            throw vfsError('EINVAL', `${path}: invalid size ${size}`);
+            throw vfsError('EINVAL', path, `invalid size ${size}`);
         // uid 0 may use the ledger's kernel reserve (privilegedView), but that view
         // only covers a call's synchronous part, and this one awaits its source:
         // each transaction below is run with the caller's own privilege.
@@ -7051,7 +7051,7 @@ export class SqliteVFS {
                             throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
                         }
                         if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
-                            throw vfsError('EINVAL', `${record.path}: chunk ${record.chunkId} out of order or past size`);
+                            throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
                         }
                         file.nextChunk++;
                         file.received += record.data.byteLength;
@@ -7078,7 +7078,7 @@ export class SqliteVFS {
                             throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
                         }
                         if (file.received !== file.inode.size) {
-                            throw vfsError('EINVAL', `${record.path}: received ${file.received} of ${file.inode.size} bytes`);
+                            throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
                         }
                         phase = 'publish';
                         const inode = this.normalizeBatchInode(file.inode, cred);
@@ -8329,42 +8329,42 @@ export class SqliteVFS {
     validateFileChunks(inode, chunks) {
         this.validateInodeContentShape(inode);
         if (inode.chunkCount !== chunks.length) {
-            throw vfsError('EINVAL', `${inode.path}: expected ${inode.chunkCount} chunks, got ${chunks.length}`);
+            throw vfsError('EINVAL', inode.path, `expected ${inode.chunkCount} chunks, got ${chunks.length}`);
         }
         let total = 0;
         const ordered = [...chunks].sort((a, b) => a.chunkId - b.chunkId);
         for (let index = 0; index < ordered.length; index++) {
             const chunk = ordered[index];
             if (chunk.chunkId !== index) {
-                throw vfsError('EINVAL', `${inode.path}: expected chunk ${index}, got ${chunk.chunkId}`);
+                throw vfsError('EINVAL', inode.path, `expected chunk ${index}, got ${chunk.chunkId}`);
             }
             const expected = Math.min(CHUNK_SIZE, inode.size - (index * CHUNK_SIZE));
             if (chunk.data.byteLength !== expected) {
-                throw vfsError('EINVAL', `${inode.path}: chunk ${index} has ${chunk.data.byteLength} bytes; expected ${expected}`);
+                throw vfsError('EINVAL', inode.path, `chunk ${index} has ${chunk.data.byteLength} bytes; expected ${expected}`);
             }
             total += chunk.data.byteLength;
         }
         if (total !== inode.size) {
-            throw vfsError('EINVAL', `${inode.path}: chunk bytes ${total} do not match size ${inode.size}`);
+            throw vfsError('EINVAL', inode.path, `chunk bytes ${total} do not match size ${inode.size}`);
         }
     }
     validateInodeContentShape(inode) {
         const kind = inodeKind(inode);
         const expectedParent = this.parentPath(inode.path);
         if (inode.parentPath !== expectedParent) {
-            throw vfsError('EINVAL', `${inode.path}: parentPath ${inode.parentPath} does not match ${expectedParent}`);
+            throw vfsError('EINVAL', inode.path, `parentPath ${inode.parentPath} does not match ${expectedParent}`);
         }
         if (inode.isDir !== (kind === 'directory')) {
-            throw vfsError('EINVAL', `${inode.path}: inode kind ${kind} conflicts with isDir=${inode.isDir}`);
+            throw vfsError('EINVAL', inode.path, `inode kind ${kind} conflicts with isDir=${inode.isDir}`);
         }
         if (!Number.isSafeInteger(inode.size) || inode.size < 0) {
-            throw vfsError('EINVAL', `${inode.path}: invalid size ${inode.size}`);
+            throw vfsError('EINVAL', inode.path, `invalid size ${inode.size}`);
         }
         if (!Number.isSafeInteger(inode.chunkCount) || inode.chunkCount < 0) {
-            throw vfsError('EINVAL', `${inode.path}: invalid chunk count ${inode.chunkCount}`);
+            throw vfsError('EINVAL', inode.path, `invalid chunk count ${inode.chunkCount}`);
         }
         if (kind === 'directory' && inode.size !== 0) {
-            throw vfsError('EINVAL', `${inode.path}: directory size must be zero`);
+            throw vfsError('EINVAL', inode.path, 'directory size must be zero');
         }
         const expectedChunkCount = kind === 'directory' || inode.size === 0
             ? 0
@@ -8830,11 +8830,15 @@ function subtreeRange(root) {
     return root === '' ? { lower: '', upper: null } : { lower: `${root}/`, upper: `${root}0` };
 }
 /**
- * The engine's refusal with its reason (`detail`): a layer that reports it
- * for its own call (the runtime bridge, toVfsError) keeps these words.
+ * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which
+ * a layer that reports the error for its own call keeps (the runtime bridge,
+ * toVfsError). A `detail` given is the reason about the name `what` and is
+ * appended to the message; without one, `what` is the whole reason. Name a
+ * storage key only in `what`, never in the reason: the caller's layer names
+ * the caller's own path.
  */
-function vfsError(code, message) {
-    return Object.assign(new Error(`${code}: ${message}`), { code, detail: message });
+function vfsError(code, what, detail = what) {
+    return Object.assign(new Error(detail === what ? `${code}: ${what}` : `${code}: ${what}: ${detail}`), { code, detail });
 }
 /**
  * The engine's refusal that says only which name (a storage key): the
@@ -8931,7 +8935,7 @@ export function listPageBudget(epoch, rev) {
         const cursorBytes = Math.max(4, pathBytes) - 4;
         if (frameBytes + entriesBytes + (count ? 1 : 0) + bytes + cursorBytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
             if (count === 0)
-                throw vfsError('E2BIG', `${path}: listing entry exceeds the RPC byte budget`);
+                throw vfsError('E2BIG', path, 'listing entry exceeds the RPC byte budget');
             return false;
         }
         entriesBytes += bytes + (count ? 1 : 0);
@@ -8944,7 +8948,7 @@ export function isPendingChunkError(error) {
     return typeof error === 'object' && error !== null && error.nimbusPending === true;
 }
 function coldChunkError(what) {
-    return vfsError('ENODATA', `${what}: its bytes are in cold storage; await prepareSnapshot() first`);
+    return vfsError('ENODATA', what, 'its bytes are in cold storage; await prepareSnapshot() first');
 }
 function unhex(text) {
     if (!/^[0-9a-f]{64}$/.test(text))
