@@ -21,31 +21,43 @@ published independently in the `@nimbus-sh` npm scope.
   refused, and every unreadable directory was skipped in silence. Its
   walk keeps what fts keeps, the directories it is inside, so its memory
   does not grow with the tree: 2 MiB over 200,000 entries, and a
-  read-ahead window of 4,096 entries on top. It is slower than the find
-  it replaces on a local tree, because it stats every directory, as fts
-  does: over 10,525 entries in SQLite, a plain walk takes 19 ms where it
-  took 11, and `-type f` 78 ms where it took 12, since a regular file
-  takes a stat to be told from a device (Nimbus's readdir reports both as
-  files).
+  read-ahead window of 4,096 entries on top. It answers -type from the
+  listing, as GNU does from d_type, and stats only what fts stats (start
+  points, directories, followed links, and entries a backend cannot
+  type). It is still slower than the find it replaces on a local tree,
+  as it stats every directory: over 10,525 entries in SQLite, a plain
+  walk takes 18-21 ms where it took 12, and `-type f` 24-28 ms where it
+  took 10-17.
 - `find -xdev` stays on the start point's file system, so `find / -xdev`
   never lists a mounted container file system such as Kinu's /sandbox.
   Without it, find reads directories (16 calls at once) ahead of what it
   prints, in walk order, when the expression only looks. That helps only
   where the mount serves calls concurrently: on a test mount (a
   MemoryVFS whose every call sleeps 10 ms), `find` over 156 directories
-  took 990 ms where it took 7.7 s. It is not a measurement of /sandbox,
+  took 990 ms where it took 7.7 s; on a 31-directory mount whose calls
+  take 5 ms, `-type f` takes 100 ms where it took 615, with 171 stats
+  where it made 86, since the composite resolves each component of a
+  path with a stat of its own. It is not a measurement of /sandbox,
   and a mount that answers one call at a time (as Kinu's MountedSyncVFS
   is reported to) gains nothing from it; there, -xdev is the remedy.
   Under -L or -H it never reads ahead into a link the loop check will
   refuse.
+- readdir's entry types are exact, as d_type: a device is listed as a
+  character device rather than a file, and a backend that cannot tell
+  says `unknown`. Node's `Dirent` reports `isCharacterDevice()` and
+  `isSymbolicLink()` (it said false for every entry), and WASI's
+  `fd_readdir` the matching file type.
 - `chmod` takes gnulib's whole mode grammar (`u=g`, `+t`, `g+s`,
   `u+rw-x`, `+111`, five-digit octal), as find -perm does.
 - `sudo`, `su` and `find -exec`/`-execdir` start the program they name as
   execvp does, in the caller's directory with its streams: a shell
   function or alias of that name is not what runs, and a program that is
   not there is `sudo: x: command not found` or `find: 'x': No such file
-  or directory`. `pwd` is a program too (coreutils', `-P` by default) for
-  them to start.
+  or directory`. A program whose reader goes away dies of SIGPIPE and the
+  command that started it goes on, so `find … -exec echo {} \; | head -n 1`
+  runs every -exec and reports `find: 'echo' terminated by signal 13`, as
+  GNU does. `pwd` is a program too (coreutils', `-P` by default) for them
+  to start.
 - `touch -d` and `find -newerXt` read a date with gnulib's ranges: an
   epoch's fraction keeps its sign (`@-1.5`) and may follow a comma, a
   number, field or result that overflows and a zone past 24 hours are
