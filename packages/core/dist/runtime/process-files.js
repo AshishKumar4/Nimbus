@@ -23,7 +23,7 @@ import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { readDeclaredSource, readText } from '../vfs/vfs.js';
+import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { createSqliteDescriptorScope, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
@@ -685,12 +685,7 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => this.namespace.readFile((await this.path(path, options?.followSymlinks !== false)))));
     }
     readRange(path, offset, length, options) {
-        return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
-            const p = (await this.path(path));
-            if (typeof this.namespace.readRange === 'function')
-                return await this.namespace.readRange(p, offset, length);
-            return (await this.namespace.readFile(p)).slice(offset, offset + length);
-        }));
+        return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => await readRangeOrWhole(this.namespace, await this.path(path), offset, length)));
     }
     writeFile(path, bytes, options) {
         return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
@@ -867,9 +862,7 @@ class AwaitingProcessBridge {
             if (!d.flags.read)
                 throw fsError('EBADF', 'read', d.path);
             const start = offset ?? d.position;
-            const bytes = typeof this.namespace.readRange === 'function'
-                ? await this.namespace.readRange(d.path, start, length)
-                : (await this.namespace.readFile(d.path)).slice(start, start + length);
+            const bytes = await readRangeOrWhole(this.namespace, d.path, start, length);
             if (offset === null)
                 d.position = start + bytes.byteLength;
             return bytes;

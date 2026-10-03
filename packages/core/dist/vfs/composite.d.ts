@@ -71,7 +71,9 @@ export interface CompositeFeed {
      * first. A directory is listed whole or not at all, only where the
      * principal may search it, and only while the names so far leave room
      * under `limit`. One readdir per directory listed, stats taken from the
-     * listings; nothing is stat-ed per named path.
+     * listings; nothing is stat-ed per named path. On a mount whose backend
+     * resolves its own paths, a directory whose parent could not be listed (a
+     * device shows only what is under its user's consent) is stat-ed itself.
      */
     walk(named: Iterable<string>, limit: number): Promise<MountWalk>;
 }
@@ -99,6 +101,27 @@ export interface MountOptions {
     absentReason?: (principal: Principal) => string;
     /** Mutations fail EROFS. */
     readOnly?: boolean;
+    /**
+     * The backend resolves a whole path itself, as a network filesystem's
+     * server does (a device tunnel, a container, a Drive): every operation on
+     * a path inside the mount is one call to the backend with the
+     * mount-relative path. The namespace stats no component on the way (the
+     * mounted root included), checks no parent, and reads no link inside the
+     * mount. The backend follows its own links, in its own tree, and answers
+     * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
+     * will not show, or a parent it makes on write. A `..` inside the mount is
+     * taken lexically, so it leaves the mount only past its root.
+     *
+     * The namespace still owns everything up to and including the mount
+     * point: root links that lead into it, ENXIO with `absentReason` while the
+     * source answers null, the mount point as a directory (EBUSY, EISDIR, mkdir
+     * -p a no-op), EROFS under `readOnly`, EXDEV across mounts, and any mount
+     * nested inside it. Permissions inside the mount, its root's included, are
+     * the backend's: a view's credential reaches it through its `as`. A walk
+     * over the namespace (a process's synchronous bridge) asks
+     * `resolvedByBackend` and hands such a path over whole too.
+     */
+    resolvesPaths?: boolean;
 }
 export interface MountInfo {
     readonly point: string;
@@ -203,10 +226,24 @@ export declare class CompositeVFS implements VFS {
      * holds through a link or file higher up).
      */
     composes(path: string): boolean;
+    /**
+     * Whether `path` lies past the point of a mount whose backend resolves its
+     * own paths (MountOptions.resolvesPaths). A walk over this namespace looks
+     * up the mount point, as any other, and no component past it: it hands the
+     * namespace the rest of the path whole.
+     */
+    resolvedByBackend(path: string): boolean;
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
     realpath(path: string): string;
     /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
     realpathAsync(path: string): Promise<string>;
+    /**
+     * `input` with every link the namespace follows resolved. Inside a mount
+     * whose backend resolves its own paths the links are the backend's: the
+     * rest is spelled as given (normalized), and the one stat that proves it
+     * is there follows them.
+     */
+    private realpathAt;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred: VfsCred, actor?: string): CompositeVFS;
     /** Who this view acts as. */
@@ -255,6 +292,8 @@ export declare class CompositeVFS implements VFS {
      * when it holds none there (then the namespace makes one: EPOCH_STAT).
      * Held means literally: under a directory the backend holds, never through
      * a link or file it holds higher up (the namespace's directory wins there).
+     * A backend that resolves its own paths is asked once, for the path, and
+     * follows its own links.
      */
     private heldDirectory;
     /** A mounted backend's root, or null when it cannot stat it. */

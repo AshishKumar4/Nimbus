@@ -35,6 +35,26 @@ async function probe(vfs, path, follow) {
 export async function exists(vfs, path) {
     return (await probe(vfs, path, true)) !== null;
 }
+export function readRangeOrWhole(vfs, path, offset, length) {
+    const whole = () => {
+        const bytes = vfs.readFile(path);
+        return 'then' in bytes ? bytes.then((all) => all.slice(offset, offset + length)) : bytes.slice(offset, offset + length);
+    };
+    if (typeof vfs.readRange !== 'function')
+        return whole();
+    const unsupported = (error) => {
+        if (!isVfsError(error, 'ENOTSUP'))
+            throw error;
+        return whole();
+    };
+    try {
+        const range = vfs.readRange(path, offset, length);
+        return 'then' in range ? range.catch(unsupported) : range;
+    }
+    catch (error) {
+        return unsupported(error);
+    }
+}
 /** The file as UTF-8 text. */
 export async function readText(vfs, path) {
     return decoder.decode(await vfs.readFile(path));

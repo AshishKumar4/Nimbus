@@ -208,6 +208,14 @@ export interface SyncVFS {
 }
 /** Whether anything is at `path`. */
 export declare function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
+/**
+ * At most `length` bytes of `path` from `offset`, for a reader that can bear
+ * reading the whole file (cat, a process's descriptor): a filesystem with no
+ * ranged read, or one answering ENOTSUP (a namespace does, for a mount whose
+ * backend has none), is read whole and cut. Synchronous when `vfs` is.
+ */
+export declare function readRangeOrWhole(vfs: Pick<SyncVFS, 'readFile' | 'readRange'>, path: string, offset: number, length: number): Uint8Array;
+export declare function readRangeOrWhole(vfs: Pick<VFS, 'readFile' | 'readRange'>, path: string, offset: number, length: number): Awaitable<Uint8Array>;
 /** The file as UTF-8 text. */
 export declare function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string>;
 /**

@@ -1454,13 +1454,19 @@ function __nsLoadLinks(t) {
 
 /**
  * The mount a lookup of \`k\` lands on unlisted: the mount point of the
- * nearest unlisted directory at \`k\` (when \`self\`) or above it, or null.
+ * nearest directory the namespace holds at \`k\` (when \`self\`) or above
+ * it, when that directory is unlisted, or null. A listed directory is known
+ * whatever is above it: a device mount that resolves its own paths can show
+ * a directory whose parents it will not list.
  */
 function __nsUnlistedOver(k, self) {
   if (__nsUnlisted.size === 0) return null;
+  const t = __residentRequire();
   for (let at = self ? k : __nsSplit(k)[0]; at !== ""; at = __nsSplit(at)[0]) {
     const mount = __nsUnlisted.get(at);
     if (mount !== undefined) return mount;
+    const row = __nsRowAt(t, at);
+    if (row && Number(row.kind) === __NS_DIR) return null;
   }
   return null;
 }

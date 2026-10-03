@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { readDeclaredSource } from '../vfs/vfs.js';
+import { readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
@@ -251,9 +251,7 @@ export class SqliteRuntimeFsBridge {
             const viewed = this.processView(mount, located.path);
             if (viewed)
                 return viewed.slice(offset, offset + length);
-            if (mount.readRange)
-                return mount.readRange(located.path, offset, length);
-            return mount.readFile(located.path).slice(offset, offset + length);
+            return readRangeOrWhole(mount, located.path, offset, length);
         }
         const p = located.path;
         if (options.expectedEpoch !== undefined && (options.expectedEpoch !== this.rawVfs.epoch
@@ -761,9 +759,10 @@ export class SqliteRuntimeFsBridge {
             }
             // On a mount, or a directory above one, the namespace answers whether
             // this component is a link (the SQLite rows it covers, links among
-            // them, are never followed). The walk itself stays here.
+            // them, are never followed). The walk itself stays here, except on a
+            // mount whose backend resolves its own paths: its links are its own.
             if (this.namespace?.composes('/' + candidate)) {
-                const link = this.mountedLink('/' + candidate);
+                const link = this.namespace.resolvedByBackend('/' + candidate) ? null : this.mountedLink('/' + candidate);
                 if (link === null) {
                     resolved.push(segment);
                     continue;
@@ -879,7 +878,7 @@ export class SqliteRuntimeFsBridge {
             mountOp(mount.truncate, 'open', path)(name, 0);
         const node = {
             ino: stat.ino, path: () => name, stat: () => this.virtualStat(mount, name),
-            read: (offset, length) => (mount.readRange ? mount.readRange(name, offset, length) : mount.readFile(name).slice(offset, offset + length)),
+            read: (offset, length) => readRangeOrWhole(mount, name, offset, length),
             write: (offset, bytes) => { mountOp(mount.writeRange, 'write', path)(name, offset, bytes); return bytes.length; },
             truncate: size => mountOp(mount.truncate, 'ftruncate', path)(name, size),
             readdir: () => mount.readdir(name).map((entry) => ({ name: entry.name, type: entry.type })),
