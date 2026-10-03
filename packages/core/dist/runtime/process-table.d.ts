@@ -22,9 +22,9 @@ export interface ProcessEntry {
     /**
      * The caller's name for the exec that started this process (`execId` on
      * exec, execStream and startProcess), taken at spawn from the parent, or,
-     * for a process a runtime starts for a command, from the command's process
-     * (`execIdOf`), so everything an exec starts carries it. Absent when no
-     * exec named one.
+     * for a process started for a command but kept out of its tree (an
+     * in-process server), from the command's process (`execIdOf`), so
+     * everything an exec starts carries it. Absent when no exec named one.
      */
     execId?: string;
     /** Explicit long-running flag set when a command is handed to a
@@ -40,8 +40,8 @@ export interface ProcessTableSpawnOptions {
     parentPid?: number;
     /**
      * The exec id of a process that does not take its parent's: an exec's own
-     * job, a process a runtime starts for a command, or a resident re-driven
-     * after a reset. Otherwise the parent's is inherited.
+     * job, or a resident re-driven after a reset. Otherwise the parent's is
+     * inherited.
      */
     execId?: string;
 }
@@ -49,8 +49,8 @@ export interface ProcessTableSpawnOptions {
 export declare function parseExecId(value: unknown): string;
 /**
  * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process a runtime starts for a command takes from the command's
- * process, which is not its parent in the table.
+ * what a process started for a command but kept out of its tree (an
+ * in-process server) takes from the command's process.
  */
 export declare function execIdOf(processes: {
     get(pid: number): ProcessEntry | undefined;

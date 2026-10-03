@@ -13,8 +13,8 @@ export function parseExecId(value) {
 }
 /**
  * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process a runtime starts for a command takes from the command's
- * process, which is not its parent in the table.
+ * what a process started for a command but kept out of its tree (an
+ * in-process server) takes from the command's process.
  */
 export function execIdOf(processes, pid) {
     return pid === undefined ? undefined : processes.get(pid)?.execId;

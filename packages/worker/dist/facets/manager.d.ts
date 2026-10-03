@@ -773,7 +773,7 @@ export interface LongRunningWorkerSpawnOptions {
     foreground?: ForegroundLaunch;
     restart?: ResidentRestartPolicy;
     port?: number;
-    /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+    /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
     invokerPid?: number;
     /** Inline modules: source text, or small wasm carried by value. */
     modules?: Record<string, string | {
@@ -853,7 +853,7 @@ export interface ResidentSpawnOptions {
     attachedTty?: boolean;
     skipSpawn?: boolean;
     callerPid?: number;
-    /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+    /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
     invokerPid?: number;
     bundleProfile?: FacetBundleProfile;
 }
@@ -1368,7 +1368,7 @@ export declare class FacetManager {
         skipSpawn?: boolean;
         /** G4: when skipSpawn is true, the PID the caller allocated. */
         callerPid?: number;
-        /** The process whose command runs the program: its exec id is the program's. */
+        /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
         invokerPid?: number;
         bundleProfile?: FacetBundleProfile;
         /** Return stdout/stderr in the result while keeping supervisor RPC

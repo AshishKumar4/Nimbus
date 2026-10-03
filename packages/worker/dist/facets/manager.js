@@ -17,7 +17,7 @@
  */
 import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdField, execIdOf } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
@@ -4987,7 +4987,11 @@ export class FacetManager {
         }
         else {
             this.processes.reap();
-            entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { execId: execIdOf(this.processes, opts.invokerPid) });
+            // A child of the command that ran it, so under its credential: the
+            // program's syscalls answer under the credential the table holds for
+            // its pid. At the top of the table it ran as the session user whoever
+            // started it.
+            entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { parentPid: opts.invokerPid });
             // Short foreground `node -e ...` helpers are quiet by design — only
             // notify for user-facing `node <file>` invocations, which covers the
             // real user intent (running scripts, wrangler, etc.).
@@ -5391,7 +5395,7 @@ export class FacetManager {
         }
         const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
         const attached = mode === 'attached';
-        const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { execId: execIdOf(this.processes, opts.invokerPid) });
+        const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { parentPid: opts.invokerPid });
         const pid = entry.pid;
         // attached TUI + headless serve are resident long-running processes; only the
         // attached TUI grabs the terminal (raw-mode stdin + live geometry).
@@ -5952,7 +5956,9 @@ export class FacetManager {
             entry = found;
         }
         else {
-            entry = this.processes.spawn(command, opts.argv || [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
+            // A child of its invoker, under its credential, as exec's. A re-drive has
+            // no invoker (the journal never holds one): it carries the row's exec id.
+            entry = this.processes.spawn(command, opts.argv || [], cwd, { parentPid: opts.invokerPid, execId });
         }
         this.processes.setLongRunning(entry.pid);
         if (opts.attachedTty)
@@ -6396,7 +6402,7 @@ export class FacetManager {
         this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
-        const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
+        const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { parentPid: opts.invokerPid, execId });
         // Stamp the process-table entry so /api/processes exposes this as a
         // long-running process.
         this.processes.setLongRunning(entry.pid);
