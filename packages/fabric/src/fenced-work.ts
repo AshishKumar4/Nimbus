@@ -262,9 +262,9 @@ export class FencedWork<R extends FencedWorkRecord> {
    * Runs once per instance — re-calls in the same instance are no-ops — and
    * re-drives every row whose pid is `> 0` and at or below `generationBase()`
    * with `attempt < FENCED_WORK_MAX_ATTEMPT`; the rest are abandoned. What the
-   * re-drive resolver receives is the journalled recipe and nothing else:
-   * env and credentials are never written to storage, so the resolver's
-   * embedder re-resolves them rather than reading them back.
+   * re-drive resolver receives is the journalled record and nothing else: a
+   * host keeps env and secrets out of it, so the resolver's embedder
+   * re-resolves them rather than reading them back.
    */
   async recoverInterrupted(): Promise<void> {
     if (this.recovered) return;
