@@ -447,6 +447,30 @@ function launched(named = []) {
   ws.filesystem.vfs.unmount('/pc');
 }
 
+// ── A directory the namespace makes on an unfed mount is not a listing ──────
+// /nm holds /sub/file, and a mount nested at /nm/sub/inner makes /nm/sub a
+// directory of the namespace's. A launch that names nothing on /nm has listed
+// none of it, /nm/sub included: what is under it is the mount's refusal,
+// never a false ENOENT, and /nm/sub's names are not only the nested mount's.
+{
+  const outer = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await outer.mkdir('/sub', { recursive: true });
+  await outer.writeFile('/sub/file', enc.encode('file-data'));
+  ws.filesystem.vfs.mount('/nm', remote(outer));
+  ws.filesystem.vfs.mount('/nm/sub/inner', remote(new MemoryVFS({ uid: 1000, gid: 1000 })));
+  assert.deepEqual(JSON.parse(await node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  stat: code(() => fs.statSync(at('nm', 'sub', 'file')).size),
+  read: code(() => fs.readFileSync(at('nm', 'sub', 'file'), 'utf8')),
+  list: code(() => fs.readdirSync(at('nm', 'sub')).sort()),
+  live: await fs.promises.readFile(at('nm', 'sub', 'file'), 'utf8'),
+})))();`, { filename: '/home/user/nested.js', cwd: '/home/user' })), {
+    stat: 'ERR:EAGAIN', read: 'ERR:EAGAIN', list: 'ERR:EAGAIN', live: 'file-data',
+  }, 'under a made directory the launch did not list, a synchronous call is the mount\'s refusal');
+  ws.filesystem.vfs.unmount('/nm/sub/inner');
+  ws.filesystem.vfs.unmount('/nm');
+}
+
 // ── A link on a mount that resolves its own paths is the backend's ─────────
 // Its backend reads an absolute target from its own root. Node's staged
 // view, its live calls and the namespace must agree: /ro/link -> /home/user/x

@@ -471,7 +471,11 @@ export class CompositeVFS implements VFS {
     for (const point of [...this.table.mounts.keys(), ...this.table.synthesized.keys()]) {
       if (point === ROOT_POINT || !this.isStructural(point) || !past(point) || walkedPaths.has(point)) continue;
       if (made.some((entry) => entry.path === point)) continue;
-      made.push({ path: point, kind: 'directory', size: 0, rev: 0, stat: this.madeStat(point) });
+      // One whose entries are a mount's without a feed, and that the walk did
+      // not list, is unlisted: what is in it is not known absent.
+      const holder = this.route(point).mount;
+      const unfed = holder.point !== ROOT_POINT && this.backend(holder)?.changes === undefined;
+      made.push({ path: point, kind: 'directory', size: 0, rev: 0, stat: this.madeStat(point), ...(unfed ? { unlisted: holder.point } : {}) });
     }
     streams.push({ entries: made, more: false });
     streams.push({ entries: walked.filter((entry) => past(entry.path)), more: false });
