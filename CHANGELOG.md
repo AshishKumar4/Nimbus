@@ -5,6 +5,35 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking for embedders: `NimbusWorkspace.exec` without a `shellId` is
+  one-shot, as a session's programmatic exec has been since 2026-10-01.
+  Every call ran on the workspace's one shell, one at a time, so a `cd`,
+  `export`, function, alias, `set` option or `umask` in one call reached
+  the next, and of two calls made at once, one doing `cd /tmp`, both
+  printed `/tmp`. Each call now runs as a process of its own with the
+  workspace shell's credential, in a shell of its own built from
+  `ws.shell`'s cwd and environment; the aliases and functions `ws.start()`
+  sources from the login files stay in `ws.shell`. What it changes ends
+  with it: its cwd, environment and umask no longer carry to the next call
+  or to `ws.shell`, and calls made at once run at once without seeing each
+  other's state. A caller that needs state to persist passes a `shellId`:
+  `ws.exec(cmd, { shellId })` runs in a named shell whose cwd and
+  environment persist between calls, one call at a time per name, saved in
+  the workspace's new `vfs_shells` table, which `destroy()` drops. The
+  call's process, and whatever it started that has ended, leaves
+  `ws.processes` when the result is returned, so a bare workspace's table
+  no longer grows by one entry per call. For a host that runs its own
+  process around a shell, `ws.shellFor(pid, { cwd, env })` and
+  `ws.withNamedShell(id, options, body)` are the two parts `exec` is made
+  of.
+- A session's and a hosted runtime's named shells are the workspace's:
+  `exec(cmd, { shellId })` through the SDK and `ws.exec(cmd, { shellId })`
+  run in the same shell, and calls on a name run one at a time whichever
+  door they come through. Its state moves from the Durable Object's
+  key-value storage to the workspace's `vfs_shells` table. A named shell an
+  earlier release saved is moved there by the first named call, unless the
+  workspace already has a shell of that name.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

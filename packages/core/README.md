@@ -80,6 +80,47 @@ export class Workspace extends DurableObject {
 }
 ```
 
+## Running commands
+
+Each `ws.exec(command)` runs as a process of its own, in a shell of its own.
+That shell starts from the cwd and environment of `ws.shell` (the shell a
+terminal types into) with the call's `cwd` and `env` on top, and the process
+has `ws.shell`'s credential and umask. It is not a login shell: the aliases
+and functions `ws.start()` sources from `~/.nimbusrc` stay in `ws.shell`.
+What the command changes ends with it: a `cd`, an `export`, a function, an
+alias, a `set -o` option, a `umask`, an `exec` descriptor. The next call
+does not see it, and neither does `ws.shell`. Calls made at once run at
+once, each in its own state. The process leaves `ws.processes` when its
+result is returned.
+
+```ts
+await Promise.all([ws.exec('cd /tmp && pwd'), ws.exec('pwd')]);   // '/tmp\n' and '/home/user\n'
+```
+
+To keep a working directory and environment between calls, name a shell.
+Calls with one `shellId` run one at a time, in the order they were made, and
+each starts where the last one left the shell. A new name starts in the
+directory the workspace started in (`ws.fs.cwd`). A call's own `cwd` and
+`env` hold for that call only. Only the cwd and environment persist:
+functions, aliases, options, umask and descriptors belong to the call's
+process. The state is a row of the workspace's `vfs_shells` table, so a name
+survives reopening the workspace. A name is 1 to 160 characters from
+`A-Z a-z 0-9 . _ : -`, starting with a letter or digit.
+
+```ts
+await ws.exec('cd app && export NODE_ENV=production', { shellId: 'agent-1' });
+await ws.exec('pwd; echo $NODE_ENV', { shellId: 'agent-1' });   // '/home/user/app\nproduction\n'
+```
+
+A host that runs commands under processes of its own uses the two parts
+`exec` is made of. `ws.shellFor(pid, { cwd, env })` builds the shell for one
+process. `ws.withNamedShell(id, { start, persist }, body)` holds a named
+shell for one call and saves it afterwards. A hosted runtime's
+programmatic exec is built on them, so a `shellId` names the same shell
+whether the command arrives through `@nimbus-sh/sdk` or through `ws.exec`.
+
+## Files
+
 Files written through `.fs` are owned by the session user (uid 1000), not
 root. The shell enforces the same permission model either way: a root-owned
 `/etc/passwd` refuses a write from `.fs`, and `id` resolves names through
