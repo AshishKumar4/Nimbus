@@ -103,8 +103,11 @@ const command: Command = async (ctx) => {
       // GNU head reads BUFSIZ (8 KiB) at a time: what it leaves unread decides a writer's SIGPIPE.
       // A leading count is a slice head stops on by itself; "all but the last N" needs the end.
       const chunks = inputChunks(ctx, file, { readSize: 8192, slice: !mode.allBut });
-      // Open (and fail) before the header, as GNU does.
-      const firstChunk = await chunks.next();
+      // Open (and fail) before the header, as GNU does. A count of none reads
+      // nothing, so standard input is not waited on: a writer that never ends
+      // it does not hold `head -n 0`.
+      const none = !mode.allBut && mode.count === 0;
+      const firstChunk = none && file === '-' ? { done: true as const } : await chunks.next();
       if (label) await writeBytes(ctx.stdout, asciiBytes(`${first ? '' : '\n'}==> ${file === '-' ? 'standard input' : file} <==\n`));
       first = false;
       await copy(firstChunk.done ? null : firstChunk.value, chunks, mode, delim, (bytes) => writeBytes(ctx.stdout, bytes));
