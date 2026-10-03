@@ -92,6 +92,9 @@ if (process.argv[2] !== '--run') {
       for (const [key, descriptor] of saved) Object.defineProperty(proto, key, descriptor);
     }
     same('a regexp of the parser', answers, ['a(b)', 'giy', true, false, 'a(b)', true, 'ac', 'undefined', 'undefined', 'undefined']);
+    // The RegExp acorn names makes the same, called or constructed.
+    same('RegExp', [Object.getPrototypeOf(realm.RegExp('a')) === Object.getPrototypeOf(re), Object.getPrototypeOf(new realm.RegExp('a', 'g')) === Object.getPrototypeOf(re),
+      new realm.RegExp('a', 'g').flags, realm.RegExp().source], [true, true, 'g', '(?:)']);
   }
   assert.throws(() => realm.push([], 1), /something other than its own list/, 'a realm array is refused');
   assert.throws(() => realm.charCodeAt({}, 0), /called charCodeAt on a object/);

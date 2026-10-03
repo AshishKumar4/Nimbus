@@ -41,7 +41,6 @@ export { arrayIsArray };
 export declare const stringFromCharCode: (...codes: number[]) => string;
 export declare const symbolIterator: symbol;
 export declare const String: StringConstructor;
-export declare const RegExp: RegExpConstructor;
 export declare const SyntaxError: SyntaxErrorConstructor;
 export declare const Error: ErrorConstructor;
 export declare const BigInt: BigIntConstructor;
@@ -67,6 +66,11 @@ export declare function list(...items: unknown[]): SafeList<unknown>;
  * of it or calls on it, by any name, reaches nothing a program replaced.
  */
 export declare function regexp<T extends object>(re: T): T;
+/**
+ * The RegExp acorn names, called or constructed, under any name it is held
+ * by: a regexp made by the launch's RegExp, made safe as `regexp` makes it.
+ */
+export declare function RegExp(pattern?: unknown, flags?: unknown): object;
 /** A constructor of acorn's own and its instances' prototype, made to inherit nothing before any use. */
 export declare function nullPrototypes(constructor: Function): void;
 /** `target[key] = value` on an object made with a realm constructor (an error): defined, so no setter it inherits runs. */

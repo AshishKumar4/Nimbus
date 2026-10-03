@@ -61,7 +61,12 @@ const GLOBAL_MEMBERS = {
  */
 const RECORDS = { ObjectPrototypeMethods: new Set(['hasOwnProperty', 'toString']) };
 
-/** Globals acorn names, each parser-realm's export of the same name: called, constructed or tested with typeof, never read from. */
+/**
+ * Globals acorn names, each parser-realm's export of the same name: called,
+ * constructed or tested with typeof, never read from. RegExp is a function
+ * that makes a regexp safe however it is called; an error constructor may
+ * only be constructed where what is set on the error can be rewritten.
+ */
 const GLOBALS = new Set(['String', 'RegExp', 'SyntaxError', 'Error', 'BigInt', 'parseInt', 'parseFloat', 'Symbol', 'console']);
 
 /** Methods of strings, lists, regexps and functions acorn calls: parser-realm's functions of these names. */
@@ -365,10 +370,20 @@ export function primordialAcorn(source, realmSpecifier) {
       const written = parent && parent.type === 'AssignmentExpression' && parent.left === node;
       if (isFunctionBinding && ((!node.computed && node.property.name === 'prototype') || written)) constructors.add(references.get(node.object));
     }
-    if (node.type === 'VariableDeclarator' && node.init && node.init.type === 'NewExpression' && node.init.callee.type === 'Identifier'
-      && references.get(node.init.callee) === null && REALM_CONSTRUCTORS.has(node.init.callee.name)) {
-      realmInstances.add(node.id);
+    // An error of the realm's: thrown at once, or held by a local only fields are set on before it is thrown.
+    if (node.type === 'NewExpression' && node.callee.type === 'Identifier' && references.get(node.callee) === null
+      && REALM_CONSTRUCTORS.has(node.callee.name)) {
+      if (parent.type === 'VariableDeclarator' && parent.init === node && parent.id.type === 'Identifier') realmInstances.add(parent.id);
+      else if (parent.type !== 'ThrowStatement') refuse(node, `an error of the realm's ${node.callee.name} used other than thrown`);
     }
+  });
+  const fieldSets = new Set();
+  walk(program, (node) => {
+    if (node.type === 'AssignmentExpression' && node.operator === '=' && node.left.type === 'MemberExpression' && !node.left.computed) fieldSets.add(node.left.object);
+  });
+  walk(program, (node, parent) => {
+    if (node.type !== 'Identifier' || !realmInstances.has(references.get(node)) || realmInstances.has(node)) return;
+    if (!(parent.type === 'ThrowStatement' || fieldSets.has(node))) refuse(node, `an error of the realm's, ${node.name}, used other than to set its fields and throw it`);
   });
 
   walk(program, (node, parent) => {
@@ -384,6 +399,9 @@ export function primordialAcorn(source, realmSpecifier) {
         }
         if (!GLOBALS.has(node.name)) refuse(node, `acorn names the global ${node.name}, which parser-realm has no capture of`);
         if (parent.type === 'MemberExpression' && parent.object === node) refuse(node, `acorn reads ${node.name}'s members, which are the realm's`);
+        if (REALM_CONSTRUCTORS.has(node.name) && !(parent.type === 'NewExpression' && parent.callee === node)) {
+          refuse(node, `acorn holds ${node.name} other than to construct it`);
+        }
         rewrites.set(node, () => `${REALM}.${node.name}`);
         return;
       }
@@ -404,10 +422,6 @@ export function primordialAcorn(source, realmSpecifier) {
       case 'CallExpression': {
         const callee = node.callee;
         if (node.optional || (callee.type === 'MemberExpression' && callee.optional)) refuse(node, 'an optional call');
-        if (callee.type === 'Identifier' && callee.name === 'RegExp' && references.get(callee) === null) {
-          rewrites.set(node, () => `${REALM}.regexp(${spliced(node)})`);
-          return;
-        }
         if (callee.type !== 'MemberExpression' || callee.computed || callee.object.type === 'ThisExpression' || callee.object.type === 'Super') return;
         const name = callee.property.name;
         if (!ROUTED_METHODS.has(name)) return;
@@ -452,11 +466,6 @@ export function primordialAcorn(source, realmSpecifier) {
       }
       case 'Literal':
         if (node.regex) rewrites.set(node, () => `${REALM}.regexp(${source.slice(node.start, node.end)})`);
-        return;
-      case 'NewExpression':
-        if (node.callee.type === 'Identifier' && node.callee.name === 'RegExp' && references.get(node.callee) === null) {
-          rewrites.set(node, () => `${REALM}.regexp(${spliced(node)})`);
-        }
         return;
       case 'BinaryExpression':
         if (node.operator === 'in' || node.operator === 'instanceof') refuse(node, `\`${node.operator}\`, which consults the realm`);
@@ -519,6 +528,15 @@ export function parserReaches(code) {
       && text(test.left.argument) === text(member.object) && test.right.type === 'Literal' && test.right.value === 'string'
       && isRealmCall(consequent, 'index') && text(consequent.arguments[0]) === text(member.object) && text(consequent.arguments[1]) === text(member.property);
   };
+  /** Whether every use of the local `id` holds is `$$.define(id, ...)` or `throw id`. */
+  const realmErrorUses = (id) => {
+    let ok = true;
+    walk(program, (n, p) => {
+      if (n.type !== 'Identifier' || n === id || references.get(n) !== id) return;
+      if (!(p.type === 'ThrowStatement' || (isRealmCall(p, 'define') && p.arguments[0] === n))) ok = false;
+    });
+    return ok;
+  };
   const isRealmCall = (node, name) => node && node.type === 'CallExpression' && node.callee.type === 'MemberExpression'
     && isRealm(node.callee.object) && !node.callee.computed && node.callee.property.name === name;
 
@@ -528,8 +546,6 @@ export function parserReaches(code) {
     if (s.type === 'VariableDeclaration') for (const d of s.declarations) declarations.set(d.id, { statement: s, init: d.init });
     if (s.type === 'FunctionDeclaration') declarations.set(s.id, { statement: s, init: s });
   }
-  const initializers = new Map();
-  walk(program, (n) => { if (n.type === 'VariableDeclarator') initializers.set(n.id, n.init); });
   const acornFields = acornFieldNames(program);
 
   const nulled = new Set();
@@ -572,9 +588,11 @@ export function parserReaches(code) {
       case 'NewExpression': {
         const callee = node.callee;
         if (callee.type === 'ThisExpression') return;
-        if (callee.type === 'MemberExpression' && isRealm(callee.object) && REALM_CONSTRUCTORS.has(callee.property.name)) return;
-        if (callee.type === 'MemberExpression' && isRealm(callee.object) && callee.property.name === 'RegExp') {
-          if (!(isRealmCall(parent, 'regexp') && parent.arguments[0] === node)) at(node, 'a regexp that inherits RegExp.prototype');
+        if (callee.type === 'MemberExpression' && isRealm(callee.object) && callee.property.name === 'RegExp') return;
+        if (callee.type === 'MemberExpression' && isRealm(callee.object) && REALM_CONSTRUCTORS.has(callee.property.name)) {
+          // An error of the realm's: thrown, or held by a local whose every other use is `define` or `throw`.
+          const held = parent.type === 'VariableDeclarator' && parent.init === node && parent.id.type === 'Identifier' ? parent.id : null;
+          if (held === null ? parent.type !== 'ThrowStatement' : !realmErrorUses(held)) at(node, `an error of the realm's ${callee.property.name} used other than thrown`);
           return;
         }
         if (callee.type === 'Identifier' && nulled.has(callee.name) && nullingFollows(callee)) return;
@@ -584,10 +602,7 @@ export function parserReaches(code) {
       case 'CallExpression': {
         const callee = node.callee;
         if (callee.type !== 'MemberExpression' || callee.computed) return;
-        if (isRealm(callee.object)) {
-          if (callee.property.name === 'RegExp' && !(isRealmCall(parent, 'regexp') && parent.arguments[0] === node)) at(node, 'a regexp that inherits RegExp.prototype');
-          return;
-        }
+        if (isRealm(callee.object)) return;
         const name = callee.property.name;
         const own = callee.object.type === 'ThisExpression';
         if (BUILTIN_NAMES.has(name) && !(own && methods.has(name))) at(node, `a call of the built-in method ${name}`);
@@ -596,6 +611,9 @@ export function parserReaches(code) {
       }
       case 'MemberExpression': {
         const object = node.object;
+        if (isRealm(object) && !node.computed && REALM_CONSTRUCTORS.has(node.property.name) && !(parent.type === 'NewExpression' && parent.callee === node)) {
+          at(node, `${node.property.name}, held other than to construct it`);
+        }
         if (object.type === 'MemberExpression' && isRealm(object.object)) {
           // A member of one of parser-realm's exports: only a record's, and only what it holds.
           const record = !object.computed && RECORDS[object.property.name];
@@ -612,18 +630,6 @@ export function parserReaches(code) {
           const decl = references.get(node.object);
           const entry = decl && declarations.get(decl);
           if (entry && entry.init && isFunction(entry.init) && !nullingFollows(node.object)) at(node, `a constructor whose prototype inherits (${node.object.name})`);
-        }
-        return;
-      }
-      case 'AssignmentExpression': {
-        const left = node.left;
-        if (left.type !== 'MemberExpression' || left.object.type !== 'Identifier') return;
-        const decl = references.get(left.object);
-        if (!decl || decl === 'arguments') return;
-        // A local initialized by the realm's constructor (an error): fields set on it would run inherited setters.
-        const init = initializers.get(decl);
-        if (init && init.type === 'NewExpression' && init.callee.type === 'MemberExpression' && isRealm(init.callee.object)) {
-          at(node, `a field set on an instance of the realm's ${init.callee.property.name}`);
         }
         return;
       }

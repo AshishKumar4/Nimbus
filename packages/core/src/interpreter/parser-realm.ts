@@ -26,6 +26,7 @@
 import * as primordials from './primordials.js';
 
 const reflectApply = primordials.reflectApply;
+const reflectConstruct = primordials.reflectConstruct;
 const reflectGetPrototypeOf = primordials.reflectGetPrototypeOf;
 const reflectSetPrototypeOf = primordials.reflectSetPrototypeOf;
 const reflectDefineProperty = primordials.reflectDefineProperty;
@@ -61,7 +62,6 @@ export { arrayIsArray };
 export const stringFromCharCode = primordials.StringFromCharCode;
 export const symbolIterator = primordials.symbolIterator;
 export const String = primordials.stringOf;
-export const RegExp = primordials.RegExp;
 export const SyntaxError = primordials.SyntaxError;
 export const Error = primordials.Error;
 export const BigInt = primordials.BigInt;
@@ -109,6 +109,14 @@ export function list(...items: unknown[]): SafeList<unknown> {
 export function regexp<T extends object>(re: T): T {
   reflectSetPrototypeOf(re, primordials.SafeRegExpPrototype);
   return re;
+}
+
+/**
+ * The RegExp acorn names, called or constructed, under any name it is held
+ * by: a regexp made by the launch's RegExp, made safe as `regexp` makes it.
+ */
+export function RegExp(pattern?: unknown, flags?: unknown): object {
+  return regexp(reflectConstruct(primordials.RegExp, [pattern, flags]));
 }
 
 /** A constructor of acorn's own and its instances' prototype, made to inherit nothing before any use. */
@@ -229,7 +237,7 @@ function eachMatch(input: string, re: unknown, visit: (match: RegExpExecArray) =
     reflectSet(re, 'lastIndex', 0);
   } else {
     const source = accessor(re, 'source');
-    search = new RegExp(typeof source === 'string' ? source : '', `${flagsOf(re)}g`);
+    search = RegExp(typeof source === 'string' ? source : '', `${flagsOf(re)}g`);
   }
   for (;;) {
     const match = exec(search, input);
