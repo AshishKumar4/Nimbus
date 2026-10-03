@@ -268,7 +268,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         const names = configPackageNames(bundle[configPath]).filter((name) => !isFacetProvided(name));
         const resolved = [];
         for (const name of names) {
-            const r = await resolveRequireEx(vfs, name, fromDir, undefined, progress);
+            // The package.json files this reads are staged: the process repeats it from them.
+            const r = await resolveRequireEx(vfs, name, fromDir, addPkgJson, progress);
             if (r)
                 resolved.push(r.resolved);
         }
