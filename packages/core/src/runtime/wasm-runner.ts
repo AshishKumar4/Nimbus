@@ -50,7 +50,6 @@
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import { execIdOf } from './process-table.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
@@ -650,6 +649,12 @@ export function makeWasmRunner(deps: {
     // free via runFresh → facetMgr.exec which spawns through the
     // process supervisor. wasm-runner opens a facet directly, so it has to
     // allocate the PID + log entries by hand.
+    //
+    // A child of the command that ran it, under the credential its view is
+    // bound with: a host answers the facet's syscalls under the credential
+    // the table holds for this pid (the Durable Object host does, through
+    // SupervisorRPC), and the reap of the command's tree takes it. At the top
+    // of the table it ran as the session user whoever started it.
     const cmdLabel =
       'wasm-runner ' +
       (opts.filename || '').replace(/^\/+/, '/') +
@@ -659,7 +664,7 @@ export function makeWasmRunner(deps: {
       cmdLabel.trim(),
       ['wasm-runner', ...argv],
       opts.cwd || '/home/user',
-      { execId: execIdOf(deps.processes, opts.invokerPid) },
+      { parentPid: opts.invokerPid, cred },
     );
     const pid = procEntry.pid;
 

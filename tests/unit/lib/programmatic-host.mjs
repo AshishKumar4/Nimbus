@@ -5,7 +5,8 @@
 //
 // `commands` registers test commands in the workspace registry, the way a
 // runtime or an npm bin joins it, so a test can control when a command ends
-// without faking the shell that runs it.
+// without faking the shell that runs it. `facets` is the workspace's facet
+// host, for a test that runs a runtime.
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,13 +17,16 @@ import { NimbusWorkspace } from '../../../packages/core/src/workspace/nimbus-wor
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
 
 /**
- * @param {{ commands?: Record<string, import('../../../packages/core/src/substrate/lifo/commands/types.ts').Command> }} [options]
+ * @param {{
+ *   commands?: Record<string, import('../../../packages/core/src/substrate/lifo/commands/types.ts').Command>,
+ *   facets?: import('../../../packages/core/src/runtime/facet-host.ts').FacetHost,
+ * }} [options]
  */
 export async function programmaticHost(options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'nimbus-programmatic-'));
   const db = new Database(join(dir, 'workspace.sqlite'));
   const harness = createSqliteVfsTestHarness(db);
-  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, facets: options.facets });
   for (const [name, command] of Object.entries(options.commands ?? {})) ws.registry.register(name, command);
   const rows = new Map();
   const held = [];
