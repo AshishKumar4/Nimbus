@@ -370,11 +370,13 @@ export class FindEntry {
     }
     /**
      * Whether the walk stats this file itself, as fts does: a start point, a
-     * directory (to know it can be entered, and where it is), and a link it
-     * follows. Every other file's type is what readdir said.
+     * directory (to know it can be entered, and where it is), a link it
+     * follows, and an entry readdir cannot type (DT_UNKNOWN). Every other
+     * file's type is what readdir said.
      */
     get statedByWalk() {
-        return this.direntType === null || this.direntType === 'directory' || (this.direntType === 'symlink' && this.following);
+        return this.direntType === null || this.direntType === 'directory' || this.direntType === 'unknown'
+            || (this.direntType === 'symlink' && this.following);
     }
     /** The type the walk sees: a stat's, for what the walk stats; readdir's otherwise. A failed stat leaves it unknown. */
     async walkType() {
@@ -567,9 +569,10 @@ export class Walker {
      * (and the expression's, when it reads them), and the listings of the
      * directories it will descend into. Under -xdev only the stat says whether
      * a directory is on this device, and when links are followed only the
-     * stats of its ancestors say whether it is one of them; then a probe queued
-     * in its place reads those first, and never lists a directory on another
-     * device or one the walk will refuse as a loop.
+     * stats of its ancestors say whether it is one of them; then, as for an
+     * entry readdir cannot type, a probe queued in its place reads those first,
+     * and never lists a directory on another device, one the walk will refuse
+     * as a loop, or what is not a directory at all.
      */
     readAhead(parent, children) {
         if (this.readAheadDone.has(parent))
@@ -582,9 +585,11 @@ export class Walker {
                 child.prefetchStat();
             if (child.depth >= options.maxDepth)
                 continue;
-            if (child.direntType !== 'directory' && !(child.direntType === 'symlink' && child.following))
+            const mayBeDirectory = child.direntType === 'directory' || child.direntType === 'unknown'
+                || (child.direntType === 'symlink' && child.following);
+            if (!mayBeDirectory)
                 continue;
-            if (!decidedByStats) {
+            if (!decidedByStats && child.direntType === 'directory') {
                 child.prefetchListing();
                 continue;
             }

@@ -2,7 +2,7 @@ import type { ScriptNode, CompoundCommandNode } from './types.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
-import type { CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
+import type { ChildExit, CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { type CapturedCommand } from './expander.js';
 import { JobTable } from './jobs.js';
@@ -244,8 +244,10 @@ export declare class Interpreter {
      * registry, then a path from `spec.cwd`), never as a function, an alias or
      * a builtin, and runs as a process on the streams it is handed. A program
      * that is not there is ENOENT, as execvp fails, for the caller to report.
+     * One whose write finds its reader gone ends there, by SIGPIPE, and its
+     * caller goes on, as the parent of a process SIGPIPE kills does.
      */
-    runProgram(argv: readonly string[], spec: ProgramSpec): Promise<number>;
+    runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit>;
     /**
      * A resolved command, run as a process of this shell's: listed for ps,
      * jobs and kill while it runs, aborted with `spec.signal`, and its failure

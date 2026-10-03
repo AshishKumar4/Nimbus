@@ -50,7 +50,8 @@ async function runAs(commandName, ctx, userName, argv) {
         return 1;
     }
     try {
-        return await ctx.runAs((await targetCredential(ctx, userName)), argv);
+        // A command a signal ends ends sudo the same way, which the shell reports as the same status.
+        return (await ctx.runAs((await targetCredential(ctx, userName)), argv)).status;
     }
     catch (error) {
         const message = isVfsError(error, 'ENOENT') && error.syscall === 'execvp'

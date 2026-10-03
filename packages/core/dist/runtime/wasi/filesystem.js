@@ -43,7 +43,11 @@ export function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
 }
 function fail(code) { throw Object.assign(new Error(code), { code }); }
-const ft = (type) => type === 'directory' ? 3 : type === 'symlink' ? 7 : 4;
+/** WASI's filetype for a stat's or a dirent's type; WASI has no FIFO, which wasmtime also calls unknown. */
+const FILETYPES = {
+    unknown: 0, block: 1, character: 2, directory: 3, file: 4, socket: 6, symlink: 7, fifo: 0,
+};
+const ft = (type) => FILETYPES[type] ?? 0;
 const num = (value) => {
     const n = Number(value);
     if (!Number.isSafeInteger(n))

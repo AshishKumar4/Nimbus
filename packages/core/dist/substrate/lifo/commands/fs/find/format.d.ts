@@ -6,6 +6,7 @@
  * precision count bytes. So does this.
  */
 import type { ProcessStat } from '../../../../../runtime/process-files.js';
+import type { VfsDirentType } from '../../../../../vfs/vfs.js';
 /** printf's flags, width and precision as GNU passes them through (it never takes `0` as a flag; a width starting with 0 is). */
 interface FieldSpec {
     readonly left: boolean;
@@ -78,6 +79,8 @@ export interface FormatSubject {
 }
 /** The -type letters a mode can have. */
 export type FileTypeLetter = 'f' | 'd' | 'l' | 's' | 'b' | 'c' | 'p';
+/** The -type letter readdir's d_type gives an entry, or null where it cannot tell. */
+export declare function direntTypeLetter(type: VfsDirentType): FileTypeLetter | null;
 /**
  * findutils' mode_to_filetype: the -type letter for a file. A stat's mode
  * carries the type bits where its backend sets them (a device's do); where

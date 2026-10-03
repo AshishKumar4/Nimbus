@@ -28,6 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
+import { type VfsDirentType } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
@@ -50,9 +51,10 @@ export interface VfsOpenDescription {
     read(offset: number, length: number): Uint8Array;
     write(offset: number, bytes: Uint8Array): number;
     truncate(size: number): void;
+    /** The directory's entries; a mounted backend's may name a device or say its type is unknown. */
     readdir(): {
         name: string;
-        type: VfsInodeKind;
+        type: VfsDirentType;
     }[];
     chmod(mode: number): void;
     chown(uid: number, gid: number): void;

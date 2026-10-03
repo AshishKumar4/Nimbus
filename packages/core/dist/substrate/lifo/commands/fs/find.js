@@ -14,7 +14,7 @@ import { findUnixGroupName, findUnixUserName } from '../../../../shell/unix-acco
 import { globMatch } from '../../utils/glob.js';
 import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand } from './find/expression.js';
-import { fileTypeLetter, renderFormat } from './find/format.js';
+import { direntTypeLetter, fileTypeLetter, renderFormat } from './find/format.js';
 import { READ_AHEAD_CALLS, Walker } from './find/walk.js';
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -58,13 +58,8 @@ function readsStatsFirst(expression) {
                 case 'exec':
                 case 'access':
                     return false;
-                // A regular file and a device are told apart by a stat; a test that wants both, or neither, needs none.
-                case 'type': {
-                    if (primary.target)
-                        return true;
-                    const others = [primary.types.f, primary.types.b, primary.types.c, primary.types.p, primary.types.s];
-                    return others.some((wanted) => wanted === true) && others.some((wanted) => wanted !== true);
-                }
+                // -type reads d_type; -xtype reads the other stat.
+                case 'type': return primary.target;
                 case 'printf': return primary.format.needs === 'stat';
                 default: return true;
             }
@@ -271,7 +266,7 @@ class FindRun {
             case 'printf': {
                 const needs = primary.format.needs;
                 const stat = needs === 'stat' ? await entry.statForTest() : null;
-                const type = needs === 'path' ? null : stat !== null ? fileTypeLetter(stat) : await this.typeLetter(entry, null);
+                const type = needs === 'path' ? null : stat !== null ? fileTypeLetter(stat) : await this.typeLetter(entry);
                 if ((needs === 'stat' && stat === null) || (needs === 'type' && type === null))
                     return false;
                 const chunks = await renderFormat(primary.format, {
@@ -306,31 +301,19 @@ class FindRun {
         }
     }
     /**
-     * The file's type letter as fts knows it: the walk's stat, for what the
-     * walk stats; otherwise readdir's type, where a 'file' (a regular file, or
-     * a device readdir cannot tell apart) is asked of a stat when `types` needs
-     * the difference and that stat can be had, d_type being what GNU trusts.
-     * Null when the walk's stat failed (reported when the walk reached it).
+     * The file's type letter as fts knows it: readdir's d_type, as GNU trusts
+     * it, and the walk's stat for what the walk stats (a start point, a
+     * directory, a followed link, an entry readdir cannot type). Null when
+     * that stat failed (reported when the walk reached it).
      */
-    async typeLetter(entry, types) {
-        if (entry.statedByWalk) {
-            const stat = await entry.xstat();
-            return stat.ok ? fileTypeLetter(stat.value) : null;
-        }
-        if (entry.direntType === 'symlink')
-            return 'l';
-        if (entry.direntType === 'directory')
-            return 'd';
-        if (types !== null) {
-            const others = [types.f, types.b, types.c, types.p, types.s];
-            if (others.every((wanted) => wanted === true) || others.every((wanted) => wanted !== true))
-                return 'f';
-        }
+    async typeLetter(entry) {
+        if (entry.direntType !== null && !entry.statedByWalk)
+            return direntTypeLetter(entry.direntType);
         const stat = await entry.xstat();
-        return stat.ok ? fileTypeLetter(stat.value) : 'f';
+        return stat.ok ? fileTypeLetter(stat.value) : null;
     }
     async testType(entry, types) {
-        const letter = await this.typeLetter(entry, types);
+        const letter = await this.typeLetter(entry);
         return letter !== null && types[letter] === true;
     }
     /** -xtype: the type through the other stat; a link that leads nowhere is a link (findutils' pred_xtype). */
@@ -390,11 +373,8 @@ class FindRun {
         if (entry.parent === null && entry.start === '.')
             return true;
         const vfs = this.ctx.vfs;
-        let isDirectory = entry.direntType === 'directory';
-        if (entry.direntType === null || (entry.direntType === 'symlink' && entry.following)) {
-            const stat = await entry.xstat();
-            isDirectory = stat.ok && stat.value.type === 'directory';
-        }
+        const type = await entry.walkType();
+        const isDirectory = type.ok && type.value === 'directory';
         try {
             try {
                 await (isDirectory ? vfs.rmdir(entry.absolute) : vfs.unlink(entry.absolute));
@@ -432,7 +412,7 @@ class FindRun {
             return true;
         }
         const argv = primary.argv.map((arg) => arg.split('{}').join(place.argument));
-        return (await this.launch(argv, place.directory)) === 0;
+        return (await this.launch(argv, place.directory)).status === 0;
     }
     /**
      * Where -execdir runs a command for this file: the directory holding it,
@@ -460,24 +440,29 @@ class FindRun {
         const directory = batch.directory ?? this.ctx.cwd;
         batch.pending.length = 0;
         batch.bytes = batch.primary.argv.reduce((total, arg) => total + encoder.encode(arg).length + 1, 0);
-        if ((await this.launch(argv, directory)) !== 0)
+        if ((await this.launch(argv, directory)).status !== 0)
             this.walker.fail();
     }
     /**
-     * A child process for `argv`, under find's own credential, in `directory`:
-     * its exit status, or 1 when there is no such program, which findutils'
-     * child reports before it exits so.
+     * A child process for `argv`, under find's own credential, in `directory`,
+     * and how it ended: exit 1 when there is no such program, which findutils'
+     * child reports before it exits so, and a signal that ended it reported as
+     * findutils reports one, which leaves find's own status to the caller.
      */
     async launch(argv, directory) {
+        let ended;
         try {
-            return await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
+            ended = await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
         }
         catch (error) {
             if (!isVfsError(error) || error.syscall !== 'execvp')
                 throw error;
             await this.diagnose(`${quote(argv[0] ?? '')}: ${VFS_STRERROR[error.code]}`);
-            return 1;
+            return { status: 1, signal: null };
         }
+        if (ended.signal !== null)
+            await this.diagnose(`${quote(argv[0] ?? '')} terminated by signal ${ended.status - 128}`);
+        return ended;
     }
     async writeBytes(chunks) {
         const length = chunks.reduce((total, chunk) => total + chunk.length, 0);

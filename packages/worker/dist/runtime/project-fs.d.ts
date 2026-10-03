@@ -9,7 +9,8 @@
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'readdir' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
+import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
+type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
 /**
  * A tool's calls on its tree in the engine's call shape (keys with or
  * without the leading slash, a stat that throws when absent, failures
@@ -18,6 +19,9 @@ type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'rea
  */
 export type ProjectFs = {
     [K in ProjectFsOp]: (...args: Parameters<CredentialedVfs[K]>) => ReturnType<CredentialedVfs[K]> | Promise<ReturnType<CredentialedVfs[K]>>;
+} & {
+    /** A directory's entries, typed as the namespace types them: a mount's may name a device, or say it cannot tell. */
+    readdir(key: string): Awaitable<Array<Pick<VfsDirent, 'name' | 'type'>>>;
 };
 /** The principal's `view` in the engine's call shape. */
 export declare function projectFs(view: ProcessView): ProjectFs;

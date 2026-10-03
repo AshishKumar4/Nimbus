@@ -136,17 +136,21 @@ export function createFs(vfs, cwd) {
         const abs = resolvePath(cwd, path);
         const entries = vfs.readdir(abs);
         if (options?.withFileTypes) {
-            return entries.map((e) => ({
-                name: e.name,
-                path: abs,
-                isFile: () => e.type === 'file',
-                isDirectory: () => e.type === 'directory',
-                isSymbolicLink: () => false,
-                isBlockDevice: () => false,
-                isCharacterDevice: () => false,
-                isFIFO: () => false,
-                isSocket: () => false,
-            }));
+            // d_type, or where the backend cannot say, the stat this shim answers lstat with too.
+            return entries.map((e) => {
+                const type = e.type === 'unknown' ? vfs.stat(resolvePath(abs, e.name)).type : e.type;
+                return {
+                    name: e.name,
+                    path: abs,
+                    isFile: () => type === 'file',
+                    isDirectory: () => type === 'directory',
+                    isSymbolicLink: () => type === 'symlink',
+                    isBlockDevice: () => type === 'block',
+                    isCharacterDevice: () => type === 'character',
+                    isFIFO: () => type === 'fifo',
+                    isSocket: () => type === 'socket',
+                };
+            });
         }
         return entries.map((e) => e.name);
     }

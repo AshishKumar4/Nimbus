@@ -4,6 +4,8 @@ import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
+import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
+import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
@@ -242,7 +244,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
             }
-            return await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks));
+            return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
         },
     };
     /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
@@ -254,7 +256,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
         stdin: staticStdinReader(stdin),
     });
-    /** A registry command run as process `io.pid`, on `io`'s descriptors. */
+    /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
     const runBuiltin = async (cmd, name, args, io) => {
         const cred = self.processes.cred(io.pid);
         const ac = new AbortController();
@@ -269,11 +271,14 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         };
         try {
             const code = await cmd(ctx);
-            return typeof code === 'number' ? code : 0;
+            return { status: typeof code === 'number' ? code : 0, signal: null };
         }
         catch (e) {
+            // A write that finds its reader gone ends the process, silently.
+            if (isBrokenPipe(e))
+                return KILLED_BY_SIGPIPE;
             await io.stderr.write(`${name}: ${errorText(e)}\n`);
-            return 1;
+            return { status: 1, signal: null };
         }
     };
     /**
@@ -285,7 +290,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
     const spawnBuiltin = async (parent, cred, argv) => {
         const [name, ...args] = argv;
         if (name === undefined)
-            return 0;
+            return { status: 0, signal: null };
         const registry = self._cpRegistry;
         const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd: parent.cwd }) : undefined;
         if (!cmd)
@@ -293,8 +298,9 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
         let exitCode = 1;
         try {
-            exitCode = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
-            return exitCode;
+            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
+            exitCode = ended.status;
+            return ended;
         }
         finally {
             self.processes.exit(child.pid, exitCode);

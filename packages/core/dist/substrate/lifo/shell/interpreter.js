@@ -5,7 +5,8 @@ import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { exitCodeForAbortSignal } from './signals.js';
+import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
+import { isBrokenPipe } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
@@ -81,6 +82,9 @@ function redirectionDiagnostic(error) {
                     ? 'Is a directory'
                     : error.message;
     return `sh: ${error.target}: ${reason}\n`;
+}
+function exited(status) {
+    return { status, signal: null };
 }
 /**
  * Assign a plain value to a name. A name that already holds an array keeps it:
@@ -828,7 +832,7 @@ export class Interpreter {
                             const identity = io.commandIdentity;
                             if (!identity)
                                 throw new Error('shell command identity is unavailable');
-                            exitCode = await this.runCommand(command, name, args, {
+                            const ended = await this.runCommand(command, name, args, {
                                 commandContext: io.commandContext,
                                 identity,
                                 cwd: this.config.getCwd(),
@@ -843,7 +847,9 @@ export class Interpreter {
                                 signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
                                 runAs: io.runAs,
                                 register: io.registerProcess !== false,
+                                shellBuiltin: BASH_BUILTINS.has(name),
                             });
+                            exitCode = ended.status;
                             // A signalled command reports the SIGNAL's status, not whatever
                             // code it returned on its way out: `sleep` observes only that
                             // ctx.signal aborted, and cannot tell SIGINT (130) from
@@ -877,11 +883,13 @@ export class Interpreter {
      * registry, then a path from `spec.cwd`), never as a function, an alias or
      * a builtin, and runs as a process on the streams it is handed. A program
      * that is not there is ENOENT, as execvp fails, for the caller to report.
+     * One whose write finds its reader gone ends there, by SIGPIPE, and its
+     * caller goes on, as the parent of a process SIGPIPE kills does.
      */
     async runProgram(argv, spec) {
         const [name, ...args] = argv;
         if (name === undefined)
-            return 0;
+            return exited(0);
         const command = await this.config.registry.resolve(name, { cwd: spec.cwd });
         if (!command)
             throw syscallError('ENOENT', 'execvp', name);
@@ -889,6 +897,7 @@ export class Interpreter {
             ...spec,
             vfs: bindProcessView(this.config.filesystem, { pid: spec.identity.pid, cred: spec.identity.cred, signal: spec.signal }),
             register: true,
+            shellBuiltin: false,
         });
     }
     /**
@@ -926,7 +935,7 @@ export class Interpreter {
             setUmask: identity.setUmask,
             runAs: async (cred, argv, options) => spec.runAs
                 ? (await spec.runAs(options?.parent ?? ctx, cred, argv))
-                : 126,
+                : exited(126),
         };
         // Register process BEFORE executing so ps can see itself
         let commandPromise;
@@ -948,46 +957,46 @@ export class Interpreter {
             });
             commandPromise = command(ctx).then((code) => {
                 resolvePromise?.(code);
-                return code;
+                return exited(code);
             }, async (err) => {
-                if (err?.code === 'EPIPE') {
+                if (isBrokenPipe(err)) {
                     // SIGPIPE: a builtin's ends its element (the catch below
                     // rethrows it); any other command alone dies, silently.
-                    resolvePromise?.(141);
-                    if (BASH_BUILTINS.has(name))
+                    resolvePromise?.(KILLED_BY_SIGPIPE.status);
+                    if (spec.shellBuiltin)
                         throw err;
-                    return 141;
+                    return KILLED_BY_SIGPIPE;
                 }
                 rejectPromise?.(err);
                 if (err instanceof Error && err.name === 'AbortError')
-                    return 130;
+                    return exited(130);
                 // Surface the failure: this rejection handler resolves
                 // commandPromise to an exit code, so the catch below
                 // never sees the error — without this write a throwing
                 // registered command dies silently at the prompt.
                 (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
-                return 1;
+                return exited(1);
             });
         }
         else {
-            commandPromise = command(ctx);
+            commandPromise = command(ctx).then(exited);
         }
         try {
             return await commandPromise;
         }
         catch (e) {
             if (e instanceof Error && e.name === 'AbortError')
-                return 130;
-            if (e?.code === 'EPIPE') {
+                return exited(130);
+            if (isBrokenPipe(e)) {
                 // A bash builtin's write is the shell's own: in bash SIGPIPE
                 // kills the element's subshell, so its element ends.
-                if (BASH_BUILTINS.has(name))
+                if (spec.shellBuiltin)
                     throw e;
                 // Any other command is its own process: it alone dies, silently.
-                return 141;
+                return KILLED_BY_SIGPIPE;
             }
             (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
-            return 1;
+            return exited(1);
         }
         finally {
             unlinkShellSignal();

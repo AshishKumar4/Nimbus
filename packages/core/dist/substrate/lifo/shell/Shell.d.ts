@@ -1,7 +1,7 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
-import type { CommandRunAsHost } from '../commands/types.js';
+import type { ChildExit, CommandRunAsHost } from '../commands/types.js';
 import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { type ProgramSpec, type ShellOptions, type TerminalFdState } from './interpreter.js';
@@ -133,7 +133,7 @@ export declare class Shell {
     getRunAsHost(): CommandRunAsHost | undefined;
     getRegistry(): CommandRegistry;
     /** execvp(3) of `argv` as a process of this shell's kernel (Interpreter.runProgram). */
-    runProgram(argv: readonly string[], spec: ProgramSpec): Promise<number>;
+    runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit>;
     /**
      * End a shell that is done: the descriptors an `exec` left open close, as a
      * process's do when it exits. A shell built for one call ends with it.

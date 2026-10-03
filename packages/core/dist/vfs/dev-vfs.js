@@ -72,7 +72,7 @@ export class DevVFS {
             this.node(path, 'scandir');
             throw syscallError('ENOTDIR', 'scandir', path);
         }
-        return [...DEVICES.keys()].map((device) => ({ name: device, type: 'file' }));
+        return [...DEVICES.keys()].map((device) => ({ name: device, type: 'character' }));
     }
     mkdir(path) {
         throw syscallError('EPERM', 'mkdir', path, { detail: 'devices are not created here' });

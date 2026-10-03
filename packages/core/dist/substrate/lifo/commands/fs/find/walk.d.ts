@@ -17,7 +17,7 @@
  * visits that may have changed it, so the caller turns it off.
  */
 import type { ProcessStat, ProcessView } from '../../../../../runtime/process-files.js';
-import type { VfsDirent, VfsFileType } from '../../../../../vfs/vfs.js';
+import type { VfsDirent, VfsDirentType } from '../../../../../vfs/vfs.js';
 import { type VfsError } from '../../../../../vfs/vfs-error.js';
 import type { SymlinkMode } from './expression.js';
 /** A settled filesystem call: never a rejected promise, so work read ahead and then dropped cannot fail the walk. */
@@ -140,7 +140,7 @@ export declare class FindEntry {
     readonly depth: number;
     readonly start: string;
     /** The type readdir gave (links not followed); null for a start point, whose type comes from its stat. */
-    readonly direntType: VfsFileType | null;
+    readonly direntType: VfsDirentType | null;
     readonly parent: FindEntry | null;
     private lstatTask;
     private followTask;
@@ -155,7 +155,7 @@ export declare class FindEntry {
     /** What -name matches: the last component. */
     name: string, depth: number, start: string, 
     /** The type readdir gave (links not followed); null for a start point, whose type comes from its stat. */
-    direntType: VfsFileType | null, parent: FindEntry | null);
+    direntType: VfsDirentType | null, parent: FindEntry | null);
     private get lstatWork();
     private get followWork();
     /** lstat(2): null when the file is gone. */
@@ -200,12 +200,13 @@ export declare class FindEntry {
     takeListing(): Promise<Outcome<VfsDirent[]>>;
     /**
      * Whether the walk stats this file itself, as fts does: a start point, a
-     * directory (to know it can be entered, and where it is), and a link it
-     * follows. Every other file's type is what readdir said.
+     * directory (to know it can be entered, and where it is), a link it
+     * follows, and an entry readdir cannot type (DT_UNKNOWN). Every other
+     * file's type is what readdir said.
      */
     get statedByWalk(): boolean;
     /** The type the walk sees: a stat's, for what the walk stats; readdir's otherwise. A failed stat leaves it unknown. */
-    walkType(): Promise<Outcome<VfsFileType>>;
+    walkType(): Promise<Outcome<VfsDirentType>>;
     /** The directory -execdir runs a command for this file in, and the name it gives the command (findutils' record_exec_dir). */
     get execDirectory(): {
         directory: string;
@@ -245,9 +246,10 @@ export declare class Walker {
      * (and the expression's, when it reads them), and the listings of the
      * directories it will descend into. Under -xdev only the stat says whether
      * a directory is on this device, and when links are followed only the
-     * stats of its ancestors say whether it is one of them; then a probe queued
-     * in its place reads those first, and never lists a directory on another
-     * device or one the walk will refuse as a loop.
+     * stats of its ancestors say whether it is one of them; then, as for an
+     * entry readdir cannot type, a probe queued in its place reads those first,
+     * and never lists a directory on another device, one the walk will refuse
+     * as a loop, or what is not a directory at all.
      */
     private readAhead;
     private stopWalk;

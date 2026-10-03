@@ -43,6 +43,8 @@ export function signalOperand(raw) {
 export function exitCodeForSignal(signal) {
     return 128 + (SIGNALS.get(signal ?? 'TERM')?.number ?? 0);
 }
+/** A process a write to a closed pipe ended, as SIGPIPE ends one. */
+export const KILLED_BY_SIGPIPE = { status: exitCodeForSignal('PIPE'), signal: 'PIPE' };
 export function signalDisposition(signal) {
     return signal === '0' ? 'ignore' : SIGNALS.get(signal)?.disposition;
 }

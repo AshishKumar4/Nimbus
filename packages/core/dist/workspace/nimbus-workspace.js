@@ -406,7 +406,7 @@ function defaultEnv(home) {
 function workspaceShellIdentity(processes, shellProcess, getShell) {
     const runAsProcess = async (parent, cred, argv) => {
         if (argv.length === 0)
-            return 0;
+            return { status: 0, signal: null };
         const child = processes.spawn(argv.join(' '), argv, parent.cwd, {
             parentPid: parent.pid,
             cred,
@@ -414,7 +414,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         let exitCode = 1;
         try {
             // The child inherits its parent's descriptors, environment and directory.
-            exitCode = await getShell().runProgram(argv, {
+            const ended = await getShell().runProgram(argv, {
                 identity: commandIdentityFor(child.pid),
                 cwd: parent.cwd,
                 env: parent.env,
@@ -427,7 +427,8 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
                 signal: parent.signal,
                 runAs: runAsProcess,
             });
-            return exitCode;
+            exitCode = ended.status;
+            return ended;
         }
         finally {
             processes.exit(child.pid, exitCode);

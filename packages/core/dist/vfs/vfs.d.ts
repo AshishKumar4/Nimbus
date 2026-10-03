@@ -13,7 +13,7 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
@@ -40,9 +40,11 @@ export interface VfsStat {
     dev?: number;
 }
 /** A directory entry; `stat` when the backend has it for free (it saves a call per child). */
+/** A directory entry's type as d_type gives it (RuntimeDirentType): a backend says 'file' only of a regular file. */
+export type VfsDirentType = RuntimeDirentType;
 export interface VfsDirent {
     name: string;
-    type: VfsFileType;
+    type: VfsDirentType;
     stat?: VfsStat;
 }
 export interface VfsCred {
