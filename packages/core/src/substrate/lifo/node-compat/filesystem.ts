@@ -11,6 +11,8 @@ export interface NodeFilesystem {
   isFile(path: string): boolean;
   isDirectory(path: string): boolean;
   stat(path: string): RuntimeVfsStat;
+  /** stat(2) of `path` itself where it names a link (lstat); ENOENT when nothing is there. */
+  lstat(path: string): RuntimeVfsStat;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   readdir(path: string): RuntimeVfsDirEntry[];
   unlink(path: string): void;
@@ -67,6 +69,11 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     stat(path) {
       const stat = fs.stat(path);
       if (!stat) throw syscallError('ENOENT', 'stat', path);
+      return stat;
+    },
+    lstat(path) {
+      const stat = fs.stat(path, { followSymlinks: false });
+      if (!stat) throw syscallError('ENOENT', 'lstat', path);
       return stat;
     },
     mkdir: (path, options) => fs.mkdir(path, options),

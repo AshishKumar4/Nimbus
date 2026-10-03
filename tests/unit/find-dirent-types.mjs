@@ -14,6 +14,11 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createFs } from '../../packages/core/src/substrate/lifo/node-compat/fs.ts';
+import { synchronousFilesystem } from '../../packages/core/src/substrate/lifo/node-compat/filesystem.ts';
+import { createRimraf } from '../../packages/core/src/substrate/lifo/node-compat/rimraf.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import { complete } from '../../packages/core/src/substrate/lifo/shell/completer.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -105,11 +110,44 @@ const isFile = (path) => /\/f\d$/.test(path);
   const stats = [];
   const fs = createFs({
     readdir: () => [{ name: 'null', type: 'character' }, { name: 'link', type: 'symlink' }, { name: 'u', type: 'unknown' }],
-    stat: (path) => { stats.push(path); return { type: 'directory' }; },
+    lstat: (path) => { stats.push(path); return { type: 'directory' }; },
   }, '/');
   const [nul, link, unknown] = fs.readdirSync('/dev', { withFileTypes: true });
   assert.deepEqual([nul.isCharacterDevice(), nul.isFile(), link.isSymbolicLink(), unknown.isDirectory()], [true, false, true, true]);
   assert.deepEqual(stats, ['/dev/u']);
+}
+
+// ── Node's Dirent over the real bridge: an untyped link is a link, dangling or not ──
+{
+  const rawVfs = new SqliteVFS(createSqliteVfsTestHarness().sql, createSqliteVfsTestHarness().ctx);
+  const kernel = rawVfs.as(CRED_KERNEL);
+  kernel.mkdir('links/target', { recursive: true });
+  kernel.symlink('target', 'links/to-dir');
+  kernel.symlink('nowhere', 'links/dangling');
+  const bridge = processBridge(rawVfs, CRED_KERNEL);
+  // The bridge as a mount that cannot type its entries would answer.
+  const untyped = new Proxy(bridge, {
+    get(target, key) {
+      if (key === 'synchronous') return untyped;
+      if (key === 'readdir') return (path, options) => target.readdir(path, options).map((entry) => ({ name: entry.name, type: 'unknown' }));
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const filesystem = synchronousFilesystem({ process: untyped })();
+  const nodeFs = createFs(filesystem, '/');
+  const byName = Object.fromEntries(nodeFs.readdirSync('/links', { withFileTypes: true }).map((d) => [d.name, [d.isSymbolicLink(), d.isDirectory(), d.isFile()]]));
+  assert.deepEqual(byName, {
+    dangling: [true, false, false],
+    target: [false, true, false],
+    'to-dir': [true, false, false],
+  }, 'an untyped link is lstat\'ed: a link to a directory is a link, and a dangling one does not fail the listing');
+  assert.equal(nodeFs.lstatSync('/links/to-dir').isSymbolicLink(), true, 'lstatSync does not follow the link');
+  assert.equal(nodeFs.statSync('/links/to-dir').isDirectory(), true, 'statSync does');
+  createRimraf(filesystem, '/').sync('/links/dangling');
+  assert.deepEqual(kernel.readdir('links').map((entry) => entry.name).sort(), ['target', 'to-dir'], 'rimraf removes a dangling link');
+  createRimraf(filesystem, '/').sync('/links/to-dir');
+  assert.deepEqual(kernel.readdir('links').map((entry) => entry.name), ['target'], 'and a link to a directory, not what it leads to');
 }
 
 await ws.close();

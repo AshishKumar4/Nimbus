@@ -54,8 +54,8 @@ interface NodeStat {
 }
 
 function toNodeStat(stat: VfsStat): NodeStat {
-  const isFile = stat.type === 'file';
   const isDir = stat.type === 'directory';
+  const holds = DIRENT_TYPES[direntTypeOfStat(stat)].node;
   return {
     dev: 0,
     ino: 0,
@@ -75,13 +75,13 @@ function toNodeStat(stat: VfsStat): NodeStat {
     mtime: new Date(stat.mtime),
     ctime: new Date(stat.ctime),
     birthtime: new Date(stat.ctime),
-    isFile: () => isFile,
-    isDirectory: () => isDir,
-    isSymbolicLink: () => false,
-    isBlockDevice: () => false,
-    isCharacterDevice: () => false,
-    isFIFO: () => false,
-    isSocket: () => false,
+    isFile: () => holds === 'isFile',
+    isDirectory: () => holds === 'isDirectory',
+    isSymbolicLink: () => holds === 'isSymbolicLink',
+    isBlockDevice: () => holds === 'isBlockDevice',
+    isCharacterDevice: () => holds === 'isCharacterDevice',
+    isFIFO: () => holds === 'isFIFO',
+    isSocket: () => holds === 'isSocket',
   };
 }
 
@@ -209,7 +209,7 @@ export function createFs(vfs: VFS, cwd: string) {
   }
 
   function lstatSync(path: string | URL): NodeStat {
-    return statSync(path);
+    return toNodeStat(vfs.lstat(resolvePath(cwd, path)));
   }
 
   function mkdirSync(path: string | URL, options?: { recursive?: boolean; mode?: number } | number): void {
@@ -222,9 +222,9 @@ export function createFs(vfs: VFS, cwd: string) {
     const abs = resolvePath(cwd, path);
     const entries = vfs.readdir(abs);
     if (options?.withFileTypes) {
-      // d_type, or where the backend cannot say, the stat this shim answers lstat with too.
+      // d_type, or where the backend cannot say, lstat's.
       return entries.map((e) => {
-        const holds = DIRENT_TYPES[e.type === 'unknown' ? direntTypeOfStat(vfs.stat(resolvePath(abs, e.name))) : e.type].node;
+        const holds = DIRENT_TYPES[e.type === 'unknown' ? direntTypeOfStat(vfs.lstat(resolvePath(abs, e.name))) : e.type].node;
         return {
           name: e.name,
           path: abs,
