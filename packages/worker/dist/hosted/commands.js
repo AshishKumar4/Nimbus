@@ -180,6 +180,11 @@ export async function registerHostedCommands(self, workspace) {
                 authority: workspace.filesystem,
                 terminal: terminal,
                 installRoot,
+                // The caller's filesystem and credential, from its working directory.
+                pid: ctx.pid,
+                home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
+                cwd: ctx.cwd || shell.getCwd(),
+                binName,
             });
         }
         const { makeRubyRunnerFactory } = await import('@nimbus-sh/core/runtime/ruby-runner.js');
