@@ -5051,8 +5051,14 @@ export function registerUnixCommands(
     if (operands.length !== 2) { await ctx.stderr.write('ln: expected target and link path\n'); return 1; }
     if (!symbolic) { await ctx.stderr.write('ln: hard links are not supported\n'); return 1; }
     const path = resolvePath(ctx.cwd, operands[1]);
-    if (force) await ctx.vfs.remove(path, { force: true });
-    await ctx.vfs.symlink(operands[0], path);
+    try {
+      if (force) await ctx.vfs.remove(path, { force: true });
+      await ctx.vfs.symlink(operands[0], path);
+    } catch (error) {
+      if (!isVfsError(error)) throw error;
+      await ctx.stderr.write(`ln: failed to create symbolic link '${operands[1]}': ${strerror(error)}\n`);
+      return 1;
+    }
     return 0;
   }));
 

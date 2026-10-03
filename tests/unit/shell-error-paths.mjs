@@ -25,6 +25,8 @@ const cases = [
   ['chmod 644 /tmp/spoon', "chmod: cannot access '/tmp/spoon': No such file or directory"],
   ['cp /tmp/spoon /tmp/x', "cp: cannot stat '/tmp/spoon': No such file or directory"],
   ['mv /tmp/spoon /tmp/y', "mv: cannot stat '/tmp/spoon': No such file or directory"],
+  ['ln -s a /tmp/spoon/s', "ln: failed to create symbolic link '/tmp/spoon/s': No such file or directory"],
+  ['cd /tmp/spoon', 'cd: /tmp/spoon: No such file or directory'],
 ];
 for (const [line, expected] of cases) {
   const result = await ws.exec(line);

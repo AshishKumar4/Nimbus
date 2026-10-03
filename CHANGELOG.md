@@ -21,7 +21,8 @@ published independently in the `@nimbus-sh` npm scope.
   'tmp/spoon'". `ls`, `chmod`, `cp` and `mv` now print GNU's words with the
   operand as written ("ls: cannot access '/tmp/spoon': No such file or
   directory"), and a refusal's own reason where it gives one; so do `rm`
-  ("cannot remove") and `chown` ("cannot access" for a name it cannot look
+  ("cannot remove"), `ln -s` ("failed to create symbolic link"), `cd` (as
+  bash words it) and `chown` ("cannot access" for a name it cannot look
   up, "changing ownership of" for a change the filesystem refuses). The shell's four
   strerror tables are one, `strerror` in `@nimbus-sh/core/vfs/vfs-error.js`;
   `EPERM` now reads "Operation not permitted", not "Permission denied". The
