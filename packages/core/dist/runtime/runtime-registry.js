@@ -166,12 +166,15 @@ export function buildRuntimeHandler(spec, ctx0) {
         // (RuntimeRunOpts.stdinReadsSync). A server is resident and never waits
         // for its stdin, so its code is not asked.
         const programStdin = async (code, path, dir, launchesServer) => {
-            if (pipedStdin === undefined)
+            const ownChannel = binSpawn?.liveInput === true;
+            if (pipedStdin === undefined && !ownChannel)
                 return {};
             // A `< file` is the file itself; nothing is read from its stream here.
-            const source = pipedStdin.file
-                ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-                : { stdin: pipedStdin };
+            // The process's own channel is read by the program itself.
+            const source = pipedStdin === undefined ? {}
+                : pipedStdin.file
+                    ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+                    : { stdin: pipedStdin };
             if (launchesServer || binSpawn?.forceLongRunning === true)
                 return source;
             const key = normalizeVfsPath(dir);

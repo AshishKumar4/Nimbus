@@ -9567,22 +9567,26 @@ function __nimbusReadStdinInto(target, offset, length, syscall) {
   throw __nimbusStdinWouldBlock(syscall);
 }
 // Read from the live channel before the entry runs: until the pipe ends when
-// it ends within the read ahead (__nimbusStdinWhole), else what the channel
-// holds now, without waiting, up to a bound (an endless writer refills the
-// channel as fast as it is read).
+// it ends within the read ahead (`whole`, __nimbusStdinWhole); until it ends
+// or the read ahead's bound is reached when nothing read it ahead of the
+// program (`toBound`, __nimbusStdinSyncRead: a child_process child, whose
+// channel is its stdin itself); else what the channel holds now, without
+// waiting, up to a bound (an endless writer refills the channel as fast as it
+// is read).
 const __NIMBUS_QUEUED_STDIN_MAX_BYTES = 1024 * 1024;
-async function __nimbusTakeQueuedStdin(whole) {
+async function __nimbusTakeQueuedStdin(whole, toBound) {
   const pid = __nimbusLiveInputChannel();
   if (!pid || !__supervisor || typeof __supervisor.cpReadStdin !== "function") return;
   const chunks = [];
   let ended = false;
   let bytes = 0;
   let failures = 0;
-  while (whole || bytes < __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
+  const waits = whole || toBound;
+  while (whole || bytes < (toBound ? 16777216 : __NIMBUS_QUEUED_STDIN_MAX_BYTES)) {
     let packet;
     try {
       packet = await __nimbusUseRpcResult(
-        __supervisor.cpReadStdin(pid, whole ? 1000 : 0, __nimbusVfsAcquireArgs()),
+        __supervisor.cpReadStdin(pid, waits ? 1000 : 0, __nimbusVfsAcquireArgs()),
         (result) => result,
       );
       failures = 0;
@@ -9606,7 +9610,7 @@ async function __nimbusTakeQueuedStdin(whole) {
       }
     }
     if (packet.ended) { ended = true; break; }
-    if (!whole && !hasData && !packet.signal) break;
+    if (!waits && !hasData && !packet.signal) break;
   }
   __nimbusQueuedStdin = { bytes: __BufferMod.concat(chunks), ended };
 }
@@ -9640,7 +9644,10 @@ async function __nimbusPrepareStdin() {
     return;
   }
   if (__nimbusLiveInputChannel()) {
-    await __nimbusTakeQueuedStdin(typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true);
+    await __nimbusTakeQueuedStdin(
+      typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true,
+      typeof __nimbusStdinSyncRead !== "undefined" && __nimbusStdinSyncRead === true,
+    );
   }
 }
 function __makeProcessStdin() {

@@ -1388,6 +1388,12 @@ export declare class FacetManager {
          */
         stdinWhole?: boolean;
         /**
+         * The program reads stdin synchronously, and its stdin is its own live
+         * input channel (a child_process child's): it reads the channel before
+         * it starts, until the end or STDIN_SYNC_READ_BYTES.
+         */
+        stdinSyncRead?: boolean;
+        /**
          * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
          * program reads stdin synchronously, so it reads the file first.
          */
