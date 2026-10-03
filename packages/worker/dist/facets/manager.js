@@ -33,7 +33,7 @@ import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { packageRootOf, planFacetData } from './data-plan.js';
+import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
@@ -4416,15 +4416,7 @@ export class FacetManager {
                     return null;
                 }
             },
-            // A missing or unreadable component is not a link: the lookup ends there.
-            readlink: async (path) => {
-                try {
-                    return await vfs.readlink(path);
-                }
-                catch {
-                    return null;
-                }
-            },
+            linkTarget: (path) => linkTargetOf(vfs, path),
             stat: async (path) => {
                 const st = await filesOf(vfs).stat(path).catch(() => null);
                 return st && { kind: st.type, size: st.size };

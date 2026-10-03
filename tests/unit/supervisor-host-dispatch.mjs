@@ -146,6 +146,7 @@ const INPUTS = {
   fsFutimes: () => [fileHandle.id, atimeMs, mtimeMs],
   fsSync: () => [fileHandle.id],
   fsRealpath: [linkPath],
+  fsLinkLeadsTo: [linkPath, target],
   fsRemove: [removePath, { recursive: true }],
   fsCopyFile: [path, copyPath],
   fsCopyTree: ['/home/user/tree-src', '/home/user/tree-copy'],
@@ -396,6 +397,7 @@ const nativeAssert = {
     await assert.rejects(ops.dispatch({ op: 'fsSync', args: [fileHandle.id + 9000], pid }), /EBADF/, 'fsSync rejects an unknown descriptor');
   },
   fsRealpath: (r) => assert.equal(r, path, 'fsRealpath resolves the symlink'),
+  fsLinkLeadsTo: (r) => assert.equal(r, target, 'fsLinkLeadsTo: a link off any mount leads to its text'),
   fsRemove: () => assert.equal(kernelVfs.exists('home/user/rm'), false, 'fsRemove took the tree'),
   fsCopyFile: () => assert.equal(dec.decode(kernelVfs.readFile('home/user/copy')), 'seeded\n', 'fsCopyFile copied the bytes'),
   fsCopyTree: (r) => {

@@ -41,6 +41,26 @@ export interface RubyReplDeps {
   terminal: WebSocketTerminal;
   /** Per-user-VFS install dir for the ruby blob. */
   installRoot: string;
+  /**
+   * The invoking process's pid. The supervisor derives the prompt's
+   * credential from it: the session filesystem the prompt reads and writes is
+   * the caller's, as the caller sees it.
+   */
+  pid: number;
+  /** The caller's HOME. */
+  home: string;
+  /** The shell's working directory: where the prompt starts. */
+  cwd: string;
+  /** The command that started the prompt: what its own refusals name. */
+  binName: string;
+}
+
+/** What one prompt step hands the facet: the driver and where it runs. */
+interface RubyReplStep {
+  userCode: string;
+  home: string;
+  cwd: string;
+  binName: string;
 }
 
 interface RubyReplFacetResult {
@@ -191,17 +211,21 @@ class RubyReplAdapter implements ReplAdapter {
     const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
     const env = (facetMgr as any).env;
     const ctx = (facetMgr as any).ctx;
+    // The caller's filesystem, under the caller's credential: the prompt
+    // starts in the shell's working directory and reads and writes there.
     this.pool = new IsolatePool(env, ctx, {
       tag: 'ruby-repl',
       concurrency: 1,
-      omitSupervisor: true,
+      supervisorPid: this.deps.pid,
       preamble,
     });
   }
 
   private async submitFacetFn(userCode: string): Promise<RubyReplFacetResult> {
     const wasmModules = { 'ruby+stdlib.wasm': this.wasmBytesAB };
-    return await this.pool.submit(rubyReplStepFacetFn, { userCode }, {
+    const { home, cwd, binName } = this.deps;
+    const step: RubyReplStep = { userCode, home, cwd, binName };
+    return await this.pool.submit(rubyReplStepFacetFn, step, {
       wasmModules,
       timeoutMs: 60_000,
     });
@@ -213,10 +237,13 @@ class RubyReplAdapter implements ReplAdapter {
  * no closure captures, no class refs, no bare 'this' word.
  *
  * Calls globalThis.__rubyRun (installed by RUBY_RUNNER_PREAMBLE_TAIL)
- * with the user code wrapped by the driver above.
+ * with the user code wrapped by the driver above, in the caller's working
+ * directory, over the caller's filesystem (the pool's SUPERVISOR), as the
+ * one-shot runner's entry does.
  */
-function rubyReplStepFacetFn(
-  args: { userCode: string },
+export function rubyReplStepFacetFn(
+  args: RubyReplStep,
+  facetEnv: { SUPERVISOR?: unknown },
 ): Promise<RubyReplFacetResult> {
   const g: any = globalThis as any;
 
@@ -228,11 +255,19 @@ function rubyReplStepFacetFn(
         error: 'ruby-repl preamble missing: __rubyRun not in scope',
       };
     }
+    const adopt = g.__wasiAdoptSupervisor as ((s: unknown) => void) | undefined;
+    const supervisor = facetEnv && facetEnv.SUPERVISOR;
+    // Published where __rubyRun re-adopts it after the mount; adopting only
+    // here would be undone by __wasiInitFS.
+    if (supervisor) Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
+    adopt?.(supervisor);
     const r = await fn({
       userCode: args.userCode,
       rbArgv: ['ruby', '-e', args.userCode],
-      userEnv: { HOME: '/home/user' },
+      userEnv: { HOME: args.home },
       progName: 'ruby',
+      binName: args.binName,
+      cwd: args.cwd,
     });
     return {
       stdout: r.stdout || '',

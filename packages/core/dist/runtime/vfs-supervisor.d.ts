@@ -22,6 +22,7 @@ export declare const FILESYSTEM_RPC_METHODS: {
     readonly rmdir: "rmdir";
     readonly rename: "rename";
     readonly readlink: "readlink";
+    readonly linkLeadsTo: "fsLinkLeadsTo";
     readonly symlink: "symlink";
     readonly fsync: "fsSync";
     readonly revision: "fsRevision";

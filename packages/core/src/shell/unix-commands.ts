@@ -226,8 +226,10 @@ async function readSymlinkTarget(vfs: UnixVfs, path: string): Promise<string | n
 async function resolveSymlinkPath(vfs: UnixVfs, startPath: string): Promise<string | null> {
   let current = resolvePath('/', startPath);
   for (let hops = 0; hops < 40; hops++) {
-    const target = (await readSymlinkTarget(vfs, current));
-    if (target === null) return current;
+    const text = (await readSymlinkTarget(vfs, current));
+    if (text === null) return current;
+    // Where the link leads in this namespace (a mount may read it from its own root).
+    const target = await vfs.linkLeadsTo(current, text);
     current = target.startsWith('/')
       ? resolvePath('/', target)
       : resolvePath(dirname(current), target);
@@ -3314,7 +3316,8 @@ async function canonicalizePath(
         resolved.push(part);
         continue;
       }
-      const target = await vfs.readlink(candidate);
+      // Where the link leads in this namespace (a mount may read it from its own root).
+      const target = await vfs.linkLeadsTo(candidate, await vfs.readlink(candidate));
       if (target.startsWith('/')) resolved.length = 0;
       pending = [...target.split('/').filter(Boolean), ...pending];
       continue;

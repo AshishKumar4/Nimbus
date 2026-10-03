@@ -31,6 +31,7 @@
  * so it is readable as data too.
  */
 import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 
 export interface DataPlanEntry { path: string; kind: string; size: number; linkTarget?: string }
@@ -40,8 +41,12 @@ export interface DataPlanSource {
   list(after: string | null): Promise<{ entries: DataPlanEntry[]; next: string | null }>;
   /** A file's text, or null when it cannot be read. */
   readText(path: string): Promise<string | null>;
-  /** A symlink's target as stored, or null when the path is not a symlink. */
-  readlink(path: string): Promise<string | null>;
+  /**
+   * Where the symlink at a path leads, as the namespace follows it (its
+   * stored target, re-rooted on a mount that reads its links from its own
+   * root: RuntimeFsBridge.linkLeadsTo), or null when the path is not a symlink.
+   */
+  linkTarget(path: string): Promise<string | null>;
   /** What is at a path, following symlinks, or null. */
   stat(path: string): Promise<{ kind: string; size: number } | null>;
 }
@@ -238,6 +243,20 @@ function resolutionFs(source: DataPlanSource): RequireFs {
   };
 }
 
+/**
+ * DataPlanSource.linkTarget over a process's bridge: where the symlink at
+ * `path` leads as the namespace follows it, or null when it is no link. A
+ * missing or unreadable component is not a link: the lookup ends there.
+ */
+export async function linkTargetOf(fs: Pick<RuntimeFsBridge, 'readlink' | 'linkLeadsTo'>, path: string): Promise<string | null> {
+  try {
+    const text = await fs.readlink(path);
+    return text === null ? null : await fs.linkLeadsTo(path, text);
+  } catch {
+    return null;
+  }
+}
+
 /** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
 
@@ -253,7 +272,7 @@ async function throughLinks(source: DataPlanSource, k: string): Promise<string |
     let followed = false;
     for (let i = 1; i <= segs.length; i++) {
       const at = segs.slice(0, i).join('/');
-      const target = await source.readlink('/' + at);
+      const target = await source.linkTarget('/' + at);
       if (target === null) continue;
       const base = target.startsWith('/') ? key(target) : joinKey(parentOf(at), target);
       path = joinKey(base, segs.slice(i).join('/'));

@@ -66,7 +66,7 @@ export const SUPERVISOR_DELIVER_OP = 'deliverOnce';
  * once it settles, and a host that joins nothing serves each attempt.
  */
 export const SUPERVISOR_JOINED_READ_OPS = [
-    'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'readFile', 'readFileBytes',
+    'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'fsLinkLeadsTo', 'readFile', 'readFileBytes',
     'fsRealpath', 'fsRevision', 'fsList', 'fsAcquire', 'fsAcquired', 'fsFstat', 'fsReaddirHandle',
     'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'hasLegacySymlinkUnder',
 ];

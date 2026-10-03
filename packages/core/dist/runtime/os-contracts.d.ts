@@ -296,6 +296,14 @@ export interface RuntimeFsBridge {
     rmdir(path: RuntimeFsPath): Awaitable<void>;
     rename(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
     readlink(path: RuntimeFsPath): Awaitable<string | null>;
+    /**
+     * Where the link at `path` (an absolute namespace path), whose text is
+     * `link` (readlink's answer), leads in this namespace: the namespace's
+     * link-root rule (CompositeVFS.linkLeadsTo), for a caller that follows a
+     * link itself. On a mount whose backend resolves its own paths an absolute
+     * target re-roots at the mount point; any other link leads to its text.
+     */
+    linkLeadsTo(path: string, link: string): Awaitable<string>;
     symlink(target: string, path: RuntimeFsPath): Awaitable<void>;
     fsync(handleId?: number): Awaitable<void>;
     /**

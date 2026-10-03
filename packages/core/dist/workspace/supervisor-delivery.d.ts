@@ -55,7 +55,7 @@ export declare const SUPERVISOR_DELIVER_OP = "deliverOnce";
  * attempt carries that answer. A read is not a mutation, so nothing is kept
  * once it settles, and a host that joins nothing serves each attempt.
  */
-export declare const SUPERVISOR_JOINED_READ_OPS: readonly ["access", "exists", "stat", "lstat", "readdir", "readlink", "readFile", "readFileBytes", "fsRealpath", "fsRevision", "fsList", "fsAcquire", "fsAcquired", "fsFstat", "fsReaddirHandle", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "hasLegacySymlinkUnder"];
+export declare const SUPERVISOR_JOINED_READ_OPS: readonly ["access", "exists", "stat", "lstat", "readdir", "readlink", "fsLinkLeadsTo", "readFile", "readFileBytes", "fsRealpath", "fsRevision", "fsList", "fsAcquire", "fsAcquired", "fsFstat", "fsReaddirHandle", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "hasLegacySymlinkUnder"];
 export type SupervisorJoinedReadOpName = (typeof SUPERVISOR_JOINED_READ_OPS)[number];
 /** The joined read `op` names, or undefined for any op that is not one. */
 export declare function supervisorJoinedReadOp(op: string): SupervisorJoinedReadOpName | undefined;

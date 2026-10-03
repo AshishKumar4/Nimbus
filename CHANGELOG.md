@@ -47,10 +47,14 @@ published independently in the `@nimbus-sh` npm scope.
   for each component itself; `..` inside the mount is lexical. `readlink`
   answers a link's text as written, so `cp` copies a link as the same link.
   Where the namespace follows one of its links itself (a node launch's
-  staged view, a process's walks), `CompositeVFS.linkLeadsTo` answers where
-  it leads, as the backend reads it: an absolute target re-rooted at the
-  mount point, a relative one climbing no higher than it. So a node launch
-  that stages `/ro/link -> /home/user/x` reads the mount's `/home/user/x`.
+  staged view and data plan, a process's walks, the shell's `realpath` and
+  `readlink -f`), `CompositeVFS.linkLeadsTo` answers where it leads, as the
+  backend reads it: an absolute target re-rooted at the mount point, a
+  relative one climbing no higher than it. A process's bridge answers the
+  same (`RuntimeFsBridge.linkLeadsTo`, over the supervisor RPC as
+  `fsLinkLeadsTo`). So a node launch that stages `/ro/link -> /home/user/x`
+  reads the mount's `/home/user/x`, and `realpath -e /pc/l` with
+  `/pc/l -> /f` names `/pc/f`, the file `cat /pc/l` reads.
   A WASI program (`python3`, `ruby`, the shell's wasm commands) reads such a
   mount too: its lookup beneath a preopen hands the rest of the path to the
   backend the same way, so `cat /pc/home/me/f` in the wasm shell reads the
@@ -108,6 +112,14 @@ published independently in the `@nimbus-sh` npm scope.
   [Errno 44] No such file or directory`, exit 1), instead of running the
   program in `/`. `cd /home/user/site && python3 -m http.server` served
   "Directory listing for /".
+- The `ruby` prompt (`ruby` with no arguments) runs over the session
+  filesystem, under the caller's credential, from the shell's working
+  directory: `File.read("here.txt")` reads the file the shell sees there,
+  and a file it writes is the shell's. It had no filesystem at all, so once
+  `ruby` refused a working directory it could not enter, every prompt
+  printed "undefined: can't enter working directory '/home/user': [Errno 8]
+  Bad file descriptor" and evaluated nothing; before that it evaluated in an
+  empty `/`.
 
 - An error from a mounted filesystem names the caller's path. A backend's
   own error left `CompositeVFS` naming the path the backend was handed:
