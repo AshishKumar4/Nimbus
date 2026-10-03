@@ -1,7 +1,5 @@
 import type { Command } from './types.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
-/** The namespace as a caller sees it, under its own credential: what it may look into and execute. */
-export type CallerView = Pick<ProcessView, 'stat' | 'access'>;
 /**
  * Where a command name is being resolved from. The registry is shared by
  * every shell of a workspace (the session's, each named shell, each exec),
@@ -14,14 +12,19 @@ export interface ResolveContext {
     cwd: string;
     /** The invoking environment's PATH. */
     path: string;
-    view: CallerView;
+    /**
+     * The namespace as the caller sees it, under its credential: a name is
+     * found, inspected and authorized here, as the caller will run it. (The
+     * credential decides the namespace too, as a confined principal's /tmp.)
+     */
+    view: ProcessView;
 }
 /**
  * The context a caller resolves from: its directory, its environment's
  * PATH, and its view. One without an environment, or whose environment has
  * no PATH, searches the session's default PATH.
  */
-export declare function resolveContext(cwd: string, env: Readonly<Record<string, string>> | undefined, view: CallerView): ResolveContext;
+export declare function resolveContext(cwd: string, env: Readonly<Record<string, string>> | undefined, view: ProcessView): ResolveContext;
 export declare class CommandRegistry {
     private commands;
     private lazy;

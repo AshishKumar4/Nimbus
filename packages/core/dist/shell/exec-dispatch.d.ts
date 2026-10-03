@@ -54,7 +54,7 @@ export declare function parseShebang(head: Uint8Array): ShebangLine | null;
 export declare function basename(path: string): string;
 export declare function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatchDecision;
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
-export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath' | 'access'>;
+export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
 /**
  * What execvp's search of PATH finds for a bare name: the first executable
  * regular file, or, when every file it finds is not executable, the first
@@ -77,5 +77,10 @@ export type PathSearchResult = {
 export declare function searchPath(name: string, from: ResolveContext): Promise<PathSearchResult>;
 /** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
 export declare function programPathOf(command: object): string | undefined;
-export declare function installPathExecResolver(registry: CommandRegistry, fs: ExecInspectionFs, getCwd: () => string): void;
+/**
+ * Resolve path-shaped names, and bare names along PATH, to what the file is.
+ * Everything is looked at through the caller's view; `fs` is the view of a
+ * caller that resolves without a context of its own.
+ */
+export declare function installPathExecResolver(registry: CommandRegistry, fs: ProcessView, getCwd: () => string): void;
 //# sourceMappingURL=exec-dispatch.d.ts.map

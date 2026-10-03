@@ -147,14 +147,22 @@ const programPaths = new WeakMap();
 export function programPathOf(command) {
     return programPaths.get(command);
 }
-/** A command whose resolution failed on what the namespace could not answer: it fails as execve's error does. */
+/**
+ * A command whose resolution failed on what the namespace could not answer,
+ * or would not show the caller: it fails as execve's error does.
+ */
 function failing(name, error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = isDenied(error) ? 'Permission denied' : error instanceof Error ? error.message : String(error);
     return async (ctx) => {
         (await ctx.stderr.write(`${name}: ${message}\n`));
         return 126;
     };
 }
+/**
+ * Resolve path-shaped names, and bare names along PATH, to what the file is.
+ * Everything is looked at through the caller's view; `fs` is the view of a
+ * caller that resolves without a context of its own.
+ */
 export function installPathExecResolver(registry, fs, getCwd) {
     const originalResolve = registry.resolve.bind(registry);
     registry.resolve = async (name, from) => {
@@ -200,7 +208,7 @@ export function installPathExecResolver(registry, fs, getCwd) {
         const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(context.cwd));
         let inspected;
         try {
-            inspected = await inspect(fs, resolved);
+            inspected = await inspect(context.view, resolved);
         }
         catch (error) {
             // What the namespace cannot answer (an absent mount, a backend's I/O
