@@ -63,6 +63,10 @@ async function installClis(ws, home) {
   kernel.mkdir('noexec/bin', { recursive: true });
   kernel.writeFile('noexec/bin/tool', '#!/bin/sh\necho "never"\n');
   kernel.chmod('noexec/bin/tool', 0o644);
+  // Executable, but only by its owner, root.
+  kernel.mkdir('rootonly/bin', { recursive: true });
+  kernel.writeFile('rootonly/bin/tool', '#!/bin/sh\necho "root only"\n');
+  kernel.chmod('rootonly/bin/tool', 0o744);
 }
 
 const run = async (ws, line, cwd = '/tmp') => {
@@ -95,11 +99,27 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin custom-only'), ['custom only\
 assert.deepEqual(await run(main, 'PATH=/custom/bin:$PATH tool'), ['custom tool \n', '', 0], 'in order');
 assert.deepEqual(await run(main, 'PATH=/noexec/bin:/custom/bin tool'), ['custom tool \n', '', 0], 'a file that is not executable is passed over');
 assert.deepEqual(await run(main, 'PATH=/noexec/bin tool; echo s=$?'), ['s=126\n', '/noexec/bin/tool: Permission denied\n', 0], 'and is EACCES when nothing else is found');
+assert.deepEqual(await run(main, 'PATH=/rootonly/bin:/custom/bin tool; echo s=$?'), ['custom tool \ns=0\n', '', 0], 'a file the caller may not execute is passed over');
+assert.deepEqual(await run(main, 'PATH=/rootonly/bin:/custom/bin which tool'), ['/custom/bin/tool\n', '', 0], 'by which too');
+assert.deepEqual(await run(main, 'PATH=/rootonly/bin tool; echo s=$?'), ['s=126\n', '/rootonly/bin/tool: Permission denied\n', 0]);
+// bash names the file it would fail to run; which (debianutils) finds no executable and prints nothing.
+assert.deepEqual(await run(main, 'PATH=/noexec/bin command -v tool; PATH=/noexec/bin type tool; PATH=/noexec/bin which -as tool; echo s=$?'),
+  ['/noexec/bin/tool\ntool is /noexec/bin/tool\ns=1\n', '', 0], 'what is found but cannot run is a file, not a builtin');
 assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/bin/tool\n', '', 0]);
 assert.deepEqual(await run(main, 'PATH=/usr/bin hello-cli; echo s=$?'), ['s=127\n', 'hello-cli: command not found\n', 0], 'off PATH, nothing is found');
 assert.deepEqual(await run(main, 'PATH= tool; echo s=$?', '/custom/bin'), ['custom tool \ns=0\n', '', 0], 'an empty entry is the current directory');
 assert.deepEqual(await run(main, '(export PATH=/custom/bin; tool)'), ['custom tool \n', '', 0], 'an exported PATH is searched');
 assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
+
+// ── An npm bin shim by its path runs only if the caller may execute it ────
+{
+  const kernel = main.vfs.as(CRED_KERNEL);
+  kernel.chmod('home/main/.local/bin/hello-cli', 0o744);
+  kernel.chown('home/main/.local/bin/hello-cli', 0, 0);
+  assert.deepEqual(await run(main, '/home/main/.local/bin/hello-cli; echo s=$?'), ['s=126\n', '/home/main/.local/bin/hello-cli: Permission denied\n', 0]);
+  assert.deepEqual(await run(main, 'hello-cli; echo s=$?'), ['s=126\n', '/home/main/.local/bin/hello-cli: Permission denied\n', 0], 'nor by its bare name');
+  kernel.chmod('home/main/.local/bin/hello-cli', 0o755);
+}
 
 // ── child_process.spawn in a Worker program searches the child's PATH ─────
 {
@@ -155,6 +175,18 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
     assert.deepEqual(await spawn('hello-cli', ['y'], env), ['hello-cli y in /tmp\n', '', 0], 'and an npm bin');
     assert.deepEqual(await spawn('tool', [], { PATH: '/custom/bin' }), ['custom tool \n', '', 0], 'by the PATH it is given');
     assert.deepEqual(await spawn('no-such-tool', [], env), ['', 'no-such-tool: command not found\n', 127]);
+    // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
+    {
+      const kernel = main.vfs.as(CRED_KERNEL);
+      kernel.mkdir('tmp/project/node_modules/.bin', { recursive: true });
+      kernel.writeFile('tmp/project/node_modules/.bin/yorkie', '#!/bin/sh\necho YORKIE\n');
+      kernel.chmod('tmp/project/node_modules/.bin/yorkie', 0o755);
+      const { childPid } = await session._rpcCpSpawn({ command: 'yorkie', args: [], env, cwd: '/tmp/project', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+      await session._rpcCpStdinEnd(childPid);
+      const waited = await session._rpcCpWait(childPid, 5_000);
+      const output = await session._rpcCpDrainOutput(childPid);
+      assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['YORKIE\n', '', 0]);
+    }
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }

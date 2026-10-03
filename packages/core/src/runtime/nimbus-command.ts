@@ -341,7 +341,7 @@ async function runNimbusStart(
     ctx.stderr.write('usage: nimbus start [--restart never|on-failure] <command> [args...]\n');
     return 2;
   }
-  const handler = registry.resolve ? await registry.resolve(command, resolveContext(ctx.cwd, ctx.env)) : null;
+  const handler = registry.resolve ? await registry.resolve(command, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
   if (!handler) {
     ctx.stderr.write(`nimbus start: ${command}: command not found\n`);
     return 127;

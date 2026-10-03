@@ -1120,7 +1120,7 @@ export class Interpreter {
           } else {
             // Check registry; a bare name not registered is searched for on the
             // PATH this command runs with, a `PATH=x cmd` prefix included.
-            const command = await this.config.registry.resolve(name, resolveContext(this.config.getCwd(), this.config.env));
+            const command = await this.config.registry.resolve(name, resolveContext(this.config.getCwd(), this.config.env, io.vfs ?? this.config.vfs));
             if (!command) {
               (await stderr.write(`${name}: command not found\n`));
               exitCode = 127;
@@ -1182,11 +1182,13 @@ export class Interpreter {
   async runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit> {
     const [name, ...args] = argv;
     if (name === undefined) return exited(0);
-    const command = await this.config.registry.resolve(name, resolveContext(spec.cwd, spec.env));
+    // The program is found, as it runs, under the child's credential.
+    const vfs = bindProcessView(this.config.filesystem, { pid: spec.identity.pid, cred: spec.identity.cred, signal: spec.signal });
+    const command = await this.config.registry.resolve(name, resolveContext(spec.cwd, spec.env, vfs));
     if (!command) throw syscallError('ENOENT', 'execvp', name);
     return await this.runCommand(command, name, args, {
       ...spec,
-      vfs: bindProcessView(this.config.filesystem, { pid: spec.identity.pid, cred: spec.identity.cred, signal: spec.signal }),
+      vfs,
       register: true,
       shellBuiltin: false,
     });

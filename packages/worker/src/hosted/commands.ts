@@ -1373,7 +1373,7 @@ registry.register('npx', async (ctx: any) => {
   const cmd = getNpxCommandWord(npxArgs);
 
   // Check if it's a built-in command (vite, esbuild, etc.)
-  const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env)) : null;
+  const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
   if (resolved) {
     return await resolved({ ...ctx, args: getNpxCommandArgs(npxArgs) });
   }

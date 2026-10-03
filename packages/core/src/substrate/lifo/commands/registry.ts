@@ -1,26 +1,32 @@
 import type { Command } from './types.js';
+import type { ProcessView } from '../../../runtime/process-files.js';
 import { DEFAULT_PATH } from '../../../constants.js';
+
+/** The namespace as a caller sees it, under its own credential: what it may look into and execute. */
+export type CallerView = Pick<ProcessView, 'stat' | 'access'>;
 
 /**
  * Where a command name is being resolved from. The registry is shared by
  * every shell of a workspace (the session's, each named shell, each exec),
  * and a name may depend on the caller: a path (./x, ../x) or one under its
  * node_modules/.bin on its cwd, and a bare name not registered here on the
- * PATH of the environment it is invoked from, as execvp searches it.
+ * PATH of the environment it is invoked from, searched as execvp searches
+ * it, as the caller.
  */
 export interface ResolveContext {
   cwd: string;
   /** The invoking environment's PATH. */
   path: string;
+  view: CallerView;
 }
 
 /**
- * The context a caller resolves from: its directory and its environment's
- * PATH. One without an environment, or whose environment has no PATH,
- * searches the session's default PATH.
+ * The context a caller resolves from: its directory, its environment's
+ * PATH, and its view. One without an environment, or whose environment has
+ * no PATH, searches the session's default PATH.
  */
-export function resolveContext(cwd: string, env: Readonly<Record<string, string>> | undefined): ResolveContext {
-  return { cwd, path: env?.PATH ?? DEFAULT_PATH };
+export function resolveContext(cwd: string, env: Readonly<Record<string, string>> | undefined, view: CallerView): ResolveContext {
+  return { cwd, path: env?.PATH ?? DEFAULT_PATH, view };
 }
 
 export class CommandRegistry {

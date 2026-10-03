@@ -38,6 +38,7 @@
  * context. Originally drafted in the plan; this is the live implementation.
  */
 
+import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -127,7 +128,7 @@ export interface SessionInternal {
   wranglerAliasBannerShown: boolean;
 
   // ── W8 child_process registry handle ────────────────────────────────
-  _cpRegistry: any;
+  _cpRegistry: CommandRegistry | null;
 
   // ── W5 ring-persist tracking (separate from `_w5PersistRing()` below) ─
   _w5LastPersistAt: number;
@@ -163,7 +164,7 @@ export interface SessionInternal {
   buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
   ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
   _envFlagDefaultOn(name: string): boolean;
-  _setCpRegistry(r: any): void;
+  _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
   ensureGlobalPrefixDirs(prefix: string): void;
   seedFilesystem(): void;

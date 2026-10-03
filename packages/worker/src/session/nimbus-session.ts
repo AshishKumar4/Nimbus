@@ -17,6 +17,7 @@ import * as runtimeServices from '../hosted/services.js';
 import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
@@ -1185,8 +1186,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * resolved commands. Called from the shell-init path right after
    * `registerUnixCommands(registry, sqliteFs)`.
    */
-  _cpRegistry: any = null;
-  _setCpRegistry(r: any) { this._cpRegistry = r; }
+  _cpRegistry: CommandRegistry | null = null;
+  _setCpRegistry(r: CommandRegistry) { this._cpRegistry = r; }
 
   /**
    * Get or create the singleton fetch proxy entrypoint.

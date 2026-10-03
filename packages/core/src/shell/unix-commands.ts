@@ -368,12 +368,11 @@ async function _registryResolved(
  *  of the caller's PATH finds (as the caller sees the namespace), else a
  *  registered command's canonical path. Returns null if not findable. */
 async function _whichLookup(
-  vfs: UnixVfs,
   registry: UnixCommandRegistry,
   name: string,
   from: ResolveContext,
 ): Promise<string | null> {
-  const hit = name.includes('/') ? null : await searchPath(vfs, name, from);
+  const hit = name.includes('/') ? null : await searchPath(name, from);
   if (hit?.kind === 'program') return hit.path;
   const canonicalPath = _CANONICAL_BIN_PATHS[name];
   if (!canonicalPath) return null;
@@ -407,13 +406,13 @@ function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       return 1;
     }
     let anyMissing = false;
-    const from = resolveContext(ctx.cwd, ctx.env);
+    const from = resolveContext(ctx.cwd, ctx.env, vfs);
     for (const name of names) {
       // Classify: is it a registered command (a shell builtin), not one found on PATH?
       const resolved = await _registryResolved(registry, name, from);
       const isBuiltin = resolved !== null && programPathOf(resolved) === undefined;
       // 1. PATH-walk + canonical-bin lookup.
-      const path = await _whichLookup(vfs, registry, name, from);
+      const path = await _whichLookup(registry, name, from);
       let found = false;
       if (path) {
         if (!silent) (await ctx.stdout.write(path + '\n'));
@@ -453,9 +452,9 @@ function mkWhereis(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       (await ctx.stderr.write('Usage: whereis name [name ...]\n'));
       return 1;
     }
-    const from = resolveContext(ctx.cwd, ctx.env);
+    const from = resolveContext(ctx.cwd, ctx.env, vfs);
     for (const name of names) {
-      const path = await _whichLookup(vfs, registry, name, from);
+      const path = await _whichLookup(registry, name, from);
       if (path) {
         (await ctx.stdout.write(`${name}: ${path}\n`));
       } else {
@@ -492,7 +491,7 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       (await ctx.stderr.write('command: missing operand\n'));
       return 1;
     }
-    const from = resolveContext(ctx.cwd, ctx.env);
+    const from = resolveContext(ctx.cwd, ctx.env, vfs);
     if (mode === '-v' || mode === '-V') {
       // What `name` runs: the file found on PATH, or a registered command
       // (by its canonical path where it has one); exit 0 if found.
@@ -549,11 +548,11 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
  * commands module already has access to; treat any registry resolve
  * as "shell builtin" classification.
  */
-function mkType(_vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
+function mkType(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     if (ctx.args.length === 0) return 0;
     let exit = 0;
-    const from = resolveContext(ctx.cwd, ctx.env);
+    const from = resolveContext(ctx.cwd, ctx.env, vfs);
     for (const name of ctx.args) {
       try {
         const resolved = typeof registry.resolve === 'function'
@@ -1809,7 +1808,7 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     // Resolve target command from registry (handles both eager + lazy maps).
     let target: ResolvedCommand | null;
     try {
-      target = asResolvedCommand(await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env)));
+      target = asResolvedCommand(await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs)));
     } catch { target = null; }
     if (!target) {
       // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.

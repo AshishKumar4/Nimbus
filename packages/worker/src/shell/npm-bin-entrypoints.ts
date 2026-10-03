@@ -1,5 +1,5 @@
 import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ProcessView, type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import { ProcessView, X_OK, type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
@@ -12,6 +12,7 @@ import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.j
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { z } from 'zod/v4';
 
 type Output = { write(data: string): void };
@@ -71,7 +72,8 @@ export function installNpmBinFallbackResolver(
   // What `registry.resolve` probes a name with before any command runs (it
   // has no caller): the namespace as the kernel, for the registry's life.
   // The command that then runs looks its bin up again through its own view.
-  const inspector = projectFs(new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs));
+  const kernelView = new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs);
+  const inspector = projectFs(kernelView);
   // A lookup the namespace cannot answer (a mount that fails under the cwd)
   // finds no bin: the name resolves as it would with none, and only the
   // command it names fails.
@@ -80,7 +82,7 @@ export function installNpmBinFallbackResolver(
   };
 
   registry.resolve = async function resolveWithNpmBins(name: string, from?: ResolveContext): Promise<unknown> {
-    const context = from ?? resolveContext(deps.getCwd() || '/home/user', undefined);
+    const context = from ?? resolveContext(deps.getCwd() || '/home/user', undefined, kernelView);
     const cwd = context.cwd;
     // An npm bin shim by path (a launcher's `exec`, or the file a search of
     // PATH found for a bare name) is the same program as the bare name: same
@@ -89,7 +91,7 @@ export function installNpmBinFallbackResolver(
     if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
       const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
       if (!bin) return await upstreamResolve(name, context);
-      return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name));
+      return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
     }
 
     // Registered commands, then PATH (searched upstream), then the bins of
@@ -110,12 +112,20 @@ export function installNpmBinFallbackResolver(
       return hintHandler;
     }
 
-    return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name));
+    return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
   };
 
+  /**
+   * The command that runs an npm bin. `executesShim`: the shim file is what
+   * was invoked (by its path, or found on PATH), so the caller must be
+   * allowed to execute it, as execve checks; a bare name found in the cwd's
+   * node_modules/.bin runs the package's program, as npm's own lookup does,
+   * whatever mode an older install left its shim with.
+   */
   function binHandler(
     name: string,
     lookup: (vfs: ProjectFs) => Promise<NpmBinResolution | null>,
+    executesShim: boolean,
   ): (ctx: CommandContext) => Promise<number> {
     return async (ctx: CommandContext): Promise<number> => {
       const invocationCwd = ctx.cwd || '/home/user';
@@ -131,6 +141,15 @@ export function installNpmBinFallbackResolver(
       if (!bin) {
         ctx.stderr.write(`${name}: command not found\n`);
         return 127;
+      }
+      if (executesShim) {
+        try {
+          await ctx.vfs.access('/' + bin.shimPath, X_OK);
+        } catch (error) {
+          if (!isVfsError(error, 'EACCES') && !isVfsError(error, 'EPERM')) throw error;
+          ctx.stderr.write(`/${bin.shimPath}: Permission denied\n`);
+          return 126;
+        }
       }
 
       const argv = Array.isArray(ctx.args) ? ctx.args.map(String) : [];

@@ -24,7 +24,7 @@
 
 import { resolveContext, type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
-import type { ProcessView } from '../runtime/process-files.js';
+import { X_OK, type ProcessView } from '../runtime/process-files.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { isVfsError } from '../vfs/vfs-error.js';
 
@@ -95,7 +95,7 @@ export function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatch
 }
 
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
-export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
+export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath' | 'access'>;
 
 /**
  * What is at a path-shaped name: nothing runnable, a directory, or a file
@@ -141,19 +141,31 @@ function pathDirectories(from: ResolveContext): string[] {
   return directories;
 }
 
+/** Whether a failed call is the caller's lack of permission, which a search of PATH passes over. */
+function isDenied(error: unknown): boolean {
+  return isVfsError(error, 'EACCES') || isVfsError(error, 'EPERM');
+}
+
 /**
- * execvp's search for `name`, a name with no slash, along the caller's PATH:
- * each directory in turn, a directory entry of that name passed over, a
- * file that is not executable remembered and passed over.
+ * execvp's search for `name`, a name with no slash, along the caller's PATH,
+ * as the caller: each directory in turn, a directory entry of that name
+ * passed over, and a file the caller may not execute (or reach) remembered
+ * and passed over. A file is executable when the caller's access(X_OK)
+ * allows it, the check a path-shaped invocation makes before it runs.
  */
-export async function searchPath(fs: ExecInspectionFs, name: string, from: ResolveContext): Promise<PathSearchResult> {
+export async function searchPath(name: string, from: ResolveContext): Promise<PathSearchResult> {
   let notExecutable: string | null = null;
   for (const directory of pathDirectories(from)) {
     const candidate = directory === '/' ? `/${name}` : `${directory}/${name}`;
-    const inspected = await inspect(fs, candidate);
-    if (inspected === null || inspected === 'directory') continue;
-    if (isExecutableMode(inspected.mode, isWasmMagic(inspected.head))) return { kind: 'program', path: candidate };
-    notExecutable ??= candidate;
+    try {
+      const stat = await from.view.stat(candidate);
+      if (stat === null || stat.type === 'directory') continue;
+      await from.view.access(candidate, X_OK);
+      return { kind: 'program', path: candidate };
+    } catch (error) {
+      if (isDenied(error)) notExecutable ??= candidate;
+      else if (!isVfsError(error, 'ENOENT') && !isVfsError(error, 'ENOTDIR') && !isVfsError(error, 'ELOOP')) throw error;
+    }
   }
   return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
 }
@@ -185,7 +197,7 @@ export function installPathExecResolver(
     const found = await originalResolve(name, from);
     if (found) return found;
     if (!name) return undefined;
-    const context = from ?? resolveContext(getCwd(), undefined);
+    const context = from ?? resolveContext(getCwd(), undefined, fs);
 
     // A bare name is searched for along the caller's PATH, as execvp
     // searches it; the file found then resolves by its path, through every
@@ -194,22 +206,24 @@ export function installPathExecResolver(
     if (!name.includes('/')) {
       let hit: PathSearchResult;
       try {
-        hit = await searchPath(fs, name, context);
+        hit = await searchPath(name, context);
       } catch (error) {
         return failing(name, error);
       }
       if (hit === null) return undefined;
+      const path = hit.path;
+      let program: Command;
       if (hit.kind === 'not-executable') {
-        const path = hit.path;
-        return async (ctx): Promise<number> => {
+        program = async (ctx): Promise<number> => {
           (await ctx.stderr.write(`${path}: Permission denied\n`));
           return 126;
         };
+      } else {
+        const command = await registry.resolve(path, context);
+        if (!command) return undefined;
+        program = async (ctx) => await command(ctx);
       }
-      const command = await registry.resolve(hit.path, context);
-      if (!command) return undefined;
-      const program: Command = async (ctx) => await command(ctx);
-      programPaths.set(program, hit.path);
+      programPaths.set(program, path);
       return program;
     }
     if (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../')) return undefined;
@@ -237,7 +251,7 @@ export function installPathExecResolver(
     const absPath = inspected.target;
     const authorize = (command: Command): Command => async (ctx): Promise<number> => {
       try {
-        (await ctx.vfs.access(accessPath, 0o1));
+        (await ctx.vfs.access(accessPath, X_OK));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.startsWith('ENOENT:')) {
@@ -284,7 +298,7 @@ export function installPathExecResolver(
             return 126;
           }
           // `#!/usr/bin/env node` names node, which env finds on the script's PATH.
-          const from = resolveContext(ctx.cwd, ctx.env);
+          const from = resolveContext(ctx.cwd, ctx.env, ctx.vfs);
           let interpCmd = await registry.resolve(interp, from);
           if (!interpCmd && interp.includes('/')) {
             interpCmd = await registry.resolve(basename(interp), from);
