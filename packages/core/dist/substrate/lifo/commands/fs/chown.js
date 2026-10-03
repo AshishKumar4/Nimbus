@@ -2,6 +2,7 @@ import { parseChownOwnership } from '../../../../shell/unix-accounts.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
+import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 const spec = {
     recursive: { type: 'boolean', short: 'R' },
 };
@@ -33,7 +34,10 @@ const command = async (ctx) => {
             (await apply(resolve(ctx.cwd, file)));
         }
         catch (error) {
-            await ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+            // GNU's words: a name that is not there cannot be accessed; a change
+            // the filesystem refuses is a change of ownership that failed.
+            const what = isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR') ? 'cannot access' : 'changing ownership of';
+            await ctx.stderr.write(`chown: ${what} '${file}': ${strerror(error)}\n`);
             exitCode = 1;
         }
     }

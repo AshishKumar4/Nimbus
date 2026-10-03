@@ -33,7 +33,7 @@ import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
-import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
+import { findUnixGroupName, findUnixUserName, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
@@ -600,7 +600,7 @@ function mkSetfacl(sqliteVfs) {
                 for (const entry of spec.split(',')) {
                     const match = /^(u|user|g|group|o|other)::([rwx-]{0,3})$/.exec(entry.trim());
                     if (!match)
-                        throw Object.assign(new Error(`only base entries (u::, g::, o::) are supported: ${entry}`), { code: 'EINVAL' });
+                        throw syscallError('EINVAL', 'setfacl', path, { detail: `only base entries (u::, g::, o::) are supported: ${entry}` });
                     const bits = [...match[2]].reduce((sum, ch) => sum | (ACL_BITS[ch] ?? 0), 0);
                     const shift = match[1][0] === 'u' ? 6 : match[1][0] === 'g' ? 3 : 0;
                     perms = (perms & ~(7 << shift)) | (bits << shift);
@@ -2758,7 +2758,7 @@ function mkRm(vfs) {
                 await vfs.remove(resolvePath(ctx.cwd, target), { recursive, force });
             }
             catch (error) {
-                await ctx.stderr.write(`rm: ${target}: ${strerror(error)}\n`);
+                await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`);
                 code = 1;
             }
         }
@@ -3386,43 +3386,6 @@ function mkId(sqliteVfs) {
             .join(',');
         (await ctx.stdout.write(`uid=${ctx.cred.uid}(${user}) gid=${ctx.cred.gid}(${group}) groups=${groups}\n`));
         return 0;
-    };
-}
-function mkChown(sqliteVfs) {
-    return async (ctx) => {
-        const recursive = ctx.args.includes('-R') || ctx.args.includes('--recursive');
-        const positional = ctx.args.filter((arg) => arg !== '-R' && arg !== '--recursive');
-        if (positional.length < 2) {
-            (await ctx.stderr.write('chown: missing operand\n'));
-            return 1;
-        }
-        const vfs = ctx.vfs;
-        let ownership;
-        try {
-            ownership = (await parseChownOwnership(vfs, positional[0]));
-        }
-        catch (error) {
-            (await ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`));
-            return 1;
-        }
-        let exitCode = 0;
-        const apply = async (path) => {
-            if (recursive && (await statOrThrow(vfs, path)).type === 'directory') {
-                for (const child of (await vfs.readdir(path)))
-                    (await apply(`${path}/${child.name}`));
-            }
-            (await vfs.chown(path, ownership.uid, ownership.gid));
-        };
-        for (const file of positional.slice(1)) {
-            try {
-                (await apply(resolvePath(ctx.cwd, file)));
-            }
-            catch (error) {
-                (await ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`));
-                exitCode = 1;
-            }
-        }
-        return exitCode;
     };
 }
 function mkTest(sqliteVfs) {
@@ -5543,7 +5506,6 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('xxd', wrapStreaming(mkXxd()));
     registry.register('od', wrapStreaming(mkOd()));
     registry.register('hexdump', wrapStreaming(mkHexdump()));
-    registry.register('chown', wrap(mkChown(sqliteVfs)));
     // ln -s makes a symbolic link; the filesystem has no hard links.
     registry.register('ln', wrap(async (ctx) => {
         const symbolic = ctx.args.some(arg => /^-[^-]*s/.test(arg));

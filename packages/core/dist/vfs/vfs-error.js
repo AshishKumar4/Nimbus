@@ -30,8 +30,11 @@ export class VfsError extends Error {
             this.syscall = options.syscall;
         if (options?.dest !== undefined)
             this.dest = options.dest;
-        if (options?.detail !== undefined)
-            this.detail = options.detail;
+        // Built without a call, the words are the reason itself (a quota's, an
+        // injected fault's), unless they are only the code's own description.
+        const detail = options?.detail ?? (options?.syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
+        if (detail !== undefined)
+            this.detail = detail;
     }
 }
 /**
@@ -64,7 +67,7 @@ export function toVfsError(error, syscall, path, dest) {
     if (error instanceof VfsError) {
         if (error.syscall !== undefined || error.path !== undefined)
             return error;
-        return syscallError(error.code, syscall, path, { detail: error.message.slice(error.code.length + 2), dest, cause: error });
+        return syscallError(error.code, syscall, path, { detail: error.detail, dest, cause: error });
     }
     if ((typeof error !== 'object' || error === null) && typeof error !== 'function')
         return error;
@@ -102,8 +105,8 @@ export function renameOutcome(error) {
  * refusal's own reason where Nimbus gives one, else strerror(3) for its code.
  */
 export function strerror(error) {
-    if (error instanceof VfsError && error.detail !== undefined)
-        return error.detail;
+    if (error instanceof VfsError)
+        return error.detail ?? VFS_STRERROR[error.code];
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
     if (isVfsErrorCode(code))
         return VFS_STRERROR[code];

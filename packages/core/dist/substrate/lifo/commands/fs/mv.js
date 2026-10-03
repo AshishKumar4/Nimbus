@@ -60,9 +60,12 @@ const command = async (ctx) => {
                 // GNU's words: a source that is not there cannot be stat'ed; any
                 // other refusal is a move that failed.
                 const missing = isVfsError(e, 'ENOENT') && (await ctx.vfs.stat(src, { follow: false })) === null;
+                const named = destIsDir ? `${rawDest.replace(/\/+$/, '')}/${basename(src)}` : rawDest;
                 await ctx.stderr.write(missing
                     ? `mv: cannot stat '${source}': ${strerror(e)}\n`
-                    : `mv: cannot move '${source}' to '${rawDest}': ${strerror(e)}\n`);
+                    : target.startsWith(`${src}/`)
+                        ? `mv: cannot move '${source}' to a subdirectory of itself, '${named}'\n`
+                        : `mv: cannot move '${source}' to '${named}': ${strerror(e)}\n`);
                 exitCode = 1;
                 continue;
             }
