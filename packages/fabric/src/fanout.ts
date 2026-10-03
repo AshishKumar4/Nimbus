@@ -21,7 +21,7 @@
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom } from './budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, type DynamicWorkerClaim } from './budgets.js';
 import { hostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { classifyDoCall, describeError, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
@@ -254,7 +254,7 @@ export class Fanout {
     this.opts.onRoute?.({ topology: claim ? 'in-do' : 'peer-do', tasks: tasks.length, headroom });
     if (!claim) return this._dispatchPeerDo<A, R>(tasks, fn);
     try {
-      return await this._dispatchInDo<A, R>(tasks, fn);
+      return await this._dispatchInDo<A, R>(tasks, fn, claim);
     } finally {
       claim.release();
     }
@@ -283,11 +283,13 @@ export class Fanout {
   private async _dispatchInDo<A, R>(
     tasks: FanoutTask<A>[],
     fn: FacetTaskFn<A, R>,
+    claim: DynamicWorkerClaim,
   ): Promise<R[]> {
     // One slot — one Dynamic Worker — per task; submitMany has claimed
-    // that width on the ledger.
+    // that width on the ledger, and the pool's dispatches are held inside it.
     const pool = new IsolatePool(this.env, this.ctx, {
       concurrency: tasks.length,
+      claim,
       timeoutMs: this.opts.timeoutMs,
       tag: this.opts.tag,
       preamble: this.opts.preamble,

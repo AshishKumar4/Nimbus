@@ -5,6 +5,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `@nimbus-sh/fabric`: a caller can wait for room on the Dynamic Worker
+  ledger instead of polling for it. `beginLoaderFetchWhenFree(ctx, key,
+  { signal, claim })` resolves with the end function `beginLoaderFetch`
+  returns, once `key` is already in flight or one more distinct worker
+  fits. Waits are let in in the order they asked, one per freed slot, by
+  any hold's end, a claim's release or the end of a refusal's pause, so a
+  wait sees Nimbus's releases as well as its own; an aborted `signal`
+  rejects the wait, which then holds nothing. The end function takes the
+  error a call failed with: a "Dynamic worker concurrency limit exceeded"
+  refusal stops the ledger admitting new workers for 50 ms, doubling to
+  2 s while refusals continue, because the platform counts a worker for a
+  moment after its call returns. `IsolatePool` now waits this way: a
+  refused call is sent again as soon as a hold ends or the pause passes,
+  where it used to sleep on a timer of its own (50 ms doubling to 2 s), so
+  a call refused behind ten busy workers no longer waits up to 2 s past the
+  release that would let it in. The 15 s bound is unchanged. A fan-out's
+  own dispatches count inside its claim (`beginLoaderFetch(ctx, key,
+  claim)`, `IsolatePool`'s `claim` option) rather than on top of it, so a
+  5-wide fan-out leaves 5 slots free, not 0. `loaderLedgerStats` adds
+  `waiting` and `pauseMs`, and `dynamicWorkerHeadroom` is 0 while a pause
+  lasts.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
