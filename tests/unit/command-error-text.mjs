@@ -28,6 +28,7 @@ const cases = [
   ['mkdir /rootdir', "mkdir: cannot create directory '/rootdir': Permission denied\n"],
   ['chmod 644 nope', "chmod: cannot access 'nope': No such file or directory\n"],
   ['chown 0 a', "chown: changing ownership of 'a': Operation not permitted\n"],
+  ['chown 0 nope', "chown: cannot access 'nope': No such file or directory\n"],
 ];
 for (const [command, stderr] of cases) {
   const result = await box.commands.run(`cd /home/user/w && ${command}`);

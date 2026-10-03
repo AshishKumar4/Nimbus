@@ -78,7 +78,7 @@ try {
   // both look the same.
   const rmMissing = await shell.execute('rm /remote/no-such');
   assert.equal(rmMissing.exitCode, 1);
-  assert.match(rmMissing.stderr, /^rm: \/remote\/no-such: No such file or directory/);
+  assert.match(rmMissing.stderr, /^rm: cannot remove '\/remote\/no-such': No such file or directory/);
   const rmForced = await shell.execute('rm -f /remote/no-such');
   assert.equal(rmForced.exitCode, 0, rmForced.stderr);
   assert.equal(rmForced.stderr, '');

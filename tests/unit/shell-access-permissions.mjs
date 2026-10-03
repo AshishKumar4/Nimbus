@@ -54,14 +54,14 @@ async function run(name, args, cred) {
 user.writeFile('home/user/owned', 'owned');
 const forbidden = await run('chown', ['root:root', 'owned'], USER);
 assert.equal(forbidden.exitCode, 1);
-assert.match(forbidden.stderr, /EPERM/,
+assert.match(forbidden.stderr, /^chown: changing ownership of 'owned': Operation not permitted$/m,
   'changing an owned file to a foreign uid fails with EPERM');
 
 root.mkdir('home/user/hidden', { mode: 0o700 });
 root.writeFile('home/user/hidden/file', 'secret');
 const untraversable = await run('chown', ['user:user', 'hidden/file'], USER);
 assert.equal(untraversable.exitCode, 1);
-assert.match(untraversable.stderr, /EACCES/,
+assert.equal(untraversable.stderr, "chown: cannot access 'hidden/file': Permission denied\n",
   'ancestor traversal denial wins over ownership policy');
 
 user.writeFile('home/user/access-mode', 'x');

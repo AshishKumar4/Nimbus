@@ -9,7 +9,11 @@ import { build } from 'esbuild';
 
 const root = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const work = mkdtempSync(join(tmpdir(), 'worker-git-consumer-'));
-const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 1 << 24 });
+// Bun leaves a `.hm` file in TMPDIR when TMPDIR and its install cache are on
+// different filesystems; inside `work` it goes with the rest.
+const childTmp = join(work, 'tmp');
+mkdirSync(childTmp);
+const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 1 << 24, env: { ...process.env, TMPDIR: childTmp } });
 const program = `import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';
