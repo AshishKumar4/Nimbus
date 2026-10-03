@@ -1852,11 +1852,13 @@ export class ViteDevServer {
       // and re-bundled on the cold path.
       // The cache is the workspace's, shared by every server whoever started
       // it: a bundle is served only to a principal who may read everything it
-      // was built from. Otherwise this server builds its own, as itself.
+      // was built from, so one that names nothing it was built from is never
+      // served. Otherwise this server builds its own, as itself.
       if (
         esmBundle &&
         esmBundle.bundleHash === BUNDLER_VERSION &&
         this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo) &&
+        esmBundle.sources.length > 0 &&
         esmBundle.sources.every((path) => this.mayRead(path))
       ) {
         let code = esmBundle.esmCode;
@@ -2168,7 +2170,8 @@ export class ViteDevServer {
           // post-rewrite text instead would pin the bundle to whichever base
           // built it first and 404 the other. Cache ONLY successful bundles;
           // a failed build left `bundled` null and never reaches here.
-          if (this.npmCache) {
+          // A bundle whose sources are unknown would never be served from the cache.
+          if (this.npmCache && bundledSources.length > 0) {
             try {
               this.npmCache.putEsmBundle({
                 specifier,

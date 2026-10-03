@@ -612,6 +612,29 @@ async function build(
     return m ? { namespace: m[1], path: m[2] } : { namespace: mainNamespace ?? 'file', path: id };
   };
   const pending = new Map<string, { namespace: string; path: string }>();
+  // The metafile's inputs, as esbuild's: every module the build loaded, keyed
+  // as a diagnostic names it, with its byte count and the imports it made.
+  // Its imports are listed in the order its source makes them, as esbuild's
+  // are: rolldown resolves them concurrently, so they are ordered by the
+  // module graph's importedIds once the bundle is generated.
+  type ImportRecord = esbuild.Metafile['inputs'][string]['imports'][number];
+  const inputBytes = new Map<string, number>();
+  const importsOf = new Map<string, Array<{ id: string; record: ImportRecord }>>();
+  const importOrder = new Map<string, readonly string[]>();
+  const importedBy = (importer: string | undefined, id: string, record: ImportRecord) => {
+    if (importer === undefined) return;
+    const list = importsOf.get(importer) ?? [];
+    list.push({ id, record });
+    importsOf.set(importer, list);
+  };
+  const importsInOrder = (importer: string): ImportRecord[] => {
+    const order = importOrder.get(importer) ?? [];
+    const at = (id: string) => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
+    return (importsOf.get(importer) ?? [])
+      .map((entry, i) => ({ ...entry, i }))
+      .sort((a, b) => at(a.id) - at(b.id) || a.record.kind.localeCompare(b.record.kind) || a.i - b.i)
+      .map((entry) => entry.record);
+  };
   const css = new Map<string, CssModule>();
   const warnings: esbuild.Message[] = [];
   const template = (names: string | undefined, fallback: string) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
@@ -666,6 +689,10 @@ async function build(
   const vfs = {
     name: plugin.name,
     generateBundle(this: { getModuleInfo(id: string): ModuleInfo }, _options: unknown, bundle: Record<string, RolldownOutput>) {
+      for (const id of inputBytes.keys()) {
+        const info = this.getModuleInfo(id);
+        importOrder.set(id, [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])]);
+      }
       for (const out of Object.values(bundle)) {
         if (out.type !== 'chunk' || !out.facadeModuleId) continue;
         const order: string[] = [];
@@ -698,11 +725,19 @@ async function build(
       if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, kind, plugin.name);
       if (answer?.warnings?.length) for (const w of answer.warnings) warnings.push(message(w.text ?? ''));
       if (!answer || (!answer.path && !answer.external)) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '');
-      if (answer!.external) return { id: answer!.path ?? path, external: true };
+      if (answer!.external) {
+        importedBy(importer, answer!.path ?? path, { path: answer!.path ?? path, kind: kind as esbuild.ImportKind, external: true });
+        return { id: answer!.path ?? path, external: true };
+      }
       const namespace = answer!.namespace ?? 'file';
       if (mainNamespace === null) mainNamespace = namespace;
       const id = idOf(namespace, answer!.path!);
       pending.set(id, { namespace, path: answer!.path! });
+      importedBy(importer, id, {
+        path: fileOf({ namespace, path: answer!.path! }),
+        kind: kind as esbuild.ImportKind,
+        ...(source === answer!.path ? {} : { original: source }),
+      });
       return id;
     },
     async load(id: string) {
@@ -713,6 +748,7 @@ async function build(
       if (!answer || answer.contents === undefined) raise(`No loader produced ${fileOf({ namespace, path })}`);
       const loader = answer!.loader ?? 'js';
       const contents = answer!.contents!;
+      inputBytes.set(id, typeof contents === 'string' ? new TextEncoder().encode(contents).length : contents.length);
       const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
       const lastSlash = path.lastIndexOf('/');
       loaded.set(id, {
@@ -831,7 +867,9 @@ async function build(
       outputFiles.push({ path, contents });
       outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
     }
-    return { outputFiles, errors: [], warnings, metafile: { inputs: {}, outputs } };
+    const inputs: esbuild.Metafile['inputs'] = {};
+    for (const [id, bytes] of inputBytes) inputs[fileOf(decode(id))] = { bytes, imports: importsInOrder(id) };
+    return { outputFiles, errors: [], warnings, metafile: { inputs, outputs } };
   } finally {
     await bundle.close();
   }
