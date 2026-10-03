@@ -33,7 +33,10 @@ published independently in the `@nimbus-sh` npm scope.
   target's, as the synchronous bridge does), not the link's own; the
   namespace's `writeFile` and `writeRange` take `parents` for that. An
   awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
-  synchronous bridge does. A node program's write-back refused with EROFS or
+  synchronous bridge does, and a descriptor opened on an asynchronous mount
+  keeps the file it opened: it re-resolved its path on every call, so a
+  link on the way repointed after the open moved its writes to another
+  file. A node program's write-back refused with EROFS or
   EBUSY is the authority's verdict (nothing landed), no longer a durability
   failure reported at exit.
 - A link on a `resolvesPaths` mount whose target a mount nested in it
