@@ -93,9 +93,12 @@ published independently in the `@nimbus-sh` npm scope.
   same with no path at all, which is how vite printed its entry as a
   storage key. Each public call now names an engine error with its syscall
   and the caller's paths (`ENOENT: no such file or directory, scandir
-  '/home/user/w/nope/x'`), the engine's error as the cause. The engine's
-  words for a refusal (a widening chmod's "use u+x") stay in that cause
-  until the engine's errors carry them.
+  '/home/user/w/nope/x'`), the engine's error as the cause. Where the
+  engine states a reason (a move into itself, a widening chmod), it stays
+  the message's words, and its marks (a pending import's) stay on the
+  error. The shell's `rm` of a directory now
+  names the call that failed: `EISDIR: illegal operation on a directory,
+  unlink '...'`, where it used to label it `rm`.
 
 ## 2026-10-02
 
