@@ -29,6 +29,9 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 const USER = { uid: 1000, gid: 1000 };
 const code = (run) => Promise.resolve().then(run).then(() => 'ok', (error) => error.code);
 
+/** Called with each call the asynchronous mount takes, before it runs (the alias swap below). */
+let beforeCall = null;
+
 /** A MemoryVFS with no synchronous face: every call answers a promise. */
 const asyncOnly = (vfs) => new Proxy(vfs, {
   get(target, key) {
@@ -36,7 +39,7 @@ const asyncOnly = (vfs) => new Proxy(vfs, {
     const value = target[key];
     if (typeof value !== 'function') return value;
     if (key === 'as') return (...args) => asyncOnly(value.apply(target, args));
-    return async (...args) => value.apply(target, args);
+    return async (...args) => { beforeCall?.(String(key), args); return value.apply(target, args); };
   },
   has: (target, key) => key !== 'sync' && key in target,
 });
@@ -91,7 +94,7 @@ const mutations = [
   ['remove -r of a directory holding the lease', () => bridge.remove('/home/user/alias/top', { recursive: true })],
   ['copyFile onto it', () => bridge.copyFile(`${F}/h.txt`, `${A}/g.txt`)],
   ['copyTree onto it', () => bridge.copyTree(F, `${A}/t`)],
-  ['open for writing', () => bridge.open(`${A}/f.txt`, { write: true })],
+  ['open for writing, truncating', () => bridge.open(`${A}/f.txt`, { write: true, truncate: true })],
   ['open, creating', () => bridge.open(`${A}/n.txt`, { write: true, create: true })],
   ['a path relative to a descriptor on the mount', () => bridge.unlink(under('top/leased/f.txt'))],
   ['a path beneath a preopen on the mount', () => bridge.writeFile({ root: 'm/top', path: 'leased/f.txt', beneath: true }, 'y')],
@@ -116,6 +119,77 @@ assert.equal(await code(() => bridge.writeFile(`${F}/ok.txt`, 'ok')), 'ok', 'bes
 assert.equal(new TextDecoder().decode(await m.readFile('/top/leased/f.txt')), 'f', 'nothing in the lease changed');
 assert.equal(await m.stat('/top/leased/new.txt'), null);
 engine.releaseExclusiveMutation(lease.owner);
+
+// ── Descriptors opened before the lease: each mutation through one is refused ──
+{
+  await seed();
+  const fd = await bridge.open(`${A}/f.txt`, { read: true, write: true });
+  const held = engine.acquireExclusiveMutation('m/top/leased');
+  const through = [
+    ['write', () => bridge.write(fd.id, 0, enc.encode('y'))],
+    ['ftruncate', () => bridge.ftruncate(fd.id, 0)],
+    ['fchmod', () => bridge.fchmod(fd.id, 0o600)],
+    ['fchown', () => bridge.fchown(fd.id, 1000, 1000)],
+    ['futimes', () => bridge.futimes(fd.id, 1, 1)],
+  ];
+  const refused = [];
+  for (const [what, run] of through) refused.push([what, await code(run)]);
+  assert.deepEqual(refused.filter(([, outcome]) => outcome !== 'EBUSY'), [], 'a descriptor\'s mutations are refused where they land');
+  assert.equal(new TextDecoder().decode(await bridge.read(fd.id, 0, 8)), 'f', 'and a read through it still reads');
+  engine.releaseExclusiveMutation(held.owner);
+  await bridge.write(fd.id, 0, enc.encode('w'));
+  assert.equal(new TextDecoder().decode(await m.readFile('/top/leased/f.txt')), 'w', 'released, it writes');
+  await bridge.close(fd.id);
+}
+
+// ── The alias repointed mid-call: a mutation lands where it was checked ──
+// The namespace resolves a mutation once and checks the lease on that route
+// right before it calls the backend. Here the alias moves from free to
+// leased while the call is under way (the first time the mount is asked
+// about top/free): the mutation lands in free, or is refused, and never
+// reaches leased unchecked.
+{
+  const ns = box.files.vfs.sync;
+  const point = (target) => {
+    if (ns.stat('/home/user/swing', { follow: false })) ns.unlink('/home/user/swing');
+    ns.symlink(target, '/home/user/swing');
+  };
+  const swings = [
+    ['writeFile', () => bridge.writeFile('/home/user/swing/v.txt', 'moved')],
+    ['writeFile, making parents', () => bridge.writeFile('/home/user/swing/new/v.txt', 'moved', { createParents: true })],
+    ['writeFileFrom', () => bridge.writeFileFrom('/home/user/swing/v.txt', 5, (async function* () { yield enc.encode('moved'); })())],
+    ['truncate', () => bridge.truncate('/home/user/swing/v.txt', 0)],
+    ['unlink', () => bridge.unlink('/home/user/swing/v.txt')],
+    ['rename', () => bridge.rename('/home/user/swing/v.txt', '/home/user/swing/w.txt')],
+    ['a view\'s write', () => view.writeFile('/home/user/swing/v.txt', 'moved')],
+  ];
+  const held = engine.acquireExclusiveMutation('m/top/leased');
+  const landed = [];
+  for (const [what, run] of swings) {
+    await seed();
+    for (const dir of ['/top/leased', '/top/free']) await m.writeFile(`${dir}/v.txt`, enc.encode('v'));
+    point('/m/top/free');
+    let swung = false;
+    beforeCall = (_key, args) => {
+      if (typeof args[0] !== 'string' || !args[0].startsWith('/top/free')) return;
+      beforeCall = null;
+      swung = true;
+      point('/m/top/leased');
+    };
+    const outcome = await code(run);
+    beforeCall = null;
+    assert.ok(swung, `${what}: the alias moved while the call was under way`);
+    const leased = (await m.readdir('/top/leased')).map((entry) => entry.name).sort();
+    const v = await Promise.resolve().then(() => m.readFile('/top/leased/v.txt')).then((bytes) => new TextDecoder().decode(bytes), () => '(gone)');
+    landed.push([what, outcome, leased.join(','), v]);
+  }
+  engine.releaseExclusiveMutation(held.owner);
+  for (const [what, outcome, leased, v] of landed) {
+    assert.ok(outcome === 'ok' || outcome === 'EBUSY', `${what}: ${outcome}`);
+    assert.deepEqual([leased, v], ['f.txt,sub,v.txt', 'v'], `${what}: nothing in the lease changed (${outcome})`);
+  }
+  point('/m');
+}
 
 // Released, the same calls go through.
 await seed();

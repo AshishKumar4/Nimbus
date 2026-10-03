@@ -19,12 +19,20 @@ published independently in the `@nimbus-sh` npm scope.
   that path checked no lease at the name its lookup reaches: with a lease
   on `m/leased`, a write, rename, unlink, mkdir, chmod, truncate, symlink,
   remove, copy or open for writing through `/home/user/alias -> /m`, or
-  relative to a descriptor open on the mount, went through. Every awaited
-  mutation now goes through one check, at the name given and at the name
-  the namespace's lookup reaches (`CompositeVFS.resolveAsync`), the last
-  link followed only when the mutation follows it: a write through a
-  dangling link into the lease is refused, and unlinking that link is not.
-  An awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
+  relative to a descriptor open on the mount, went through, and so did a
+  write, truncate, chmod, chown or utimes through a descriptor opened before
+  the lease. The namespace now refuses them itself: `CompositeVFS.guardMutations`
+  takes a guard that every mutation a credentialed view makes is checked
+  against, at the name it was given and on the route the namespace resolved,
+  right before the backend is called, so what is checked is where the
+  mutation goes even if a link on the way is repointed meanwhile. A process
+  namespace's guard is the engine's lease (`SqliteVFS.mutationRefusal`, the
+  one definition its own mutations use too). A write through a dangling link
+  into the lease is refused, and unlinking that link is not. An awaited write
+  with `createParents` makes the directories above where it lands (a link's
+  target's, as the synchronous bridge does), not the link's own; the
+  namespace's `writeFile` and `writeRange` take `parents` for that. An
+  awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
   synchronous bridge does.
 - A link on a `resolvesPaths` mount whose target a mount nested in it
   covers belongs to that backend. With `/pc` read-only holding

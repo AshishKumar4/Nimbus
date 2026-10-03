@@ -902,14 +902,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
   }
 
-  /**
-   * leaseAllows, for a face that resolves a mutation's path itself (the
-   * awaiting face over an asynchronous mount): each of `paths`, the names
-   * it was given and reaches, refused as Node's error for `call`.
-   */
-  assertMayMutate(paths: readonly string[], call: FsCall): void {
-    called(call, () => { for (const path of paths) this.leaseAllows(path); });
-  }
 
   /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
   private sqlitePath(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): string {
@@ -1237,7 +1229,7 @@ function normalizeOpenFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags']
 }
 
 /** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
-export interface FsCall {
+interface FsCall {
   syscall: string;
   path: RuntimeFsPath;
   dest?: RuntimeFsPath;
