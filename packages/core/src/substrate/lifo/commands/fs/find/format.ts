@@ -8,6 +8,7 @@
 
 import type { ProcessStat } from '../../../../../runtime/process-files.js';
 import type { VfsDirentType } from '../../../../../vfs/vfs.js';
+import { direntTypeOfStat, type KnownDirentType } from '../../../../../vfs/dirent-type.js';
 import { FindUsageError } from './errors.js';
 
 const encoder = new TextEncoder();
@@ -245,32 +246,21 @@ export interface FormatSubject {
   groupName(gid: number): Promise<string | null>;
 }
 
-const S_IFMT = 0o170000;
-
-/** The -type letters a mode can have. */
+/** The -type letters a file can have. */
 export type FileTypeLetter = 'f' | 'd' | 'l' | 's' | 'b' | 'c' | 'p';
 
-const FILE_TYPE_LETTERS: ReadonlyMap<number, FileTypeLetter> = new Map<number, FileTypeLetter>([
-  [0o100000, 'f'], [0o040000, 'd'], [0o120000, 'l'], [0o140000, 's'],
-  [0o060000, 'b'], [0o020000, 'c'], [0o010000, 'p'],
-]);
-
-const DIRENT_TYPE_LETTERS: Readonly<Record<Exclude<VfsDirentType, 'unknown'>, FileTypeLetter>> = {
+const TYPE_LETTERS: Readonly<Record<KnownDirentType, FileTypeLetter>> = {
   file: 'f', directory: 'd', symlink: 'l', character: 'c', block: 'b', fifo: 'p', socket: 's',
 };
 
 /** The -type letter readdir's d_type gives an entry, or null where it cannot tell. */
 export function direntTypeLetter(type: VfsDirentType): FileTypeLetter | null {
-  return type === 'unknown' ? null : DIRENT_TYPE_LETTERS[type];
+  return type === 'unknown' ? null : TYPE_LETTERS[type];
 }
 
-/**
- * findutils' mode_to_filetype: the -type letter for a file. A stat's mode
- * carries the type bits where its backend sets them (a device's do); where
- * it holds only the permission bits, the stat's own type stands in for them.
- */
+/** findutils' mode_to_filetype: the -type letter for a file a stat describes. */
 export function fileTypeLetter(stat: Pick<ProcessStat, 'mode' | 'type'>): FileTypeLetter {
-  return FILE_TYPE_LETTERS.get(stat.mode & S_IFMT) ?? (stat.type === 'directory' ? 'd' : stat.type === 'symlink' ? 'l' : 'f');
+  return TYPE_LETTERS[direntTypeOfStat(stat)];
 }
 
 const MODE_STRING_TYPES: Readonly<Record<string, string>> = { f: '-', d: 'd', l: 'l', s: 's', b: 'b', c: 'c', p: 'p' };

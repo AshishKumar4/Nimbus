@@ -49,6 +49,7 @@ import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-sp
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import {
   FACET_PROVIDED_PACKAGES,
@@ -987,7 +988,7 @@ const __fsMod = (() => {
       const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
       if (real && real !== "ELOOP") {
         for (const child of __nsChildren(real.path)) {
-          names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : "file");
+          names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
         }
       }
     }
@@ -2699,24 +2700,37 @@ const __fsMod = (() => {
     return stat;
   }
 
+  // Each exact dirent type's S_IFMT bits and Node predicate (core's vfs/dirent-type.ts).
+  const _direntTypes = ${JSON.stringify(DIRENT_TYPES)};
+  /** The dirent type a mode's format bits name, or \`fallback\` where they name none. */
+  function _direntTypeOfMode(mode, fallback) {
+    const format = Number(mode) & 0o170000;
+    for (const type in _direntTypes) if (_direntTypes[type].format === format) return type;
+    return fallback;
+  }
+  /** The dirent type an lstat says, for an entry the listing could not type ('unknown'). */
+  function _direntTypeOfStats(st) {
+    return _direntTypeOfMode(st.mode, st.isDirectory() ? "directory" : st.isSymbolicLink() ? "symlink" : "file");
+  }
+
   // The one Dirent shape: readdir({ withFileTypes }) sync and async, and
-  // every Dir.read(). \`parentPath\` is Node's field; \`path\` its deprecated
+  // every Dir.read(), for an entry whose type is known (an 'unknown' one is
+  // lstat'ed first). \`parentPath\` is Node's field; \`path\` its deprecated
   // alias that older callers still read.
   class __Dirent {
     constructor(name, type, parentPath) {
       this.name = name;
       this.parentPath = parentPath === undefined ? "" : String(parentPath);
       this.path = this.parentPath;
-      this._isDir = type === "directory" || type === "dir";
-      this._isSymlink = type === "symlink";
+      this._holds = _direntTypes[type === "dir" ? "directory" : type]?.node;
     }
-    isFile() { return !this._isDir && !this._isSymlink; }
-    isDirectory() { return this._isDir; }
-    isSymbolicLink() { return this._isSymlink; }
-    isBlockDevice() { return false; }
-    isCharacterDevice() { return false; }
-    isFIFO() { return false; }
-    isSocket() { return false; }
+    isFile() { return this._holds === "isFile"; }
+    isDirectory() { return this._holds === "isDirectory"; }
+    isSymbolicLink() { return this._holds === "isSymbolicLink"; }
+    isBlockDevice() { return this._holds === "isBlockDevice"; }
+    isCharacterDevice() { return this._holds === "isCharacterDevice"; }
+    isFIFO() { return this._holds === "isFIFO"; }
+    isSocket() { return this._holds === "isSocket"; }
   }
   function _direntObject(name, type, parentPath) { return new __Dirent(name, type, parentPath); }
 
@@ -3119,8 +3133,11 @@ const __fsMod = (() => {
         // listing does not. So it is asked for, never assumed (one lstat per
         // child directory, concurrently).
         if (opts?.withFileTypes) {
+          const base = absPath === "/" ? "" : absPath;
+          const types = await Promise.all(entries.map(async (entry) =>
+            entry.type === "unknown" ? _direntTypeOfStats(await _lstatAsync(base + "/" + entry.name)) : entry.type));
           return entries
-            .map((entry) => _direntObject(entry.name, entry.type, absPath))
+            .map((entry, i) => _direntObject(entry.name, types[i], absPath))
             .sort((a, b) => a.name.localeCompare(b.name));
         }
         return entries.map((entry) => entry.name).sort();
