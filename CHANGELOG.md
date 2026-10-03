@@ -18,6 +18,21 @@ fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
 file, so a mount that cannot tell must answer `unknown`, as described
 below.
 
+- `node:http2` exports exactly Node 22's names. `Http2ServerRequest` and
+  `Http2ServerResponse` are real classes, so `res instanceof
+  Http2ServerResponse` is false for an HTTP/1 response instead of throwing
+  "Right-hand side of 'instanceof' is not an object", which made every Astro
+  dev request a 500. The settings functions compute what Node computes;
+  servers and sessions still answer `ERR_HTTP2_NOT_SUPPORTED`. One module
+  now serves both node runtimes.
+- A node program's first launch stages more of what it reads, so fewer
+  launches fail until the next one: the tool's config file and what it
+  imports or names by string (Vite, PostCSS plugins), the entry files of
+  the project's dependencies, a package's bins when the code locates the
+  package by its manifest, a module's only `import()` of its own package,
+  and a one-shot's static data reads (lightningcss's wasm). Each stays
+  within the launch's module bound, and what is only a guess is evicted
+  first.
 - A command name nothing registers is searched for on the PATH of the
   environment that invokes it, as execvp searches it, by the shell (a
   `PATH=x cmd` prefix included), a script's commands, `sudo`,
