@@ -131,6 +131,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         return self.facetProcessManager;
     self.ensureSqliteFs();
     self.ensureFacetManager();
+    /** The namespace as process `pid` sees it under `cred`. */
+    const processView = (pid, cred) => new ProcessView(self.getFilesystemAuthority().bind({ pid, cred }));
     // FacetProcessManager is statically imported at top-of-file (W8).
     // No lazy-import: workerd doesn't ship CJS require, and the dynamic
     // import would be async — making _ensureFacetProcessManager async
@@ -166,20 +168,21 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return 127;
             }
             const commandName = normalizeCpCommandName(payload.command);
-            const cmd = await registry.resolve(commandName, { cwd: payload.cwd || '/home/user' });
+            const cred = self.processes.cred(payload.processPid);
+            const vfs = processView(payload.processPid, cred);
+            const cmd = await registry.resolve(commandName, resolveContext(payload.cwd || '/home/user', payload.env, vfs));
             if (!cmd) {
                 hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
                 return 127;
             }
             // Synthesize a CommandContext for the internal shell substrate.
             const ac = new AbortController();
-            const cred = self.processes.cred(payload.processPid);
             const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
             const ctx = {
                 ...io,
                 cred,
                 args: payload.args || [],
-                vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: payload.processPid, cred })),
+                vfs,
                 signal: ac.signal,
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
                 runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
@@ -232,7 +235,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes('cp: registry unavailable\n'));
                 return 127;
             }
-            const cmd = await registry.resolve(normalizeCpCommandName(name), resolveContext(cwd, env));
+            const view = processView(pid, self.processes.cred(pid));
+            const cmd = await registry.resolve(normalizeCpCommandName(name), resolveContext(cwd, env, view));
             if (!cmd) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
@@ -257,7 +261,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             ...io,
             cred,
             args,
-            vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: io.pid, cred })),
+            vfs: processView(io.pid, cred),
             signal: ac.signal,
             setUmask: (mask) => { self.processes.setUmask(io.pid, mask); },
             runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
@@ -285,7 +289,9 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         if (name === undefined)
             return { status: 0, signal: null };
         const registry = self._cpRegistry;
-        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), resolveContext(parent.cwd, parent.env)) : undefined;
+        // Found as the child will run it: under its credential.
+        const view = processView(parent.pid, cred);
+        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), resolveContext(parent.cwd, parent.env, view)) : undefined;
         if (!cmd)
             throw syscallError('ENOENT', 'execvp', name);
         const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });

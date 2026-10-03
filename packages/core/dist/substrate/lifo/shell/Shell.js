@@ -1209,7 +1209,7 @@ export class Shell {
                 exitCode = 2;
                 continue;
             }
-            const command = await this.registry.resolve(arg, resolveContext(this.getCwd(), this.env));
+            const command = await this.registry.resolve(arg, resolveContext(this.getCwd(), this.env, this.vfs));
             if (!command) {
                 (await stderr.write(`hash: ${arg}: not found\n`));
                 exitCode = 1;

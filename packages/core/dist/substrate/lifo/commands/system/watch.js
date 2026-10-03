@@ -19,7 +19,7 @@ export function createWatchCommand(registry) {
         const cmdName = ctx.args[argStart];
         const cmdArgs = ctx.args.slice(argStart + 1);
         const fullCmd = ctx.args.slice(argStart).join(' ');
-        const command = await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env));
+        const command = await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs));
         if (!command) {
             await ctx.stderr.write(`watch: ${cmdName}: command not found\n`);
             return 1;

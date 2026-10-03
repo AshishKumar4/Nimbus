@@ -22,7 +22,7 @@
  * executable until touched. No migration.
  */
 import { type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
-import type { ProcessView } from '../runtime/process-files.js';
+import { type ProcessView } from '../runtime/process-files.js';
 export interface ShebangLine {
     /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
     interpreter: string;
@@ -54,7 +54,7 @@ export declare function parseShebang(head: Uint8Array): ShebangLine | null;
 export declare function basename(path: string): string;
 export declare function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatchDecision;
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
-export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
+export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath' | 'access'>;
 /**
  * What execvp's search of PATH finds for a bare name: the first executable
  * regular file, or, when every file it finds is not executable, the first
@@ -68,11 +68,13 @@ export type PathSearchResult = {
     readonly path: string;
 } | null;
 /**
- * execvp's search for `name`, a name with no slash, along the caller's PATH:
- * each directory in turn, a directory entry of that name passed over, a
- * file that is not executable remembered and passed over.
+ * execvp's search for `name`, a name with no slash, along the caller's PATH,
+ * as the caller: each directory in turn, a directory entry of that name
+ * passed over, and a file the caller may not execute (or reach) remembered
+ * and passed over. A file is executable when the caller's access(X_OK)
+ * allows it, the check a path-shaped invocation makes before it runs.
  */
-export declare function searchPath(fs: ExecInspectionFs, name: string, from: ResolveContext): Promise<PathSearchResult>;
+export declare function searchPath(name: string, from: ResolveContext): Promise<PathSearchResult>;
 /** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
 export declare function programPathOf(command: object): string | undefined;
 export declare function installPathExecResolver(registry: CommandRegistry, fs: ExecInspectionFs, getCwd: () => string): void;

@@ -1,11 +1,11 @@
 import { DEFAULT_PATH } from '../../../constants.js';
 /**
- * The context a caller resolves from: its directory and its environment's
- * PATH. One without an environment, or whose environment has no PATH,
- * searches the session's default PATH.
+ * The context a caller resolves from: its directory, its environment's
+ * PATH, and its view. One without an environment, or whose environment has
+ * no PATH, searches the session's default PATH.
  */
-export function resolveContext(cwd, env) {
-    return { cwd, path: env?.PATH ?? DEFAULT_PATH };
+export function resolveContext(cwd, env, view) {
+    return { cwd, path: env?.PATH ?? DEFAULT_PATH, view };
 }
 export class CommandRegistry {
     commands = new Map();
