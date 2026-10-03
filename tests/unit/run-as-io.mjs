@@ -43,6 +43,17 @@ for (const shell of ['sh', 'bash']) {
   assert.deepEqual(await run(nested('export FOO=bar; sudo -u user env | grep ^FOO=')), ['FOO=bar\n', '', 0], `${shell}: with the script's environment`);
 }
 
+// A child whose reader is gone dies of SIGPIPE, as a process does, and the
+// command that started it goes on: find runs every -exec after it.
+{
+  assert.equal((await ws.exec('mkdir -p /tmp/io/many && for i in $(seq 1 120); do : > /tmp/io/many/f$i; done')).exitCode, 0);
+  const line = "{ find many -type f '(' -exec echo '{}' ';' , -exec sh -c 'echo \"$1\" >> log' sh '{}' ';' ')'; echo $? > rc; } | head -n 1 > /dev/null; cat rc; wc -l < log";
+  const [stdout, stderr] = await run(line);
+  assert.equal(stdout, '0\n120\n', 'find goes on, and exits 0');
+  const deaths = stderr.split('\n').filter((text) => text !== '');
+  assert.ok(deaths.length > 0 && deaths.every((text) => text === "find: 'echo' terminated by signal 13"), `each echo that lost its reader is reported: ${JSON.stringify(stderr.slice(0, 200))}`);
+}
+
 // Typed at the workspace's shell, the same holds.
 assert.deepEqual(await redirected('find d -name f1 -exec echo hit {} \\; > out2.txt', 'out2.txt'), ['', '', 0, 'hit d/f1\n']);
 assert.deepEqual(await run('sudo -u user echo x | cat -n'), ['     1\tx\n', '', 0]);

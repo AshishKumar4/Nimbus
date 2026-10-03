@@ -682,6 +682,12 @@ const SCRIPTS = [
   "job() { echo JOB; }; find a/f.js -exec job '{}' +; echo \"status $?\"",
   "alias cat='echo ALIAS'\nfind a/f.js -exec cat '{}' ';'",
   "cd a && find . -name f.js -exec echo '{}' ';'",
+  // A program whose reader is gone dies of SIGPIPE; find reports it, the -exec is false, and the walk goes on.
+  // The reader exits before find starts, so every echo loses it.
+  "cd ../scratch && mkdir pipe && i=0 && while [ $i -lt 120 ]; do i=$((i+1)); : > pipe/f$i; done; " +
+    "{ sleep 0.2; find pipe -type f '(' -exec echo '{}' ';' , -exec sh -c 'echo \"$1\" >> log' sh '{}' ';' ')'; echo $? > rc; } | true; " +
+    "cat rc; wc -l < log",
+  "cd ../scratch && { sleep 0.2; find pipe -name f1 -exec echo '{}' +; echo $? > rc; } | true; cat rc",
 ];
 
 let compared = 0;

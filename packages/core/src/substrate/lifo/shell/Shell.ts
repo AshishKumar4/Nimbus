@@ -2,7 +2,7 @@ import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
-import type { CommandContext, CommandRunAsHost } from '../commands/types.js';
+import type { ChildExit, CommandContext, CommandRunAsHost } from '../commands/types.js';
 import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
@@ -371,7 +371,7 @@ export class Shell {
   }
 
   /** execvp(3) of `argv` as a process of this shell's kernel (Interpreter.runProgram). */
-  runProgram(argv: readonly string[], spec: ProgramSpec): Promise<number> {
+  runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit> {
     return this.interpreter.runProgram(argv, spec);
   }
 

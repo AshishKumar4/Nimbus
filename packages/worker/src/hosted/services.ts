@@ -4,7 +4,9 @@ import { FacetProcessManager, textBytes, type OutputHooks } from "../facets/proc
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
-import type { Command, CommandContext, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
+import type { ChildExit, Command, CommandContext, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
+import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
+import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 
 import type { CommandRegistry } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
 import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
@@ -277,7 +279,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         if (!registry) { hooks.onStderr(textBytes('cp: registry unavailable\n')); return 127; }
         const cmd = await registry.resolve(normalizeCpCommandName(name), { cwd });
         if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
-        return await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks));
+        return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
       },
     };
     /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
@@ -289,8 +291,8 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       stderr: { write: (d: string) => hooks.onStderr(textBytes(String(d))) },
       stdin: staticStdinReader(stdin),
     });
-    /** A registry command run as process `io.pid`, on `io`'s descriptors. */
-    const runBuiltin = async (cmd: Command, name: string, args: string[], io: BuiltinIo): Promise<number> => {
+    /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
+    const runBuiltin = async (cmd: Command, name: string, args: string[], io: BuiltinIo): Promise<ChildExit> => {
       const cred = self.processes.cred(io.pid);
       const ac = new AbortController();
       const ctx: CommandContext = {
@@ -304,10 +306,12 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       };
       try {
         const code = await cmd(ctx);
-        return typeof code === 'number' ? code : 0;
+        return { status: typeof code === 'number' ? code : 0, signal: null };
       } catch (e) {
+        // A write that finds its reader gone ends the process, silently.
+        if (isBrokenPipe(e)) return KILLED_BY_SIGPIPE;
         await io.stderr.write(`${name}: ${errorText(e)}\n`);
-        return 1;
+        return { status: 1, signal: null };
       }
     };
     /**
@@ -316,17 +320,18 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
      * environment and directory. A program that is not there is ENOENT, as
      * execvp fails, for the caller to report.
      */
-    const spawnBuiltin = async (parent: BuiltinIo, cred: VfsCred, argv: string[]): Promise<number> => {
+    const spawnBuiltin = async (parent: BuiltinIo, cred: VfsCred, argv: string[]): Promise<ChildExit> => {
       const [name, ...args] = argv;
-      if (name === undefined) return 0;
+      if (name === undefined) return { status: 0, signal: null };
       const registry: CommandRegistry | null = self._cpRegistry;
       const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd: parent.cwd }) : undefined;
       if (!cmd) throw syscallError('ENOENT', 'execvp', name);
       const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
       let exitCode = 1;
       try {
-        exitCode = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
-        return exitCode;
+        const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
+        exitCode = ended.status;
+        return ended;
       } finally {
         self.processes.exit(child.pid, exitCode);
       }
@@ -363,7 +368,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           const cred = self.processes.cred(pid);
           const setUmask = (mask: number) => { self.processes.setUmask(pid, mask); };
           // The child inherits from the command that starts it: its pipes and redirections, and the directory a `cd` moved to.
-          const runAs = (parent: CommandContext, targetCred: VfsCred, argv: string[]): Promise<number> =>
+          const runAs = (parent: CommandContext, targetCred: VfsCred, argv: string[]): Promise<ChildExit> =>
             spawnBuiltin(parent, targetCred, argv);
           const result = await self.shell.execute(String(commandLine), {
             cwd: cwd || '/home/user',

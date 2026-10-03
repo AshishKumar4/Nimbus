@@ -62,7 +62,7 @@ async function run(path, cred, args = []) {
       const result = await run(targetArgv[0], targetCred, targetArgv.slice(1));
       stdout += result.stdout;
       stderr += result.stderr;
-      return result.exitCode;
+      return { status: result.exitCode, signal: null };
     },
   });
   return { exitCode, stdout, stderr };

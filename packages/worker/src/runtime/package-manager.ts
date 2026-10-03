@@ -67,7 +67,7 @@ export async function installRuntimeProgrammatic(deps: {
     pid: 0,
     get cred() { return programmaticCred; },
     setUmask: (umask) => { programmaticCred = { ...programmaticCred, umask }; },
-    runAs: async () => 126,
+    runAs: async () => ({ status: 126, signal: null }),
     args: [],
     env: {},
     cwd: deps.getHome(),

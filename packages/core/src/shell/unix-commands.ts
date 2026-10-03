@@ -20,7 +20,7 @@ import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import type { VfsFileType as FileType } from '../vfs/vfs.js';
-import type { Command, CommandInputStream, RunAsOptions } from '../substrate/lifo/commands/types.js';
+import type { ChildExit, Command, CommandInputStream, RunAsOptions } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import sedCommand from '../substrate/lifo/commands/text/sed.js';
 import grepCommand from '../substrate/lifo/commands/text/grep.js';
@@ -102,7 +102,7 @@ type Ctx = {
   vfs: CtxVfs;
   signal: AbortSignal;
   setUmask(mask: number): void;
-  runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<number>;
+  runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<ChildExit>;
   execInterpreterDepth?: number;
 };
 

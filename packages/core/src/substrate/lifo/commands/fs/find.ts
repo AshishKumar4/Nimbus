@@ -9,7 +9,7 @@
  * caller's own credential), from find's directory or the file's.
  */
 
-import type { Command, CommandContext } from '../types.js';
+import type { ChildExit, Command, CommandContext } from '../types.js';
 import type { ProcessStat } from '../../../../runtime/process-files.js';
 import { isVfsError, VFS_STRERROR, type VfsErrorCode } from '../../../../vfs/vfs-error.js';
 import { NIMBUS_VERSION } from '../../../../constants.js';
@@ -397,7 +397,7 @@ class FindRun {
       return true;
     }
     const argv = primary.argv.map((arg) => arg.split('{}').join(place.argument));
-    return (await this.launch(argv, place.directory)) === 0;
+    return (await this.launch(argv, place.directory)).status === 0;
   }
 
   /**
@@ -424,22 +424,26 @@ class FindRun {
     const directory = batch.directory ?? this.ctx.cwd;
     batch.pending.length = 0;
     batch.bytes = batch.primary.argv.reduce((total, arg) => total + encoder.encode(arg).length + 1, 0);
-    if ((await this.launch(argv, directory)) !== 0) this.walker.fail();
+    if ((await this.launch(argv, directory)).status !== 0) this.walker.fail();
   }
 
   /**
-   * A child process for `argv`, under find's own credential, in `directory`:
-   * its exit status, or 1 when there is no such program, which findutils'
-   * child reports before it exits so.
+   * A child process for `argv`, under find's own credential, in `directory`,
+   * and how it ended: exit 1 when there is no such program, which findutils'
+   * child reports before it exits so, and a signal that ended it reported as
+   * findutils reports one, which leaves find's own status to the caller.
    */
-  private async launch(argv: string[], directory: string): Promise<number> {
+  private async launch(argv: string[], directory: string): Promise<ChildExit> {
+    let ended: ChildExit;
     try {
-      return await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
+      ended = await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
     } catch (error) {
       if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
       await this.diagnose(`${quote(argv[0] ?? '')}: ${VFS_STRERROR[error.code]}`);
-      return 1;
+      return { status: 1, signal: null };
     }
+    if (ended.signal !== null) await this.diagnose(`${quote(argv[0] ?? '')} terminated by signal ${ended.status - 128}`);
+    return ended;
   }
 
   private async writeBytes(chunks: readonly Uint8Array[]): Promise<void> {

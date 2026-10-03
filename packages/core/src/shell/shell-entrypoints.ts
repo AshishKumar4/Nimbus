@@ -1,4 +1,4 @@
-import type { CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { ChildExit, CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -19,7 +19,7 @@ type ShellCommandContext = {
   pid: number;
   cred: VfsCred;
   setUmask(mask: number): void;
-  runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<number>;
+  runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<ChildExit>;
   vfs: VFS;
 };
 

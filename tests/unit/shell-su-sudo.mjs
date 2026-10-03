@@ -75,7 +75,7 @@ async function assertElevation(name, commandName, args, expectedCred, expectedAr
     stderr: { write: (text) => { stderr += text; } },
     runAs: async (cred, argv) => {
       calls.push({ cred, argv });
-      return 7;
+      return { status: 7, signal: null };
     },
   });
 

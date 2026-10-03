@@ -1,3 +1,5 @@
+import type { ChildExit } from '../commands/types.js';
+
 export type SignalDisposition = 'ignore' | 'stop' | 'continue' | 'terminate';
 const STANDARD_SIGNALS: readonly (readonly [string, SignalDisposition])[] = [
   ['HUP', 'terminate'], ['INT', 'terminate'], ['QUIT', 'terminate'], ['ILL', 'terminate'], ['TRAP', 'terminate'],
@@ -53,6 +55,9 @@ export function signalOperand(raw: string): string | null {
 export function exitCodeForSignal(signal?: string): number {
   return 128 + (SIGNALS.get(signal ?? 'TERM')?.number ?? 0);
 }
+
+/** A process a write to a closed pipe ended, as SIGPIPE ends one. */
+export const KILLED_BY_SIGPIPE: ChildExit = { status: exitCodeForSignal('PIPE'), signal: 'PIPE' };
 
 export function signalDisposition(signal: string): SignalDisposition | undefined {
   return signal === '0' ? 'ignore' : SIGNALS.get(signal)?.disposition;

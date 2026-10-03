@@ -218,7 +218,7 @@ try {
         const result = await run(targetArgv[0], targetArgv.slice(1), targetCred, stdin);
         stdout += result.stdout;
         stderr += result.stderr;
-        return result.exitCode;
+        return { status: result.exitCode, signal: null };
       },
     });
     return { exitCode, stdout, stderr };

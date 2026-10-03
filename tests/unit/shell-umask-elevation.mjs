@@ -92,7 +92,7 @@ assert.equal(root.stat('work/ordinary').mode & 0o7777, 0o644);
 const invocations = [];
 const runAs = async (cred, argv) => {
   invocations.push({ cred, argv });
-  return 23;
+  return { status: 23, signal: null };
 };
 
 assert.equal((await run('sudo', ['id'], first.pid, { runAs })).exitCode, 23);
