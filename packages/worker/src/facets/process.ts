@@ -81,7 +81,8 @@ interface ChildEntry {
   stdinChunks: Uint8Array[];
   stdinClosed: boolean;
   stdinTotalBytes: number;
-  stdinWaiters: Array<(r: { data: Uint8Array; ended: boolean }) => void>;
+  /** Woken when stdin gains a chunk, closes, or the child exits; each takes from `stdinChunks` itself. */
+  stdinWaiters: Array<() => void>;
 
   // stdout/stderr ring (child → parent)
   // fd 1 = stdout, fd 2 = stderr.
@@ -770,10 +771,7 @@ export class FacetProcessManager {
     }
     child.stdinChunks.push(data);
     child.stdinTotalBytes += data.byteLength;
-    // Flush any waiters
-    for (const w of child.stdinWaiters.splice(0)) {
-      w({ data, ended: false });
-    }
+    for (const w of child.stdinWaiters.splice(0)) w();
     return { ok: true };
   }
 
@@ -781,9 +779,18 @@ export class FacetProcessManager {
     const child = this.children.get(childPid);
     if (!child) return;
     child.stdinClosed = true;
-    for (const w of child.stdinWaiters.splice(0)) {
-      w({ data: EMPTY_BYTES, ended: true });
+    for (const w of child.stdinWaiters.splice(0)) w();
+  }
+
+  /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
+  private _takeStdin(child: ChildEntry): { data: Uint8Array; ended: boolean } | null {
+    const data = child.stdinChunks.shift();
+    if (data !== undefined) {
+      child.stdinTotalBytes -= data.byteLength;
+      return { data, ended: false };
     }
+    if (child.stdinClosed || child.exitCode !== null) return { data: EMPTY_BYTES, ended: true };
+    return null;
   }
 
   /**
@@ -793,22 +800,19 @@ export class FacetProcessManager {
   async cpReadStdin(childPid: number, waitMs: number): Promise<{ data: Uint8Array; ended: boolean }> {
     const child = this.children.get(childPid);
     if (!child) return { data: EMPTY_BYTES, ended: true };
-    if (child.stdinChunks.length > 0) {
-      const data = child.stdinChunks.shift()!;
-      child.stdinTotalBytes -= data.byteLength;
-      return { data, ended: false };
-    }
-    if (child.stdinClosed) return { data: EMPTY_BYTES, ended: true };
-    // Long-poll
+    const ready = this._takeStdin(child);
+    if (ready) return ready;
+    // Long-poll. The chunk that wakes this reader stays queued until taken
+    // here, so no other reader is handed it too.
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         const idx = child.stdinWaiters.indexOf(wrapped);
         if (idx >= 0) child.stdinWaiters.splice(idx, 1);
         resolve({ data: EMPTY_BYTES, ended: false });
       }, Math.min(waitMs, 5000));
-      const wrapped = (r: { data: Uint8Array; ended: boolean }) => {
+      const wrapped = () => {
         clearTimeout(timer);
-        resolve(r);
+        resolve(this._takeStdin(child) ?? { data: EMPTY_BYTES, ended: false });
       };
       child.stdinWaiters.push(wrapped);
     });
@@ -1000,11 +1004,8 @@ export class FacetProcessManager {
       const fresh = child.outputs[w.fd].filter((c) => c.seq > w.sinceSeq);
       w.resolve({ chunks: fresh, closed: true, maxSeq: child.outputSeq[w.fd] });
     }
-    // Wake stdin waiters with ended=true so a child blocked on cpReadStdin
-    // unblocks and exits cleanly.
-    for (const w of child.stdinWaiters.splice(0)) {
-      w({ data: EMPTY_BYTES, ended: true });
-    }
+    // A child blocked on cpReadStdin is told stdin ended, and exits cleanly.
+    for (const w of child.stdinWaiters.splice(0)) w();
   }
 
   /**
