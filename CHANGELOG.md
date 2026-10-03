@@ -40,6 +40,25 @@ published independently in the `@nimbus-sh` npm scope.
   read whole, such as Kinu's bounded preview, refuses on that answer. The
   fallback reads the whole file for each range, as the old one did; neither
   has a size bound.
+- A WASI program (`python3`, `ruby`, the shell's wasm commands) follows an
+  absolute symlink. With `/home/user -> /home/main`, every path through the
+  link failed with errno 76, "Capabilities insufficient":
+  `os.chdir('/home/user/site')` raised, `os.path.exists` behind it answered
+  False, and `cd`, `cat` and `ls` in the wasm shell failed, while node
+  resolved the link. A lookup beneath a WASI preopen refused any absolute
+  link target. Now an absolute target resolves from the namespace's `/`, as
+  every other lookup resolves it, and what the lookup reaches must still lie
+  at or under the preopen's root (ENOTCAPABLE otherwise, as `..` at the root
+  and an absolute path still are). A dangling one is ENOENT. The model
+  (VFS-COMP-006, `Nimbus.Vfs.CompositeBeneath`) proves the lookup still
+  stays beneath the root, finds every directory it passes searchable, the
+  ones an absolute link walks from `/` included, and agrees with the
+  unrestricted walk.
+- `python3` and `ruby` fail when they cannot enter the shell's working
+  directory, naming it (`python3: can't enter working directory '/x':
+  [Errno 44] No such file or directory`, exit 1), instead of running the
+  program in `/`. `cd /home/user/site && python3 -m http.server` served
+  "Directory listing for /".
 
 ## 2026-10-02
 

@@ -1036,13 +1036,16 @@ const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
  * namespace walk does it (VFS-COMP-006): the root must be reachable (every
- * directory above it searchable); an absolute path, `..` at the root, and any
- * absolute link are ENOTCAPABLE; each component needs the directory it leaves
- * to be a searchable directory; a missing component is ENOENT unless it is
- * the last. Links resolve (the last only when `follow`), 40 hops, then null
- * (ELOOP). The one walk for every face: it yields its lookups, which the
- * synchronous bridge answers at once and a face over asynchronous mounts
- * awaits. `root` is normalized; the answer is the resolved path, normalized.
+ * directory above it searchable); an absolute path and `..` at the root are
+ * ENOTCAPABLE; each component needs the directory it leaves to be a
+ * searchable directory; a missing component is ENOENT unless it is the last.
+ * Links resolve (the last only when `follow`), 40 hops, then null (ELOOP):
+ * a relative one from its directory, an absolute one from the namespace's
+ * `/`, as the unrestricted walk resolves them, and what the walk reaches
+ * must lie at or under the root, else ENOTCAPABLE. The one walk for every
+ * face: it yields its lookups, which the synchronous bridge answers at once
+ * and a face over asynchronous mounts awaits. `root` is normalized; the
+ * answer is the resolved path, normalized.
  */
 export function* walkBeneath(root, path, follow, cred) {
     const name = typeof path === 'string' ? path : path.path;
@@ -1052,7 +1055,6 @@ export function* walkBeneath(root, path, follow, cred) {
         throw fsError('ENOTCAPABLE', 'path', path);
     const pending = name.split('/').filter(Boolean);
     const resolved = root === '' ? [] : root.split('/');
-    const depth = resolved.length;
     let hops = 0;
     while (pending.length > 0) {
         const segment = pending.shift();
@@ -1067,7 +1069,7 @@ export function* walkBeneath(root, path, follow, cred) {
         if (segment === '.')
             continue;
         if (segment === '..') {
-            if (resolved.length === depth)
+            if (dir === root)
                 throw fsError('ENOTCAPABLE', 'path', path);
             resolved.pop();
             continue;
@@ -1087,10 +1089,13 @@ export function* walkBeneath(root, path, follow, cred) {
             return null;
         const target = (yield { readlink: '/' + candidate });
         if (target.startsWith('/'))
-            throw fsError('ENOTCAPABLE', 'path', path);
+            resolved.length = 0;
         pending.unshift(...target.split('/').filter(Boolean));
     }
-    return resolved.join('/');
+    const reached = resolved.join('/');
+    if (root !== '' && reached !== root && !reached.startsWith(root + '/'))
+        throw fsError('ENOTCAPABLE', 'path', path);
+    return reached;
 }
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;

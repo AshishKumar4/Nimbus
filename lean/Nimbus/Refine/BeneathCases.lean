@@ -91,14 +91,16 @@ def directed : Json :=
     [(R, true, false, ["m", "x", "..", "..", "n"]), (R, true, false, ["m", ".."]), (R, true, false, ["m", "..", ".."]),
      (R, true, false, ["m", "x", "..", "..", "..", "etc", "p"]), (R, true, false, ["m", "side"]),
      (R, true, false, ["m", "up"]), (R, true, false, ["m", "abs"]), (M, true, false, [".."]),
-     (M, true, false, ["side"]), (M, false, false, ["abs"]), (M, true, true, ["x"]), (M, true, false, ["x", "f"]), (M, true, false, ["loop"])]
+     (M, true, false, ["side"]), (M, false, false, ["abs"]), (M, true, true, ["x"]), (M, true, false, ["x", "f"]), (M, true, false, ["loop"]),
+     (R, true, false, ["m", "inside"]), (R, true, false, ["m", "chain"]), (R, true, false, ["m", "gone"]),
+     (R, true, false, ["m", "gone", "x"]), (M, true, false, ["inside"]), (M, false, false, ["inside"])]
   .obj [("mounts", mountsJson S.mounts), ("backends", .obj [("b0", backendJson (S.bks 0)), ("b1", backendJson (S.bks 1))]),
     ("steps", .arr (steps.map fun (R, f, abs, raw) => stepJson S u2 R f abs raw))]
 
 def fixture : String :=
   fixtureText [("fixture", .str "beneath"), ("model", .str "Nimbus.Vfs.CompositeBeneath.resolveB"),
       ("principals", .arr (creds.map credJson)),
-      ("note", .str "a lookup of path beneath root (a preopen, RESOLVE_BENEATH) through the composite, the root first resolved from / (EACCES unless every directory from / to root grants search), then as composite-perm's walk (search checked on every directory left from root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at root, an absolute link, or an absolute path; .. elsewhere pops one component, so at a mount's root it reaches the mount point's parent; a missing last component resolves")]
+      ("note", .str "a lookup of path beneath root (a preopen, RESOLVE_BENEATH) through the composite, the root first resolved from / (EACCES unless every directory from / to root grants search), then as composite-perm's walk (search checked on every directory left from root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at root or an absolute path; an absolute link resolves from /, and an answer that does not lie at or under root is ENOTCAPABLE; .. elsewhere pops one component, so at a mount's root it reaches the mount point's parent; a missing last component resolves")]
     ([directed] ++ runGen 0x42454E45 (casesOf 150 genCase))
 
 end Nimbus.Refine.BeneathCases

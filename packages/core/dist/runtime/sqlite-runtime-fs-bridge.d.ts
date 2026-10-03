@@ -201,13 +201,16 @@ type BeneathAnswer = {
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
  * namespace walk does it (VFS-COMP-006): the root must be reachable (every
- * directory above it searchable); an absolute path, `..` at the root, and any
- * absolute link are ENOTCAPABLE; each component needs the directory it leaves
- * to be a searchable directory; a missing component is ENOENT unless it is
- * the last. Links resolve (the last only when `follow`), 40 hops, then null
- * (ELOOP). The one walk for every face: it yields its lookups, which the
- * synchronous bridge answers at once and a face over asynchronous mounts
- * awaits. `root` is normalized; the answer is the resolved path, normalized.
+ * directory above it searchable); an absolute path and `..` at the root are
+ * ENOTCAPABLE; each component needs the directory it leaves to be a
+ * searchable directory; a missing component is ENOENT unless it is the last.
+ * Links resolve (the last only when `follow`), 40 hops, then null (ELOOP):
+ * a relative one from its directory, an absolute one from the namespace's
+ * `/`, as the unrestricted walk resolves them, and what the walk reaches
+ * must lie at or under the root, else ENOTCAPABLE. The one walk for every
+ * face: it yields its lookups, which the synchronous bridge answers at once
+ * and a face over asynchronous mounts awaits. `root` is normalized; the
+ * answer is the resolved path, normalized.
  */
 export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: {
     uid: number;

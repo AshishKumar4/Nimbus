@@ -5,11 +5,14 @@
 
   `resolve(R, path)` walks `path` relative to the directory `R` exactly as
   `CompositePerm.walk` does (search checked on each directory it leaves, before the
-  next lookup; every link followed in the namespace; 40 hops, then ELOOP), with three
-  refusals, each ENOTCAPABLE, checked per component and per hop: `..` at `R`; an
-  absolute link; an absolute `path`. `..` elsewhere pops one component, so at a
-  mount's root it goes to the mount point's parent, and across the composite's own
-  directories above a mount it is the same pop: there is no other way up.
+  next lookup; every link followed in the namespace, a relative one from its
+  directory and an absolute one from `/`; 40 hops, then ELOOP), with three
+  refusals, each ENOTCAPABLE: `..` at `R` and an absolute `path`, checked per
+  component, and an answer that does not lie at or under `R`, checked once at the
+  end. `..` elsewhere pops one component, so at a mount's root it goes to the mount
+  point's parent, and across the composite's own directories above a mount it is
+  the same pop: there is no other way up. An absolute link leaves `R` only for as
+  long as the walk is away: where it leads must come back beneath `R`.
   The root itself is resolved by name first: every directory from `/` down to `R`
   must grant search, else EACCES (as Nimbus re-resolves a descriptor root by path).
 
@@ -17,16 +20,18 @@
   - `beneath_contained`: whatever `resolve(R, path)` resolves to lies at or under `R`,
     through any number of links, `..`, mounts and directories above them.
   - `beneath_named`: every directory it passes from `R` down is a directory granting
-    the caller search; `beneath_root_searched`: so does every directory from `/` to
-    `R`, because the root is resolved by name first (EACCES otherwise: stricter than
-    Linux, which trusts the preopen's descriptor, and never looser).
+    the caller search, an absolute link's walk from `/` included;
+    `beneath_root_searched`: so does every directory from `/` to `R`, because the
+    root is resolved by name first (EACCES otherwise: stricter than Linux, which
+    trusts the preopen's descriptor, and never looser).
   - `beneath_agrees`: when it resolves, it resolves to exactly what the unrestricted
     walk from `R` does: the refusals only refuse, they never pick another file.
   - `beneath_across_mounts` (decided, the f6f6fa6e shape): from a root above a mount
     point and from a mount point, `..` out of the mount stays beneath, and one more
-    `..` at the root is ENOTCAPABLE; relative links climbing out and absolute links
-    are ENOTCAPABLE; a link climbing to the mount point's parent that is still
-    beneath resolves.
+    `..` at the root is ENOTCAPABLE; relative links climbing out are ENOTCAPABLE; a
+    link climbing to the mount point's parent that is still beneath resolves; an
+    absolute link resolves from `/` where it lands beneath the root, and is
+    ENOTCAPABLE where it does not.
 -/
 
 import Nimbus.Vfs.CompositePerm
@@ -51,8 +56,7 @@ def walkB (S : St) (c : Cred) (follow : Bool) (R : Path) : Nat → Nat → Path 
       | some (.link a t, _) =>
         if rs = [] ∧ follow = false then .ok q
         else if h = 0 then .error "ELOOP"
-        else if a then .error "ENOTCAPABLE"
-        else walkB S c follow R n (h - 1) done (t ++ rs)
+        else walkB S c follow R n (h - 1) (if a then [] else done) (t ++ rs)
       | some (.dir, _) => walkB S c follow R n h q rs
       | some (.file _, _) => if rs = [] then .ok q else .error "ENOTDIR"
 
@@ -62,10 +66,33 @@ def walkB (S : St) (c : Cred) (follow : Bool) (R : Path) : Nat → Nat → Path 
 def rootDenied (S : St) (c : Cred) (R : Path) : Bool :=
   (List.range R.length).any fun i => !grants c (metaAt S (R.take i)) 1
 
-/-- `path` (its components; `abs` when it began with `/`) resolved beneath `R`. -/
+/-- `path` (its components; `abs` when it began with `/`) resolved beneath `R`: what the
+    walk reaches, when that lies at or under `R`. -/
 def resolveB (S : St) (c : Cred) (follow : Bool) (R : Path) (abs : Bool) (raw : List String) : Except String Path :=
   if rootDenied S c R then .error "EACCES"
-  else if abs then .error "ENOTCAPABLE" else walkB S c follow R fuel maxLinks R raw
+  else if abs then .error "ENOTCAPABLE"
+  else match walkB S c follow R fuel maxLinks R raw with
+    | .ok p => if R.isPrefixOf p then .ok p else .error "ENOTCAPABLE"
+    | .error e => .error e
+
+/-- What `resolveB` answers `.ok` for is what the walk reached, and it lies at or under `R`. -/
+theorem resolveB_ok {S : St} {c : Cred} {f : Bool} {R : Path} {abs : Bool} {raw : List String} {p : Path}
+    (h : resolveB S c f R abs raw = .ok p) :
+    rootDenied S c R = false ∧ walkB S c f R fuel maxLinks R raw = .ok p ∧ R <+: p := by
+  unfold resolveB at h
+  split at h
+  · cases h
+  rename_i hd
+  split at h
+  · cases h
+  split at h
+  · rename_i p' hw
+    split at h
+    · rename_i hp
+      cases h
+      exact ⟨by simpa using hd, hw, List.isPrefixOf_iff_prefix.mp hp⟩
+    · cases h
+  · cases h
 
 /-! ## Contained -/
 
@@ -75,51 +102,10 @@ theorem prefix_dropLast {R d : Path} (h : R <+: d) (hne : d ≠ R) : R <+: d.dro
   rw [List.dropLast_append_of_ne_nil _ ht]
   exact List.prefix_append _ _
 
-theorem walkB_contained (S : St) (c : Cred) (f : Bool) (R : Path) :
-    ∀ n h done rs p, R <+: done → walkB S c f R n h done rs = .ok p → R <+: p := by
-  intro n
-  induction n with
-  | zero => intro _ _ _ _ _ h; simp [walkB] at h
-  | succ n ih =>
-    intro h done rs p hR hw
-    have snoc : ∀ x, R <+: done ++ [x] := fun x => hR.trans (List.prefix_append _ _)
-    cases rs with
-    | nil => simp only [walkB, Except.ok.injEq] at hw; subst hw; exact hR
-    | cons x rs =>
-      simp only [walkB] at hw
-      split at hw
-      · cases hw
-      · split at hw
-        · exact ih _ _ _ _ hR hw
-        · split at hw
-          · split at hw
-            · cases hw
-            · exact ih _ _ _ _ (prefix_dropLast hR ‹_›) hw
-          · split at hw
-            · split at hw
-              · cases hw; exact snoc x
-              · cases hw
-            · split at hw
-              · cases hw; exact snoc x
-              · split at hw
-                · cases hw
-                · split at hw
-                  · cases hw
-                  · exact ih _ _ _ _ hR hw
-            · exact ih _ _ _ _ (snoc x) hw
-            · split at hw
-              · cases hw; exact snoc x
-              · cases hw
-
 /-- Whatever a path resolves to beneath `R` lies at or under `R`. -/
 theorem beneath_contained (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool) (raw : List String) (p : Path)
-    (h : resolveB S c f R abs raw = .ok p) : R <+: p := by
-  unfold resolveB at h
-  split at h
-  · cases h
-  split at h
-  · cases h
-  · exact walkB_contained S c f R _ _ _ _ p (List.prefix_refl R) h
+    (h : resolveB S c f R abs raw = .ok p) : R <+: p :=
+  (resolveB_ok h).2.2
 
 /-! ## Searched from the root down -/
 
@@ -149,17 +135,40 @@ theorem namedFrom_dropLast {S : St} {c : Cred} {R d : Path} (hn : NamedFrom S c 
     exact hn i hr (by omega)
   · exact (hn _ (by omega) (by omega)).1
 
+/-- Where the walk stands: beneath `R`, every directory from `R` down searched; or,
+    once an absolute link has sent it to `/`, every directory from `/` down searched. -/
+def Walked (S : St) (c : Cred) (R d : Path) : Prop :=
+  (R <+: d ∧ NamedFrom S c R d) ∨ Named S c d
+
+theorem walked_snoc {S : St} {c : Cred} {R d : Path} (x : String) (hw : Walked S c R d) (hd : IsDir S d)
+    (hg : grants c (metaAt S d) 1 = true) : Walked S c R (d ++ [x]) := by
+  rcases hw with ⟨hR, hn⟩ | hn
+  · exact .inl ⟨hR.trans (List.prefix_append _ _), namedFrom_snoc x hn hd hg⟩
+  · exact .inr (named_snoc x hn hd hg)
+
+theorem walked_dropLast {S : St} {c : Cred} {R d : Path} (hw : Walked S c R d) (hd : IsDir S d) (hne : d ≠ R) :
+    Walked S c R d.dropLast ∧ IsDir S d.dropLast := by
+  rcases hw with ⟨hR, hn⟩ | hn
+  · have := namedFrom_dropLast hn hR hne
+    exact ⟨.inl ⟨prefix_dropLast hR hne, this.1⟩, this.2⟩
+  · have := named_dropLast hn hd
+    exact ⟨.inr this.1, this.2⟩
+
+theorem walked_named {S : St} {c : Cred} {R d : Path} (hw : Walked S c R d) : NamedFrom S c R d := by
+  rcases hw with ⟨_, hn⟩ | hn
+  · exact hn
+  · exact fun i _ hi => hn i hi
+
 theorem walkB_named (S : St) (c : Cred) (f : Bool) (R : Path) :
-    ∀ n h done rs p, R <+: done → NamedFrom S c R done → IsDir S done →
+    ∀ n h done rs p, Walked S c R done → IsDir S done →
       walkB S c f R n h done rs = .ok p → NamedFrom S c R p := by
   intro n
   induction n with
-  | zero => intro _ _ _ _ _ _ _ h; simp [walkB] at h
+  | zero => intro _ _ _ _ _ _ h; simp [walkB] at h
   | succ n ih =>
-    intro h done rs p hR hn hd hw
-    have snocR : ∀ x, R <+: done ++ [x] := fun x => hR.trans (List.prefix_append _ _)
+    intro h done rs p hW hd hw
     cases rs with
-    | nil => simp only [walkB, Except.ok.injEq] at hw; subst hw; exact hn
+    | nil => simp only [walkB, Except.ok.injEq] at hw; subst hw; exact walked_named hW
     | cons x rs =>
       simp only [walkB] at hw
       split at hw
@@ -167,42 +176,36 @@ theorem walkB_named (S : St) (c : Cred) (f : Bool) (R : Path) :
       · rename_i hg
         have hg : grants c (metaAt S done) 1 = true := by simpa using hg
         split at hw
-        · exact ih _ _ _ _ hR hn hd hw
+        · exact ih _ _ _ _ hW hd hw
         · split at hw
           · split at hw
             · cases hw
             · rename_i hne
-              have := namedFrom_dropLast hn hR hne
-              exact ih _ _ _ _ (prefix_dropLast hR hne) this.1 this.2 hw
+              have := walked_dropLast hW hd hne
+              exact ih _ _ _ _ this.1 this.2 hw
           · split at hw
             · split at hw
-              · cases hw; exact namedFrom_snoc x hn hd hg
+              · cases hw; exact walked_named (walked_snoc x hW hd hg)
               · cases hw
             · split at hw
-              · cases hw; exact namedFrom_snoc x hn hd hg
+              · cases hw; exact walked_named (walked_snoc x hW hd hg)
               · split at hw
                 · cases hw
                 · split at hw
-                  · cases hw
-                  · exact ih _ _ _ _ hR hn hd hw
+                  · exact ih _ _ _ _ (.inr fun i hi => by simp at hi) (root_dir S) hw
+                  · exact ih _ _ _ _ hW hd hw
             · rename_i m he
-              exact ih _ _ _ _ (snocR x) (namedFrom_snoc x hn hd hg) ⟨m, he⟩ hw
+              exact ih _ _ _ _ (walked_snoc x hW hd hg) ⟨m, he⟩ hw
             · split at hw
-              · cases hw; exact namedFrom_snoc x hn hd hg
+              · cases hw; exact walked_named (walked_snoc x hW hd hg)
               · cases hw
 
 /-- Every directory from `R` down to what `R`'s path resolves to is a directory that
     grants the caller search. -/
 theorem beneath_named (S : St) (c : Cred) (f : Bool) (R : Path) (hR : IsDir S R) (abs : Bool) (raw : List String)
     (p : Path) (h : resolveB S c f R abs raw = .ok p) :
-    ∀ i, R.length ≤ i → i < p.length → IsDir S (p.take i) ∧ grants c (metaAt S (p.take i)) 1 = true := by
-  unfold resolveB at h
-  split at h
-  · cases h
-  split at h
-  · cases h
-  · exact walkB_named S c f R _ _ _ _ p (List.prefix_refl R)
-      (fun i h1 h2 => absurd h2 (by omega)) hR h
+    ∀ i, R.length ≤ i → i < p.length → IsDir S (p.take i) ∧ grants c (metaAt S (p.take i)) 1 = true :=
+  walkB_named S c f R _ _ _ _ p (.inl ⟨List.prefix_refl R, fun i h1 h2 => absurd h2 (by omega)⟩) hR (resolveB_ok h).2.1
 
 /-- What resolves beneath a root the caller could name: every directory from `/` to the
     root granted search too. -/
@@ -261,23 +264,13 @@ theorem walkB_agrees (S : St) (c : Cred) (f : Bool) (R : Path) :
                   split at hw
                   · cases hw
                   · rw [if_neg ‹_›]
-                    split at hw
-                    · cases hw
-                    · rename_i ha
-                      simp only [Bool.not_eq_true] at ha
-                      subst ha
-                      exact ih _ _ _ _ hw
+                    exact ih _ _ _ _ hw
 
 /-- When `path` resolves beneath `R`, it resolves to exactly what the unrestricted
     walk from `R` gives. -/
 theorem beneath_agrees (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool) (raw : List String) (p : Path)
-    (h : resolveB S c f R abs raw = .ok p) : walk S c f fuel maxLinks R raw = .ok p := by
-  unfold resolveB at h
-  split at h
-  · cases h
-  split at h
-  · cases h
-  · exact walkB_agrees S c f R _ _ _ _ p h
+    (h : resolveB S c f R abs raw = .ok p) : walk S c f fuel maxLinks R raw = .ok p :=
+  walkB_agrees S c f R _ _ _ _ p (resolveB_ok h).2.1
 
 /-! ## Across mounts (f6f6fa6e) -/
 
@@ -287,7 +280,8 @@ def ans : Except String Path → String × Path
   | .ok p => ("", p)
 
 /-- `/a/m` mounts backend 1 (holding `x/f`, `up -> ../../etc/p`, `side -> ../n`,
-    `abs -> /etc/p`, `loop -> loop`); the root holds `/a/n` and `/etc/p`. -/
+    `abs -> /etc/p`, `loop -> loop`, and the absolute links `inside -> /a/n`,
+    `chain -> /a/m/inside` and `gone -> /a/none`); the root holds `/a/n` and `/etc/p`. -/
 def mountTrace : St :=
   { mounts := [⟨["a", "m"], 1⟩],
     bks := fun k => if k = 0 then
@@ -297,7 +291,10 @@ def mountTrace : St :=
           (["up"], ⟨.link false ["..", "..", "etc", "p"], synthMeta⟩),
           (["side"], ⟨.link false ["..", "n"], synthMeta⟩),
           (["abs"], ⟨.link true ["etc", "p"], synthMeta⟩),
-          (["loop"], ⟨.link false ["loop"], synthMeta⟩)] }
+          (["loop"], ⟨.link false ["loop"], synthMeta⟩),
+          (["inside"], ⟨.link true ["a", "n"], synthMeta⟩),
+          (["chain"], ⟨.link true ["a", "m", "inside"], synthMeta⟩),
+          (["gone"], ⟨.link true ["a", "none"], synthMeta⟩)] }
 
 theorem beneath_across_mounts :
     let S := mountTrace
@@ -315,6 +312,11 @@ theorem beneath_across_mounts :
     ans (resolveB S u2 false M false ["abs"]) = ("", ["a", "m", "abs"]) ∧
     ans (resolveB S u2 true M true ["x"]) = ("ENOTCAPABLE", []) ∧
     ans (resolveB S u2 true M false ["loop"]) = ("ELOOP", []) ∧
+    ans (resolveB S u2 true R false ["m", "inside"]) = ("", ["a", "n"]) ∧
+    ans (resolveB S u2 true R false ["m", "chain"]) = ("", ["a", "n"]) ∧
+    ans (resolveB S u2 true R false ["m", "gone"]) = ("", ["a", "none"]) ∧
+    ans (resolveB S u2 true R false ["m", "gone", "x"]) = ("ENOENT", []) ∧
+    ans (resolveB S u2 true M false ["inside"]) = ("ENOTCAPABLE", []) ∧
     ans (walk S u2 true fuel maxLinks M ["up"]) = ("", ["etc", "p"]) := by
   decide
 
