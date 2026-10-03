@@ -60,9 +60,14 @@ export declare class CssError extends Error {
     readonly diagnostic: esbuild.Message;
     constructor(diagnostic: esbuild.Message);
 }
+/** A bundled stylesheet, and what esbuild would have warned about its sheets. */
+export interface BundledCss {
+    css: string;
+    warnings: esbuild.Message[];
+}
 export declare function bundleCss(modules: readonly CssModule[], plugin: EsbuildRemotePlugin, assets: CssAssets, { minify }: {
     minify: boolean;
-}): Promise<string>;
+}): Promise<BundledCss>;
 /** esbuild's EncodeStringAsShortestDataURL. */
 export declare function shortestDataUrl(mimeType: string, text: string): string;
 /** esbuild's EncodeStringAsPercentEscapedDataURL, for text that came from valid UTF-8. */

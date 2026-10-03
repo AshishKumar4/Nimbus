@@ -137,6 +137,8 @@ try {
       try {
         const result = await service.build([`/home/user/${name}/${project.entry}`], { ...viteBuildOptions(name), ...project.options });
         seen[engine] = await observe(name, project, result);
+        // A stylesheet's syntax warnings, where the project asks: esbuild's text and place.
+        if (project.compareWarnings) seen[engine].warnings = (result.warnings ?? []).map((w) => `${w.location?.file?.split('/').pop()}:${w.location?.line}:${w.location?.column} ${w.text}`).sort();
         reads[engine] = fs.reads;
       } catch (error) {
         seen[engine] = {

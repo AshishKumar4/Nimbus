@@ -238,6 +238,34 @@ globalThis.__result = { bom, manifest, page, bin, eot, md, xhtml, sfnt, gifish, 
       'src/b.css': '/*! license b */\n.b { color: b }\n',
     },
   },
+  // ── The css-tree re-review (InstitutionalPinniped) ──────────────────────
+  // A url() css-tree keeps as written (a custom property's value, a
+  // declaration it cannot parse, an at-rule's prelude) is still a url().
+  'vite-review-urls-in-raw-values': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./sub/a.css";\n.m { color: m }\n',
+      'src/sub/a.css': '.visible { --bg: url(./a.png); --n: 1 ; background-image: var(--bg) }\n.r { color: red !!! url(./c.png) }\n@supports (background: url(./s.png)) { .s { color: s } }\n',
+      'src/sub/a.png': PNG,
+      'src/sub/c.png': PNG + 'c',
+      'src/sub/s.png': PNG + 's',
+    },
+  },
+  // Malformed @import rules are kept as written, never followed, and end the imports after them.
+  'vite-review-malformed-imports': {
+    entry: 'src/main.js',
+    compareWarnings: true,
+    files: {
+      'src/main.js': "import './one.css';\nimport './two.css';\nimport './three.css';\nimport './four.css';\nglobalThis.__result = 1;\n",
+      'src/one.css': '@import url("./a.css" "extra");\n@import "./b.css";\n.one { color: one }\n',
+      'src/two.css': '@import "./a.css" { .x { color: red } }\n@import "./b.css";\n.two { color: two }\n',
+      'src/three.css': '@import 5;\n@import "./b.css";\n.three { color: three }\n',
+      'src/four.css': '@import "./a.css";\n@layer x;\n@import "./b.css";\n.four { color: four }\n',
+      'src/a.css': '.a { color: a }\n',
+      'src/b.css': '.b { color: b }\n',
+    },
+  },
   'vite-css-rules': {
     entry: 'src/main.js',
     files: {

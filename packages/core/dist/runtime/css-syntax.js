@@ -4,12 +4,16 @@
  * grammar data stays out of every bundle).
  *
  * A stylesheet is parsed once into css-tree's AST. On top of it this module
- * answers what bundling needs and css-tree does not model: which `@import`
- * rules are in effect (only those before any rule but `@charset` and
- * `@layer` statements, as CSS says), each one's URL and conditions (`layer`,
- * `layer(...)`, `supports(...)`, then a media query list) as component values
- * from css-tree's tokens, and the cascade layers the sheet names before and
- * after its first `@import`. Rules print through css-tree's generator, which
+ * answers what bundling needs and css-tree does not model, by esbuild
+ * 0.24's rules (internal/css_parser): which `@import` rules are in effect
+ * (only those before any rule but `@charset` and `@layer` statements, no
+ * `@layer` statement once an `@import` has been seen), each one's URL and
+ * conditions (`layer`, `layer(...)`, `supports(...)`, then a media query
+ * list) as component values from css-tree's tokens, and the cascade layers
+ * the sheet names before and after its first `@import`. A malformed `@import`
+ * (no URL, a url() of anything but one string, a block) is never followed:
+ * it is kept as written, with esbuild's warning, and ends the imports after
+ * it. Rules print through css-tree's generator, which
  * keeps what whitespace and comments meant (`.x/**\/.y` stays one compound
  * selector, a no-break space stays a name character); conditions print as
  * esbuild 0.24 prints them, since a bundle writes them back.
@@ -32,22 +36,28 @@ const OPEN = {
 export function componentsOf(source, base = 0) {
     const root = [];
     const stack = [{ list: root, close: -1 }];
+    const open = [];
     T.tokenize(source, (type, start, end) => {
         if (type === T.EOF)
             return;
         const top = stack[stack.length - 1];
         if (type === top.close && stack.length > 1) {
             stack.pop();
+            open.pop().end = base + end;
             return;
         }
-        const component = { type, text: source.slice(start, end), at: base + start };
+        const component = { type, text: source.slice(start, end), at: base + start, end: base + end };
         top.list.push(component);
         const close = OPEN[type];
         if (close !== undefined) {
             component.children = [];
             stack.push({ list: component.children, close });
+            open.push(component);
         }
     });
+    // A bracket left open runs to the end, as the tokenizer reads it.
+    for (const component of open)
+        component.end = base + source.length;
     return root;
 }
 const insignificant = (c) => c.type === T.WhiteSpace || c.type === T.Comment;
@@ -194,11 +204,12 @@ function importOf(prelude) {
         length = first.text.length;
     }
     else if (first && isNamed(first, 'url', [T.Function])) {
-        const arg = trim(first.children ?? [])[0];
-        if (arg?.type === T.String) {
-            path = valueOf(arg);
-            at = arg.at;
-            length = arg.text.length;
+        // `url("...")`: exactly one string, as esbuild's parseURLOrString takes it.
+        const args = trim(first.children ?? []);
+        if (args.length === 1 && args[0].type === T.String) {
+            path = valueOf(args[0]);
+            at = args[0].at;
+            length = args[0].text.length;
         }
     }
     if (path === null)
@@ -251,7 +262,7 @@ export function parseSheet(source) {
                 legal.push(`/*${value}*/`);
         },
     });
-    const sheet = { source, ast, imports: [], missingUrl: null, layersPreImport: [], layersPostImport: [], legal, hasCharset: false };
+    const sheet = { source, ast, imports: [], nodes: [], warnings: [], layersPreImport: [], layersPostImport: [], legal, hasCharset: false };
     // The cascade layers named anywhere, in order, prefixed by the layers they
     // sit in; nothing inside an anonymous layer (esbuild's recordAtLayerRule).
     const record = (names, enclosing) => {
@@ -280,7 +291,9 @@ export function parseSheet(source) {
             visitLayers(node.block?.children?.toArray() ?? [], inner, innerAnonymous);
         }
     };
-    // `@import` is in effect only before any rule but `@charset` and `@layer` statements.
+    // esbuild's parseListOfRules: `@import` is in effect only before any rule
+    // but `@charset` and `@layer` statements, and no `@layer` statement once an
+    // `@import` has been seen.
     let importsValid = true;
     ast.children.forEach((node) => {
         if (node.type === 'Comment')
@@ -288,16 +301,31 @@ export function parseSheet(source) {
         const name = node.type === 'Atrule' ? atRuleName(node) : '';
         if (name === 'charset') {
             sheet.hasCharset = true;
+            sheet.nodes.push({ node, role: 'charset' });
             return;
         }
-        if (name === 'layer' && !node.block) {
-            visitLayers([node], [], 0);
-            return;
-        }
-        if (name === 'import' && importsValid) {
-            const rule = importOf(node.prelude ? componentsOf(sourceOf(source, node.prelude), node.prelude.loc.start.offset) : []);
+        if (name === 'import') {
+            if (!importsValid) {
+                sheet.warnings.push({ text: 'All "@import" rules must come first', at: node.loc.start.offset, length: node.name.length + 1 });
+                sheet.nodes.push({ node, role: 'rule' });
+                return;
+            }
+            const parts = componentsOf(sourceOf(source, node), node.loc.start.offset).slice(1);
+            const block = parts.find((c) => c.type === T.LeftCurlyBracket);
+            const prelude = parts.filter((c) => c !== block && c.type !== T.Semicolon);
+            const rule = block ? null : importOf(prelude);
             if (!rule) {
-                sheet.missingUrl ??= { at: node.loc.start.offset, length: node.name.length + 1 };
+                // Malformed: kept as written, never followed; the imports after it are not in effect.
+                const found = block ?? trim(prelude)[0];
+                // esbuild places a missing `;` right after the token before it.
+                const beforeBlock = trim(prelude).at(-1);
+                sheet.warnings.push(block
+                    ? { text: 'Expected ";"', at: beforeBlock?.end ?? block.at, length: 0 }
+                    : found
+                        ? { text: `Expected URL token but found ${JSON.stringify(found.children ? found.text : source.slice(found.at, found.end))}`, at: found.at, length: found.text.length }
+                        : { text: 'Expected URL token but found end of file', at: node.loc.end.offset, length: 0 });
+                sheet.nodes.push({ node, role: 'rule' });
+                importsValid = false;
                 return;
             }
             if (sheet.imports.length === 0) {
@@ -305,66 +333,130 @@ export function parseSheet(source) {
                 sheet.layersPostImport = [];
             }
             sheet.imports.push(rule);
+            sheet.nodes.push({ node, role: 'import' });
+            return;
+        }
+        visitLayers([node], [], 0);
+        if (name === 'layer' && !node.block && sheet.imports.length === 0) {
+            sheet.nodes.push({ node, role: 'pre-import-layer' });
             return;
         }
         importsValid = false;
-        visitLayers([node], [], 0);
+        sheet.nodes.push({ node, role: 'rule' });
     });
     return sheet;
+}
+/** The top-level nodes a sheet prints where it is bundled. */
+function printedNodes(sheet) {
+    // The `@layer` statements before its first `@import` the bundle orders by itself.
+    return sheet.nodes
+        .filter(({ role }) => role === 'rule' || (role === 'pre-import-layer' && sheet.imports.length === 0))
+        .map(({ node }) => node);
 }
 /**
  * The rules a sheet contributes where it is bundled, each printed: all but
  * its `@charset`, the `@import`s in effect, and (when it has any) the
- * `@layer` statements before them, which the bundle orders by itself.
- * Comments are dropped. `rewriteUrl` gives each url() its URL first; it
- * changes the sheet's nodes, so a sheet is printed once.
+ * `@layer` statements before them. Comments are dropped. `rewriteUrl` gives
+ * each url() its URL first; it changes the sheet's nodes, so a sheet is
+ * printed once.
  */
 export function sheetRules(sheet, rewriteUrl) {
-    const rules = [];
-    let importsSeen = 0;
-    let importsValid = true;
-    const before = [];
-    sheet.ast.children.forEach((node) => {
-        if (node.type === 'Comment')
-            return;
-        const name = node.type === 'Atrule' ? atRuleName(node) : '';
-        if (name === 'charset')
-            return;
-        if (name === 'layer' && !node.block && importsValid) {
-            (importsSeen === 0 ? before : rules).push(print(sheet.source, node, rewriteUrl));
-            return;
-        }
-        if (name === 'import' && importsValid) {
-            importsSeen++;
-            return;
-        }
-        importsValid = false;
-        rules.push(print(sheet.source, node, rewriteUrl));
-    });
-    return sheet.imports.length ? rules : [...before, ...rules];
+    return printedNodes(sheet).map((node) => print(sheet.source, node, rewriteUrl));
+}
+/** Every url() a sheet's rules print, in order: what sheetRules rewrites. */
+export function sheetUrls(sheet) {
+    return printedNodes(sheet).flatMap((node) => urlSites(sheet.source, node).map(({ site }) => site));
 }
 /**
- * One node printed: comments dropped, url()s (but an `@import`'s) rewritten
- * and quoted as esbuild quotes them, at-rule preludes printed from their
- * tokens as esbuild prints them (css-tree's generator would respace them).
+ * The url()s in a node the bundle prints, each with a setter for its printed
+ * form: a parsed value's Url node, or a url token (or `url("...")` with one
+ * string) among the tokens of what css-tree keeps as written, a custom
+ * property's value or a declaration it could not parse, as esbuild finds
+ * url tokens anywhere in a declaration. Not in an at-rule's prelude (esbuild
+ * does not load those), and not in an `@import` kept as written. Discovery
+ * (sheetUrls) and printing (print) both go through here, so a url() is
+ * loaded exactly when it is printed.
  */
-function print(source, node, rewriteUrl) {
-    walk(node, (inner, item, list) => {
+function urlSites(source, node) {
+    const sites = [];
+    walk(node, function (inner) {
         if (inner.type === 'Atrule' && atRuleName(inner) === 'import')
             return walk.skip;
-        if (inner.type === 'Comment' && item && list) {
+        if (this.atrulePrelude || !inner.loc)
+            return;
+        if (inner.type === 'Url') {
+            const text = sourceOf(source, inner);
+            const innerStart = /^url\(\s*/i.exec(text)?.[0].length ?? 0;
+            sites.push({
+                site: {
+                    url: inner.value, at: inner.loc.start.offset, length: text.length,
+                    innerAt: inner.loc.start.offset + innerStart, innerLength: text.replace(/\s*\)$/, '').length - innerStart,
+                },
+                write(printed) {
+                    inner.type = 'Raw';
+                    inner.value = printed;
+                },
+            });
+        }
+        else if (inner.type === 'Raw') {
+            const raw = inner;
+            const original = raw.value;
+            const base = raw.loc.start.offset;
+            const replacements = [];
+            const visit = (components) => {
+                for (const c of components) {
+                    const args = c.type === T.Function && valueOf(c) === 'url' ? trim(c.children ?? []) : [];
+                    const value = c.type === T.Url ? c : args.length === 1 && args[0].type === T.String ? args[0] : null;
+                    if (value) {
+                        sites.push({
+                            site: { url: valueOf(value), at: c.at, length: c.end - c.at, innerAt: value.at, innerLength: value.end - value.at },
+                            write(printed) {
+                                replacements.push({ start: c.at - base, end: c.end - base, text: printed });
+                                let out = original;
+                                for (const r of [...replacements].sort((a, b) => b.start - a.start))
+                                    out = out.slice(0, r.start) + r.text + out.slice(r.end);
+                                raw.value = out;
+                            },
+                        });
+                    }
+                    else if (c.children) {
+                        visit(c.children);
+                    }
+                }
+            };
+            visit(componentsOf(original, base));
+        }
+    });
+    return sites;
+}
+/**
+ * One node printed: comments dropped, url()s rewritten and quoted as esbuild
+ * quotes them, at-rule preludes printed from their tokens as esbuild prints
+ * them (css-tree's generator would respace them), an `@import` kept as
+ * written printed from its tokens as esbuild prints an unknown at-rule.
+ */
+function print(source, node, rewriteUrl) {
+    if (node.type === 'Atrule' && atRuleName(node) === 'import')
+        return printUnknownAtRule(source, node);
+    for (const { site, write } of urlSites(source, node)) {
+        const { url, written } = rewriteUrl ? rewriteUrl(site.url) : { url: site.url, written: false };
+        write(printUrl(url, written));
+    }
+    walk(node, (inner, item, list) => {
+        if (inner.type === 'Comment' && item && list)
             list.remove(item);
-        }
-        else if (inner.type === 'Url') {
-            const { url, written } = rewriteUrl ? rewriteUrl(inner.value) : { url: inner.value, written: false };
-            inner.type = 'Raw';
-            inner.value = printUrl(url, written);
-        }
         else if (inner.type === 'Atrule' && inner.prelude?.loc) {
             inner.prelude = { type: 'Raw', value: ' ' + printComponents(componentsOf(sourceOf(source, inner.prelude)), true) };
         }
     });
     return generate(node, { decorator: spaceAfterUrl });
+}
+/** An at-rule from its tokens, as esbuild prints one it does not know: `@name prelude;` or `@name prelude{block}`. */
+function printUnknownAtRule(source, node) {
+    const [keyword, ...rest] = componentsOf(sourceOf(source, node), node.loc.start.offset);
+    const block = rest.find((c) => c.type === T.LeftCurlyBracket);
+    const prelude = printComponents(trim(rest.filter((c) => c !== block && c.type !== T.Semicolon)), true);
+    return `${keyword.text}${prelude ? ' ' + prelude : ''}${block ? `{${printComponents(trim(block.children ?? []), true)}}` : ';'}`;
 }
 const AFTER_URL_SPACED = new Set([T.Ident, T.Function, T.Url, T.String, T.Number, T.Dimension, T.Percentage, T.Hash]);
 /**
@@ -379,21 +471,4 @@ function spaceAfterUrl(handlers) {
         return prevCode >> 1 === T.Url && AFTER_URL_SPACED.has(type) ? next | 1 : next;
     };
     return handlers;
-}
-/** Every url() a sheet's rules name (but an `@import`'s). */
-export function sheetUrls(sheet) {
-    const urls = [];
-    walk(sheet.ast, (node) => {
-        if (node.type === 'Atrule' && atRuleName(node) === 'import')
-            return walk.skip;
-        if (node.type !== 'Url' || !node.loc)
-            return;
-        const text = sheet.source.slice(node.loc.start.offset, node.loc.end.offset);
-        const inner = /^url\(\s*/i.exec(text)?.[0].length ?? 0;
-        urls.push({
-            url: node.value, at: node.loc.start.offset, length: text.length,
-            innerAt: node.loc.start.offset + inner, innerLength: text.replace(/\s*\)$/, '').length - inner,
-        });
-    });
-    return urls;
 }

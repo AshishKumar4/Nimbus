@@ -55,7 +55,7 @@ export async function devStylesheet(fs, root, base, vfsPath) {
         throw new Error('a dev stylesheet emits no assets');
     };
     try {
-        return await bundleCss([{ namespace: 'file', path: vfsPath, resolveDir: dirOf(vfsPath), source }], plugin, { emit: unused, dataUrl: unused }, { minify: false });
+        return (await bundleCss([{ namespace: 'file', path: vfsPath, resolveDir: dirOf(vfsPath), source }], plugin, { emit: unused, dataUrl: unused }, { minify: false })).css;
     }
     catch (error) {
         if (error instanceof CssError)

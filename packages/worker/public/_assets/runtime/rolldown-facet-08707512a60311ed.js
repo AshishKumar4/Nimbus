@@ -13568,21 +13568,25 @@ var OPEN = {
 function componentsOf(source, base = 0) {
   const root = [];
   const stack = [{ list: root, close: -1 }];
+  const open = [];
   tokenize(source, (type, start, end) => {
     if (type === EOF) return;
     const top = stack[stack.length - 1];
     if (type === top.close && stack.length > 1) {
       stack.pop();
+      open.pop().end = base + end;
       return;
     }
-    const component = { type, text: source.slice(start, end), at: base + start };
+    const component = { type, text: source.slice(start, end), at: base + start, end: base + end };
     top.list.push(component);
     const close = OPEN[type];
     if (close !== void 0) {
       component.children = [];
       stack.push({ list: component.children, close });
+      open.push(component);
     }
   });
+  for (const component of open) component.end = base + source.length;
   return root;
 }
 var insignificant = (c3) => c3.type === WhiteSpace || c3.type === Comment;
@@ -13699,11 +13703,11 @@ function importOf(prelude) {
     at = first.at;
     length = first.text.length;
   } else if (first && isNamed(first, "url", [Function])) {
-    const arg = trim(first.children ?? [])[0];
-    if (arg?.type === String2) {
-      path3 = valueOf(arg);
-      at = arg.at;
-      length = arg.text.length;
+    const args2 = trim(first.children ?? []);
+    if (args2.length === 1 && args2[0].type === String2) {
+      path3 = valueOf(args2[0]);
+      at = args2[0].at;
+      length = args2[0].text.length;
     }
   }
   if (path3 === null) return null;
@@ -13746,7 +13750,7 @@ function parseSheet(source) {
       if (isLegalComment(value)) legal.push(`/*${value}*/`);
     }
   });
-  const sheet = { source, ast, imports: [], missingUrl: null, layersPreImport: [], layersPostImport: [], legal, hasCharset: false };
+  const sheet = { source, ast, imports: [], nodes: [], warnings: [], layersPreImport: [], layersPostImport: [], legal, hasCharset: false };
   const record2 = (names, enclosing) => {
     for (const name50 of names) sheet.layersPostImport.push([...enclosing, ...name50]);
   };
@@ -13773,16 +13777,25 @@ function parseSheet(source) {
     const name50 = node.type === "Atrule" ? atRuleName(node) : "";
     if (name50 === "charset") {
       sheet.hasCharset = true;
+      sheet.nodes.push({ node, role: "charset" });
       return;
     }
-    if (name50 === "layer" && !node.block) {
-      visitLayers([node], [], 0);
-      return;
-    }
-    if (name50 === "import" && importsValid) {
-      const rule = importOf(node.prelude ? componentsOf(sourceOf(source, node.prelude), node.prelude.loc.start.offset) : []);
+    if (name50 === "import") {
+      if (!importsValid) {
+        sheet.warnings.push({ text: 'All "@import" rules must come first', at: node.loc.start.offset, length: node.name.length + 1 });
+        sheet.nodes.push({ node, role: "rule" });
+        return;
+      }
+      const parts = componentsOf(sourceOf(source, node), node.loc.start.offset).slice(1);
+      const block = parts.find((c3) => c3.type === LeftCurlyBracket);
+      const prelude = parts.filter((c3) => c3 !== block && c3.type !== Semicolon);
+      const rule = block ? null : importOf(prelude);
       if (!rule) {
-        sheet.missingUrl ??= { at: node.loc.start.offset, length: node.name.length + 1 };
+        const found = block ?? trim(prelude)[0];
+        const beforeBlock = trim(prelude).at(-1);
+        sheet.warnings.push(block ? { text: 'Expected ";"', at: beforeBlock?.end ?? block.at, length: 0 } : found ? { text: `Expected URL token but found ${JSON.stringify(found.children ? found.text : source.slice(found.at, found.end))}`, at: found.at, length: found.text.length } : { text: "Expected URL token but found end of file", at: node.loc.end.offset, length: 0 });
+        sheet.nodes.push({ node, role: "rule" });
+        importsValid = false;
         return;
       }
       if (sheet.imports.length === 0) {
@@ -13790,49 +13803,97 @@ function parseSheet(source) {
         sheet.layersPostImport = [];
       }
       sheet.imports.push(rule);
+      sheet.nodes.push({ node, role: "import" });
+      return;
+    }
+    visitLayers([node], [], 0);
+    if (name50 === "layer" && !node.block && sheet.imports.length === 0) {
+      sheet.nodes.push({ node, role: "pre-import-layer" });
       return;
     }
     importsValid = false;
-    visitLayers([node], [], 0);
+    sheet.nodes.push({ node, role: "rule" });
   });
   return sheet;
 }
+function printedNodes(sheet) {
+  return sheet.nodes.filter(({ role }) => role === "rule" || role === "pre-import-layer" && sheet.imports.length === 0).map(({ node }) => node);
+}
 function sheetRules(sheet, rewriteUrl) {
-  const rules = [];
-  let importsSeen = 0;
-  let importsValid = true;
-  const before = [];
-  sheet.ast.children.forEach((node) => {
-    if (node.type === "Comment") return;
-    const name50 = node.type === "Atrule" ? atRuleName(node) : "";
-    if (name50 === "charset") return;
-    if (name50 === "layer" && !node.block && importsValid) {
-      (importsSeen === 0 ? before : rules).push(print(sheet.source, node, rewriteUrl));
-      return;
+  return printedNodes(sheet).map((node) => print(sheet.source, node, rewriteUrl));
+}
+function sheetUrls(sheet) {
+  return printedNodes(sheet).flatMap((node) => urlSites(sheet.source, node).map(({ site }) => site));
+}
+function urlSites(source, node) {
+  const sites = [];
+  walker_default2(node, function(inner) {
+    if (inner.type === "Atrule" && atRuleName(inner) === "import") return walker_default2.skip;
+    if (this.atrulePrelude || !inner.loc) return;
+    if (inner.type === "Url") {
+      const text = sourceOf(source, inner);
+      const innerStart = /^url\(\s*/i.exec(text)?.[0].length ?? 0;
+      sites.push({
+        site: {
+          url: inner.value,
+          at: inner.loc.start.offset,
+          length: text.length,
+          innerAt: inner.loc.start.offset + innerStart,
+          innerLength: text.replace(/\s*\)$/, "").length - innerStart
+        },
+        write(printed) {
+          inner.type = "Raw";
+          inner.value = printed;
+        }
+      });
+    } else if (inner.type === "Raw") {
+      const raw = inner;
+      const original = raw.value;
+      const base = raw.loc.start.offset;
+      const replacements = [];
+      const visit = (components) => {
+        for (const c3 of components) {
+          const args2 = c3.type === Function && valueOf(c3) === "url" ? trim(c3.children ?? []) : [];
+          const value = c3.type === Url ? c3 : args2.length === 1 && args2[0].type === String2 ? args2[0] : null;
+          if (value) {
+            sites.push({
+              site: { url: valueOf(value), at: c3.at, length: c3.end - c3.at, innerAt: value.at, innerLength: value.end - value.at },
+              write(printed) {
+                replacements.push({ start: c3.at - base, end: c3.end - base, text: printed });
+                let out = original;
+                for (const r3 of [...replacements].sort((a2, b2) => b2.start - a2.start)) out = out.slice(0, r3.start) + r3.text + out.slice(r3.end);
+                raw.value = out;
+              }
+            });
+          } else if (c3.children) {
+            visit(c3.children);
+          }
+        }
+      };
+      visit(componentsOf(original, base));
     }
-    if (name50 === "import" && importsValid) {
-      importsSeen++;
-      return;
-    }
-    importsValid = false;
-    rules.push(print(sheet.source, node, rewriteUrl));
   });
-  return sheet.imports.length ? rules : [...before, ...rules];
+  return sites;
 }
 function print(source, node, rewriteUrl) {
+  if (node.type === "Atrule" && atRuleName(node) === "import") return printUnknownAtRule(source, node);
+  for (const { site, write } of urlSites(source, node)) {
+    const { url, written } = rewriteUrl ? rewriteUrl(site.url) : { url: site.url, written: false };
+    write(printUrl(url, written));
+  }
   walker_default2(node, (inner, item, list) => {
-    if (inner.type === "Atrule" && atRuleName(inner) === "import") return walker_default2.skip;
-    if (inner.type === "Comment" && item && list) {
-      list.remove(item);
-    } else if (inner.type === "Url") {
-      const { url, written } = rewriteUrl ? rewriteUrl(inner.value) : { url: inner.value, written: false };
-      inner.type = "Raw";
-      inner.value = printUrl(url, written);
-    } else if (inner.type === "Atrule" && inner.prelude?.loc) {
+    if (inner.type === "Comment" && item && list) list.remove(item);
+    else if (inner.type === "Atrule" && inner.prelude?.loc) {
       inner.prelude = { type: "Raw", value: " " + printComponents(componentsOf(sourceOf(source, inner.prelude)), true) };
     }
   });
   return generator_default2(node, { decorator: spaceAfterUrl });
+}
+function printUnknownAtRule(source, node) {
+  const [keyword, ...rest] = componentsOf(sourceOf(source, node), node.loc.start.offset);
+  const block = rest.find((c3) => c3.type === LeftCurlyBracket);
+  const prelude = printComponents(trim(rest.filter((c3) => c3 !== block && c3.type !== Semicolon)), true);
+  return `${keyword.text}${prelude ? " " + prelude : ""}${block ? `{${printComponents(trim(block.children ?? []), true)}}` : ";"}`;
 }
 var AFTER_URL_SPACED = /* @__PURE__ */ new Set([Ident, Function, Url, String2, Number2, Dimension, Percentage, Hash]);
 function spaceAfterUrl(handlers) {
@@ -13842,23 +13903,6 @@ function spaceAfterUrl(handlers) {
     return prevCode >> 1 === Url && AFTER_URL_SPACED.has(type) ? next | 1 : next;
   };
   return handlers;
-}
-function sheetUrls(sheet) {
-  const urls = [];
-  walker_default2(sheet.ast, (node) => {
-    if (node.type === "Atrule" && atRuleName(node) === "import") return walker_default2.skip;
-    if (node.type !== "Url" || !node.loc) return;
-    const text = sheet.source.slice(node.loc.start.offset, node.loc.end.offset);
-    const inner = /^url\(\s*/i.exec(text)?.[0].length ?? 0;
-    urls.push({
-      url: node.value,
-      at: node.loc.start.offset,
-      length: text.length,
-      innerAt: node.loc.start.offset + inner,
-      innerLength: text.replace(/\s*\)$/, "").length - inner
-    });
-  });
-  return urls;
 }
 
 // ../core/src/runtime/css-bundle.ts
@@ -13877,12 +13921,12 @@ function fileOf(module) {
 }
 var utf8Length = (text) => new TextEncoder().encode(text).length;
 async function bundleCss(modules, plugin, assets, { minify }) {
-  const fail = (module, at, length, text, pluginName = "") => {
+  const diagnostic = (module, at, length, text, pluginName = "") => {
     const before = module.source.slice(0, at);
     const line = before.split(/\r\n|\r|\n/).length;
     const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
     const lineEnd = module.source.slice(at).search(/\r|\n/);
-    throw new CssError({
+    return {
       id: "",
       pluginName,
       text,
@@ -13897,7 +13941,10 @@ async function bundleCss(modules, plugin, assets, { minify }) {
         lineText: module.source.slice(lineStart, lineEnd < 0 ? void 0 : at + lineEnd),
         suggestion: ""
       }
-    });
+    };
+  };
+  const fail = (module, at, length, text, pluginName = "") => {
+    throw new CssError(diagnostic(module, at, length, text, pluginName));
   };
   const resolved = /* @__PURE__ */ new Map();
   const loadedModules = /* @__PURE__ */ new Map();
@@ -13926,7 +13973,6 @@ async function bundleCss(modules, plugin, assets, { minify }) {
     if (known) return known;
     const file = { key, module, sheet: parseSheet(module.source), targets: [], rules: [] };
     files.set(key, file);
-    if (file.sheet.missingUrl) fail(module, file.sheet.missingUrl.at, file.sheet.missingUrl.length, "Expected URL token");
     for (const rule of file.sheet.imports) {
       if (isRemoteImport(rule.path)) {
         file.targets.push({ kind: "external", path: rule.path });
@@ -13972,7 +14018,8 @@ async function bundleCss(modules, plugin, assets, { minify }) {
     file.rules = sheetRules(file.sheet, (url) => urls.get(url) ?? { url, written: false });
   }
   const order = importOrder(roots);
-  return printBundle(order, minify);
+  const warnings = [...files.values()].flatMap((file) => file.sheet.warnings.map((w2) => diagnostic(file.module, w2.at, w2.length, w2.text)));
+  return { css: printBundle(order, minify), warnings };
 }
 function isConditionalImportRedundant(earlier, later) {
   if (later.length > earlier.length) return false;
@@ -14798,7 +14845,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
           };
           let bundled;
           try {
-            bundled = encoder.encode(await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true }));
+            const sheet = await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true });
+            warnings.push(...sheet.warnings);
+            bundled = encoder.encode(sheet.css);
           } catch (error2) {
             if (error2 instanceof CssError) throw new BuildError([error2.diagnostic]);
             throw error2;

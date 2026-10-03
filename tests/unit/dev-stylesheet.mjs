@@ -70,11 +70,25 @@ const squash = (css) => css.replace(/\/\*[^*]*\*\/\n?/g, '').replace(/\s+/g, ' '
   console.log('  ok  @tailwind and @apply pass through');
 }
 
-// A sheet the CSS layer refuses is served as written, the reason first.
+// A url() in a custom property's value, or in a declaration css-tree keeps as written, is rooted too.
 {
-  const css = await serve({ 'src/main.css': '@import ;\n.main { color: red }\n' });
-  assert.match(css, /^\/\* Expected URL token \*\/\n@import ;\n/);
-  console.log('  ok  a sheet the layer refuses is served as written, with the reason');
+  const css = await serve({
+    'src/main.css': '@import "./sub/a.css";\n',
+    'src/sub/a.css': '.visible { --bg: url(./a.png); background-image: var(--bg) }\n.r { color: red !!! url(./c.png) }\n',
+  });
+  assert.equal(squash(css), `.visible{--bg: url(${BASE}/src/sub/a.png);background-image:var(--bg)} .r{color: red !!! url(${BASE}/src/sub/c.png)}`);
+  console.log('  ok  url()s in custom properties and unparsed declarations are rooted');
+}
+
+// A malformed @import is kept as written and not followed, nor are the @imports after it.
+{
+  const css = await serve({
+    'src/main.css': '@import url("./a.css" "extra");\n@import "./b.css";\n.main { color: red }\n',
+    'src/a.css': '.a { color: a }\n',
+    'src/b.css': '.b { color: b }\n',
+  });
+  assert.equal(squash(css), '@import url("./a.css" "extra"); @import "./b.css"; .main{color:red}');
+  console.log('  ok  a malformed @import, and the imports after it, are kept as written');
 }
 
 console.log('dev-stylesheet OK');

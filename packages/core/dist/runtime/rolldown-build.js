@@ -765,7 +765,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                     };
                     let bundled;
                     try {
-                        bundled = encoder.encode(await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true }));
+                        const sheet = await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true });
+                        warnings.push(...sheet.warnings);
+                        bundled = encoder.encode(sheet.css);
                     }
                     catch (error) {
                         if (error instanceof CssError)

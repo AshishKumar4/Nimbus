@@ -4,12 +4,16 @@
  * grammar data stays out of every bundle).
  *
  * A stylesheet is parsed once into css-tree's AST. On top of it this module
- * answers what bundling needs and css-tree does not model: which `@import`
- * rules are in effect (only those before any rule but `@charset` and
- * `@layer` statements, as CSS says), each one's URL and conditions (`layer`,
- * `layer(...)`, `supports(...)`, then a media query list) as component values
- * from css-tree's tokens, and the cascade layers the sheet names before and
- * after its first `@import`. Rules print through css-tree's generator, which
+ * answers what bundling needs and css-tree does not model, by esbuild
+ * 0.24's rules (internal/css_parser): which `@import` rules are in effect
+ * (only those before any rule but `@charset` and `@layer` statements, no
+ * `@layer` statement once an `@import` has been seen), each one's URL and
+ * conditions (`layer`, `layer(...)`, `supports(...)`, then a media query
+ * list) as component values from css-tree's tokens, and the cascade layers
+ * the sheet names before and after its first `@import`. A malformed `@import`
+ * (no URL, a url() of anything but one string, a block) is never followed:
+ * it is kept as written, with esbuild's warning, and ends the imports after
+ * it. Rules print through css-tree's generator, which
  * keeps what whitespace and comments meant (`.x/**\/.y` stays one compound
  * selector, a no-break space stays a name character); conditions print as
  * esbuild 0.24 prints them, since a bundle writes them back.
@@ -26,6 +30,8 @@ export interface Component {
     type: number;
     text: string;
     at: number;
+    /** Where it ends in the sheet's source: a function's or block's closing bracket included. */
+    end: number;
     /** A function's (`name(`) or a block's (`(`, `[`, `{`) contents. */
     children?: Component[];
 }
@@ -43,15 +49,24 @@ export interface ImportRule {
     length: number;
     conditions: ImportConditions | null;
 }
+/** What a top-level node is to the bundle: a rule it prints, or what it takes over. */
+type Role = 'charset' | 'import' | 'pre-import-layer' | 'rule';
+/** A warning about a sheet, as esbuild words and places it. */
+export interface CssWarning {
+    text: string;
+    at: number;
+    length: number;
+}
 export interface ParsedSheet {
     source: string;
     ast: CssNode;
     imports: ImportRule[];
-    /** An `@import` with no URL, where its keyword is: the sheet is an error there. */
-    missingUrl: {
-        at: number;
-        length: number;
-    } | null;
+    /** Each top-level node but comments, in order, with what it is to the bundle. */
+    nodes: {
+        node: CssNode;
+        role: Role;
+    }[];
+    warnings: CssWarning[];
     /** Layer names the sheet orders before its first `@import`, and from there on. */
     layersPreImport: string[][];
     layersPostImport: string[][];
@@ -83,9 +98,9 @@ export declare function parseSheet(source: string): ParsedSheet;
 /**
  * The rules a sheet contributes where it is bundled, each printed: all but
  * its `@charset`, the `@import`s in effect, and (when it has any) the
- * `@layer` statements before them, which the bundle orders by itself.
- * Comments are dropped. `rewriteUrl` gives each url() its URL first; it
- * changes the sheet's nodes, so a sheet is printed once.
+ * `@layer` statements before them. Comments are dropped. `rewriteUrl` gives
+ * each url() its URL first; it changes the sheet's nodes, so a sheet is
+ * printed once.
  */
 export declare function sheetRules(sheet: ParsedSheet, rewriteUrl?: (url: string) => {
     url: string;
@@ -99,6 +114,7 @@ export interface SheetUrl {
     innerAt: number;
     innerLength: number;
 }
-/** Every url() a sheet's rules name (but an `@import`'s). */
+/** Every url() a sheet's rules print, in order: what sheetRules rewrites. */
 export declare function sheetUrls(sheet: ParsedSheet): SheetUrl[];
+export {};
 //# sourceMappingURL=css-syntax.d.ts.map

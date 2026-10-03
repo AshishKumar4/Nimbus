@@ -53,19 +53,22 @@ function fileOf(module) {
 }
 const utf8Length = (text) => new TextEncoder().encode(text).length;
 export async function bundleCss(modules, plugin, assets, { minify }) {
-    const fail = (module, at, length, text, pluginName = '') => {
+    const diagnostic = (module, at, length, text, pluginName = '') => {
         const before = module.source.slice(0, at);
         const line = before.split(/\r\n|\r|\n/).length;
         const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1;
         const lineEnd = module.source.slice(at).search(/\r|\n/);
-        throw new CssError({
+        return {
             id: '', pluginName, text, notes: [], detail: undefined,
             location: {
                 file: fileOf(module), namespace: '', line, column: utf8Length(before.slice(lineStart)),
                 length: utf8Length(module.source.slice(at, at + length)),
                 lineText: module.source.slice(lineStart, lineEnd < 0 ? undefined : at + lineEnd), suggestion: '',
             },
-        });
+        };
+    };
+    const fail = (module, at, length, text, pluginName = '') => {
+        throw new CssError(diagnostic(module, at, length, text, pluginName));
     };
     // Every resolve and load once per build: each is a call to the session.
     const resolved = new Map();
@@ -102,8 +105,6 @@ export async function bundleCss(modules, plugin, assets, { minify }) {
             return known;
         const file = { key, module, sheet: parseSheet(module.source), targets: [], rules: [] };
         files.set(key, file);
-        if (file.sheet.missingUrl)
-            fail(module, file.sheet.missingUrl.at, file.sheet.missingUrl.length, 'Expected URL token');
         for (const rule of file.sheet.imports) {
             if (isRemoteImport(rule.path)) {
                 file.targets.push({ kind: 'external', path: rule.path });
@@ -158,7 +159,8 @@ export async function bundleCss(modules, plugin, assets, { minify }) {
         file.rules = sheetRules(file.sheet, (url) => urls.get(url) ?? { url, written: false });
     }
     const order = importOrder(roots);
-    return printBundle(order, minify);
+    const warnings = [...files.values()].flatMap((file) => file.sheet.warnings.map((w) => diagnostic(file.module, w.at, w.length, w.text)));
+    return { css: printBundle(order, minify), warnings };
 }
 /** esbuild's isConditionalImportRedundant: `later` applies wherever `earlier` would. */
 function isConditionalImportRedundant(earlier, later) {

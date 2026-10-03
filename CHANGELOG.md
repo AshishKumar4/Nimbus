@@ -102,7 +102,13 @@ published independently in the `@nimbus-sh` npm scope.
   an escaped string, not substituted into its text, and two different files
   at one output path fail the build as in esbuild. Data URLs keep every byte
   (a UTF-8 BOM was dropped) and take esbuild's MIME table and Go's content
-  sniffing. The Vite dev server inlines a stylesheet's `@import`s with the
+  sniffing. A url() in what css-tree keeps as written (a custom property's
+  value, a declaration it cannot parse) is loaded and rewritten like any
+  other, as esbuild does; a malformed `@import` (no URL, a url() of more
+  than one string, a block) is kept as written with esbuild's warning,
+  never followed, and ends the imports after it, as does a `@layer`
+  statement after an `@import`. The Vite dev server inlines a stylesheet's
+  `@import`s with the
   same layer, conditions and nesting included, and roots each url() so an
   inlined sheet's url()s still name their files.
 - `vite build`'s stylesheet reads each `@import`'s conditions from its
