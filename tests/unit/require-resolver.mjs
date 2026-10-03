@@ -365,4 +365,31 @@ console.log('require-resolver: createRequire ok');
   assert.equal(r.bundle['home/user/app/node_modules/outside.js'], undefined, 'no bin outside its package');
   assert.equal(r.bundle['home/user/app/node_modules/vinext/dist/own.js'], undefined, 'a relative manifest locates no package');
 }
+// A package an ES module imports is staged as an ES import loads it, too.
+// The process runs the module lowered to CommonJS, whose require takes the
+// "require" branch; a module runner that evaluates the same source itself
+// (Vite's, under Astro) imports its externals with import(), which takes the
+// "import" branch. Astro's dev server missed clsx/dist/clsx.mjs, zod/v4,
+// tinyglobby and common-ancestor-path, one per launch, that way. The import
+// branch waits in phase 2, ahead of a deferral table.
+{
+  const files = {
+    'home/user/app/node_modules/fw/bin.mjs': "import './lib/render.js';",
+    'home/user/app/node_modules/fw/lib/render.js': "import clsx from 'clsx'; export * from 'same'; import './local.js'; export const r = clsx;",
+    'home/user/app/node_modules/fw/lib/local.js': 'export const l = 1;',
+    'home/user/app/node_modules/fw/node_modules/clsx/package.json': JSON.stringify({ name: 'clsx', exports: { '.': { import: './dist/clsx.mjs', default: './dist/clsx.js' } } }),
+    'home/user/app/node_modules/fw/node_modules/clsx/dist/clsx.mjs': 'export default 1;',
+    'home/user/app/node_modules/fw/node_modules/clsx/dist/clsx.js': 'module.exports = 1;',
+    'home/user/app/node_modules/same/package.json': JSON.stringify({ name: 'same', main: 'index.js' }),
+    'home/user/app/node_modules/same/index.js': 'module.exports = {};',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/fw/bin.mjs';
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  const clsx = 'home/user/app/node_modules/fw/node_modules/clsx/dist/';
+  assert.equal(r.bundle[clsx + 'clsx.js'], files[clsx + 'clsx.js'], "the require branch, which the process's require loads");
+  assert.equal(r.bundle[clsx + 'clsx.mjs'], files[clsx + 'clsx.mjs'], 'and the import branch');
+  assert.deepEqual([...r.speculative], [clsx + 'clsx.mjs'], 'the import branch is phase 2; a package with one entry adds nothing');
+}
 console.log('require-resolver: speculative dynamic imports ok');

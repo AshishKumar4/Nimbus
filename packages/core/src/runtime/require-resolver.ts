@@ -476,12 +476,21 @@ export async function prefetchForRequire(
     // bundle but none of the relative `import './x'` siblings — at
     // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
     // fails because `x` was never added.
+    //
+    // The process runs such a module lowered to CommonJS, and its require
+    // takes a package's "require" branch. A module runner that evaluates the
+    // same source itself (Vite's, under Astro) imports a package with
+    // import(), which takes the "import" branch: that file waits in phase 2,
+    // one deferral, when it is another.
     for (const match of stripped.matchAll(IMPORT_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded || declined) break;
       const r = await resolveStaticDependency(specifier, fromDir);
       if (r) (await addFile(r.resolved));
+      if (policy || /^[./#]|^file:/.test(specifier)) continue;
+      const imported = await resolveDynamicImport(specifier, fromDir);
+      if (imported !== null && imported !== r?.resolved) defer({ specifier, fromDir, alternatives: 1, path: imported });
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
     const deferrals = new Set<string>();
