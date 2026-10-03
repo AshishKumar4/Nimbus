@@ -74,6 +74,39 @@ function exportTarget(value) {
     }
     return null;
 }
+/**
+ * Every file a package.json names as an entry, relative to its package:
+ * each subpath's `exports` targets under every condition (a dev server
+ * resolves for the browser, the process for node), and `module`, `main` and
+ * a string `browser`. Subpath patterns name no file until a specifier fills
+ * them, so they name none here.
+ */
+function entryTargets(manifest) {
+    const out = new Set();
+    const leaves = (value) => {
+        if (typeof value === 'string') {
+            if (!value.includes('*'))
+                out.add(value);
+            return;
+        }
+        if (Array.isArray(value)) {
+            for (const v of value)
+                leaves(v);
+            return;
+        }
+        if (value && typeof value === 'object')
+            for (const v of Object.values(value))
+                leaves(v);
+    };
+    leaves(manifest.exports);
+    for (const field of ['module', 'main', 'browser']) {
+        if (typeof manifest[field] === 'string')
+            out.add(manifest[field]);
+    }
+    if (manifest.exports === undefined && manifest.main === undefined)
+        out.add('index.js');
+    return [...out];
+}
 /** Map `./sub` through a package.json `exports` field; null when it does not export it. */
 function mapExports(exportsField, sub) {
     if (typeof exportsField !== 'object' || exportsField === null || Array.isArray(exportsField)) {
@@ -103,6 +136,21 @@ function mapExports(exportsField, sub) {
         return null;
     return t.replaceAll('*', sub.slice(best.prefix.length, sub.length - best.suffix.length));
 }
+/** A directory's package.json, parsed once per plan; null when absent or not JSON. */
+async function readManifest(source, dir, manifests) {
+    let manifest = manifests.get(dir);
+    if (manifest === undefined) {
+        const text = await source.readText(joinKey(dir, 'package.json'));
+        try {
+            manifest = text === null ? null : JSON.parse(text);
+        }
+        catch {
+            manifest = null;
+        }
+        manifests.set(dir, manifest);
+    }
+    return manifest;
+}
 async function resolveSpecifier(source, fromDir, spec, manifests) {
     const parts = spec.split('/');
     const nameLen = spec.startsWith('@') ? 2 : 1;
@@ -113,17 +161,7 @@ async function resolveSpecifier(source, fromDir, spec, manifests) {
     for (let dir = fromDir;; dir = parentOf(dir)) {
         if (baseOf(dir) !== 'node_modules') {
             const pkgDir = joinKey(dir, 'node_modules/' + name);
-            let manifest = manifests.get(pkgDir);
-            if (manifest === undefined) {
-                const text = await source.readText(pkgDir + '/package.json');
-                try {
-                    manifest = text === null ? null : JSON.parse(text);
-                }
-                catch {
-                    manifest = null;
-                }
-                manifests.set(pkgDir, manifest);
-            }
+            const manifest = await readManifest(source, pkgDir, manifests);
             if (manifest) {
                 const mapped = manifest.exports !== undefined ? mapExports(manifest.exports, sub ? './' + sub : '.') : null;
                 if (mapped)
@@ -209,7 +247,7 @@ export async function planFacetData(source, input) {
     const learned = new Set();
     for (const p of input.learned ?? [])
         learned.add(key(p));
-    const rules = Object.fromEntries(['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'learned']
+    const rules = Object.fromEntries(['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned']
         .map((r) => [r, { files: 0, bytes: 0 }]));
     const paths = [];
     const planned = new Set();
@@ -446,6 +484,43 @@ export async function planFacetData(source, input) {
             const entry = { path: resolved, kind: 'file', size: found.size };
             if (staticWorthy(entry))
                 take(entry, 'static');
+        }
+    }
+    // The working dir's dependencies' entries. A `main` or `module` without its
+    // extension names the file Node would load for it.
+    const projectManifest = await readManifest(source, cwd, manifests);
+    const dependencies = new Set();
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+        const named = projectManifest?.[field];
+        if (named && typeof named === 'object')
+            for (const name of Object.keys(named))
+                dependencies.add(name);
+    }
+    for (const name of dependencies) {
+        let pkgDir = null;
+        for (let d = cwd; pkgDir === null; d = parentOf(d)) {
+            if (packageRoots.has(joinKey(d, 'node_modules/' + name)))
+                pkgDir = joinKey(d, 'node_modules/' + name);
+            if (d === '')
+                break;
+        }
+        if (pkgDir === null)
+            continue;
+        const manifest = await readManifest(source, pkgDir, manifests);
+        if (manifest === null)
+            continue;
+        for (const rel of entryTargets(manifest)) {
+            for (const candidate of [rel, rel + '.js', rel + '/index.js']) {
+                const k = await throughLinks(source, joinKey(pkgDir, candidate));
+                if (k === null)
+                    break;
+                const found = await source.stat(k);
+                if (found === null || found.kind !== 'file')
+                    continue;
+                if (found.size < PACKAGE_DATA_MAX_BYTES && !closure.has(k))
+                    take({ path: k, kind: 'file', size: found.size }, 'entries');
+                break;
+            }
         }
     }
     // The files behind symlinked directories the project or home rule reached.

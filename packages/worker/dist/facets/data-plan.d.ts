@@ -20,6 +20,11 @@
  *                  under 256 KiB, or any size when the code reads it with
  *                  readFileSync (or a read-only openSync) by that path,
  *                  through any symlinks on it
+ *   entries        the entry files the working dir's own dependencies name
+ *                  (exports under every condition, module, main, browser),
+ *                  under 256 KiB: a dev server reads them synchronously to
+ *                  pre-bundle what the app imports (Vite's optimizer reads
+ *                  each with readFileSync), and the process never loads them
  *   learned        paths earlier launches of the same package versions missed
  *
  * Code the closure loads is in the module map already; the store adopts it,
@@ -59,7 +64,7 @@ export interface DataPlanInput {
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
 }
-export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'learned';
+export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned';
 export interface DataPlan {
     paths: string[];
     bytes: number;

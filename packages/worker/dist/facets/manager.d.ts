@@ -677,6 +677,16 @@ export interface PrefetchBundleOptions {
     transformStore?: BundleCellResultStore;
 }
 /**
+ * The working dir's config files of the tool a launch runs. The tool
+ * executes them (Vite bundles vite.config.ts and imports the result), so
+ * what they import is required code that nothing in the program's own graph
+ * names, and a first run would miss it. A config is the tool's when it is
+ * named for the launched package or a package that one depends on (Astro
+ * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
+ * (eslint.config.js beside Vite) is not.
+ */
+export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]>;
+/**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
  * The static walker supplies the complete known require closure. Separate
