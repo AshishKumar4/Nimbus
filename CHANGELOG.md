@@ -5,6 +5,30 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A mount whose backend resolves a whole path itself, as a network
+  filesystem's server does, can say so: `vfs.mount('/pc', source,
+  { resolvesPaths: true })`. Every operation on a path inside it (stat,
+  lstat, readdir, read, write, `mkdir -p`, rename, unlink, realpath) is then
+  one call to the backend with the mount-relative path. The namespace
+  resolved a mounted path a component at a time, with a stat of each
+  directory on the way: `readFile('/pc/home/me/a/b/c.txt')` made 7 backend
+  calls (6 stats and the read), each a round trip on a device tunnel, a
+  container or a Drive. A device that refuses a stat of the directories
+  above the one its user consented to (EACCES) could serve none of its
+  files, and a backend that makes a write's missing parents got ENOENT from
+  the walk's parent check. Now the backend follows its own links and answers
+  for each component itself; `..` inside the mount is lexical. The namespace
+  still owns the way in: root links into the mount, ENXIO with
+  `absentReason`, the mount point (EBUSY, EISDIR, `mkdir -p` has nothing to
+  do), EROFS under `readOnly`, EXDEV across mounts (so `mv`, `cp` and
+  `ws.fs.move` copy), and mounts nested in it. A process's synchronous bridge
+  hands such a path over whole too (`CompositeVFS.resolvedByBackend`). A node
+  launch in a device's consented directory lists it, with a stat of each
+  directory whose parent the device will not list, so its synchronous `fs`
+  and `require` work there; and a denied package.json probe above that
+  directory no longer fails the launch, since Node's module lookup reads
+  EACCES as absent. A mount without the option resolves as before.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

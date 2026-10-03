@@ -31,6 +31,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MOUNT_LIST_NAME_LIMIT } from '../../packages/core/src/constants.ts';
@@ -410,6 +411,40 @@ function launched(named = []) {
   assert.ok(stats <= 210, `a stat per listed name, not per name and component (${stats})`);
   await ws.filesystem.releaseProcess(pid);
   ws.filesystem.vfs.unmount('/cost');
+}
+
+// ── A device that resolves its own paths (MountOptions.resolvesPaths) ───────
+// It shows only the directory its user consented to: a stat or a listing of
+// anything above /home/me is EACCES, as Kinu's /pc device answers. Node's fs
+// reaches the consented files all the same, sync and async.
+{
+  const device = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await device.mkdir('/home/me', { recursive: true });
+  const consented = (path) => path === '/home/me' || path.startsWith('/home/me/');
+  const refusing = new Proxy(device, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== 'function' || key === 'as') return value;
+      return (...args) => {
+        if (typeof args[0] === 'string' && !consented(args[0])) throw syscallError('EACCES', String(key), args[0], { detail: 'outside the consented directory' });
+        return value.apply(target, args);
+      };
+    },
+  });
+  ws.filesystem.vfs.mount('/pc', remote(refusing), { resolvesPaths: true, absentReason: () => 'no device connected' });
+  const onDevice = await probe('/pc/home/me/n');
+  assert.equal(onDevice.first, home.first, 'the probe answers on the device every line as the home does');
+  assert.equal(onDevice.second, home.second, 'and so does the next launch');
+  assert.equal(dec.decode(await device.readFile('/home/me/n/w.txt')), 'written', 'its synchronous write is on the device');
+  assert.deepEqual(JSON.parse(await node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  missing: code(() => fs.statSync(process.argv[2] + '/nope')),
+  above: code(() => fs.readdirSync('/pc/home')),
+  aboveLive: await fs.promises.readdir('/pc/home').then(() => 'listed', (e) => 'ERR:' + e.code),
+})))();`, { filename: '/home/user/device.js', cwd: '/home/user', argv: ['/pc/home/me/n'] })), {
+    missing: 'ERR:ENOENT', above: 'ERR:EAGAIN', aboveLive: 'ERR:EACCES',
+  }, 'a missing name in a listed directory is ENOENT; what the device will not list is not known, and refused live');
+  ws.filesystem.vfs.unmount('/pc');
 }
 
 await ws.close();

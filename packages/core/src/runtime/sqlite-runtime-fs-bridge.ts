@@ -748,9 +748,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       // On a mount, or a directory above one, the namespace answers whether
       // this component is a link (the SQLite rows it covers, links among
-      // them, are never followed). The walk itself stays here.
+      // them, are never followed). The walk itself stays here, except on a
+      // mount whose backend resolves its own paths: its links are its own.
       if (this.namespace?.composes('/' + candidate)) {
-        const link = this.mountedLink('/' + candidate);
+        const link = this.namespace.resolvedByBackend('/' + candidate) ? null : this.mountedLink('/' + candidate);
         if (link === null) {
           resolved.push(segment);
           continue;

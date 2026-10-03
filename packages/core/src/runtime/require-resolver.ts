@@ -409,7 +409,14 @@ export async function prefetchForRequire(
         const dirPkgJson = dir + '/package.json';
         if (visited.has(dirPkgJson)) break; // already shipped, stop walking
         if (progress) await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
-        if ((await vfs.exists(dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
+        // A package.json the user may not look up is no package scope, as
+        // Node's lookup reads it: a device mount shows nothing above the
+        // directory its user consented to.
+        const held = await (async () => vfs.exists(dirPkgJson))().catch((error: unknown) => {
+          if (error && typeof error === 'object' && 'code' in error && error.code === 'EACCES') return false;
+          throw error;
+        });
+        if (held && !(await vfs.isDirectory(dirPkgJson))) {
           visited.add(dirPkgJson);
           await stageCell(dirPkgJson, 'metadata');
         }

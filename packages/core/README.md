@@ -394,6 +394,34 @@ a write past that fails with `EFBIG`) and writes the whole file back on
 wrote reads and stats its own writes at once. Another process sees the
 mount's content, and so the writes only after that write-back.
 
+By default the namespace resolves a mounted path one component at a time,
+asking the backend for a stat of each directory on the way. A backend that
+resolves a whole path itself, as a network filesystem's server does (a
+device tunnel, a container, a Drive, where every call is a round trip), is
+mounted with `resolvesPaths`:
+
+```ts
+ws.filesystem.vfs.mount('/pc', ({ cred }) => devices.for(cred.uid), {
+  resolvesPaths: true,
+  absentReason: () => 'no device connected',
+});
+await ws.fs.readFileString('/pc/home/me/a/b/c.txt'); // one call: readFile('/home/me/a/b/c.txt')
+```
+
+Every operation on a path inside it (stat, readdir, read, write, `mkdir -p`,
+rename, unlink, realpath) is then one call with the mount-relative path. The
+namespace stats no directory on the way, checks no parent, and reads no link
+inside the mount. The backend follows its own links within its own tree and
+answers for every component itself: a device may refuse a stat of the
+directories above the one its user consented to (EACCES) and still serve the
+files in it, and a backend may make a write's missing parents. `..` inside
+the mount is lexical. The namespace still owns the way in: root links that
+lead to the mount, ENXIO with `absentReason` while the source answers null,
+the mount point itself (EBUSY, EISDIR, `mkdir -p` has nothing to do), EROFS
+under `readOnly`, EXDEV across mounts (so `mv` and `ws.fs.move` copy), and
+any mount nested inside it. Permissions inside the mount are the backend's:
+a view's credential reaches it through its `as`.
+
 A node process's synchronous `fs` and `require` see a mount, one without a
 `sync` face included, where its launch names it: its working directory, its
 program's directory and arguments, the literal paths its code names, and the
@@ -403,9 +431,12 @@ is every directory from the mount point down to it. A mount the launch does
 not name is not walked. A synchronous call on a mounted path the launch did
 not list, or past the bound, answers EAGAIN ("/shared is an asynchronous
 mount; this caller cannot wait for it") and names the `fs.promises` form that
-reads it; a missing name in a listed directory is ENOENT. The process holds
-the mount's names and content as of its launch, plus its own writes, which
-reach the mount through its write-back.
+reads it; a missing name in a listed directory is ENOENT. On a mount with
+`resolvesPaths`, a directory whose parent the backend will not list is
+stat-ed and listed on its own, so a node program in a device's consented
+directory reads it synchronously too. The process holds the mount's names
+and content as of its launch, plus its own writes, which reach the mount
+through its write-back.
 
 ## What the worker package adds
 
