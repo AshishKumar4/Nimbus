@@ -30,8 +30,6 @@ export class VfsError extends Error {
             this.syscall = options.syscall;
         if (options?.dest !== undefined)
             this.dest = options.dest;
-        // Built without a call, the words are the reason itself (a quota's, an
-        // injected fault's), unless they are only the code's own description.
         const detail = options?.detail ?? (options?.syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
         if (detail !== undefined)
             this.detail = detail;
@@ -60,7 +58,6 @@ export function isVfsErrorCode(code) {
  * error's own where it names one. The layer's error is the cause.
  * A VfsError naming a call or a path is returned as it is; one naming
  * neither (a storage quota's) keeps its words and gains this call's.
- * A layer's own reason (`detail`) is kept as the description.
  * Anything without a known code is returned as it is.
  */
 export function toVfsError(error, syscall, path, dest) {
@@ -76,8 +73,7 @@ export function toVfsError(error, syscall, path, dest) {
         const call = 'syscall' in error && typeof error.syscall === 'string' ? error.syscall : syscall;
         // The caller's second path belongs to its own call, not to another the layer names.
         const second = 'dest' in error && typeof error.dest === 'string' ? error.dest : call === syscall ? dest : undefined;
-        const detail = 'detail' in error && typeof error.detail === 'string' ? error.detail : undefined;
-        return syscallError(code, call, 'path' in error && typeof error.path === 'string' ? error.path : path, { dest: second, detail, cause: error });
+        return syscallError(code, call, 'path' in error && typeof error.path === 'string' ? error.path : path, { dest: second, cause: error });
     }
     return error;
 }
@@ -99,21 +95,6 @@ export function renameOutcome(error) {
             return renamed;
     }
     return undefined;
-}
-/**
- * What GNU coreutils print for a filesystem error after the operand: the
- * refusal's own reason where Nimbus gives one, else strerror(3) for its code.
- */
-export function strerror(error) {
-    if (error instanceof VfsError)
-        return error.detail ?? VFS_STRERROR[error.code];
-    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (isVfsErrorCode(code))
-        return VFS_STRERROR[code];
-    if (error instanceof Error)
-        return error.message;
-    // An errno this table does not name is printed as its name.
-    return typeof code === 'string' ? code : String(error);
 }
 /** strerror(3) for a code: the text GNU coreutils print. */
 export const VFS_STRERROR = {

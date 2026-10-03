@@ -31,6 +31,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MOUNT_LIST_NAME_LIMIT } from '../../packages/core/src/constants.ts';
@@ -410,6 +411,99 @@ function launched(named = []) {
   assert.ok(stats <= 210, `a stat per listed name, not per name and component (${stats})`);
   await ws.filesystem.releaseProcess(pid);
   ws.filesystem.vfs.unmount('/cost');
+}
+
+// ── A device that resolves its own paths (MountOptions.resolvesPaths) ───────
+// It shows only the directory its user consented to: a stat or a listing of
+// anything above /home/me is EACCES, as Kinu's /pc device answers. Node's fs
+// reaches the consented files all the same, sync and async.
+{
+  const device = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await device.mkdir('/home/me', { recursive: true });
+  const consented = (path) => path === '/home/me' || path.startsWith('/home/me/');
+  const refusing = new Proxy(device, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== 'function' || key === 'as') return value;
+      return (...args) => {
+        if (typeof args[0] === 'string' && !consented(args[0])) throw syscallError('EACCES', String(key), args[0], { detail: 'outside the consented directory' });
+        return value.apply(target, args);
+      };
+    },
+  });
+  ws.filesystem.vfs.mount('/pc', remote(refusing), { resolvesPaths: true, absentReason: () => 'no device connected' });
+  const onDevice = await probe('/pc/home/me/n');
+  assert.equal(onDevice.first, home.first, 'the probe answers on the device every line as the home does');
+  assert.equal(onDevice.second, home.second, 'and so does the next launch');
+  assert.equal(dec.decode(await device.readFile('/home/me/n/w.txt')), 'written', 'its synchronous write is on the device');
+  assert.deepEqual(JSON.parse(await node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  missing: code(() => fs.statSync(process.argv[2] + '/nope')),
+  above: code(() => fs.readdirSync('/pc/home')),
+  aboveLive: await fs.promises.readdir('/pc/home').then(() => 'listed', (e) => 'ERR:' + e.code),
+})))();`, { filename: '/home/user/device.js', cwd: '/home/user', argv: ['/pc/home/me/n'] })), {
+    missing: 'ERR:ENOENT', above: 'ERR:EAGAIN', aboveLive: 'ERR:EACCES',
+  }, 'a missing name in a listed directory is ENOENT; what the device will not list is not known, and refused live');
+  ws.filesystem.vfs.unmount('/pc');
+}
+
+// ── A directory the namespace makes on an unfed mount is not a listing ──────
+// /nm holds /sub/file, and a mount nested at /nm/sub/inner makes /nm/sub a
+// directory of the namespace's. A launch that names nothing on /nm has listed
+// none of it, /nm/sub included: what is under it is the mount's refusal,
+// never a false ENOENT, and /nm/sub's names are not only the nested mount's.
+{
+  const outer = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await outer.mkdir('/sub', { recursive: true });
+  await outer.writeFile('/sub/file', enc.encode('file-data'));
+  ws.filesystem.vfs.mount('/nm', remote(outer));
+  ws.filesystem.vfs.mount('/nm/sub/inner', remote(new MemoryVFS({ uid: 1000, gid: 1000 })));
+  assert.deepEqual(JSON.parse(await node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  stat: code(() => fs.statSync(at('nm', 'sub', 'file')).size),
+  read: code(() => fs.readFileSync(at('nm', 'sub', 'file'), 'utf8')),
+  list: code(() => fs.readdirSync(at('nm', 'sub')).sort()),
+  live: await fs.promises.readFile(at('nm', 'sub', 'file'), 'utf8'),
+})))();`, { filename: '/home/user/nested.js', cwd: '/home/user' })), {
+    stat: 'ERR:EAGAIN', read: 'ERR:EAGAIN', list: 'ERR:EAGAIN', live: 'file-data',
+  }, 'under a made directory the launch did not list, a synchronous call is the mount\'s refusal');
+  ws.filesystem.vfs.unmount('/nm/sub/inner');
+  ws.filesystem.vfs.unmount('/nm');
+}
+
+// ── A link on a mount that resolves its own paths is the backend's ─────────
+// Its backend reads an absolute target from its own root. Node's staged
+// view, its live calls and the namespace must agree: /ro/link -> /home/user/x
+// is the mount's /home/user/x, never SQLite's, and the read-only mount
+// refuses the write.
+{
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await backend.mkdir('/home/user', { recursive: true });
+  await backend.writeFile('/home/user/x', enc.encode('backend'));
+  await backend.symlink('/home/user/x', '/link');
+  await backend.symlink('../../../home/user/x', '/climb');
+  ws.filesystem.vfs.mount('/ro', remote(backend), { resolvesPaths: true, readOnly: true });
+  await ws.fs.writeFile('/home/user/x', 'sqlite');
+  assert.equal(await ws.fs.readlink('/ro/link'), '/ro/home/user/x', 'an absolute target re-roots at the mount');
+  assert.equal(await ws.fs.readlink('/ro/climb'), '/ro/home/user/x', 'a relative one climbs no higher than its root');
+  const through = (argv, write) => node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  read: code(() => fs.readFileSync(process.argv[2], 'utf8')),
+  size: code(() => fs.statSync(process.argv[2]).size),
+  live: await fs.promises.readFile(process.argv[2], 'utf8').catch((e) => 'ERR:' + e.code),
+  ${write ? "write: await fs.promises.writeFile(process.argv[2], 'changed').then(() => 'written', (e) => 'ERR:' + e.code)," : ''}
+})))();`, { filename: '/home/user/ro-link.js', cwd: '/home/user', argv });
+  // Naming the link and the file it leads to, both are staged as the mount's.
+  const named = JSON.parse(await through(['/ro/link', '/ro/home/user/x'], false));
+  assert.equal(named.size, 7, `the stat through the link is the mount's file (${JSON.stringify(named)})`);
+  assert.ok(named.read === 'backend' || named.read === 'ERR:EAGAIN', `and so is the read, or the mount's refusal (${JSON.stringify(named)})`);
+  assert.equal(named.live, 'backend', 'fs.promises reads the mount\'s file');
+  // Naming only the link, the file it leads to is not staged: the mount's refusal, never SQLite's file.
+  assert.deepEqual(JSON.parse(await through(['/ro/link'], true)), { read: 'ERR:EAGAIN', size: 'ERR:EAGAIN', live: 'backend', write: 'ERR:EAGAIN' },
+    'a target the launch did not list is the mount\'s refusal');
+  await assert.rejects(ws.fs.writeFile('/ro/link', 'changed'), { code: 'EROFS' }, 'the namespace refuses the write on the mount');
+  assert.equal(await ws.fs.readFileString('/home/user/x'), 'sqlite', 'SQLite\'s file is untouched');
+  ws.filesystem.vfs.unmount('/ro');
 }
 
 await ws.close();

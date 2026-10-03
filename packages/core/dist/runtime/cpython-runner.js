@@ -284,12 +284,13 @@ export function makeCPythonRunnerFactory(deps) {
                 // WASI has no process cwd, so wasi-libc starts every guest at '/'.
                 // Leaving it there silently reroutes every relative path a program
                 // opens — the shell says the user is in /home/user and Python resolves
-                // against the root.
+                // against the root — so a cwd it cannot enter fails the launch, as a
+                // shell's cd fails, naming it.
                 'import os',
                 'try:',
                 `    os.chdir(${JSON.stringify(cwd)})`,
-                'except OSError:',
-                '    pass',
+                'except OSError as error:',
+                `    raise SystemExit("%s: can't enter working directory '%s': [Errno %d] %s" % (${JSON.stringify(binName)}, ${JSON.stringify(cwd)}, error.errno, error.strerror))`,
             ].join('\n');
             const cacertVfs = findFile(CPYTHON_CACERT_REL);
             const userEnv = { ...(ctx.env || {}) };

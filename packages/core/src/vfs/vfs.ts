@@ -219,6 +219,33 @@ export async function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<bool
   return (await probe(vfs, path, true)) !== null;
 }
 
+/**
+ * At most `length` bytes of `path` from `offset`, for a reader that can bear
+ * reading the whole file (cat, a process's descriptor): a filesystem with no
+ * ranged read, or one answering ENOTSUP (a namespace does, for a mount whose
+ * backend has none), is read whole and cut. Synchronous when `vfs` is.
+ */
+export function readRangeOrWhole(vfs: Pick<SyncVFS, 'readFile' | 'readRange'>, path: string, offset: number, length: number): Uint8Array;
+export function readRangeOrWhole(vfs: Pick<VFS, 'readFile' | 'readRange'>, path: string, offset: number, length: number): Awaitable<Uint8Array>;
+export function readRangeOrWhole(vfs: Pick<VFS, 'readFile' | 'readRange'>, path: string, offset: number, length: number): Awaitable<Uint8Array> {
+  const whole = (): Awaitable<Uint8Array> => {
+    const bytes = vfs.readFile(path);
+    return 'then' in bytes ? bytes.then((all) => all.slice(offset, offset + length)) : bytes.slice(offset, offset + length);
+  };
+  if (typeof vfs.readRange !== 'function') return whole();
+  // By its code: a backend across RPC answers a plain `{ code }` error.
+  const unsupported = (error: unknown): Awaitable<Uint8Array> => {
+    if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'ENOTSUP') throw error;
+    return whole();
+  };
+  try {
+    const range = vfs.readRange(path, offset, length);
+    return 'then' in range ? range.catch(unsupported) : range;
+  } catch (error) {
+    return unsupported(error);
+  }
+}
+
 /** The file as UTF-8 text. */
 export async function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string> {
   return decoder.decode(await vfs.readFile(path));

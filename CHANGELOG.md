@@ -32,6 +32,98 @@ published independently in the `@nimbus-sh` npm scope.
   listed the current directory instead of `DIR`; it lists `DIR`, prints it
   as written, and exits 2 with tree's `[error opening dir]` for one it
   cannot open.
+- A mount whose backend resolves a whole path itself, as a network
+  filesystem's server does, can say so: `vfs.mount('/pc', source,
+  { resolvesPaths: true })`. Every operation on a path inside it (stat,
+  lstat, readdir, read, write, `mkdir -p`, rename, unlink, realpath) is then
+  one call to the backend with the mount-relative path. The namespace
+  resolved a mounted path a component at a time, with a stat of each
+  directory on the way: `readFile('/pc/home/me/a/b/c.txt')` made 7 backend
+  calls (6 stats and the read), each a round trip on a device tunnel, a
+  container or a Drive. A device that refuses a stat of the directories
+  above the one its user consented to (EACCES) could serve none of its
+  files, and a backend that makes a write's missing parents got ENOENT from
+  the walk's parent check. Now the backend follows its own links and answers
+  for each component itself; `..` inside the mount is lexical. Its links are
+  read as it resolves them: `readlink` answers the namespace path a link
+  leads to, an absolute target re-rooted at the mount point and a relative
+  one climbing no higher than it, and a link copied off the mount keeps
+  that. So a node launch that stages `/ro/link -> /home/user/x` reads the
+  mount's `/home/user/x`; it used to read, and write, SQLite's. A WASI
+  program (`python3`, `ruby`, the shell's wasm commands) reads such a mount
+  too: its lookup beneath a preopen hands the rest of the path to the
+  backend the same way, so `cat /pc/home/me/f` in the wasm shell reads the
+  consented file instead of failing with "Permission denied" at
+  `/pc/home`; the model (VFS-COMP-005, VFS-COMP-006) hands the same paths
+  over and still proves the lookup stays beneath the preopen. The namespace
+  still owns the way in: root links into the mount, ENXIO with
+  `absentReason`, the mount point (EBUSY, EISDIR, `mkdir -p` has nothing to
+  do), EROFS under `readOnly`, EXDEV across mounts (so `mv`, `cp` and
+  `ws.fs.move` copy), and mounts nested in it: the backend never sees a path
+  into one, so the directories on the way are looked up, and searched with
+  the caller's credential, here. A process's synchronous bridge
+  hands such a path over whole too (`CompositeVFS.resolvedByBackend`). A node
+  launch in a device's consented directory lists it, with a stat of each
+  directory whose parent the device will not list, so its synchronous `fs`
+  and `require` work there; and a denied package.json probe above that
+  directory no longer fails the launch, since Node's module lookup reads
+  EACCES as absent. A mount without the option resolves as before.
+- `cat`, `head`, `tail` and a process's descriptor read a mount whose backend
+  has no `readRange`. They failed with "ENOTSUP: this filesystem does not
+  support readRange": a process's reader read the whole file only when the
+  namespace had no `readRange`, and a `CompositeVFS` always has one. It now
+  reads the whole file when the ranged read answers ENOTSUP (a VfsError,
+  or a plain `{ code }` error from across RPC), through
+  `readRangeOrWhole` (`@nimbus-sh/core/vfs/vfs.js`), which an embedder's
+  reader can use too. `CompositeVFS.readRange` itself still answers ENOTSUP
+  for such a mount, on purpose: a ranged read done as a whole read is not a
+  ranged read (a 4 GB file read to serve 64 KiB), and a caller that must not
+  read whole, such as Kinu's bounded preview, refuses on that answer. The
+  fallback reads the whole file for each range, as the old one did; neither
+  has a size bound.
+- A WASI program (`python3`, `ruby`, the shell's wasm commands) follows an
+  absolute symlink. With `/home/user -> /home/main`, every path through the
+  link failed with errno 76, "Capabilities insufficient":
+  `os.chdir('/home/user/site')` raised, `os.path.exists` behind it answered
+  False, and `cd`, `cat` and `ls` in the wasm shell failed, while node
+  resolved the link. A lookup beneath a WASI preopen refused any absolute
+  link target. Now an absolute target resolves from the namespace's `/`, as
+  every other lookup resolves it, and what the lookup reaches must still lie
+  at or under the preopen's root (ENOTCAPABLE otherwise, as `..` at the root
+  and an absolute path still are). A dangling one is ENOENT. The model
+  (VFS-COMP-006, `Nimbus.Vfs.CompositeBeneath`) proves the lookup still
+  stays beneath the root, finds every directory it passes searchable, the
+  ones an absolute link walks from `/` included, and agrees with the
+  unrestricted walk.
+- `python3` and `ruby` fail when they cannot enter the shell's working
+  directory, naming it (`python3: can't enter working directory '/x':
+  [Errno 44] No such file or directory`, exit 1), instead of running the
+  program in `/`. `cd /home/user/site && python3 -m http.server` served
+  "Directory listing for /".
+
+- An error from a mounted filesystem names the caller's path. A backend's
+  own error left `CompositeVFS` naming the path the backend was handed:
+  `readFile('/m/nope')` failed with "ENOENT: no such file or directory,
+  open '/nope'", a rename on a mount named both paths without the mount
+  point, and a call through a root link named the link's target. Now every
+  filesystem error a backend throws is reported as Node's error for the
+  caller's call: its syscall and the paths the caller gave, the reason in
+  the backend's own words (`VfsError.detail`, which a layer re-naming an
+  error keeps), the backend's error as the cause, and an asynchronous
+  mount's refusal still marked as one. An error that is not a filesystem
+  error is passed on as the backend threw it.
+- The runtime fs bridge, which node programs and the shell reach, fails with
+  Node's error for its own call. The SQLite engine's errors carry a code and
+  no call, and name a storage key, and they left the bridge as they were:
+  `fs.realpathSync` and `readdirSync` of '/home/user/w/nope/x' failed with
+  "ENOENT: home/user/w/nope", and `writeFile`, `symlink` and `mkdir` the
+  same with no path at all, which is how vite printed its entry as a
+  storage key. Each public call now names an engine error with its syscall
+  and the caller's paths (`ENOENT: no such file or directory, scandir
+  '/home/user/w/nope/x'`), the engine's error as the cause. Where the
+  engine states a reason (a move into itself, a widening chmod), it stays
+  the message's words, and its marks (a pending import's) stay on the
+  error.
 
 ## 2026-10-02
 

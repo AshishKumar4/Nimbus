@@ -27,7 +27,7 @@ import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { readDeclaredSource, readText } from '../vfs/vfs.js';
+import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
@@ -682,7 +682,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if ((await this.namespace.stat(base))?.type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
       return (base === '/' ? '' : base) + '/' + path.path;
     }
-    const walk = walkBeneath(normalizeVfsPath(base), path, follow, this.cred);
+    const walk = walkBeneath(normalizeVfsPath(base), path, follow, this.cred, (name) => this.namespace.resolvedByBackend(name));
     for (let step = walk.next(); ; ) {
       if (step.done) {
         if (step.value === null) throw fsError('ELOOP', 'path', path);
@@ -727,11 +727,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => this.namespace.readFile((await this.path(path, options?.followSymlinks !== false)))));
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions) {
-    return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
-      const p = (await this.path(path));
-      if (typeof this.namespace.readRange === 'function') return await this.namespace.readRange(p, offset, length);
-      return (await this.namespace.readFile(p)).slice(offset, offset + length);
-    }));
+    return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () =>
+      await readRangeOrWhole(this.namespace, await this.path(path), offset, length)));
   }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
     return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
@@ -899,9 +896,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.on(handleId, () => this.bridge.read(handleId, offset, length), async (d) => {
       if (!d.flags.read) throw fsError('EBADF', 'read', d.path);
       const start = offset ?? d.position;
-      const bytes = typeof this.namespace.readRange === 'function'
-        ? await this.namespace.readRange(d.path, start, length)
-        : (await this.namespace.readFile(d.path)).slice(start, start + length);
+      const bytes = await readRangeOrWhole(this.namespace, d.path, start, length);
       if (offset === null) d.position = start + bytes.byteLength;
       return bytes;
     });

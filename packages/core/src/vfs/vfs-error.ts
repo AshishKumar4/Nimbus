@@ -39,7 +39,7 @@ export interface VfsErrorOptions extends ErrorOptions {
   syscall?: string;
   /** The second path of a call that names two (rename, copyfile, symlink). */
   dest?: string;
-  /** Why, in Nimbus's words, where it knows more than the code says (`use u+x`). */
+  /** The reason in the filesystem's own words, where it says more than the code's description (`use u+x`). */
   detail?: string;
 }
 
@@ -47,6 +47,12 @@ export class VfsError extends Error {
   readonly errno: number;
   declare readonly syscall?: string;
   declare readonly dest?: string;
+  /**
+   * The reason in the filesystem's own words: `detail` where one was given,
+   * else the message of an error naming no call, which is all reason.
+   * Undefined where the code's description says it; a layer that reports
+   * the error for its own call keeps these words.
+   */
   declare readonly detail?: string;
 
   /**
@@ -62,8 +68,6 @@ export class VfsError extends Error {
     this.errno = VFS_ERRNO[code];
     if (options?.syscall !== undefined) this.syscall = options.syscall;
     if (options?.dest !== undefined) this.dest = options.dest;
-    // Built without a call, the words are the reason itself (a quota's, an
-    // injected fault's), unless they are only the code's own description.
     const detail = options?.detail ?? (options?.syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
     if (detail !== undefined) this.detail = detail;
   }

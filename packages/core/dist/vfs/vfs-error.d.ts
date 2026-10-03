@@ -12,7 +12,7 @@ export interface VfsErrorOptions extends ErrorOptions {
     syscall?: string;
     /** The second path of a call that names two (rename, copyfile, symlink). */
     dest?: string;
-    /** Why, in Nimbus's words, where it knows more than the code says (`use u+x`). */
+    /** The reason in the filesystem's own words, where it says more than the code's description. */
     detail?: string;
 }
 export declare class VfsError extends Error {
@@ -21,6 +21,12 @@ export declare class VfsError extends Error {
     readonly errno: number;
     readonly syscall?: string;
     readonly dest?: string;
+    /**
+     * The reason in the filesystem's own words: `detail` where one was given,
+     * else the message of an error naming no call, which is all reason.
+     * Undefined where the code's description says it; a layer that reports
+     * the error for its own call keeps these words.
+     */
     readonly detail?: string;
     /**
      * `message` is what Node's message says before the path: the description
@@ -48,7 +54,6 @@ export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;
  * error's own where it names one. The layer's error is the cause.
  * A VfsError naming a call or a path is returned as it is; one naming
  * neither (a storage quota's) keeps its words and gains this call's.
- * A layer's own reason (`detail`) is kept as the description.
  * Anything without a known code is returned as it is.
  */
 export declare function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown;
@@ -68,11 +73,6 @@ export declare const RENAME_REFUSALS: ReadonlySet<VfsErrorCode>;
  */
 export type RenameOutcome = 'none' | 'all';
 export declare function renameOutcome(error: unknown): RenameOutcome | undefined;
-/**
- * What GNU coreutils print for a filesystem error after the operand: the
- * refusal's own reason where Nimbus gives one, else strerror(3) for its code.
- */
-export declare function strerror(error: unknown): string;
 /** strerror(3) for a code: the text GNU coreutils print. */
 export declare const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>>;
 /**

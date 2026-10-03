@@ -570,16 +570,21 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositeBeneath.lean -/
 
 #print axioms Nimbus.Vfs.CompositeBeneath.prefix_dropLast
-#print axioms Nimbus.Vfs.CompositeBeneath.walkB_contained
+#print axioms Nimbus.Vfs.CompositeBeneath.resolveB_ok
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_contained
 #print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_snoc
 #print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_snoc
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_parent
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_named
 #print axioms Nimbus.Vfs.CompositeBeneath.walkB_named
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_named
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_root_searched
 #print axioms Nimbus.Vfs.CompositeBeneath.walkB_agrees
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_agrees
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_across_mounts
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_hands_over
 
 /-! ## Nimbus/Vfs/CompositeCache.lean -/
 
@@ -643,6 +648,9 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositePerm.root_dir
 #print axioms Nimbus.Vfs.CompositePerm.named_snoc
 #print axioms Nimbus.Vfs.CompositePerm.named_dropLast
+#print axioms Nimbus.Vfs.CompositePerm.namedH_snoc
+#print axioms Nimbus.Vfs.CompositePerm.namedH_dropLast
+#print axioms Nimbus.Vfs.CompositePerm.namedH_parent
 #print axioms Nimbus.Vfs.CompositePerm.walk_named
 #print axioms Nimbus.Vfs.CompositePerm.resolve_named
 #print axioms Nimbus.Vfs.CompositePerm.never_widens

@@ -35,6 +35,27 @@ async function probe(vfs, path, follow) {
 export async function exists(vfs, path) {
     return (await probe(vfs, path, true)) !== null;
 }
+export function readRangeOrWhole(vfs, path, offset, length) {
+    const whole = () => {
+        const bytes = vfs.readFile(path);
+        return 'then' in bytes ? bytes.then((all) => all.slice(offset, offset + length)) : bytes.slice(offset, offset + length);
+    };
+    if (typeof vfs.readRange !== 'function')
+        return whole();
+    // By its code: a backend across RPC answers a plain `{ code }` error.
+    const unsupported = (error) => {
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'ENOTSUP')
+            throw error;
+        return whole();
+    };
+    try {
+        const range = vfs.readRange(path, offset, length);
+        return 'then' in range ? range.catch(unsupported) : range;
+    }
+    catch (error) {
+        return unsupported(error);
+    }
+}
 /** The file as UTF-8 text. */
 export async function readText(vfs, path) {
     return decoder.decode(await vfs.readFile(path));
