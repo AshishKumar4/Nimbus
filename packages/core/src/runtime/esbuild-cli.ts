@@ -8,7 +8,7 @@
  * there is runtime/esbuild-cli/preamble.ts behind esbuild-wasm's wasm_exec.js,
  * which installs `globalThis.__esbuildCliRun(args, supervisor, output, module)`.
  * On workerd that is the session's esbuild facet, the one that also serves its
- * transforms, and the runner reaches it as a staged asset.
+ * builds, and the runner reaches it as a staged asset.
  *
  * Nothing about the build lives in the session's isolate. esbuild's Go heap
  * grows with the module graph and a WebAssembly memory never shrinks: a React

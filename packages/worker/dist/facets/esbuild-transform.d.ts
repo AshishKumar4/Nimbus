@@ -1,4 +1,4 @@
-import { EsbuildService, type EsbuildBuildHost, type EsbuildTransformHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, type EsbuildTransformHost, type EsbuildBuildHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
@@ -14,16 +14,13 @@ export declare const ESBUILD_FACET_WORKER_ID: string;
  * the global one unless given). `cliRunner` is the staged runner of the
  * `esbuild` command (fetchEsbuildCliRunner).
  */
-export declare function esbuildFacetWorkerCode(wasmModule: WebAssembly.Module, jsFnBody: string, cliRunner: string): WorkerCode;
+export declare function esbuildFacetWorkerCode(wasmModule: WebAssembly.Module, jsFnBody: string, cliRunner: string, transformRuntime: string): WorkerCode;
 /**
- * The transform host a Durable Object's esbuild runs its transforms on: its
- * esbuild facet, a slice per call. Transforms are pure, so a slice whose call
- * failed (the facet reset, the connection dropped) is sent once more, to a
- * freshly minted stub; an overloaded facet is not asked again. A slice that
- * still fails answers each of its requests with a transient error, which is
- * no verdict on the source, and the other slices keep their answers.
+ * Where the transform facet sends a module that ran Oxc out of native stack
+ * (oxcTransformHost): the esbuild facet, whose Go stacks grow. One call per
+ * batch; the caller answers a failed call as transient.
  */
-export declare function esbuildTransformHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost;
+export declare function esbuildStackFallbackHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost;
 /**
  * The build host a Durable Object's esbuild runs its builds on: its esbuild
  * facet. The plugin, and with it every file read, stays with the caller.
@@ -37,11 +34,18 @@ export declare function esbuildBuildHost(ctx: DurableObjectState, env: unknown):
  */
 export declare function runEsbuildCli(ctx: DurableObjectState, env: unknown, pid: number, args: EsbuildCliArgs, output: EsbuildCliOutput): Promise<number>;
 /**
- * The esbuild a Durable Object's supervisor shares: its transforms and its
- * builds run in its esbuild facet, and build() reads `vfs` from here. The
- * facet's code (ESBUILD_FACET_WORKER_ID: the esbuild version, the facet body
- * and the staged CLI runner) is the host's identity, which the launch's
- * transform store keys its results by.
+ * What a transform from supervisorEsbuildService's host is a function of:
+ * the transform facet's code (OXC_FACET_WORKER_ID) and, for a module too deep
+ * for it, the esbuild facet's (ESBUILD_FACET_WORKER_ID, which carries the
+ * esbuild version). The launch's transform store keys results by it, so a new
+ * build of either engine misses every stored result.
+ */
+export declare const TRANSFORM_HOST_ID: string;
+/**
+ * The transforms and builds a Durable Object's supervisor shares: transforms
+ * run in its transform facet (oxc-transform.ts), builds in its esbuild
+ * facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is the host's
+ * identity, which the launch's transform store keys its results by.
  */
 export declare function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService;
 //# sourceMappingURL=esbuild-transform.d.ts.map

@@ -56,6 +56,63 @@ fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
 `defaultGemHome` give way to `pythonSitePackages(home)` and
 `gemHomeFor(home)`, as described below.
 
+- Code a node program produces while it runs now runs in the same launch.
+  Before, Workers' ban on compiling code at runtime meant such code (a
+  `Function` or `AsyncFunction` constructor's text, `vm.runInThisContext`, a
+  module file written after the launch) was refused with
+  `ERR_NIMBUS_CODE_NEXT_LAUNCH` and ran from the next launch, so a Vite or
+  Nuxt dev server failed its first run. Nimbus now runs it in its own
+  JavaScript interpreter, and still records it so the next launch compiles
+  it natively. Interpreted code observes what V8 would: test262 passes on
+  39,145 of the 39,191 tests V8 passes, and the interpreter itself calls
+  none of the built-ins a program can replace (its parser, acorn, still
+  does). It loads only when a program first produces such code; each
+  launch's map carries it (240 KiB). Measured locally, it runs 1.1 to 1.9
+  times slower than native on framework code and about 45 times slower on
+  tight generated code such as a JSON-schema validator, for that first
+  launch only. TypeScript or JSX text and `using` still wait
+  for the next launch. `import()` of a module that uses top-level await
+  waits for it; `require()` of one, and a static import of one, return its
+  exports at once.
+- Transforms run on Nimbus's own build of Oxc instead of esbuild-wasm: every
+  TypeScript, JSX and ES-module-to-CommonJS transform a session makes (a
+  launch's module cells and entry, the built-in Vite dev server's modules,
+  the Vite config read, the supervisor transform RPC). The engine is a
+  2.15 MiB wasm module (`packages/worker/scripts/oxc-wasm`: Oxc 0.152's
+  parser, TypeScript/JSX transformer and printer, plus a module pass that
+  writes CommonJS in esbuild's shape, helpers and `__esModule` included),
+  built reproducibly from a pinned toolchain, staged under `/_assets/oxc/`
+  and digest-checked like every staged artifact. It runs in a transform
+  facet of its own; the esbuild facet keeps builds and the `esbuild`
+  command. On pi 0.99.1's 66 bundle chunks plus 23 TypeScript sources, a
+  cold pass takes 280 ms where esbuild-wasm took 3,647 ms; the wasm starts
+  at 4.25 MiB where esbuild's starts at 28 MiB, and peaks at 62 MiB where
+  esbuild's reached 336 MiB. Stored launch transforms are redone once,
+  since the transform host's identity changed. Output is printed
+  differently (formatting only); `supervisorEsbuildService` keeps its name,
+  signature and contract.
+- Lowering a module with top-level await (the transform's ESM output run as a
+  CommonJS cell) now evaluates every module the source requests before the
+  body, re-exports included, in source order, as Node does; and each export
+  is a live getter installed before the body runs, so `export let db; db =
+  await connect()` exports the connected value, wherever the transform
+  printed the export. The cell's top level holds only generated names, so a
+  module's own `import Object from "dep"` cannot reach the lowering's code.
+- A module nested deeper than Oxc's recursive passes can run on the host's
+  stack (under V8: about 4,800 concatenated terms, a 1,950-arm ternary, 1,400
+  chained calls or arrays 585 deep) is transformed by esbuild in the esbuild
+  facet, that module alone: every such module of a batch, in calls of at most
+  four, each call with a 30 s deadline, each module logged with its path and
+  reason. Only the driver's own RangeError marks a module so, never
+  message text. Stored launch transforms are keyed by both engines' code.
+  esbuild's own wasm grows with depth too (268 MiB for 5,000 concatenated
+  terms), so past its own limit neither transforms it.
+- `jsx: "preserve"` with `format: "cjs"` is refused: preserved JSX would name
+  imports that the conversion to CommonJS moved onto records.
+- Fixed: on the SQLite filesystem, renaming a directory over an empty
+  directory counted the replaced directory as a file, so `df` and the
+  filesystem's stats reported one file too few and one directory too many
+  until the counters were next reloaded from the store.
 - Changed: a workspace's per-user defaults follow the `HOME` its host
   configures (`NimbusWorkspace.create({ env: { HOME } })`). The home
   directory and `~/.nimbusrc` are seeded there, `/etc/passwd` names it, and

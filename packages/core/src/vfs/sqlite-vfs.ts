@@ -5181,8 +5181,8 @@ export class SqliteVFS {
       for (const opened of this.openNodes) if (opened.path === destInode.path) opened.path = null;
       destInode.ctime = this.now();
       this.inodes.delete(destInode.path);
-      this._totalFiles--;
-      this._usedBytes -= destInode.size;
+      if (destInode.isDir) this._totalDirs--;
+      else { this._totalFiles--; this._usedBytes -= destInode.size; }
     }
     for (const { entry, stored } of renamed) {
       for (const opened of this.openNodes) if (opened.path === entry.path) opened.path = stored.path;

@@ -22,9 +22,9 @@ export interface ParsedViteConfig {
  * Read a `vite.config.ts` without a TypeScript transform where the transform
  * cannot change what this reader sees.
  *
- * The transform is esbuild, and on a fresh session it is the session's first:
- * it starts the esbuild facet (loading the wasm and initializing esbuild,
- * about a second), and `vite` waits on it before it serves anything. Most
+ * On a fresh session the transform is the session's first: it starts the
+ * transform facet (fetching and compiling its wasm), and `vite` waits on it
+ * before it serves anything. Most
  * configs, the seeded one included, are plain JavaScript under a `.ts` name.
  *
  * The direct read is taken only for a source that parses as a JavaScript

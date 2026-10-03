@@ -1,3 +1,7 @@
+import { type RuntimeFunctionKind } from './runtime-function-source.js';
+export type { RuntimeFunctionKind } from './runtime-function-source.js';
+/** Why V8's constructor would refuse these arguments, or null when it would build the function. */
+export declare function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null;
 /** The Worker Loader module name for the cell at VFS key `key` (a path without its leading slash). */
 export declare function commonJsCellModuleName(key: string): string;
 /** The module name of a process's entry code, `filename` being the script's path or `[eval]`. */
@@ -66,14 +70,6 @@ export declare const RUNTIME_CODE_MAX_ENTRIES = 1024;
  * tiny pieces is nearly free by text and not at all by heap.
  */
 export declare const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
-/** The constructors whose text a program can hand in at runtime. */
-declare const RUNTIME_FUNCTION_HEADS: {
-    readonly function: "function";
-    readonly async: "async function";
-    readonly generator: "function*";
-    readonly asyncGenerator: "async function*";
-};
-export type RuntimeFunctionKind = keyof typeof RUNTIME_FUNCTION_HEADS;
 /** Code a launch could not compile, as its ledger reports it. */
 export type RuntimeCodeEntry = {
     kind: RuntimeFunctionKind;
@@ -83,6 +79,11 @@ export type RuntimeCodeEntry = {
     kind: 'module';
     path: string;
     text: string;
+}
+/** vm.runInThisContext's code: a script whose value is its one expression's (scriptExpression). */
+ | {
+    kind: 'expression';
+    code: string;
 };
 /**
  * What of a file's path decides the module its text becomes: its directory
@@ -102,21 +103,18 @@ export declare function runtimeCodeKey(entry: RuntimeCodeEntry): string;
  * ledger charges the same (__nimbusRuntimeCodeCompile).
  */
 export declare function runtimeCodeCharge(entry: RuntimeCodeEntry): number;
+/**
+ * The module names, in every node launch's map, of the interpreter, the host
+ * module it runs on, and its primordials, which it requires from beside it as
+ * ./interpreter-primordials.js (worker scripts/interpreter-bundle.mjs).
+ */
+export declare const RUNTIME_INTERPRETER_MODULE = "nimbus/interpreter.js";
+export declare const RUNTIME_INTERPRETER_OPS_MODULE = "nimbus/interpreter-ops.js";
+export declare const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = "nimbus/interpreter-primordials.js";
 /** The module name of the runtime code with key `key`. */
 export declare function runtimeCodeModuleName(key: string): string;
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export declare function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null;
-/**
- * Why V8's constructor would refuse these arguments, or null when it would
- * build the function. V8 parses the parameters alone and requires them to end
- * where the list ends ("Arg string terminates parameters early"), the body
- * alone, and then the whole source, which must be exactly one function
- * literal ("Single function literal required"). Splicing unchecked text into
- * `(<head> anonymous(<params>\n) {\n<body>\n})` would otherwise let a body
- * such as `}, globalThis.x = 1, function () {` run code at module
- * evaluation that the constructor never would.
- */
-export declare function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null;
 /**
  * The `{ cjs }` module text for a Function-constructor call: it exports the
  * function V8 builds for `new <Kind>Function(...params, body)` — named
@@ -130,19 +128,28 @@ export declare function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, pa
  * to the global object's.
  */
 export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;
+/**
+ * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
+ * function returning the value of the one expression the script is (after
+ * its directive prologue, which the function keeps), in the global scope as
+ * a constructor's function is (runtimeFunctionModule), which node-shims
+ * calls with the global object as `this`, a script's own; or
+ * it throws the SyntaxError V8 would, or, for a script of another shape,
+ * the error the interpreter answers it with in the first launch.
+ */
+export declare function runtimeExpressionModule(code: string): string;
 /** The main module's imports the runtime below reads through. */
 export declare const COMMONJS_CELL_IMPORTS: string;
 /**
  * The generated facet's side of the cells: resolve a VFS key to its module's
  * wrapper function, read a cell's text back for the process's store, and
- * answer runtime code from the launch's `gen/` modules or record it for the
- * next launch (`__nimbusRuntimeCode`, which the shims' async and generator
- * Function constructors, `vm.compileFunction`, `Module.prototype._compile`
- * and the loader of a file outside the map call).
+ * answer runtime code from the launch's `gen/` modules, or else record it for
+ * the next launch and interpret it (`__nimbusRuntimeCode`, which the shims'
+ * Function constructors, `vm.compileFunction`, `vm.runInThisContext`,
+ * `Module.prototype._compile` and the loader of a file outside the map call).
  *
  * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
  * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.
  */
 export declare const COMMONJS_CELL_RUNTIME_SOURCE: string;
-export {};
 //# sourceMappingURL=commonjs-cell.d.ts.map

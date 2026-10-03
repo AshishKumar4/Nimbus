@@ -1,16 +1,21 @@
 /**
  * Lower an ES module with top-level await to a CommonJS function body.
  *
- * esbuild refuses `format: 'cjs'` for top-level await, so the transform first
+ * The transform refuses `format: 'cjs'` for top-level await, so it first
  * emits the module as ESM (TypeScript, JSX and defines already applied) and
- * this turns that output into the body the CommonJS cell runs: every import
- * declaration becomes a require above an async IIFE holding the rest, and each
- * export becomes an assignment to `module.exports`. Acorn's module parse gives
+ * this turns that output into the body the CommonJS cell runs. As in Node,
+ * every module the source requests is evaluated before its body: each import
+ * and re-export becomes a require above an async IIFE holding the rest, in
+ * source order. Each export is a live getter on `module.exports`, installed
+ * before the body runs: a binding the body assigns after an `await` (`export
+ * let db; db = await connect()`) reads as assigned, wherever the transform
+ * printed its export. A default expression is assigned where it is evaluated.
+ * Acorn's module parse gives
  * the declarations; esbuild prints an import or export clause across several
  * lines when it is long (serve 14's `import {\n resolve as resolvePath, ... }
  * from "node:path"`), so no line or text pattern can stand in for it.
  *
- * Runs in the esbuild facet (installed by esbuild-cli/preamble.ts) and, for
+ * Runs in the transform facet (installed by oxc-facet/preamble.ts) and, for
  * in-process transforms, in esbuild-service.ts.
  */
 import { Parser } from 'acorn';
@@ -25,15 +30,21 @@ export function lowerAsyncModule(esm) {
     // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
     const nameOf = (node) => node.type === 'Identifier' ? String(node.name) : String(node.value);
     const sourceOf = (node) => JSON.stringify(String(node.value));
-    let marked = false;
-    const esModule = () => {
-        if (marked)
-            return '';
-        marked = true;
-        return 'module.exports.__esModule = true; ';
-    };
+    // The cell's top level holds only generated names (its records and these):
+    // the module's own bindings, its imports' included, are inside the IIFE, so
+    // nothing it declares (`import Object from "dep"`) reaches what these read.
+    const exportsRef = temp();
+    const exportGetter = temp();
+    const defineProperty = temp();
+    const live = (exported, value) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`;
     const requires = [];
+    // Inside the IIFE, before the body: the imports' bindings, read off their
+    // records, then a getter per export name, installed in name order (a module
+    // namespace's), whichever order the transform printed.
+    const imported = [];
+    const getters = [];
     const edits = [];
+    let exportsAnything = false;
     // A hashbang is only valid as the first line of a script; the body moves
     // into a function. Kept as a comment so line numbers stay put.
     if (esm.startsWith('#!'))
@@ -47,63 +58,65 @@ export function lowerAsyncModule(esm) {
                     break;
                 }
                 const mod = temp();
-                const bindings = [`const ${mod} = require(${sourceOf(node.source)});`];
+                requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
                 for (const specifier of node.specifiers) {
                     const local = specifier.local.name;
                     if (specifier.type === 'ImportNamespaceSpecifier')
-                        bindings.push(`const ${local} = ${mod};`);
+                        imported.push(`const ${local} = ${mod};`);
                     else if (specifier.type === 'ImportDefaultSpecifier') {
-                        bindings.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+                        imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
                     }
                     else
-                        bindings.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
+                        imported.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
                 }
-                requires.push(bindings.join(' '));
                 break;
             }
             case 'ExportNamedDeclaration': {
+                exportsAnything = true;
                 if (node.declaration) {
                     edits.push({ start: node.start, end: node.declaration.start, text: '' });
-                    const names = declaredNames(node.declaration);
-                    edits.push({
-                        start: node.end, end: node.end,
-                        text: '\n' + esModule() + names.map((name) => `module.exports${key(name)} = ${name};`).join(' '),
-                    });
+                    for (const name of declaredNames(node.declaration))
+                        getters.push([name, name]);
                 }
                 else if (node.source) {
                     const mod = temp();
-                    const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${mod}${key(nameOf(s.local))};`);
-                    edits.push({
-                        start: node.start, end: node.end,
-                        text: `${esModule()}{ const ${mod} = require(${sourceOf(node.source)}); ${assigns.join(' ')} }`,
-                    });
+                    edits.push({ start: node.start, end: node.end, text: '' });
+                    requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
+                    for (const s of node.specifiers)
+                        getters.push([nameOf(s.exported), `${mod}${key(nameOf(s.local))}`]);
                 }
                 else {
-                    const assigns = node.specifiers.map((s) => `module.exports${key(nameOf(s.exported))} = ${nameOf(s.local)};`);
-                    edits.push({ start: node.start, end: node.end, text: esModule() + assigns.join(' ') });
+                    edits.push({ start: node.start, end: node.end, text: '' });
+                    for (const s of node.specifiers)
+                        getters.push([nameOf(s.exported), nameOf(s.local)]);
                 }
                 break;
             }
             case 'ExportDefaultDeclaration': {
+                exportsAnything = true;
                 const declaration = node.declaration;
                 if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
                     edits.push({ start: node.start, end: declaration.start, text: '' });
-                    edits.push({ start: node.end, end: node.end, text: `\n${esModule()}module.exports.default = ${declaration.id.name};` });
+                    getters.push(['default', declaration.id.name]);
                 }
                 else {
                     edits.push({
                         start: node.start, end: node.end,
-                        text: `${esModule()}module.exports.default = (${esm.slice(declaration.start, declaration.end)});`,
+                        text: `${exportsRef}.default = (${esm.slice(declaration.start, declaration.end)});`,
                     });
                 }
                 break;
             }
             case 'ExportAllDeclaration': {
+                exportsAnything = true;
                 const mod = temp();
-                const text = node.exported
-                    ? `module.exports${key(nameOf(node.exported))} = require(${sourceOf(node.source)});`
-                    : `{ const ${mod} = require(${sourceOf(node.source)}); for (const k in ${mod}) if (k !== "default" && k !== "__esModule") module.exports[k] = ${mod}[k]; }`;
-                edits.push({ start: node.start, end: node.end, text: esModule() + text });
+                edits.push({ start: node.start, end: node.end, text: '' });
+                requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
+                // `*` goes first; a name exported explicitly, installed after it, wins.
+                if (node.exported)
+                    getters.push([nameOf(node.exported), mod]);
+                else
+                    requires.push(`for (const k in ${mod}) if (k !== "default" && k !== "__esModule") ${exportGetter}(k, () => ${mod}[k]);`);
                 break;
             }
             default:
@@ -117,7 +130,16 @@ export function lowerAsyncModule(esm) {
         at = end;
     }
     parts.push(esm.slice(at));
-    return `${requires.join('\n')}\nreturn (async () => {\n${parts.join('')}\n})();\n`;
+    const header = exportsAnything
+        ? [
+            `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true; const ${defineProperty} = Object.defineProperty;`,
+            `const ${exportGetter} = (name, get) => ${defineProperty}(${exportsRef}, name, { enumerable: true, configurable: true, get });`,
+        ]
+        : [];
+    const installed = getters
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([exported, value]) => live(exported, value));
+    return `${[...header, ...requires].join('\n')}\nreturn (async () => { ${[...imported, ...installed].join(' ')}\n${parts.join('')}\n})();\n`;
 }
 /** The bindings an exported declaration introduces. */
 function declaredNames(declaration) {

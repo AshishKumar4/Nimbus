@@ -1,0 +1,30 @@
+# Nimbus's Oxc transform, built as wasm by build.mjs (see src/lib.rs).
+[package]
+name = "nimbus_oxc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+# Its own workspace: build.mjs copies the crate into a work directory.
+[workspace]
+
+[lib]
+# cdylib for the wasm; rlib for the examples, which run the same transform natively.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+oxc = { version = "=0.152.0", default-features = false, features = ["transformer", "semantic", "codegen", "ast_visit"] }
+oxc_ecmascript = "=0.152.0"
+oxc_traverse = "=0.152.0"
+memchr = "2"
+rustc-hash = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+debug = false
+strip = "symbols"

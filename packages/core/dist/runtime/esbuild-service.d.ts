@@ -1,12 +1,13 @@
 /**
- * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
+ * EsbuildService — TypeScript/JSX transform + bundling.
  *
- * esbuild-wasm's linear memory starts at ~28 MiB, grows to fit the working
- * set of its transforms/builds, and cannot shrink. A host whose isolate is
- * memory-constrained passes a `transformHost` and a
- * `buildHost` so esbuild runs in another isolate (the session's is the
- * loader-backed esbuild facet); without them, esbuild runs here. build()'s
- * VFS resolver plugin always runs here, over this service's view.
+ * A host whose isolate is memory-constrained passes a `transformHost` and a
+ * `buildHost` so both run in another isolate: the session's transforms run in
+ * its transform facet on Nimbus's Oxc build (oxc-transform.ts, which keeps
+ * esbuild's transform contract), its builds in the esbuild facet. Without
+ * them, esbuild-wasm runs both here; its linear memory starts at ~28 MiB,
+ * grows to fit the working set and cannot shrink. build()'s VFS resolver
+ * plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
 /**
@@ -137,11 +138,14 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
-/**
- * Source the esbuild facet evaluates next to esbuild: its transform and build
- * helpers, and the esbuild it keeps for transforms (keep-esbuild.ts).
- */
+/** Source the esbuild facet evaluates next to esbuild: its build helpers. */
 export declare function generateEsbuildFacetRuntimeSource(): string;
+/**
+ * Source the transform facet evaluates next to its engine: one transform
+ * request, run against anything with esbuild's `transform()` contract
+ * (oxc-transform.ts's in the facet).
+ */
+export declare function generateTransformFacetRuntimeSource(): string;
 /** One transform a {@link EsbuildTransformHost} runs. */
 export interface EsbuildTransformRequest {
     code: string;
@@ -152,15 +156,23 @@ export interface EsbuildTransformRequest {
  * module. A `transient` error is no verdict on the source: the host could not
  * run the transform this time.
  */
+/**
+ * A transform's answer. `transient` marks a failure that is no verdict on the
+ * source (retry); `stackExhausted` one where the engine ran out of native
+ * stack on the module's nesting, which another engine may still answer
+ * (oxc-transform.ts's driver sets it from the RangeError it caught, never
+ * from message text).
+ */
 export type EsbuildTransformOutcome = TransformResult | {
     error: string;
     transient?: true;
+    stackExhausted?: true;
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
- * esbuild-wasm's linear memory starts at ~28 MiB, grows to the working set of
- * the largest module it transforms and is never released, so an isolate that
- * is memory-constrained (a session supervisor) hands its transforms to one of
+ * A transform engine's wasm memory grows to the working set of the largest
+ * module it transforms and is never released, so an isolate that is
+ * memory-constrained (a session supervisor) hands its transforms to one of
  * these.
  */
 export type EsbuildTransformHost = (requests: EsbuildTransformRequest[]) => Promise<EsbuildTransformOutcome[]>;

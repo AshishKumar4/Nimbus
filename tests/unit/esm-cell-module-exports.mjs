@@ -93,11 +93,11 @@ const manager = new FacetManager(
   env, host.processes, new PortRegistry(), processHostFor, {},
 );
 manager.setVfs(rawVfs, processFiles(rawVfs));
-// Native esbuild stands in for the wasm build the facet runs; the service's
+// The engine the transform facet runs (lib/oxc-engine.mjs); the service's
 // in-isolate path runs the same transform-then-rewrite.
 const esbuild = new EsbuildService();
 esbuild.ensureInit = async () => {};
-esbuild._esbuild = await import('esbuild');
+esbuild._esbuild = (await import('./lib/oxc-engine.mjs')).oxcEngine;
 manager.setEsbuildService(esbuild);
 
 for (const [rel, text] of Object.entries(files)) {

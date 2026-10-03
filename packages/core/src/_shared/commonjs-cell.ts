@@ -81,20 +81,49 @@
  * (src/workerd/jsg/modules-new.c++ ~L2001-2007). Request-time `eval` and
  * `new Function` throw.
  *
- * So such code is staged for the NEXT launch of the same command. The guest
- * records it in a ledger that travels with the existing residency-miss report
- * (the one-shot envelope, the resident exit report); the supervisor keeps it
+ * So such code runs twice over. In the launch that produced it, the guest's
+ * interpreter runs it (core/interpreter: parsed and compiled once into
+ * closures, sharing the program's realm and objects), loaded from the map the
+ * first time any code needs it. And it is staged for the NEXT launch of the
+ * same command, which compiles it natively: the guest records it in a ledger
+ * that travels with the existing residency-miss report (the one-shot
+ * envelope, the resident exit report); the supervisor keeps it
  * content-addressed for that command's bundle key; the next launch carries it
  * as `gen/<sha256>.js` modules, compiled on first use. A key is the SHA-256 of
  * what decides the module (runtimeCodeKeySource): a constructor's arguments,
  * or a file's text together with its directory and extension, which decide
  * how it is lowered and what its relative imports mean — not its name, so a
  * file written under a fresh name each run still converges. Text that
- * changes every run (an edit, then the module runner's transform of it)
- * costs one relaunch per change.
+ * changes every run (an edit, then the module runner's transform of it) is
+ * interpreted each time. Code the interpreter refuses (TypeScript or JSX
+ * text, `using` declarations) still throws EvalError code
+ * ERR_NIMBUS_CODE_NEXT_LAUNCH, and runs from the next launch on.
+ *
+ * A process started with NIMBUS_RUNTIME_CODE=interpret interprets even code
+ * an earlier launch staged: the same launch, natively or not, which is how
+ * the interpreter's cost and behaviour are compared with V8's.
  */
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
+import {
+  RUNTIME_FUNCTION_HEADS, expressionFunctionBody, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn,
+  type RuntimeFunctionKind, type ScriptExpression, scriptExpression, type SourceRealm,
+} from './runtime-function-source.js';
+import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
+
+export type { RuntimeFunctionKind } from './runtime-function-source.js';
+
+/** This module's own built-ins, for the checks it shares with the interpreter. */
+const REALM: SourceRealm = { SyntaxError, messageOf: (e) => (e instanceof Error ? e.message : String(e)) };
+
+function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
+  return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
+}
+
+/** Why V8's constructor would refuse these arguments, or null when it would build the function. */
+export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null {
+  return syntaxErrorIn(kind, params, body, REALM);
+}
 
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -303,19 +332,12 @@ export const RUNTIME_CODE_MAX_ENTRIES = 1024;
  */
 export const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
 
-/** The constructors whose text a program can hand in at runtime. */
-const RUNTIME_FUNCTION_HEADS = {
-  function: 'function',
-  async: 'async function',
-  generator: 'function*',
-  asyncGenerator: 'async function*',
-} as const;
-export type RuntimeFunctionKind = keyof typeof RUNTIME_FUNCTION_HEADS;
-
 /** Code a launch could not compile, as its ledger reports it. */
 export type RuntimeCodeEntry =
   | { kind: RuntimeFunctionKind; params: string[]; body: string }
-  | { kind: 'module'; path: string; text: string };
+  | { kind: 'module'; path: string; text: string }
+  /** vm.runInThisContext's code: a script whose value is its one expression's (scriptExpression). */
+  | { kind: 'expression'; code: string };
 
 /**
  * What of a file's path decides the module its text becomes: its directory
@@ -343,9 +365,9 @@ export function runtimeModuleScope(path: string): [dir: string, ext: string] {
  * same function (its sync node:crypto), so both sides name the same module.
  */
 function runtimeCodeKeySource(entry: RuntimeCodeEntry): string {
-  return entry.kind === 'module'
-    ? JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text])
-    : JSON.stringify([entry.kind, entry.params, entry.body]);
+  if (entry.kind === 'module') return JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text]);
+  if (entry.kind === 'expression') return JSON.stringify(['expression', entry.code]);
+  return JSON.stringify([entry.kind, entry.params, entry.body]);
 }
 
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
@@ -364,6 +386,15 @@ export function runtimeCodeCharge(entry: RuntimeCodeEntry): number {
   return runtimeCodeKeySource(entry).length + (entry.kind === 'module' ? entry.path.length : 0) + RUNTIME_CODE_ENTRY_OVERHEAD;
 }
 
+/**
+ * The module names, in every node launch's map, of the interpreter, the host
+ * module it runs on, and its primordials, which it requires from beside it as
+ * ./interpreter-primordials.js (worker scripts/interpreter-bundle.mjs).
+ */
+export const RUNTIME_INTERPRETER_MODULE = 'nimbus/interpreter.js';
+export const RUNTIME_INTERPRETER_OPS_MODULE = 'nimbus/interpreter-ops.js';
+export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primordials.js';
+
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key: string): string {
   return `gen/${key}.js`;
@@ -372,55 +403,15 @@ export function runtimeCodeModuleName(key: string): string {
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
   if (typeof value !== 'object' || value === null) return null;
-  const v: { kind?: unknown; path?: unknown; text?: unknown; params?: unknown; body?: unknown } = value;
+  const v: { kind?: unknown; path?: unknown; text?: unknown; params?: unknown; body?: unknown; code?: unknown } = value;
   if (v.kind === 'module') {
     return typeof v.path === 'string' && typeof v.text === 'string'
       ? { kind: 'module', path: v.path, text: v.text } : null;
   }
+  if (v.kind === 'expression') return typeof v.code === 'string' ? { kind: 'expression', code: v.code } : null;
   if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind)) return null;
   if (!Array.isArray(v.params) || !v.params.every((p: unknown): p is string => typeof p === 'string') || typeof v.body !== 'string') return null;
   return { kind: v.kind, params: [...v.params], body: v.body };
-}
-
-function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
-  return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
-}
-
-/**
- * Why V8's constructor would refuse these arguments, or null when it would
- * build the function. V8 parses the parameters alone and requires them to end
- * where the list ends ("Arg string terminates parameters early"), the body
- * alone, and then the whole source, which must be exactly one function
- * literal ("Single function literal required"). Splicing unchecked text into
- * `(<head> anonymous(<params>\n) {\n<body>\n})` would otherwise let a body
- * such as `}, globalThis.x = 1, function () {` run code at module
- * evaluation that the constructor never would.
- */
-export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null {
-  const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
-  const paramText = params.join(',');
-  const checks: Array<[text: string, bodyStart: number, emptyBody: boolean]> = [
-    [`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true],
-    [`${head}\n) {\n${body}\n})`, `${head}\n) `.length, false],
-    [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
-  ];
-  for (const [text, bodyStart, emptyBody] of checks) {
-    let program: Program | undefined;
-    try {
-      program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
-    } catch (e) {
-      return e instanceof Error ? e.message : String(e);
-    }
-    const [statement] = program.body;
-    const fn = program.body.length === 1 && statement.type === 'ExpressionStatement' ? statement.expression : null;
-    if (
-      !fn || fn.type !== 'FunctionExpression' || fn.start !== 1 || fn.end !== text.length - 1
-      || fn.body.start !== bodyStart || (emptyBody && fn.body.body.length !== 0)
-    ) {
-      return emptyBody ? 'Arg string terminates parameters early' : 'Single function literal required';
-    }
-  }
-  return null;
 }
 
 /**
@@ -439,9 +430,32 @@ export function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonl
   const refused = runtimeFunctionSyntaxError(kind, params, body);
   if (refused !== null) return `throw new SyntaxError(${JSON.stringify(refused)});`;
   return 'module.exports = (function (require, module, exports, __filename, __dirname) { return ('
-    + `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${params.join(',')}\n) {\n${body}\n}); })`
+    + `${runtimeFunctionSource(kind, params, body)}); })`
     + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname);';
 }
+
+/**
+ * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
+ * function returning the value of the one expression the script is (after
+ * its directive prologue, which the function keeps), in the global scope as
+ * a constructor's function is (runtimeFunctionModule), which node-shims
+ * calls with the global object as `this`, a script's own; or
+ * it throws the SyntaxError V8 would, or, for a script of another shape,
+ * the error the interpreter answers it with in the first launch.
+ */
+export function runtimeExpressionModule(code: string): string {
+  let at: ScriptExpression | null;
+  try {
+    at = scriptExpression(code, REALM);
+  } catch (e) {
+    return `throw new SyntaxError(${JSON.stringify(REALM.messageOf(e))});`;
+  }
+  if (at === null) return `throw new Error(${JSON.stringify(VM_SCRIPT_UNSUPPORTED)});`;
+  return runtimeFunctionModule('function', [], expressionFunctionBody(code.slice(0, at.prologueEnd), code.slice(at.start, at.end)));
+}
+
+/** Why a vm script that is not one expression does not run in a Worker. */
+const VM_SCRIPT_UNSUPPORTED = 'vm.runInThisContext: a Worker runs code compiled after its launch only as one expression, whose value is the result';
 
 /** The main module's imports the runtime below reads through. */
 export const COMMONJS_CELL_IMPORTS = [
@@ -453,16 +467,20 @@ export const COMMONJS_CELL_IMPORTS = [
 /**
  * The generated facet's side of the cells: resolve a VFS key to its module's
  * wrapper function, read a cell's text back for the process's store, and
- * answer runtime code from the launch's `gen/` modules or record it for the
- * next launch (`__nimbusRuntimeCode`, which the shims' async and generator
- * Function constructors, `vm.compileFunction`, `Module.prototype._compile`
- * and the loader of a file outside the map call).
+ * answer runtime code from the launch's `gen/` modules, or else record it for
+ * the next launch and interpret it (`__nimbusRuntimeCode`, which the shims'
+ * Function constructors, `vm.compileFunction`, `vm.runInThisContext`,
+ * `Module.prototype._compile` and the loader of a file outside the map call).
  *
  * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
  * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
+// The built-ins the interpreter calls, captured now, before any program code
+// runs (core interpreter/primordials.ts): the interpreter itself loads only
+// when the program first produces code, by when it may have replaced them.
+const { LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
@@ -550,12 +568,18 @@ const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};
 function __nimbusRuntimeCodeKey(entry) {
   const __source = entry.kind === "module"
     ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
-    : JSON.stringify([entry.kind, entry.params, entry.body]);
+    : entry.kind === "expression"
+      ? JSON.stringify(["expression", entry.code])
+      : JSON.stringify([entry.kind, entry.params, entry.body]);
   return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };
 }
-// This launch's module for the code, or undefined when it was not staged.
+// This launch's module for the code, or undefined when it was not staged (or
+// the process asked for the interpreter: RUNTIME CODE in commonjs-cell.ts).
 function __nimbusRuntimeCodeStaged(key) {
-  return __nimbusRuntimeKeys.has(key) ? __nimbusRegistryRequire("./gen/" + key + ".js") : undefined;
+  if (!__nimbusRuntimeKeys.has(key)) return undefined;
+  const __env = globalThis.process && globalThis.process.env;
+  if (__env && __env.NIMBUS_RUNTIME_CODE === "interpret") return undefined;
+  return __nimbusRegistryRequire("./gen/" + key + ".js");
 }
 function __nimbusRuntimeCodeRecord({ source, key }, entry) {
   const __charge = source.length + (entry.kind === "module" ? entry.path.length : 0) + ${RUNTIME_CODE_ENTRY_OVERHEAD};
@@ -569,22 +593,40 @@ function __nimbusRuntimeCodeRecord({ source, key }, entry) {
     __nimbusNotifyRuntimeCode();
   }
 }
+// The interpreter (core/interpreter), from this launch's map, on first use:
+// a program that produces no runtime code never compiles it.
+let __nimbusInterpreter = null;
+function __nimbusRuntimeInterpreter() {
+  if (__nimbusInterpreter === null) {
+    const { createInterpreter } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
+    __nimbusInterpreter = createInterpreter(__nimbusRegistryRequire("./${RUNTIME_INTERPRETER_OPS_MODULE}"), {
+      dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
+      primordials: __nimbusLaunchPrimordials,
+    });
+  }
+  return __nimbusInterpreter;
+}
+// The compiled code: this launch's module for it when an earlier launch
+// staged it; otherwise recorded for the next launch and interpreted. A
+// SyntaxError is what compiling it natively throws too.
 function __nimbusRuntimeCodeCompile(entry, describe) {
   const __id = __nimbusRuntimeCodeKey(entry);
   const __staged = __nimbusRuntimeCodeStaged(__id.key);
   if (__staged !== undefined) return __staged;
   __nimbusRuntimeCodeRecord(__id, entry);
-  const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with. It is staged: the next launch of this command compiles it.");
-  __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
-  __err.key = __id.key;
-  throw __err;
+  const __interpreter = __nimbusRuntimeInterpreter();
+  try {
+    if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text);
+    if (entry.kind === "expression") return __interpreter.compileExpression(entry.code);
+    return __interpreter.compileFunction(entry.kind, entry.params, entry.body);
+  } catch (e) {
+    if (!e || e.code !== "${INTERPRETER_UNSUPPORTED}") throw e;
+    const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")");
+    __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+    __err.key = __id.key;
+    throw __err;
+  }
 }
-// Plain Function constructor refusals of this launch: each refusal error to
-// its text, and the latest. Staged only for the failure they caused
-// (stageFailedLaunch).
-const __nimbusPlainRefusals = new WeakMap();
-let __nimbusLastPlainRefusal = null;
-let __nimbusLaunchFailure;
 // The wrapper function of a file that is not one of the launch's cells.
 function __nimbusRuntimeModule(path, text) {
   return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
@@ -594,59 +636,13 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
     if (!${JSON.stringify(Object.keys(RUNTIME_FUNCTION_HEADS))}.includes(kind)) throw new TypeError("compileFunction: unknown kind " + String(kind));
     return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor");
   },
+  // vm.runInThisContext's code (node-shims): a function returning its value,
+  // which node-shims calls with the global object as \`this\`, a script's own.
+  compileExpression(code) {
+    return __nimbusRuntimeCodeCompile({ kind: "expression", code: String(code) }, "Code handed to vm.runInThisContext");
+  },
   compileModule(path, text) {
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
-  },
-  // The plain Function constructor answers only what an earlier launch staged
-  // and otherwise throws the native refusal. Code probes it (TypeBox's
-  // CanEvaluate tries Function("null"), falls back silently, and otherwise
-  // compiles every check with it), so a refusal is staged only when the
-  // launch's failure is attributable to it (stageFailedLaunch): a probe
-  // answers the same in every launch, failed or not.
-  plainFunction(params, body, refusal) {
-    const __entry = { kind: "function", params: Array.from(params, String), body: String(body) };
-    const __id = __nimbusRuntimeCodeKey(__entry);
-    const __staged = __nimbusRuntimeCodeStaged(__id.key);
-    if (__staged !== undefined) return __staged;
-    const __record = { id: __id, entry: __entry, reported: false };
-    __nimbusPlainRefusals.set(refusal, __record);
-    __nimbusLastPlainRefusal = __record;
-    // A program that reports the refusal reads its message or stack; one
-    // that probes and falls back never does.
-    for (const __name of ["message", "stack"]) {
-      const __d = Object.getOwnPropertyDescriptor(refusal, __name);
-      if (!__d || !__d.configurable) continue;
-      const __read = "value" in __d ? () => __d.value : () => __d.get.call(refusal);
-      Object.defineProperty(refusal, __name, {
-        get() { __record.reported = true; return __read(); },
-        set(value) { Object.defineProperty(refusal, __name, { value, writable: true, configurable: true }); },
-        configurable: true,
-        enumerable: __d.enumerable,
-      });
-    }
-    throw refusal;
-  },
-  // The error an uncaught failure of this launch threw (the first one).
-  noteFailure(error) {
-    if (__nimbusLaunchFailure === undefined) __nimbusLaunchFailure = error;
-  },
-  // A failed launch stages the one refusal its failure is attributable to:
-  // the refusal an uncaught error is (or was caused by) — depd, under
-  // express 4, builds its deprecated wrappers with \`new Function\` as the
-  // module loads — or else, for a non-zero exit, the launch's latest refusal
-  // if the program reported it (serve 14 prints ajv's refusal and exits 1).
-  // Returns the line (no newline) the failure report adds, or "".
-  stageFailedLaunch() {
-    let __record = null;
-    for (let __e = __nimbusLaunchFailure, __depth = 0; __e !== null && typeof __e === "object" && __depth < 8; __e = __e.cause, __depth++) {
-      __record = __nimbusPlainRefusals.get(__e) ?? null;
-      if (__record !== null) break;
-    }
-    if (__record === null && __nimbusLastPlainRefusal !== null && __nimbusLastPlainRefusal.reported) __record = __nimbusLastPlainRefusal;
-    __nimbusLastPlainRefusal = null;
-    if (__record === null) return "";
-    __nimbusRuntimeCodeRecord(__record.id, __record.entry);
-    return "Nimbus [ERR_NIMBUS_CODE_NEXT_LAUNCH]: the code this program handed the Function constructor was produced after this launch started; it is staged, and the next launch of this command compiles it.";
   },
 });
 // What this launch could not compile, for the next launch of its command.

@@ -60,21 +60,26 @@ export function moduleMapText(modules) {
 
 /**
  * The guest's module registry, for a module set written to disk: `require`
- * of a `{ cjs }` module compiles its text as workerd's CommonJS handler does,
- * a sloppy function body with `module` and `exports` in scope, once per file.
+ * of a `{ cjs }` module compiles its text as workerd's CommonJS handler does
+ * (src/workerd/api/commonjs.h CommonJsModuleContext), a sloppy function body
+ * with `module`, `exports`, `require` (of the set's modules, relative to the
+ * module's own name), `__filename` and `__dirname` in scope, once per file.
  * Bun would read a `.mjs` file as an ES module whatever it holds; the loader
  * types a module by its `{ cjs }` member, not its name.
  */
 const registry = new Map();
-globalThis.__nimbusTestCreateRequire = (base) => (specifier) => {
+const createRequire = (base) => (specifier) => {
   const file = fileURLToPath(new URL(specifier, base));
   if (!registry.has(file)) {
     const moduleObject = { exports: {} };
-    new Function('module', 'exports', readFileSync(file, 'utf8'))(moduleObject, moduleObject.exports);
+    new Function('module', 'exports', 'require', '__filename', '__dirname', readFileSync(file, 'utf8'))(
+      moduleObject, moduleObject.exports, createRequire(pathToFileURL(file)), file, dirname(file),
+    );
     registry.set(file, moduleObject.exports);
   }
   return registry.get(file);
 };
+globalThis.__nimbusTestCreateRequire = createRequire;
 const REGISTRY_IMPORT = 'import { createRequire as __nimbusCreateRequire } from "node:module";';
 const REGISTRY_STAND_IN = 'const __nimbusCreateRequire = globalThis.__nimbusTestCreateRequire;';
 
