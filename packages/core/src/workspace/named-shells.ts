@@ -42,7 +42,8 @@ export interface NamedShellOptions {
   /**
    * Save what the shell holds when the call settles; the default. False for a
    * call whose shell outlives it, such as a background job: what it would
-   * save is a moment nobody asked about.
+   * save is a moment nobody asked about. A new name is saved where it started
+   * either way.
    */
   readonly persist?: boolean;
 }
@@ -77,7 +78,9 @@ export class NamedShells {
   /**
    * Run `body` in the named shell `id`: in the cwd and environment the last
    * call on that name left it with, else `options.start`, and save what the
-   * shell holds when `body` settles.
+   * shell holds when `body` settles. A name's first call saves where it
+   * started even when it saves nothing else (`persist: false`), so the name
+   * exists from then on, rooted there.
    */
   async hold<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T> {
     const name = ShellIdSchema.parse(id);
@@ -99,6 +102,7 @@ export class NamedShells {
         return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
       } finally {
         if (options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
+        else if (saved === undefined) this.save(name, state);
       }
     } finally {
       release();

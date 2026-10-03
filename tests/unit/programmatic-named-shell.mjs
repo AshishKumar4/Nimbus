@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 
-import { rpcExec } from '../../packages/worker/src/session/programmatic.ts';
+import { rpcExec, rpcStartProcess } from '../../packages/worker/src/session/programmatic.ts';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 
 // `barrier` returns once two invocations are inside it at the same time, and
@@ -48,7 +48,7 @@ const box = await programmaticHost({
     },
   },
 });
-const { ws, host, rows, sql } = box;
+const { ws, host, rows, sql, held } = box;
 
 try {
   await ws.exec('mkdir -p /home/user/build');
@@ -134,6 +134,16 @@ try {
   await rpcExec(host, 'cd /home/user', { shellId: 'agent-3', shellRoot: '/home/user/build' });
   const kept = await rpcExec(host, 'pwd', { shellId: 'agent-3', shellRoot: '/home/user/build' });
   assert.equal(kept.stdout.trim(), '/home/user', 'a seed does not reset a shell that already exists');
+
+  // ── A name's first call starts it there, a background one too ────────────
+  // A background call saves nothing it changes, but the name exists from its
+  // first call: the next call on it starts where the first was rooted.
+  await rpcStartProcess(host, 'cd /tmp', { shellId: 'agent-6', shellRoot: '/home/user/build' });
+  assert.equal((await rpcExec(host, 'pwd', { shellId: 'agent-6' })).stdout, '/home/user/build\n',
+    'the name started where its first call, a background one, was rooted');
+  await rpcStartProcess(host, 'cd /tmp', { shellId: 'agent-6' });
+  assert.equal((await rpcExec(host, 'pwd', { shellId: 'agent-6' })).stdout, '/home/user/build\n', 'and its cd was not saved');
+  await Promise.all(held);
 
   // ── Concurrent calls on one name serialize instead of racing ──────────────
   //

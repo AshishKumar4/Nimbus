@@ -30,9 +30,11 @@ published independently in the `@nimbus-sh` npm scope.
   `exec(cmd, { shellId })` through the SDK and `ws.exec(cmd, { shellId })`
   run in the same shell, and calls on a name run one at a time whichever
   door they come through. Its state moves from the Durable Object's
-  key-value storage to the workspace's `vfs_shells` table. A named shell an
-  earlier release saved is moved there by the first named call, unless the
-  workspace already has a shell of that name.
+  key-value storage to the workspace's `vfs_shells` table. A named shell
+  an earlier release saved is moved there by the first named call, unless
+  the workspace already has a shell of that name. A name's first call
+  saves where it started, a background one (`startProcess`) too, which
+  saves nothing else.
 - Fixed: a wasm program, or a node program (one-shot, resident, worker or
   opencode), started by a principal other than the session user ran as the
   session user. Its process was entered at the top of the process table,
