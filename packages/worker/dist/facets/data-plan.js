@@ -1,3 +1,36 @@
+/**
+ * Which file contents a resident node process holds from its first
+ * instruction, besides its module map.
+ *
+ * A synchronous read cannot wait for bytes, so whatever a process reads
+ * synchronously has to be in its facet before it runs; the namespace (every
+ * name and stat) is always there, content is not. This decides content by
+ * rule, from the namespace and the module closure, without reading file
+ * contents except a few package.json files:
+ *
+ *   package-json   every package.json
+ *   project        the working tree, minus dependency, VCS and build-cache dirs
+ *   convention     config and lockfile names in the working dir and above it
+ *   package-data   non-code files under 256 KiB in every package the closure uses
+ *   home           $HOME's dot entries (tool config, skills), minus caches
+ *   typescript     when the closure has typescript: its lib .d.ts, @types/**,
+ *                  and the declaration files of the packages @types depends on
+ *   static         what the closure's own code names by a foldable path
+ *                  (static-fs-refs.ts), resolved against the namespace:
+ *                  under 256 KiB, or any size when the code reads it with
+ *                  readFileSync (or a read-only openSync) by that path,
+ *                  through any symlinks on it
+ *   entries        the entry files the working dir's own dependencies name
+ *                  (exports under every condition, module, main, browser),
+ *                  under 256 KiB: a dev server reads them synchronously to
+ *                  pre-bundle what the app imports (Vite's optimizer reads
+ *                  each with readFileSync), and the process never loads them
+ *   learned        paths earlier launches of the same package versions missed
+ *
+ * Code the closure loads is in the module map already; the store adopts it,
+ * so it is readable as data too.
+ */
+import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
 const CODE_FILE = /\.(?:c|m)?(?:j|t)sx?$|\.map$|\.d\.(?:c|m)?ts$|\.node$|\.wasm$/;
@@ -172,6 +205,23 @@ async function resolveSpecifier(source, fromDir, spec, manifests) {
         if (dir === '')
             return null;
     }
+}
+/** The resolver's filesystem (require-resolution.ts) over the plan's source. */
+function resolutionFs(source) {
+    return {
+        exists: async (path) => (await source.stat(path)) !== null,
+        isDirectory: async (path) => (await source.stat(path))?.kind === 'directory',
+        readFileString: async (path) => {
+            const text = await source.readText(path);
+            if (text === null)
+                throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+            return text;
+        },
+        stat: async (path) => {
+            const found = await source.stat(path);
+            return found === null ? null : { size: found.size };
+        },
+    };
 }
 /** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
@@ -486,8 +536,11 @@ export async function planFacetData(source, input) {
                 take(entry, 'static');
         }
     }
-    // The working dir's dependencies' entries. A `main` or `module` without its
-    // extension names the file Node would load for it.
+    // The working dir's dependencies' entries, each the file Node's resolver
+    // loads for it (require-resolution.ts, as the module-map walk resolves): a
+    // `main` without its extension, or naming a directory with a package.json
+    // of its own.
+    const files = resolutionFs(source);
     const projectManifest = await readManifest(source, cwd, manifests);
     const dependencies = new Set();
     for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
@@ -510,17 +563,15 @@ export async function planFacetData(source, input) {
         if (manifest === null)
             continue;
         for (const rel of entryTargets(manifest)) {
-            for (const candidate of [rel, rel + '.js', rel + '/index.js']) {
-                const k = await throughLinks(source, joinKey(pkgDir, candidate));
-                if (k === null)
-                    break;
-                const found = await source.stat(k);
-                if (found === null || found.kind !== 'file')
-                    continue;
-                if (found.size < PACKAGE_DATA_MAX_BYTES && !closure.has(k))
-                    take({ path: k, kind: 'file', size: found.size }, 'entries');
-                break;
-            }
+            const resolved = await resolveFile(files, joinKey(pkgDir, rel));
+            const k = resolved === null ? null : await throughLinks(source, resolved);
+            if (k === null)
+                continue;
+            const found = await source.stat(k);
+            if (found === null || found.kind !== 'file')
+                continue;
+            if (found.size < PACKAGE_DATA_MAX_BYTES && !closure.has(k))
+                take({ path: k, kind: 'file', size: found.size }, 'entries');
         }
     }
     // The files behind symlinked directories the project or home rule reached.
