@@ -207,10 +207,14 @@ try {
   await page.setViewport({ width: 1280, height: 800 });
 
   // ── unsaved editor changes are not discarded without asking ──
-  // The file tree lists notes.js once its listing arrives; click it then.
-  const notesNode = await page.waitForFunction((name) => [...document.querySelectorAll('.tree-node')]
-    .find((candidate) => candidate.querySelector('.tree-label')?.textContent === name), { timeout: 30_000 }, 'notes.js');
-  await notesNode.asElement().click();
+  // The file tree lists notes.js once its listing arrives; click it then, in
+  // the same task that finds it: a later listing redraws the tree, and a node
+  // found in one task can be detached by the next.
+  await page.waitForFunction((name) => {
+    const node = [...document.querySelectorAll('.tree-node')].find((candidate) => candidate.querySelector('.tree-label')?.textContent === name);
+    node?.click();
+    return node !== undefined;
+  }, { timeout: 30_000 }, 'notes.js');
   await page.waitForFunction(() => document.getElementById('editorTab')?.textContent?.includes('notes.js'), { timeout: 30_000 });
   await page.click('.monaco-editor .view-lines');
   await page.keyboard.type('// unsaved\n');
