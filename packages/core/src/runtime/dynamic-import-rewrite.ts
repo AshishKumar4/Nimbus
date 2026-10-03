@@ -129,8 +129,7 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
     edits.push({ start: site.ss, end: site.d + 1, text: call });
   }
   if (!edits.length && !metas.length) return code;
-  if (!metas.length) return applyEdits(code, edits, metas, null, 0);
-  return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+  return applyEdits(code, edits, metas, escapedCaptureNames(code), () => afterDirectives(code));
 }
 
 /** Marks the lexer reports only where it reads the marked spot as code. */
@@ -303,7 +302,8 @@ function escapedCaptureNames(code: string): Set<string> {
     try {
       const token = tokenizer(code.slice(start, end), { ecmaVersion: 'latest' }).getToken();
       const value: unknown = Reflect.get(token, 'value');
-      if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(METADATA_BINDING)) names.add(value);
+      if (token.type === tokTypes.name && typeof value === 'string'
+        && (value.startsWith(METADATA_BINDING) || value.startsWith(DYNAMIC_IMPORT_HELPER))) names.add(value);
     } catch (error) {
       // A unicode escape in text need not spell a legal word.
       if (!(error instanceof SyntaxError)) throw error;
@@ -414,17 +414,41 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, 
       if (typeof Reflect.get(statement, 'directive') !== 'string') break;
       insertion = statement.end;
     }
-    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
+    return applyEdits(code, collected.edits, collected.metas, collected.names ?? escapedCaptureNames(code), () => insertion);
   }
   return code;
 }
 
-function applyEdits(code: string, edits: Edit[], metas: Span[], names: Set<string> | null, insertion: number): string {
+/** `name`, or the shortest `name_…` neither the cell's text nor its escaped identifiers use. */
+function freeName(name: string, code: string, names: ReadonlySet<string>): string {
+  let free = name;
+  while (code.includes(free) || names.has(free)) free += '_';
+  return free;
+}
+
+/**
+ * Apply the import() edits (each a call to DYNAMIC_IMPORT_HELPER) and bind
+ * the metadata spans. A name the cell itself uses cannot be captured: the
+ * module binding takes a free name, and so does the loader, bound from the
+ * global where the cell spells the loader's own name (an import, or a
+ * declaration that lowering keeps).
+ */
+function applyEdits(code: string, edits: Edit[], metas: Span[], names: ReadonlySet<string>, insertion: () => number): string {
+  let prologue = '';
   if (metas.length) {
-    let binding = METADATA_BINDING;
-    while (code.includes(binding) || names?.has(binding)) binding += '_';
+    const binding = freeName(METADATA_BINDING, code, names);
     for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-    edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
+    prologue += `\n"use strict";\nconst ${binding} = arguments[2];\n`;
+  }
+  const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
+  const calls = edits.filter((edit) => edit.text.startsWith(DYNAMIC_IMPORT_HELPER + '('));
+  if (calls.length && loader !== DYNAMIC_IMPORT_HELPER) {
+    for (const call of calls) call.text = loader + call.text.slice(DYNAMIC_IMPORT_HELPER.length);
+    prologue += `\nconst ${loader} = globalThis.${DYNAMIC_IMPORT_HELPER};\n`;
+  }
+  if (prologue) {
+    const at = insertion();
+    edits.push({ start: at, end: at, text: prologue });
   }
   edits.sort((a, b) => a.start - b.start || a.end - b.end);
   const parts: string[] = [];
