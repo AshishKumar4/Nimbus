@@ -24,6 +24,11 @@ export const COLD_MODULE_OPTIONS = {
   external: ['react', 'react/*', 'react-dom', 'react-dom/*'],
 };
 
+// A wasm module whose bytes are not ASCII (its i32.const 200 is c8 01): `() => 200`.
+const WASM_200 = Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, 0x0a, 0x07, 0x01, 0x05, 0x00, 0x41, 0xc8, 0x01, 0x0b);
+/** Every byte value once. */
+export const ALL_BYTES = Uint8Array.from({ length: 256 }, (_, i) => i);
+
 export const REQUESTS = [['GET', '/'], ['GET', '/u/7?q=a'], ['POST', '/items', { name: 'x', n: 1 }], ['POST', '/items', { name: '', n: 1.5 }], ['GET', '/ns'], ['OPTIONS', '/']];
 
 const cjsAndEsmPackages = {
@@ -103,6 +108,42 @@ export default { fetch() { return Response.json({ cjs: cjs.value, named, esm, tw
   'worker-unresolved': {
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
     files: { 'src/index.js': "import { x } from './missing.js';\nexport default { fetch() { return new Response(x); } };" },
+  },
+  // The import is placed at its own literal, not an earlier string of the same
+  // text, and its column counts UTF-8 bytes, as esbuild's does.
+  'worker-unresolved-after-same-string': {
+    options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
+    files: { 'src/index.js': "const s = './missing.js'; const \u00e9 = '\u{1F600}'; import { x } from './missing.js';\nexport default { fetch() { return new Response(s + x + \u00e9); } };" },
+  },
+  // Every import that does not resolve is an error, in esbuild's order (file, line, column), with the other errors.
+  'worker-unresolved-every-import': {
+    options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
+    files: {
+      'src/index.js': "import './z.js';\nimport './b.js';\nimport { a } from './a.js';\nimport './nope-index.js';\nexport default { fetch() { return new Response(a); } };",
+      'src/a.js': "import './nope-a2.js'; export const a = () => require('./nope-a1.cjs');",
+      'src/b.js': 'export let = ;',
+      'src/z.js': "import './nope-z.js';",
+    },
+    sameExceptText: 'parse errors are worded by each parser',
+  },
+  // Bytes a `binary` import must keep whole: a wasm module that instantiates, and every byte value.
+  'worker-binary-bytes': {
+    options: WRANGLER_OPTIONS, run: 'module', entry: 'src/index.js',
+    files: {
+      'src/index.js': "import wasm from './f.wasm'; import blob from './all.node';\nexport const f = new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(); export const wasmBytes = Array.from(wasm).join(','); export const all = Array.from(blob).join(','); export const kind = Object.prototype.toString.call(blob);",
+      'src/f.wasm': WASM_200,
+      'src/all.node': ALL_BYTES,
+    },
+  },
+  // An imported constant read before its module has run: esbuild keeps the
+  // reference, so the cycle sees undefined, as unbundled modules would.
+  'worker-cyclic-constant': {
+    options: WRANGLER_OPTIONS, run: 'module', entry: 'src/main.js',
+    files: {
+      'src/main.js': "import { seen } from './a.js'; import { B } from './b.js'; export const result = { seen, B };",
+      'src/a.js': "import { readB } from './b.js'; export var A = 1; export var seen = readB();",
+      'src/b.js': "import { A } from './a.js'; export var B = A; export function readB() { return [A, B]; }",
+    },
   },
   'worker-syntax-error': {
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.ts',

@@ -35,7 +35,7 @@ const hosts = {
 
 /** A project's files as the VFS a build reads, under /home/user/<name>. */
 function memoryFs(name, files) {
-  const at = new Map(Object.entries(files).map(([p, text]) => [`home/user/${name}/${p}`, new TextEncoder().encode(text)]));
+  const at = new Map(Object.entries(files).map(([p, text]) => [`home/user/${name}/${p}`, typeof text === 'string' ? new TextEncoder().encode(text) : text]));
   const isDir = (p) => [...at.keys()].some((k) => k.startsWith(p.replace(/^\/+|\/+$/g, '') + '/'));
   const strip = (p) => p.replace(/^\/+/, '');
   return {
@@ -131,6 +131,25 @@ try {
     assert.deepEqual(comparable(seen.rolldown), comparable(seen.esbuild), `${name}:\n  esbuild:  ${JSON.stringify(seen.esbuild)}\n  rolldown: ${JSON.stringify(seen.rolldown)}`);
     if (project.run === 'failure') assert.ok(seen.rolldown.failure, `${name} must fail`);
     console.log(`  ok  ${name}: ${project.run === 'failure' ? 'the same failure' : 'the same behavior'}`);
+  }
+
+  // Overlapping failed builds each place their own diagnostics: what they
+  // report together is what each reports alone.
+  {
+    const names = ['worker-syntax-error', 'worker-unresolved-every-import', 'worker-unresolved-after-same-string'];
+    const failure = async (name) => {
+      const project = PROJECTS[name];
+      const service = new EsbuildService(memoryFs(name, project.files), { buildHost: hosts.rolldown });
+      return service.build([`/home/user/${name}/${project.entry}`], project.options).then(
+        () => assert.fail(`${name} must fail`),
+        (error) => ({ failure: error.message, at: error.errors.map((e) => e.location && [e.location.file, e.location.line, e.location.column]) }),
+      );
+    };
+    const alone = [];
+    for (const name of names) alone.push(await failure(name));
+    assert.deepEqual(await Promise.all(names.map(failure)), alone);
+    assert.ok(alone.every((outcome) => outcome.at.every(Boolean)), 'every error is placed');
+    console.log('  ok  overlapping failed builds each place their own diagnostics');
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

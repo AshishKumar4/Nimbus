@@ -65,6 +65,14 @@ export interface NapiWasmBindingHost {
   memoryPages: number;
   /** The binding's name, for diagnostics. */
   name: string;
+  /**
+   * Called once if the binding dies: a trap (a Rust panic aborts), or the
+   * host's stack overflowing inside it (a RangeError). The instance is
+   * unusable from then on and no promise it holds will settle, so the host
+   * settles its own callers and drops the binding. Absent: the error is
+   * thrown as an uncaught one.
+   */
+  onFatal?(error: unknown): void;
 }
 
 /** What the loader calls on the binding instance besides napi. */
@@ -562,9 +570,15 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   let fatal: unknown = null;
 
   const die = (error: unknown) => {
+    if (fatal !== null) return;
     fatal = error;
-    // A trap (a Rust panic aborts) leaves the instance unusable. Surface it
-    // as an uncaught error rather than leave every pending promise hanging.
+    while (waiting > 0) context.decreaseWaitingRequestCounter();
+    // A trap or a stack overflow leaves the instance unusable: tell the host,
+    // or surface it as an uncaught error.
+    if (host.onFatal) {
+      host.onFatal(error);
+      return;
+    }
     queueMicrotask(() => {
       throw error;
     });
@@ -636,6 +650,21 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   };
 
   const context = createContext();
+  // What the binding holds open (threadsafe functions, async work) holds a
+  // Node host's event loop open until released; a dead binding releases
+  // nothing, so a fatal error lets go of it all.
+  let waiting = 0;
+  const increaseWaiting = context.increaseWaitingRequestCounter.bind(context);
+  const decreaseWaiting = context.decreaseWaitingRequestCounter.bind(context);
+  context.increaseWaitingRequestCounter = () => {
+    waiting++;
+    increaseWaiting();
+  };
+  context.decreaseWaitingRequestCounter = () => {
+    if (waiting === 0) return;
+    waiting--;
+    decreaseWaiting();
+  };
   const { napiModule } = instantiateNapiModuleSync(host.binding, {
     context,
     asyncWorkPoolSize: 0,

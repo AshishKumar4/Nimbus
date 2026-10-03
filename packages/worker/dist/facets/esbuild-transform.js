@@ -23,7 +23,8 @@ import { rolldownBuildHost } from './build-facet.js';
  *
  * Transforms run in the transform facet (oxc-transform.ts); `transformMany`
  * here answers only the modules that ran it out of stack (oxcTransformHost).
- * A build, an `esbuild` command or such a batch gets its own Go instance,
+ * A build (the built-in `vite build`, or one whose rolldown binding died
+ * under it), an `esbuild` command or such a batch gets its own Go instance,
  * dropped when it ends.
  */
 const ESBUILD_FACET_BODY = [
@@ -173,12 +174,12 @@ export function esbuildStackFallbackHost(ctx, env) {
 }
 /**
  * The build host a Durable Object's esbuild runs its builds on: its esbuild
- * facet. The plugin, and with it every file read, stays with the caller.
+ * facet, for the built-in `vite build` and for a build whose rolldown binding
+ * died under it (rolldownBuildHost's fallback), whose Go stacks grow. The
+ * plugin, and with it every file read, stays with the caller.
  */
 export function esbuildBuildHost(ctx, env) {
-    return async (options, plugin) => {
-        return onEsbuildFacet(ctx, env, (facet) => facet.build(options, plugin));
-    };
+    return async (options, plugin) => onEsbuildFacet(ctx, env, (facet) => facet.build(options, plugin));
 }
 /**
  * Runs one `esbuild` command in the Durable Object's esbuild facet, as
@@ -207,13 +208,14 @@ export const TRANSFORM_HOST_ID = `${OXC_FACET_WORKER_ID}+${ESBUILD_FACET_WORKER_
  * The transforms and builds a Durable Object's supervisor shares: transforms
  * run in its transform facet (oxc-transform.ts), builds in its build facet
  * (build-facet.ts, rolldown) but the built-in `vite build`, which stays in
- * the esbuild facet, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
+ * the esbuild facet, each with the esbuild facet for what its engine cannot
+ * finish, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
  * the host's identity, which the launch's transform store keys its results by.
  */
 export function supervisorEsbuildService(ctx, env, vfs) {
     return new EsbuildService(vfs, {
         transformHost: oxcTransformHost(ctx, env, esbuildStackFallbackHost(ctx, env)),
-        buildHost: rolldownBuildHost(ctx, env),
+        buildHost: rolldownBuildHost(ctx, env, esbuildBuildHost(ctx, env)),
         viteBuildHost: esbuildBuildHost(ctx, env),
         transformHostId: TRANSFORM_HOST_ID,
     });

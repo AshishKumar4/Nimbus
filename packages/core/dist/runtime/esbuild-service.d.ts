@@ -138,6 +138,15 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
+type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
+/**
+ * One esbuild build in which `plugin` resolves and loads every module: an
+ * EsbuildService without a build host builds this way in its own isolate,
+ * the esbuild facet so for a build whose rolldown binding died (serialized
+ * into it: self-contained), and the build differentials use it as the
+ * reference.
+ */
+export declare function buildWithEsbuild(esbuildApi: EsbuildBuildApi, options: EsbuildHostBuildOptions, plugin: EsbuildRemotePlugin): Promise<EsbuildBuildOutcome>;
 /** Source the esbuild facet evaluates next to esbuild: its build helpers. */
 export declare function generateEsbuildFacetRuntimeSource(): string;
 /**
@@ -371,4 +380,5 @@ export declare class EsbuildService {
     private makeVfsPlugin;
     get isInitialized(): boolean;
 }
+export {};
 //# sourceMappingURL=esbuild-service.d.ts.map

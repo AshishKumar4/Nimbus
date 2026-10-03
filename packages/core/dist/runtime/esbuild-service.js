@@ -788,11 +788,6 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
     return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };
 }
 /**
- * One esbuild build in which `plugin` resolves and loads every module,
- * wherever that plugin runs. Self-contained: it is serialized into the
- * esbuild facet as well as called here.
- */
-/**
  * An esbuild diagnostic as RPC can carry it: everything but \`detail\`, which
  * is whatever a plugin threw and may not clone. Notes keep their own text and
  * location (a duplicate declaration's note points at the original).
@@ -804,7 +799,14 @@ function serializableMessage({ id, pluginName, text, location, notes }) {
 function isBuildFailure(value) {
     return value instanceof Error && Array.isArray(Reflect.get(value, 'errors')) && Array.isArray(Reflect.get(value, 'warnings'));
 }
-async function buildWithEsbuild(esbuildApi, options, plugin) {
+/**
+ * One esbuild build in which `plugin` resolves and loads every module: an
+ * EsbuildService without a build host builds this way in its own isolate,
+ * the esbuild facet so for a build whose rolldown binding died (serialized
+ * into it: self-contained), and the build differentials use it as the
+ * reference.
+ */
+export async function buildWithEsbuild(esbuildApi, options, plugin) {
     let result;
     try {
         result = await esbuildApi.build({

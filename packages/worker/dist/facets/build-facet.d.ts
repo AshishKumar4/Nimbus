@@ -15,6 +15,12 @@ export declare function buildFacetWorkerCode(parts: BuildFacetParts): WorkerCode
 /**
  * The build host a Durable Object's builds run on: its build facet, which runs
  * rolldown. The plugin, and with it every file read, stays with the caller.
+ *
+ * A build whose binding died under it (`crashed`: a trap, or a module nested
+ * past the stack) retires that generation: the next build mints a fresh
+ * isolate. The build itself, and every other one that was in flight on that
+ * binding, goes to `fallback` (the esbuild facet in production), each logged;
+ * without one, its failure says what happened.
  */
-export declare function rolldownBuildHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost;
+export declare function rolldownBuildHost(ctx: DurableObjectState, env: unknown, fallback?: EsbuildBuildHost): EsbuildBuildHost;
 //# sourceMappingURL=build-facet.d.ts.map

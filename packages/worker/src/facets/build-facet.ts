@@ -30,24 +30,54 @@ const ROLLDOWN = stagedBinding('rolldown');
  * graph built. Nothing here reads a file: every module comes from the
  * caller's plugin, so the binding's WASI filesystem is the facet's own empty
  * node:fs.
+ *
+ * A binding that dies (a trap, or the stack overflowing inside it: a module
+ * nested too deeply) holds promises that never settle. The loader says so
+ * (`onFatal`), and every build on it, in flight or later, is answered at once
+ * with `crashed`; rolldown's JavaScript keeps the binding it imported, so only
+ * a fresh isolate (rolldownBuildHost's next generation) builds again.
  */
 const BUILD_FACET_BODY = [
   // One load for every caller, overlapping ones included.
   'let runtime = null;',
+  'let crashed = null;',
+  'const inFlight = new Set();',
   'function rolldownRuntime() {',
   '  if (runtime === null) {',
   '    globalThis.__nimbusRolldownBinding = createNapiWasmBinding({',
   '      fs, env: {}, writeStdout() {}, writeStderr() {},',
   `      binding: rolldownWasm, trampoline: trampolineWasm, memoryPages: ${ROLLDOWN.memoryPages}, name: "rolldown",`,
+  '      onFatal(error) {',
+  '        crashed = { stackExhausted: error instanceof RangeError, message: String((error && error.message) || error) };',
+  '        for (const answer of inFlight) answer();',
+  '        inFlight.clear();',
+  '      },',
   '    });',
   // Dynamic: rolldown's JavaScript reads the binding as it evaluates, so it is imported once the binding exists.
   '    runtime = import("rolldown-runtime.js");',
   '  }',
   '  return runtime;',
   '}',
+  'function crashOutcome() {',
+  '  const text = crashed.stackExhausted',
+  '    ? "Nimbus\'s bundler ran out of stack: a module nests too deeply for it (" + crashed.message + ")"',
+  '    : "Nimbus\'s bundler crashed: " + crashed.message;',
+  '  return {',
+  '    outputFiles: [], warnings: [], failure: "Build failed with 1 error:\\nerror: " + text,',
+  '    errors: [{ id: "", pluginName: "", text, location: null, notes: [], detail: undefined }],',
+  '    crashed,',
+  '  };',
+  '}',
   'export class BuildFacet extends DurableObject {',
   '  async build(options, plugin) {',
-  '    return (await rolldownRuntime()).build(options, plugin);',
+  '    if (crashed) return crashOutcome();',
+  '    const { build } = await rolldownRuntime();',
+  '    if (crashed) return crashOutcome();',
+  '    return new Promise((resolve, reject) => {',
+  '      const answer = () => resolve(crashOutcome());',
+  '      inFlight.add(answer);',
+  '      build(options, plugin).then(resolve, reject).finally(() => inFlight.delete(answer));',
+  '    });',
   '  }',
   '}',
 ].join('\n');
@@ -62,8 +92,11 @@ export const BUILD_FACET_WORKER_ID = [
   hashSource(BUILD_FACET_BODY),
 ].join(':');
 
+/** A build's outcome from the facet; `crashed` says its binding died under it. */
+type BuildFacetOutcome = EsbuildBuildOutcome & { crashed?: { stackExhausted: boolean; message: string } };
+
 type BuildFacetRpc = DurableObject & {
-  build(options: EsbuildHostBuildOptions, plugin: EsbuildRemotePlugin): Promise<EsbuildBuildOutcome>;
+  build(options: EsbuildHostBuildOptions, plugin: EsbuildRemotePlugin): Promise<BuildFacetOutcome>;
 };
 
 /** The staged parts of the build facet, each verified against its pinned digest. */
@@ -120,50 +153,88 @@ export function buildFacetWorkerCode(parts: BuildFacetParts): WorkerCode {
   };
 }
 
-async function buildFacet(ctx: DurableObjectState, env: unknown): Promise<Fetcher<BuildFacetRpc>> {
+/**
+ * Which isolate of the build facet's code builds: a binding that died is
+ * left behind with its isolate, and every Durable Object this isolate hosts
+ * moves to the next generation's, whose loader id and facet name are new.
+ */
+let generation = 0;
+const generationId = (n: number) => `${BUILD_FACET_WORKER_ID}:g${n}`;
+
+interface SharedFacet {
+  generation: number;
+  stub: Promise<Fetcher<BuildFacetRpc>>;
+}
+
+async function buildFacet(ctx: DurableObjectState, env: unknown, id: string): Promise<Fetcher<BuildFacetRpc>> {
   const loader = Reflect.get(Object(env), 'LOADER');
   if (!loader || typeof loader.get !== 'function') throw new Error('Nimbus: env.LOADER unavailable for the build facet');
   const assets = Reflect.get(Object(env), 'ASSETS');
   if (!assets || typeof assets.fetch !== 'function') throw new Error('Nimbus: env.ASSETS unavailable for the build facet');
-  const worker = await loader.get(BUILD_FACET_WORKER_ID, async () => buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets })));
+  const worker = await loader.get(id, async () => buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets })));
   const facetClass = worker.getDurableObjectClass('BuildFacet');
-  return ctx.facets.get<BuildFacetRpc>(BUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
+  return ctx.facets.get<BuildFacetRpc>(id, async () => ({ class: facetClass }));
 }
 
 /**
  * One stub per Durable Object: callers that overlap wait on one facet load.
  * A load or call that failed drops the entry; the next caller mints a fresh one.
+ * An entry of a retired generation is dropped, and its facet aborted.
  */
-const sharedFacets = new WeakMap<DurableObjectState, Promise<Fetcher<BuildFacetRpc>>>();
+const sharedFacets = new WeakMap<DurableObjectState, SharedFacet>();
 
-function sharedBuildFacet(ctx: DurableObjectState, env: unknown): Promise<Fetcher<BuildFacetRpc>> {
+function sharedBuildFacet(ctx: DurableObjectState, env: unknown): SharedFacet {
   const current = sharedFacets.get(ctx);
-  if (current) return current;
-  const minted = buildFacet(ctx, env);
+  if (current && current.generation === generation) return current;
+  if (current) retireFacet(ctx, current);
+  const minted: SharedFacet = { generation, stub: buildFacet(ctx, env, generationId(generation)) };
   sharedFacets.set(ctx, minted);
-  minted.catch(() => forgetBuildFacet(ctx, minted));
+  minted.stub.catch(() => forgetBuildFacet(ctx, minted));
   return minted;
 }
 
-function forgetBuildFacet(ctx: DurableObjectState, stub: Promise<Fetcher<BuildFacetRpc>>): void {
-  if (sharedFacets.get(ctx) === stub) sharedFacets.delete(ctx);
+function forgetBuildFacet(ctx: DurableObjectState, facet: SharedFacet): void {
+  if (sharedFacets.get(ctx) === facet) sharedFacets.delete(ctx);
+}
+
+function retireFacet(ctx: DurableObjectState, facet: SharedFacet): void {
+  forgetBuildFacet(ctx, facet);
+  try {
+    ctx.facets.abort(generationId(facet.generation), new Error('Nimbus: the build facet\'s binding died'));
+  } catch {
+    // already gone
+  }
 }
 
 /**
  * The build host a Durable Object's builds run on: its build facet, which runs
  * rolldown. The plugin, and with it every file read, stays with the caller.
+ *
+ * A build whose binding died under it (`crashed`: a trap, or a module nested
+ * past the stack) retires that generation: the next build mints a fresh
+ * isolate. The build itself, and every other one that was in flight on that
+ * binding, goes to `fallback` (the esbuild facet in production), each logged;
+ * without one, its failure says what happened.
  */
-export function rolldownBuildHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost {
+export function rolldownBuildHost(ctx: DurableObjectState, env: unknown, fallback?: EsbuildBuildHost): EsbuildBuildHost {
   return async (options, plugin) => {
-    const stub = sharedBuildFacet(ctx, env);
+    const facet = sharedBuildFacet(ctx, env);
     const endFetch = beginLoaderFetch(ctx, BUILD_FACET_WORKER_ID);
+    let outcome: BuildFacetOutcome;
     try {
-      return await (await stub).build(options, plugin);
+      outcome = await (await facet.stub).build(options, plugin);
     } catch (error) {
-      forgetBuildFacet(ctx, stub);
+      forgetBuildFacet(ctx, facet);
       throw error;
     } finally {
       endFetch();
     }
+    const { crashed, ...built } = outcome;
+    if (!crashed) return built;
+    if (facet.generation === generation) generation++;
+    retireFacet(ctx, facet);
+    const entries = Array.isArray(options.entryPoints) ? options.entryPoints.join(', ') : '<entries>';
+    console.warn(`[build-facet] rolldown's binding died building ${entries} (${crashed.message}); ${fallback ? 'building it with esbuild' : 'the build fails'}`);
+    return fallback ? fallback(options, plugin) : built;
   };
 }

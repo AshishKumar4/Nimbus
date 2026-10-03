@@ -7050,9 +7050,55 @@ var LOADER_MODULE_TYPES = {
   text: "text",
   base64: "base64",
   dataurl: "dataurl",
-  binary: "binary",
   empty: "empty"
 };
+function importSpan(module, source, parse2) {
+  let program;
+  try {
+    program = parse2(module.source, { lang: module.lang });
+  } catch {
+    return null;
+  }
+  let found = null;
+  const literal2 = (node) => {
+    const n5 = node;
+    if (n5?.type !== "Literal" || n5.value !== source || typeof n5.start !== "number" || typeof n5.end !== "number") return;
+    if (found === null || n5.start < found[0]) found = [n5.start, n5.end];
+  };
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const n5 = node;
+    switch (n5.type) {
+      case "ImportDeclaration":
+      case "ExportNamedDeclaration":
+      case "ExportAllDeclaration":
+      case "ImportExpression":
+        literal2(n5.source);
+        break;
+      case "TSExternalModuleReference":
+        literal2(n5.expression);
+        break;
+      case "CallExpression": {
+        const callee = n5.callee;
+        if (callee?.type === "Identifier" && callee.name === "require") literal2(n5.arguments?.[0]);
+        break;
+      }
+    }
+    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child);
+  };
+  visit(program);
+  return found;
+}
+var utf8Length = (text) => new TextEncoder().encode(text).length;
+function base64Of(bytes) {
+  let latin1 = "";
+  for (let i2 = 0; i2 < bytes.length; i2 += 32768) latin1 += String.fromCharCode(...bytes.subarray(i2, i2 + 32768));
+  return btoa(latin1);
+}
 var BuildError = class extends Error {
   constructor(messages) {
     super(messages.map((m2) => m2.text).join("\n"));
@@ -7077,35 +7123,44 @@ function refuse(text) {
   throw new BuildError([message(text)]);
 }
 async function buildWithRolldown(api, options, plugin) {
-  const raised = [];
+  const state = { raised: [], unresolved: [], loaded: /* @__PURE__ */ new Map() };
   try {
-    return await build(api, options, plugin, raised);
+    return await build(api, options, plugin, state);
   } catch (error2) {
-    const errors = error2 instanceof BuildError ? error2.messages : messagesOf(error2, raised);
+    const errors = error2 instanceof BuildError ? error2.messages : sortedMessages([...state.unresolved, ...messagesOf(error2, state.raised, state.loaded)]);
     return { outputFiles: [], errors, warnings: [], failure: esbuildFailureText(errors) };
   }
 }
-function messagesOf(error2, raised) {
+function sortedMessages(messages) {
+  const key = (m2) => m2.location;
+  return messages.map((m2, i2) => [m2, i2]).sort(([a2, i2], [b2, j]) => {
+    const la = key(a2);
+    const lb = key(b2);
+    if (!la || !lb) return la ? 1 : lb ? -1 : i2 - j;
+    if (la.file !== lb.file) return la.file < lb.file ? -1 : 1;
+    return la.line - lb.line || la.column - lb.column || i2 - j;
+  }).map(([m2]) => m2);
+}
+function messagesOf(error2, raised, loaded) {
   const logs = error2 instanceof Error ? Reflect.get(error2, "errors") : void 0;
   if (!Array.isArray(logs) || !logs.length) return [message(error2 instanceof Error ? error2.message : String(error2))];
   const unclaimed = [...raised];
   return logs.map((log) => {
     const i2 = unclaimed.findIndex((m2) => log.message.includes(m2.text));
-    return i2 >= 0 ? unclaimed.splice(i2, 1)[0] : fromLog(log);
+    return i2 >= 0 ? unclaimed.splice(i2, 1)[0] : fromLog(log, loaded);
   });
 }
-var loadedForLog = /* @__PURE__ */ new Map();
-function fromLog(log) {
+function fromLog(log, modules) {
   const plain = log.message.replace(/\u001b\[[0-9;]*m/g, "");
   const firstLine = plain.split("\n")[0].replace(/^\[[A-Z_]+\]\s*/, "").replace(/^(Error|Warning):\s*/, "");
-  const loaded = log.id ? loadedForLog.get(log.id) : void 0;
+  const loaded = log.id ? modules.get(log.id) : void 0;
   const location = log.loc && loaded ? locate2(fileOf(loaded), loaded.source, log.loc.line, log.loc.column) : null;
   return message(firstLine, location, log.plugin ?? "");
 }
 function fileOf(module) {
   return module.namespace === "file" || module.namespace === "" ? module.path : `${module.namespace}:${module.path}`;
 }
-async function build(api, options, plugin, raised) {
+async function build(api, options, plugin, { raised, unresolved, loaded }) {
   for (const [key, value] of Object.entries(options)) {
     if (value !== void 0 && !SUPPORTED.has(key)) refuse(`Nimbus's bundler does not support the esbuild option "${key}"`);
   }
@@ -7130,8 +7185,6 @@ async function build(api, options, plugin, raised) {
   };
   let mainNamespace = null;
   const idOf = (namespace, path3) => namespace === mainNamespace ? path3 : `\0${namespace}:${path3}`;
-  const loaded = /* @__PURE__ */ new Map();
-  loadedForLog = loaded;
   const decode = (id2) => {
     const known = loaded.get(id2);
     if (known) return known;
@@ -7141,24 +7194,27 @@ async function build(api, options, plugin, raised) {
   const pending = /* @__PURE__ */ new Map();
   const css = [];
   const warnings = [];
-  const raise = (text, importer, source) => {
+  const raise = (text, pluginName = "") => {
+    raised.push(message(text, null, pluginName));
+    throw new Error(text);
+  };
+  const unresolvedImport = (text, importer, source, pluginName, parse2) => {
     const from = importer ? loaded.get(importer) : void 0;
     let location = null;
-    if (from) {
-      const at = from.source.indexOf(JSON.stringify(source).slice(1, -1));
-      if (at >= 0) {
-        const before = from.source.slice(0, at);
-        const line = before.split(/\r\n|\r|\n/).length;
-        const column = at - Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) - 1 - 1;
-        location = locate2(fileOf(from), from.source, line, column, source.length + 2);
-      }
+    const span = from?.lang ? importSpan(from, source, parse2) : null;
+    if (from && span) {
+      const before = from.source.slice(0, span[0]);
+      const line = before.split(/\r\n|\r|\n/).length;
+      const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
+      location = locate2(fileOf(from), from.source, line, utf8Length(before.slice(lineStart)), utf8Length(from.source.slice(span[0], span[1])));
     }
-    raised.push(message(text, location, ""));
-    throw new Error(text);
+    unresolved.push(message(text, location, pluginName));
+    return { id: source, external: true };
   };
   const vfs = {
     name: plugin.name,
     async resolveId(source, importer, extra) {
+      const parse2 = this.parse.bind(this);
       if (source.startsWith("\0")) return null;
       const from = importer ? decode(importer) : null;
       const kind = extra.isEntry && !importer ? "entry-point" : extra.kind ?? "import-statement";
@@ -7171,9 +7227,9 @@ async function build(api, options, plugin, raised) {
         kind,
         with: extra.attributes ?? {}
       });
-      if (answer?.errors?.length) raise(answer.errors[0].text ?? "error", importer, source);
+      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? "error", importer, source, plugin.name, parse2);
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
-      if (!answer || !answer.path && !answer.external) raise(`Could not resolve ${JSON.stringify(source)}`, importer, source);
+      if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, "", parse2);
       if (answer.external) return { id: answer.path ?? path3, external: true };
       const namespace = answer.namespace ?? "file";
       if (mainNamespace === null) mainNamespace = namespace;
@@ -7184,9 +7240,9 @@ async function build(api, options, plugin, raised) {
     async load(id2) {
       const { namespace, path: path3 } = pending.get(id2) ?? decode(id2);
       const answer = await plugin.load({ path: path3, namespace, suffix: "", with: {} });
-      if (answer?.errors?.length) raise(answer.errors[0].text ?? "error", void 0, path3);
+      if (answer?.errors?.length) raise(answer.errors[0].text ?? "error", plugin.name);
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
-      if (!answer || answer.contents === void 0) raise(`No loader produced ${fileOf({ namespace, path: path3 })}`, void 0, path3);
+      if (!answer || answer.contents === void 0) raise(`No loader produced ${fileOf({ namespace, path: path3 })}`);
       const loader = answer.loader ?? "js";
       const contents = answer.contents;
       const text = typeof contents === "string" ? contents : loader === "binary" || loader === "base64" || loader === "dataurl" || loader === "file" ? "" : new TextDecoder().decode(contents);
@@ -7195,18 +7251,23 @@ async function build(api, options, plugin, raised) {
         namespace,
         path: path3,
         resolveDir: answer.resolveDir ?? (namespace === "file" || namespace === mainNamespace ? lastSlash > 0 ? path3.slice(0, lastSlash) : "/" : ""),
-        source: text
+        source: text,
+        lang: loader === "js" || loader === "jsx" || loader === "ts" || loader === "tsx" ? loader : void 0
       });
       if (loader === "css") {
         css.push({ id: id2, path: path3, source: text });
         return { code: "", moduleType: "js", moduleSideEffects: true };
       }
+      if (loader === "binary") {
+        const bytes = typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
+        return { code: `export default /* @__PURE__ */ Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
+      }
       const moduleType2 = LOADER_MODULE_TYPES[loader];
-      if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path: path3 })})`, void 0, path3);
+      if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path: path3 })})`);
       if (typeof contents === "string") return { code: contents, moduleType: moduleType2 };
       let latin1 = "";
       for (let i2 = 0; i2 < contents.length; i2 += 32768) latin1 += String.fromCharCode(...contents.subarray(i2, i2 + 32768));
-      return { code: moduleType2 === "binary" || moduleType2 === "base64" || moduleType2 === "dataurl" ? latin1 : text, moduleType: moduleType2 };
+      return { code: moduleType2 === "base64" || moduleType2 === "dataurl" ? latin1 : text, moduleType: moduleType2 };
     }
   };
   const bundle = await api.rolldown({
@@ -7222,8 +7283,11 @@ async function build(api, options, plugin, raised) {
       jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" }
     },
     checks: { pluginTimings: false },
+    // esbuild keeps an imported constant a reference: inlining its value
+    // changes what a cycle sees before the constant's module has run.
+    optimization: { inlineConst: false },
     onLog(level, log) {
-      if (level === "warn") warnings.push(fromLog(log));
+      if (level === "warn") warnings.push(fromLog(log, loaded));
     }
   });
   try {
@@ -7239,6 +7303,7 @@ async function build(api, options, plugin, raised) {
       assetFileNames: `${template(options.assetNames, "[name]-[hash]")}[extname]`,
       codeSplitting: false
     });
+    if (unresolved.length) throw new BuildError(sortedMessages(unresolved));
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf("/")) || "/" : options.outdir ?? "/dist";
     const at = (fileName) => `${outdir.replace(/\/+$/, "")}/${fileName}`;
     const encoder = new TextEncoder();

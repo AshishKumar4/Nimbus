@@ -16,6 +16,21 @@ published independently in the `@nimbus-sh` npm scope.
   are worded by Oxc's parser, and esbuild-wasm's spurious "Cannot read
   directory" error beside an unresolved import is gone. The built-in
   `vite build` still runs in the esbuild facet.
+- Builds keep esbuild's semantics where rolldown's defaults differed: a
+  `binary` import (a `.wasm` or `.node`) is its bytes whole (they were
+  stored as UTF-8, so a non-ASCII byte became two); an imported constant
+  stays a reference, so a cycle reads `undefined` before the constant's
+  module runs, as it did; every import that does not resolve is reported,
+  at its own string literal with esbuild's byte columns, and errors come in
+  esbuild's order (file, line, column); and overlapping failed builds no
+  longer place their diagnostics in each other's files.
+- A build that runs rolldown's binding out of stack (a module nested too
+  deeply, such as a 10,000-term expression) or traps it no longer leaves
+  that build, and every build after it, waiting forever: the napi-wasm
+  loader reports the binding's death (`onFatal`), every build on it is
+  rebuilt by esbuild in the esbuild facet (as transforms too deep for Oxc
+  are), and the next build gets a fresh build facet. A Node host is no
+  longer kept alive by a dead binding.
 - A `NimbusWorkspace` no longer holds a lazily built esbuild service: its
   only runtimes are bash, python and wasm-runner, which reads its `.wasm`
   itself, so nothing in it ever transformed source.

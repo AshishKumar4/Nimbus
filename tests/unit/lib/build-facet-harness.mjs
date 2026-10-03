@@ -65,13 +65,21 @@ export async function freshFacetClass() {
   }
 }
 
-/** A Durable Object as build-facet.ts sees it; `counts` says what it was asked for. */
-export function durableObject(BuildFacet) {
-  const counts = { loaderGets: 0, facetInstances: 0 };
+/**
+ * A Durable Object as build-facet.ts sees it; `counts` says what it was asked
+ * for. `classFor(id)` is the facet class the loader hands out for a worker
+ * id (a fresh evaluation per id is a fresh isolate); by default, `BuildFacet`.
+ */
+export function durableObject(BuildFacet, classFor = async () => BuildFacet) {
+  const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], aborted: [] };
   const facets = new Map();
   const ctx = {
     id: { toString: () => 'build-facet-do' },
     facets: {
+      abort(name) {
+        counts.aborted.push(name);
+        facets.delete(name);
+      },
       get(name, load) {
         if (!facets.has(name)) facets.set(name, load().then(({ class: FacetClass }) => { counts.facetInstances++; return new FacetClass({}, {}); }));
         const instance = facets.get(name);
@@ -91,7 +99,14 @@ export function durableObject(BuildFacet) {
   };
   const env = {
     ASSETS: { async fetch() { throw new Error('the worker is handed out by LOADER.get below'); } },
-    LOADER: { async get() { counts.loaderGets++; return { getDurableObjectClass: () => BuildFacet }; } },
+    LOADER: {
+      async get(id) {
+        counts.loaderGets++;
+        counts.loaderIds.push(id);
+        const FacetClass = await classFor(id);
+        return { getDurableObjectClass: () => FacetClass };
+      },
+    },
   };
   return { ctx, env, counts };
 }

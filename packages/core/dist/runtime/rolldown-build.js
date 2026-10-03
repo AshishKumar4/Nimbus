@@ -29,8 +29,70 @@ const SUPPORTED = new Set([
     'conditions', 'mainFields', 'logLevel',
 ]);
 const LOADER_MODULE_TYPES = {
-    js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', base64: 'base64', dataurl: 'dataurl', binary: 'binary', empty: 'empty',
+    js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', base64: 'base64', dataurl: 'dataurl', empty: 'empty',
 };
+/**
+ * Where `module` names `source` as an import (static, dynamic, re-exported or
+ * required): the span of the first such string literal, by the parser, so a
+ * same-text string elsewhere in the file does not stand in for it.
+ */
+function importSpan(module, source, parse) {
+    let program;
+    try {
+        program = parse(module.source, { lang: module.lang });
+    }
+    catch {
+        return null;
+    }
+    let found = null;
+    const literal = (node) => {
+        const n = node;
+        if (n?.type !== 'Literal' || n.value !== source || typeof n.start !== 'number' || typeof n.end !== 'number')
+            return;
+        if (found === null || n.start < found[0])
+            found = [n.start, n.end];
+    };
+    const visit = (node) => {
+        if (!node || typeof node !== 'object')
+            return;
+        if (Array.isArray(node)) {
+            for (const child of node)
+                visit(child);
+            return;
+        }
+        const n = node;
+        switch (n.type) {
+            case 'ImportDeclaration':
+            case 'ExportNamedDeclaration':
+            case 'ExportAllDeclaration':
+            case 'ImportExpression':
+                literal(n.source);
+                break;
+            case 'TSExternalModuleReference':
+                literal(n.expression);
+                break;
+            case 'CallExpression': {
+                const callee = n.callee;
+                if (callee?.type === 'Identifier' && callee.name === 'require')
+                    literal(n.arguments?.[0]);
+                break;
+            }
+        }
+        for (const [key, child] of Object.entries(n))
+            if (key !== 'parent')
+                visit(child);
+    };
+    visit(program);
+    return found;
+}
+const utf8Length = (text) => new TextEncoder().encode(text).length;
+/** `bytes` in base64. */
+function base64Of(bytes) {
+    let latin1 = '';
+    for (let i = 0; i < bytes.length; i += 0x8000)
+        latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(latin1);
+}
 class BuildError extends Error {
     messages;
     constructor(messages) {
@@ -58,39 +120,55 @@ function refuse(text) {
     throw new BuildError([message(text)]);
 }
 export async function buildWithRolldown(api, options, plugin) {
-    const raised = [];
+    // This build's diagnostics and modules: overlapping builds each keep their own.
+    const state = { raised: [], unresolved: [], loaded: new Map() };
     try {
-        return await build(api, options, plugin, raised);
+        return await build(api, options, plugin, state);
     }
     catch (error) {
-        const errors = error instanceof BuildError ? error.messages : messagesOf(error, raised);
+        const errors = error instanceof BuildError ? error.messages : sortedMessages([...state.unresolved, ...messagesOf(error, state.raised, state.loaded)]);
         return { outputFiles: [], errors, warnings: [], failure: esbuildFailureText(errors) };
     }
 }
+/** In esbuild's order: by file, line and column, those without a place first. */
+function sortedMessages(messages) {
+    const key = (m) => m.location;
+    return messages
+        .map((m, i) => [m, i])
+        .sort(([a, i], [b, j]) => {
+        const la = key(a);
+        const lb = key(b);
+        if (!la || !lb)
+            return la ? 1 : lb ? -1 : i - j;
+        if (la.file !== lb.file)
+            return la.file < lb.file ? -1 : 1;
+        return la.line - lb.line || la.column - lb.column || i - j;
+    })
+        .map(([m]) => m);
+}
 /**
  * A rolldown failure's diagnostics; anything else is one error with its
- * message. An error the adapter raised from a hook (an unresolved import)
+ * message. An error the adapter raised from a hook (a load the plugin failed)
  * comes back inside rolldown's own, by text only: `raised` holds it as
- * esbuild worded and placed it.
+ * esbuild worded it.
  */
-function messagesOf(error, raised) {
+function messagesOf(error, raised, loaded) {
     const logs = error instanceof Error ? Reflect.get(error, 'errors') : undefined;
     if (!Array.isArray(logs) || !logs.length)
         return [message(error instanceof Error ? error.message : String(error))];
     const unclaimed = [...raised];
     return logs.map((log) => {
         const i = unclaimed.findIndex((m) => log.message.includes(m.text));
-        return i >= 0 ? unclaimed.splice(i, 1)[0] : fromLog(log);
+        return i >= 0 ? unclaimed.splice(i, 1)[0] : fromLog(log, loaded);
     });
 }
-let loadedForLog = new Map();
 /** A rolldown diagnostic as esbuild's: its first line of text, its place in its module. */
-function fromLog(log) {
+function fromLog(log, modules) {
     // rolldown's message repeats the code and draws the source; esbuild's text is the one line.
     // eslint-disable-next-line no-control-regex
     const plain = log.message.replace(/\u001b\[[0-9;]*m/g, '');
     const firstLine = plain.split('\n')[0].replace(/^\[[A-Z_]+\]\s*/, '').replace(/^(Error|Warning):\s*/, '');
-    const loaded = log.id ? loadedForLog.get(log.id) : undefined;
+    const loaded = log.id ? modules.get(log.id) : undefined;
     const location = log.loc && loaded
         ? locate(fileOf(loaded), loaded.source, log.loc.line, log.loc.column)
         : null;
@@ -100,7 +178,7 @@ function fromLog(log) {
 function fileOf(module) {
     return module.namespace === 'file' || module.namespace === '' ? module.path : `${module.namespace}:${module.path}`;
 }
-async function build(api, options, plugin, raised) {
+async function build(api, options, plugin, { raised, unresolved, loaded }) {
     for (const [key, value] of Object.entries(options)) {
         if (value !== undefined && !SUPPORTED.has(key))
             refuse(`Nimbus's bundler does not support the esbuild option "${key}"`);
@@ -134,8 +212,6 @@ async function build(api, options, plugin, raised) {
     // The namespace most modules load in: the plugin's answer for the first entry.
     let mainNamespace = null;
     const idOf = (namespace, path) => (namespace === mainNamespace ? path : `\0${namespace}:${path}`);
-    const loaded = new Map();
-    loadedForLog = loaded;
     const decode = (id) => {
         const known = loaded.get(id);
         if (known)
@@ -146,24 +222,30 @@ async function build(api, options, plugin, raised) {
     const pending = new Map();
     const css = [];
     const warnings = [];
-    const raise = (text, importer, source) => {
+    const raise = (text, pluginName = '') => {
+        raised.push(message(text, null, pluginName));
+        throw new Error(text);
+    };
+    // An import that did not resolve, placed at its string literal as esbuild
+    // places it (column and length in UTF-8 bytes). The import stays external
+    // so the build goes on to report every other error with it.
+    const unresolvedImport = (text, importer, source, pluginName, parse) => {
         const from = importer ? loaded.get(importer) : undefined;
         let location = null;
-        if (from) {
-            const at = from.source.indexOf(JSON.stringify(source).slice(1, -1));
-            if (at >= 0) {
-                const before = from.source.slice(0, at);
-                const line = before.split(/\r\n|\r|\n/).length;
-                const column = at - Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) - 1 - 1;
-                location = locate(fileOf(from), from.source, line, column, source.length + 2);
-            }
+        const span = from?.lang ? importSpan(from, source, parse) : null;
+        if (from && span) {
+            const before = from.source.slice(0, span[0]);
+            const line = before.split(/\r\n|\r|\n/).length;
+            const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1;
+            location = locate(fileOf(from), from.source, line, utf8Length(before.slice(lineStart)), utf8Length(from.source.slice(span[0], span[1])));
         }
-        raised.push(message(text, location, ''));
-        throw new Error(text);
+        unresolved.push(message(text, location, pluginName));
+        return { id: source, external: true };
     };
     const vfs = {
         name: plugin.name,
         async resolveId(source, importer, extra) {
+            const parse = this.parse.bind(this);
             if (source.startsWith('\0'))
                 return null;
             const from = importer ? decode(importer) : null;
@@ -178,12 +260,12 @@ async function build(api, options, plugin, raised) {
                 with: extra.attributes ?? {},
             });
             if (answer?.errors?.length)
-                raise(answer.errors[0].text ?? 'error', importer, source);
+                return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, plugin.name, parse);
             if (answer?.warnings?.length)
                 for (const w of answer.warnings)
                     warnings.push(message(w.text ?? ''));
             if (!answer || (!answer.path && !answer.external))
-                raise(`Could not resolve ${JSON.stringify(source)}`, importer, source);
+                return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, '', parse);
             if (answer.external)
                 return { id: answer.path ?? path, external: true };
             const namespace = answer.namespace ?? 'file';
@@ -197,12 +279,12 @@ async function build(api, options, plugin, raised) {
             const { namespace, path } = pending.get(id) ?? decode(id);
             const answer = await plugin.load({ path, namespace, suffix: '', with: {} });
             if (answer?.errors?.length)
-                raise(answer.errors[0].text ?? 'error', undefined, path);
+                raise(answer.errors[0].text ?? 'error', plugin.name);
             if (answer?.warnings?.length)
                 for (const w of answer.warnings)
                     warnings.push(message(w.text ?? ''));
             if (!answer || answer.contents === undefined)
-                raise(`No loader produced ${fileOf({ namespace, path })}`, undefined, path);
+                raise(`No loader produced ${fileOf({ namespace, path })}`);
             const loader = answer.loader ?? 'js';
             const contents = answer.contents;
             const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
@@ -211,21 +293,28 @@ async function build(api, options, plugin, raised) {
                 namespace, path,
                 resolveDir: answer.resolveDir ?? (namespace === 'file' || namespace === mainNamespace ? (lastSlash > 0 ? path.slice(0, lastSlash) : '/') : ''),
                 source: text,
+                lang: loader === 'js' || loader === 'jsx' || loader === 'ts' || loader === 'tsx' ? loader : undefined,
             });
             if (loader === 'css') {
                 css.push({ id, path, source: text });
                 return { code: '', moduleType: 'js', moduleSideEffects: true };
             }
+            // A Uint8Array of the bytes, decoded from base64 as esbuild's __toBinary does:
+            // rolldown's `binary` takes a string, and would store its UTF-8.
+            if (loader === 'binary') {
+                const bytes = typeof contents === 'string' ? new TextEncoder().encode(contents) : contents;
+                return { code: `export default /* @__PURE__ */ Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
+            }
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)
-                raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`, undefined, path);
+                raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`);
             if (typeof contents === 'string')
                 return { code: contents, moduleType };
             // Byte loaders: rolldown takes their source as a string of the bytes' latin1 code units.
             let latin1 = '';
             for (let i = 0; i < contents.length; i += 0x8000)
                 latin1 += String.fromCharCode(...contents.subarray(i, i + 0x8000));
-            return { code: moduleType === 'binary' || moduleType === 'base64' || moduleType === 'dataurl' ? latin1 : text, moduleType };
+            return { code: moduleType === 'base64' || moduleType === 'dataurl' ? latin1 : text, moduleType };
         },
     };
     const bundle = await api.rolldown({
@@ -241,9 +330,12 @@ async function build(api, options, plugin, raised) {
             jsx: { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' },
         },
         checks: { pluginTimings: false },
+        // esbuild keeps an imported constant a reference: inlining its value
+        // changes what a cycle sees before the constant's module has run.
+        optimization: { inlineConst: false },
         onLog(level, log) {
             if (level === 'warn')
-                warnings.push(fromLog(log));
+                warnings.push(fromLog(log, loaded));
         },
     });
     try {
@@ -259,6 +351,8 @@ async function build(api, options, plugin, raised) {
             assetFileNames: `${template(options.assetNames, '[name]-[hash]')}[extname]`,
             codeSplitting: false,
         });
+        if (unresolved.length)
+            throw new BuildError(sortedMessages(unresolved));
         const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf('/')) || '/' : (options.outdir ?? '/dist');
         const at = (fileName) => `${outdir.replace(/\/+$/, '')}/${fileName}`;
         const encoder = new TextEncoder();
