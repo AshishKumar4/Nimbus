@@ -364,10 +364,11 @@ structure Mnt where
   bk : Nat
   deriving DecidableEq, Repr
 
-/-- Backend 0 is the root's, mounted at `[]` implicitly. `hands`: the paths the
-    composite hands to their backend whole (`MountOptions.resolvesPaths`): past the
-    point of a mount whose backend resolves its own paths, and not above a mount
-    nested in it. The composite looks up none of them; none by default. -/
+/-- Backend 0 is the root's, mounted at `[]` implicitly. `hands`: the paths past the
+    point of the mount they are in (the longest mount on them) when that mount's
+    backend resolves its own paths (`MountOptions.resolvesPaths`); none by default.
+    A lookup hands such a path to the backend (`handsTo`) unless it is a directory
+    above a mount nested there that the lookup goes on into. -/
 structure St where
   mounts : List Mnt
   bks : Nat → Backend
@@ -417,10 +418,22 @@ def metaAt (S : St) (d : Path) : Meta := match entAt S d with
 def maxLinks : Nat := 40
 def fuel : Nat := 256
 
-/-- Whether the walk at `done`, taking `x`, is in a path its backend resolves: it is
-    already, or `x` takes it there. Then nothing is looked up or searched here. -/
-def handed (S : St) (done : Path) (x : String) : Bool :=
-  S.hands done || (x != "" && x != "." && x != ".." && S.hands (done ++ [x]))
+/-- Where a walk at `done` goes on to, taking `rest` lexically. -/
+def lex : Path → List String → Path
+  | done, [] => done
+  | done, x :: rs => lex (if x = "" ∨ x = "." then done else if x = ".." then done.dropLast else done ++ [x]) rs
+
+/-- Whether a lookup at `q`, going on to `to`, hands `q` to its backend: it is past
+    the point of a mount whose backend resolves its own paths, and not a directory
+    above a mount nested there unless `to` stays in that mount. -/
+def handsTo (S : St) (q to : Path) : Bool :=
+  S.hands q && (!structural S.mounts q || (ownerOf S.mounts to).point == (ownerOf S.mounts q).point)
+
+/-- Whether the walk at `done`, taking `x` and then `rs`, is in a path its backend
+    resolves: it is already, or `x` takes it there. Then nothing is looked up or
+    searched here. -/
+def handed (S : St) (done : Path) (x : String) (rs : List String) : Bool :=
+  handsTo S done (lex done (x :: rs)) || (x != "" && x != "." && x != ".." && handsTo S (done ++ [x]) (lex done (x :: rs)))
 
 /-- Linux path walk in the caller's namespace; in a path its backend resolves,
     lexical (the backend answers for the rest). -/
@@ -428,7 +441,7 @@ def walk (S : St) (c : Cred) (follow : Bool) : Nat → Nat → Path → List Str
   | 0, _, _, _ => .error "ELOOP"
   | _ + 1, _, done, [] => .ok done
   | n + 1, h, done, x :: rs =>
-    if handed S done x then
+    if handed S done x rs then
       if x = "" ∨ x = "." then walk S c follow n h done rs
       else if x = ".." then walk S c follow n h done.dropLast rs
       else walk S c follow n h (done ++ [x]) rs
@@ -528,25 +541,30 @@ theorem named_dropLast {S : St} {c : Cred} {d : Path} (hn : Named S c d) (hd : I
     | nil => exact hd
     | cons y ys => exact (hn _ (by simp)).1
 
-/-- Paths handed to their backend whole are closed under extension (nothing is
-    mounted below one), and the directory a handed path is in is handed or a
+/-- A path past a flagged mount's point leads on to one, or to a directory (a mount
+    point nested there); and the directory it is in is past that point too, or a
     directory (at the top, the mount point). -/
 def HandsWF (S : St) : Prop :=
-  (∀ p x, S.hands p = true → S.hands (p ++ [x]) = true) ∧
+  (∀ p x, S.hands p = true → S.hands (p ++ [x]) = true ∨ IsDir S (p ++ [x])) ∧
   (∀ p, S.hands p = true → S.hands p.dropLast = true ∨ IsDir S p.dropLast)
 
-/-- Every directory on `d` is a directory granting the caller search, or one the
-    walk left into a path its backend resolves, which that backend checks. -/
+/-- Every directory on `d` is a directory granting the caller search, or is in or
+    leads into a path its backend resolves, which that backend checks. -/
 def NamedH (S : St) (c : Cred) (d : Path) : Prop :=
-  ∀ i < d.length, S.hands (d.take (i + 1)) = true ∨ (IsDir S (d.take i) ∧ grants c (metaAt S (d.take i)) 1 = true)
+  ∀ i < d.length, S.hands (d.take i) = true ∨ S.hands (d.take (i + 1)) = true ∨
+    (IsDir S (d.take i) ∧ grants c (metaAt S (d.take i)) 1 = true)
+
+theorem structural_dir {S : St} {q : Path} (h : structural S.mounts q = true) : IsDir S q :=
+  ⟨descMeta S q, by simp [entAt, h]⟩
 
 theorem namedH_snoc {S : St} {c : Cred} {d : Path} (x : String) (hn : NamedH S c d)
-    (hx : S.hands (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) : NamedH S c (d ++ [x]) := by
+    (hx : S.hands d = true ∨ S.hands (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) :
+    NamedH S c (d ++ [x]) := by
   intro i hi
   simp only [List.length_append, List.length_singleton] at hi
   by_cases e : i = d.length
   · subst e
-    rw [List.take_of_length_le (by simp), List.take_append_of_le_length (Nat.le_refl _), List.take_length]
+    rw [List.take_append_of_le_length (Nat.le_refl _), List.take_length, List.take_of_length_le (by simp)]
     exact hx
   · rw [List.take_append_of_le_length (by omega), List.take_append_of_le_length (by omega)]
     exact hn i (by omega)
@@ -559,21 +577,48 @@ theorem namedH_dropLast {S : St} {c : Cred} {d : Path} (hn : NamedH S c d) : Nam
   rw [Nat.min_eq_left (show i + 1 ≤ d.length - 1 by omega), Nat.min_eq_left (show i ≤ d.length - 1 by omega)]
   exact hn i (by omega)
 
-/-- A directory the walk is in, not handed over, sits in a directory. -/
-theorem namedH_parent {S : St} {c : Cred} {d : Path} (hn : NamedH S c d) (hnd : S.hands d = false)
-    (hd : IsDir S d) : IsDir S d.dropLast := by
+/-- The directory the walk's `done` is in is past a flagged mount's point, or a directory. -/
+theorem namedH_parent {S : St} {c : Cred} {d : Path} (hw : HandsWF S) (hn : NamedH S c d) :
+    S.hands d.dropLast = true ∨ IsDir S d.dropLast := by
   cases d with
-  | nil => exact hd
+  | nil => exact .inr (root_dir S)
   | cons y ys =>
     have h := hn ys.length (by simp)
     simp only [List.length_cons] at h
-    rw [List.take_of_length_le (by simp)] at h
-    rcases h with h | h
-    · simp [hnd] at h
-    · rw [List.dropLast_eq_take]; simpa using h.1
+    rw [List.take_of_length_le (show (y :: ys).length ≤ ys.length + 1 by simp)] at h
+    have hdl : (y :: ys).dropLast = (y :: ys).take ys.length := by rw [List.dropLast_eq_take]; simp
+    rw [hdl]
+    rcases h with h | h | h
+    · exact .inl h
+    · rcases hw.2 _ h with h' | h'
+      · exact .inl (by rw [← hdl]; exact h')
+      · exact .inr (by rw [← hdl]; exact h')
+    · exact .inr h.1
+
+/-- What `handed` says, without where the lookup goes. -/
+theorem handed_hands {S : St} {done : Path} {x : String} {rs : List String} (h : handed S done x rs = true) :
+    S.hands done = true ∨ ((x = "" → False) ∧ (x = "." → False) ∧ (x = ".." → False) ∧ S.hands (done ++ [x]) = true) := by
+  unfold handed handsTo at h
+  simp only [Bool.or_eq_true, Bool.and_eq_true, bne_iff_ne, ne_eq] at h
+  rcases h with h | h
+  · exact .inl h.1
+  · exact .inr ⟨h.1.1.1, h.1.1.2, h.1.2, h.2.1⟩
+
+/-- A walk not handed over at a path past a flagged point is at a directory above a
+    nested mount. -/
+theorem unhanded_dir {S : St} {done : Path} {x : String} {rs : List String} (h : handed S done x rs = false)
+    (hd : S.hands done = true ∨ IsDir S done) : IsDir S done := by
+  rcases hd with hd | hd
+  · apply structural_dir
+    unfold handed handsTo at h
+    simp only [hd, Bool.true_and, Bool.or_eq_false_iff, Bool.not_eq_eq_eq_not, Bool.not_true] at h
+    cases hs : structural S.mounts done
+    · simp [hs] at h
+    · rfl
+  · exact hd
 
 /-- Whatever a walk resolves to, every directory on it grants the caller search,
-    except where the walk handed the rest to a backend that resolves its own paths. -/
+    except where it is in or leads into a path its backend resolves. -/
 theorem walk_named (S : St) (c : Cred) (f : Bool) (hw : HandsWF S) :
     ∀ n h done rs p, NamedH S c done → (S.hands done = true ∨ IsDir S done) →
       walk S c f n h done rs = .ok p → NamedH S c p := by
@@ -591,43 +636,39 @@ theorem walk_named (S : St) (c : Cred) (f : Bool) (hw : HandsWF S) :
         split at hwk
         · exact ih _ _ _ _ hn hd hwk
         · split at hwk
-          · rename_i hdd
-            have hdone : S.hands done = true := by
-              unfold handed at hh; cases h' : S.hands done <;> simp_all
-            exact ih _ _ _ _ (namedH_dropLast hn) (hw.2 _ hdone) hwk
-          · have hq : S.hands (done ++ [x]) = true := by
-              unfold handed at hh
-              cases h' : S.hands done
-              · simp_all
-              · exact hw.1 _ _ h'
-            exact ih _ _ _ _ (namedH_snoc x hn (.inl hq)) (.inl hq) hwk
+          · exact ih _ _ _ _ (namedH_dropLast hn) (namedH_parent hw hn) hwk
+          · rename_i hx1 hx2
+            rcases handed_hands hh with hq | ⟨_, _, _, hq⟩
+            · have hnext := hw.1 _ x hq
+              exact ih _ _ _ _ (namedH_snoc x hn (.inl hq)) hnext hwk
+            · exact ih _ _ _ _ (namedH_snoc x hn (.inr (.inl hq))) (.inl hq) hwk
       · rename_i hh
-        have hnd : S.hands done = false := by
-          unfold handed at hh; cases h' : S.hands done <;> simp_all
-        have hdir : IsDir S done := hd.resolve_left (by simp [hnd])
+        have hdir : IsDir S done := unhanded_dir (by simpa using hh) hd
         split at hwk
         · cases hwk
         · rename_i hg
           have hg : grants c (metaAt S done) 1 = true := by simpa using hg
+          have hs : S.hands done = true ∨ S.hands (done ++ [x]) = true ∨ (IsDir S done ∧ grants c (metaAt S done) 1 = true) :=
+            .inr (.inr ⟨hdir, hg⟩)
           split at hwk
           · exact ih _ _ _ _ hn hd hwk
           · split at hwk
-            · exact ih _ _ _ _ (namedH_dropLast hn) (.inr (namedH_parent hn hnd hdir)) hwk
+            · exact ih _ _ _ _ (namedH_dropLast hn) (namedH_parent hw hn) hwk
             · split at hwk
               · split at hwk
-                · cases hwk; exact namedH_snoc x hn (.inr ⟨hdir, hg⟩)
+                · cases hwk; exact namedH_snoc x hn hs
                 · cases hwk
               · split at hwk
-                · cases hwk; exact namedH_snoc x hn (.inr ⟨hdir, hg⟩)
+                · cases hwk; exact namedH_snoc x hn hs
                 · split at hwk
                   · cases hwk
                   · split at hwk
                     · exact ih _ _ _ _ (fun i hi => by simp at hi) (.inr (root_dir S)) hwk
                     · exact ih _ _ _ _ hn hd hwk
               · rename_i m he
-                exact ih _ _ _ _ (namedH_snoc x hn (.inr ⟨hdir, hg⟩)) (.inr ⟨m, he⟩) hwk
+                exact ih _ _ _ _ (namedH_snoc x hn hs) (.inr ⟨m, he⟩) hwk
               · split at hwk
-                · cases hwk; exact namedH_snoc x hn (.inr ⟨hdir, hg⟩)
+                · cases hwk; exact namedH_snoc x hn hs
                 · cases hwk
 
 /-- Whatever a path resolves to in a namespace that hands nothing over, through any
@@ -638,7 +679,8 @@ theorem resolve_named (S : St) (c : Cred) (f : Bool) (hS : ∀ q, S.hands q = fa
   have hwf : HandsWF S := ⟨fun q _ hq => by simp [hS] at hq, fun q hq => by simp [hS] at hq⟩
   have hn := walk_named S c f hwf _ _ _ _ p (fun i hi => by simp at hi) (.inr (root_dir S)) h
   intro i hi
-  rcases hn i hi with h' | h'
+  rcases hn i hi with h' | h' | h'
+  · simp [hS] at h'
   · simp [hS] at h'
   · exact h'
 

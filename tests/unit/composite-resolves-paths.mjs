@@ -224,6 +224,40 @@ async function only(backend, expected, label, run) {
   connected = true;
 }
 
+// ── A link on such a mount is copied as written ────────────────────────────
+// readlink answers the text the backend holds, and symlink stores it, so a
+// copied link leads where the original does in the same backend (review of
+// 4e2dc0eea: a re-rooted readlink made cp's copy dangle). Across two mounts
+// the text is copied as written, as GNU cp -P does (Nimbus' cp copies a link as a link).
+{
+  const harness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+  const pcBacking = new MemoryVFS();
+  pcBacking.writeFile('/f', enc.encode('pc f\n'));
+  pcBacking.symlink('/f', '/l');
+  pcBacking.mkdir('/d');
+  pcBacking.symlink('/f', '/d/l');
+  const qcBacking = new MemoryVFS();
+  qcBacking.writeFile('/f', enc.encode('qc f\n'));
+  ws.filesystem.vfs.mount('/pc', remote(pcBacking).vfs, { resolvesPaths: true });
+  ws.filesystem.vfs.mount('/qc', remote(qcBacking).vfs, { resolvesPaths: true });
+  const run = async (command) => {
+    const result = await ws.exec(command);
+    assert.equal(result.exitCode, 0, `${command}: ${result.stderr}`);
+    return result.stdout;
+  };
+  assert.equal(await run('readlink /pc/l'), '/f\n', 'readlink is the text as written');
+  assert.equal(await run('cat /pc/l'), 'pc f\n', 'and the link leads to the mount\'s /f');
+  assert.equal(await run('cp /pc/l /pc/l2 && readlink /pc/l2 && cat /pc/l2'), '/f\npc f\n', 'a link copied within the mount is the same link');
+  assert.equal(pcBacking.readlink('/l2'), '/f');
+  assert.equal(await run('cp /pc/l /qc/l3 && readlink /qc/l3 && cat /qc/l3'), '/f\nqc f\n', 'across mounts, the text as written');
+  assert.equal(qcBacking.readlink('/l3'), '/f');
+  // The namespace's own copy across mounts copies the text as written too.
+  assert.equal(await ws.filesystem.vfs.copy('/pc/d', '/qc/d', { recursive: true }), 2);
+  assert.equal(qcBacking.readlink('/d/l'), '/f', 'a tree copied across mounts keeps its links\' text');
+  await ws.close();
+}
+
 // ── A nested mount is reached only through what the outer backend lets the user search ──
 {
   const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };

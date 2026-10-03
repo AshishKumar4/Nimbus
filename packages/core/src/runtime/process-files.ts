@@ -682,7 +682,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if ((await this.namespace.stat(base))?.type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
       return (base === '/' ? '' : base) + '/' + path.path;
     }
-    const walk = walkBeneath(normalizeVfsPath(base), path, follow, this.cred, (name) => this.namespace.resolvedByBackend(name));
+    const root = normalizeVfsPath(base);
+    const walk = walkBeneath(root, path, follow, this.cred, (name, to) => this.namespace.resolvedByBackend(name, '/' + root, to));
     for (let step = walk.next(); ; ) {
       if (step.done) {
         if (step.value === null) throw fsError('ELOOP', 'path', path);
@@ -690,7 +691,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       }
       const lookup = step.value;
       step = walk.next('readlink' in lookup
-        ? (await this.namespace.readlink(lookup.readlink)) ?? ''
+        ? this.namespace.linkLeadsTo(lookup.readlink, await this.namespace.readlink(lookup.readlink))
         : await this.namespace.stat(lookup.stat, { follow: false }));
     }
   }

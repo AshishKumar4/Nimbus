@@ -484,8 +484,11 @@ function launched(named = []) {
   await backend.symlink('../../../home/user/x', '/climb');
   ws.filesystem.vfs.mount('/ro', remote(backend), { resolvesPaths: true, readOnly: true });
   await ws.fs.writeFile('/home/user/x', 'sqlite');
-  assert.equal(await ws.fs.readlink('/ro/link'), '/ro/home/user/x', 'an absolute target re-roots at the mount');
-  assert.equal(await ws.fs.readlink('/ro/climb'), '/ro/home/user/x', 'a relative one climbs no higher than its root');
+  // readlink answers the text as written; where it leads is the namespace's to work out when it follows it.
+  assert.equal(await ws.fs.readlink('/ro/link'), '/home/user/x', 'readlink is the text as written');
+  assert.equal(await ws.fs.readlink('/ro/climb'), '../../../home/user/x');
+  assert.equal(ws.filesystem.vfs.linkLeadsTo('/ro/link', '/home/user/x'), '/ro/home/user/x', 'an absolute target leads within the mount');
+  assert.equal(ws.filesystem.vfs.linkLeadsTo('/ro/climb', '../../../home/user/x'), '/ro/home/user/x', 'a relative one climbs no higher than its root');
   const through = (argv, write) => node(`${CHECK}
 (async () => console.log(JSON.stringify({
   read: code(() => fs.readFileSync(process.argv[2], 'utf8')),

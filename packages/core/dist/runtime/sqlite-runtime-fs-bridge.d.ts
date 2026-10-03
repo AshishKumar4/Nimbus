@@ -145,6 +145,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private resolveDataPath;
     /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
     private mountedLink;
+    /** Where the link at `path`, reading `link`, leads for this walk: the namespace's link-root rule (CompositeVFS.linkLeadsTo). */
+    private leadsTo;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
@@ -209,10 +211,12 @@ type BeneathAnswer = {
  * a relative one from its directory, an absolute one from the namespace's
  * `/`, as the unrestricted walk resolves them, and what the walk reaches
  * must lie at or under the root, else ENOTCAPABLE. A path the namespace
- * hands to its backend whole (`handedOver`: CompositeVFS.resolvedByBackend,
- * MountOptions.resolvesPaths) is neither looked up nor searched here, nor
- * are its links read: its components are taken lexically, `..` included,
- * and that backend answers for them. The one walk for every face: it yields
+ * hands to its backend whole beneath this root (`handedOver`, asked with
+ * where the lookup goes on to lexically: CompositeVFS.resolvedByBackend
+ * within the root, a resolvesPaths mount whose point lies at or under it, so
+ * the backend's own links stay beneath it) is neither looked up nor searched
+ * here, nor are its links read: its components are taken lexically, `..`
+ * included, and that backend answers for them. The one walk for every face: it yields
  * its lookups, which the synchronous bridge answers at once and a face over
  * asynchronous mounts awaits. `root` is normalized; the answer is the
  * resolved path, normalized.
@@ -221,7 +225,7 @@ export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: b
     uid: number;
     gid: number;
     groups: readonly number[];
-}, handedOver: (path: string) => boolean): Generator<BeneathLookup, string | null, BeneathAnswer>;
+}, handedOver: (path: string, to: string) => boolean): Generator<BeneathLookup, string | null, BeneathAnswer>;
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export declare const BUFFERED_WRITE_BYTES: number;
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */

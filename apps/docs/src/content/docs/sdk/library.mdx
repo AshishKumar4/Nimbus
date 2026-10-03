@@ -142,11 +142,15 @@ the mount point itself (EBUSY, EISDIR, `mkdir -p` has nothing to do), EROFS
 under `readOnly`, EXDEV across mounts (so `mv` and `ws.fs.move` copy), and
 any mount nested inside it (the way to one is looked up and searched here,
 since the backend never sees that path). Permissions inside the mount are
-the backend's: a view's credential reaches it through its `as`. A link on
-it reads as the namespace path it leads to (an absolute target re-rooted at
-the mount point), so a node program's staged view lands where the backend
-does, and a WASI program (`python3`, `ruby`, the shell's wasm commands)
-reaches it through a preopen the same way, one call per lookup.
+the backend's: a view's credential reaches it through its `as`. `readlink`
+answers a link's text as written; where the namespace follows a link
+itself (a node program's staged view, a process's walks),
+`CompositeVFS.linkLeadsTo` re-roots an absolute target at the mount point,
+as the backend reads it. A WASI program (`python3`, `ruby`, the shell's
+wasm commands) reaches the mount through a preopen the same way, one call
+per lookup, when the preopen holds the mount point; beneath a preopen
+inside the mount every component is looked up, so the backend cannot
+follow a link out of it.
 
 A node process's synchronous `fs` and `require` see a mount, one without a
 `sync` face included, where its launch names it: its working directory, its
