@@ -6,7 +6,7 @@ import {
   materializeNpmBinShims,
   npmBinManifestPath,
   resolveNpmBin,
-  resolveNpmBinFromPath,
+  resolveNpmBinPath,
 } from '../../packages/worker/src/npm/bin-links.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -33,6 +33,11 @@ class FakeVfs {
 
   isDirectory(path) {
     return this.dirs.has(path);
+  }
+
+  stat(path) {
+    if (!this.files.has(path)) throw new Error(`ENOENT: ${path}`);
+    return { mode: this.modes.get(path) ?? 0o644 };
   }
 
   readFileString(path) {
@@ -167,12 +172,8 @@ const manifestPath = npmBinManifestPath(nm);
   // successful install.
   assert.equal(vfs.modes.get('home/user/.local/bin/pi'), 0o755, 'materialized shim is executable');
 
-  const resolved = await resolveNpmBinFromPath(
-    vfs,
-    '/home/user',
-    '/home/user/.local/bin:/usr/bin',
-    'pi',
-  );
+  // The shim a search of PATH finds is the npm program its bin directory's manifest names.
+  const resolved = await resolveNpmBinPath(vfs, '/home/user', '/home/user/.local/bin/pi');
   assert.equal(resolved?.shimPath, 'home/user/.local/bin/pi');
   assert.equal(resolved?.targetPath, `${prefixNm}/@earendil-works/pi-coding-agent/dist/cli.js`);
   assert.equal(resolved?.packageName, '@earendil-works/pi-coding-agent');

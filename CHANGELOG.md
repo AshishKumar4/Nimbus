@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A command name nothing registers is searched for on the PATH of the
+  environment that invokes it, as execvp searches it, by the shell (a
+  `PATH=x cmd` prefix included), a script's commands, `sudo`,
+  `find -exec`, `xargs`, `npx`, `nimbus start`, `watch` and a Worker
+  program's `child_process.spawn`. With `HOME=/home/main`, a CLI installed
+  only in `/home/main/.local/bin` runs by its bare name from anywhere.
+  Before, the Worker's search used the default home's PATH, so a bin it
+  found there could run a different file, and a workspace without the
+  Worker (the SDK) ran nothing from PATH by its bare name. Any executable
+  on PATH runs this way (a `#!` script, a wasm binary, an npm bin shim),
+  the first one in PATH order; a file that is not executable is passed
+  over, and is `Permission denied` (126) when nothing else is found; an
+  empty PATH entry is the current directory. A caller with no environment
+  searches the default PATH. `type`, `command -v` and `which` report the
+  file that runs (`tool is /home/main/.local/bin/tool`), where `type`
+  called it a builtin or missed it.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

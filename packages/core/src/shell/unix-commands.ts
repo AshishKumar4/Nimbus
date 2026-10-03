@@ -21,7 +21,8 @@ import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import type { VfsFileType as FileType } from '../vfs/vfs.js';
 import type { ChildExit, Command, CommandInputStream, RunAsOptions } from '../substrate/lifo/commands/types.js';
-import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { resolveContext, type ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { programPathOf, searchPath } from './exec-dispatch.js';
 import sedCommand from '../substrate/lifo/commands/text/sed.js';
 import grepCommand from '../substrate/lifo/commands/text/grep.js';
 import tailCommand from '../substrate/lifo/commands/text/tail.js';
@@ -344,23 +345,6 @@ const _CANONICAL_BIN_PATHS: Record<string, string> = {
   nimbus: '/usr/local/bin/nimbus',
 };
 
-async function _pathLookup(
-  vfs: UnixVfs,
-  name: string,
-  envPath: string,
-): Promise<string | null> {
-  const paths = (envPath || '/usr/local/bin:/usr/bin:/bin').split(':');
-  for (const dir of paths) {
-    if (!dir) continue;
-    const stripped = dir.replace(/^\/+/, '').replace(/\/+$/, '');
-    const fp = stripped + '/' + name;
-    if ((await vfs.exists(fp)) && !(await vfs.isDirectory(fp))) {
-      return '/' + fp;
-    }
-  }
-  return null;
-}
-
 async function _registryResolved(
   registry: UnixCommandRegistry,
   name: string,
@@ -380,18 +364,17 @@ async function _registryResolved(
   return null;
 }
 
-/** Resolve a command name to a path via PATH-walk + canonical-bin
- *  fallback. Returns null if not findable. Skip-canonical when the
- *  caller knows the command is a shell builtin (no fallback). */
+/** Resolve a command name to a path: the executable file execvp's search
+ *  of the caller's PATH finds (as the caller sees the namespace), else a
+ *  registered command's canonical path. Returns null if not findable. */
 async function _whichLookup(
   vfs: UnixVfs,
   registry: UnixCommandRegistry,
   name: string,
-  envPath: string,
   from: ResolveContext,
 ): Promise<string | null> {
-  const diskPath = (await _pathLookup(vfs, name, envPath));
-  if (diskPath) return diskPath;
+  const hit = name.includes('/') ? null : await searchPath(vfs, name, from);
+  if (hit?.kind === 'program') return hit.path;
   const canonicalPath = _CANONICAL_BIN_PATHS[name];
   if (!canonicalPath) return null;
   return await _registryResolved(registry, name, from, { includeInstallHints: true })
@@ -424,12 +407,13 @@ function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       return 1;
     }
     let anyMissing = false;
+    const from = resolveContext(ctx.cwd, ctx.env);
     for (const name of names) {
-      // Classify: is it a registry-resolvable command (shell builtin)?
-      const resolved = await _registryResolved(registry, name, { cwd: ctx.cwd });
-      const isBuiltin = !!resolved;
+      // Classify: is it a registered command (a shell builtin), not one found on PATH?
+      const resolved = await _registryResolved(registry, name, from);
+      const isBuiltin = resolved !== null && programPathOf(resolved) === undefined;
       // 1. PATH-walk + canonical-bin lookup.
-      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '', { cwd: ctx.cwd });
+      const path = await _whichLookup(vfs, registry, name, from);
       let found = false;
       if (path) {
         if (!silent) (await ctx.stdout.write(path + '\n'));
@@ -448,7 +432,7 @@ function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
         continue;
       }
       if (!found) {
-        if (!silent) (await ctx.stderr.write(`which: no ${name} in (${ctx.env.PATH || '/usr/local/bin:/usr/bin:/bin'})\n`));
+        if (!silent) (await ctx.stderr.write(`which: no ${name} in (${from.path})\n`));
         anyMissing = true;
       }
     }
@@ -469,8 +453,9 @@ function mkWhereis(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       (await ctx.stderr.write('Usage: whereis name [name ...]\n'));
       return 1;
     }
+    const from = resolveContext(ctx.cwd, ctx.env);
     for (const name of names) {
-      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '', { cwd: ctx.cwd });
+      const path = await _whichLookup(vfs, registry, name, from);
       if (path) {
         (await ctx.stdout.write(`${name}: ${path}\n`));
       } else {
@@ -507,27 +492,31 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       (await ctx.stderr.write('command: missing operand\n'));
       return 1;
     }
-    if (mode === '-v') {
-      // Print path or builtin marker; exit 0 if found.
+    const from = resolveContext(ctx.cwd, ctx.env);
+    if (mode === '-v' || mode === '-V') {
+      // What `name` runs: the file found on PATH, or a registered command
+      // (by its canonical path where it has one); exit 0 if found.
       const name = args[0];
-      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '', { cwd: ctx.cwd });
-      if (path) { (await ctx.stdout.write(path + '\n')); return 0; }
-      if (await _registryResolved(registry, name, { cwd: ctx.cwd })) { (await ctx.stdout.write(name + '\n')); return 0; }
-      return 1;
-    }
-    if (mode === '-V') {
-      const name = args[0];
-      const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '', { cwd: ctx.cwd });
-      if (path) { (await ctx.stdout.write(`${name} is ${path}\n`)); return 0; }
-      if (await _registryResolved(registry, name, { cwd: ctx.cwd })) { (await ctx.stdout.write(`${name} is a shell builtin\n`)); return 0; }
-      (await ctx.stderr.write(`command: ${name}: not found\n`));
-      return 1;
+      const resolved = await _registryResolved(registry, name, from);
+      const program = resolved === null ? undefined : programPathOf(resolved);
+      const path = program ?? (resolved === null ? null : _CANONICAL_BIN_PATHS[name] ?? null);
+      if (mode === '-v') {
+        if (resolved === null) return 1;
+        (await ctx.stdout.write(`${path ?? name}\n`));
+        return 0;
+      }
+      if (resolved === null) {
+        (await ctx.stderr.write(`command: ${name}: not found\n`));
+        return 1;
+      }
+      (await ctx.stdout.write(path !== null ? `${name} is ${path}\n` : `${name} is a shell builtin\n`));
+      return 0;
     }
     // invoke mode: dispatch directly via registry. Bypasses aliases
     // because we're calling the resolved cmd not the alias name.
     const name = args[0];
     try {
-      const resolved = asResolvedCommand(await registry.resolve(name, { cwd: ctx.cwd }));
+      const resolved = asResolvedCommand(await registry.resolve(name, from));
       if (!resolved) {
         (await ctx.stderr.write(`command: ${name}: not found\n`));
         return 127;
@@ -564,12 +553,16 @@ function mkType(_vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     if (ctx.args.length === 0) return 0;
     let exit = 0;
+    const from = resolveContext(ctx.cwd, ctx.env);
     for (const name of ctx.args) {
       try {
         const resolved = typeof registry.resolve === 'function'
-          ? asResolvedCommand(await registry.resolve(name, { cwd: ctx.cwd }))
+          ? asResolvedCommand(await registry.resolve(name, from))
           : null;
-        if (resolved && !isRuntimeInstallHintHandler(resolved)) {
+        const program = resolved === null ? undefined : programPathOf(resolved);
+        if (program !== undefined) {
+          (await ctx.stdout.write(`${name} is ${program}\n`));
+        } else if (resolved && !isRuntimeInstallHintHandler(resolved)) {
           (await ctx.stdout.write(`${name} is a shell builtin\n`));
         } else {
           (await ctx.stderr.write(`type: ${name}: not found\n`));
@@ -1816,7 +1809,7 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     // Resolve target command from registry (handles both eager + lazy maps).
     let target: ResolvedCommand | null;
     try {
-      target = asResolvedCommand(await registry.resolve(cmdName, { cwd: ctx.cwd }));
+      target = asResolvedCommand(await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env)));
     } catch { target = null; }
     if (!target) {
       // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.

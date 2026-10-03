@@ -22,7 +22,7 @@
  * executable until touched. No migration.
  */
 
-import type { CommandRegistry, ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { resolveContext, type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ProcessView } from '../runtime/process-files.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
@@ -118,6 +118,63 @@ async function inspect(fs: ExecInspectionFs, path: string): Promise<Inspected> {
   }
 }
 
+/**
+ * What execvp's search of PATH finds for a bare name: the first executable
+ * regular file, or, when every file it finds is not executable, the first
+ * of those (which execvp fails with EACCES).
+ */
+export type PathSearchResult =
+  | { readonly kind: 'program'; readonly path: string }
+  | { readonly kind: 'not-executable'; readonly path: string }
+  | null;
+
+/**
+ * The directories `from.path` names, in order, as execvp reads them: an
+ * empty entry is the current directory, and a relative one is taken from it.
+ */
+function pathDirectories(from: ResolveContext): string[] {
+  const directories: string[] = [];
+  for (const entry of from.path.split(':')) {
+    const directory = '/' + resolveVfsPath(entry, normalizeVfsPath(from.cwd));
+    if (!directories.includes(directory)) directories.push(directory);
+  }
+  return directories;
+}
+
+/**
+ * execvp's search for `name`, a name with no slash, along the caller's PATH:
+ * each directory in turn, a directory entry of that name passed over, a
+ * file that is not executable remembered and passed over.
+ */
+export async function searchPath(fs: ExecInspectionFs, name: string, from: ResolveContext): Promise<PathSearchResult> {
+  let notExecutable: string | null = null;
+  for (const directory of pathDirectories(from)) {
+    const candidate = directory === '/' ? `/${name}` : `${directory}/${name}`;
+    const inspected = await inspect(fs, candidate);
+    if (inspected === null || inspected === 'directory') continue;
+    if (isExecutableMode(inspected.mode, isWasmMagic(inspected.head))) return { kind: 'program', path: candidate };
+    notExecutable ??= candidate;
+  }
+  return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
+}
+
+/** The file each command a PATH search resolved runs: what `type` and `command -v` report for it. */
+const programPaths = new WeakMap<object, string>();
+
+/** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
+export function programPathOf(command: object): string | undefined {
+  return programPaths.get(command);
+}
+
+/** A command whose resolution failed on what the namespace could not answer: it fails as execve's error does. */
+function failing(name: string, error: unknown): Command {
+  const message = error instanceof Error ? error.message : String(error);
+  return async (ctx): Promise<number> => {
+    (await ctx.stderr.write(`${name}: ${message}\n`));
+    return 126;
+  };
+}
+
 export function installPathExecResolver(
   registry: CommandRegistry,
   fs: ExecInspectionFs,
@@ -127,11 +184,37 @@ export function installPathExecResolver(
   registry.resolve = async (name: string, from?: ResolveContext): Promise<Command | undefined> => {
     const found = await originalResolve(name, from);
     if (found) return found;
-    if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
-      return undefined;
-    }
+    if (!name) return undefined;
+    const context = from ?? resolveContext(getCwd(), undefined);
 
-    const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(from?.cwd ?? getCwd()));
+    // A bare name is searched for along the caller's PATH, as execvp
+    // searches it; the file found then resolves by its path, through every
+    // resolver (an npm bin shim is the npm program it names), and the
+    // command it gives runs that file and no other.
+    if (!name.includes('/')) {
+      let hit: PathSearchResult;
+      try {
+        hit = await searchPath(fs, name, context);
+      } catch (error) {
+        return failing(name, error);
+      }
+      if (hit === null) return undefined;
+      if (hit.kind === 'not-executable') {
+        const path = hit.path;
+        return async (ctx): Promise<number> => {
+          (await ctx.stderr.write(`${path}: Permission denied\n`));
+          return 126;
+        };
+      }
+      const command = await registry.resolve(hit.path, context);
+      if (!command) return undefined;
+      const program: Command = async (ctx) => await command(ctx);
+      programPaths.set(program, hit.path);
+      return program;
+    }
+    if (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../')) return undefined;
+
+    const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(context.cwd));
     let inspected: Inspected;
     try {
       inspected = await inspect(fs, resolved);
@@ -139,11 +222,7 @@ export function installPathExecResolver(
       // What the namespace cannot answer (an absent mount, a backend's I/O
       // error) fails this command, as execve's error does; the rest of the
       // line still runs.
-      const message = error instanceof Error ? error.message : String(error);
-      return async (ctx): Promise<number> => {
-        (await ctx.stderr.write(`${name}: ${message}\n`));
-        return 126;
-      };
+      return failing(name, error);
     }
     if (inspected === null) return undefined;
     if (inspected === 'directory') {
@@ -204,9 +283,11 @@ export function installPathExecResolver(
             (await ctx.stderr.write(`${name}: too many levels of interpreters\n`));
             return 126;
           }
-          let interpCmd = await registry.resolve(interp, { cwd: ctx.cwd });
+          // `#!/usr/bin/env node` names node, which env finds on the script's PATH.
+          const from = resolveContext(ctx.cwd, ctx.env);
+          let interpCmd = await registry.resolve(interp, from);
           if (!interpCmd && interp.includes('/')) {
-            interpCmd = await registry.resolve(basename(interp), { cwd: ctx.cwd });
+            interpCmd = await registry.resolve(basename(interp), from);
           }
           if (!interpCmd) {
             (await ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`));

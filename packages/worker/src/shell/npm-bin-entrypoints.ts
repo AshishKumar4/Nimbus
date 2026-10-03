@@ -4,15 +4,14 @@ import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
-  resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath,
+  resolveNpmBin, resolveNpmBinPath,
   type NpmBinResolution,
   isStagedArtifactTarget, stagedArtifactId,
 } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import type { ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
-import { DEFAULT_PATH } from '@nimbus-sh/core/constants.js';
+import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { z } from 'zod/v4';
 
 type Output = { write(data: string): void };
@@ -81,19 +80,24 @@ export function installNpmBinFallbackResolver(
   };
 
   registry.resolve = async function resolveWithNpmBins(name: string, from?: ResolveContext): Promise<unknown> {
-    const cwd = from?.cwd || deps.getCwd() || '/home/user';
-    // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
-    // same program as the bare name: same runtime choice, TTY and lifecycle.
+    const context = from ?? resolveContext(deps.getCwd() || '/home/user', undefined);
+    const cwd = context.cwd;
+    // An npm bin shim by path (a launcher's `exec`, or the file a search of
+    // PATH found for a bare name) is the same program as the bare name: same
+    // runtime choice, TTY and lifecycle. The command that runs looks the
+    // shim up again through its own view, at the same path.
     if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
       const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
-      if (!bin) return await upstreamResolve(name, from);
-      return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
+      if (!bin) return await upstreamResolve(name, context);
+      return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name));
     }
 
-    const upstream = await upstreamResolve(name, from);
+    // Registered commands, then PATH (searched upstream), then the bins of
+    // the node_modules directories from the cwd up.
+    const upstream = await upstreamResolve(name, context);
     if (upstream) return upstream;
 
-    if (!await probe(() => resolveNpmBinForInvocation(inspector, cwd, DEFAULT_PATH, name))) {
+    if (!await probe(() => resolveNpmBin(inspector, cwd, name))) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
       if (!hint) return undefined;
@@ -106,17 +110,12 @@ export function installNpmBinFallbackResolver(
       return hintHandler;
     }
 
-    return binHandler(name, async (ctx, vfs) => await resolveNpmBinForInvocation(
-      vfs,
-      ctx.cwd || '/home/user',
-      ctx.env?.PATH || DEFAULT_PATH,
-      name,
-    ));
+    return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name));
   };
 
   function binHandler(
     name: string,
-    lookup: (ctx: CommandContext, vfs: ProjectFs) => Promise<NpmBinResolution | null>,
+    lookup: (vfs: ProjectFs) => Promise<NpmBinResolution | null>,
   ): (ctx: CommandContext) => Promise<number> {
     return async (ctx: CommandContext): Promise<number> => {
       const invocationCwd = ctx.cwd || '/home/user';
@@ -124,7 +123,7 @@ export function installNpmBinFallbackResolver(
       const vfs = projectFs(ctx.vfs);
       let bin: NpmBinResolution | null;
       try {
-        bin = await lookup(ctx, vfs);
+        bin = await lookup(vfs);
       } catch (error) {
         ctx.stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
         return 126;
@@ -227,16 +226,6 @@ export function installNpmBinFallbackResolver(
       return exitCode;
     };
   }
-}
-
-async function resolveNpmBinForInvocation(
-  vfs: ProjectFs,
-  cwd: string,
-  envPath: string,
-  name: string,
-): Promise<NpmBinResolution | null> {
-  return await resolveNpmBinFromPath(vfs, cwd, envPath, name)
-    ?? await resolveNpmBin(vfs, cwd, name);
 }
 
 async function runStagedArtifact(

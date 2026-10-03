@@ -18,6 +18,7 @@ import type { CommandContext } from '../substrate/lifo/commands/types.js';
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { parseRuntimeManifest, type RuntimeManifest } from './runtime-manifest.js';
 import type { MinShellRegistry } from './installed-runtimes.js';
+import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import type { RuntimeManager } from './runtime-manager.js';
 import type { RuntimeAvailability } from './runtime-package.js';
 
@@ -340,7 +341,7 @@ async function runNimbusStart(
     ctx.stderr.write('usage: nimbus start [--restart never|on-failure] <command> [args...]\n');
     return 2;
   }
-  const handler = registry.resolve ? await registry.resolve(command, { cwd: ctx.cwd }) : null;
+  const handler = registry.resolve ? await registry.resolve(command, resolveContext(ctx.cwd, ctx.env)) : null;
   if (!handler) {
     ctx.stderr.write(`nimbus start: ${command}: command not found\n`);
     return 127;
