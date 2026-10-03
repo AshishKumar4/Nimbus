@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "79be5d791ade79d838d2dbf0e8c42444498f96f1ce4191e163ddf4713265efad",
+  "fingerprint": "10b2600a96e1a03ae34dba75b1cfd877c7fb4611231a34184546410037d12a34",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -505,8 +505,8 @@
     "packages/core/dist/substrate/lifo/commands/fs/chmod.d.ts.map": "17cc18a0da35d3d72830207f6c394ff5ead36d84ea745a6e219f6d91a2a915d7",
     "packages/core/dist/substrate/lifo/commands/fs/chmod.js": "707c0002de35c73b5666bab4185abb18f14535ae3127a5c1e262df154dabe3ba",
     "packages/core/dist/substrate/lifo/commands/fs/chown.d.ts": "1807dbb34141cd45db082b729782e0d40442729e4085a855d48afdac63fbde39",
-    "packages/core/dist/substrate/lifo/commands/fs/chown.d.ts.map": "4e681bf5bc9552275b89bcc477288d6b4a311f3a92aad885f2df058bb6b5e929",
-    "packages/core/dist/substrate/lifo/commands/fs/chown.js": "4c31da56d38291d2fc371d7983be71ac9e816b8efcbe535b86b3663f712f1dc2",
+    "packages/core/dist/substrate/lifo/commands/fs/chown.d.ts.map": "41ee70b3232c827d39d55bf43a1381889338554e802a8209659c3618554d7668",
+    "packages/core/dist/substrate/lifo/commands/fs/chown.js": "c9ebd788517be40f0759c306887ee532b6c1e9ffa52a3e3a3fe41e7727e334ee",
     "packages/core/dist/substrate/lifo/commands/fs/cp.d.ts": "265f0605544e8147ea57480d4c50c959b42fe9dd18431fda9454d202322e2918",
     "packages/core/dist/substrate/lifo/commands/fs/cp.d.ts.map": "7c1bcb7df839587ec4c595328cf6cb498aaf9a33bb5bade683b5f9078048c4a0",
     "packages/core/dist/substrate/lifo/commands/fs/cp.js": "47b2a9322b9339988793cf766641dc6c44bbc07e273751037ac7cebafd78058a",
@@ -1199,7 +1199,7 @@
     "packages/core/src/substrate/lifo/commands/fs/basename.ts": "ccdaba25b0a3900100844187095a076ce7dc200641cfcf066e6debbd37090248",
     "packages/core/src/substrate/lifo/commands/fs/cat.ts": "00d1dfb3195eb80a53f146376206df1758d4d7abe43039ab1870e6c97d93a781",
     "packages/core/src/substrate/lifo/commands/fs/chmod.ts": "79e9d63143de90fd3917eb93d5e243fcece75db3eb6641bf2aa88dd23f71a7fc",
-    "packages/core/src/substrate/lifo/commands/fs/chown.ts": "4f5c6d4abd0c43898fd344e6b1e5db9edd9661e00ad39ce5fea8caa470545d8e",
+    "packages/core/src/substrate/lifo/commands/fs/chown.ts": "9a46e82347d9d542084436dddeb3bc705c9ff07922ea2f94595de46c0f18ecb9",
     "packages/core/src/substrate/lifo/commands/fs/cp.ts": "1f3a6a4d36d3199dd46064aeec4ffe699e0da19e4ab8e719c7377f34e8fa45b3",
     "packages/core/src/substrate/lifo/commands/fs/dirname.ts": "866622c7c99c56f7426af4e2270289ed79aaaf677404b71eb07bbfe741b13187",
     "packages/core/src/substrate/lifo/commands/fs/du.ts": "fae8192c907fdae6227c95b2c11064883647778af4f9d6e1d4a2ad5dde3153c9",
