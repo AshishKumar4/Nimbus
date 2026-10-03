@@ -6978,42 +6978,374 @@ if (isMainThread) {
 }
 
 // ../core/src/runtime/css-bundle.ts
-async function bundleCss(modules, _plugin, { minify }) {
-  if (minify) throw new Error("minified CSS is not supported by Nimbus's bundler yet");
-  const parts = [];
-  for (const module of modules) {
-    const body = stripComments(module.source);
-    if (/@import\b/i.test(body)) throw new Error(`${module.path}: CSS @import is not supported by Nimbus's bundler yet`);
-    if (/\burl\(/i.test(body)) throw new Error(`${module.path}: CSS url() is not supported by Nimbus's bundler yet`);
-    parts.push(`/* ${module.path} */
-${module.source.trim()}
-`);
+var CssError = class extends Error {
+  constructor(diagnostic) {
+    super(diagnostic.text);
+    this.diagnostic = diagnostic;
   }
-  return parts.join("\n");
-}
-function stripComments(css) {
-  let out = "";
-  for (let i2 = 0; i2 < css.length; ) {
+  diagnostic;
+};
+function tokenize(css) {
+  const tokens = [];
+  let i2 = 0;
+  const n5 = css.length;
+  const stringEnd = (start) => {
+    const quote = css[start];
+    let j = start + 1;
+    while (j < n5 && css[j] !== quote && css[j] !== "\n") j += css[j] === "\\" ? 2 : 1;
+    return Math.min(j + 1, n5);
+  };
+  while (i2 < n5) {
     const c3 = css[i2];
-    if (c3 === '"' || c3 === "'") {
-      const end = endOfString(css, i2);
-      out += css.slice(i2, end);
-      i2 = end;
-    } else if (c3 === "/" && css[i2 + 1] === "*") {
+    if (c3 === "/" && css[i2 + 1] === "*") {
       const end = css.indexOf("*/", i2 + 2);
-      i2 = end < 0 ? css.length : end + 2;
+      const stop = end < 0 ? n5 : end + 2;
+      tokens.push({ kind: "comment", text: css.slice(i2, stop), at: i2 });
+      i2 = stop;
+    } else if (/\s/.test(c3)) {
+      let j = i2;
+      while (j < n5 && /\s/.test(css[j])) j++;
+      tokens.push({ kind: "ws", text: css.slice(i2, j), at: i2 });
+      i2 = j;
+    } else if (c3 === '"' || c3 === "'") {
+      const end = stringEnd(i2);
+      tokens.push({ kind: "string", text: css.slice(i2, end), at: i2 });
+      i2 = end;
+    } else if ((c3 === "u" || c3 === "U") && /^url\(/i.test(css.slice(i2, i2 + 4)) && !/[\w-]/.test(css[i2 - 1] ?? "")) {
+      let j = i2 + 4;
+      while (j < n5 && /\s/.test(css[j])) j++;
+      if (css[j] === '"' || css[j] === "'") {
+        const end = stringEnd(j);
+        let k2 = end;
+        while (k2 < n5 && /\s/.test(css[k2])) k2++;
+        if (css[k2] === ")") {
+          tokens.push({ kind: "url", text: css.slice(i2, k2 + 1), at: i2, url: unescape(css.slice(j + 1, end - 1)), quoted: true, inner: j, innerLength: end - j });
+          i2 = k2 + 1;
+          continue;
+        }
+      } else {
+        let k2 = j;
+        while (k2 < n5 && css[k2] !== ")") k2 += css[k2] === "\\" ? 2 : 1;
+        tokens.push({ kind: "url", text: css.slice(i2, k2 + 1), at: i2, url: unescape(css.slice(j, k2).trimEnd()), quoted: false, inner: i2, innerLength: k2 + 1 - i2 });
+        i2 = k2 + 1;
+        continue;
+      }
+      tokens.push({ kind: "other", text: c3, at: i2 });
+      i2++;
+    } else if (c3 === ";") {
+      tokens.push({ kind: "semicolon", text: c3, at: i2 });
+      i2++;
+    } else if (c3 === "{") {
+      tokens.push({ kind: "open", text: c3, at: i2 });
+      i2++;
+    } else if (c3 === "}") {
+      tokens.push({ kind: "close", text: c3, at: i2 });
+      i2++;
+    } else if (c3 === "\\") {
+      tokens.push({ kind: "other", text: css.slice(i2, i2 + 2), at: i2 });
+      i2 += 2;
+    } else {
+      let j = i2 + 1;
+      while (j < n5 && !/[\s"'/;{}\\]/.test(css[j]) && !/^url\(/i.test(css.slice(j, j + 4))) j++;
+      tokens.push({ kind: "other", text: css.slice(i2, j), at: i2 });
+      i2 = j;
+    }
+  }
+  return tokens;
+}
+function unescape(text) {
+  return text.replace(/\\([0-9a-fA-F]{1,6}\s?|[\s\S])/g, (_3, e3) => /^[0-9a-fA-F]/.test(e3) ? String.fromCodePoint(parseInt(e3, 16)) : e3);
+}
+function stringValue(token) {
+  return unescape(token.slice(1, token.endsWith(token[0]) && token.length > 1 ? -1 : void 0));
+}
+var isExternalUrl = (url) => /^(data:|https?:|\/\/|#)/i.test(url) || url === "";
+var NO_CONDITIONS = [];
+function bestQuote(text, url) {
+  let none = 0;
+  let single = 2;
+  let double = 2;
+  for (const c3 of text) {
+    if (c3 === "'") {
+      none++;
+      single++;
+    } else if (c3 === '"') {
+      none++;
+      double++;
+    } else if (c3 === "(" || c3 === ")" || c3 === " " || c3 === "	") none++;
+    else if (c3 === "\\" || c3 === "\n" || c3 === "\r" || c3 === "\f") {
+      none++;
+      single++;
+      double++;
+    }
+  }
+  if (url && none < single && none < double) return "";
+  return single < double ? "'" : '"';
+}
+function quoted(text, quote) {
+  let out = quote;
+  const chars = [...text];
+  chars.forEach((c3, i2) => {
+    if (c3 === "\0" || c3 === "\r" || c3 === "\n" || c3 === "\f") {
+      out += "\\" + c3.codePointAt(0).toString(16) + (/^[0-9a-fA-F\s]/.test(chars[i2 + 1] ?? "") ? " " : "");
+    } else if (c3 === "\\" || c3 === quote || quote === "" && (c3 === "(" || c3 === ")" || c3 === " " || c3 === "	" || c3 === '"' || c3 === "'")) {
+      out += "\\" + c3;
     } else {
       out += c3;
-      i2++;
+    }
+  });
+  return out + quote;
+}
+function conditionTokens(tokens) {
+  const out = [];
+  for (const token of tokens) {
+    if (token.kind === "ws" || token.kind === "comment") out.push({ kind: token.kind, text: token.text });
+    else if (token.kind === "string") out.push({ kind: "atom", text: (() => {
+      const value = stringValue(token.text);
+      return quoted(value, bestQuote(value, false));
+    })() });
+    else if (token.kind === "url") out.push({ kind: "atom", text: `url(${quoted(token.url, bestQuote(token.url, true))})` });
+    else if (token.text.startsWith("\\")) out.push({ kind: "atom", text: token.text });
+    else {
+      for (const piece of token.text.split(/([()])/)) {
+        if (piece) out.push({ kind: piece === "(" ? "open" : piece === ")" ? "close" : "word", text: piece });
+      }
     }
   }
   return out;
 }
-function endOfString(css, start) {
-  const quote = css[start];
-  let i2 = start + 1;
-  while (i2 < css.length && css[i2] !== quote && css[i2] !== "\n") i2 += css[i2] === "\\" ? 2 : 1;
-  return Math.min(i2 + 1, css.length);
+function conditionText(tokens) {
+  return tokens.map((t5) => t5.kind === "comment" ? "" : t5.text).join("").trim();
+}
+function parseLevel(tokens) {
+  let i2 = 0;
+  const skip = () => {
+    while (i2 < tokens.length && (tokens[i2].kind === "ws" || tokens[i2].kind === "comment")) i2++;
+  };
+  const closing = (open) => {
+    let depth = 0;
+    for (let k2 = open; k2 < tokens.length; k2++) {
+      if (tokens[k2].kind === "open") depth++;
+      else if (tokens[k2].kind === "close" && --depth === 0) return k2;
+    }
+    return tokens.length;
+  };
+  const isFunction = (name) => tokens[i2]?.kind === "word" && tokens[i2].text.toLowerCase() === name && tokens[i2 + 1]?.kind === "open";
+  let layerOf = null;
+  let supportsOf = null;
+  skip();
+  if (isFunction("layer")) {
+    const end = closing(i2 + 1);
+    layerOf = { name: conditionText(tokens.slice(i2 + 2, end)) };
+    i2 = end + 1;
+  } else if (tokens[i2]?.kind === "word" && tokens[i2].text.toLowerCase() === "layer") {
+    layerOf = { name: null };
+    i2++;
+  }
+  skip();
+  if (isFunction("supports")) {
+    const end = closing(i2 + 1);
+    supportsOf = `(${conditionText(tokens.slice(i2 + 2, end))})`;
+    i2 = end + 1;
+  }
+  const media = conditionText(tokens.slice(i2));
+  if (!layerOf && !supportsOf && !media) return null;
+  return { media: media || null, supports: supportsOf, layer: layerOf };
+}
+function wrap3(body, conditions) {
+  let out = body;
+  for (const level of [...conditions].reverse()) {
+    if (level.layer) out = level.layer.name === null ? `@layer {
+${out}
+}` : `@layer ${level.layer.name} {
+${out}
+}`;
+    if (level.supports) out = `@supports ${level.supports} {
+${out}
+}`;
+    if (level.media) out = `@media ${level.media} {
+${out}
+}`;
+  }
+  return out;
+}
+var same = (a2, b2) => (a2 ?? "").replace(/\s+/g, "") === (b2 ?? "").replace(/\s+/g, "");
+function redundant(earlier, later) {
+  if (later.length > earlier.length) return false;
+  for (let i2 = 0; i2 < later.length; i2++) {
+    const a2 = earlier[i2];
+    const b2 = later[i2];
+    if (same(a2.layer ? a2.layer.name ?? "\0" : null, b2.layer ? b2.layer.name ?? "\0" : null) && Boolean(a2.layer) === Boolean(b2.layer)) {
+      const sameSupports = same(a2.supports, b2.supports);
+      const sameMedia = same(a2.media, b2.media);
+      if (sameSupports && sameMedia) continue;
+      if (sameMedia && !b2.supports) continue;
+      if (sameSupports && !b2.media) continue;
+    }
+    return false;
+  }
+  return true;
+}
+async function bundleCss(modules, plugin, assets, { minify }) {
+  const pieces = [];
+  const externals = [];
+  const legal = [];
+  let charset = false;
+  const fail = (module, at, length, text, pluginName = "") => {
+    const before = module.source.slice(0, at);
+    const line = before.split("\n").length;
+    const lineStart = before.lastIndexOf("\n") + 1;
+    const lineEnd = module.source.indexOf("\n", at);
+    throw new CssError({
+      id: "",
+      pluginName,
+      text,
+      notes: [],
+      detail: void 0,
+      location: {
+        file: fileOf(module),
+        namespace: "",
+        line,
+        column: at - lineStart,
+        length,
+        lineText: module.source.slice(lineStart, lineEnd < 0 ? void 0 : lineEnd),
+        suggestion: ""
+      }
+    });
+  };
+  const resolve = async (from, path3, kind, at, length) => {
+    const answer = await plugin.resolve({ path: path3, importer: from.path, namespace: from.namespace, resolveDir: from.resolveDir, kind, with: {} });
+    if (answer?.errors?.length) fail(from, at, length, answer.errors[0].text ?? "error", plugin.name);
+    if (!answer || !answer.path && !answer.external) fail(from, at, length, `Could not resolve ${JSON.stringify(path3)}`);
+    return answer;
+  };
+  const load2 = async (from, module, at, length) => {
+    const answer = await plugin.load({ path: module.path, namespace: module.namespace, suffix: "", with: {} });
+    if (answer?.errors?.length) fail(from, at, length, answer.errors[0].text ?? "error", plugin.name);
+    if (!answer || answer.contents === void 0) fail(from, at, length, `Could not load ${fileOf(module)}`);
+    return answer;
+  };
+  const flatten = async (module, conditions, stack) => {
+    const id2 = fileOf(module);
+    if (stack.has(id2)) return;
+    stack.add(id2);
+    const tokens = tokenize(module.source);
+    let body = "";
+    let depth = 0;
+    let rulesSeen = false;
+    for (let i2 = 0; i2 < tokens.length; i2++) {
+      const token = tokens[i2];
+      if (token.kind === "open") depth++;
+      if (token.kind === "close") depth--;
+      if (depth === 0 && token.kind === "other" && /^@charset$/i.test(token.text)) {
+        charset = true;
+        while (i2 < tokens.length && tokens[i2].kind !== "semicolon") i2++;
+        continue;
+      }
+      if (depth === 0 && token.kind === "other" && /^@import$/i.test(token.text) && !rulesSeen) {
+        let j = i2 + 1;
+        while (j < tokens.length && (tokens[j].kind === "ws" || tokens[j].kind === "comment")) j++;
+        const target = tokens[j];
+        let end = j + 1;
+        while (end < tokens.length && tokens[end].kind !== "semicolon") end++;
+        const condition = conditionTokens(tokens.slice(j + 1, end));
+        const printed = conditionText(condition);
+        const path3 = target?.kind === "string" ? stringValue(target.text) : target?.kind === "url" ? target.url : null;
+        if (path3 === null) fail(module, token.at, token.text.length, "Expected URL token");
+        const own = parseLevel(condition);
+        if (/^(https?:)?\/\//i.test(path3)) {
+          externals.push(`@import ${JSON.stringify(path3)}${printed ? " " + printed : ""};`);
+        } else {
+          const where = target.kind === "url" ? [target.inner, target.innerLength] : [target.at, target.text.length];
+          const answer = await resolve(module, path3, "import-rule", where[0], where[1]);
+          if (answer.external) {
+            externals.push(`@import ${JSON.stringify(answer.path ?? path3)}${printed ? " " + printed : ""};`);
+          } else {
+            const child = { namespace: answer.namespace ?? "file", path: answer.path };
+            const loaded = await load2(module, child, where[0], where[1]);
+            const source = typeof loaded.contents === "string" ? loaded.contents : new TextDecoder().decode(loaded.contents);
+            const lastSlash = child.path.lastIndexOf("/");
+            await flatten(
+              { ...child, source, resolveDir: loaded.resolveDir ?? (lastSlash > 0 ? child.path.slice(0, lastSlash) : "/") },
+              own ? [...conditions, own] : conditions,
+              stack
+            );
+          }
+        }
+        i2 = end;
+        continue;
+      }
+      if (depth === 0 && token.kind === "other" && !/^@(import|charset|layer)$/i.test(token.text)) rulesSeen = true;
+      if (token.kind === "url") {
+        body += await rewriteUrl(module, token);
+        continue;
+      }
+      if (token.kind === "comment" && isLegal(token.text)) {
+        legal.push(token.text);
+        continue;
+      }
+      body += token.text;
+    }
+    stack.delete(id2);
+    pieces.push({ id: id2, module, conditions, body });
+  };
+  const rewriteUrl = async (module, token) => {
+    if (isExternalUrl(token.url)) return token.text;
+    const answer = await resolve(module, token.url, "url-token", token.inner, token.innerLength);
+    if (answer.external) return `url(${JSON.stringify(answer.path ?? token.url)})`;
+    const target = { namespace: answer.namespace ?? "file", path: answer.path };
+    const loaded = await load2(module, target, token.inner, token.innerLength);
+    const bytes = typeof loaded.contents === "string" ? new TextEncoder().encode(loaded.contents) : loaded.contents;
+    if (loaded.loader === "file") return `url(${JSON.stringify(await assets.emit(target, bytes))})`;
+    if (loaded.loader === "dataurl") return `url(${JSON.stringify(assets.dataUrl(target.path, bytes))})`;
+    return fail(module, token.inner, token.innerLength, `Cannot use ${JSON.stringify(fileOf(target))} as a URL`);
+  };
+  for (const module of modules) await flatten(module, NO_CONDITIONS, /* @__PURE__ */ new Set());
+  const later = /* @__PURE__ */ new Map();
+  const kept = [];
+  for (let i2 = pieces.length - 1; i2 >= 0; i2--) {
+    const piece = pieces[i2];
+    const seen = later.get(piece.id) ?? [];
+    if (seen.some((conditions) => redundant(piece.conditions, conditions))) continue;
+    seen.push(piece.conditions);
+    later.set(piece.id, seen);
+    kept.unshift(piece);
+  }
+  const head = [...charset ? ['@charset "UTF-8";'] : [], ...new Set(externals)];
+  const sheets = kept.map((piece) => {
+    const body = piece.body.trim();
+    return minify ? wrap3(body, piece.conditions) : `/* ${fileOf(piece.module)} */
+${wrap3(body, piece.conditions)}
+`;
+  });
+  const tail = [...new Set(legal)];
+  if (minify) return minifyCss([...head, ...sheets].join("")) + "\n" + tail.map((c3) => c3 + "\n").join("");
+  return `${head.length ? head.join("\n") + "\n\n" : ""}${sheets.join("\n")}${tail.map((c3) => c3 + "\n").join("")}`;
+}
+var isLegal = (comment) => comment.startsWith("/*!") || /@(license|preserve)\b/.test(comment);
+function fileOf(module) {
+  return module.namespace === "file" || module.namespace === "" ? module.path : `${module.namespace}:${module.path}`;
+}
+function minifyCss(css) {
+  let out = "";
+  let pendingSpace = false;
+  for (const token of tokenize(css)) {
+    if (token.kind === "comment") {
+      pendingSpace = true;
+      continue;
+    }
+    if (token.kind === "ws") {
+      pendingSpace = true;
+      continue;
+    }
+    const prev = out[out.length - 1];
+    if (token.kind === "close" && prev === ";") out = out.slice(0, -1);
+    const needsSpace = !/[{};,"']/.test(prev ?? ";") && !/^[{};,]/.test(token.text) && (token.kind !== "string" || prev === ":");
+    if (pendingSpace && needsSpace) out += " ";
+    pendingSpace = false;
+    out += token.text;
+  }
+  return out;
 }
 
 // ../core/src/runtime/rolldown-build.ts
@@ -7048,10 +7380,96 @@ var LOADER_MODULE_TYPES = {
   tsx: "tsx",
   json: "json",
   text: "text",
-  base64: "base64",
-  dataurl: "dataurl",
   empty: "empty"
 };
+var MIME_TYPES = {
+  ".avif": "image/avif",
+  ".css": "text/css;charset=utf-8",
+  ".gif": "image/gif",
+  ".htm": "text/html;charset=utf-8",
+  ".html": "text/html;charset=utf-8",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".js": "text/javascript;charset=utf-8",
+  ".json": "application/json;charset=utf-8",
+  ".mjs": "text/javascript;charset=utf-8",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".txt": "text/plain;charset=utf-8",
+  ".wasm": "application/wasm",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".xml": "text/xml;charset=utf-8",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".ico": "image/x-icon",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg"
+};
+function extensionOf(path3) {
+  const base = path3.slice(path3.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot).toLowerCase() : "";
+}
+function base64Of(bytes) {
+  let latin1 = "";
+  for (let i2 = 0; i2 < bytes.length; i2 += 32768) latin1 += String.fromCharCode(...bytes.subarray(i2, i2 + 32768));
+  return btoa(latin1);
+}
+function dataUrlOf(path3, bytes) {
+  const mime = MIME_TYPES[extensionOf(path3)] ?? "application/octet-stream";
+  const encoded = `data:${mime};base64,${base64Of(bytes)}`;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return encoded;
+  }
+  let trailing = text.length;
+  while (trailing > 0) {
+    const c3 = text.charCodeAt(trailing - 1);
+    if (c3 > 32 || c3 === 9 || c3 === 10 || c3 === 13) break;
+    trailing--;
+  }
+  let escaped = `data:${mime},`;
+  for (let i2 = 0; i2 < text.length; i2++) {
+    const c3 = text.charCodeAt(i2);
+    const hex = (n5) => "%" + n5.toString(16).toUpperCase().padStart(2, "0");
+    if (c3 === 9 || c3 === 10 || c3 === 13 || c3 === 35 || i2 >= trailing || c3 === 37 && /^[0-9a-fA-F]{2}/.test(text.slice(i2 + 1, i2 + 3))) escaped += hex(c3);
+    else escaped += text[i2];
+  }
+  return escaped.length < encoded.length ? escaped : encoded;
+}
+async function contentHash(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const byte of digest) {
+    value = value << 8 | byte;
+    bits += 8;
+    while (bits >= 5 && out.length < 8) {
+      out += alphabet[value >>> bits - 5 & 31];
+      bits -= 5;
+    }
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+function relativeUrl(from, to) {
+  const fromParts = from.split("/").slice(0, -1);
+  const toParts = to.split("/");
+  let common = 0;
+  while (common < fromParts.length && common < toParts.length - 1 && fromParts[common] === toParts[common]) common++;
+  const up = fromParts.length - common;
+  return (up === 0 ? "./" : "../".repeat(up)) + toParts.slice(common).join("/");
+}
 function stringLiteralAt(source, start) {
   const quote = source[start];
   if (quote !== '"' && quote !== "'" && quote !== "`") return null;
@@ -7095,7 +7513,7 @@ async function locateUnresolved(api, options, records, loaded) {
   for (const [importer, mine] of byImporter) {
     const module = loaded.get(importer);
     if (!module) continue;
-    const fileOnly = { file: fileOf(module), namespace: "", line: 0, column: 0, length: 0, lineText: "", suggestion: "" };
+    const fileOnly = { file: fileOf2(module), namespace: "", line: 0, column: 0, length: 0, lineText: "", suggestion: "" };
     const bytes = utf8Length(module.source);
     if (!module.lang || bytes > PLACEMENT_IMPORTER_BYTES || spent + bytes > PLACEMENT_BUILD_BYTES) {
       for (const r3 of mine) placed.set(r3, fileOnly);
@@ -7160,17 +7578,12 @@ async function locateUnresolved(api, options, records, loaded) {
       const before = module.source.slice(0, span.start);
       const line = before.split(/\r\n|\r|\n/).length;
       const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
-      placed.set(r3, locate2(fileOf(module), module.source, line, utf8Length(before.slice(lineStart)), utf8Length(module.source.slice(span.start, span.end))));
+      placed.set(r3, locate2(fileOf2(module), module.source, line, utf8Length(before.slice(lineStart)), utf8Length(module.source.slice(span.start, span.end))));
     }
   }
   return records.map((r3) => message(r3.text, placed.get(r3) ?? null, r3.pluginName));
 }
 var utf8Length = (text) => new TextEncoder().encode(text).length;
-function base64Of(bytes) {
-  let latin1 = "";
-  for (let i2 = 0; i2 < bytes.length; i2 += 32768) latin1 += String.fromCharCode(...bytes.subarray(i2, i2 + 32768));
-  return btoa(latin1);
-}
 var BuildError = class extends Error {
   constructor(messages) {
     super(messages.map((m2) => m2.text).join("\n"));
@@ -7187,7 +7600,11 @@ function locate2(file, source, line, column, length = 0) {
   return { file, namespace: "", line, column, length, lineText, suggestion: "" };
 }
 function esbuildFailureText(errors) {
-  const lines = errors.map((e3) => e3.location ? e3.location.line > 0 ? `${e3.location.file}:${e3.location.line}:${e3.location.column}: ERROR: ${e3.text}` : `${e3.location.file}: ERROR: ${e3.text}` : `error: ${e3.text}`);
+  const lines = errors.map((e3) => {
+    const text = e3.pluginName ? `[plugin: ${e3.pluginName}] ${e3.text}` : e3.text;
+    if (!e3.location) return `error: ${text}`;
+    return e3.location.line > 0 ? `${e3.location.file}:${e3.location.line}:${e3.location.column}: ERROR: ${text}` : `${e3.location.file}: ERROR: ${text}`;
+  });
   return `Build failed with ${errors.length} error${errors.length === 1 ? "" : "s"}:
 ${lines.join("\n")}`;
 }
@@ -7245,10 +7662,28 @@ function fromLog(log, modules) {
   const plain = log.message.replace(/\u001b\[[0-9;]*m/g, "");
   const firstLine = plain.split("\n")[0].replace(/^\[[A-Z_]+\]\s*/, "").replace(/^(Error|Warning):\s*/, "");
   const loaded = log.id ? modules.get(log.id) : void 0;
-  const location = log.loc && loaded ? locate2(fileOf(loaded), loaded.source, log.loc.line, log.loc.column) : null;
-  return message(firstLine, location, log.plugin ?? "");
+  const location = log.loc && loaded ? locate2(fileOf2(loaded), loaded.source, log.loc.line, log.loc.column) : null;
+  const result = message(firstLine, location, log.plugin ?? "");
+  if (loaded) {
+    let sourceLine = 0;
+    let gutter = 0;
+    for (const line of plain.split("\n")) {
+      const source = /^\s*(\d+) │ /.exec(line);
+      if (source) {
+        sourceLine = Number(source[1]);
+        gutter = source[0].length;
+        continue;
+      }
+      const label = /[╰├]── (.*)$/.exec(line);
+      if (!label || !sourceLine) continue;
+      const column = line.search(/[╰├]/) - gutter;
+      if (location && sourceLine === location.line && column === location.column) continue;
+      result.notes.push({ text: label[1].trim(), location: locate2(fileOf2(loaded), loaded.source, sourceLine, column) });
+    }
+  }
+  return result;
 }
-function fileOf(module) {
+function fileOf2(module) {
   return module.namespace === "file" || module.namespace === "" ? module.path : `${module.namespace}:${module.path}`;
 }
 async function build(api, options, plugin, { raised, unresolved, loaded }) {
@@ -7283,8 +7718,23 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     return m2 ? { namespace: m2[1], path: m2[2] } : { namespace: mainNamespace ?? "file", path: id2 };
   };
   const pending = /* @__PURE__ */ new Map();
-  const css = [];
+  const css = /* @__PURE__ */ new Map();
   const warnings = [];
+  const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, "[extname]");
+  const assetFiles = /* @__PURE__ */ new Map();
+  const assetMarkers = [];
+  const emitAsset = async (module, bytes) => {
+    const key = `${module.namespace}:${module.path}`;
+    const known = assetFiles.get(key);
+    if (known) return known.fileName;
+    const base = module.path.slice(module.path.lastIndexOf("/") + 1);
+    const ext = extensionOf(base);
+    const name = ext ? base.slice(0, -ext.length) : base;
+    const hash = await contentHash(bytes);
+    const fileName = (options.assetNames ?? "[name]-[hash]").replace(/\[name\]/g, name).replace(/\[hash\]/g, hash).replace(/\[ext\]/g, ext.slice(1)) + ext;
+    assetFiles.set(key, { fileName, contents: bytes });
+    return fileName;
+  };
   const raise = (text, pluginName = "") => {
     raised.push(message(text, null, pluginName));
     throw new Error(text);
@@ -7293,8 +7743,26 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     unresolved.push({ importer, source, kind, text, pluginName });
     return { id: source, external: true };
   };
+  const cssOrder = /* @__PURE__ */ new Map();
   const vfs = {
     name: plugin.name,
+    generateBundle(_options, bundle2) {
+      for (const out of Object.values(bundle2)) {
+        if (out.type !== "chunk" || !out.facadeModuleId) continue;
+        const order = [];
+        const seen = /* @__PURE__ */ new Set();
+        const visit = (id2) => {
+          if (seen.has(id2)) return;
+          seen.add(id2);
+          const info = this.getModuleInfo(id2);
+          for (const child of info?.importedIds ?? []) visit(child);
+          if (css.has(id2)) order.push(id2);
+          for (const child of info?.dynamicallyImportedIds ?? []) visit(child);
+        };
+        visit(out.facadeModuleId);
+        cssOrder.set(out.fileName, order);
+      }
+    },
     async resolveId(source, importer, extra) {
       if (source.startsWith("\0")) return null;
       const from = importer ? decode(importer) : null;
@@ -7323,7 +7791,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       const answer = await plugin.load({ path: path3, namespace, suffix: "", with: {} });
       if (answer?.errors?.length) raise(answer.errors[0].text ?? "error", plugin.name);
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
-      if (!answer || answer.contents === void 0) raise(`No loader produced ${fileOf({ namespace, path: path3 })}`);
+      if (!answer || answer.contents === void 0) raise(`No loader produced ${fileOf2({ namespace, path: path3 })}`);
       const loader = answer.loader ?? "js";
       const contents = answer.contents;
       const text = typeof contents === "string" ? contents : loader === "binary" || loader === "base64" || loader === "dataurl" || loader === "file" ? "" : new TextDecoder().decode(contents);
@@ -7336,20 +7804,26 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         lang: loader === "js" || loader === "jsx" || loader === "ts" || loader === "tsx" ? loader : void 0
       });
       if (loader === "css") {
-        if (!options.outdir && !options.outfile) raise(`Cannot import ${JSON.stringify(fileOf({ namespace, path: path3 }))} into a JavaScript file without an output path configured`);
-        css.push({ id: id2, path: path3, source: text });
+        if (!options.outdir && !options.outfile) raise(`Cannot import ${JSON.stringify(fileOf2({ namespace, path: path3 }))} into a JavaScript file without an output path configured`);
+        css.set(id2, { namespace, path: path3, resolveDir: loaded.get(id2).resolveDir, source: text });
         return { code: "", moduleType: "js", moduleSideEffects: true };
       }
+      const bytesOf = () => typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
+      const value = (string2) => ({ code: JSON.stringify(string2), moduleType: "json" });
+      if (loader === "file") {
+        const entry = [`__NIMBUS_ASSET_${assetMarkers.length}__`, ""];
+        assetMarkers.push(entry);
+        entry[1] = await emitAsset({ namespace, path: path3 }, bytesOf());
+        return value(entry[0]);
+      }
+      if (loader === "dataurl") return value(dataUrlOf(path3, bytesOf()));
+      if (loader === "base64") return value(base64Of(bytesOf()));
       if (loader === "binary") {
-        const bytes = typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
-        return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
+        return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
       }
       const moduleType2 = LOADER_MODULE_TYPES[loader];
-      if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path: path3 })})`);
-      if (typeof contents === "string") return { code: contents, moduleType: moduleType2 };
-      let latin1 = "";
-      for (let i2 = 0; i2 < contents.length; i2 += 32768) latin1 += String.fromCharCode(...contents.subarray(i2, i2 + 32768));
-      return { code: moduleType2 === "base64" || moduleType2 === "dataurl" ? latin1 : text, moduleType: moduleType2 };
+      if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
+      return { code: text, moduleType: moduleType2 };
     }
   };
   const bundle = await api.rolldown({
@@ -7361,7 +7835,6 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     }
   });
   try {
-    const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, "[extname]");
     const { output } = await bundle.generate({
       format: format === "esm" ? "es" : format,
       name: options.globalName,
@@ -7382,15 +7855,28 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     const relative = (path3) => path3.replace(/^\/+/, "");
     for (const out of output) {
       if (out.type === "chunk") {
-        const contents = encoder.encode(out.code);
+        let code2 = out.code;
+        for (const [marker, fileName] of assetMarkers) code2 = code2.split(marker).join(relativeUrl(out.fileName, fileName));
+        const contents = encoder.encode(code2);
         const path3 = at(out.fileName);
         outputFiles.push({ path: path3, contents });
         const entry = out.isEntry && out.facadeModuleId ? decode(out.facadeModuleId) : null;
-        const cssOfChunk = css.filter((m2) => out.moduleIds.includes(m2.id));
+        const cssOfChunk = (cssOrder.get(out.fileName) ?? []).map((id2) => css.get(id2));
         let cssBundle;
         if (cssOfChunk.length) {
-          const cssPath = path3.replace(/\.js$/, ".css");
-          const bundled = await bundleCss(cssOfChunk, plugin, { minify: options.minify === true });
+          const cssFileName = out.fileName.replace(/\.js$/, ".css");
+          const cssPath = at(cssFileName);
+          const sheetAssets = {
+            emit: async (module, bytes) => relativeUrl(cssFileName, await emitAsset(module, bytes)),
+            dataUrl: dataUrlOf
+          };
+          let bundled;
+          try {
+            bundled = await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true });
+          } catch (error2) {
+            if (error2 instanceof CssError) throw new BuildError([error2.diagnostic]);
+            throw error2;
+          }
           outputFiles.push({ path: cssPath, contents: encoder.encode(bundled) });
           outputs[relative(cssPath)] = { imports: [], exports: [], inputs: {}, bytes: bundled.length };
           cssBundle = relative(cssPath);
@@ -7400,7 +7886,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
           exports: out.exports,
           inputs: {},
           bytes: contents.length,
-          ...entry ? { entryPoint: fileOf(entry) } : {},
+          ...entry ? { entryPoint: fileOf2(entry) } : {},
           ...cssBundle ? { cssBundle } : {}
         };
       } else {
@@ -7409,6 +7895,11 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         outputFiles.push({ path: path3, contents });
         outputs[relative(path3)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
       }
+    }
+    for (const { fileName, contents } of assetFiles.values()) {
+      const path3 = at(fileName);
+      outputFiles.push({ path: path3, contents });
+      outputs[relative(path3)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
     }
     return { outputFiles, errors: [], warnings, metafile: { inputs: {}, outputs } };
   } finally {

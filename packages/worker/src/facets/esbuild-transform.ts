@@ -39,8 +39,9 @@ import { rolldownBuildHost } from './build-facet.js';
  *
  * Transforms run in the transform facet (oxc-transform.ts); `transformMany`
  * here answers only the modules that ran it out of stack (oxcTransformHost).
- * A build (the built-in `vite build`, or one whose rolldown binding died
- * under it), an `esbuild` command or such a batch gets its own Go instance,
+ * Builds run in the build facet (build-facet.ts); `build` here answers only
+ * those whose rolldown binding died under them (rolldownBuildHost). An
+ * `esbuild` command, such a batch or such a build gets its own Go instance,
  * dropped when it ends.
  */
 const ESBUILD_FACET_BODY = [
@@ -157,8 +158,8 @@ async function esbuildFacet(ctx: DurableObjectState, env: unknown): Promise<Fetc
 }
 
 /**
- * The one way to a Durable Object's esbuild facet: its builds and `esbuild`
- * commands share one stub, so a caller that starts
+ * The one way to a Durable Object's esbuild facet: its `esbuild` commands and
+ * the transforms too deep for Oxc share one stub, so a caller that starts
  * while another is still loading the facet (fetching and verifying its
  * staged adapter and runner) waits on that load instead of starting a second one. A load or call
  * that failed drops the entry; the next caller mints a fresh stub.
@@ -210,12 +211,10 @@ export function esbuildStackFallbackHost(ctx: DurableObjectState, env: unknown):
 }
 
 /**
- * The build host a Durable Object's esbuild runs its builds on: its esbuild
- * facet, for the built-in `vite build` and for a build whose rolldown binding
- * died under it (rolldownBuildHost's fallback), whose Go stacks grow. The
- * plugin, and with it every file read, stays with the caller.
+ * Where the build facet sends a build whose rolldown binding died under it
+ * (rolldownBuildHost): the esbuild facet, whose Go stacks grow.
  */
-export function esbuildBuildHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost {
+export function esbuildBuildFallbackHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost {
   return async (options, plugin) => onEsbuildFacet(ctx, env, (facet) => facet.build(options, plugin));
 }
 
@@ -252,16 +251,14 @@ export const TRANSFORM_HOST_ID = `${OXC_FACET_WORKER_ID}+${ESBUILD_FACET_WORKER_
 /**
  * The transforms and builds a Durable Object's supervisor shares: transforms
  * run in its transform facet (oxc-transform.ts), builds in its build facet
- * (build-facet.ts, rolldown) but the built-in `vite build`, which stays in
- * the esbuild facet, each with the esbuild facet for what its engine cannot
- * finish, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
+ * (build-facet.ts, rolldown), each with the esbuild facet for what its engine
+ * cannot finish, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
  * the host's identity, which the launch's transform store keys its results by.
  */
 export function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService {
   return new EsbuildService(vfs, {
     transformHost: oxcTransformHost(ctx, env, esbuildStackFallbackHost(ctx, env)),
-    buildHost: rolldownBuildHost(ctx, env, esbuildBuildHost(ctx, env)),
-    viteBuildHost: esbuildBuildHost(ctx, env),
+    buildHost: rolldownBuildHost(ctx, env, esbuildBuildFallbackHost(ctx, env)),
     transformHostId: TRANSFORM_HOST_ID,
   });
 }

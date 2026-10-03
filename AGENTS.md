@@ -117,10 +117,10 @@ the loader-backed transform facet on Nimbus's Oxc build
 every `EsbuildService.build()` in the build facet on rolldown's staged
 threadless binding, whose memory starts at 5.4 MiB (`supervisorEsbuildService`
 composes both; pre-bundles run in the build facet too). The esbuild facet,
-whose esbuild-wasm heap starts at ~28 MiB, runs the built-in `vite build`, the
-`esbuild` command, the transforms too deep for Oxc's stack and the builds
-whose rolldown binding died; it loads esbuild's wasm from staged assets, so
-no other isolate holds it. Nothing per-process chooses:
+whose esbuild-wasm heap starts at ~28 MiB, runs the `esbuild` command, the
+transforms too deep for Oxc's stack and the builds whose rolldown binding
+died; it loads esbuild's wasm from staged assets, so no other isolate holds
+it. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,

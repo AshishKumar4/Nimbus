@@ -18,6 +18,11 @@
  * message, its diagnostics alongside. Options no caller uses are refused
  * rather than ignored. CSS is bundled by css-bundle.ts, as esbuild bundled it.
  *
+ * The asset loaders are esbuild's: `file` emits the module's bytes under
+ * `assetNames` and exports the path relative to the importing chunk,
+ * `dataurl` exports a data URL (esbuild's encoding), `base64` the bytes in
+ * base64, `text` the text, `binary` a Uint8Array.
+ *
  * Self-contained but for types and css-bundle.ts: the build facet's runtime
  * bundles it (rolldown-facet/preamble.ts).
  */
@@ -48,6 +53,8 @@ type RolldownOutput = {
     fileName: string;
     source: string | Uint8Array;
 };
+/** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text. */
+export declare function dataUrlOf(path: string, bytes: Uint8Array): string;
 /** `Build failed with N errors:` and one line per error, as esbuild words its rejection. */
 export declare function esbuildFailureText(errors: readonly esbuild.Message[]): string;
 export declare function buildWithRolldown(api: RolldownApi, options: EsbuildHostBuildOptions, plugin: EsbuildRemotePlugin): Promise<EsbuildBuildOutcome>;

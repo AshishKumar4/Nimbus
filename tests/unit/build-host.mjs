@@ -1,50 +1,31 @@
 #!/usr/bin/env bun
-// With a build host, build() runs esbuild in the host (the session's esbuild
-// facet) and only the VFS plugin here, so every read keeps the caller's view.
+// With a build host, build() runs the bundler in the host (the session's
+// build facet: rolldown over the staged binding) and only the VFS plugin
+// here, so every read keeps the caller's view.
 //
 // build() used to run esbuild-wasm in the caller's isolate, whose esbuild heap
 // only grows. On a throwaway at main 9401b6c9, `npm install` then `vite build`
 // reset the session with exceededMemory at 200.4 MiB.
 //
-// The host is the facet module production loads (esbuildFacetWorkerCode, from
-// the assets production stages for it), evaluated here. Options, outcome and a
-// thrown error cross a structured clone, as they cross RPC: an error keeps its
+// The host is the facet module production loads (buildFacetWorkerCode over the
+// staged parts, lib/build-facet-harness.mjs). Options, outcome and a thrown
+// error cross a structured clone, as they cross RPC: an error keeps its
 // message and loses every other property.
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { esbuildFacetWorkerCode } from '../../packages/worker/src/facets/esbuild-transform.ts';
-import { ESBUILD_JS_ASSET_PATH } from '../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
-import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
-import { OXC_FACET_ASSET_PATH } from '../../packages/worker/src/oxc-facet-artifact.generated.ts';
+import { rolldownBuildHost } from '../../packages/worker/src/facets/build-facet.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 
-const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-const wasmBytes = await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm'));
-const staged = (path) => readFile(new URL(`../../packages/worker/public${path}`, import.meta.url), 'utf8');
-// The loader resolves the facet's two imports; bound here to what it would
-// supply: the host's compiled esbuild module, handed over as is.
-const wasmModule = await WebAssembly.compile(wasmBytes);
-const facetSource = esbuildFacetWorkerCode(
-  wasmModule, await staged(ESBUILD_JS_ASSET_PATH), await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH),
-).modules['worker.js'];
-globalThis.__facetImports = {
-  DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
-  wasmModule,
-};
-const facetModule = facetSource
-  .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
-  .replace('import wasmModule from "esbuild.wasm";', 'const { wasmModule } = globalThis.__facetImports;');
-assert.doesNotMatch(facetModule, /^import /m);
-const { EsbuildFacet } = await import('data:text/javascript;base64,' + Buffer.from(facetModule).toString('base64'));
-const facet = new EsbuildFacet({}, {});
+const { BuildFacet, cleanup } = await freshFacetClass();
+const { ctx, env } = durableObject(BuildFacet);
+const host = rolldownBuildHost(ctx, env);
 const buildHost = async (options, remote) => {
   try {
-    return structuredClone(await facet.build(structuredClone(options), remote));
+    return await host(options, remote);
   } catch (error) {
     throw structuredClone(error);
   }
@@ -88,7 +69,8 @@ author.writeFile('home/user/app/src/leak.ts', 'export { default } from "/private
   assert.match(bundle.contents, /toUpperCase/, 'the extensionless relative .ts import resolved');
   assert.match(bundle.contents, /RAW_NOTES_MARKER/, 'a ?raw import loaded through its own namespace');
   assert.equal(service.isInitialized, false, "the caller's isolate never started esbuild");
-  console.log('  ok  build() bundles in the host from the caller\'s VFS; no esbuild in this isolate');
+  assert.equal(memories.length, 1, 'the host made one rolldown binding');
+  console.log('  ok  build() bundles in the host from the caller\'s VFS; no bundler in this isolate');
 }
 
 // ── The plugin keeps the caller's view: the host confers no read authority ──
@@ -128,29 +110,16 @@ author.writeFile('home/user/app/src/leak.ts', 'export { default } from "/private
   const failure = await service.build(['/home/user/app/src/twice.ts']).then(() => null, (error) => error);
   const duplicate = failure?.errors?.find(({ text }) => /already been declared/.test(text));
   assert.ok(duplicate, `the duplicate declaration is reported: ${failure?.message}`);
+  // Oxc places the error at the original declaration and labels the
+  // redeclaration (esbuild did the reverse); the other place is the note.
   assert.equal(duplicate.notes.length, 1, 'with its note');
-  assert.equal(duplicate.notes[0].location?.line, 1, 'which points at the original declaration');
+  assert.deepEqual([duplicate.location?.line, duplicate.notes[0].location?.line].sort(), [1, 2], 'the two declarations');
   assert.equal(typeof duplicate.id, 'string');
   assert.equal(duplicate.detail, undefined, 'and no detail, which may not clone');
   console.log('  ok  a diagnostic keeps its notes across RPC');
 }
 
 harness.db.close();
-// ── The facet answers what ran the transform facet out of stack ─────────────
-{
-  // runTransformRequest with the runtime staged for the transform facet: a
-  // module nested past the host stack Oxc runs on (arrays 5,000 deep; Oxc's
-  // passes stop near 600 under Node; esbuild's wasm grows to 76 MiB for it),
-  // and a top-level-await one.
-  const [deep, tla] = structuredClone(await facet.transformMany(structuredClone([
-    { code: `export const x = ${'['.repeat(5000)}"bottom"${']'.repeat(5000)};`, options: { loader: 'js', format: 'cjs', target: 'esnext' } },
-    { code: 'export let db; db = await Promise.resolve(7);', options: { loader: 'js', format: 'cjs', target: 'esnext' } },
-  ])));
-  assert.equal(deep.error, undefined, deep.error);
-  assert.match(deep.code, /"bottom"/);
-  assert.equal(tla.error, undefined, tla.error);
-  assert.match(tla.code, /^return \(async \(\) => \{/m);
-  console.log('  ok  transformMany answers a module too deep for Oxc, and lowers top-level await');
-}
-
-console.log('esbuild-build-host OK');
+cleanup();
+releaseBuildFacetHarness();
+console.log('build-host OK');

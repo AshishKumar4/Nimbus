@@ -909,7 +909,6 @@ export class EsbuildService {
     vfs;
     transformHost;
     buildHost;
-    viteBuildHost;
     /** See EsbuildServiceOptions.transformHostId. */
     transformHostId;
     initialized = false;
@@ -922,7 +921,6 @@ export class EsbuildService {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
-        this.viteBuildHost = options.viteBuildHost ?? null;
         this.engine = options.engine ?? null;
         this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
@@ -1055,9 +1053,8 @@ export class EsbuildService {
             fs: options?.fs,
         }), buildOptions);
         let outcome;
-        const host = options?.viteAssets && this.viteBuildHost ? this.viteBuildHost : this.buildHost;
-        if (host) {
-            outcome = await host(buildOptions, plugin);
+        if (this.buildHost) {
+            outcome = await this.buildHost(buildOptions, plugin);
         }
         else {
             await this.ensureInit();

@@ -6,16 +6,23 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Builds run on rolldown 1.2.11 instead of esbuild-wasm: `wrangler dev`'s
-  Worker bundle, real Vite's config bundle, and the Vite dev server's
-  cold-module fallback. They run in a build facet of their own, on the
-  threadless rolldown binding Nimbus already stages for Vite 8, with
-  rolldown's JavaScript staged beside it; the session's VFS plugin and
-  every caller are unchanged (`EsbuildService.build`, `supervisorEsbuildService`
-  keep their contract), and a failed build still rejects with esbuild's
-  "Build failed with N errors:" message and its diagnostics. Parse errors
-  are worded by Oxc's parser, and esbuild-wasm's spurious "Cannot read
-  directory" error beside an unresolved import is gone. The built-in
-  `vite build` still runs in the esbuild facet.
+  Worker bundle, the built-in `vite build`, real Vite's config bundle, and
+  the Vite dev server's cold-module fallback. They run in a build facet of
+  their own, on the threadless rolldown binding Nimbus already stages for
+  Vite 8, with rolldown's JavaScript staged beside it; the session's VFS
+  plugin and every caller are unchanged (`EsbuildService.build`,
+  `supervisorEsbuildService` keep their contract), and a failed build still
+  rejects with esbuild's "Build failed with N errors:" message and its
+  diagnostics, labels as notes. `vite build`'s stylesheet is bundled by
+  esbuild's rules (`@import` inlined with its conditions, a file imported
+  twice keeping its last place, external imports and `@charset` hoisted,
+  `url()` assets emitted, legal comments at the end) and its assets by
+  esbuild's loaders; the sheet is minified by whitespace and comments only,
+  so it is somewhat larger than esbuild's, never different in meaning.
+  Parse errors are worded by Oxc's parser, and esbuild-wasm's spurious
+  "Cannot read directory" error beside an unresolved import is gone. The
+  esbuild facet keeps the `esbuild` command and the transforms too deep for
+  Oxc's stack.
 - Builds keep esbuild's semantics where rolldown's defaults differed: a
   `binary` import (a `.wasm` or `.node`) is its bytes whole (they were
   stored as UTF-8, so a non-ASCII byte became two); an imported constant
@@ -47,9 +54,9 @@ published independently in the `@nimbus-sh` npm scope.
   pre-bundles are rebuilt once (`BUNDLER_VERSION` v12). The binding keeps
   what the largest bundle grew it to (60 MiB after @mui/material), so a
   build facet whose binding passes 64 MiB is replaced by a fresh one after
-  the call. A `binary` module that is required rather than imported is its
-  bytes, as esbuild's is, and a build with no output path refuses a
-  stylesheet import as esbuild does.
+  the call. An asset module (`file`, `dataurl`, `base64`, `binary`) that is
+  required rather than imported is its value, as esbuild's is, and a build
+  with no output path refuses a stylesheet import as esbuild does.
 - A build facet left behind with calls still in flight (its binding past
   64 MiB) and its successor's are now counted as two Dynamic Workers on the
   Durable Object's ledger, as the platform counts them, not one, so a
@@ -69,14 +76,19 @@ published independently in the `@nimbus-sh` npm scope.
   compiled module of the Worker, which workerd compiled at startup in
   every isolate, every session's Durable Object included, whether or not it
   ever ran esbuild. esbuild.wasm is now a staged, digest-checked asset that
-  only the esbuild facet loads, when the built-in `vite build`, the
-  `esbuild` command, a module too deep for Oxc or a build whose rolldown
-  binding died needs it. The Worker
+  only the esbuild facet loads, when the `esbuild` command, a module too
+  deep for Oxc or a build whose rolldown binding died needs it. The Worker
   upload falls from 19,119 KiB to 7,358 KiB (gzip 4,752 to 1,621 KiB): the
   wasm and esbuild's 133 KiB JS adapter, which core no longer imports.
   `EsbuildService` runs a call without a host on an engine its caller
   supplies (`EsbuildServiceOptions.engine`), and rejects without one; core
   imports no part of esbuild-wasm.
+- `vite build`'s stylesheet reads each `@import`'s conditions from its
+  tokens: a `)` or `,` inside a string or a url(), an escape, a comment, or
+  a `layer()` name directly followed by media no longer cut a `supports()`
+  condition short or turn it into media. Strings and URLs in a condition
+  are printed as esbuild prints them, and a `supports()` condition is always
+  parenthesized, as esbuild does.
 - Two more fixes for builds whose binding dies: the facet is aborted only
   once every call still on it is answered (workerd's abort cancels calls in
   flight, which left a sibling of the crashed build to fail instead of

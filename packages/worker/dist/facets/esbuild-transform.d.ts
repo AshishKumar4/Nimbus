@@ -22,12 +22,10 @@ export declare function esbuildFacetWorkerCode(wasm: ArrayBuffer, jsFnBody: stri
  */
 export declare function esbuildStackFallbackHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost;
 /**
- * The build host a Durable Object's esbuild runs its builds on: its esbuild
- * facet, for the built-in `vite build` and for a build whose rolldown binding
- * died under it (rolldownBuildHost's fallback), whose Go stacks grow. The
- * plugin, and with it every file read, stays with the caller.
+ * Where the build facet sends a build whose rolldown binding died under it
+ * (rolldownBuildHost): the esbuild facet, whose Go stacks grow.
  */
-export declare function esbuildBuildHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost;
+export declare function esbuildBuildFallbackHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost;
 /**
  * Runs one `esbuild` command in the Durable Object's esbuild facet, as
  * process `pid`: its files go through a supervisor capability minted for that
@@ -46,9 +44,8 @@ export declare const TRANSFORM_HOST_ID: string;
 /**
  * The transforms and builds a Durable Object's supervisor shares: transforms
  * run in its transform facet (oxc-transform.ts), builds in its build facet
- * (build-facet.ts, rolldown) but the built-in `vite build`, which stays in
- * the esbuild facet, each with the esbuild facet for what its engine cannot
- * finish, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
+ * (build-facet.ts, rolldown), each with the esbuild facet for what its engine
+ * cannot finish, and build() reads `vfs` from here. TRANSFORM_HOST_ID is
  * the host's identity, which the launch's transform store keys its results by.
  */
 export declare function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService;

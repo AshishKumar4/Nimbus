@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Nimbus's bundler (rolldown 1.2.11 through core runtime/rolldown-build.ts,
 // what the build facet runs) against the one it replaces, esbuild-wasm 0.24.2
-// (buildWithEsbuild, what the esbuild facet runs), behind the same
+// (buildWithEsbuild, what the esbuild facet ran), behind the same
 // EsbuildService.build and its VFS plugin, with each caller's options:
 // wrangler's Worker bundle, real Vite's config bundle, and Vite dev's cold
 // module. Each output is run, and what it does is compared, not its text:
@@ -14,11 +14,10 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { EsbuildService, generateEsbuildFacetRuntimeSource } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
 import { PROJECTS, REQUESTS } from '../fixtures/build-differential/projects.mjs';
 
-const { buildWithEsbuild } = new Function(`${generateEsbuildFacetRuntimeSource()}\nreturn { buildWithEsbuild };`)();
 const fromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const esbuild = await import(fromCore.resolve('esbuild-wasm/esm/browser.js'));
 await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(fromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });

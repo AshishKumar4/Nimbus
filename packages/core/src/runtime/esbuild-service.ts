@@ -1000,12 +1000,6 @@ export interface EsbuildServiceOptions {
   /** Where build() runs. Absent: this isolate, on `engine`. */
   buildHost?: EsbuildBuildHost;
   /**
-   * Where a build with `viteAssets` (the built-in `vite build`) runs, when not
-   * where every other build does: its stylesheets and emitted assets are
-   * esbuild's until Nimbus's bundler does them. Absent: buildHost.
-   */
-  viteBuildHost?: EsbuildBuildHost;
-  /**
    * The engine a call without a host runs on in this isolate, loaded on the
    * first such call (a test's esbuild-wasm or Oxc, a tool's own). Absent:
    * such a call rejects.
@@ -1117,7 +1111,6 @@ export class EsbuildService {
   private vfs: EsbuildReadFs | null;
   private readonly transformHost: EsbuildTransformHost | null;
   private readonly buildHost: EsbuildBuildHost | null;
-  private readonly viteBuildHost: EsbuildBuildHost | null;
   /** See EsbuildServiceOptions.transformHostId. */
   readonly transformHostId: string | null;
   private initialized = false;
@@ -1131,7 +1124,6 @@ export class EsbuildService {
     this.vfs = vfs ?? null;
     this.transformHost = options.transformHost ?? null;
     this.buildHost = options.buildHost ?? null;
-    this.viteBuildHost = options.viteBuildHost ?? null;
     this.engine = options.engine ?? null;
     this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
   }
@@ -1309,9 +1301,8 @@ export class EsbuildService {
     }), buildOptions);
 
     let outcome: EsbuildBuildOutcome;
-    const host = options?.viteAssets && this.viteBuildHost ? this.viteBuildHost : this.buildHost;
-    if (host) {
-      outcome = await host(buildOptions, plugin);
+    if (this.buildHost) {
+      outcome = await this.buildHost(buildOptions, plugin);
     } else {
       await this.ensureInit();
       outcome = await buildWithEsbuild(this._esbuild!, buildOptions, plugin);

@@ -18,10 +18,15 @@
  * message, its diagnostics alongside. Options no caller uses are refused
  * rather than ignored. CSS is bundled by css-bundle.ts, as esbuild bundled it.
  *
+ * The asset loaders are esbuild's: `file` emits the module's bytes under
+ * `assetNames` and exports the path relative to the importing chunk,
+ * `dataurl` exports a data URL (esbuild's encoding), `base64` the bytes in
+ * base64, `text` the text, `binary` a Uint8Array.
+ *
  * Self-contained but for types and css-bundle.ts: the build facet's runtime
  * bundles it (rolldown-facet/preamble.ts).
  */
-import { bundleCss } from './css-bundle.js';
+import { bundleCss, CssError } from './css-bundle.js';
 /** esbuild options a Nimbus build may pass; anything else is refused. */
 const SUPPORTED = new Set([
     'entryPoints', 'bundle', 'format', 'target', 'platform', 'outdir', 'outfile', 'sourcemap', 'minify', 'external',
@@ -29,8 +34,87 @@ const SUPPORTED = new Set([
     'conditions', 'mainFields', 'logLevel',
 ]);
 const LOADER_MODULE_TYPES = {
-    js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', base64: 'base64', dataurl: 'dataurl', empty: 'empty',
+    js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', empty: 'empty',
 };
+/** esbuild's MIME types by extension (internal/helpers/mime.go), as a data URL writes them. */
+const MIME_TYPES = {
+    '.avif': 'image/avif', '.css': 'text/css;charset=utf-8', '.gif': 'image/gif', '.htm': 'text/html;charset=utf-8',
+    '.html': 'text/html;charset=utf-8', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.js': 'text/javascript;charset=utf-8',
+    '.json': 'application/json;charset=utf-8', '.mjs': 'text/javascript;charset=utf-8', '.pdf': 'application/pdf',
+    '.png': 'image/png', '.svg': 'image/svg+xml', '.txt': 'text/plain;charset=utf-8', '.wasm': 'application/wasm',
+    '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2', '.xml': 'text/xml;charset=utf-8',
+    '.ttf': 'font/ttf', '.otf': 'font/otf', '.ico': 'image/x-icon', '.mp4': 'video/mp4', '.webm': 'video/webm',
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+};
+function extensionOf(path) {
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(dot).toLowerCase() : '';
+}
+function base64Of(bytes) {
+    let latin1 = '';
+    for (let i = 0; i < bytes.length; i += 0x8000)
+        latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(latin1);
+}
+/** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text. */
+export function dataUrlOf(path, bytes) {
+    const mime = MIME_TYPES[extensionOf(path)] ?? 'application/octet-stream';
+    const encoded = `data:${mime};base64,${base64Of(bytes)}`;
+    let text;
+    try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    }
+    catch {
+        return encoded;
+    }
+    let trailing = text.length;
+    while (trailing > 0) {
+        const c = text.charCodeAt(trailing - 1);
+        if (c > 0x20 || c === 9 || c === 10 || c === 13)
+            break;
+        trailing--;
+    }
+    let escaped = `data:${mime},`;
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        const hex = (n) => '%' + n.toString(16).toUpperCase().padStart(2, '0');
+        if (c === 9 || c === 10 || c === 13 || c === 35 || i >= trailing || (c === 37 && /^[0-9a-fA-F]{2}/.test(text.slice(i + 1, i + 3))))
+            escaped += hex(c);
+        else
+            escaped += text[i];
+    }
+    return escaped.length < encoded.length ? escaped : encoded;
+}
+/** esbuild's [hash]: eight base32 characters of the content's digest. */
+async function contentHash(bytes) {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let bits = 0;
+    let value = 0;
+    let out = '';
+    for (const byte of digest) {
+        value = (value << 8) | byte;
+        bits += 8;
+        while (bits >= 5 && out.length < 8) {
+            out += alphabet[(value >>> (bits - 5)) & 31];
+            bits -= 5;
+        }
+        if (out.length >= 8)
+            break;
+    }
+    return out;
+}
+/** `to`, relative to the directory of `from` (both relative to the output root). */
+function relativeUrl(from, to) {
+    const fromParts = from.split('/').slice(0, -1);
+    const toParts = to.split('/');
+    let common = 0;
+    while (common < fromParts.length && common < toParts.length - 1 && fromParts[common] === toParts[common])
+        common++;
+    const up = fromParts.length - common;
+    return (up === 0 ? './' : '../'.repeat(up)) + toParts.slice(common).join('/');
+}
 /**
  * The JavaScript string literal (or template without substitutions) that
  * starts at `start`: where it ends and its value, escapes decoded. Null when
@@ -195,13 +279,6 @@ async function locateUnresolved(api, options, records, loaded) {
     return records.map((r) => message(r.text, placed.get(r) ?? null, r.pluginName));
 }
 const utf8Length = (text) => new TextEncoder().encode(text).length;
-/** `bytes` in base64. */
-function base64Of(bytes) {
-    let latin1 = '';
-    for (let i = 0; i < bytes.length; i += 0x8000)
-        latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(latin1);
-}
 class BuildError extends Error {
     messages;
     constructor(messages) {
@@ -221,9 +298,12 @@ function locate(file, source, line, column, length = 0) {
 /** `Build failed with N errors:` and one line per error, as esbuild words its rejection. */
 export function esbuildFailureText(errors) {
     // A place without a line (one placement could not afford) names the file alone.
-    const lines = errors.map((e) => (e.location
-        ? e.location.line > 0 ? `${e.location.file}:${e.location.line}:${e.location.column}: ERROR: ${e.text}` : `${e.location.file}: ERROR: ${e.text}`
-        : `error: ${e.text}`));
+    const lines = errors.map((e) => {
+        const text = e.pluginName ? `[plugin: ${e.pluginName}] ${e.text}` : e.text;
+        if (!e.location)
+            return `error: ${text}`;
+        return e.location.line > 0 ? `${e.location.file}:${e.location.line}:${e.location.column}: ERROR: ${text}` : `${e.location.file}: ERROR: ${text}`;
+    });
     return `Build failed with ${errors.length} error${errors.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
 }
 function refuse(text) {
@@ -302,9 +382,12 @@ function messagesOf(error, raised, loaded) {
         return i >= 0 ? unclaimed.splice(i, 1)[0] : fromLog(log, loaded);
     });
 }
-/** A rolldown diagnostic as esbuild's: its first line of text, its place in its module. */
+/**
+ * A rolldown diagnostic as esbuild's: its first line of text, its place in
+ * its module, and every other place it labels (rolldown draws them in the
+ * message: `N │ <line>`, then `╰── <label>` under the column) as a note.
+ */
 function fromLog(log, modules) {
-    // rolldown's message repeats the code and draws the source; esbuild's text is the one line.
     // eslint-disable-next-line no-control-regex
     const plain = log.message.replace(/\u001b\[[0-9;]*m/g, '');
     const firstLine = plain.split('\n')[0].replace(/^\[[A-Z_]+\]\s*/, '').replace(/^(Error|Warning):\s*/, '');
@@ -312,7 +395,27 @@ function fromLog(log, modules) {
     const location = log.loc && loaded
         ? locate(fileOf(loaded), loaded.source, log.loc.line, log.loc.column)
         : null;
-    return message(firstLine, location, log.plugin ?? '');
+    const result = message(firstLine, location, log.plugin ?? '');
+    if (loaded) {
+        let sourceLine = 0;
+        let gutter = 0;
+        for (const line of plain.split('\n')) {
+            const source = /^\s*(\d+) │ /.exec(line);
+            if (source) {
+                sourceLine = Number(source[1]);
+                gutter = source[0].length;
+                continue;
+            }
+            const label = /[╰├]── (.*)$/.exec(line);
+            if (!label || !sourceLine)
+                continue;
+            const column = line.search(/[╰├]/) - gutter;
+            if (location && sourceLine === location.line && column === location.column)
+                continue;
+            result.notes.push({ text: label[1].trim(), location: locate(fileOf(loaded), loaded.source, sourceLine, column) });
+        }
+    }
+    return result;
 }
 /** How esbuild names a module's file in a diagnostic: `<namespace>:<path>`, the path alone for `file`. */
 function fileOf(module) {
@@ -360,8 +463,26 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         return m ? { namespace: m[1], path: m[2] } : { namespace: mainNamespace ?? 'file', path: id };
     };
     const pending = new Map();
-    const css = [];
+    const css = new Map();
     const warnings = [];
+    const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
+    // Emitted assets, by module: the `file` loader's (from JavaScript or a stylesheet's url()).
+    const assetFiles = new Map();
+    const assetMarkers = [];
+    const emitAsset = async (module, bytes) => {
+        const key = `${module.namespace}:${module.path}`;
+        const known = assetFiles.get(key);
+        if (known)
+            return known.fileName;
+        // The marker after `__NIMBUS_ASSET_1` is `_10`: a marker ends at `__`, so `_1__` never matches inside `_10__`.
+        const base = module.path.slice(module.path.lastIndexOf('/') + 1);
+        const ext = extensionOf(base);
+        const name = ext ? base.slice(0, -ext.length) : base;
+        const hash = await contentHash(bytes);
+        const fileName = (options.assetNames ?? '[name]-[hash]').replace(/\[name\]/g, name).replace(/\[hash\]/g, hash).replace(/\[ext\]/g, ext.slice(1)) + ext;
+        assetFiles.set(key, { fileName, contents: bytes });
+        return fileName;
+    };
     const raise = (text, pluginName = '') => {
         raised.push(message(text, null, pluginName));
         throw new Error(text);
@@ -372,8 +493,33 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         unresolved.push({ importer, source, kind, text, pluginName });
         return { id: source, external: true };
     };
+    // Per entry chunk, its CSS modules in the order its JavaScript evaluates
+    // them: rolldown renders an empty module into no chunk, so the graph says.
+    const cssOrder = new Map();
     const vfs = {
         name: plugin.name,
+        generateBundle(_options, bundle) {
+            for (const out of Object.values(bundle)) {
+                if (out.type !== 'chunk' || !out.facadeModuleId)
+                    continue;
+                const order = [];
+                const seen = new Set();
+                const visit = (id) => {
+                    if (seen.has(id))
+                        return;
+                    seen.add(id);
+                    const info = this.getModuleInfo(id);
+                    for (const child of info?.importedIds ?? [])
+                        visit(child);
+                    if (css.has(id))
+                        order.push(id);
+                    for (const child of info?.dynamicallyImportedIds ?? [])
+                        visit(child);
+                };
+                visit(out.facadeModuleId);
+                cssOrder.set(out.fileName, order);
+            }
+        },
         async resolveId(source, importer, extra) {
             if (source.startsWith('\0'))
                 return null;
@@ -428,26 +574,35 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 // esbuild bundles a JavaScript build's stylesheets into a sheet beside it, so it needs a place for that sheet.
                 if (!options.outdir && !options.outfile)
                     raise(`Cannot import ${JSON.stringify(fileOf({ namespace, path }))} into a JavaScript file without an output path configured`);
-                css.push({ id, path, source: text });
+                css.set(id, { namespace, path, resolveDir: loaded.get(id).resolveDir, source: text });
                 return { code: '', moduleType: 'js', moduleSideEffects: true };
             }
+            const bytesOf = () => (typeof contents === 'string' ? new TextEncoder().encode(contents) : contents);
+            // An asset loader's module is its one value, as esbuild's is: imported,
+            // the default export; required, module.exports itself. rolldown's `json`
+            // (and `text`) modules are exactly that, so a string value is a JSON one.
+            const value = (string) => ({ code: JSON.stringify(string), moduleType: 'json' });
+            if (loader === 'file') {
+                // Loads run concurrently: the marker is claimed before the await.
+                const entry = [`__NIMBUS_ASSET_${assetMarkers.length}__`, ''];
+                assetMarkers.push(entry);
+                entry[1] = await emitAsset({ namespace, path }, bytesOf());
+                return value(entry[0]);
+            }
+            if (loader === 'dataurl')
+                return value(dataUrlOf(path, bytesOf()));
+            if (loader === 'base64')
+                return value(base64Of(bytesOf()));
             // A Uint8Array of the bytes, decoded from base64 as esbuild's __toBinary
             // does (rolldown's `binary` takes a string, and would store its UTF-8);
             // CommonJS, so a require() gets the array itself.
             if (loader === 'binary') {
-                const bytes = typeof contents === 'string' ? new TextEncoder().encode(contents) : contents;
-                return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
+                return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
             }
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)
                 raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`);
-            if (typeof contents === 'string')
-                return { code: contents, moduleType };
-            // Byte loaders: rolldown takes their source as a string of the bytes' latin1 code units.
-            let latin1 = '';
-            for (let i = 0; i < contents.length; i += 0x8000)
-                latin1 += String.fromCharCode(...contents.subarray(i, i + 0x8000));
-            return { code: moduleType === 'base64' || moduleType === 'dataurl' ? latin1 : text, moduleType };
+            return { code: text, moduleType };
         },
     };
     const bundle = await api.rolldown({
@@ -460,7 +615,6 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         },
     });
     try {
-        const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
         const { output } = await bundle.generate({
             format: format === 'esm' ? 'es' : format,
             name: options.globalName,
@@ -483,15 +637,32 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         const relative = (path) => path.replace(/^\/+/, '');
         for (const out of output) {
             if (out.type === 'chunk') {
-                const contents = encoder.encode(out.code);
+                let code = out.code;
+                for (const [marker, fileName] of assetMarkers)
+                    code = code.split(marker).join(relativeUrl(out.fileName, fileName));
+                const contents = encoder.encode(code);
                 const path = at(out.fileName);
                 outputFiles.push({ path, contents });
                 const entry = out.isEntry && out.facadeModuleId ? decode(out.facadeModuleId) : null;
-                const cssOfChunk = css.filter((m) => out.moduleIds.includes(m.id));
+                // In the order the chunk's JavaScript first imports them.
+                const cssOfChunk = (cssOrder.get(out.fileName) ?? []).map((id) => css.get(id));
                 let cssBundle;
                 if (cssOfChunk.length) {
-                    const cssPath = path.replace(/\.js$/, '.css');
-                    const bundled = await bundleCss(cssOfChunk, plugin, { minify: options.minify === true });
+                    const cssFileName = out.fileName.replace(/\.js$/, '.css');
+                    const cssPath = at(cssFileName);
+                    const sheetAssets = {
+                        emit: async (module, bytes) => relativeUrl(cssFileName, await emitAsset(module, bytes)),
+                        dataUrl: dataUrlOf,
+                    };
+                    let bundled;
+                    try {
+                        bundled = await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true });
+                    }
+                    catch (error) {
+                        if (error instanceof CssError)
+                            throw new BuildError([error.diagnostic]);
+                        throw error;
+                    }
                     outputFiles.push({ path: cssPath, contents: encoder.encode(bundled) });
                     outputs[relative(cssPath)] = { imports: [], exports: [], inputs: {}, bytes: bundled.length };
                     cssBundle = relative(cssPath);
@@ -508,6 +679,11 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 outputFiles.push({ path, contents });
                 outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
             }
+        }
+        for (const { fileName, contents } of assetFiles.values()) {
+            const path = at(fileName);
+            outputFiles.push({ path, contents });
+            outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
         }
         return { outputFiles, errors: [], warnings, metafile: { inputs: {}, outputs } };
     }

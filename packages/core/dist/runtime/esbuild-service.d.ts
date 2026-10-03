@@ -229,12 +229,6 @@ export interface EsbuildServiceOptions {
     /** Where build() runs. Absent: this isolate, on `engine`. */
     buildHost?: EsbuildBuildHost;
     /**
-     * Where a build with `viteAssets` (the built-in `vite build`) runs, when not
-     * where every other build does: its stylesheets and emitted assets are
-     * esbuild's until Nimbus's bundler does them. Absent: buildHost.
-     */
-    viteBuildHost?: EsbuildBuildHost;
-    /**
      * The engine a call without a host runs on in this isolate, loaded on the
      * first such call (a test's esbuild-wasm or Oxc, a tool's own). Absent:
      * such a call rejects.
@@ -280,7 +274,6 @@ export declare class EsbuildService {
     private vfs;
     private readonly transformHost;
     private readonly buildHost;
-    private readonly viteBuildHost;
     /** See EsbuildServiceOptions.transformHostId. */
     readonly transformHostId: string | null;
     private initialized;

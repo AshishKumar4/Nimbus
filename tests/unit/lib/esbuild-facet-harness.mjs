@@ -8,7 +8,7 @@
 // cap the memory the facet's esbuilds hold, or end the latest esbuild's Go
 // program (`exitGo`). `durableObject` is a Durable Object as
 // esbuild-transform.ts sees it (`env.LOADER`, `ctx.facets`), so a case drives
-// the same `esbuildBuildHost` a session does.
+// the same `esbuildStackFallbackHost` a session does.
 
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -131,9 +131,9 @@ export function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
         }
         const instance = instances.get(name);
         if (++counts.stubs <= brokenStubs) {
-          return { build: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
+          return { transformMany: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
         }
-        return { build: async () => (await instance, { built: true }) };
+        return { transformMany: async (requests) => structuredClone(await (await instance).transformMany(structuredClone(requests))) };
       },
     },
   };
