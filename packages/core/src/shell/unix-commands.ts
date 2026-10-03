@@ -2185,6 +2185,67 @@ function expandBackslashEscapes(text: string): string {
 }
 
 /**
+ * pwd(1) as coreutils' program, for what starts one without a shell (find
+ * -execdir, xargs, sudo): the working directory with every link resolved,
+ * or, under -L (the default with POSIXLY_CORRECT), $PWD when it is an
+ * absolute name of that directory with no `.` or `..` in it.
+ */
+function mkPwd(vfs: UnixVfs): CmdFn {
+  return async (ctx) => {
+    let logical = ctx.env.POSIXLY_CORRECT !== undefined;
+    let operands = 0;
+    for (let i = 0; i < ctx.args.length; i++) {
+      const arg = ctx.args[i];
+      if (arg === '--') {
+        operands += ctx.args.length - i - 1;
+        break;
+      }
+      if (arg === '--logical' || arg === '--physical') {
+        logical = arg === '--logical';
+      } else if (arg === '--version') {
+        (await ctx.stdout.write(`pwd (nimbus coreutils) ${NIMBUS_VERSION}\n`));
+        return 0;
+      } else if (arg.startsWith('--')) {
+        (await ctx.stderr.write(`pwd: unrecognized option '${arg}'\nTry 'pwd --help' for more information.\n`));
+        return 1;
+      } else if (arg.startsWith('-') && arg !== '-') {
+        for (const letter of arg.slice(1)) {
+          if (letter !== 'L' && letter !== 'P') {
+            (await ctx.stderr.write(`pwd: invalid option -- '${letter}'\nTry 'pwd --help' for more information.\n`));
+            return 1;
+          }
+          logical = letter === 'L';
+        }
+      } else {
+        operands++;
+      }
+    }
+    if (operands > 0) (await ctx.stderr.write('pwd: ignoring non-option arguments\n'));
+    let physical: string;
+    try {
+      physical = await vfs.realpath(ctx.cwd);
+    } catch (error) {
+      if (!isVfsError(error)) throw error;
+      (await ctx.stderr.write(`pwd: ${VFS_STRERROR[error.code]}\n`));
+      return 1;
+    }
+    const named = ctx.env.PWD;
+    if (logical && named !== undefined && named.startsWith('/') && !named.split('/').some((part) => part === '.' || part === '..')) {
+      const same = await vfs.realpath(named).then((path) => path === physical, (error: unknown) => {
+        if (isVfsError(error)) return false;
+        throw error;
+      });
+      if (same) {
+        (await ctx.stdout.write(`${named}\n`));
+        return 0;
+      }
+    }
+    (await ctx.stdout.write(`${physical}\n`));
+    return 0;
+  };
+}
+
+/**
  * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
  * resolves. `echo` is a Shell.builtins entry, NOT in the
  * registry map. xargs's cross-command dispatch goes through
@@ -4975,6 +5036,7 @@ export function registerUnixCommands(
   // entry is only reached when a command (xargs etc.) looks them up
   // via the registry path.
   registry.register('echo', wrap(mkEcho()));
+  registry.register('pwd', wrap(withInvocationVfs(sqliteVfs, mkPwd)));
   registry.register('cat', textCommand(sqliteVfs, catCommand));
   registry.register('tac', textCommand(sqliteVfs, tacCommand));
   registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));

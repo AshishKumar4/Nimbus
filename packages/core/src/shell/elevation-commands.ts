@@ -1,6 +1,7 @@
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { credForUnixUser, findUnixUser } from './unix-accounts.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 
 function symbolicUmask(mask: number): string {
   const permissions = 0o777 & ~mask;
@@ -58,7 +59,10 @@ async function runAs(
   try {
     return await ctx.runAs((await targetCredential(ctx, userName)), argv);
   } catch (error) {
-    (await ctx.stderr.write(`${commandName}: ${error instanceof Error ? error.message : String(error)}\n`));
+    const message = isVfsError(error, 'ENOENT') && error.syscall === 'execvp'
+      ? `${argv[0]}: command not found`
+      : error instanceof Error ? error.message : String(error);
+    (await ctx.stderr.write(`${commandName}: ${message}\n`));
     return 1;
   }
 }

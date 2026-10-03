@@ -20,6 +20,7 @@ import { ProcessView, bindProcessView } from '../../../runtime/process-files.js'
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type {
+  Command,
   CommandOutputStream,
   CommandInputStream,
   CommandContext,
@@ -27,6 +28,7 @@ import type {
   TerminalInputStream,
 } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
+import { syscallError } from '../../../vfs/vfs-error.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import {
@@ -209,11 +211,7 @@ type ExecutionIo = {
   positionals?: PositionalFrame;
   /** Host-supplied fields merged into each command's CommandContext. */
   commandContext?: Record<string, unknown>;
-  commandIdentity?: {
-    pid: number;
-    cred: VfsCred;
-    setUmask(mask: number): void;
-  };
+  commandIdentity?: CommandIdentity;
   runAs?: CommandRunAsHost;
   vfs?: ProcessView;
   /** The terminal's own shell (bash -i): job notices are printed. */
@@ -221,6 +219,37 @@ type ExecutionIo = {
   /** Files the enclosing redirections hold open, by their stream. */
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
+
+/** The process a command runs as: its pid and credential, and how it sets its umask. */
+export interface CommandIdentity {
+  readonly pid: number;
+  readonly cred: VfsCred;
+  setUmask(mask: number): void;
+}
+
+/** What a program started by runProgram runs with: its identity, directory, environment and inherited streams. */
+export interface ProgramSpec {
+  readonly identity: CommandIdentity;
+  readonly cwd: string;
+  readonly env: Record<string, string>;
+  readonly stdin?: CommandInputStream;
+  readonly stdout: CommandOutputStream;
+  readonly stderr: CommandOutputStream;
+  readonly terminalStdin?: TerminalInputStream;
+  readonly isFdTerminal?: (fd: number) => boolean;
+  readonly isFdPipe?: (fd: number) => boolean;
+  readonly signal: AbortSignal;
+  /** How the program's own runAs starts a child, as its parent's did. */
+  readonly runAs?: CommandRunAsHost;
+  /** Host-supplied fields merged into the program's CommandContext. */
+  readonly commandContext?: Record<string, unknown>;
+}
+
+/** A resolved command run as a process: the program's spec, its bound view, and whether ps lists it. */
+interface CommandSpec extends ProgramSpec {
+  readonly vfs: ProcessView;
+  readonly register: boolean;
+}
 
 export type TerminalFdState = {
   stdin?: boolean;
@@ -408,11 +437,7 @@ export class Interpreter {
       terminalFds?: TerminalFdState;
       scriptMode?: boolean;
       commandContext?: Record<string, unknown>;
-      commandIdentity?: {
-        pid: number;
-        cred: VfsCred;
-        setUmask(mask: number): void;
-      };
+      commandIdentity?: CommandIdentity;
       runAs?: CommandRunAsHost;
       signal?: AbortSignal;
       interactive?: boolean;
@@ -1071,115 +1096,24 @@ export class Interpreter {
               (await stderr.write(`${name}: command not found\n`));
               exitCode = 127;
             } else {
-              const shouldRegister = io.registerProcess !== false;
-              let pid: number | undefined;
-              const abortController = new AbortController();
-              let unlinkShellSignal: (() => void) | undefined;
-
-              const shellSignal = io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal;
-              unlinkShellSignal = linkAbortSignal(shellSignal, abortController);
-
-              const terminalStdin = io.terminalStdin;
               const identity = io.commandIdentity;
               if (!identity) throw new Error('shell command identity is unavailable');
-              let ctx: CommandContext;
-              ctx = {
-                ...io.commandContext,
-                pid: identity.pid,
-                cred: identity.cred,
-                args,
-                env: { ...this.config.env },
+              exitCode = await this.runCommand(command, name, args, {
+                commandContext: io.commandContext,
+                identity,
                 cwd: this.config.getCwd(),
+                env: { ...this.config.env },
                 vfs: io.vfs ?? this.config.vfs,
                 stdout,
                 stderr,
-                signal: abortController.signal,
                 stdin,
-                terminalStdin,
-                setRawMode: terminalStdin
-                  ? (v: boolean) => { terminalStdin.rawMode = v; }
-                  : undefined,
-                getRawMode: terminalStdin
-                  ? () => terminalStdin.rawMode
-                  : undefined,
+                terminalStdin: io.terminalStdin,
                 isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
                 isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
-                setUmask: identity.setUmask,
-                runAs: async (cred, argv, options) => io.runAs
-                  ? (await io.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
-                  : Promise.resolve(126),
-              };
-
-              // Register process BEFORE executing so ps can see itself
-              let commandPromise: Promise<number>;
-
-              if (shouldRegister) {
-                let resolvePromise: ((code: number) => void) | undefined;
-                let rejectPromise: ((err: unknown) => void) | undefined;
-                const registeredPromise = new Promise<number>((resolve, reject) => {
-                  resolvePromise = resolve;
-                  rejectPromise = reject;
-                });
-
-                pid = this.config.processRegistry.spawn({
-                  command: name,
-                  args: [name, ...args],
-                  cwd: this.config.getCwd(),
-                  env: { ...this.config.env },
-                  isForeground: true,
-                  promise: registeredPromise,
-                  abortController,
-                });
-
-                commandPromise = command(ctx).then(
-                  (code) => {
-                    resolvePromise?.(code);
-                    return code;
-                  },
-                  async (err) => {
-                    if ((err as { code?: string })?.code === 'EPIPE') {
-                      // SIGPIPE: a builtin's ends its element (the catch below
-                      // rethrows it); any other command alone dies, silently.
-                      resolvePromise?.(141);
-                      if (BASH_BUILTINS.has(name)) throw err;
-                      return 141;
-                    }
-                    rejectPromise?.(err);
-                    if (err instanceof Error && err.name === 'AbortError') return 130;
-                    // Surface the failure: this rejection handler resolves
-                    // commandPromise to an exit code, so the catch below
-                    // never sees the error — without this write a throwing
-                    // registered command dies silently at the prompt.
-                    (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
-                    return 1;
-                  }
-                );
-              } else {
-                commandPromise = command(ctx);
-              }
-
-              try {
-                exitCode = await commandPromise;
-              } catch (e) {
-                if (e instanceof Error && e.name === 'AbortError') {
-                  exitCode = 130;
-                } else if ((e as { code?: string })?.code === 'EPIPE') {
-                  // A bash builtin's write is the shell's own: in bash SIGPIPE
-                  // kills the element's subshell, so its element ends.
-                  if (BASH_BUILTINS.has(name)) throw e;
-                  // Any other command is its own process: it alone dies, silently.
-                  exitCode = 141;
-                } else {
-                  (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
-                  exitCode = 1;
-                }
-              } finally {
-                unlinkShellSignal?.();
-                if (shouldRegister && pid !== undefined) {
-                  await Promise.resolve();
-                  this.config.processRegistry.reap(pid);
-                }
-              }
+                signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+                runAs: io.runAs,
+                register: io.registerProcess !== false,
+              });
 
               // A signalled command reports the SIGNAL's status, not whatever
               // code it returned on its way out: `sleep` observes only that
@@ -1204,6 +1138,132 @@ export class Interpreter {
     if (fatalSpecialBuiltin) throw new ErrexitSignal(exitCode);
     if (replacesShell) throw new ExitSignal(exitCode);
     return exitCode;
+  }
+
+  /**
+   * execvp(3) of `argv`: argv[0] is found as a program is found (the
+   * registry, then a path from `spec.cwd`), never as a function, an alias or
+   * a builtin, and runs as a process on the streams it is handed. A program
+   * that is not there is ENOENT, as execvp fails, for the caller to report.
+   */
+  async runProgram(argv: readonly string[], spec: ProgramSpec): Promise<number> {
+    const [name, ...args] = argv;
+    if (name === undefined) return 0;
+    const command = await this.config.registry.resolve(name, { cwd: spec.cwd });
+    if (!command) throw syscallError('ENOENT', 'execvp', name);
+    return await this.runCommand(command, name, args, {
+      ...spec,
+      vfs: bindProcessView(this.config.filesystem, { pid: spec.identity.pid, cred: spec.identity.cred, signal: spec.signal }),
+      register: true,
+    });
+  }
+
+  /**
+   * A resolved command, run as a process of this shell's: listed for ps,
+   * jobs and kill while it runs, aborted with `spec.signal`, and its failure
+   * (a closed pipe, an abort, a throw) turned into the status a process
+   * would end with.
+   */
+  private async runCommand(command: Command, name: string, args: string[], spec: CommandSpec): Promise<number> {
+    const abortController = new AbortController();
+    const unlinkShellSignal = linkAbortSignal(spec.signal, abortController);
+    const { identity, terminalStdin, stderr } = spec;
+    let pid: number | undefined;
+    const ctx: CommandContext = {
+      ...spec.commandContext,
+      pid: identity.pid,
+      cred: identity.cred,
+      args,
+      env: spec.env,
+      cwd: spec.cwd,
+      vfs: spec.vfs,
+      stdout: spec.stdout,
+      stderr,
+      signal: abortController.signal,
+      stdin: spec.stdin,
+      terminalStdin,
+      setRawMode: terminalStdin
+        ? (v: boolean) => { terminalStdin.rawMode = v; }
+        : undefined,
+      getRawMode: terminalStdin
+        ? () => terminalStdin.rawMode
+        : undefined,
+      isFdTerminal: spec.isFdTerminal,
+      isFdPipe: spec.isFdPipe,
+      setUmask: identity.setUmask,
+      runAs: async (cred, argv, options) => spec.runAs
+        ? (await spec.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
+        : 126,
+    };
+
+    // Register process BEFORE executing so ps can see itself
+    let commandPromise: Promise<number>;
+
+    if (spec.register) {
+      let resolvePromise: ((code: number) => void) | undefined;
+      let rejectPromise: ((err: unknown) => void) | undefined;
+      const registeredPromise = new Promise<number>((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+      });
+
+      pid = this.config.processRegistry.spawn({
+        command: name,
+        args: [name, ...args],
+        cwd: spec.cwd,
+        env: { ...spec.env },
+        isForeground: true,
+        promise: registeredPromise,
+        abortController,
+      });
+
+      commandPromise = command(ctx).then(
+        (code) => {
+          resolvePromise?.(code);
+          return code;
+        },
+        async (err) => {
+          if ((err as { code?: string })?.code === 'EPIPE') {
+            // SIGPIPE: a builtin's ends its element (the catch below
+            // rethrows it); any other command alone dies, silently.
+            resolvePromise?.(141);
+            if (BASH_BUILTINS.has(name)) throw err;
+            return 141;
+          }
+          rejectPromise?.(err);
+          if (err instanceof Error && err.name === 'AbortError') return 130;
+          // Surface the failure: this rejection handler resolves
+          // commandPromise to an exit code, so the catch below
+          // never sees the error — without this write a throwing
+          // registered command dies silently at the prompt.
+          (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
+          return 1;
+        }
+      );
+    } else {
+      commandPromise = command(ctx);
+    }
+
+    try {
+      return await commandPromise;
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') return 130;
+      if ((e as { code?: string })?.code === 'EPIPE') {
+        // A bash builtin's write is the shell's own: in bash SIGPIPE
+        // kills the element's subshell, so its element ends.
+        if (BASH_BUILTINS.has(name)) throw e;
+        // Any other command is its own process: it alone dies, silently.
+        return 141;
+      }
+      (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
+      return 1;
+    } finally {
+      unlinkShellSignal();
+      if (spec.register && pid !== undefined) {
+        await Promise.resolve();
+        this.config.processRegistry.reap(pid);
+      }
+    }
   }
 
   private assignEnv(name: string, value: string): boolean {

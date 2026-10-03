@@ -6,6 +6,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -32,6 +33,27 @@ await assertElevation('sudo defaults to root', 'sudo', ['id'], CRED_KERNEL, ['id
 await assertElevation('sudo -u maps a named user', 'sudo', ['-u', 'user', 'whoami'], USER, ['whoami']);
 await assertElevation('su defaults to a root login shell', 'su', ['-c', 'id'], CRED_KERNEL, ['sh', '-c', 'id']);
 await assertElevation('su accepts a named target user', 'su', ['user', '-c', 'whoami'], USER, ['sh', '-c', 'whoami']);
+
+// In a workspace, the command sudo starts is a program, found as execvp
+// finds one: not a shell function or an alias by that name, and one that
+// is not there is sudo's "command not found", not the shell's. The
+// workspace's shell keeps what each line defines, so the line that
+// redefines `echo` comes last.
+{
+  const workspaceHarness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: workspaceHarness.sql, transactions: workspaceHarness.ctx });
+  const run = async (line) => {
+    const result = await ws.exec(line);
+    return [result.stdout, result.stderr, result.exitCode];
+  };
+  assert.deepEqual(await run("printf 'x\\n' > /tmp/f && chmod 644 /tmp/f"), ['', '', 0]);
+  assert.deepEqual(await run("alias cat='printf ALIAS'\nsudo -u user cat /tmp/f"), ['x\n', '', 0], 'an alias is not a program');
+  assert.deepEqual(await run('job() { echo JOB; }; sudo -u user job'), ['', 'sudo: job: command not found\n', 1]);
+  assert.deepEqual(await run('sudo -u user nosuchcommand'), ['', 'sudo: nosuchcommand: command not found\n', 1]);
+  assert.deepEqual(await run('mkdir -p /tmp/sub && cd /tmp/sub && sudo -u user pwd'), ['/tmp/sub\n', '', 0], 'in the caller\'s directory');
+  assert.deepEqual(await run("echo() { printf 'WRONG\\n'; }; sudo -u user echo hi"), ['hi\n', '', 0], 'a function is not a program');
+  await ws.close();
+}
 
 console.log('shell su and sudo: ok');
 

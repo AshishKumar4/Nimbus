@@ -14,6 +14,7 @@ import {
   type BuiltinExecutionContext,
   type BuiltinFn,
   type InterpreterConfig,
+  type ProgramSpec,
   type ShellOptions,
   type TerminalFdState,
   assignScalar,
@@ -366,6 +367,11 @@ export class Shell {
 
   getRegistry(): CommandRegistry {
     return this.registry;
+  }
+
+  /** execvp(3) of `argv` as a process of this shell's kernel (Interpreter.runProgram). */
+  runProgram(argv: readonly string[], spec: ProgramSpec): Promise<number> {
+    return this.interpreter.runProgram(argv, spec);
   }
 
   /**

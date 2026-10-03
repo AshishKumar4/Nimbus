@@ -427,9 +427,19 @@ class FindRun {
     if ((await this.launch(argv, directory)) !== 0) this.walker.fail();
   }
 
-  /** A child process for `argv`, under find's own credential, in `directory`. */
+  /**
+   * A child process for `argv`, under find's own credential, in `directory`:
+   * its exit status, or 1 when there is no such program, which findutils'
+   * child reports before it exits so.
+   */
   private async launch(argv: string[], directory: string): Promise<number> {
-    return await this.ctx.runAs(this.ctx.cred, argv, { cwd: directory });
+    try {
+      return await this.ctx.runAs(this.ctx.cred, argv, { cwd: directory });
+    } catch (error) {
+      if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
+      await this.diagnose(`${quote(argv[0] ?? '')}: ${VFS_STRERROR[error.code]}`);
+      return 1;
+    }
   }
 
   private async writeBytes(chunks: readonly Uint8Array[]): Promise<void> {

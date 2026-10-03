@@ -225,7 +225,8 @@ fs.mkdirSync(accounts);
 fs.writeFileSync(path.join(accounts, 'passwd'), (await ws.exec('cat /etc/passwd')).stdout);
 fs.writeFileSync(path.join(accounts, 'group'), (await ws.exec('cat /etc/group')).stdout);
 
-function runHost(argv, cwd, setup) {
+/** `body` (find on argv, by default) under the host's sh, in the sandbox, after `setup`. */
+function runHost(argv, cwd, setup, body = 'exec find "$@"') {
   const result = spawnSync('bwrap', [
     '--unshare-user', '--uid', '1000', '--gid', '1000',
     '--dev-bind', '/', '/',
@@ -235,7 +236,7 @@ function runHost(argv, cwd, setup) {
     '--ro-bind', path.join(accounts, 'group'), '/etc/group',
     '--chdir', cwd,
     '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin', '--setenv', 'LC_ALL', 'C', '--setenv', 'TZ', 'UTC',
-    '--', '/bin/sh', '-c', `set -e\n${populateMount}\ncd ${shQuote(cwd)}\n${setup ?? ''}\nexec find "$@"`, 'sh', ...argv,
+    '--', '/bin/sh', '-c', `set -e\n${populateMount}\ncd ${shQuote(cwd)}\n${setup ?? ''}\nset +e\n${body}`, 'sh', ...argv,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   if (result.error) throw result.error;
   return { stdout: result.stdout, stderr: result.stderr, status: result.status };
@@ -461,6 +462,10 @@ const CASES = [
   ['a', '-type', 'f', '-exec', 'echo', '{}', '+'],
   ['a', '-exec', 'echo', '[{}]', '{}{}', ';'],
   ['a', '-name', '*.js', '-exec', 'false', ';', '-o', '-print'],
+  ['a', '-name', '*.js', '-exec', 'nosuchcommand', '{}', ';', '-o', '-print'],
+  ['a', '-name', '*.js', '-exec', 'nosuchcommand', '{}', '+'],
+  ['a', '-name', '*.js', '-execdir', 'nosuchcommand', '{}', ';'],
+  ['a', '-name', '*.js', '-exec', './nosuch.sh', '{}', ';'],
   ['a', '-name', '*.ts', '-exec', 'sh', '-c', 'exit 1', 'sh', '{}', '+', '-print'],
   ['a', '-name', '*.ts', '-exec', 'sh', '-c', 'exit 3', ';', '-print'],
   ['a', '-execdir', 'echo', '{}', ';'],
@@ -659,6 +664,27 @@ const CHANGING = [
   { setup: 'mkdir d6 && mkdir d6/full && touch d6/full/x', argv: ['d6/full', '-depth', '-delete'], then: ['.', '-path', './d6*'] },
   { setup: 'mkdir d7 && mkdir d7/n && touch d7/n/x', argv: ['d7', '-name', 'n', '-delete'], then: ['d7'] },
   { setup: 'mkdir d8 && touch d8/z && touch d8/y', argv: ['d8', '-type', 'f', '-exec', 'rm', '{}', '+'], then: ['d8'] },
+  // A program named by a path is found from the directory it runs in.
+  {
+    setup: "mkdir d9 && touch d9/x && echo '#!/bin/sh' > d9/tool.sh && echo 'echo tool \"$1\" \"$(pwd)\"' >> d9/tool.sh && chmod 755 d9/tool.sh",
+    argv: ['d9', '-name', 'x', '-execdir', './tool.sh', '{}', ';'],
+    then: ['d9'],
+  },
+];
+
+// -exec starts a program, as execvp does: a shell function, an alias or a
+// builtin of the shell find was started from is not one. Each script runs as
+// one command line: under the host's sh, and in the workspace's shell.
+// The workspace's shell keeps what a command line defines, so each script's
+// name is its own, and a script that redefines `echo` comes after every
+// script that runs it.
+const SCRIPTS = [
+  "cd a && find . -name f.js -exec echo '{}' ';'",
+  "job() { echo JOB; }; find a/f.js -exec job '{}' ';'; echo \"status $?\"",
+  "task() { echo TASK; }; find a/f.js -exec task '{}' +; echo \"status $?\"",
+  "alias cat='echo ALIAS'\nfind a/f.js -exec cat '{}' ';'",
+  "echo() { printf 'WRONG\\n'; }; find a/f.js -exec echo '{}' ';'",
+  "echo() { printf 'WRONG\\n'; }; find a/f.js a/g.ts -exec echo '{}' +",
 ];
 
 let compared = 0;
@@ -687,6 +713,11 @@ for (const { setup, argv, cwd, then } of CHANGING) {
   const host = runHost(argv, SCRATCH, `${setup}\ncd ${shQuote(at)}`);
   report(name, host, await runNimbus(argv, at, setup, SCRATCH));
   report(`${name}; then find ${then.map(shQuote).join(' ')}`, runHost(then, at), await runNimbus(then, at));
+}
+
+for (const script of SCRIPTS) {
+  const nimbus = await ws.exec(script, { cwd: W });
+  report(script, runHost([], W, '', script), { stdout: nimbus.stdout, stderr: nimbus.stderr, status: nimbus.exitCode });
 }
 
 // ── What Nimbus refuses, loudly, where GNU would act ────────────────────────
