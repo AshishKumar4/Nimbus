@@ -331,6 +331,31 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
   releaseAll();
 }
 
+// ── A file copied onto a link writes, and is checked, where the link leads ──
+// cp writes through a link at its destination. /m is asynchronous-only and
+// not flagged; /m/top/free/l -> ../leased/f.txt. A file copied from another
+// mount onto /m/top/free/l used to be checked at the link's own name while
+// the backend's write followed it into the lease.
+{
+  await seed();
+  await m.symlink('../leased/f.txt', '/top/free/l');
+  const other = new MemoryVFS(USER);
+  await other.writeFile('/c.txt', enc.encode('copied'));
+  ws.filesystem.vfs.mount('/cs', asyncOnly(other));
+  const ns = box.files.vfs.as({ uid: 1000, gid: 1000, groups: [1000] });
+  const held = engine.acquireExclusiveMutation('m/top/leased');
+  assert.equal(await code(() => ns.copy('/cs/c.txt', '/m/top/free/l')), 'EBUSY', 'the namespace\'s copy is refused where the link leads');
+  assert.equal(await code(() => bridge.copyFile('/cs/c.txt', '/m/top/free/l')), 'EBUSY', 'and a process\'s copyFile');
+  assert.equal(await code(() => bridge.copyFile('/cs/c.txt', '/home/user/alias/top/free/l')), 'EBUSY', 'also through the alias');
+  assert.equal(new TextDecoder().decode(await m.readFile('/top/leased/f.txt')), 'f', 'the leased file is untouched');
+  engine.releaseExclusiveMutation(held.owner);
+  // Released, the copy writes through the link, as cp does.
+  assert.equal(await ns.copy('/cs/c.txt', '/m/top/free/l'), 1);
+  assert.equal(new TextDecoder().decode(await m.readFile('/top/leased/f.txt')), 'copied', 'released, the copy lands where the link leads');
+  assert.equal((await m.stat('/top/free/l', { follow: false }))?.type, 'symlink', 'and the link stays a link');
+  ws.filesystem.vfs.unmount('/cs');
+}
+
 // ── A write still resolving when its scope is revoked does not land ────────
 // The namespace asks the bridge's scope again right before the backend is
 // called. Each case holds the mount's stat of the write's own name, revokes

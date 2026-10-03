@@ -1525,6 +1525,18 @@ export class CompositeVFS implements VFS {
         if (stat === null) throw new Refusal('ENOENT', from);
         const dir = stat.type === 'directory';
         if (dir && !options?.recursive) throw new Refusal('EISDIR', from, 'a tree needs recursive');
+        // The copy itself, at `at` (its namespace path): guarded right before
+        // the backend is called, there and at the name given.
+        const write = (at: string): Awaitable<number> => {
+          const route = this.route(at);
+          if (route.mount.options.readOnly) throw new Refusal('EROFS', at, `${route.mount.point} is mounted read-only`);
+          if (source.mount === route.mount && typeof sourceOps.copy === 'function') {
+            this.guardMutation([toInput, at]);
+            return sourceOps.copy(source.rel, route.rel, options);
+          }
+          this.guardMutation([toInput]);
+          return this.copyBytes(sourceOps, source.rel, stat, this.ops(route, sync) as SyncVFS, route.rel, at);
+        };
         // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
         return then(target.mount.options.resolvesPaths ? undefined : then(this.statAt(parentOf(to), true, sync), (parent) => {
           if (parent === null) throw new Refusal('ENOENT', to);
@@ -1536,12 +1548,18 @@ export class CompositeVFS implements VFS {
               if (dir) throw new Refusal('EEXIST', to);
               if (existing.type === 'directory') throw new Refusal('EISDIR', to);
             }
-            if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
-              this.guardMutation([toInput, to]);
-              return sourceOps.copy(source.rel, target.rel, options);
-            }
-            this.guardMutation([toInput]);
-            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel, to);
+            if (stat.type !== 'file' || existing?.type !== 'symlink') return write(to);
+            // A file is written through a link at the destination, as cp
+            // opens it: where that write lands, the link followed, is what is
+            // checked and written. (A link or a tree is made at the name.)
+            return then(this.resolve(toInput, true, sync), (through) => {
+              this.present(through);
+              if (this.isStructural(through)) throw new Refusal('EBUSY', through, 'a mount point cannot be replaced');
+              return then(this.statAt(through, false, sync), (landing) => {
+                if (landing?.type === 'directory') throw new Refusal('EISDIR', to);
+                return write(through);
+              });
+            });
           });
         });
       });
