@@ -236,7 +236,7 @@ try {
     assert.match(rooted.stderr, /vite: the dev server serves only projects on the workspace filesystem; \/m\/app is on a mounted one/);
     const home = await runtime.exec('mkdir -p /home/user/app && cd /m/w && vite --root /home/user/app; echo vite=$?; vite stop');
     assert.doesNotMatch(home.stderr, /serves only projects on the workspace filesystem/, home.stderr);
-    assert.match(home.stdout, /Root: {7}home\/user\/app\n[^]*vite=0\n/, home.stdout + home.stderr);
+    assert.match(home.stdout, /Root: {7}\/home\/user\/app\n[^]*vite=0\n/, home.stdout + home.stderr);
     console.log('  the Worker and vite dev servers refuse a mounted project by the root they serve');
   }
 } finally {
