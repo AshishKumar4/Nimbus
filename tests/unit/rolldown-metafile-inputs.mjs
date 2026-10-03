@@ -49,7 +49,7 @@ const fs = {
 /** What a caller reads of the inputs: each module's key and bytes, and the modules it imports, with how. */
 const inputsOf = (metafile) => Object.fromEntries(Object.entries(metafile?.inputs ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([key, input]) => [key, {
   bytes: input.bytes,
-  imports: input.imports.filter((i) => !i.external).map((i) => `${i.kind} ${i.path}${i.original ? ` (${i.original})` : ""}`).sort(),
+  imports: input.imports.filter((i) => !i.external).map((i) => `${i.kind} ${i.path}${i.original ? ` (${i.original})` : ""}`),
 }]));
 
 const seen = {};
