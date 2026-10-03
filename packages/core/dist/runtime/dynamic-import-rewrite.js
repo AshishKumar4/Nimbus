@@ -127,7 +127,9 @@ function rewriteFromLexer(code, parentUrl, metadata, imports) {
     }
     if (!edits.length && !metas.length)
         return code;
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), () => afterDirectives(code));
+    if (!metas.length)
+        return applyEdits(code, edits, metas, null, 0);
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
 }
 /** Marks the lexer reports only where it reads the marked spot as code. */
 const CODE_MARK = ' import.meta ';
@@ -318,8 +320,7 @@ function escapedCaptureNames(code) {
         try {
             const token = tokenizer(code.slice(start, end), { ecmaVersion: 'latest' }).getToken();
             const value = Reflect.get(token, 'value');
-            if (token.type === tokTypes.name && typeof value === 'string'
-                && (value.startsWith(METADATA_BINDING) || value.startsWith(DYNAMIC_IMPORT_HELPER)))
+            if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(METADATA_BINDING))
                 names.add(value);
         }
         catch (error) {
@@ -435,66 +436,18 @@ function rewriteWithGrammar(code, parentUrl, metadata, imports) {
                 break;
             insertion = statement.end;
         }
-        return applyEdits(code, collected.edits, collected.metas, collected.names ?? escapedCaptureNames(code), () => insertion);
+        return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
     }
     return code;
 }
-/** `name`, or the shortest `name_…` neither the cell's text nor its escaped identifiers use. */
-function freeName(name, code, names) {
-    let free = name;
-    while (code.includes(free) || names.has(free))
-        free += '_';
-    return free;
-}
-/**
- * Whether the cell names an identifier with the loader's name: an import or
- * a declaration that lowering keeps, or a reference to one. A string or a
- * comment that spells it names nothing.
- */
-function namesLoader(code, names) {
-    if (names.has(DYNAMIC_IMPORT_HELPER))
-        return true;
-    if (!code.includes(DYNAMIC_IMPORT_HELPER))
-        return false;
-    try {
-        for (const token of tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true })) {
-            if (token.type === tokTypes.name && Reflect.get(token, 'value') === DYNAMIC_IMPORT_HELPER)
-                return true;
-        }
-    }
-    catch (error) {
-        // Text the tokenizer cannot read: assume the name may be bound.
-        if (!(error instanceof SyntaxError))
-            throw error;
-        return true;
-    }
-    return false;
-}
-/**
- * Apply the import() edits (each a call to DYNAMIC_IMPORT_HELPER) and bind
- * the metadata spans. A name the cell itself binds cannot capture them: the
- * module binding takes a free name, and so does the loader where the cell
- * names the loader's own, bound from the global object. (A cell that binds
- * the loader's name and also shadows globalThis is not supported.)
- */
 function applyEdits(code, edits, metas, names, insertion) {
-    let prologue = '';
     if (metas.length) {
-        const binding = freeName(METADATA_BINDING, code, names);
+        let binding = METADATA_BINDING;
+        while (code.includes(binding) || names?.has(binding))
+            binding += '_';
         for (const meta of metas)
             edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-        prologue += `\n"use strict";\nconst ${binding} = arguments[2];\n`;
-    }
-    const calls = edits.filter((edit) => edit.text.startsWith(DYNAMIC_IMPORT_HELPER + '('));
-    if (calls.length && namesLoader(code, names)) {
-        const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
-        for (const call of calls)
-            call.text = loader + call.text.slice(DYNAMIC_IMPORT_HELPER.length);
-        prologue += `\nconst ${loader} = globalThis.${DYNAMIC_IMPORT_HELPER};\n`;
-    }
-    if (prologue) {
-        const at = insertion();
-        edits.push({ start: at, end: at, text: prologue });
+        edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
     }
     edits.sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];

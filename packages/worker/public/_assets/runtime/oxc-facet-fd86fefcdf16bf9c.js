@@ -8427,7 +8427,8 @@ error: the Oxc transform crashed (${reason})`);
       edits.push({ start: site.ss, end: site.d + 1, text: call });
     }
     if (!edits.length && !metas.length) return code;
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), () => afterDirectives(code));
+    if (!metas.length) return applyEdits(code, edits, metas, null, 0);
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
   }
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
@@ -8555,7 +8556,7 @@ error: the Oxc transform crashed (${reason})`);
       try {
         const token = tokenizer2(code.slice(start, end), { ecmaVersion: "latest" }).getToken();
         const value = Reflect.get(token, "value");
-        if (token.type === types$1.name && typeof value === "string" && (value.startsWith(METADATA_BINDING) || value.startsWith(DYNAMIC_IMPORT_HELPER))) names.add(value);
+        if (token.type === types$1.name && typeof value === "string" && value.startsWith(METADATA_BINDING)) names.add(value);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
       }
@@ -8647,49 +8648,19 @@ error: the Oxc transform crashed (${reason})`);
         if (typeof Reflect.get(statement, "directive") !== "string") break;
         insertion = statement.end;
       }
-      return applyEdits(code, collected.edits, collected.metas, collected.names ?? escapedCaptureNames(code), () => insertion);
+      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
     }
     return code;
   }
-  function freeName(name, code, names) {
-    let free = name;
-    while (code.includes(free) || names.has(free)) free += "_";
-    return free;
-  }
-  function namesLoader(code, names) {
-    if (names.has(DYNAMIC_IMPORT_HELPER)) return true;
-    if (!code.includes(DYNAMIC_IMPORT_HELPER)) return false;
-    try {
-      for (const token of tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true })) {
-        if (token.type === types$1.name && Reflect.get(token, "value") === DYNAMIC_IMPORT_HELPER) return true;
-      }
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      return true;
-    }
-    return false;
-  }
   function applyEdits(code, edits, metas, names, insertion) {
-    let prologue = "";
     if (metas.length) {
-      const binding = freeName(METADATA_BINDING, code, names);
+      let binding = METADATA_BINDING;
+      while (code.includes(binding) || names?.has(binding)) binding += "_";
       for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-      prologue += `
+      edits.push({ start: insertion, end: insertion, text: `
 "use strict";
 const ${binding} = arguments[2];
-`;
-    }
-    const calls = edits.filter((edit) => edit.text.startsWith(DYNAMIC_IMPORT_HELPER + "("));
-    if (calls.length && namesLoader(code, names)) {
-      const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
-      for (const call of calls) call.text = loader + call.text.slice(DYNAMIC_IMPORT_HELPER.length);
-      prologue += `
-const ${loader} = globalThis.${DYNAMIC_IMPORT_HELPER};
-`;
-    }
-    if (prologue) {
-      const at3 = insertion();
-      edits.push({ start: at3, end: at3, text: prologue });
+` });
     }
     edits.sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];

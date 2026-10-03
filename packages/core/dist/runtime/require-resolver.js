@@ -75,9 +75,8 @@ const REQUIRE_RE = /(?:require(?:\.resolve)?\s*\(\s*)(['"`])([^'"`]+?)\1\s*\)/g;
 // can't read it — the scaffolder exits silently. Only literal specifiers
 // are followed; computed `import(expr)` remains out of scope. An entry
 // script the shell already transformed has them as the process's loader
-// calls (dynamic-import-rewrite.ts), `__nimbusDynamicImport("<parent>", "x")`,
-// or `__nimbusDynamicImport_(…)` in a cell that uses the loader's own name.
-const DYNIMPORT_RE = /(?:\bimport\s*\(|\b__nimbusDynamicImport_*\(\s*"[^"]*"\s*,)\s*(['"`])([^'"`]+?)\1\s*\)/g;
+// calls (dynamic-import-rewrite.ts), `__nimbusDynamicImport("<parent>", "x")`.
+const DYNIMPORT_RE = /(?:\bimport\s*\(|\b__nimbusDynamicImport\(\s*"[^"]*"\s*,)\s*(['"`])([^'"`]+?)\1\s*\)/g;
 // Immediately-invoked `createRequire(<expr>)('literal')`. pi-coding-agent's
 // bin (dist/bundle/cli.js) is exactly:
 //   import { createRequire, enableCompileCache } from "node:module";
