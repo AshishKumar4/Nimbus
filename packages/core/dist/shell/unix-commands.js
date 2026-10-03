@@ -35,6 +35,7 @@ import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevat
 import { isVfsError, syscallError, VFS_STRERROR } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
+import { direntTypeIn } from '../vfs/dirent-type.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
  * registry takes a command context; the ones registered below read the string
@@ -877,7 +878,7 @@ function mkTree(vfs) {
                     const connector = isLast ? '└── ' : '├── ';
                     const childPrefix = isLast ? '    ' : '│   ';
                     (await ctx.stdout.write(prefix + connector + e.name + '\n'));
-                    if (e.type === 'directory') {
+                    if ((await direntTypeIn(vfs, path, e)) === 'directory') {
                         dirs++;
                         (await walk(path + '/' + e.name, prefix + childPrefix, depth + 1));
                     }

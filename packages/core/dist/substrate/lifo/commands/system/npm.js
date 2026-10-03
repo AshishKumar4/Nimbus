@@ -5,6 +5,7 @@ import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, RegistryVersionInfoSchema, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
 import { npmLogEnabled } from './npm-log.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 /** The registry an install reads from when its env names none. */
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 export const NPM_VERSION = '10.0.0';
@@ -521,14 +522,15 @@ async function npmList(ctx) {
     const entries = (await ctx.vfs.readdir(modulesDir));
     const packages = [];
     for (const entry of entries) {
-        if (entry.type !== 'directory')
+        if ((await direntTypeIn(ctx.vfs, modulesDir, entry)) !== 'directory')
             continue;
         if (entry.name.startsWith('@')) {
             // Scoped packages
             try {
-                const scopeEntries = (await ctx.vfs.readdir(join(modulesDir, entry.name)));
+                const scopeDir = join(modulesDir, entry.name);
+                const scopeEntries = (await ctx.vfs.readdir(scopeDir));
                 for (const se of scopeEntries) {
-                    if (se.type !== 'directory')
+                    if ((await direntTypeIn(ctx.vfs, scopeDir, se)) !== 'directory')
                         continue;
                     const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name, se.name)));
                     packages.push({ name: `${entry.name}/${se.name}`, version: v });

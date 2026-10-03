@@ -629,7 +629,7 @@ function __residentTablesOnSql(sql) {
     nsOfKind(kind) { return [...sql.exec("SELECT parent, name FROM ns WHERE kind = ?", kind)]; },
     // Directories whose entries the listing did not name (__nsUnlisted): their target is the mount point.
     nsUnlisted() { return [...sql.exec("SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL", __NS_DIR)]; },
-    nsChildren(parent) { return [...sql.exec("SELECT name, kind FROM ns WHERE parent = ?", parent)]; },
+    nsChildren(parent) { return [...sql.exec("SELECT name, kind, mode FROM ns WHERE parent = ?", parent)]; },
     nsCount() { const row = first(sql.exec("SELECT count(*) AS n FROM ns")); return row === undefined ? 0 : Number(row.n); },
   };
 }
@@ -874,7 +874,7 @@ function __residentTablesInMemory() {
     nsChildren(parent) {
       const dir = ns.get(parent);
       if (!dir) return [];
-      return [...dir.keys()].sort(byName).map((name) => ({ name, kind: dir.get(name).kind }));
+      return [...dir.keys()].sort(byName).map((name) => ({ name, kind: dir.get(name).kind, mode: dir.get(name).mode }));
     },
     nsCount() { return names; },
   };
@@ -1624,9 +1624,9 @@ function __nsUnknown(k, followLeaf, listing) {
   return listing ? __nsUnlistedOver(found.path, true) : null;
 }
 
-/** The entries directly under directory \`k\` (already resolved): [{ name, kind }]. */
+/** The entries directly under directory \`k\` (already resolved): [{ name, kind, mode }]; the mode says what a file kind is. */
 function __nsChildren(k) {
-  return __residentRequire().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind) }));
+  return __residentRequire().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
 }
 
 /** Whether the credential may search directory \`row\` (POSIX x). */

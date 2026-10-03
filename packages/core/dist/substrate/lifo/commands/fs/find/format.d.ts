@@ -77,15 +77,11 @@ export interface FormatSubject {
     userName(uid: number): Promise<string | null>;
     groupName(gid: number): Promise<string | null>;
 }
-/** The -type letters a mode can have. */
+/** The -type letters a file can have. */
 export type FileTypeLetter = 'f' | 'd' | 'l' | 's' | 'b' | 'c' | 'p';
 /** The -type letter readdir's d_type gives an entry, or null where it cannot tell. */
 export declare function direntTypeLetter(type: VfsDirentType): FileTypeLetter | null;
-/**
- * findutils' mode_to_filetype: the -type letter for a file. A stat's mode
- * carries the type bits where its backend sets them (a device's do); where
- * it holds only the permission bits, the stat's own type stands in for them.
- */
+/** findutils' mode_to_filetype: the -type letter for a file a stat describes. */
 export declare function fileTypeLetter(stat: Pick<ProcessStat, 'mode' | 'type'>): FileTypeLetter;
 /** gnulib's base_name: the last component, with a run of trailing slashes kept as one. */
 export declare function baseName(path: string): string;

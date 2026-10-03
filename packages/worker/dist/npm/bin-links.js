@@ -1,3 +1,4 @@
+import { projectEntryType } from '../runtime/project-fs.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { npmBinMap, npmBinName } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
@@ -284,7 +285,7 @@ async function* listPackagePaths(vfs, nodeModulesPath) {
         return;
     }
     for (const entry of entries) {
-        if (entry.type !== 'directory' || entry.name === '.bin')
+        if (entry.name === '.bin' || (await projectEntryType(vfs, nodeModulesPath, entry)) !== 'directory')
             continue;
         const path = `${nodeModulesPath}/${entry.name}`;
         if (!entry.name.startsWith('@')) {
@@ -299,7 +300,7 @@ async function* listPackagePaths(vfs, nodeModulesPath) {
             continue;
         }
         for (const scoped of scopedEntries) {
-            if (scoped.type === 'directory')
+            if ((await projectEntryType(vfs, path, scoped)) === 'directory')
                 yield `${path}/${scoped.name}`;
         }
     }

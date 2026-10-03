@@ -1,4 +1,4 @@
-import type { ProjectFs } from '../runtime/project-fs.js';
+import { type ProjectFs } from '../runtime/project-fs.js';
 import type { ResolvedPackage } from './resolver.js';
 /**
  * A staged-artifact bin target (`nimbus-staged:<artifact>`) is a sentinel,
@@ -30,7 +30,7 @@ export interface NpmBinResolution extends NpmBinEntry {
  * caller (see runtime/project-fs.ts), each call answered at once by the
  * engine or awaited through the caller's view of the namespace.
  */
-type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
+type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat'>;
 type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'>;
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;

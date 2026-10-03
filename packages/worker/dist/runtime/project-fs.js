@@ -8,8 +8,22 @@
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
-import { syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+/** The exact type of `entry` in `dir`, lstat'ing it where its listing could not type it; null when it has gone. */
+export function projectEntryType(fs, dir, entry) {
+    return direntTypeOf(entry, async () => {
+        try {
+            return await fs.lstat(`${dir}/${entry.name}`);
+        }
+        catch (error) {
+            if (isVfsError(error, 'ENOENT'))
+                return null;
+            throw error;
+        }
+    });
+}
 /** The principal's `view` in the engine's call shape. */
 export function projectFs(view) {
     const at = (key) => '/' + normalizeVfsPath(key);

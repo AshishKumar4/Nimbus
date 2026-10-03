@@ -1,3 +1,4 @@
+import { direntTypeIn } from '../vfs/dirent-type.js';
 import { extractTarball } from '../_shared/tarball.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 const RUBYGEMS_API = 'https://rubygems.org';
@@ -11,7 +12,7 @@ export async function installedGemLibRoots(vfs, gemHome) {
         return [];
     const out = [];
     for (const entry of (await vfs.readdir(gemsRoot))) {
-        if (entry.type !== 'directory')
+        if ((await direntTypeIn(vfs, gemsRoot, entry)) !== 'directory')
             continue;
         const lib = `${gemsRoot}/${entry.name}/lib`;
         if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib)))
@@ -23,10 +24,13 @@ export async function installedGemBins(vfs, gemHome) {
     const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
     if (!(await vfs.exists(binRoot)) || !(await vfs.isDirectory(binRoot)))
         return [];
-    return (await vfs.readdir(binRoot))
-        .filter((entry) => entry.type === 'file' && isValidGemExecutableName(entry.name))
-        .map((entry) => ({ name: entry.name, path: `${binRoot}/${entry.name}` }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+    const bins = [];
+    for (const entry of await vfs.readdir(binRoot)) {
+        if (!isValidGemExecutableName(entry.name) || (await direntTypeIn(vfs, binRoot, entry)) !== 'file')
+            continue;
+        bins.push({ name: entry.name, path: `${binRoot}/${entry.name}` });
+    }
+    return bins.sort((a, b) => a.name.localeCompare(b.name));
 }
 export async function installRubyGems(vfs, requests, opts) {
     const gemHome = normalizeVfsPath(opts.gemHome);

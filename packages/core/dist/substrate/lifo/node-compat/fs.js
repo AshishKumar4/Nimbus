@@ -4,6 +4,7 @@ import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
+import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 function toNodeStat(stat) {
     const isFile = stat.type === 'file';
     const isDir = stat.type === 'directory';
@@ -138,17 +139,17 @@ export function createFs(vfs, cwd) {
         if (options?.withFileTypes) {
             // d_type, or where the backend cannot say, the stat this shim answers lstat with too.
             return entries.map((e) => {
-                const type = e.type === 'unknown' ? vfs.stat(resolvePath(abs, e.name)).type : e.type;
+                const holds = DIRENT_TYPES[e.type === 'unknown' ? direntTypeOfStat(vfs.stat(resolvePath(abs, e.name))) : e.type].node;
                 return {
                     name: e.name,
                     path: abs,
-                    isFile: () => type === 'file',
-                    isDirectory: () => type === 'directory',
-                    isSymbolicLink: () => type === 'symlink',
-                    isBlockDevice: () => type === 'block',
-                    isCharacterDevice: () => type === 'character',
-                    isFIFO: () => type === 'fifo',
-                    isSocket: () => type === 'socket',
+                    isFile: () => holds === 'isFile',
+                    isDirectory: () => holds === 'isDirectory',
+                    isSymbolicLink: () => holds === 'isSymbolicLink',
+                    isBlockDevice: () => holds === 'isBlockDevice',
+                    isCharacterDevice: () => holds === 'isCharacterDevice',
+                    isFIFO: () => holds === 'isFIFO',
+                    isSocket: () => holds === 'isSocket',
                 };
             });
         }

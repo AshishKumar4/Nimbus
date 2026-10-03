@@ -27,6 +27,7 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
@@ -2621,7 +2622,7 @@ async function nodeModulesNames(view, dir) {
     for (const entry of await view.readdir(dir)) {
         if (entry.name.startsWith(COPY_PREFIX))
             continue;
-        if (entry.type !== 'directory' || !entry.name.startsWith('@')) {
+        if (!entry.name.startsWith('@') || (await direntTypeIn(view, dir, entry)) !== 'directory') {
             names.push(entry.name);
             continue;
         }

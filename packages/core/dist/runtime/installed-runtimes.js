@@ -17,6 +17,7 @@
  * must not share either.
  */
 import { sha256Incremental } from '../_shared/crypto.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 import { BASH_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
 export function runtimeAbiForManifest(manifest) {
@@ -93,13 +94,24 @@ export async function listInstalledManifestsView(fs, homeDir) {
     if (!await fs.exists(runtimesRoot))
         return out;
     // Each entry under runtimesRoot is a <name>; each entry under that
-    // is a <version>; each <version> dir has a manifest.json.
+    // is a <version>; each <version> dir has a manifest.json. This fs has no
+    // stat, so an entry its listing cannot type is opened as a directory: a
+    // file fails that listing (ENOTDIR), or has no manifest.json under it.
     for (const nameEntry of await fs.readdir(runtimesRoot)) {
-        if (nameEntry.type !== 'directory')
+        if (nameEntry.type !== 'directory' && nameEntry.type !== 'unknown')
             continue;
         const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-        for (const verEntry of await fs.readdir(nameDir)) {
-            if (verEntry.type !== 'directory')
+        let versions;
+        try {
+            versions = await fs.readdir(nameDir);
+        }
+        catch (error) {
+            if (nameEntry.type === 'unknown' && isVfsError(error, 'ENOTDIR'))
+                continue;
+            throw error;
+        }
+        for (const verEntry of versions) {
+            if (verEntry.type !== 'directory' && verEntry.type !== 'unknown')
                 continue;
             const verDir = `${nameDir}/${verEntry.name}`;
             const manifestPath = `${verDir}/manifest.json`;

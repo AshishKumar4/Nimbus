@@ -23,7 +23,7 @@
  * verifies them — these blobs are interpreters, so bytes that reach the
  * filesystem are bytes that execute.
  */
-import type { Awaitable } from './os-contracts.js';
+import type { Awaitable, RuntimeDirentType } from './os-contracts.js';
 export interface RuntimePackageFs {
     exists(path: string): Awaitable<boolean>;
     readFile(path: string): Awaitable<Uint8Array>;
@@ -39,7 +39,7 @@ export interface RuntimePackageFs {
     }): Awaitable<void>;
     readdir(path: string): Awaitable<{
         name: string;
-        type: string;
+        type: RuntimeDirentType;
     }[]>;
     unlink(path: string): Awaitable<void>;
     rmdir(path: string): Awaitable<void>;

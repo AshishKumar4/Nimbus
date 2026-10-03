@@ -24,6 +24,7 @@ import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner } from './resident-identity.js';
 import { z } from 'zod/v4';
@@ -70,6 +71,10 @@ import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
+/** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
+function launchEntryType(vfs, dir, entry) {
+    return direntTypeOf(entry, () => vfs.stat(`${dir}/${entry.name}`, { followSymlinks: false }));
+}
 function filesOf(fs) {
     let files = launchAdapters.get(fs);
     if (files === undefined) {
@@ -2187,7 +2192,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                 {
                     const sibs = await (async () => vfs.readdir(entryDir))().catch(() => []);
                     for (const sib of sibs) {
-                        if (sib.type !== 'file')
+                        if ((await launchEntryType(vfs, entryDir, sib)) !== 'file')
                             continue;
                         // Hash-chunk pattern: <name>.<hash>.<cjs|mjs|js>. Hash must
                         // be 6+ chars AND look like a hash, not an English word —
@@ -2215,7 +2220,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                     const sharedStripped = sharedDir.replace(/^\/+/, '');
                     if (await (async () => filesOf(vfs).isDirectory(sharedStripped))().catch(() => false)) {
                         for (const sh of await (async () => vfs.readdir(sharedDir))().catch(() => [])) {
-                            if (sh.type !== 'file')
+                            if ((await launchEntryType(vfs, sharedDir, sh)) !== 'file')
                                 continue;
                             if (!/\.(cjs|mjs|js)$/.test(sh.name))
                                 continue;
@@ -2757,7 +2762,7 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
             if (e.name === '.git')
                 continue;
             const child = dir + '/' + e.name;
-            if (e.type === 'directory') {
+            if ((await launchEntryType(vfs, dir, e)) === 'directory') {
                 if (!shouldVisitBinPackageDirectory(pkgRoot, child, bundleProfile))
                     continue;
                 queue.push(child);
@@ -3117,10 +3122,11 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
             visited++;
             if (e.name === '.' || e.name === '..')
                 continue;
-            if (e.type === 'directory' && SKIP_DIRS.has(e.name))
+            const isDirectory = (await launchEntryType(vfs, dir, e)) === 'directory';
+            if (isDirectory && SKIP_DIRS.has(e.name))
                 continue;
             const child = dir + '/' + e.name;
-            if (e.type === 'directory') {
+            if (isDirectory) {
                 queue.push(child);
                 continue;
             }

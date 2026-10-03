@@ -15,6 +15,7 @@ import { RegistrySearchResponseSchema } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
 import { linkPackage, unlinkPackage, readDevLinks, loadDevLinks, } from '../../pkg/lifo-dev.js';
 import { readLifoManifest, createLifoCommand, } from '../../pkg/lifo-runtime.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 // ─── Helpers ───
 async function printHelp(stdout) {
@@ -92,20 +93,27 @@ async function lifoRemove(ctx, registry) {
     return 0;
 }
 // ─── list ───
+/** The directories in a scope's directory `dir`, each named `scope/name`. */
+async function directoriesIn(vfs, dir, scope) {
+    const names = [];
+    for (const child of await vfs.readdir(dir)) {
+        if ((await direntTypeIn(vfs, dir, child)) === 'directory')
+            names.push(join(scope, child.name));
+    }
+    return names;
+}
 async function lifoList(ctx) {
     const { vfs, stdout } = ctx;
     // 1. Installed lifo packages (global node_modules with lifo field)
     const installed = [];
     if ((await vfs.exists(GLOBAL_MODULES))) {
         for (const entry of (await vfs.readdir(GLOBAL_MODULES))) {
-            if (entry.type !== 'directory')
+            if ((await direntTypeIn(vfs, GLOBAL_MODULES, entry)) !== 'directory')
                 continue;
             const dirs = entry.name.startsWith('@')
                 ? (await (async () => {
                     try {
-                        return (await vfs.readdir(join(GLOBAL_MODULES, entry.name)))
-                            .filter(e => e.type === 'directory')
-                            .map(e => join(entry.name, e.name));
+                        return await directoriesIn(vfs, join(GLOBAL_MODULES, entry.name), entry.name);
                     }
                     catch {
                         return [];
@@ -393,12 +401,10 @@ export async function rehydrateGlobalPackages(vfs, registry) {
         return;
     // 2. Scan every package in /usr/lib/node_modules
     for (const entry of await vfs.readdir(GLOBAL_MODULES)) {
-        if (entry.type !== 'directory')
+        if ((await direntTypeIn(vfs, GLOBAL_MODULES, entry)) !== 'directory')
             continue;
         const dirs = entry.name.startsWith('@')
-            ? (await vfs.readdir(join(GLOBAL_MODULES, entry.name)))
-                .filter(entry => entry.type === 'directory')
-                .map(child => join(entry.name, child.name))
+            ? await directoriesIn(vfs, join(GLOBAL_MODULES, entry.name), entry.name)
             : [entry.name];
         for (const dirName of dirs) {
             const pkgDir = join(GLOBAL_MODULES, dirName);

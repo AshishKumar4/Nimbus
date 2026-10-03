@@ -1,4 +1,5 @@
 import { statOrThrow } from '../../../../vfs/vfs.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 // ─── ANSI helpers ───
 const ESC = '\x1b[';
 const RST = `${ESC}0m`;
@@ -139,7 +140,7 @@ async function getDiskInfo(vfs) {
         try {
             for (const entry of (await vfs.readdir(dir))) {
                 const full = dir === '/' ? '/' + entry.name : dir + '/' + entry.name;
-                if (entry.type === 'file') {
+                if ((await direntTypeIn(vfs, dir, entry)) === 'file') {
                     totalFiles++;
                     totalBytes += (await statOrThrow(vfs, full)).size;
                 }
