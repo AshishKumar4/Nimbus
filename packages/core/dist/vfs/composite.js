@@ -148,7 +148,9 @@ export class CompositeVFS {
     nextDev = 0;
     viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
-    viewed = new WeakMap();
+    viewed;
+    /** Asked right before each of this view's mutations reaches a backend (scoped). */
+    check;
     /**
      * Views per principal, held weakly: one per principal while someone holds
      * it, none once no one does (a table serving thousands of agents does not
@@ -157,6 +159,8 @@ export class CompositeVFS {
     views;
     syncView;
     constructor(root, options = {}, shared) {
+        this.viewed = shared?.viewed ?? new WeakMap();
+        this.check = shared?.check;
         if (shared) {
             this.table = shared.table;
             this.viewer = shared.principal;
@@ -604,6 +608,20 @@ export class CompositeVFS {
      */
     guardMutations(guard) {
         this.table.guard = guard;
+    }
+    /**
+     * This view, for one holder: `check` is asked right before each mutation
+     * reaches a backend, after every lookup and read the mutation waited on,
+     * and refuses by throwing. A process's bridge passes its scope's liveness,
+     * so a write whose lookup was still awaited when the process was released
+     * or killed (or its host lease disposed) does not land. Shares this view's
+     * table, principal and backend views; not cached, so the check is the
+     * holder's alone.
+     */
+    scoped(check) {
+        return new CompositeVFS(this.table.mounts.get(ROOT_POINT).source, undefined, {
+            table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check,
+        });
     }
     as(cred, actor) {
         const principal = actor === undefined ? { cred } : { cred, actor };
@@ -1225,6 +1243,7 @@ export class CompositeVFS {
      * backend is, on the path this namespace resolved.
      */
     guardMutation(paths) {
+        this.check?.();
         const guard = this.table.guard;
         const cred = this.viewer.cred;
         if (guard === undefined || cred === null)
@@ -1364,6 +1383,19 @@ export class CompositeVFS {
                     const dir = stat.type === 'directory';
                     if (dir && !options?.recursive)
                         throw new Refusal('EISDIR', from, 'a tree needs recursive');
+                    // The copy itself, at `at` (its namespace path): guarded right before
+                    // the backend is called, there and at the name given.
+                    const write = (at) => {
+                        const route = this.route(at);
+                        if (route.mount.options.readOnly)
+                            throw new Refusal('EROFS', at, `${route.mount.point} is mounted read-only`);
+                        if (source.mount === route.mount && typeof sourceOps.copy === 'function') {
+                            this.guardMutation([toInput, at]);
+                            return sourceOps.copy(source.rel, route.rel, options);
+                        }
+                        this.guardMutation([toInput]);
+                        return this.copyBytes(sourceOps, source.rel, stat, this.ops(route, sync), route.rel, at);
+                    };
                     // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
                     return then(target.mount.options.resolvesPaths ? undefined : then(this.statAt(parentOf(to), true, sync), (parent) => {
                         if (parent === null)
@@ -1380,12 +1412,21 @@ export class CompositeVFS {
                                 if (existing.type === 'directory')
                                     throw new Refusal('EISDIR', to);
                             }
-                            if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
-                                this.guardMutation([toInput, to]);
-                                return sourceOps.copy(source.rel, target.rel, options);
-                            }
-                            this.guardMutation([toInput]);
-                            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync), target.rel, to);
+                            if (stat.type !== 'file' || existing?.type !== 'symlink')
+                                return write(to);
+                            // A file is written through a link at the destination, as cp
+                            // opens it: where that write lands, the link followed, is what is
+                            // checked and written. (A link or a tree is made at the name.)
+                            return then(this.resolve(toInput, true, sync), (through) => {
+                                this.present(through);
+                                if (this.isStructural(through))
+                                    throw new Refusal('EBUSY', through, 'a mount point cannot be replaced');
+                                return then(this.statAt(through, false, sync), (landing) => {
+                                    if (landing?.type === 'directory')
+                                        throw new Refusal('EISDIR', to);
+                                    return write(through);
+                                });
+                            });
                         });
                     });
                 });
