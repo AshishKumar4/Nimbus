@@ -1,1 +1,1 @@
-{"version":3,"file":"nl.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/text/nl.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAyC3C,QAAA,MAAM,OAAO,EAAE,OAmJd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"nl.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/text/nl.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AA0C3C,QAAA,MAAM,OAAO,EAAE,OAmJd,CAAC;AAEF,eAAe,OAAO,CAAC"}

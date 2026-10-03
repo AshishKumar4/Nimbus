@@ -1,6 +1,6 @@
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { isVfsError, syscallError } from '../../../../vfs/vfs-error.js';
+import { isVfsError, strerror, syscallError } from '../../../../vfs/vfs-error.js';
 import { lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     recursive: { type: 'boolean', short: 'r' },
@@ -51,8 +51,17 @@ const command = async (ctx) => {
     for (const source of sources) {
         const src = resolve(ctx.cwd, source);
         const target = destIsDir ? resolve(dest, basename(src)) : dest;
+        const stat = await lstatOrThrow(ctx.vfs, src).catch(async (e) => {
+            if (!isVfsError(e))
+                throw e;
+            await ctx.stderr.write(`cp: cannot stat '${source}': ${strerror(e)}\n`);
+            return null;
+        });
+        if (stat === null) {
+            exitCode = 1;
+            continue;
+        }
         try {
-            const stat = await lstatOrThrow(ctx.vfs, src);
             if (stat.type === 'directory') {
                 if (!recursive) {
                     await ctx.stderr.write(`cp: -r not specified; omitting directory '${source}'\n`);

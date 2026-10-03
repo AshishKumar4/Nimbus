@@ -1,7 +1,7 @@
 import { resolve, basename } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
 import { move } from '../../../../vfs/move.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     force: { type: 'boolean', short: 'f' },
@@ -57,7 +57,12 @@ const command = async (ctx) => {
         }
         catch (e) {
             if (isVfsError(e)) {
-                await ctx.stderr.write(`mv: ${e.message}\n`);
+                // GNU's words: a source that is not there cannot be stat'ed; any
+                // other refusal is a move that failed.
+                const missing = isVfsError(e, 'ENOENT') && (await ctx.vfs.stat(src, { follow: false })) === null;
+                await ctx.stderr.write(missing
+                    ? `mv: cannot stat '${source}': ${strerror(e)}\n`
+                    : `mv: cannot move '${source}' to '${rawDest}': ${strerror(e)}\n`);
                 exitCode = 1;
                 continue;
             }

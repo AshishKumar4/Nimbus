@@ -1,4 +1,5 @@
-import { asciiBytes, concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 class NlUsage extends Error {
 }
 function style(value, which) {
@@ -166,7 +167,7 @@ const command = async (ctx) => {
             bytes = concatBytes(parts);
         }
         catch (error) {
-            await ctx.stderr.write(`nl: ${file}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`nl: ${file}: ${strerror(error)}\n`);
             status = 1;
             continue;
         }

@@ -168,19 +168,6 @@ function isHigh(c) { return c >= 0xd800 && c <= 0xdbff; }
 export function isBrokenPipe(error) {
     return error?.code === 'EPIPE';
 }
-/** GNU's text for a filesystem error. */
-export function fsErrorText(error) {
-    const code = error?.code;
-    if (code === 'ENOENT')
-        return 'No such file or directory';
-    if (code === 'EACCES' || code === 'EPERM')
-        return 'Permission denied';
-    if (code === 'EISDIR')
-        return 'Is a directory';
-    if (code === 'ENOTDIR')
-        return 'Not a directory';
-    return error instanceof Error ? error.message : String(error);
-}
 /** Records split on `delim`: each without its delimiter; `terminated` says whether the last had one. */
 export function splitRecords(bytes, delim) {
     const records = [];

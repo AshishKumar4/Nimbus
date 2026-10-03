@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 function nodeHasher(name) {
     const h = createHash(name);
     return { update: (b) => { h.update(b); }, digest: () => new Uint8Array(h.digest()) };
@@ -317,7 +318,7 @@ async function sumFiles(ctx, o) {
             result = await hashFile(ctx, file, o.algorithm, o.bits);
         }
         catch (error) {
-            await ctx.stderr.write(`${o.program}: ${quoteName(file)}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`${o.program}: ${quoteName(file)}: ${strerror(error)}\n`);
             status = 1;
             continue;
         }
@@ -386,7 +387,7 @@ async function checkFiles(ctx, o) {
             text = decodeLossless(concatBytes(parts));
         }
         catch (error) {
-            await ctx.stderr.write(`${o.program}: ${quoteName(list)}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`${o.program}: ${quoteName(list)}: ${strerror(error)}\n`);
             status = 1;
             continue;
         }
@@ -447,7 +448,7 @@ async function checkFiles(ctx, o) {
                 if (o.ignoreMissing && code === 'ENOENT')
                     continue;
                 unreadable++;
-                await ctx.stderr.write(`${o.program}: ${quoteName(name)}: ${fsErrorText(error)}\n`);
+                await ctx.stderr.write(`${o.program}: ${quoteName(name)}: ${strerror(error)}\n`);
                 await say(`${name}: FAILED open or read\n`);
                 continue;
             }

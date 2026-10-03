@@ -1,4 +1,5 @@
-import { asciiBytes, concatBytes, fsErrorText, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 class HeadUsage extends Error {
 }
 /** GNU's multipliers: b is 512; each of K M G T P E Z Y R Q is 1024^n, or 1000^n followed by B, 1024^n by iB. */
@@ -133,7 +134,7 @@ const command = async (ctx) => {
         catch (error) {
             if (isBrokenPipe(error))
                 throw error;
-            await ctx.stderr.write(`head: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`head: cannot open '${file}' for reading: ${strerror(error)}\n`);
             status = 1;
         }
     }

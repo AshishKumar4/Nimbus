@@ -1,6 +1,7 @@
 import { resolve } from '../../utils/path.js';
-import { decodeLossless, encodeLossless, fsErrorText, readAllInput, writeBytes } from '../../utils/bytes-io.js';
+import { decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 class SedScriptError extends Error {
 }
 class Parser {
@@ -638,7 +639,7 @@ export async function runSed(ctx) {
         }
     }
     catch (error) {
-        await ctx.stderr.write(`sed: couldn't open file: ${fsErrorText(error)}\n`);
+        await ctx.stderr.write(`sed: couldn't open file: ${strerror(error)}\n`);
         return 1;
     }
     if (scripts.length === 0) {
@@ -692,7 +693,7 @@ export async function runSed(ctx) {
             return { name: file, lines, terminated };
         }
         catch (error) {
-            await ctx.stderr.write(`sed: can't read ${file}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`sed: can't read ${file}: ${strerror(error)}\n`);
             status = 2;
             return null;
         }
@@ -1093,7 +1094,7 @@ export async function runSed(ctx) {
                     await ctx.vfs.writeFile(resolve(ctx.cwd, backup.includes('/') ? backup : target.slice(0, target.lastIndexOf('/') + 1) + backup), await ctx.vfs.readFile(path));
                 }
                 catch (error) {
-                    await ctx.stderr.write(`sed: couldn't open file ${backup}: ${fsErrorText(error)}\n`);
+                    await ctx.stderr.write(`sed: couldn't open file ${backup}: ${strerror(error)}\n`);
                     return 4;
                 }
             }
@@ -1107,7 +1108,7 @@ export async function runSed(ctx) {
             await ctx.vfs.writeFile(resolve(ctx.cwd, file), encodeLossless(w.chunks.join('')));
         }
         catch (error) {
-            await ctx.stderr.write(`sed: couldn't open file ${file}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`sed: couldn't open file ${file}: ${strerror(error)}\n`);
             status = 4;
         }
     }

@@ -35,7 +35,7 @@ import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
-import { isVfsError, syscallError, VFS_STRERROR } from '../vfs/vfs-error.js';
+import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
@@ -68,17 +68,6 @@ function withInvocationVfs(_sqliteVfs, factory) {
         requireVfsCred(ctx.cred, 'unix command dispatch');
         return (await factory(ctx.vfs)(ctx));
     };
-}
-export function fsErrorMessage(error) {
-    if (error instanceof Error) {
-        const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
-        if (code === 'EACCES' || code === 'EPERM')
-            return 'Permission denied';
-        if (code === 'ENOENT')
-            return 'No such file or directory';
-        return error.message;
-    }
-    return String(error);
 }
 /** `drwxr-xr-x`-style permission string, shared by `ls -l` and `stat %A`. */
 function unixModeString(mode, isDir, isLink) {
@@ -619,7 +608,7 @@ function mkSetfacl(sqliteVfs) {
                 vfs.setDefaultAcl(path, perms);
             }
             catch (error) {
-                (await ctx.stderr.write(`setfacl: ${target}: ${fsErrorMessage(error)}\n`));
+                (await ctx.stderr.write(`setfacl: ${target}: ${strerror(error)}\n`));
                 return 1;
             }
         }
@@ -648,7 +637,7 @@ function mkGetfacl(sqliteVfs) {
                 (await ctx.stdout.write(`${lines.join('\n')}\n\n`));
             }
             catch (error) {
-                (await ctx.stderr.write(`getfacl: ${target}: ${fsErrorMessage(error)}\n`));
+                (await ctx.stderr.write(`getfacl: ${target}: ${strerror(error)}\n`));
                 status = 1;
             }
         }
@@ -1032,7 +1021,7 @@ async function headBytes(ctx, files, limit) {
             }));
         }
         catch (error) {
-            (await ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`));
+            (await ctx.stderr.write(`head: ${f}: ${strerror(error)}\n`));
             exit = 1;
         }
     }
@@ -2628,7 +2617,7 @@ function mkLs(vfs) {
                 real = await kvfs.readdirStat(fp);
             }
             catch (e) {
-                (await ctx.stderr.write(`ls: cannot access '${dirPath}': ${fsErrorMessage(e)}\n`));
+                (await ctx.stderr.write(`ls: cannot access '${dirPath}': ${strerror(e)}\n`));
                 exit = 2;
                 return [];
             }
@@ -2710,7 +2699,7 @@ function mkLs(vfs) {
                 }
             }
             catch (e) {
-                (await ctx.stderr.write(`ls: cannot access '${arg}': ${errorText(e)}\n`));
+                (await ctx.stderr.write(`ls: cannot access '${arg}': ${strerror(e)}\n`));
                 exit = 1;
             }
         }
@@ -2769,7 +2758,7 @@ function mkRm(vfs) {
                 await vfs.remove(resolvePath(ctx.cwd, target), { recursive, force });
             }
             catch (error) {
-                await ctx.stderr.write(`rm: ${target}: ${fsErrorMessage(error)}\n`);
+                await ctx.stderr.write(`rm: ${target}: ${strerror(error)}\n`);
                 code = 1;
             }
         }
@@ -2804,17 +2793,6 @@ function parseTouchStamp(text, now) {
 function touchErrno(error) {
     const code = error?.code;
     return typeof code === 'string' ? code : 'EIO';
-}
-/** glibc's strerror for the errnos a filesystem call gives; an unlisted one by its name. */
-function strerror(errno) {
-    const text = {
-        EPERM: 'Operation not permitted', ENOENT: 'No such file or directory', EIO: 'Input/output error',
-        EACCES: 'Permission denied', EEXIST: 'File exists', ENOTDIR: 'Not a directory', EISDIR: 'Is a directory',
-        EINVAL: 'Invalid argument', ENOSPC: 'No space left on device', EROFS: 'Read-only file system',
-        ELOOP: 'Too many levels of symbolic links', ENAMETOOLONG: 'File name too long', EBUSY: 'Device or resource busy',
-        ENOTSUP: 'Operation not supported', EOPNOTSUPP: 'Operation not supported', EDQUOT: 'Disk quota exceeded',
-    };
-    return text[errno] ?? errno;
 }
 /**
  * touch, as GNU touch: each file's atime and mtime to now, to a -d date, a
@@ -2994,17 +2972,17 @@ function mkTouch(vfs) {
                 catch (e) {
                     const errno = touchErrno(e);
                     if (openErrno) {
-                        await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(openErrno)}\n`);
+                        await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror({ code: openErrno })}\n`);
                         code = 1;
                     }
                     else if (!(noCreate && errno === 'ENOENT')) {
-                        await ctx.stderr.write(`touch: setting times of '${f}': ${strerror(errno)}\n`);
+                        await ctx.stderr.write(`touch: setting times of '${f}': ${strerror({ code: errno })}\n`);
                         code = 1;
                     }
                 }
             }
             catch (e) {
-                await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(touchErrno(e))}\n`);
+                await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(e)}\n`);
                 code = 1;
             }
         }
@@ -3337,7 +3315,7 @@ function mkBase64(vfs) {
                 bytes = (await vfs.readFile(resolvePath(ctx.cwd, file)));
             }
             catch (error) {
-                (await ctx.stderr.write(`base64: ${file}: ${fsErrorMessage(error)}\n`));
+                (await ctx.stderr.write(`base64: ${file}: ${strerror(error)}\n`));
                 return 1;
             }
         }
@@ -4652,7 +4630,7 @@ class DumpByteSource {
                 return true;
             }
             catch (error) {
-                (await this.ctx.stderr.write(`${this.label}: ${file}: ${fsErrorMessage(error)}\n`));
+                (await this.ctx.stderr.write(`${this.label}: ${file}: ${strerror(error)}\n`));
                 this.failures++;
             }
         }
@@ -5365,7 +5343,7 @@ function mkXxd() {
                 (await ctx.vfs.writeRange(outAbs, fileOffset, encode(pending.join(''))));
             }
             catch (error) {
-                (await ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`));
+                (await ctx.stderr.write(`xxd: ${output}: ${strerror(error)}\n`));
                 writeFailed = true;
                 return;
             }
@@ -5391,7 +5369,7 @@ function mkXxd() {
                 (await ctx.vfs.writeFile(outAbs, ''));
             }
             catch (error) {
-                (await ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`));
+                (await ctx.stderr.write(`xxd: ${output}: ${strerror(error)}\n`));
                 return 1;
             }
         }

@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
-import { fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 // GNU tee (coreutils 9.7) on bytes, streaming: standard input to standard
 // output and every FILE as it arrives. -a appends; a FILE that cannot be
 // opened is reported and the rest still get the input (status 1); -i, -p and
@@ -56,7 +57,7 @@ const command = async (ctx) => {
             outputs.push({ path, offset: 0 });
         }
         catch (error) {
-            await ctx.stderr.write(`tee: ${file}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`tee: ${file}: ${strerror(error)}\n`);
             status = 1;
         }
     }
@@ -74,7 +75,7 @@ const command = async (ctx) => {
                 }
             }
             catch (error) {
-                await ctx.stderr.write(`tee: ${out.path}: ${fsErrorText(error)}\n`);
+                await ctx.stderr.write(`tee: ${out.path}: ${strerror(error)}\n`);
                 status = 1;
             }
         }

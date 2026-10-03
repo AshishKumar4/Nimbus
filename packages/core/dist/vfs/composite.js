@@ -1,4 +1,5 @@
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
+import { normalizeVfsPath } from './path.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -85,16 +86,7 @@ function firstComponent(path) {
 }
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export function normalizePath(path) {
-    const out = [];
-    for (const segment of String(path).split('/')) {
-        if (segment === '' || segment === '.')
-            continue;
-        if (segment === '..')
-            out.pop();
-        else
-            out.push(segment);
-    }
-    return `/${out.join('/')}`;
+    return `/${normalizeVfsPath(String(path))}`;
 }
 function parentOf(path) {
     const cut = path.lastIndexOf('/');

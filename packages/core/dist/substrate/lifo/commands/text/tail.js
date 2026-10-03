@@ -1,4 +1,5 @@
-import { concatBytes, fsErrorText, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
+import { concatBytes, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 class TailUsage extends Error {
 }
 function parseCount(value, unit) {
@@ -96,7 +97,7 @@ const command = async (ctx) => {
             bytes = concatBytes(parts);
         }
         catch (error) {
-            await ctx.stderr.write(`tail: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`tail: cannot open '${file}' for reading: ${strerror(error)}\n`);
             status = 1;
             continue;
         }

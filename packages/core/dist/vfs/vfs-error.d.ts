@@ -12,6 +12,8 @@ export interface VfsErrorOptions extends ErrorOptions {
     syscall?: string;
     /** The second path of a call that names two (rename, copyfile, symlink). */
     dest?: string;
+    /** Why, in Nimbus's words, where it knows more than the code says (`use u+x`). */
+    detail?: string;
 }
 export declare class VfsError extends Error {
     readonly code: VfsErrorCode;
@@ -19,6 +21,7 @@ export declare class VfsError extends Error {
     readonly errno: number;
     readonly syscall?: string;
     readonly dest?: string;
+    readonly detail?: string;
     /**
      * `message` is what Node's message says before the path: the description
      * and the syscall (`no such file or directory, open`). The path follows it
@@ -34,9 +37,7 @@ export declare class VfsError extends Error {
  * `detail` stands in libuv's description where Nimbus knows the reason
  * (`/m is mounted read-only, open '/m/x'`).
  */
-export declare function syscallError(code: VfsErrorCode, syscall: string, path?: string, options?: VfsErrorOptions & {
-    detail?: string;
-}): VfsError;
+export declare function syscallError(code: VfsErrorCode, syscall: string, path?: string, options?: VfsErrorOptions): VfsError;
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
 export declare function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsError;
 export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;
@@ -47,6 +48,7 @@ export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;
  * error's own where it names one. The layer's error is the cause.
  * A VfsError naming a call or a path is returned as it is; one naming
  * neither (a storage quota's) keeps its words and gains this call's.
+ * A layer's own reason (`detail`) is kept as the description.
  * Anything without a known code is returned as it is.
  */
 export declare function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown;
@@ -66,6 +68,11 @@ export declare const RENAME_REFUSALS: ReadonlySet<VfsErrorCode>;
  */
 export type RenameOutcome = 'none' | 'all';
 export declare function renameOutcome(error: unknown): RenameOutcome | undefined;
+/**
+ * What GNU coreutils print for a filesystem error after the operand: the
+ * refusal's own reason where Nimbus gives one, else strerror(3) for its code.
+ */
+export declare function strerror(error: unknown): string;
 /** strerror(3) for a code: the text GNU coreutils print. */
 export declare const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>>;
 /**

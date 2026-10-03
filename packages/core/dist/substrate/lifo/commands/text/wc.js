@@ -1,4 +1,5 @@
-import { asciiBytes, fsErrorText, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 /** glibc's iswspace in a UTF-8 locale. */
 function isSpace(cp) {
     return (cp >= 9 && cp <= 13) || cp === 32 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x2006)
@@ -175,7 +176,7 @@ const command = async (ctx) => {
             results.push({ label: file, counts: counter.finish(), regular: file !== undefined && file !== '-' });
         }
         catch (error) {
-            await ctx.stderr.write(`wc: ${file}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`wc: ${file}: ${strerror(error)}\n`);
             status = 1;
             results.push({ label: file, counts: null, regular: false });
         }

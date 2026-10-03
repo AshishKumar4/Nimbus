@@ -1,5 +1,6 @@
-import { concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 // GNU tac (coreutils 9.7) on bytes: records in reverse order, each keeping
 // its separator (after it, or before it with -b); -s STRING, -r (the
 // separator is a basic regular expression). A last record without its
@@ -82,7 +83,7 @@ const command = async (ctx) => {
             bytes = concatBytes(parts);
         }
         catch (error) {
-            await ctx.stderr.write(`tac: failed to open '${file}' for reading: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`tac: failed to open '${file}' for reading: ${strerror(error)}\n`);
             status = 1;
             continue;
         }

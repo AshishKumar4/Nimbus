@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
-import { asciiBytes, concatBytes, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 const isBlank = (b) => b === 0x20 || b === 0x09;
 const upper = (b) => (b >= 0x61 && b <= 0x7a ? b - 32 : b);
 const command = async (ctx) => {
@@ -120,7 +121,7 @@ const command = async (ctx) => {
         input = concatBytes(parts);
     }
     catch (error) {
-        await ctx.stderr.write(`uniq: ${operands[0]}: ${fsErrorText(error)}\n`);
+        await ctx.stderr.write(`uniq: ${operands[0]}: ${strerror(error)}\n`);
         return 1;
     }
     const lines = [];
@@ -205,7 +206,7 @@ const command = async (ctx) => {
             await ctx.vfs.writeFile(resolve(ctx.cwd, operands[1]), bytes);
         }
         catch (error) {
-            await ctx.stderr.write(`uniq: ${operands[1]}: ${fsErrorText(error)}\n`);
+            await ctx.stderr.write(`uniq: ${operands[1]}: ${strerror(error)}\n`);
             return 1;
         }
         return 0;
