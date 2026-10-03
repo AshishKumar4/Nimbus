@@ -84,6 +84,12 @@ export type SupervisorAnswer = {
 /** The refusal `error` is, or undefined when it is not one (no string `code`) and must still throw. */
 export declare function supervisorRefusal(error: unknown): SupervisorRefusal | undefined;
 /**
+ * `call`'s outcome as `answer` resolves it: its value, or its refusal. A
+ * failure without a code is thrown. SupervisorRPC.answer runs its method
+ * through this, and so does any double of it.
+ */
+export declare function supervisorAnswer(call: () => unknown): Promise<SupervisorAnswer>;
+/**
  * The error `refusal` was, as the facet received it when SupervisorRPC threw
  * it: a new error of the thrower's type, its message, its own properties, and
  * no stack of the thrower's (src/workerd/jsg/ser.c++, with

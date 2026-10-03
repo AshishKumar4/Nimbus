@@ -56,7 +56,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { isSupervisorAnsweredMethod, supervisorRefusal, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { isSupervisorAnsweredMethod, supervisorAnswer, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { fsReadBatchRequestBytes } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 /**
@@ -255,15 +255,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         if (!isSupervisorAnsweredMethod(method) || !Array.isArray(args)) {
             throw new TypeError(`SupervisorRPC.answer: ${JSON.stringify(method)} is not a filesystem call`);
         }
-        try {
-            return { value: await Reflect.apply(this[method], this, args) };
-        }
-        catch (error) {
-            const refusal = supervisorRefusal(error);
-            if (refusal === undefined)
-                throw error;
-            return { refusal };
-        }
+        return supervisorAnswer(() => Reflect.apply(this[method], this, args));
     }
     async readFile(path) {
         return this._call(this._fsRead('readFile', [path]));
