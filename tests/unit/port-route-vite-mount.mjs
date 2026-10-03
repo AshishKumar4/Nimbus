@@ -97,6 +97,10 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
       return files.has(p) || dirs.has(p);
     },
     isDirectory: (p) => dirs.has(p),
+    // Every file here is readable: the server checks its principal may read a module before bundling it.
+    access: (p) => {
+      if (!files.has(p) && !dirs.has(p)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    },
     readdir: (dir) => {
       if (!dirs.has(dir)) throw new Error(`ENOENT: ${dir}`);
       const names = new Map();
