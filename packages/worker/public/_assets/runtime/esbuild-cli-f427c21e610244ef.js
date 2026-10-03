@@ -679,6 +679,9 @@ return globalThis.Go;
     for (const [key, value] of Object.entries(refusal.properties)) {
       Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
     }
+    for (const [key, value] of Object.entries(refusal.errors)) {
+      Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
+    }
     return error;
   }
   function isAnsweringStub(supervisor) {

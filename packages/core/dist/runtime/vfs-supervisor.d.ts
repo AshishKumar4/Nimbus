@@ -71,12 +71,16 @@ export declare function isSupervisorAnsweredMethod(name: unknown): name is Super
  * A refusal as it crosses the hop: what workerd's enhanced_error_serialization
  * carries of a thrown error, as data. `properties` are the error's own ones
  * but `message` and `stack`: `code`, `errno`, `syscall`, `path`, `dest`,
- * `detail`, `cause`, whatever the host set (`name` too, when it is its own).
+ * `detail`, whatever the host set (`name` too, when it is its own). An error
+ * among them (a `cause`) is in `errors`, as data of the same shape: inside
+ * a returned value it would cross as a structured clone, which keeps only
+ * its message.
  */
 export interface SupervisorRefusal {
     readonly name: string;
     readonly message: string;
     readonly properties: Readonly<Record<string, unknown>>;
+    readonly errors: Readonly<Record<string, SupervisorRefusal>>;
 }
 /** What `answer` resolves with: the call's own value, or the refusal it was. */
 export type SupervisorAnswer = {

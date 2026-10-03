@@ -105,12 +105,21 @@ export function isSupervisorAnsweredMethod(name) {
 export function supervisorRefusal(error) {
     if (!(error instanceof Error) || typeof Reflect.get(error, 'code') !== 'string')
         return undefined;
+    return errorData(error);
+}
+function errorData(error) {
     const properties = {};
+    const errors = {};
     for (const key of Object.getOwnPropertyNames(error)) {
-        if (key !== 'message' && key !== 'stack')
-            properties[key] = Reflect.get(error, key);
+        if (key === 'message' || key === 'stack')
+            continue;
+        const value = Reflect.get(error, key);
+        if (value instanceof Error)
+            errors[key] = errorData(value);
+        else
+            properties[key] = value;
     }
-    return { name: error.name, message: error.message, properties };
+    return { name: error.name, message: error.message, properties, errors };
 }
 /**
  * `call`'s outcome as `answer` resolves it: its value, or its refusal. A
@@ -146,6 +155,9 @@ export function supervisorRefusalError(refusal) {
     }
     for (const [key, value] of Object.entries(refusal.properties)) {
         Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
+    }
+    for (const [key, value] of Object.entries(refusal.errors)) {
+        Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
     }
     return error;
 }
