@@ -34,4 +34,14 @@ for (const [line, expected] of cases) {
   assert.equal(result.stderr.trim(), expected, line);
 }
 
+// tree (2.3.1) names the directory as the caller wrote it, the first operand
+// included when no `-L` is given, and refuses one it cannot open with 2.
+await ws.exec('mkdir -p /tmp/t/a && touch /tmp/t/f');
+const tree = await ws.exec('cd /tmp && tree t');
+assert.equal(tree.exitCode, 0);
+assert.equal(tree.stdout, 't\n├── a\n└── f\n\n1 directories, 1 files\n');
+const missing = await ws.exec('tree /tmp/spoon');
+assert.equal(missing.exitCode, 2);
+assert.equal(missing.stdout, '/tmp/spoon  [error opening dir]\n\n0 directories, 0 files\n');
+
 console.log('shell-error-paths: ok');
