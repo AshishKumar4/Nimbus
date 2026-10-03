@@ -303,7 +303,7 @@ export interface RuntimeFsBridge {
      * link itself. On a mount whose backend resolves its own paths an absolute
      * target re-roots at the mount point; any other link leads to its text.
      */
-    linkLeadsTo(path: string, link: string): Awaitable<string>;
+    linkLeadsTo(path: string, link: string): Awaitable<string | null>;
     symlink(target: string, path: RuntimeFsPath): Awaitable<void>;
     fsync(handleId?: number): Awaitable<void>;
     /**

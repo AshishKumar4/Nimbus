@@ -191,7 +191,7 @@ export declare class ProcessView implements VFS {
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
-    linkLeadsTo(path: string, link: string): Promise<string>;
+    linkLeadsTo(path: string, link: string): Promise<string | null>;
     chmod(path: string, mode: number): Promise<void>;
     /** chown(2): a null side keeps what the file has (chown -1). */
     chown(path: string, uid: number | null, gid: number | null): Promise<void>;

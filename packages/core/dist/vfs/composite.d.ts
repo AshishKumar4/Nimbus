@@ -271,11 +271,15 @@ export declare class CompositeVFS implements VFS {
      * that follows the link itself. A mount whose backend resolves its own
      * paths reads its links from its own root, so an absolute target re-roots
      * at the mount point and a relative one climbs no higher than it; either
-     * comes back as the namespace path it leads to. Any other link leads to
-     * its text. readlink answers the text, as written, so a copied link is the
-     * same link.
+     * comes back as the namespace path it leads to. Null when that name is
+     * another mount's (a mount nested in this one covers it): the backend
+     * follows the link to its own file, which the namespace has no name for,
+     * so a caller hands the link's own path to the namespace instead (whose
+     * backend follows it) or takes what it leads to as unknown. Any other
+     * link leads to its text. readlink answers the text, as written, so a
+     * copied link is the same link.
      */
-    linkLeadsTo(path: string, link: string): string;
+    linkLeadsTo(path: string, link: string): string | null;
     /**
      * `input` with every link the namespace follows resolved. Inside a mount
      * whose backend resolves its own paths the links are the backend's: the

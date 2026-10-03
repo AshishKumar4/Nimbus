@@ -417,14 +417,23 @@ export class CompositeVFS {
             for (const { name, stat } of fresh)
                 if (stat.type !== 'symlink')
                     put(`${dir}/${name}`, stat);
+            // A link the namespace cannot name the target of (one it cannot read,
+            // or one its backend follows to a name a nested mount covers) is left
+            // out, and its directory is then not listed: what it leads to is not
+            // known, rather than absent.
+            let named = true;
             for (let i = 0; i < links.length; i += WALK_CONCURRENCY) {
                 await Promise.all(links.slice(i, i + WALK_CONCURRENCY).map(async ({ name, stat }) => {
                     const target = await this.readlink(`${dir}/${name}`).catch(() => null);
-                    if (target !== null)
-                        put(`${dir}/${name}`, stat, this.linkLeadsTo(`${dir}/${name}`, target));
+                    const leads = target === null ? null : this.linkLeadsTo(`${dir}/${name}`, target);
+                    if (leads === null)
+                        named = false;
+                    else
+                        put(`${dir}/${name}`, stat, leads);
                 }));
             }
-            listed.add(dir);
+            if (named)
+                listed.add(dir);
             return entries.filter(({ stat }) => stat.type === 'directory').map(({ name }) => `${dir}/${name}`);
         };
         // Top down, a depth at a time: each directory is named by its parent's listing before its own.
@@ -563,16 +572,21 @@ export class CompositeVFS {
      * that follows the link itself. A mount whose backend resolves its own
      * paths reads its links from its own root, so an absolute target re-roots
      * at the mount point and a relative one climbs no higher than it; either
-     * comes back as the namespace path it leads to. Any other link leads to
-     * its text. readlink answers the text, as written, so a copied link is the
-     * same link.
+     * comes back as the namespace path it leads to. Null when that name is
+     * another mount's (a mount nested in this one covers it): the backend
+     * follows the link to its own file, which the namespace has no name for,
+     * so a caller hands the link's own path to the namespace instead (whose
+     * backend follows it) or takes what it leads to as unknown. Any other
+     * link leads to its text. readlink answers the text, as written, so a
+     * copied link is the same link.
      */
     linkLeadsTo(path, link) {
         const route = this.route(normalizePath(path));
         if (!route.mount.options.resolvesPaths)
             return link;
         const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(route.rel)}/${link}`);
-        return inBackend === ROOT_POINT ? route.mount.point : `${route.mount.point}${inBackend}`;
+        const leads = inBackend === ROOT_POINT ? route.mount.point : `${route.mount.point}${inBackend}`;
+        return this.route(leads).mount === route.mount ? leads : null;
     }
     /**
      * `input` with every link the namespace follows resolved. Inside a mount

@@ -870,7 +870,12 @@ export class SqliteRuntimeFsBridge {
         }
         return resolved.join('/');
     }
-    /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
+    /**
+     * A mounted (or composed) entry's link target, or null when it is not a
+     * link or not there, or when the namespace has no name for where it leads
+     * (linkLeadsTo): then the walk keeps the link's own name, and the
+     * namespace hands it to the backend that follows it.
+     */
     mountedLink(path) {
         let stat;
         try {
@@ -1185,6 +1190,10 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
         if (++hops > MAX_LINK_HOPS)
             return null;
         const target = (yield { readlink: '/' + candidate });
+        // A link whose target the namespace has no name for (a mount nested in
+        // its backend covers it) cannot be followed beneath the root.
+        if (target === null)
+            throw fsError('ENOTCAPABLE', 'path', path);
         if (target.startsWith('/'))
             resolved.length = 0;
         pending.unshift(...target.split('/').filter(Boolean));

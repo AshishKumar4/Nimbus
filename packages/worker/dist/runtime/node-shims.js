@@ -3169,8 +3169,20 @@ const __fsMod = (() => {
 
   async function _writeFileAsync(p, data, opts) {
     const absPath = _resolveFollow(p, "open");
-    writeFileSync(p, data, opts);
     const supervisor = _supervisor();
+    // A target the namespace cannot judge (on a mount, where the launch did
+    // not list it) is the authority's to answer for, as the async rename's
+    // destination is: written there, live, as the call named it, rather than
+    // refused because this view does not know it.
+    if (supervisor && typeof supervisor.writeFile === "function"
+        && _statLadder(absPath) === undefined && _nsUnlisted(absPath, true, false) !== null) {
+      await _announceLocalDirs(absPath, supervisor);
+      const written = await _fsRpc(supervisor.writeFile(absPath, data instanceof Uint8Array ? data : String(data)), "write", p, (result) => result);
+      _markVfsStale();
+      await _learnLive(absPath, supervisor, typeof written === "number" ? written : undefined);
+      return;
+    }
+    writeFileSync(p, data, opts);
     if (supervisor && typeof supervisor.writeFile === "function") {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
