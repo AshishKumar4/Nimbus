@@ -71,6 +71,18 @@ published independently in the `@nimbus-sh` npm scope.
   error keeps), the backend's error as the cause, and an asynchronous
   mount's refusal still marked as one. An error that is not a filesystem
   error is passed on as the backend threw it.
+- The runtime fs bridge, which node programs and the shell reach, fails with
+  Node's error for its own call. The SQLite engine's errors carry a code and
+  no call, and name a storage key, and they left the bridge as they were:
+  `fs.realpathSync` and `readdirSync` of '/home/user/w/nope/x' failed with
+  "ENOENT: home/user/w/nope", and `writeFile`, `symlink` and `mkdir` the
+  same with no path at all, which is how vite printed its entry as a
+  storage key. Each public call now names an engine error with its syscall
+  and the caller's paths (`ENOENT: no such file or directory, scandir
+  '/home/user/w/nope/x'`), the engine's error as the cause. The engine's
+  words for a refusal (a widening chmod's "use u+x") stay in that cause
+  until the engine's errors carry them.
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
