@@ -82,7 +82,7 @@ import {
   generateChokidarShimModuleCode,
 } from './real-vite-hmr.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
@@ -631,6 +631,8 @@ export class CirrusReal {
     root: string;
     basePath: string;
     vfs: SqliteVFS;
+    /** Who the server reads its project as: the credential of the process it runs under. */
+    cred: VfsCred;
     vfsEvents?: VfsEventEmitter | null;
     userConfigBundle?: string | null;
     extraSyntheticFiles?: Record<string, string>;
@@ -639,7 +641,7 @@ export class CirrusReal {
     this.port = opts.port;
     this.root = opts.root;
     this.basePath = opts.basePath;
-    this.vfs = opts.vfs.as(CRED_KERNEL);
+    this.vfs = opts.vfs.as(opts.cred);
     this.vfsEvents = opts.vfsEvents || null;
     this.userConfigBundle = opts.userConfigBundle || null;
     this.extraSyntheticFiles = opts.extraSyntheticFiles || {};

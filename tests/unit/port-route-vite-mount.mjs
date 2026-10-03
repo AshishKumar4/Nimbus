@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-port-mount-test-'));
 const build = await Bun.build({
@@ -152,7 +153,8 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
     sessionBasePathHydrated: true,
     portRegistry: new PortRegistry(),
     processes: {
-      spawn: () => ({ pid: nextPid++ }),
+      // An entry as the process table makes one: under the credential asked for, else the session user's.
+      spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }),
       appendOutput: () => {},
     },
     ctx: {
@@ -177,7 +179,9 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 }
 
 const HIBERNATED = {
-  'vite-config': { root: ROOT, basePath: PREVIEW_BASE, port: VITE_PORT },
+  'vite-config': { root: ROOT, basePath: PREVIEW_BASE, port: VITE_PORT,
+    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
+  },
 };
 
 // A request through the `<port>--<sid>` host: the router forwards it as

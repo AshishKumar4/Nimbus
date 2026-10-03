@@ -24,10 +24,10 @@ export interface ProcessEntry {
   parentPid?: number;
   /**
    * The caller's name for the exec that started this process (`execId` on
-   * exec, execStream and startProcess), taken at spawn from the parent, or,
-   * for a process started for a command but kept out of its tree (an
-   * in-process server), from the command's process (`execIdOf`), so
-   * everything an exec starts carries it. Absent when no exec named one.
+   * exec, execStream and startProcess), taken at spawn from the parent, so
+   * everything an exec starts carries it; a dev server restored after a
+   * hibernation, or a resident re-driven after a reset, is given the one it
+   * had. Absent when no exec named one.
    */
   execId?: string;
   /** Explicit long-running flag set when a command is handed to a
@@ -63,18 +63,6 @@ export function parseExecId(value: unknown): string {
     'execId must be 1 to 160 characters from A-Z a-z 0-9 . _ : - and start with a letter or digit, got '
       + (typeof value === 'string' ? `${value.length} characters` : typeof value),
   );
-}
-
-/**
- * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process started for a command but kept out of its tree (an
- * in-process server) takes from the command's process.
- */
-export function execIdOf(
-  processes: { get(pid: number): ProcessEntry | undefined },
-  pid: number | undefined,
-): string | undefined {
-  return pid === undefined ? undefined : processes.get(pid)?.execId;
 }
 
 /**

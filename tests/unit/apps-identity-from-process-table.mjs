@@ -297,8 +297,8 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   const identity = await first.fm.residentIdentity(pid);
   assert.match(identity.owner, /^auto:[a-f0-9]{24}$/, 'the in-process dev server has a derived identity');
   const persisted = await first.ctx.storage.get('vite-config');
-  assert.deepEqual(persisted.identity, { cwd: first.processes.get(pid).cwd, argv: first.processes.get(pid).argv },
-    'the identity inputs are persisted with the dev-server config');
+  assert.deepEqual(persisted.identity, { cwd: first.processes.get(pid).cwd, argv: first.processes.get(pid).argv, cred: first.processes.get(pid).cred },
+    'the identity inputs are persisted with the dev-server config, and who it ran as');
 
   const exposed = await rpcExposeApp(first.self, 5173, { visibility: 'public', name: 'web' });
   assert.equal(exposed.owner, identity.owner);

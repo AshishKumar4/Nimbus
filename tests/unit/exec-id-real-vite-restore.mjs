@@ -20,6 +20,7 @@ import { pathToFileURL } from 'node:url';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const root = new URL('../../', import.meta.url).pathname;
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-exec-id-real-vite-'));
@@ -125,12 +126,12 @@ first.ensureSqliteFs();
 // What the `vite` builtin hands it when an exec named 'j1' ran `vite --port 5173`.
 await realVite(first, {
   root: ROOT, port: PORT, basePath: `${BASE_PATH}/preview`, configDir: ROOT,
-  identity: { cwd: `/${ROOT}`, argv: ['vite', '--port', String(PORT)], execId: 'j1' },
+  identity: { cwd: `/${ROOT}`, argv: ['vite', '--port', String(PORT)], cred: CRED_SESSION_USER, execId: 'j1' },
 });
 const served = first.processes.get(first.portRegistry.get(PORT).pid);
 assert.equal(served.execId, 'j1', 'the dev server carries the execId of the command that started it');
-assert.deepEqual(store.get('vite-config').identity, { cwd: `/${ROOT}`, argv: ['vite', '--port', String(PORT)], execId: 'j1' },
-  'the persisted identity carries the execId');
+assert.deepEqual(store.get('vite-config').identity, { cwd: `/${ROOT}`, argv: ['vite', '--port', String(PORT)], cred: CRED_SESSION_USER, execId: 'j1' },
+  'the persisted identity carries the execId, and the credential it ran as');
 console.log('  [1] a real-vite server started by an exec carries its execId and persists it');
 
 // Hibernation: a new instance over the same storage, nothing in memory.
@@ -143,14 +144,13 @@ assert.deepEqual({ cwd: restored.cwd, argv: restored.argv, execId: restored.exec
   'the restored server is given the persisted identity, its execId included');
 console.log('  [2] a hibernation restores it with the persisted cwd, argv and execId');
 
-// A config written before identity was persisted restores as it always did.
+// A config written before it recorded who the server ran as is not
+// restored: it would read the project as someone else.
 const legacy = new Map([['vite-config', { devServer: 'real', root: ROOT, port: PORT, basePath: `${BASE_PATH}/preview`, configDir: ROOT }]]);
 const old = session(legacy, 3);
 const oldRes = await routes.handleFetch(old, new Request(`https://nimbus-os.dev/port/${PORT}/`, { headers: { 'X-Nimbus-Base': '' } }));
-assert.equal(oldRes.status, 200);
-const oldEntry = old.processes.get(old.portRegistry.get(PORT).pid);
-assert.deepEqual({ cwd: oldEntry.cwd, argv: oldEntry.argv, execId: oldEntry.execId }, { cwd: ROOT, argv: [], execId: undefined },
-  'a config without an identity restores at its root, unnamed');
-console.log('  [3] a config persisted before identities restores unchanged');
+assert.notEqual(oldRes.status, 200, 'nothing serves the port');
+assert.equal(old.portRegistry.get(PORT), undefined, 'and no server was started for it');
+console.log('  [3] a config persisted before credentials is not restored');
 
 console.log('exec-id-real-vite-restore OK');

@@ -23,7 +23,7 @@
  */
 
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -57,6 +57,12 @@ import {
 
 export interface ViteDevServerOptions {
   vfs: SqliteVFS;
+  /**
+   * Who the server reads and writes as: the credential of the process it
+   * runs under, the command that started it. Everything it serves, bundles
+   * or synthesizes goes through the VFS as this principal.
+   */
+  cred: VfsCred;
   esbuild: EsbuildService;
   /** Root directory in VFS (e.g. "home/user/projects") */
   root: string;
@@ -1309,7 +1315,7 @@ export class ViteDevServer {
   private logSink: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void } | null = null;
 
   constructor(opts: ViteDevServerOptions) {
-    this.vfs = opts.vfs.as(CRED_KERNEL);
+    this.vfs = opts.vfs.as(opts.cred);
     this.vfsEvents = opts.vfs.events;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
@@ -1690,9 +1696,17 @@ export class ViteDevServer {
         });
       }
 
-      // Serve from VFS (with transforms for TS/TSX/JSX)
-      return this.serveFile(request, pathname, query, headers, base);
+      // Serve from VFS (with transforms for TS/TSX/JSX). Awaited, so a
+      // read the server's principal is refused lands in the catch below.
+      return await this.serveFile(request, pathname, query, headers, base);
     } catch (e: any) {
+      // The server reads as the principal who started it: a file that
+      // principal may not read is forbidden, not an error of the server's.
+      if (e?.code === 'EACCES' || e?.code === 'EPERM') {
+        return new Response('403 Forbidden: ' + pathname, {
+          status: 403, headers: { ...headers, 'Content-Type': 'text/plain' },
+        });
+      }
       return new Response(`500 Internal Server Error: ${e?.message}`, {
         status: 500, headers: { ...headers, 'Content-Type': 'text/plain' },
       });
@@ -2111,6 +2125,7 @@ export class ViteDevServer {
               // Base-neutral (see the pooled build above).
               define: this.defineFor(''),
               external: externals.length > 0 ? externals : undefined,
+              fs: this.vfs,
             });
             if (result.outputFiles?.length) {
               bundled = result.outputFiles[0].contents;
