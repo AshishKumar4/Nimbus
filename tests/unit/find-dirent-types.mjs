@@ -98,7 +98,7 @@ const isFile = (path) => /\/f\d$/.test(path);
   const untyped = await ws.exec('tree -L 5 /untyped');
   const typed = await ws.exec('tree -L 5 /typed');
   assert.equal(untyped.stdout.split('\n').at(-2), '20 directories, 105 files', 'tree walks an untyped directory as a directory');
-  assert.equal(untyped.stdout.replace(/^untyped/, ''), typed.stdout.replace(/^typed/, ''), 'and draws the tree a typed listing gives');
+  assert.equal(untyped.stdout.replace(/^\/untyped/, ''), typed.stdout.replace(/^\/typed/, ''), 'and draws the tree a typed listing gives');
   const completion = await complete({
     line: 'cd /untyped/', cursorPos: 'cd /untyped/'.length, cwd: '/', env: {}, vfs: view, registry: ws.registry, builtinNames: [],
   });
