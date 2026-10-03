@@ -121,6 +121,21 @@ export default { fetch() { return Response.json({ cjs: cjs.value, named, esm, tw
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
     files: { 'src/index.js': "import './missing.js';\nexport const a = () => require('./missing.js');\nexport const b = () => require('./missing.js');\nimport './missing.js';\nexport const c = () => import('./missing.js');\nexport default { fetch() { return new Response('x'); } };" },
   },
+  // A call of a `require` the code binds itself is not an import: the real
+  // require's error is placed at the real require, after every shadowing form.
+  'worker-unresolved-shadowed-require': {
+    options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
+    files: { 'src/index.js': [
+      "function fake(require) { return require('./missing.js'); }",
+      "const arrow = ({ require }) => require('./missing.js');",
+      "function hoisted() { if (fake) { var require = String; } return require('./missing.js'); }",
+      "{ const require = String; require('./missing.js'); }",
+      "try { fake(); } catch (require) { require('./missing.js'); }",
+      "const named = function require() { return require('./missing.js'); };",
+      "export const real = () => require('./missing.js');",
+      "export default { fetch() { return new Response(String(fake && arrow && hoisted && named)); } };",
+    ].join('\n') },
+  },
   // Every import that does not resolve is an error, in esbuild's order (file, line, column), with the other errors.
   'worker-unresolved-every-import': {
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',

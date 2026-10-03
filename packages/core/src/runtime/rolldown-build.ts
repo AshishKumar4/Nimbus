@@ -83,7 +83,9 @@ type ImportKind = 'import-statement' | 'dynamic-import' | 'require-call';
  * by the parser, so a same-text string elsewhere in the file, or an import of
  * another kind, does not stand in for it. esbuild reports an unresolved
  * import once per specifier and kind, at its first occurrence, and so does
- * this. Keyed `<kind>\0<specifier>`.
+ * this. Keyed `<kind>\0<specifier>`. A call of a `require` the code binds
+ * itself (a parameter, a declaration, a catch binding, a function's own
+ * name) is not an import, to esbuild or to rolldown, and is skipped.
  */
 function importSpans(module: Loaded, parse: Parse): Map<string, [number, number]> {
   const spans = new Map<string, [number, number]>();
@@ -100,13 +102,14 @@ function importSpans(module: Loaded, parse: Parse): Map<string, [number, number]
     const known = spans.get(key);
     if (!known || n.start < known[0]) spans.set(key, [n.start, n.end]);
   };
-  const visit = (node: unknown): void => {
+  const visit = (node: unknown, shadowed: boolean): void => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
-      for (const child of node) visit(child);
+      for (const child of node) visit(child, shadowed);
       return;
     }
     const n = node as Record<string, unknown>;
+    shadowed ||= bindsRequire(n);
     switch (n.type) {
       case 'ImportDeclaration': case 'ExportNamedDeclaration': case 'ExportAllDeclaration':
         literal('import-statement', n.source);
@@ -119,14 +122,86 @@ function importSpans(module: Loaded, parse: Parse): Map<string, [number, number]
         break;
       case 'CallExpression': {
         const callee = n.callee as { type?: string; name?: string } | undefined;
-        if (callee?.type === 'Identifier' && callee.name === 'require') literal('require-call', (n.arguments as unknown[] | undefined)?.[0]);
+        if (!shadowed && callee?.type === 'Identifier' && callee.name === 'require') literal('require-call', (n.arguments as unknown[] | undefined)?.[0]);
         break;
       }
     }
-    for (const [key, child] of Object.entries(n)) if (key !== 'parent') visit(child);
+    for (const [key, child] of Object.entries(n)) if (key !== 'parent') visit(child, shadowed);
   };
-  visit(program);
+  visit(program, false);
   return spans;
+}
+
+type AstNode = Record<string, unknown> & { type?: string };
+
+/** Whether a binding pattern (`require`, `{ require }`, `[require]`, `...require`, `require = x`) binds `require`. */
+function patternBindsRequire(pattern: unknown): boolean {
+  const p = pattern as AstNode | null;
+  if (!p || typeof p !== 'object') return false;
+  switch (p.type) {
+    case 'Identifier': return p.name === 'require';
+    case 'AssignmentPattern': return patternBindsRequire(p.left);
+    case 'RestElement': return patternBindsRequire(p.argument);
+    case 'ArrayPattern': return (p.elements as unknown[]).some(patternBindsRequire);
+    case 'ObjectPattern': return (p.properties as AstNode[]).some((q) => patternBindsRequire(q.type === 'RestElement' ? q.argument : q.value));
+    default: return false;
+  }
+}
+
+/** Whether `node`'s scope binds `require` for everything inside it. */
+function bindsRequire(node: AstNode): boolean {
+  switch (node.type) {
+    case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+      return (node.type === 'FunctionExpression' && patternBindsRequire(node.id))
+        || (node.params as unknown[]).some(patternBindsRequire)
+        || hoistsRequire(node.body, true);
+    case 'Program':
+      return hoistsRequire(node.body, true) || (node.body as AstNode[]).some((s) => s.type === 'ImportDeclaration'
+        && (s.specifiers as AstNode[]).some((spec) => patternBindsRequire(spec.local)));
+    case 'BlockStatement': case 'StaticBlock': case 'SwitchCase':
+      return hoistsRequire(node.type === 'SwitchCase' ? node.consequent : node.body, false);
+    case 'CatchClause':
+      return patternBindsRequire(node.param);
+    case 'ForStatement': case 'ForInStatement': case 'ForOfStatement': {
+      const head = (node.type === 'ForStatement' ? node.init : node.left) as AstNode | null;
+      return head?.type === 'VariableDeclaration' && (head.declarations as AstNode[]).some((d) => patternBindsRequire(d.id));
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether statements declare `require`: by let, const, class or function
+ * among them, and, for a function's or the program's body (`varScope`), by a
+ * `var` anywhere in it outside nested functions.
+ */
+function hoistsRequire(body: unknown, varScope: boolean): boolean {
+  const statements = (Array.isArray(body) ? body : (body as AstNode | null)?.type === 'BlockStatement' ? (body as AstNode).body : []) as AstNode[];
+  for (const statement of statements) {
+    const declared = statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportDefaultDeclaration' ? (statement.declaration as AstNode | null) : statement;
+    if (!declared) continue;
+    if ((declared.type === 'FunctionDeclaration' || declared.type === 'ClassDeclaration') && patternBindsRequire(declared.id)) return true;
+    if (declared.type === 'VariableDeclaration' && declared.kind !== 'var' && (declared.declarations as AstNode[]).some((d) => patternBindsRequire(d.id))) return true;
+  }
+  if (!varScope) return false;
+  let found = false;
+  const visitVars = (node: unknown): void => {
+    if (found || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) visitVars(child);
+      return;
+    }
+    const n = node as AstNode;
+    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
+    if (n.type === 'VariableDeclaration' && n.kind === 'var' && (n.declarations as AstNode[]).some((d) => patternBindsRequire(d.id))) {
+      found = true;
+      return;
+    }
+    for (const [key, child] of Object.entries(n)) if (key !== 'parent') visitVars(child);
+  };
+  visitVars(statements);
+  return found;
 }
 
 const utf8Length = (text: string) => new TextEncoder().encode(text).length;

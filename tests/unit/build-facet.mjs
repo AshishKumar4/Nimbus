@@ -20,6 +20,7 @@ import { CASES, FILES, NODE_MODULES } from '../fixtures/prebundle-differential/p
 import { prebundleSlice } from '../../packages/core/src/runtime/prebundle-slice.ts';
 import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
 import { PRE_BUNDLE_CONCURRENCY } from '../../packages/platform/src/limits.ts';
+import { DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats } from '../../packages/fabric/src/budgets.ts';
 import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 
 const MiB = 1024 * 1024;
@@ -90,19 +91,34 @@ try {
   }
 
   // ── A binding grown past its mark is left behind after the call ─────────────
-  // 150,000 object literals (3.1 MiB of source) grow it to about 90 MiB.
+  // 150,000 object literals (3.1 MiB of source) grow it to about 90 MiB. A
+  // build beside it on the same binding is still in flight when the next one
+  // starts on a fresh isolate: two workers at once, each counted by the
+  // Durable Object's Dynamic Worker ledger under its own id.
   {
-    const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet);
+    const slowEntry = '/home/user/slow/b.js';
+    const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, {
+      deliveryDelayMs: (_call, options) => (options?.entryPoints?.[0] === slowEntry ? 2_000 : 0),
+    });
     const host = rolldownBuildHost(ctx, env);
     const big = memoryFs('big', { 'a.js': `export const a = [${Array.from({ length: 150_000 }, (_, i) => `{x:${i},y:"s${i}"}`).join(',')}];` });
     const small = PROJECTS['worker-routes'];
+    const slow = new EsbuildService(memoryFs('slow', { 'b.js': 'export const b = 2;' }), { buildHost: host }).build([slowEntry], WRANGLER_OPTIONS);
     const built = await new EsbuildService(big, { buildHost: host }).build(['/home/user/big/a.js'], WRANGLER_OPTIONS);
     assert.ok(built.outputFiles[0].contents.length > 3_000_000, 'the big build answers');
     assert.ok(memories.at(-1).buffer.byteLength > 64 * MiB, `${memories.at(-1).buffer.byteLength / MiB} MiB`);
-    assert.equal(counts.aborted.length, 1, 'its facet is aborted once the call is answered');
-    await new EsbuildService(memoryFs('worker-routes', small.files), { buildHost: host }).build([`/home/user/worker-routes/${small.entry}`], small.options);
+    assert.equal(counts.aborted.length, 0, 'its facet is not aborted while a call on it is in flight');
+    const next = new EsbuildService(memoryFs('worker-routes', small.files), { buildHost: host }).build([`/home/user/worker-routes/${small.entry}`], small.options);
+    for (let i = 0; i < 200 && counts.loaderIds.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const [first, fresh] = counts.loaderIds;
+    assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers.sort(), [first, fresh].sort(), 'both generations are in flight, each under its own id');
+    assert.equal(loaderLedgerStats(ctx).headroom, DO_DYNAMIC_WORKER_LIMIT - 2);
+    await next;
     assert.equal(counts.loaderIds.length, 2, 'the next build starts a fresh isolate');
-    console.log(`  ok  a binding grown past 64 MiB (${(memories.at(-2).buffer.byteLength / MiB).toFixed(0)} MiB) is left behind; the next build starts a fresh isolate`);
+    await slow;
+    assert.deepEqual(counts.aborted, [first], 'the retired facet is aborted once its last call is answered');
+    assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'and the ledger holds nothing');
+    console.log(`  ok  a binding grown past 64 MiB (${(memories.at(-2).buffer.byteLength / MiB).toFixed(0)} MiB) is left behind; the next build starts a fresh isolate, each generation counted as its own worker`);
   }
 
   // ── Pre-bundles run in the same facet, from their slices, one at a time ─────

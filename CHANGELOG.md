@@ -50,6 +50,13 @@ published independently in the `@nimbus-sh` npm scope.
   the call. A `binary` module that is required rather than imported is its
   bytes, as esbuild's is, and a build with no output path refuses a
   stylesheet import as esbuild does.
+- A build facet left behind with calls still in flight (its binding past
+  64 MiB) and its successor's are now counted as two Dynamic Workers on the
+  Durable Object's ledger, as the platform counts them, not one, so a
+  fan-out no longer dispatches locally past the limit; it is aborted once.
+  An unresolved `require()` is placed at a real require, not at a call of a
+  `require` the code binds itself (a parameter, a declaration, a catch
+  binding).
 - The Worker no longer bundles esbuild-wasm: its 11.36 MiB wasm was a
   compiled module of the Worker, which workerd compiled at startup in
   every isolate, every session's Durable Object included, whether or not it

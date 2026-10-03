@@ -237,6 +237,8 @@ function forgetBuildFacet(ctx: DurableObjectState, facet: SharedFacet): void {
 
 function retireFacet(ctx: DurableObjectState, facet: SharedFacet): void {
   forgetBuildFacet(ctx, facet);
+  // Once: every answer on an outgrown binding says to retire it.
+  if (facet.retired) return;
   facet.retired = true;
   if (facet.calls === 0) abortFacet(ctx, facet);
 }
@@ -249,9 +251,14 @@ function abortFacet(ctx: DurableObjectState, facet: SharedFacet): void {
   }
 }
 
-/** A call on `facet` began: it is counted until it is answered. */
+/**
+ * A call on `facet` began: it is counted until it is answered, on the
+ * Durable Object's Dynamic Worker ledger under its generation's own worker
+ * id, since a retired generation's call and the next one's can be in flight
+ * at once as two workers.
+ */
 function beginCall(ctx: DurableObjectState, facet: SharedFacet): () => void {
-  const endFetch = beginLoaderFetch(ctx, BUILD_FACET_WORKER_ID);
+  const endFetch = beginLoaderFetch(ctx, generationId(facet.generation));
   facet.calls++;
   return () => {
     endFetch();

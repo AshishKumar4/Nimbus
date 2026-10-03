@@ -7067,13 +7067,14 @@ function importSpans(module, parse2) {
     const known = spans.get(key);
     if (!known || n5.start < known[0]) spans.set(key, [n5.start, n5.end]);
   };
-  const visit = (node) => {
+  const visit = (node, shadowed) => {
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node)) {
-      for (const child of node) visit(child);
+      for (const child of node) visit(child, shadowed);
       return;
     }
     const n5 = node;
+    shadowed ||= bindsRequire(n5);
     switch (n5.type) {
       case "ImportDeclaration":
       case "ExportNamedDeclaration":
@@ -7088,14 +7089,83 @@ function importSpans(module, parse2) {
         break;
       case "CallExpression": {
         const callee = n5.callee;
-        if (callee?.type === "Identifier" && callee.name === "require") literal2("require-call", n5.arguments?.[0]);
+        if (!shadowed && callee?.type === "Identifier" && callee.name === "require") literal2("require-call", n5.arguments?.[0]);
         break;
       }
     }
-    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child);
+    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child, shadowed);
   };
-  visit(program);
+  visit(program, false);
   return spans;
+}
+function patternBindsRequire(pattern) {
+  const p = pattern;
+  if (!p || typeof p !== "object") return false;
+  switch (p.type) {
+    case "Identifier":
+      return p.name === "require";
+    case "AssignmentPattern":
+      return patternBindsRequire(p.left);
+    case "RestElement":
+      return patternBindsRequire(p.argument);
+    case "ArrayPattern":
+      return p.elements.some(patternBindsRequire);
+    case "ObjectPattern":
+      return p.properties.some((q2) => patternBindsRequire(q2.type === "RestElement" ? q2.argument : q2.value));
+    default:
+      return false;
+  }
+}
+function bindsRequire(node) {
+  switch (node.type) {
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression":
+      return node.type === "FunctionExpression" && patternBindsRequire(node.id) || node.params.some(patternBindsRequire) || hoistsRequire(node.body, true);
+    case "Program":
+      return hoistsRequire(node.body, true) || node.body.some((s2) => s2.type === "ImportDeclaration" && s2.specifiers.some((spec) => patternBindsRequire(spec.local)));
+    case "BlockStatement":
+    case "StaticBlock":
+    case "SwitchCase":
+      return hoistsRequire(node.type === "SwitchCase" ? node.consequent : node.body, false);
+    case "CatchClause":
+      return patternBindsRequire(node.param);
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement": {
+      const head = node.type === "ForStatement" ? node.init : node.left;
+      return head?.type === "VariableDeclaration" && head.declarations.some((d2) => patternBindsRequire(d2.id));
+    }
+    default:
+      return false;
+  }
+}
+function hoistsRequire(body, varScope) {
+  const statements = Array.isArray(body) ? body : body?.type === "BlockStatement" ? body.body : [];
+  for (const statement of statements) {
+    const declared = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? statement.declaration : statement;
+    if (!declared) continue;
+    if ((declared.type === "FunctionDeclaration" || declared.type === "ClassDeclaration") && patternBindsRequire(declared.id)) return true;
+    if (declared.type === "VariableDeclaration" && declared.kind !== "var" && declared.declarations.some((d2) => patternBindsRequire(d2.id))) return true;
+  }
+  if (!varScope) return false;
+  let found = false;
+  const visitVars = (node) => {
+    if (found || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visitVars(child);
+      return;
+    }
+    const n5 = node;
+    if (n5.type === "FunctionDeclaration" || n5.type === "FunctionExpression" || n5.type === "ArrowFunctionExpression") return;
+    if (n5.type === "VariableDeclaration" && n5.kind === "var" && n5.declarations.some((d2) => patternBindsRequire(d2.id))) {
+      found = true;
+      return;
+    }
+    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visitVars(child);
+  };
+  visitVars(statements);
+  return found;
 }
 var utf8Length = (text) => new TextEncoder().encode(text).length;
 function base64Of(bytes) {

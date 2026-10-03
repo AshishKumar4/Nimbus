@@ -37,7 +37,9 @@ const LOADER_MODULE_TYPES = {
  * by the parser, so a same-text string elsewhere in the file, or an import of
  * another kind, does not stand in for it. esbuild reports an unresolved
  * import once per specifier and kind, at its first occurrence, and so does
- * this. Keyed `<kind>\0<specifier>`.
+ * this. Keyed `<kind>\0<specifier>`. A call of a `require` the code binds
+ * itself (a parameter, a declaration, a catch binding, a function's own
+ * name) is not an import, to esbuild or to rolldown, and is skipped.
  */
 function importSpans(module, parse) {
     const spans = new Map();
@@ -57,15 +59,16 @@ function importSpans(module, parse) {
         if (!known || n.start < known[0])
             spans.set(key, [n.start, n.end]);
     };
-    const visit = (node) => {
+    const visit = (node, shadowed) => {
         if (!node || typeof node !== 'object')
             return;
         if (Array.isArray(node)) {
             for (const child of node)
-                visit(child);
+                visit(child, shadowed);
             return;
         }
         const n = node;
+        shadowed ||= bindsRequire(n);
         switch (n.type) {
             case 'ImportDeclaration':
             case 'ExportNamedDeclaration':
@@ -80,17 +83,100 @@ function importSpans(module, parse) {
                 break;
             case 'CallExpression': {
                 const callee = n.callee;
-                if (callee?.type === 'Identifier' && callee.name === 'require')
+                if (!shadowed && callee?.type === 'Identifier' && callee.name === 'require')
                     literal('require-call', n.arguments?.[0]);
                 break;
             }
         }
         for (const [key, child] of Object.entries(n))
             if (key !== 'parent')
-                visit(child);
+                visit(child, shadowed);
     };
-    visit(program);
+    visit(program, false);
     return spans;
+}
+/** Whether a binding pattern (`require`, `{ require }`, `[require]`, `...require`, `require = x`) binds `require`. */
+function patternBindsRequire(pattern) {
+    const p = pattern;
+    if (!p || typeof p !== 'object')
+        return false;
+    switch (p.type) {
+        case 'Identifier': return p.name === 'require';
+        case 'AssignmentPattern': return patternBindsRequire(p.left);
+        case 'RestElement': return patternBindsRequire(p.argument);
+        case 'ArrayPattern': return p.elements.some(patternBindsRequire);
+        case 'ObjectPattern': return p.properties.some((q) => patternBindsRequire(q.type === 'RestElement' ? q.argument : q.value));
+        default: return false;
+    }
+}
+/** Whether `node`'s scope binds `require` for everything inside it. */
+function bindsRequire(node) {
+    switch (node.type) {
+        case 'FunctionDeclaration':
+        case 'FunctionExpression':
+        case 'ArrowFunctionExpression':
+            return (node.type === 'FunctionExpression' && patternBindsRequire(node.id))
+                || node.params.some(patternBindsRequire)
+                || hoistsRequire(node.body, true);
+        case 'Program':
+            return hoistsRequire(node.body, true) || node.body.some((s) => s.type === 'ImportDeclaration'
+                && s.specifiers.some((spec) => patternBindsRequire(spec.local)));
+        case 'BlockStatement':
+        case 'StaticBlock':
+        case 'SwitchCase':
+            return hoistsRequire(node.type === 'SwitchCase' ? node.consequent : node.body, false);
+        case 'CatchClause':
+            return patternBindsRequire(node.param);
+        case 'ForStatement':
+        case 'ForInStatement':
+        case 'ForOfStatement': {
+            const head = (node.type === 'ForStatement' ? node.init : node.left);
+            return head?.type === 'VariableDeclaration' && head.declarations.some((d) => patternBindsRequire(d.id));
+        }
+        default:
+            return false;
+    }
+}
+/**
+ * Whether statements declare `require`: by let, const, class or function
+ * among them, and, for a function's or the program's body (`varScope`), by a
+ * `var` anywhere in it outside nested functions.
+ */
+function hoistsRequire(body, varScope) {
+    const statements = (Array.isArray(body) ? body : body?.type === 'BlockStatement' ? body.body : []);
+    for (const statement of statements) {
+        const declared = statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportDefaultDeclaration' ? statement.declaration : statement;
+        if (!declared)
+            continue;
+        if ((declared.type === 'FunctionDeclaration' || declared.type === 'ClassDeclaration') && patternBindsRequire(declared.id))
+            return true;
+        if (declared.type === 'VariableDeclaration' && declared.kind !== 'var' && declared.declarations.some((d) => patternBindsRequire(d.id)))
+            return true;
+    }
+    if (!varScope)
+        return false;
+    let found = false;
+    const visitVars = (node) => {
+        if (found || !node || typeof node !== 'object')
+            return;
+        if (Array.isArray(node)) {
+            for (const child of node)
+                visitVars(child);
+            return;
+        }
+        const n = node;
+        if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')
+            return;
+        if (n.type === 'VariableDeclaration' && n.kind === 'var' && n.declarations.some((d) => patternBindsRequire(d.id))) {
+            found = true;
+            return;
+        }
+        for (const [key, child] of Object.entries(n))
+            if (key !== 'parent')
+                visitVars(child);
+    };
+    visitVars(statements);
+    return found;
 }
 const utf8Length = (text) => new TextEncoder().encode(text).length;
 /** `bytes` in base64. */
