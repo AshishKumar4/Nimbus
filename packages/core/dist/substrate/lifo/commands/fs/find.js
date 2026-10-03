@@ -470,7 +470,7 @@ class FindRun {
      */
     async launch(argv, directory) {
         try {
-            return await this.ctx.runAs(this.ctx.cred, argv, { cwd: directory });
+            return await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
         }
         catch (error) {
             if (!isVfsError(error) || error.syscall !== 'execvp')

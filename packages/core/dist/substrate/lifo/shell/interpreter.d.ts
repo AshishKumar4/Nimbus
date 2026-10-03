@@ -1,4 +1,4 @@
-import type { ScriptNode } from './types.js';
+import type { ScriptNode, CompoundCommandNode } from './types.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
@@ -55,6 +55,8 @@ export interface BuiltinExecutionContext {
     executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
     /** Bind a name to the running function. False outside one, where it is an error. */
     declareLocal(name: string): boolean;
+    /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
+    unsetFunction(name: string): boolean;
     /** The state of the shell running the builtin: a child shell's own, after a fork. */
     shell: InterpreterConfig;
     getLastExitCode(): number;
@@ -103,6 +105,8 @@ type ExecutionIo = {
     /** Files the enclosing redirections hold open, by their stream. */
     openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
+/** A shell's function definitions, by name. */
+export type FunctionTable = ReadonlyMap<string, CompoundCommandNode>;
 /** The process a command runs as: its pid and credential, and how it sets its umask. */
 export interface CommandIdentity {
     readonly pid: number;
@@ -180,6 +184,9 @@ export declare class Interpreter {
     /** One frame per running function call, holding the bindings `local` shadowed. */
     private localFrames;
     constructor(config: InterpreterConfig);
+    /** The functions this shell defines, for a run whose own definitions must not outlast it (restoreFunctions). */
+    saveFunctions(): FunctionTable;
+    restoreFunctions(saved: FunctionTable): void;
     /**
      * A child shell, as fork(2) makes one: its own copy of every piece of shell
      * state (variables and arrays, cwd, options, traps, readonly names,

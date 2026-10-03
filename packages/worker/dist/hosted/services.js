@@ -173,24 +173,17 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return 127;
             }
             // Synthesize a CommandContext for the internal shell substrate.
-            const stdoutStream = { write: (d) => hooks.onStdout(textBytes(String(d))) };
-            const stderrStream = { write: (d) => hooks.onStderr(textBytes(String(d))) };
             const ac = new AbortController();
             const cred = self.processes.cred(payload.processPid);
+            const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
             const ctx = {
-                pid: payload.processPid,
+                ...io,
                 cred,
                 args: payload.args || [],
-                env: payload.env || {},
-                cwd: payload.cwd || '/home/user',
                 vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: payload.processPid, cred })),
-                stdout: stdoutStream,
-                stderr: stderrStream,
                 signal: ac.signal,
-                // For commands that need stdin we pass a tiny adapter.
-                stdin: staticStdinReader(payload.stdin || ''),
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
-                runAs: (targetCred, argv, options) => spawnBuiltin(payload.processPid, targetCred, argv, payload.env, options?.cwd ?? payload.cwd, payload.stdin, hooks),
+                runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
                 // Reuse the broker's pid and let runtime RPC output reach its
                 // live queues. A direct inline invocation without a managed child
                 // still needs a captured result.
@@ -249,51 +242,58 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
             }
-            return await runBuiltin(cmd, pid, name, args, env, cwd, stdin, hooks);
+            return await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks));
         },
     };
-    /** A registry command run as process `pid`, its output to `hooks`. */
-    const runBuiltin = async (cmd, pid, name, args, env, cwd, stdin, hooks) => {
-        const cred = self.processes.cred(pid);
+    /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
+    const processIo = (pid, env, cwd, stdin, hooks) => ({
+        pid,
+        env,
+        cwd,
+        stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
+        stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
+        stdin: staticStdinReader(stdin),
+    });
+    /** A registry command run as process `io.pid`, on `io`'s descriptors. */
+    const runBuiltin = async (cmd, name, args, io) => {
+        const cred = self.processes.cred(io.pid);
         const ac = new AbortController();
         const ctx = {
-            pid,
+            ...io,
             cred,
-            args, env, cwd,
-            vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid, cred })),
-            stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
-            stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
+            args,
+            vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: io.pid, cred })),
             signal: ac.signal,
-            stdin: staticStdinReader(stdin),
-            setUmask: (mask) => { self.processes.setUmask(pid, mask); },
-            runAs: (targetCred, argv, options) => spawnBuiltin(pid, targetCred, argv, env, options?.cwd ?? cwd, stdin, hooks),
+            setUmask: (mask) => { self.processes.setUmask(io.pid, mask); },
+            runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
         };
         try {
             const code = await cmd(ctx);
             return typeof code === 'number' ? code : 0;
         }
         catch (e) {
-            hooks.onStderr(textBytes(`${name}: ${errorText(e)}\n`));
+            await io.stderr.write(`${name}: ${errorText(e)}\n`);
             return 1;
         }
     };
     /**
      * runAs for a builtin run on a process's behalf: execvp of `argv` in a
-     * child of `parentPid` under `cred`, in `cwd`. A program that is not
-     * there is ENOENT, as execvp fails, for the caller to report.
+     * child of `parent` under `cred`, inheriting `parent`'s descriptors,
+     * environment and directory. A program that is not there is ENOENT, as
+     * execvp fails, for the caller to report.
      */
-    const spawnBuiltin = async (parentPid, cred, argv, env, cwd, stdin, hooks) => {
+    const spawnBuiltin = async (parent, cred, argv) => {
         const [name, ...args] = argv;
         if (name === undefined)
             return 0;
         const registry = self._cpRegistry;
-        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd }) : undefined;
+        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd: parent.cwd }) : undefined;
         if (!cmd)
             throw syscallError('ENOENT', 'execvp', name);
-        const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid, cred });
+        const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
         let exitCode = 1;
         try {
-            exitCode = await runBuiltin(cmd, child.pid, name, args, env, cwd, stdin, hooks);
+            exitCode = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
             return exitCode;
         }
         finally {
@@ -325,8 +325,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 }
                 const cred = self.processes.cred(pid);
                 const setUmask = (mask) => { self.processes.setUmask(pid, mask); };
-                // Where the command line's own command runs, which a `cd` in it may have moved.
-                const runAs = (parent, targetCred, argv) => spawnBuiltin(pid, targetCred, argv, env, parent.cwd, stdin, hooks);
+                // The child inherits from the command that starts it: its pipes and redirections, and the directory a `cd` moved to.
+                const runAs = (parent, targetCred, argv) => spawnBuiltin(parent, targetCred, argv);
                 const result = await self.shell.execute(String(commandLine), {
                     cwd: cwd || '/home/user',
                     env: { ...self.shell.env, ...(env || {}) },

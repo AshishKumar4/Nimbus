@@ -134,6 +134,13 @@ export class Interpreter {
     constructor(config) {
         this.config = config;
     }
+    /** The functions this shell defines, for a run whose own definitions must not outlast it (restoreFunctions). */
+    saveFunctions() {
+        return new Map(this.functions);
+    }
+    restoreFunctions(saved) {
+        this.functions = new Map(saved);
+    }
     /**
      * A child shell, as fork(2) makes one: its own copy of every piece of shell
      * state (variables and arrays, cwd, options, traps, readonly names,
@@ -499,6 +506,7 @@ export class Interpreter {
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                 executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
                 declareLocal: (name) => this.declareLocal(name),
+                unsetFunction: (name) => this.functions.delete(name),
                 shell: this.config,
                 interactive: redirIo.interactive,
                 getLastExitCode: () => this.lastExitCode,
@@ -803,6 +811,7 @@ export class Interpreter {
                             setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                             executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
                             declareLocal: (name) => this.declareLocal(name),
+                            unsetFunction: (name) => this.functions.delete(name),
                             shell: this.config,
                             interactive: io.interactive,
                             getLastExitCode: () => this.lastExitCode,
@@ -916,7 +925,7 @@ export class Interpreter {
             isFdPipe: spec.isFdPipe,
             setUmask: identity.setUmask,
             runAs: async (cred, argv, options) => spec.runAs
-                ? (await spec.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
+                ? (await spec.runAs(options?.parent ?? ctx, cred, argv))
                 : 126,
         };
         // Register process BEFORE executing so ps can see itself

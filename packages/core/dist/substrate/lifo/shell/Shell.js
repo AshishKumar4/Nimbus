@@ -200,7 +200,7 @@ export class Shell {
         this.ownBuiltins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
         this.ownBuiltins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
         this.ownBuiltins.set('kill', async (args, stdout, stderr) => (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list(), this.hostProcessSignals)));
-        this.ownBuiltins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
+        this.ownBuiltins.set('unset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinUnset(args, stderr, context)));
         this.ownBuiltins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
         this.ownBuiltins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
         this.ownBuiltins.set('typeset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('typeset', args, stderr, context)));
@@ -1384,9 +1384,43 @@ export class Shell {
         }
         return last;
     }
-    async builtinUnset(args, stderr) {
+    /**
+     * `unset [-f] [-v] [-n] [name ...]`, as bash: -f removes functions, -v
+     * (and -n, as this shell has no namerefs) variables, and with neither a
+     * name is a variable, or a function when no variable has that name.
+     */
+    async builtinUnset(args, stderr, context) {
+        let functions = false;
+        let variables = false;
+        let first = 0;
+        for (; first < args.length && args[first].startsWith('-') && args[first] !== '-'; first++) {
+            if (args[first] === '--') {
+                first++;
+                break;
+            }
+            for (const flag of args[first].slice(1)) {
+                if (flag === 'f')
+                    functions = true;
+                else if (flag === 'v' || flag === 'n')
+                    variables = true;
+                else {
+                    (await stderr.write(`unset: -${flag}: invalid option\nunset: usage: unset [-f] [-v] [-n] [name ...]\n`));
+                    return 2;
+                }
+            }
+        }
+        if (functions && variables) {
+            (await stderr.write('unset: cannot simultaneously unset a function and a variable\n'));
+            return 1;
+        }
         let exitCode = 0;
-        for (const arg of args) {
+        for (const arg of args.slice(first)) {
+            if (functions) {
+                context?.unsetFunction(arg);
+                continue;
+            }
+            if (!variables && !Object.hasOwn(this.env, arg) && !this.arrays.has(arg) && context?.unsetFunction(arg))
+                continue;
             // `unset arr[2]` clears one element; `unset arr` removes the variable.
             const element = /^([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]*)\]$/.exec(arg);
             const name = element === null ? arg : element[1];
@@ -1493,6 +1527,8 @@ export class Shell {
             shellOptions: { ...this.shellOptions },
             traps: new Map(this.traps),
             readonlyNames: new Set(this.readonlyNames),
+            aliases: new Map(this.aliases),
+            functions: this.interpreter.saveFunctions(),
         };
     }
     restoreShellState(frame) {
@@ -1502,6 +1538,8 @@ export class Shell {
         restoreShellOptions(this.shellOptions, frame.shellOptions);
         replaceMap(this.traps, frame.traps);
         replaceSet(this.readonlyNames, frame.readonlyNames);
+        replaceMap(this.aliases, frame.aliases);
+        this.interpreter.restoreFunctions(frame.functions);
     }
     async builtinExit(args, stderr, context) {
         if (args.length > 1) {

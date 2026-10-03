@@ -216,6 +216,11 @@ export declare class Shell {
     private builtinReadonly;
     private builtinRead;
     private builtinWait;
+    /**
+     * `unset [-f] [-v] [-n] [name ...]`, as bash: -f removes functions, -v
+     * (and -n, as this shell has no namerefs) variables, and with neither a
+     * name is a variable, or a function when no variable has that name.
+     */
     private builtinUnset;
     /**
      * `local name`, `local name=value`, `local name=(word …)` and the `declare` /
