@@ -1507,36 +1507,49 @@ export class CompositeVFS implements VFS {
               if (dir) throw new Refusal('EEXIST', to);
               if (existing.type === 'directory') throw new Refusal('EISDIR', to);
             }
-            this.guardMutation([toInput, to]);
             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
+              this.guardMutation([toInput, to]);
               return sourceOps.copy(source.rel, target.rel, options);
             }
-            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel);
+            this.guardMutation([toInput]);
+            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel, to);
           });
         });
       });
     }); });
   }
 
-  /** Copy an entry (a tree when it is a directory) between backends, links as links. */
-  private copyBytes(from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string): Awaitable<number> {
+  /**
+   * Copy an entry (a tree when it is a directory) between backends, links as
+   * links. `toAt` is the namespace path `toRel` names: each write, link and
+   * directory is guarded there (guardMutation) right before it is made,
+   * after the reads it waited on.
+   */
+  private copyBytes(from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string, toAt: string): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
     if (stat.type === 'symlink') {
       if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
         throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
       }
-      return then(from.readlink(fromRel), (target) => then(to.symlink!(target, toRel), () => 1));
+      return then(from.readlink(fromRel), (target) => {
+        this.guardMutation([toAt]);
+        return then(to.symlink!(target, toRel), () => 1);
+      });
     }
     if (stat.type === 'file') {
-      return then(from.readFile(fromRel), (bytes) => then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1));
+      return then(from.readFile(fromRel), (bytes) => {
+        this.guardMutation([toAt]);
+        return then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1);
+      });
     }
+    this.guardMutation([toAt]);
     return then(to.mkdir(toRel, mode === undefined ? undefined : { mode }), () => then(from.readdir(fromRel), (entries) =>
       entries.reduce<Awaitable<number>>((count, entry) => then(count, (n) => {
         const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
         const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
         return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
           ? n
-          : then(this.copyBytes(from, child, childStat, to, dest), (m) => n + m)));
+          : then(this.copyBytes(from, child, childStat, to, dest, `${toAt}/${entry.name}`), (m) => n + m)));
       }), 1)));
   }
 
@@ -1550,6 +1563,8 @@ export class CompositeVFS implements VFS {
         if (stat.type !== 'directory') throw new Refusal('ENOTDIR', path);
         return then(backend.readdir(rel), (entries) => {
           if (entries.length > 0) throw new Refusal('ENOTEMPTY', path);
+          // Guarded again after the reads it waited on, right before the unlink.
+          this.guardMutation([path]);
           return backend.unlink(rel);
         });
       });
@@ -1624,6 +1639,9 @@ export class CompositeVFS implements VFS {
           });
         };
         try {
+          // Each entry guarded right before it is removed, after the walk's
+          // reads: a refusal keeps it (and the directories holding it).
+          this.guardMutation([at(entry.rel)]);
           const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
           if (isPromise(out)) return out.then(() => { gone.add(entry.rel); }, fail);
           gone.add(entry.rel);

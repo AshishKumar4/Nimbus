@@ -245,4 +245,90 @@ assert.equal(new TextDecoder().decode(await m.readFile('/top/free/b.txt')), 'asy
 const cat = await ws.exec('cat /home/user/sdir/a.txt /home/user/mdir/b.txt');
 assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a directory linkasync', ''], 'the shell reads through both');
 
+// ── A lease taken while a mutation waits on its own reads ────────────────
+// The namespace guards each raw backend mutation right before it is made, on
+// the route it resolved: a copy's every write, a walked removal's every
+// unlink, rmdir's fallback unlink. Here the backend itself takes the lease
+// while the mutation reads (a copy's readFile, a removal's readdir), so the
+// next write or unlink must be refused, with no timing.
+{
+  const cred = { uid: 1000, gid: 1000, groups: [1000] };
+  const ns = box.files.vfs.as(cred);
+  const leases = [];
+  const take = (root) => { leases.push(engine.acquireExclusiveMutation(root).owner); };
+  const releaseAll = () => { while (leases.length > 0) engine.releaseExclusiveMutation(leases.pop()); };
+  /**
+   * `vfs` with no synchronous face, `hide`'s methods absent, and `hooks` run
+   * before a call. With rmdir hidden, its unlink removes an empty directory,
+   * as a plane's single delete does.
+   */
+  const hooked = (vfs, hooks, hide = []) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'sync' || hide.includes(key)) return undefined;
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      if (key === 'as') return (...args) => hooked(value.apply(target, args), hooks, hide);
+      return async (...args) => {
+        await hooks[key]?.(...args);
+        if (key === 'unlink' && hide.includes('rmdir') && (await target.stat(args[0], { follow: false }))?.type === 'directory') return target.rmdir(args[0]);
+        return value.apply(target, args);
+      };
+    },
+    has: (target, key) => key !== 'sync' && !hide.includes(key) && key in target,
+  });
+
+  const src = new MemoryVFS(USER);
+  await src.mkdir('/tree');
+  await src.writeFile('/f.txt', enc.encode('f'));
+  await src.writeFile('/tree/a.txt', enc.encode('a'));
+  await src.writeFile('/tree/b.txt', enc.encode('b'));
+  const srcHooks = {};
+  const dst = new MemoryVFS(USER);
+  const w = new MemoryVFS(USER);
+  const wHooks = {};
+  ws.filesystem.vfs.mount('/src', hooked(src, srcHooks));
+  ws.filesystem.vfs.mount('/dst', asyncOnly(dst));
+  ws.filesystem.vfs.mount('/w', hooked(w, wHooks, ['removeRecursive', 'rmdir']));
+
+  // A file copy: the source's readFile takes a lease on the destination.
+  srcHooks.readFile = (path) => { if (path === '/f.txt') take('dst/f.txt'); };
+  assert.equal(await code(() => ns.copy('/src/f.txt', '/dst/f.txt')), 'EBUSY', 'the copy\'s write is refused');
+  assert.equal(await dst.stat('/f.txt'), null, 'and nothing was written');
+  releaseAll();
+  // Through a process's bridge too.
+  srcHooks.readFile = (path) => { if (path === '/f.txt') take('dst/h.txt'); };
+  assert.equal(await code(() => bridge.copyFile('/src/f.txt', '/dst/h.txt')), 'EBUSY', 'the bridge\'s copy too');
+  assert.equal(await dst.stat('/h.txt'), null);
+  releaseAll();
+
+  // A tree copy: the second file's read takes a lease on its own destination.
+  srcHooks.readFile = (path) => { if (path === '/tree/b.txt') take('dst/tree/b.txt'); };
+  assert.equal(await code(() => ns.copy('/src/tree', '/dst/tree', { recursive: true })), 'EBUSY', 'a tree copy\'s later write is refused');
+  assert.equal(await dst.stat('/tree/b.txt'), null, 'the leased name was not written');
+  releaseAll();
+  srcHooks.readFile = undefined;
+
+  // A walked removal: its readdir of the operand takes a lease on a child.
+  await w.mkdir('/t/keep', { recursive: true });
+  await w.writeFile('/t/keep/x', enc.encode('x'));
+  await w.writeFile('/t/gone.txt', enc.encode('g'));
+  wHooks.readdir = (path) => { if (path === '/t') take('w/t/keep'); };
+  const report = await ns.removeRecursive('/w/t');
+  wHooks.readdir = undefined;
+  assert.deepEqual(report.failures.map((f) => [f.path, f.error.code]), [['/w/t/keep/x', 'EBUSY']], 'the leased entry is refused');
+  assert.deepEqual([report.kept, report.removed], [['/w/t', '/w/t/keep', '/w/t/keep/x'], ['/w/t/gone.txt']],
+    'it is kept with the directories holding it, and the walk carries on');
+  assert.equal(new TextDecoder().decode(await w.readFile('/t/keep/x')), 'x', 'the leased child is there');
+  assert.equal(await w.stat('/t/gone.txt'), null, 'its sibling is removed');
+  releaseAll();
+
+  // rmdir on a backend without it: its readdir takes a lease on the directory.
+  await w.mkdir('/empty');
+  wHooks.readdir = (path) => { if (path === '/empty') take('w/empty'); };
+  assert.equal(await code(() => ns.rmdir('/w/empty')), 'EBUSY', 'the fallback unlink is refused');
+  wHooks.readdir = undefined;
+  assert.equal((await w.stat('/empty'))?.type, 'directory', 'and the directory is there');
+  releaseAll();
+}
+
 console.log(`async-mount-leases: ${mutations.length} awaited mutations are checked where they land`);

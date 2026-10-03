@@ -25,7 +25,11 @@ published independently in the `@nimbus-sh` npm scope.
   takes a guard that every mutation a credentialed view makes is checked
   against, at the name it was given and on the route the namespace resolved,
   right before the backend is called, so what is checked is where the
-  mutation goes even if a link on the way is repointed meanwhile. A process
+  mutation goes even if a link on the way is repointed meanwhile. Each raw
+  backend mutation is checked, after the reads it waited on: every write,
+  link and directory of a copy across filesystems, every unlink of a walked
+  removal (a refused entry is kept and reported, as rm -r does), and rmdir's
+  unlink on a backend without rmdir. A process
   namespace's guard is the engine's lease (`SqliteVFS.mutationRefusal`, the
   one definition its own mutations use too). A write through a dangling link
   into the lease is refused, and unlinking that link is not. An awaited write
