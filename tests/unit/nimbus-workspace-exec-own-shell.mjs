@@ -122,6 +122,31 @@ ws.registry.register('barrier', async () => {
   await ws.shell.execute('umask 022');
 }
 
+// ── A call's process lets go of the filesystem with its entry ─────────────
+// Each call binds its pid to the namespace: a descriptor scope that holds
+// what the call's commands opened and watched. Released, the pid is refused
+// (ESTALE) and what it held is closed; left bound, every call left one more
+// scope behind, its watches still firing.
+{
+  let fired = 0;
+  const pids = [];
+  ws.registry.register('watch-home', async (ctx) => {
+    pids.push(ctx.pid);
+    ctx.vfs.process.subscribe(home, () => { fired += 1; });
+    return 0;
+  });
+  for (let i = 0; i < 5; i++) assert.equal((await ws.exec('watch-home')).exitCode, 0);
+  // `sudo` runs its program as a child process, bound to a pid of its own.
+  assert.equal((await ws.exec('sudo watch-home')).exitCode, 0);
+  await ws.fs.writeFile(`${home}/watched.txt`, 'x');
+  await ws.fs.remove(`${home}/watched.txt`);
+  assert.equal(fired, 0, 'no watch outlived the call that made it');
+  const cred = ws.processes.cred(ws.shellProcessPid);
+  for (const pid of pids) {
+    assert.throws(() => ws.filesystem.bind({ pid, cred }), { code: 'ESTALE' }, `pid ${pid} was released`);
+  }
+}
+
 // ── A named shell keeps its cwd and environment between calls ─────────────
 {
   assert.equal((await ws.exec('cd /tmp; export STAGE=release', { shellId: 'agent-1' })).exitCode, 0);

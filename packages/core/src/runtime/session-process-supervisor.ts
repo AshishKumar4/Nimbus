@@ -213,13 +213,18 @@ export class SessionProcessSupervisor {
   /**
    * Remove `pid` and every process under it that has ended, now, as a parent
    * that waited for its children does: what a caller ran to completion has
-   * nothing left to report. One still running is kept. Logs are orphaned as
-   * by {@link reap}.
+   * nothing left to report. Each is first handed to `release`, the
+   * filesystem's `releaseProcess`, so what the process bound (its descriptor
+   * scope, its watches) goes with its entry rather than outliving it. One
+   * still running is kept. Logs are orphaned as by {@link reap}.
    */
-  reapTree(pid: number): number {
+  async reapTree(pid: number, release: (pid: number) => Promise<void>): Promise<number> {
     let reaped = 0;
-    for (const each of [pid, ...this.table.descendantsOf(pid).map((entry) => entry.pid)]) {
-      if (this.table.forget(each)) reaped++;
+    for (const entry of [this.table.get(pid), ...this.table.descendantsOf(pid)]) {
+      if (entry === undefined || entry.state === 'running') continue;
+      await release(entry.pid);
+      this.table.forget(entry.pid);
+      reaped++;
     }
     if (reaped > 0) this.logRetention?.();
     return reaped;

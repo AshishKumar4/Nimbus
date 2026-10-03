@@ -500,11 +500,12 @@ export class NimbusWorkspace {
       return result;
     } finally {
       this.processes.exit(pid, exitCode);
-      // Its descriptors close as it exits; its entry goes even if one fails to.
+      // Its descriptors close as it exits; its entry, and what it bound in
+      // the filesystem, go even if one fails to.
       try {
         await shell.closeDescriptors();
       } finally {
-        this.processes.reapTree(pid);
+        await this.processes.reapTree(pid, (each) => this.filesystem.releaseProcess(each));
       }
     }
   }
