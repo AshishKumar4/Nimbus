@@ -23,6 +23,11 @@
  *   globalThis.__nimbusVirtualSockets — python-runner and ruby-runner
  *   splice it into their socket process worker module sources.
  *
+ *   The answering supervisor client (@nimbus-sh/core
+ *   src/runtime/vfs-supervisor.ts answeringSupervisor) is an IIFE the same
+ *   way, installing globalThis.__nimbusAnsweringSupervisor for the node
+ *   bodies, which are generated text and splice it.
+ *
  *   The WASI shim (src/runtime/wasi/preamble.ts) is bundled as a flat ESM
  *   body, NOT an IIFE: runners and tests append `export { __wasiInitFS, … }`
  *   to the emitted string and wasi-threads.ts is concatenated after it into
@@ -35,6 +40,8 @@
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
  *   @nimbus-sh/core src/runtime/virtual-socket-kernel.generated.ts — exports
  *       VIRTUAL_SOCKET_KERNEL_SRC: string
+ *   @nimbus-sh/core src/runtime/supervisor-answering.generated.ts — exports
+ *       SUPERVISOR_ANSWERING_SRC: string
  *   @nimbus-sh/core src/runtime/wasi-instance.generated.ts — exports
  *       WASI_INSTANCE_BODY_SRC: string
  *   @nimbus-sh/core src/runtime/bash-runner.generated.ts — exports
@@ -165,6 +172,36 @@ async function bundleVirtualSocketKernel() {
   });
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/virtual-socket-kernel] esbuild produced no output');
+  }
+  return withoutComments(result.outputFiles[0].text);
+}
+
+/**
+ * The answering supervisor client as a self-contained IIFE that installs
+ * globalThis.__nimbusAnsweringSupervisor, so a facet body that is generated
+ * text runs the one implementation the bundled facets import.
+ */
+async function bundleAnsweringSupervisor() {
+  const result = await build({
+    stdin: {
+      contents: [
+        "import { installAnsweringSupervisor } from './src/runtime/vfs-supervisor.ts';",
+        'installAnsweringSupervisor();',
+      ].join('\n'),
+      resolveDir: coreRoot,
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/supervisor-answering] esbuild produced no output');
   }
   return withoutComments(result.outputFiles[0].text);
 }
@@ -637,6 +674,26 @@ async function main() {
   ].join('\n');
   writeFileSync(kernelOutPath, kernelWrapper);
 
+  const answeringSrc = await bundleAnsweringSupervisor();
+  const answeringOutPath = join(coreRoot, 'src', 'runtime', 'supervisor-answering.generated.ts');
+  writeFileSync(answeringOutPath, [
+    '/**',
+    ' * supervisor-answering.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - @nimbus-sh/core src/runtime/vfs-supervisor.ts (answeringSupervisor)',
+    ' *',
+    ' * Self-contained IIFE that installs globalThis.__nimbusAnsweringSupervisor.',
+    ' * Spliced into the node facet bodies (worker facets/manager.ts) and the',
+    ' * opencode runner, which wrap their SUPERVISOR binding with it.',
+    ' *',
+    ` * Size: ${(answeringSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const SUPERVISOR_ANSWERING_SRC: string = ${JSON.stringify(answeringSrc)};`,
+    '',
+  ].join('\n'));
+
   console.log(
     `[bundle-facet-workers] wrote ${outPath} ` +
     `(tar=${(tarStripped.length / 1024).toFixed(2)} KiB, ` +
@@ -719,7 +776,7 @@ async function main() {
 // generated files from source and compare, rather than restating the esbuild
 // settings — a second copy of those settings is exactly the drift such a test
 // exists to catch. main() therefore runs only when this file is the entry point.
-export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli, bundleOxcFacet };
+export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli, bundleOxcFacet, bundleAnsweringSupervisor };
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((e) => {

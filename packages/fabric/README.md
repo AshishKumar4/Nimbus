@@ -67,6 +67,15 @@ Worker that imports Nimbus's own entry (`@nimbus-sh/sdk/worker`) inherits
 that entry's composition, so a host that names its own namespace composes in
 a Worker that does not import it.
 
+A program's filesystem calls reach the supervisor entrypoint through its
+`answer(method, args)`, which resolves `{ value }`, or `{ refusal }` for an
+error with a `code` (ENOENT, ENOTDIR, EEXIST), and the program's client
+rethrows the refusal as the error a throw would have delivered. A refusal
+thrown from an entrypoint is recorded by the platform as an exception
+("canceled ... your Worker's code had hung") although its caller was
+answered. `SupervisorRPC` implements `answer`, so an entrypoint that extends
+it has it; one written from scratch must implement it too.
+
 The route back to the host (namespace, dispatch method, supervisor
 entrypoint) is minted into every binding the fabric hands a program, in the
 host's isolate, and the entrypoints that answer those bindings read it from

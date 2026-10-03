@@ -26,6 +26,24 @@ published independently in the `@nimbus-sh` npm scope.
   5-wide fan-out leaves 5 slots free, not 0. `loaderLedgerStats` adds
   `waiting` and `pauseMs`, and `dynamicWorkerHeadroom` is 0 while a pause
   lasts.
+- A filesystem call a process makes and the host refuses (an error with a
+  `code`: ENOENT, ENOTDIR, EEXIST) is answered by `SupervisorRPC` as a
+  value and rethrown in the process, instead of being thrown across the
+  entrypoint. The platform recorded every thrown refusal as an invocation
+  with outcome "exception" and "The Workers runtime canceled this request
+  because it detected that your Worker's code had hung", though its caller
+  was answered at once, so the noise hid real hangs. Node and opencode
+  processes, bash, and the WASI runtimes (python, ruby, clang, wasm) make
+  their filesystem calls through the new `SupervisorRPC.answer(method,
+  args)`, which resolves `{ value }` or `{ refusal }`, and core's
+  `answeringSupervisor` rethrows a refusal as exactly the error the program
+  got before: the same class, name, message and own properties (`code`,
+  `errno`, `syscall`, `path`, `dest`, `detail`, `cause`). A failure without
+  a code, such as a dropped connection, still throws. npm's and git's
+  facets still call the methods directly, which throw as before. A
+  supervisor entrypoint written from scratch (composeFabric's
+  `supervisorEntrypoint`) must implement `answer`; one that extends
+  `SupervisorRPC` inherits it.
 
 ## 2026-10-02
 
