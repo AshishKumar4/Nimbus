@@ -85,11 +85,13 @@ if (process.argv[2] !== '--run') {
     for (const key of ['global', 'flags', 'source']) Object.defineProperty(proto, key, { get: () => 'replaced', configurable: true });
     let answers;
     try {
-      answers = [re.source, re.flags, re.global, re.test('xab'), re['source'], realm.test(re, 'ab'), realm.replace('ab', realm.regexp(/b/g), 'c')];
+      answers = [re.source, re.flags, re.global, re.test('xab'), re['source'], realm.test(re, 'ab'), realm.replace('ab', realm.regexp(/b/g), 'c'),
+        // Searches that would make a regexp of the realm's own, whose exec is the realm's, are not there to call.
+        typeof re[Symbol.split], typeof re[Symbol.matchAll], typeof re.constructor];
     } finally {
       for (const [key, descriptor] of saved) Object.defineProperty(proto, key, descriptor);
     }
-    same('a regexp of the parser', answers, ['a(b)', 'giy', true, false, 'a(b)', true, 'ac']);
+    same('a regexp of the parser', answers, ['a(b)', 'giy', true, false, 'a(b)', true, 'ac', 'undefined', 'undefined', 'undefined']);
   }
   assert.throws(() => realm.push([], 1), /something other than its own list/, 'a realm array is refused');
   assert.throws(() => realm.charCodeAt({}, 0), /called charCodeAt on a object/);

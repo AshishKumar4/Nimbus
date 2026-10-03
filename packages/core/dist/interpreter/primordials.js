@@ -167,15 +167,18 @@ export const SafeAsyncGeneratorPrototype = objectCreate(null);
  * members as own properties, over nothing, so that what a regexp is asked
  * (its source, its flags, test, whose own reads of `exec` and of each flag
  * look here too) reaches no member a program replaced on RegExp.prototype.
- * Not `constructor`: a regexp's species is then the realm's own %RegExp%.
+ * Not `constructor`, nor @@split or @@matchAll, which search with a new
+ * regexp of the realm's own (its species), whose `exec` is the realm's.
  */
 export const SafeRegExpPrototype = objectCreate(null);
 {
     const keys = Reflect.ownKeys(RegExp.prototype);
     const members = [];
-    for (let i = 0; i < keys.length; i++)
-        if (keys[i] !== 'constructor')
-            members[members.length] = keys[i];
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        if (key !== 'constructor' && key !== Symbol.split && key !== Symbol.matchAll)
+            members[members.length] = key;
+    }
     copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
 }
 export const GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, 'next');

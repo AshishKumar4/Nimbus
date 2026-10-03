@@ -183,6 +183,8 @@ const upgrades = {
   'an alias of the source text, indexed': [acornSource.replace('switch (this.input[this.pos]) {', 'var text = this.input; switch (text[this.pos]) {'), '$$.index(text, this.pos)'],
   'an alias of a regexp, read for its source': [acornSource.replace(ANCHOR, 'var lineBreakAlias = lineBreak;\nvar lineBreakG = new RegExp(lineBreakAlias.source, "g");'), SAFE_LINE_BREAK],
   "a regexp's source, read by a computed key": [acornSource.replace(ANCHOR, 'var lineBreakG = new RegExp(lineBreak["source"], "g");'), SAFE_LINE_BREAK],
+  'a regexp made by calling RegExp': [acornSource.replace('var lineBreak = /\\r\\n?|\\n|\\u2028|\\u2029/;', 'var lineBreak = RegExp("\\\\r\\\\n?|\\\\n|\\\\u2028|\\\\u2029");'),
+    'var lineBreak = $$.regexp($$.RegExp('],
 };
 for (const [name, [text, routed]] of Object.entries(upgrades)) {
   let rewritten = null;

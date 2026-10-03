@@ -153,7 +153,8 @@ export declare const SafeAsyncGeneratorPrototype: object;
  * members as own properties, over nothing, so that what a regexp is asked
  * (its source, its flags, test, whose own reads of `exec` and of each flag
  * look here too) reaches no member a program replaced on RegExp.prototype.
- * Not `constructor`: a regexp's species is then the realm's own %RegExp%.
+ * Not `constructor`, nor @@split or @@matchAll, which search with a new
+ * regexp of the realm's own (its species), whose `exec` is the realm's.
  */
 export declare const SafeRegExpPrototype: object;
 export declare const GeneratorPrototypeNext: unknown;

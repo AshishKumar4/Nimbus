@@ -404,6 +404,10 @@ export function primordialAcorn(source, realmSpecifier) {
       case 'CallExpression': {
         const callee = node.callee;
         if (node.optional || (callee.type === 'MemberExpression' && callee.optional)) refuse(node, 'an optional call');
+        if (callee.type === 'Identifier' && callee.name === 'RegExp' && references.get(callee) === null) {
+          rewrites.set(node, () => `${REALM}.regexp(${spliced(node)})`);
+          return;
+        }
         if (callee.type !== 'MemberExpression' || callee.computed || callee.object.type === 'ThisExpression' || callee.object.type === 'Super') return;
         const name = callee.property.name;
         if (!ROUTED_METHODS.has(name)) return;
@@ -580,7 +584,10 @@ export function parserReaches(code) {
       case 'CallExpression': {
         const callee = node.callee;
         if (callee.type !== 'MemberExpression' || callee.computed) return;
-        if (isRealm(callee.object)) return;
+        if (isRealm(callee.object)) {
+          if (callee.property.name === 'RegExp' && !(isRealmCall(parent, 'regexp') && parent.arguments[0] === node)) at(node, 'a regexp that inherits RegExp.prototype');
+          return;
+        }
         const name = callee.property.name;
         const own = callee.object.type === 'ThisExpression';
         if (BUILTIN_NAMES.has(name) && !(own && methods.has(name))) at(node, `a call of the built-in method ${name}`);
