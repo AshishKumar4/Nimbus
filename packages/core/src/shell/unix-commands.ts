@@ -365,12 +365,36 @@ async function _registryResolved(
 }
 
 /**
+ * The first executable named `name` that execvp's search of the caller's
+ * PATH finds, as the caller sees the namespace. A directory that cannot be
+ * read (an I/O error) finds nothing, as the stat of bash's and GNU which's
+ * searches finds nothing there.
+ */
+async function _pathExecutable(name: string, from: ResolveContext): Promise<string | null> {
+  let hit: PathSearchResult = null;
+  try {
+    hit = await searchPath(name, from);
+  } catch (error) {
+    if (!isVfsError(error)) throw error;
+  }
+  return hit?.kind === 'program' ? hit.path : null;
+}
+
+/**
+ * Where a user sees a command the workspace knows by name (registered, an npm
+ * bin, or a runtime it would install on first use): the first executable of
+ * that name on PATH (a gem's wrapper in ~/.gem/bin), else the runtime's
+ * canonical bin; null for a shell builtin.
+ */
+async function _knownCommandPath(name: string, from: ResolveContext): Promise<string | null> {
+  return await _pathExecutable(name, from) ?? _CANONICAL_BIN_PATHS[name] ?? null;
+}
+
+/**
  * What `which` knows of a name, from one search of PATH: the executable file
- * execvp's search of the caller's PATH finds (as the caller sees the
- * namespace), else a registered command's canonical path; and whether the
- * name is a registered command, which `which -a` calls a shell built-in. A
- * directory that cannot be read (an I/O error) finds nothing, as GNU which's
- * stat finds nothing there.
+ * on the caller's PATH, else, for a registered command, where a user sees
+ * it; and whether the name is a registered command, which `which -a` calls a
+ * shell built-in.
  */
 async function _whichLookup(
   registry: UnixCommandRegistry,
@@ -379,15 +403,33 @@ async function _whichLookup(
 ): Promise<{ path: string | null; builtin: boolean }> {
   if (name.includes('/')) return { path: null, builtin: false };
   const registered = await _registryResolved(registry, name, { ...from, search: false }, { includeInstallHints: true });
-  let hit: PathSearchResult = null;
-  try {
-    hit = await searchPath(name, from);
-  } catch (error) {
-    if (!isVfsError(error)) throw error;
-  }
   const builtin = registered !== null && !isRuntimeInstallHintHandler(registered);
-  if (hit?.kind === 'program') return { path: hit.path, builtin };
-  return { path: registered === null ? null : _CANONICAL_BIN_PATHS[name] ?? null, builtin };
+  if (registered !== null) return { path: await _knownCommandPath(name, from), builtin };
+  return { path: await _pathExecutable(name, from), builtin };
+}
+
+/**
+ * What `command -v`/`-V` and `type` report a name as: what runs it, at the
+ * file a user sees. A program a search of PATH found is that file
+ * (executable or not, as bash reports either); a path is itself; any other
+ * command the workspace knows is where `_knownCommandPath` puts it, or else
+ * a shell builtin (a runtime's install hint with no bin is not found). A
+ * resolution that failed is not found.
+ */
+async function _describeCommand(
+  registry: UnixCommandRegistry,
+  name: string,
+  from: ResolveContext,
+): Promise<{ kind: 'file'; path: string } | { kind: 'builtin' } | null> {
+  const resolved = await _registryResolved(registry, name, from, { includeInstallHints: true });
+  if (resolved === null) return null;
+  const resolution = resolutionOf(resolved);
+  if (resolution?.kind === 'failed') return null;
+  if (resolution?.kind === 'program') return { kind: 'file', path: resolution.path };
+  if (name.includes('/')) return { kind: 'file', path: name };
+  const path = await _knownCommandPath(name, from);
+  if (path !== null) return { kind: 'file', path };
+  return isRuntimeInstallHintHandler(resolved) ? null : { kind: 'builtin' };
 }
 
 function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
@@ -498,23 +540,18 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     }
     const from = resolveContext(ctx.cwd, ctx.env, vfs);
     if (mode === '-v' || mode === '-V') {
-      // What `name` runs: the file found on PATH, or a registered command
-      // (by its canonical path where it has one); exit 0 if found.
       const name = args[0];
-      const resolved = await _registryResolved(registry, name, from);
-      const resolution = resolved === null ? undefined : resolutionOf(resolved);
-      const found = resolved !== null && resolution?.kind !== 'failed';
-      const path = resolution?.kind === 'program' ? resolution.path : _CANONICAL_BIN_PATHS[name] ?? null;
+      const described = await _describeCommand(registry, name, from);
       if (mode === '-v') {
-        if (!found) return 1;
-        (await ctx.stdout.write(`${path ?? name}\n`));
+        if (described === null) return 1;
+        (await ctx.stdout.write(`${described.kind === 'file' ? described.path : name}\n`));
         return 0;
       }
-      if (!found) {
+      if (described === null) {
         (await ctx.stderr.write(`command: ${name}: not found\n`));
         return 1;
       }
-      (await ctx.stdout.write(path !== null ? `${name} is ${path}\n` : `${name} is a shell builtin\n`));
+      (await ctx.stdout.write(described.kind === 'file' ? `${name} is ${described.path}\n` : `${name} is a shell builtin\n`));
       return 0;
     }
     // invoke mode: dispatch directly via registry. Bypasses aliases
@@ -560,22 +597,12 @@ function mkType(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     let exit = 0;
     const from = resolveContext(ctx.cwd, ctx.env, vfs);
     for (const name of ctx.args) {
-      try {
-        const resolved = typeof registry.resolve === 'function'
-          ? asResolvedCommand(await registry.resolve(name, from))
-          : null;
-        const resolution = resolved === null ? undefined : resolutionOf(resolved);
-        if (resolution?.kind === 'program') {
-          (await ctx.stdout.write(`${name} is ${resolution.path}\n`));
-        } else if (resolved && resolution === undefined && !isRuntimeInstallHintHandler(resolved)) {
-          (await ctx.stdout.write(`${name} is a shell builtin\n`));
-        } else {
-          (await ctx.stderr.write(`type: ${name}: not found\n`));
-          exit = 1;
-        }
-      } catch (_e) {
+      const described = await _describeCommand(registry, name, from);
+      if (described === null) {
         (await ctx.stderr.write(`type: ${name}: not found\n`));
         exit = 1;
+      } else {
+        (await ctx.stdout.write(described.kind === 'file' ? `${name} is ${described.path}\n` : `${name} is a shell builtin\n`));
       }
     }
     return exit;

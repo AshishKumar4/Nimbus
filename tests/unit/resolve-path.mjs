@@ -12,7 +12,7 @@
 // commands only a PATH naming it finds.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -24,6 +24,7 @@ import { materializeNpmBinShims } from '../../packages/worker/src/npm/bin-links.
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { searchPath } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { resolveContext } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -38,8 +39,8 @@ async function workspace(env) {
     processes: ws.processes,
     getFacetManager() { throw new Error('unexpected staged artifact'); },
     notifyTerminalEvent() {},
-    // One runtime the workspace knows how to install, and has not.
-    async runtimeCommandHint(name) { return name === 'hintedtool' ? { installSpec: 'hintedtool' } : null; },
+    // Runtimes the workspace knows how to install, and has not.
+    async runtimeCommandHint(name) { return ['hintedtool', 'clang'].includes(name) ? { installSpec: name } : null; },
     emitShellExecDone() {},
   });
   return ws;
@@ -144,6 +145,51 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
   assert.deepEqual(await run(main, 'PATH=/gone which never-installed; echo s=$?'), ['s=1\n', 'which: no never-installed in (/gone)\n', 0]);
   const [, stderr] = await run(main, 'PATH=/gone never-installed; echo s=$?');
   assert.match(stderr, /^never-installed: .*EIO/, 'running it reports the error');
+}
+
+// ── A runtime's or a gem's command is reported where a user sees it ──────
+// which, command -v, command -V and type agree on it: a gem's wrapper on PATH
+// (~/.gem/bin), else a runtime's canonical bin, installed or one the
+// workspace would install on first use; a shell builtin by its name.
+{
+  // An installed runtime's bin is registered by its name, as the runtime manager registers it.
+  main.registry.register('clang++', async () => 0);
+  // `gem install` of a gem with an executable, then its bin registered as ruby-runner does.
+  const gemDir = await mkdtemp(join(tmpdir(), 'nimbus-resolve-path-gem-'));
+  try {
+    await mkdir(join(gemDir, 'data/bin'), { recursive: true });
+    await mkdir(join(gemDir, 'data/lib'), { recursive: true });
+    await writeFile(join(gemDir, 'data/bin/rackup'), '#!/usr/bin/env ruby\nputs "rackup"\n');
+    await writeFile(join(gemDir, 'data/lib/rackup.rb'), 'module Rackup; end\n');
+    for (const argv of [['tar', '-czf', 'data.tar.gz', '-C', 'data', 'bin', 'lib'], ['tar', '-cf', 'rackup-2.1.0.gem', 'data.tar.gz']]) {
+      assert.equal(Bun.spawnSync(argv, { cwd: gemDir }).exitCode, 0, argv.join(' '));
+    }
+    const gem = await readFile(join(gemDir, 'rackup-2.1.0.gem'));
+    const responses = new Map([
+      ['https://rubygems.org/api/v1/versions/rackup.json', Response.json([{ number: '2.1.0', platform: 'ruby', prerelease: false }])],
+      ['https://rubygems.org/api/v2/rubygems/rackup/versions/2.1.0.json', Response.json({ name: 'rackup', version: '2.1.0', platform: 'ruby', gem_uri: 'https://rubygems.org/gems/rackup-2.1.0.gem', dependencies: { runtime: [] } })],
+      ['https://rubygems.org/gems/rackup-2.1.0.gem', new Response(gem)],
+    ]);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => responses.get(String(url)) ?? new Response(null, { status: 404 });
+    try {
+      const view = main.filesystem.view({ pid: 900, cred: CRED_KERNEL });
+      await installRubyGems(view, [{ name: 'rackup', requirements: [] }], { gemHome: '/home/main/.gem' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  } finally {
+    await rm(gemDir, { recursive: true, force: true });
+  }
+  main.registry.register('rackup', async () => 0);
+
+  const report = async (name) => await run(main, `which ${name}; command -v ${name}; command -V ${name}; type ${name}`);
+  const at = (name, path) => [`${path}\n${path}\n${name} is ${path}\n${name} is ${path}\n`, '', 0];
+  assert.deepEqual(await report('clang'), at('clang', '/usr/local/bin/clang'), 'a runtime the workspace would install');
+  assert.deepEqual(await report('clang++'), at('clang++', '/usr/local/bin/clang++'), 'an installed runtime');
+  assert.deepEqual(await report('rackup'), at('rackup', '/home/main/.gem/bin/rackup'), 'a gem\'s bin');
+  assert.deepEqual(await run(main, 'command -v clang >/dev/null && echo "clang installed" || echo "clang missing"'), ['clang installed\n', '', 0]);
+  assert.deepEqual(await run(main, 'command -v echo; command -V echo; type echo'), ['echo\necho is a shell builtin\necho is a shell builtin\n', '', 0]);
 }
 
 // ── which searches PATH once ─────────────────────────────────────────────
