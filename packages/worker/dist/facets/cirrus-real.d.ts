@@ -52,6 +52,7 @@
  */
 import { HmrBridge } from './real-vite-hmr.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 /**
@@ -109,6 +110,8 @@ export declare class CirrusReal {
         root: string;
         basePath: string;
         vfs: SqliteVFS;
+        /** Who the server reads its project as: the credential of the process it runs under. */
+        cred: VfsCred;
         vfsEvents?: VfsEventEmitter | null;
         userConfigBundle?: string | null;
         extraSyntheticFiles?: Record<string, string>;

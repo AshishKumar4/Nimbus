@@ -582,6 +582,52 @@ return globalThis.Go;
     }
   }
 
+  var FILESYSTEM_RPC_METHODS = {
+    stat: "stat",
+    readFile: "readFileBytes",
+    writeFile: "writeFile",
+    readRange: "fsReadRange",
+    writeRange: "fsWriteRange",
+    truncate: "fsTruncate",
+    utimes: "utimes",
+    chmod: "chmod",
+    access: "access",
+    chown: "chown",
+    open: "fsOpen",
+    read: "fsRead",
+    write: "fsWrite",
+    close: "fsClose",
+    readdir: "readdir",
+    mkdir: "mkdir",
+    unlink: "unlink",
+    rmdir: "rmdir",
+    rename: "rename",
+    readlink: "readlink",
+    symlink: "symlink",
+    fsync: "fsSync",
+    revision: "fsRevision",
+    acquire: "fsAcquire",
+    list: "fsList",
+    realpath: "fsRealpath",
+    remove: "fsRemove",
+    copyFile: "fsCopyFile",
+    copyTree: "fsCopyTree",
+    fstat: "fsFstat",
+    dup: "fsDup",
+    seek: "fsSeek",
+    setStatus: "fsSetStatus",
+    readdirHandle: "fsReaddirHandle",
+    ftruncate: "fsFtruncate",
+    fchmod: "fsFchmod",
+    fchown: "fsFchown",
+    futimes: "fsFutimes",
+    appendOnce: "fsAppend",
+    acknowledgeAppend: "fsAppendAck",
+    writeBatch: "writeBatch",
+    writeStream: "writeBatchStream",
+    acquireExclusiveMutation: "fsAcquireExclusiveMutation",
+    releaseExclusiveMutation: "fsReleaseExclusiveMutation"
+  };
   function pending(result) {
     return (typeof result === "object" || typeof result === "function") && result !== null && typeof result.then === "function";
   }
@@ -594,50 +640,7 @@ return globalThis.Go;
   function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
   }
-  var SUPERVISOR_ANSWERED_METHODS = [
-    "stat",
-    "readFileBytes",
-    "writeFile",
-    "fsReadRange",
-    "fsWriteRange",
-    "fsTruncate",
-    "utimes",
-    "chmod",
-    "access",
-    "chown",
-    "fsOpen",
-    "fsRead",
-    "fsWrite",
-    "fsClose",
-    "readdir",
-    "mkdir",
-    "unlink",
-    "rmdir",
-    "rename",
-    "readlink",
-    "symlink",
-    "fsSync",
-    "fsRevision",
-    "fsAcquire",
-    "fsList",
-    "fsRealpath",
-    "fsRemove",
-    "fsCopyFile",
-    "fsCopyTree",
-    "fsFstat",
-    "fsDup",
-    "fsSeek",
-    "fsSetStatus",
-    "fsReaddirHandle",
-    "fsFtruncate",
-    "fsFchmod",
-    "fsFchown",
-    "fsFutimes",
-    "fsAppend",
-    "fsAppendAck",
-    "writeBatch",
-    "fsAcquireExclusiveMutation",
-    "fsReleaseExclusiveMutation",
+  var NODE_SHIM_RPC_METHODS = [
     "readFile",
     "writeFileStat",
     "lstat",
@@ -648,6 +651,12 @@ return globalThis.Go;
     "fsStorageGrant",
     "fsReadRangeUncached",
     "fsReadBatch"
+  ];
+  var SUPERVISOR_ANSWERED_METHODS = [
+    ...Object.values(FILESYSTEM_RPC_METHODS).filter(
+      (name) => name !== FILESYSTEM_RPC_METHODS.writeStream
+    ),
+    ...NODE_SHIM_RPC_METHODS
   ];
   var ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
   function isSupervisorAnsweredMethod(name) {

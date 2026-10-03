@@ -1560,9 +1560,10 @@ export declare class FacetManager {
     private _failLaunch;
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
-     * row carries is the recipe and nothing else: env and credentials are never
-     * written to storage, so a worker launch's are re-resolved by the embedder
-     * through `hooks.resolveWorkerLaunch`.
+     * row carries is the recipe, and who the launch ran as (its credential and
+     * exec id); env and secrets are never written to storage, so a worker
+     * launch's are re-resolved by the embedder through
+     * `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
     /**
@@ -1583,8 +1584,8 @@ export declare class FacetManager {
      * `attempt` distinguishes the launch the user asked for from the one re-drive
      * an instance reset earns it, and is carried in the journal rather than in
      * the caller's options because no caller has an opinion about it. So is a
-     * re-drive's `execId`, from the row: the process that invoked the launch
-     * went with the instance.
+     * re-drive's credential and exec id, from the row: the process that invoked
+     * the launch went with the instance.
      */
     private _spawnResident;
     /**
@@ -1630,7 +1631,7 @@ export declare class FacetManager {
      * owner, and the facet is dead once the pid is.
      */
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<SpawnedWorker>;
-    /** `attempt` is the journal's re-drive budget, and `execId` a re-drive's exec id, as `_spawnResident` carries them. */
+    /** `attempt` is the journal's re-drive budget, and `redriven` who a re-drive runs as, as `_spawnResident` carries them. */
     private _spawnWorker;
     private _holdForeground;
     /**

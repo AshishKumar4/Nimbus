@@ -21,7 +21,6 @@
  * HMR: VFS events → ViteDevServer detects changes → sends {type:'hmr'}
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
@@ -1200,7 +1199,7 @@ export class ViteDevServer {
     logPid = null;
     logSink = null;
     constructor(opts) {
-        this.vfs = opts.vfs.as(CRED_KERNEL);
+        this.vfs = opts.vfs.as(opts.cred);
         this.vfsEvents = opts.vfs.events;
         this.esbuild = opts.esbuild;
         this.injectBasename = opts.injectBasename !== false;
@@ -1571,10 +1570,18 @@ export class ViteDevServer {
                     headers: { ...headers, 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
                 });
             }
-            // Serve from VFS (with transforms for TS/TSX/JSX)
-            return this.serveFile(request, pathname, query, headers, base);
+            // Serve from VFS (with transforms for TS/TSX/JSX). Awaited, so a
+            // read the server's principal is refused lands in the catch below.
+            return await this.serveFile(request, pathname, query, headers, base);
         }
         catch (e) {
+            // The server reads as the principal who started it: a file that
+            // principal may not read is forbidden, not an error of the server's.
+            if (e?.code === 'EACCES' || e?.code === 'EPERM') {
+                return new Response('403 Forbidden: ' + pathname, {
+                    status: 403, headers: { ...headers, 'Content-Type': 'text/plain' },
+                });
+            }
             return new Response(`500 Internal Server Error: ${e?.message}`, {
                 status: 500, headers: { ...headers, 'Content-Type': 'text/plain' },
             });
@@ -1953,6 +1960,7 @@ export class ViteDevServer {
                             // Base-neutral (see the pooled build above).
                             define: this.defineFor(''),
                             external: externals.length > 0 ? externals : undefined,
+                            fs: this.vfs,
                         });
                         if (result.outputFiles?.length) {
                             bundled = result.outputFiles[0].contents;

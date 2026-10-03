@@ -24,23 +24,35 @@ import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-ha
 import { acquireHeavyAlloc } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { registerServingPort } from './serving-port.js';
-/**
- * What a dev server's pid is persisted as, and given back on restore: the
- * cwd+argv its identity derives from, and its exec id when it has one.
- */
+/** What a dev server's pid is persisted as, and given back on restore. */
 export function devServerIdentity(entry) {
-    return { cwd: entry.cwd, argv: entry.argv, ...execIdField(entry) };
+    return { cwd: entry.cwd, argv: entry.argv, cred: entry.cred, ...execIdField(entry) };
 }
-/** A persisted dev-server identity, read back; undefined for a config written before it was persisted. */
+/**
+ * A persisted dev-server identity, read back; undefined for a config written
+ * before it recorded who the server ran as, which is not restored: it would
+ * read the project as someone else.
+ */
 export function persistedIdentity(value) {
     const identity = value;
     if (typeof identity?.cwd !== 'string' || !Array.isArray(identity.argv))
         return undefined;
+    const cred = persistedCred(identity.cred);
+    if (cred === undefined)
+        return undefined;
     return {
         cwd: identity.cwd,
         argv: identity.argv.map(String),
+        cred,
         ...(typeof identity.execId === 'string' ? { execId: identity.execId } : {}),
     };
+}
+function persistedCred(value) {
+    const cred = value;
+    const id = (n) => Number.isInteger(n) && Number(n) >= 0;
+    if (!id(cred?.uid) || !id(cred.gid) || !id(cred.umask) || !Array.isArray(cred.groups) || !cred.groups.every(id))
+        return undefined;
+    return { uid: cred.uid, gid: cred.gid, groups: cred.groups, umask: cred.umask };
 }
 /**
  * Boot a cirrus-real dev server on `self`, register its port, and persist the
@@ -116,13 +128,15 @@ export async function startRealVite(self, opts) {
             root: opts.root,
             basePath: opts.basePath,
             vfs: self.sqliteFs,
+            cred: opts.identity.cred,
             vfsEvents: self.sqliteFs.events,
             userConfigBundle,
             extraSyntheticFiles,
         });
         self.cirrusReal = cirrusReal;
         // Reserve a PID so `ps`/logs show it like any other facet.
-        const entry = self.processes.spawn('vite (real, ' + opts.root + ')', opts.identity?.argv ?? [], opts.identity?.cwd ?? opts.root, { longRunning: true, execId: opts.identity?.execId });
+        // Its facet's syscalls answer under this pid's credential.
+        const entry = self.processes.spawn('vite (real, ' + opts.root + ')', opts.identity.argv, opts.identity.cwd, { longRunning: true, cred: opts.identity.cred, execId: opts.identity.execId });
         // start() is async — it ASSETS-fetches the Vite/plugin-react bundles on
         // first invocation (cached per-isolate after).
         await cirrusReal.start(self.ctx, entry.pid);

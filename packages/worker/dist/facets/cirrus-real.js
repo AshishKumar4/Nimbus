@@ -62,7 +62,6 @@ import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/s
 import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 /**
  * The real-vite facet needs Node's http client and server modules. At
@@ -587,7 +586,7 @@ export class CirrusReal {
         this.port = opts.port;
         this.root = opts.root;
         this.basePath = opts.basePath;
-        this.vfs = opts.vfs.as(CRED_KERNEL);
+        this.vfs = opts.vfs.as(opts.cred);
         this.vfsEvents = opts.vfsEvents || null;
         this.userConfigBundle = opts.userConfigBundle || null;
         this.extraSyntheticFiles = opts.extraSyntheticFiles || {};

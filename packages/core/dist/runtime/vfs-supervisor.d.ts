@@ -55,14 +55,17 @@ export type FilesystemSupervisor = {
 };
 /** Local facets retain the process-bound bridge and its synchronous capability. */
 export declare function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor;
+type BridgeRpcMethod = typeof FILESYSTEM_RPC_METHODS[Method];
+/** The calls node's shims make that the bridge does not name. */
+declare const NODE_SHIM_RPC_METHODS: readonly ["readFile", "writeFileStat", "lstat", "exists", "hasLegacySymlinkUnder", "setUmask", "fsAcquired", "fsStorageGrant", "fsReadRangeUncached", "fsReadBatch"];
 /**
  * The SupervisorRPC methods `answer` runs: the filesystem surface, every
- * table entry above but the streamed write, and the calls node's shims make
- * that the bridge does not name. The worker checks each is a method of its
- * SupervisorRPC.
+ * table entry above but the streamed write (a stream does not travel inside
+ * `answer`'s argument list), and the node shims' own calls. The worker checks
+ * each is a method of its SupervisorRPC.
  */
-export declare const SUPERVISOR_ANSWERED_METHODS: readonly ["stat", "readFileBytes", "writeFile", "fsReadRange", "fsWriteRange", "fsTruncate", "utimes", "chmod", "access", "chown", "fsOpen", "fsRead", "fsWrite", "fsClose", "readdir", "mkdir", "unlink", "rmdir", "rename", "readlink", "symlink", "fsSync", "fsRevision", "fsAcquire", "fsList", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsAppend", "fsAppendAck", "writeBatch", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "readFile", "writeFileStat", "lstat", "exists", "hasLegacySymlinkUnder", "setUmask", "fsAcquired", "fsStorageGrant", "fsReadRangeUncached", "fsReadBatch"];
-export type SupervisorAnsweredMethod = typeof SUPERVISOR_ANSWERED_METHODS[number];
+export type SupervisorAnsweredMethod = Exclude<BridgeRpcMethod, typeof FILESYSTEM_RPC_METHODS.writeStream> | typeof NODE_SHIM_RPC_METHODS[number];
+export declare const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[];
 export declare function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAnsweredMethod;
 /**
  * A refusal as it crosses the hop: what workerd's enhanced_error_serialization

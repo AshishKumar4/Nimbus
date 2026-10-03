@@ -21,10 +21,10 @@ export interface ProcessEntry {
     parentPid?: number;
     /**
      * The caller's name for the exec that started this process (`execId` on
-     * exec, execStream and startProcess), taken at spawn from the parent, or,
-     * for a process started for a command but kept out of its tree (an
-     * in-process server), from the command's process (`execIdOf`), so
-     * everything an exec starts carries it. Absent when no exec named one.
+     * exec, execStream and startProcess), taken at spawn from the parent, so
+     * everything an exec starts carries it; a dev server restored after a
+     * hibernation, or a resident re-driven after a reset, is given the one it
+     * had. Absent when no exec named one.
      */
     execId?: string;
     /** Explicit long-running flag set when a command is handed to a
@@ -47,14 +47,6 @@ export interface ProcessTableSpawnOptions {
 }
 /** An exec id from a caller, or an error that names the rule it broke. */
 export declare function parseExecId(value: unknown): string;
-/**
- * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process started for a command but kept out of its tree (an
- * in-process server) takes from the command's process.
- */
-export declare function execIdOf(processes: {
-    get(pid: number): ProcessEntry | undefined;
-}, pid: number | undefined): string | undefined;
 /**
  * A process's exec id as a field of a record that reports it (a process, or
  * the pid listening on a port): absent when the process has none, so a
@@ -123,8 +115,8 @@ export declare class ProcessTable {
      * several commands run concurrently in one session.
      */
     descendantsOf(pid: number): ProcessEntry[];
-    /** Remove `pid` if it has ended. A running process is kept. */
-    forget(pid: number): boolean;
+    /** Remove `pid`'s entry, now: its owner has seen it end. */
+    forget(pid: number): void;
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge?: number): number;
     get stats(): {

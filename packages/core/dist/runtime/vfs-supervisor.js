@@ -88,33 +88,14 @@ function bytes(result) {
 function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
 }
-// ── Refusals as answers ─────────────────────────────────────────────────
-//
-// A filesystem call the host refuses (ENOENT, ENOTDIR, EEXIST: an error with a
-// code) is an answer, as bytes are. Thrown from SupervisorRPC, it crossed the
-// entrypoint as an exception, and the platform recorded every such invocation
-// with outcome "exception" and "The Workers runtime canceled this request
-// because it detected that your Worker's code had hung" although its caller
-// was answered at once (Kinu, 2026-10-02: 6 of 6 refused stats; the answered
-// ones "canceled"). So a facet calls the filesystem through SupervisorRPC's
-// `answer(method, args)`, which returns a refusal as a value, and rethrows it
-// here as the error the throw would have delivered. Anything without a code
-// (a dropped connection, a bug) still throws.
-/**
- * The SupervisorRPC methods `answer` runs: the filesystem surface, every
- * table entry above but the streamed write, and the calls node's shims make
- * that the bridge does not name. The worker checks each is a method of its
- * SupervisorRPC.
- */
-export const SUPERVISOR_ANSWERED_METHODS = [
-    'stat', 'readFileBytes', 'writeFile', 'fsReadRange', 'fsWriteRange', 'fsTruncate', 'utimes', 'chmod',
-    'access', 'chown', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose', 'readdir', 'mkdir', 'unlink', 'rmdir',
-    'rename', 'readlink', 'symlink', 'fsSync', 'fsRevision', 'fsAcquire', 'fsList', 'fsRealpath', 'fsRemove',
-    'fsCopyFile', 'fsCopyTree', 'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate',
-    'fsFchmod', 'fsFchown', 'fsFutimes', 'fsAppend', 'fsAppendAck', 'writeBatch', 'fsAcquireExclusiveMutation',
-    'fsReleaseExclusiveMutation',
+/** The calls node's shims make that the bridge does not name. */
+const NODE_SHIM_RPC_METHODS = [
     'readFile', 'writeFileStat', 'lstat', 'exists', 'hasLegacySymlinkUnder', 'setUmask', 'fsAcquired',
     'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch',
+];
+export const SUPERVISOR_ANSWERED_METHODS = [
+    ...Object.values(FILESYSTEM_RPC_METHODS).filter((name) => name !== FILESYSTEM_RPC_METHODS.writeStream),
+    ...NODE_SHIM_RPC_METHODS,
 ];
 const ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
 export function isSupervisorAnsweredMethod(name) {

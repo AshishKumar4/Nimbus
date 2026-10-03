@@ -22,10 +22,17 @@
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { BundlePoolProvider } from './prebundle-pool.js';
 export interface ViteDevServerOptions {
     vfs: SqliteVFS;
+    /**
+     * Who the server reads and writes as: the credential of the process it
+     * runs under, the command that started it. Everything it serves, bundles
+     * or synthesizes goes through the VFS as this principal.
+     */
+    cred: VfsCred;
     esbuild: EsbuildService;
     /** Root directory in VFS (e.g. "home/user/projects") */
     root: string;

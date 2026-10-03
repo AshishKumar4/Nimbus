@@ -12,14 +12,6 @@ export function parseExecId(value) {
         + (typeof value === 'string' ? `${value.length} characters` : typeof value));
 }
 /**
- * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process started for a command but kept out of its tree (an
- * in-process server) takes from the command's process.
- */
-export function execIdOf(processes, pid) {
-    return pid === undefined ? undefined : processes.get(pid)?.execId;
-}
-/**
  * A process's exec id as a field of a record that reports it (a process, or
  * the pid listening on a port): absent when the process has none, so a
  * record about a process no exec named is what it was before exec ids.
@@ -186,12 +178,9 @@ export class ProcessTable {
         }
         return found;
     }
-    /** Remove `pid` if it has ended. A running process is kept. */
+    /** Remove `pid`'s entry, now: its owner has seen it end. */
     forget(pid) {
-        const entry = this.processes.get(pid);
-        if (!entry || entry.state === 'running')
-            return false;
-        return this.processes.delete(pid);
+        this.processes.delete(pid);
     }
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge = 60_000) {

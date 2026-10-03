@@ -46,19 +46,8 @@ import { registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler } from './supervisor-op.js';
-import { z } from 'zod/v4';
-/** A shell's name, the rule an `execId` follows. */
-const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const ShellStateSchema = z.object({
-    cwd: z.string().startsWith('/'),
-    env: z.record(z.string(), z.string()),
-}).strict();
-/** A saved shell state, or an error naming what is wrong with it. */
-export function parseShellState(value) {
-    return ShellStateSchema.parse(value);
-}
-/** Where named shells are saved, one row each; made by the first call that names one. */
-const SHELLS_TABLE = 'vfs_shells';
+import { NamedShells, SHELLS_TABLE } from './named-shells.js';
+export { parseShellState } from './named-shells.js';
 /**
  * A durable filesystem and a shell over it.
  *
@@ -107,9 +96,7 @@ export class NimbusWorkspace {
     /** The pid the shell's commands run as — the host's identity pid when it
      *  supplied one, else the `sh` this workspace spawned. */
     shellProcessPid;
-    /** One queue per named shell; see {@link withNamedShell}. */
-    shellQueues = new Map();
-    shellTableMade = false;
+    namedShells;
     constructor(vfs, kernel, shell, registry, env, sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, 
     /** Who the workspace shell acts as, and so every call's process. */
     identity) {
@@ -130,6 +117,7 @@ export class NimbusWorkspace {
         // session user, never as the kernel. Its working directory is the
         // shell's before anything has run: create's `cwd`, else HOME.
         this.fs = new WorkspaceFs(shell.getVfs(), shell.getCwd());
+        this.namedShells = new NamedShells(sql, this.fs.cwd, (pid, state) => this.shellFor(pid, state));
     }
     static async create(options) {
         if (options.fabric)
@@ -163,6 +151,9 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+        // Its processes bind to this filesystem, so a reap releases them here:
+        // the one place the table and the filesystem meet.
+        processes.setRelease((pid) => filesystem.releaseProcess(pid));
         const env = { ...defaultEnv(home), ...options.env };
         // The identity every shell command runs as. A host that supplied one keeps
         // it verbatim — its pid is already alive in ITS process table. Otherwise
@@ -351,12 +342,13 @@ export class NimbusWorkspace {
         }
         finally {
             this.processes.exit(pid, exitCode);
-            // Its descriptors close as it exits; its entry goes even if one fails to.
+            // Its descriptors close as it exits; its entry, and what it bound in
+            // the filesystem, go even if one fails to.
             try {
                 await shell.closeDescriptors();
             }
             finally {
-                this.processes.reapTree(pid);
+                await this.processes.reapTree(pid);
             }
         }
     }
@@ -387,56 +379,16 @@ export class NimbusWorkspace {
         return shell;
     }
     /**
-     * Run `body` in the named shell `id`: in the cwd and environment the last
-     * call on that name left it with, else `options.start`. What the shell
-     * holds when `body` settles is saved in this workspace's database, so a
-     * name outlives this object and its host's restarts.
-     *
-     * Calls on one name run one at a time, in the order they were made: two at
-     * once would read one state and race to write it back, and the loser's
-     * `cd` would vanish. Calls on different names run at once. A call's
-     * functions, aliases, options, umask and descriptors are its process's and
-     * end with it; only cwd and environment persist.
+     * Run `body` in the named shell `id` (see named-shells.ts): in the cwd and
+     * environment the last call on that name left it with, else
+     * `options.start`, one call on the name at a time.
      *
      * {@link exec} with a `shellId` is this around one command. A host that
      * runs its own process around the shell (a session's exec and background
      * jobs) calls it directly, and builds the shell with `open(pid)`.
      */
-    async withNamedShell(id, options, body) {
-        const name = ShellIdSchema.parse(id);
-        const previous = this.shellQueues.get(name) ?? Promise.resolve();
-        let release = () => { };
-        const gate = new Promise((resolve) => { release = resolve; });
-        const tail = previous.then(() => gate);
-        this.shellQueues.set(name, tail);
-        await previous;
-        try {
-            if (!this.shellTableMade) {
-                this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
-                this.shellTableMade = true;
-            }
-            const [saved] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
-            const state = saved === undefined
-                ? { cwd: options.start?.cwd ?? this.fs.cwd, env: options.start?.env ?? {} }
-                : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
-            const call = {};
-            try {
-                return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
-            }
-            finally {
-                if (options.persist !== false) {
-                    const env = { ...(call.shell?.getEnv() ?? state.env) };
-                    // `$` is the pid of the call that just ended, not state of the shell.
-                    delete env.$;
-                    this.sql.exec(`INSERT INTO ${SHELLS_TABLE} (id, cwd, env) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET cwd = excluded.cwd, env = excluded.env`, name, call.shell?.getCwd() ?? state.cwd, JSON.stringify(env));
-                }
-            }
-        }
-        finally {
-            release();
-            if (this.shellQueues.get(name) === tail)
-                this.shellQueues.delete(name);
-        }
+    withNamedShell(id, options, body) {
+        return this.namedShells.hold(id, options, body);
     }
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope) {
@@ -481,7 +433,6 @@ export class NimbusWorkspace {
         for (const table of WORKSPACE_TABLES) {
             this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
         }
-        this.shellTableMade = false;
     }
 }
 /**

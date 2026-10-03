@@ -35,11 +35,8 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
-/** Where a shell is: its working directory and its environment. */
-export interface ShellState {
-    readonly cwd: string;
-    readonly env: Readonly<Record<string, string>>;
-}
+import { type NamedShell, type NamedShellOptions } from './named-shells.js';
+export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
     /**
@@ -50,32 +47,6 @@ export interface WorkspaceExecOptions extends RunOptions {
      */
     readonly shellId?: string;
 }
-/** A named shell, held by one call: see {@link NimbusWorkspace.withNamedShell}. */
-export interface NamedShell {
-    /** Its working directory, where the process the call runs as starts. */
-    readonly cwd: string;
-    /** The shell, built for `pid`, the process the call runs as. */
-    open(pid: number): Shell;
-}
-export interface NamedShellOptions {
-    /**
-     * Where a name with no saved state starts: absent, in the directory the
-     * workspace started in (`fs.cwd`), with nothing beyond the workspace shell's
-     * environment.
-     */
-    readonly start?: {
-        readonly cwd: string;
-        readonly env?: Readonly<Record<string, string>>;
-    };
-    /**
-     * Save what the shell holds when the call settles; the default. False for a
-     * call whose shell outlives it, such as a background job: what it would
-     * save is a moment nobody asked about.
-     */
-    readonly persist?: boolean;
-}
-/** A saved shell state, or an error naming what is wrong with it. */
-export declare function parseShellState(value: unknown): ShellState;
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
     readonly sql: SqlDatabase;
@@ -243,9 +214,7 @@ export declare class NimbusWorkspace {
     /** The pid the shell's commands run as — the host's identity pid when it
      *  supplied one, else the `sh` this workspace spawned. */
     readonly shellProcessPid: number;
-    /** One queue per named shell; see {@link withNamedShell}. */
-    private readonly shellQueues;
-    private shellTableMade;
+    private readonly namedShells;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
     close(): Promise<void>;
@@ -282,16 +251,9 @@ export declare class NimbusWorkspace {
         readonly env?: Readonly<Record<string, string>>;
     }): Shell;
     /**
-     * Run `body` in the named shell `id`: in the cwd and environment the last
-     * call on that name left it with, else `options.start`. What the shell
-     * holds when `body` settles is saved in this workspace's database, so a
-     * name outlives this object and its host's restarts.
-     *
-     * Calls on one name run one at a time, in the order they were made: two at
-     * once would read one state and race to write it back, and the loser's
-     * `cd` would vanish. Calls on different names run at once. A call's
-     * functions, aliases, options, umask and descriptors are its process's and
-     * end with it; only cwd and environment persist.
+     * Run `body` in the named shell `id` (see named-shells.ts): in the cwd and
+     * environment the last call on that name left it with, else
+     * `options.start`, one call on the name at a time.
      *
      * {@link exec} with a `shellId` is this around one command. A host that
      * runs its own process around the shell (a session's exec and background

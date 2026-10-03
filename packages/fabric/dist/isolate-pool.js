@@ -534,13 +534,16 @@ export class IsolatePool {
             // fine and stays — it only tears down the long-lived SUPERVISOR
             // binding stub once the whole pool is done, which does NOT
             // invalidate any in-flight slot's entrypoint reference.
-            const stub = this.loader.get(id, async () => code);
-            const entrypoint = stub.getEntrypoint();
-            // Direct property call, awaited by this frame — bracketed, never
-            // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
+            //
+            // The hold comes first, so it ends whatever setup throws: a retry's
+            // was taken when the ledger let it in.
             const endFetch = admitted ?? beginLoaderFetch(this.ctx, id, this.claim);
             admitted = undefined;
             try {
+                const stub = this.loader.get(id, async () => code);
+                const entrypoint = stub.getEntrypoint();
+                // Direct property call, awaited by this frame — bracketed, never
+                // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
                 return await invoke(entrypoint, attempt);
             }
             catch (err) {
