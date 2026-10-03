@@ -2,7 +2,7 @@ import { parseChownOwnership } from '../../../../shell/unix-accounts.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
-import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 const spec = {
     recursive: { type: 'boolean', short: 'R' },
 };
@@ -21,23 +21,36 @@ const command = async (ctx) => {
         await ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
         return 1;
     }
-    const apply = async (path) => {
-        if (flags.recursive && (await statOrThrow(vfs, path)).type === 'directory') {
-            for (const child of (await vfs.readdir(path)))
-                (await apply(resolve(path, child.name)));
+    const apply = async (path, type) => {
+        if (flags.recursive && type === 'directory') {
+            for (const child of (await vfs.readdir(path))) {
+                const childPath = resolve(path, child.name);
+                (await apply(childPath, (await statOrThrow(vfs, childPath)).type));
+            }
         }
         (await vfs.chown(path, requested.uid, requested.gid));
     };
     let exitCode = 0;
     for (const file of positional.slice(1)) {
+        // GNU stats each operand before changing it, so a name it cannot look
+        // up (missing, or behind a directory it cannot search) "cannot be
+        // accessed", and only a change the filesystem refuses is a change of
+        // ownership that failed.
+        const path = resolve(ctx.cwd, file);
+        let type;
         try {
-            (await apply(resolve(ctx.cwd, file)));
+            type = (await statOrThrow(vfs, path)).type;
         }
         catch (error) {
-            // GNU's words: a name that is not there cannot be accessed; a change
-            // the filesystem refuses is a change of ownership that failed.
-            const what = isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR') ? 'cannot access' : 'changing ownership of';
-            await ctx.stderr.write(`chown: ${what} '${file}': ${strerror(error)}\n`);
+            await ctx.stderr.write(`chown: cannot access '${file}': ${strerror(error)}\n`);
+            exitCode = 1;
+            continue;
+        }
+        try {
+            (await apply(path, type));
+        }
+        catch (error) {
+            await ctx.stderr.write(`chown: changing ownership of '${file}': ${strerror(error)}\n`);
             exitCode = 1;
         }
     }
