@@ -418,4 +418,30 @@ console.log('require-resolver: createRequire ok');
   assert.equal(roomy.bundle['home/user/app/node_modules/dual/esm/index.js'], files['home/user/app/node_modules/dual/esm/index.js'], 'with room, the import branch is staged');
   assert.ok(roomy.speculative.has('home/user/app/node_modules/dual/esm/package.json'), 'with the metadata only it read, as optional');
 }
+// The import branch is the weakest evidence phase 2 has (a module runner may
+// load it; the process's own require does not): it waits behind every
+// deferral the code names, tables included. Ahead of them it shed Astro's
+// Shiki grammars (jsx.mjs, markdown.mjs among 118), which a page's code block
+// loads with import().
+{
+  const grammar = 'export default ' + JSON.stringify('x'.repeat(400)) + ';';
+  const files = {
+    'home/user/app/node_modules/fw/bin.mjs': "import clsx from 'clsx'; import './langs.js'; export default clsx;",
+    'home/user/app/node_modules/fw/langs.js': "export const langs = { a: () => import('./g/a.js'), b: () => import('./g/b.js') };",
+    'home/user/app/node_modules/fw/g/a.js': grammar,
+    'home/user/app/node_modules/fw/g/b.js': grammar,
+    'home/user/app/node_modules/clsx/package.json': JSON.stringify({ name: 'clsx', exports: { '.': { import: './clsx.mjs', default: './clsx.js' } } }),
+    'home/user/app/node_modules/clsx/clsx.js': 'module.exports = 1;',
+    'home/user/app/node_modules/clsx/clsx.mjs': 'export default ' + JSON.stringify('y'.repeat(400)) + ';',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/fw/bin.mjs';
+  const required = [entry, 'home/user/app/node_modules/fw/langs.js', 'home/user/app/node_modules/clsx/clsx.js']
+    .reduce((n, path) => n + files[path].length, 0);
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry, required + 2 * grammar.length + 10);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  assert.deepEqual([...r.speculative].filter((p) => p.endsWith('.js') || p.endsWith('.mjs')),
+    ['home/user/app/node_modules/fw/g/a.js', 'home/user/app/node_modules/fw/g/b.js'], "the code's own table first");
+  assert.equal(r.bundle['home/user/app/node_modules/clsx/clsx.mjs'], undefined, 'the import branch takes only the room left');
+}
 console.log('require-resolver: speculative dynamic imports ok');
