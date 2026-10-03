@@ -33,7 +33,9 @@ published independently in the `@nimbus-sh` npm scope.
   target's, as the synchronous bridge does), not the link's own; the
   namespace's `writeFile` and `writeRange` take `parents` for that. An
   awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
-  synchronous bridge does.
+  synchronous bridge does. A node program's write-back refused with EROFS or
+  EBUSY is the authority's verdict (nothing landed), no longer a durability
+  failure reported at exit.
 - A link on a `resolvesPaths` mount whose target a mount nested in it
   covers belongs to that backend. With `/pc` read-only holding
   `/link -> /inner/x`, and a writable mount at `/pc/inner`, the namespace
@@ -48,8 +50,10 @@ published independently in the `@nimbus-sh` npm scope.
   does), a launch takes what the link leads to as unknown rather than absent,
   and a lookup beneath a preopen inside the mount refuses it (ENOTCAPABLE;
   VFS-COMP-006 refuses it too). A node program's asynchronous write to a
-  name its launch did not list now goes to the authority as named, as its
-  asynchronous rename does, where it answered EAGAIN.
+  name its launch did not list is now parked and written back like any
+  other, the authority answering for it as for its asynchronous rename,
+  where it answered EAGAIN: a synchronous read after it is the bytes
+  written, and a refused one drops them.
 - The `python3` prompt starts in the shell's working directory, as the
   `ruby` prompt does: once per interpreter, keeping the directory the
   program's own `os.chdir` left on later lines, and refusing one it cannot

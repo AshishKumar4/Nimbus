@@ -548,5 +548,31 @@ function launched(named = []) {
   ws.filesystem.vfs.unmount('/pc');
 }
 
+// ── A write through such a link on a writable mount, then a read ─────────
+// The same shape on a writable /pc2: the async write lands at the backend's
+// own /inner/x, and the program's view of /pc2/link is the bytes it wrote,
+// also after it read (and kept) the old ones.
+{
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await backend.mkdir('/inner', { recursive: true });
+  await backend.writeFile('/inner/x', enc.encode('old'));
+  await backend.symlink('/inner/x', '/link');
+  const nested = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await nested.writeFile('/x', enc.encode('nested'));
+  ws.filesystem.vfs.mount('/pc2', remote(backend), { resolvesPaths: true });
+  ws.filesystem.vfs.mount('/pc2/inner', nested);
+  const seen = JSON.parse(await node(`${CHECK}
+(async () => {
+  const before = await fs.promises.readFile('/pc2/link', 'utf8');
+  await fs.promises.writeFile('/pc2/link', 'new');
+  console.log(JSON.stringify({ before, sync: code(() => fs.readFileSync('/pc2/link', 'utf8')), live: await fs.promises.readFile('/pc2/link', 'utf8') }));
+})();`, { filename: '/home/user/through.js', cwd: '/home/user', argv: ['/pc2/link'] }));
+  assert.deepEqual(seen, { before: 'old', sync: 'new', live: 'new' }, 'a synchronous read after the write is the bytes written');
+  assert.equal(dec.decode(await backend.readFile('/inner/x')), 'new', 'which landed at the backend\'s own file');
+  assert.equal(dec.decode(await nested.readFile('/x')), 'nested', 'and not the nested mount\'s');
+  ws.filesystem.vfs.unmount('/pc2/inner');
+  ws.filesystem.vfs.unmount('/pc2');
+}
+
 await ws.close();
 console.log('node-sync-fs-async-mount: hosted node\'s synchronous fs and require see an asynchronous mount, bounded where the launch names it');
