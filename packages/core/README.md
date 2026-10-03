@@ -426,8 +426,13 @@ the mount is lexical. The namespace still owns the way in: root links that
 lead to the mount, ENXIO with `absentReason` while the source answers null,
 the mount point itself (EBUSY, EISDIR, `mkdir -p` has nothing to do), EROFS
 under `readOnly`, EXDEV across mounts (so `mv` and `ws.fs.move` copy), and
-any mount nested inside it. Permissions inside the mount are the backend's:
-a view's credential reaches it through its `as`.
+any mount nested inside it (the way to one is looked up and searched here,
+since the backend never sees that path). Permissions inside the mount are
+the backend's: a view's credential reaches it through its `as`. A link on
+it reads as the namespace path it leads to (an absolute target re-rooted at
+the mount point), so a node program's staged view lands where the backend
+does, and a WASI program (`python3`, `ruby`, the shell's wasm commands)
+reaches it through a preopen the same way, one call per lookup.
 
 A node process's synchronous `fs` and `require` see a mount, one without a
 `sync` face included, where its launch names it: its working directory, its

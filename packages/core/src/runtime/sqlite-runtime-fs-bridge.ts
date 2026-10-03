@@ -774,7 +774,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // The root is found by name, so every directory above it must grant
       // search (VFS-COMP-006) before anything is looked up beneath it.
       const root = normalizeVfsPath('root' in path ? path.root : this.description(path.directory).node.path());
-      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred);
+      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name) => this.namespace?.resolvedByBackend(name) === true);
       for (let step = walk.next(); ; ) {
         if (step.done) return step.value;
         const lookup = step.value;
@@ -1085,12 +1085,19 @@ type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number }
  * Links resolve (the last only when `follow`), 40 hops, then null (ELOOP):
  * a relative one from its directory, an absolute one from the namespace's
  * `/`, as the unrestricted walk resolves them, and what the walk reaches
- * must lie at or under the root, else ENOTCAPABLE. The one walk for every
- * face: it yields its lookups, which the synchronous bridge answers at once
- * and a face over asynchronous mounts awaits. `root` is normalized; the
- * answer is the resolved path, normalized.
+ * must lie at or under the root, else ENOTCAPABLE. A path the namespace
+ * hands to its backend whole (`handedOver`: CompositeVFS.resolvedByBackend,
+ * MountOptions.resolvesPaths) is neither looked up nor searched here, nor
+ * are its links read: its components are taken lexically, `..` included,
+ * and that backend answers for them. The one walk for every face: it yields
+ * its lookups, which the synchronous bridge answers at once and a face over
+ * asynchronous mounts awaits. `root` is normalized; the answer is the
+ * resolved path, normalized.
  */
-export function* walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] }): Generator<BeneathLookup, string | null, BeneathAnswer> {
+export function* walkBeneath(
+  root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
+  handedOver: (path: string) => boolean,
+): Generator<BeneathLookup, string | null, BeneathAnswer> {
   const name = typeof path === 'string' ? path : path.path;
   if (root !== '') yield { stat: '/' + root };
   if (name.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
@@ -1100,19 +1107,26 @@ export function* walkBeneath(root: string, path: RuntimeFsPath, follow: boolean,
   while (pending.length > 0) {
     const segment = pending.shift()!;
     const dir = resolved.join('/');
-    const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
-    if (searched === null) throw fsError('ENOENT', 'path', path);
-    if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
-    if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
+    const candidate = dir === '' ? segment : `${dir}/${segment}`;
+    const handed = handedOver('/' + dir) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate));
+    if (!handed) {
+      const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
+      if (searched === null) throw fsError('ENOENT', 'path', path);
+      if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
+      if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
+    }
     if (segment === '.') continue;
     if (segment === '..') {
       if (dir === root) throw fsError('ENOTCAPABLE', 'path', path);
       resolved.pop();
       continue;
     }
+    if (handed) {
+      resolved.push(segment);
+      continue;
+    }
     // Every component already walked is a directory, not a link, so a
     // lookup by its literal name is the walk's own.
-    const candidate = dir === '' ? segment : `${dir}/${segment}`;
     const isFinal = pending.length === 0;
     const stat = (yield { stat: '/' + candidate }) as Exclude<BeneathAnswer, string>;
     if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);

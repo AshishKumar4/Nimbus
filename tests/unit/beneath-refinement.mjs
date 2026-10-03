@@ -112,7 +112,9 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   const source = (name) => (backends[name] instanceof SqliteVFS ? sqliteFiles(backends[name], CRED_KERNEL) : backends[name]);
   files.vfs.unmount('/proc');
   files.vfs.unmount('/dev');
-  for (const mount of testCase.mounts) files.vfs.mount(mount.point, face === 'synchronous' ? source(mount.backend) : asyncOnly(source(mount.backend)));
+  for (const mount of testCase.mounts) {
+    files.vfs.mount(mount.point, face === 'synchronous' ? source(mount.backend) : asyncOnly(source(mount.backend)), { resolvesPaths: mount.resolvesPaths === true });
+  }
   const bind = (binding) => (face === 'synchronous' ? files.bind(binding).synchronous : files.bind(binding));
   const kernel = bind({ pid: 1, cred: CRED_KERNEL });
   let pid = 2;

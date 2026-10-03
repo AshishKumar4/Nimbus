@@ -22,7 +22,13 @@ published independently in the `@nimbus-sh` npm scope.
   leads to, an absolute target re-rooted at the mount point and a relative
   one climbing no higher than it, and a link copied off the mount keeps
   that. So a node launch that stages `/ro/link -> /home/user/x` reads the
-  mount's `/home/user/x`; it used to read, and write, SQLite's. The namespace
+  mount's `/home/user/x`; it used to read, and write, SQLite's. A WASI
+  program (`python3`, `ruby`, the shell's wasm commands) reads such a mount
+  too: its lookup beneath a preopen hands the rest of the path to the
+  backend the same way, so `cat /pc/home/me/f` in the wasm shell reads the
+  consented file instead of failing with "Permission denied" at
+  `/pc/home`; the model (VFS-COMP-005, VFS-COMP-006) hands the same paths
+  over and still proves the lookup stays beneath the preopen. The namespace
   still owns the way in: root links into the mount, ENXIO with
   `absentReason`, the mount point (EBUSY, EISDIR, `mkdir -p` has nothing to
   do), EROFS under `readOnly`, EXDEV across mounts (so `mv`, `cp` and
@@ -39,7 +45,8 @@ published independently in the `@nimbus-sh` npm scope.
   has no `readRange`. They failed with "ENOTSUP: this filesystem does not
   support readRange": a process's reader read the whole file only when the
   namespace had no `readRange`, and a `CompositeVFS` always has one. It now
-  reads the whole file when the ranged read answers ENOTSUP, through
+  reads the whole file when the ranged read answers ENOTSUP (a VfsError,
+  or a plain `{ code }` error from across RPC), through
   `readRangeOrWhole` (`@nimbus-sh/core/vfs/vfs.js`), which an embedder's
   reader can use too. `CompositeVFS.readRange` itself still answers ENOTSUP
   for such a mount, on purpose: a ranged read done as a whole read is not a

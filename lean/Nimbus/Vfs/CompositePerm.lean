@@ -33,7 +33,10 @@
   Proved:
   - `resolve_named`: whatever a walk resolves to, every directory on the resolved
     path is a directory that grants the caller search: through links, the caller
-    reaches only what it could name directly.
+    reaches only what it could name directly. `walk_named`: so with `hands` (a
+    mount whose backend resolves its own paths, past its point and off the way to
+    a mount nested in it), except where the walk handed the rest to that backend,
+    which looks up, searches and follows links there itself (`..` is lexical).
   - `never_widens` / `backend_refusal_stands`: the answer at a resolved path the
     composite does not make is the backend's own, and a backend refusal is never
     turned into a success. `resolved_frame`: that answer depends only on the backend
@@ -361,10 +364,14 @@ structure Mnt where
   bk : Nat
   deriving DecidableEq, Repr
 
-/-- Backend 0 is the root's, mounted at `[]` implicitly. -/
+/-- Backend 0 is the root's, mounted at `[]` implicitly. `hands`: the paths the
+    composite hands to their backend whole (`MountOptions.resolvesPaths`): past the
+    point of a mount whose backend resolves its own paths, and not above a mount
+    nested in it. The composite looks up none of them; none by default. -/
 structure St where
   mounts : List Mnt
   bks : Nat → Backend
+  hands : Path → Bool := fun _ => false
 
 def ownerOf (ms : List Mnt) (p : Path) : Mnt :=
   ms.foldl (fun best m => if m.point.isPrefixOf p && best.point.length < m.point.length then m else best) ⟨[], 0⟩
@@ -410,12 +417,22 @@ def metaAt (S : St) (d : Path) : Meta := match entAt S d with
 def maxLinks : Nat := 40
 def fuel : Nat := 256
 
-/-- Linux path walk in the caller's namespace. -/
+/-- Whether the walk at `done`, taking `x`, is in a path its backend resolves: it is
+    already, or `x` takes it there. Then nothing is looked up or searched here. -/
+def handed (S : St) (done : Path) (x : String) : Bool :=
+  S.hands done || (x != "" && x != "." && x != ".." && S.hands (done ++ [x]))
+
+/-- Linux path walk in the caller's namespace; in a path its backend resolves,
+    lexical (the backend answers for the rest). -/
 def walk (S : St) (c : Cred) (follow : Bool) : Nat → Nat → Path → List String → Except String Path
   | 0, _, _, _ => .error "ELOOP"
   | _ + 1, _, done, [] => .ok done
   | n + 1, h, done, x :: rs =>
-    if !grants c (metaAt S done) 1 then .error "EACCES"
+    if handed S done x then
+      if x = "" ∨ x = "." then walk S c follow n h done rs
+      else if x = ".." then walk S c follow n h done.dropLast rs
+      else walk S c follow n h (done ++ [x]) rs
+    else if !grants c (metaAt S done) 1 then .error "EACCES"
     else if x = "" ∨ x = "." then walk S c follow n h done rs
     else if x = ".." then walk S c follow n h done.dropLast rs
     else
@@ -511,48 +528,119 @@ theorem named_dropLast {S : St} {c : Cred} {d : Path} (hn : Named S c d) (hd : I
     | nil => exact hd
     | cons y ys => exact (hn _ (by simp)).1
 
-theorem walk_named (S : St) (c : Cred) (f : Bool) : ∀ n h done rs p, Named S c done → IsDir S done →
-    walk S c f n h done rs = .ok p → Named S c p := by
+/-- Paths handed to their backend whole are closed under extension (nothing is
+    mounted below one), and the directory a handed path is in is handed or a
+    directory (at the top, the mount point). -/
+def HandsWF (S : St) : Prop :=
+  (∀ p x, S.hands p = true → S.hands (p ++ [x]) = true) ∧
+  (∀ p, S.hands p = true → S.hands p.dropLast = true ∨ IsDir S p.dropLast)
+
+/-- Every directory on `d` is a directory granting the caller search, or one the
+    walk left into a path its backend resolves, which that backend checks. -/
+def NamedH (S : St) (c : Cred) (d : Path) : Prop :=
+  ∀ i < d.length, S.hands (d.take (i + 1)) = true ∨ (IsDir S (d.take i) ∧ grants c (metaAt S (d.take i)) 1 = true)
+
+theorem namedH_snoc {S : St} {c : Cred} {d : Path} (x : String) (hn : NamedH S c d)
+    (hx : S.hands (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) : NamedH S c (d ++ [x]) := by
+  intro i hi
+  simp only [List.length_append, List.length_singleton] at hi
+  by_cases e : i = d.length
+  · subst e
+    rw [List.take_of_length_le (by simp), List.take_append_of_le_length (Nat.le_refl _), List.take_length]
+    exact hx
+  · rw [List.take_append_of_le_length (by omega), List.take_append_of_le_length (by omega)]
+    exact hn i (by omega)
+
+theorem namedH_dropLast {S : St} {c : Cred} {d : Path} (hn : NamedH S c d) : NamedH S c d.dropLast := by
+  rw [List.dropLast_eq_take]
+  intro i hi
+  simp only [List.length_take] at hi
+  simp only [List.take_take]
+  rw [Nat.min_eq_left (show i + 1 ≤ d.length - 1 by omega), Nat.min_eq_left (show i ≤ d.length - 1 by omega)]
+  exact hn i (by omega)
+
+/-- A directory the walk is in, not handed over, sits in a directory. -/
+theorem namedH_parent {S : St} {c : Cred} {d : Path} (hn : NamedH S c d) (hnd : S.hands d = false)
+    (hd : IsDir S d) : IsDir S d.dropLast := by
+  cases d with
+  | nil => exact hd
+  | cons y ys =>
+    have h := hn ys.length (by simp)
+    simp only [List.length_cons] at h
+    rw [List.take_of_length_le (by simp)] at h
+    rcases h with h | h
+    · simp [hnd] at h
+    · rw [List.dropLast_eq_take]; simpa using h.1
+
+/-- Whatever a walk resolves to, every directory on it grants the caller search,
+    except where the walk handed the rest to a backend that resolves its own paths. -/
+theorem walk_named (S : St) (c : Cred) (f : Bool) (hw : HandsWF S) :
+    ∀ n h done rs p, NamedH S c done → (S.hands done = true ∨ IsDir S done) →
+      walk S c f n h done rs = .ok p → NamedH S c p := by
   intro n
   induction n with
-  | zero => intro _ _ _ _ hn _ h; simp [walk] at h
+  | zero => intro _ _ _ _ _ _ h; simp [walk] at h
   | succ n ih =>
-    intro h done rs p hn hd hw
+    intro h done rs p hn hd hwk
     cases rs with
-    | nil => simp only [walk, Except.ok.injEq] at hw; subst hw; exact hn
+    | nil => simp only [walk, Except.ok.injEq] at hwk; subst hwk; exact hn
     | cons x rs =>
-      simp only [walk] at hw
-      split at hw
-      · cases hw
-      · rename_i hg
-        have hg : grants c (metaAt S done) 1 = true := by simpa using hg
-        split at hw
-        · exact ih _ _ _ _ hn hd hw
-        · split at hw
-          · have := named_dropLast hn hd; exact ih _ _ _ _ this.1 this.2 hw
-          · split at hw
-            · split at hw
-              · cases hw; exact named_snoc x hn hd hg
-              · cases hw
-            · split at hw
-              · cases hw; exact named_snoc x hn hd hg
-              · split at hw
-                · cases hw
-                · split at hw
-                  · exact ih _ _ _ _ (fun i hi => by simp at hi) (root_dir S) hw
-                  · exact ih _ _ _ _ hn hd hw
-            · rename_i m he
-              exact ih _ _ _ _ (named_snoc x hn hd hg) ⟨m, he⟩ hw
-            · split at hw
-              · cases hw; exact named_snoc x hn hd hg
-              · cases hw
+      simp only [walk] at hwk
+      split at hwk
+      · rename_i hh
+        split at hwk
+        · exact ih _ _ _ _ hn hd hwk
+        · split at hwk
+          · rename_i hdd
+            have hdone : S.hands done = true := by
+              unfold handed at hh; cases h' : S.hands done <;> simp_all
+            exact ih _ _ _ _ (namedH_dropLast hn) (hw.2 _ hdone) hwk
+          · have hq : S.hands (done ++ [x]) = true := by
+              unfold handed at hh
+              cases h' : S.hands done
+              · simp_all
+              · exact hw.1 _ _ h'
+            exact ih _ _ _ _ (namedH_snoc x hn (.inl hq)) (.inl hq) hwk
+      · rename_i hh
+        have hnd : S.hands done = false := by
+          unfold handed at hh; cases h' : S.hands done <;> simp_all
+        have hdir : IsDir S done := hd.resolve_left (by simp [hnd])
+        split at hwk
+        · cases hwk
+        · rename_i hg
+          have hg : grants c (metaAt S done) 1 = true := by simpa using hg
+          split at hwk
+          · exact ih _ _ _ _ hn hd hwk
+          · split at hwk
+            · exact ih _ _ _ _ (namedH_dropLast hn) (.inr (namedH_parent hn hnd hdir)) hwk
+            · split at hwk
+              · split at hwk
+                · cases hwk; exact namedH_snoc x hn (.inr ⟨hdir, hg⟩)
+                · cases hwk
+              · split at hwk
+                · cases hwk; exact namedH_snoc x hn (.inr ⟨hdir, hg⟩)
+                · split at hwk
+                  · cases hwk
+                  · split at hwk
+                    · exact ih _ _ _ _ (fun i hi => by simp at hi) (.inr (root_dir S)) hwk
+                    · exact ih _ _ _ _ hn hd hwk
+              · rename_i m he
+                exact ih _ _ _ _ (namedH_snoc x hn (.inr ⟨hdir, hg⟩)) (.inr ⟨m, he⟩) hwk
+              · split at hwk
+                · cases hwk; exact namedH_snoc x hn (.inr ⟨hdir, hg⟩)
+                · cases hwk
 
-/-- Whatever a path resolves to, through any number of links, every directory on
-    the resolved path is a directory that grants the caller search: it reaches only
-    what it could name directly. -/
-theorem resolve_named (S : St) (c : Cred) (f : Bool) (raw : List String) (p : Path)
-    (h : resolve S c f raw = .ok p) : ∀ i < p.length, IsDir S (p.take i) ∧ grants c (metaAt S (p.take i)) 1 = true :=
-  walk_named S c f _ _ _ _ p (fun i hi => by simp at hi) (root_dir S) h
+/-- Whatever a path resolves to in a namespace that hands nothing over, through any
+    number of links, every directory on the resolved path is a directory that grants
+    the caller search: it reaches only what it could name directly. -/
+theorem resolve_named (S : St) (c : Cred) (f : Bool) (hS : ∀ q, S.hands q = false) (raw : List String) (p : Path)
+    (h : resolve S c f raw = .ok p) : ∀ i < p.length, IsDir S (p.take i) ∧ grants c (metaAt S (p.take i)) 1 = true := by
+  have hwf : HandsWF S := ⟨fun q _ hq => by simp [hS] at hq, fun q hq => by simp [hS] at hq⟩
+  have hn := walk_named S c f hwf _ _ _ _ p (fun i hi => by simp at hi) (.inr (root_dir S)) h
+  intro i hi
+  rcases hn i hi with h' | h'
+  · simp [hS] at h'
+  · exact h'
 
 /-! ## Never wider than the backend -/
 

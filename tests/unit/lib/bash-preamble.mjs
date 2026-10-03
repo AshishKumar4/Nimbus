@@ -70,7 +70,7 @@ export function loadPreamble(opts = {}) {
   const raw = new SqliteVFS(harness.sql, harness.ctx);
   const authority = new ProcessFiles(raw);
   // Embedder mounts on the namespace, as a workspace's are.
-  for (const [point, vfs] of Object.entries(opts.mounts ?? {})) authority.vfs.mount(point, vfs);
+  for (const [point, vfs] of Object.entries(opts.mounts ?? {})) authority.vfs.mount(point, vfs, opts.mountOptions?.[point]);
   const root = raw.as(CRED_KERNEL);
   const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   for (const dir of ['bin', 'home/user', 'tmp', ...(opts.dirs ?? [])]) {
