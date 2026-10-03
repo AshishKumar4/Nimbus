@@ -26,7 +26,12 @@ published independently in the `@nimbus-sh` npm scope.
   up, "changing ownership of" for a change the filesystem refuses). The shell's four
   strerror tables are one, `strerror` in `@nimbus-sh/core/vfs/vfs-error.js`;
   `EPERM` now reads "Operation not permitted", not "Permission denied". The
-  shell had two `chown` commands; one remains.
+  shell had two `chown` commands; one remains. The shell's own path
+  resolver gave storage keys (`tmp/x`), which reached any error a command
+  printed whole; it now gives absolute paths. `tree DIR` without `-L`
+  listed the current directory instead of `DIR`; it lists `DIR`, prints it
+  as written, and exits 2 with tree's `[error opening dir]` for one it
+  cannot open.
 
 ## 2026-10-02
 
