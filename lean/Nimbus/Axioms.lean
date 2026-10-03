@@ -580,6 +580,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_mem
 #print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_max
 #print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_prefix_of
+#print axioms Nimbus.Vfs.CompositeBeneath.handsIn_of_nil
 #print axioms Nimbus.Vfs.CompositeBeneath.handsWF_beneath
 #print axioms Nimbus.Vfs.CompositeBeneath.walked_parent
 #print axioms Nimbus.Vfs.CompositeBeneath.walked_named

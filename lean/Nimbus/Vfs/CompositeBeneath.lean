@@ -18,10 +18,12 @@
   Past the point of a mount whose backend resolves its own paths (`hands`), as in
   `walk`, nothing is looked up, searched or read as a link, and `..` is lexical: that
   backend answers for the rest, and the answer is still checked beneath `R`. Beneath
-  `R` only a mount whose point lies at or under `R` is handed over (`beneathSt`): its
-  backend follows links only in its own tree, so beneath `R`. From a root inside such
-  a mount every component is walked here, links read (`handsWF_beneath`: the
-  restriction keeps the hand-off well formed).
+  `R` only a mount whose point lies at or under `R` is handed over (`beneathSt`,
+  `within := R`): its backend follows links only in its own tree, so beneath `R`. From
+  a root inside such a mount every component is walked here, and its links are read as
+  its backend reads them (`linkComps`: an absolute target re-rooted at the mount point,
+  a relative one climbing no higher than it). `handsWF_beneath`: the restriction keeps
+  the hand-off well formed.
 
   Proved:
   - `beneath_contained`: whatever `resolve(R, path)` resolves to lies at or under `R`,
@@ -72,7 +74,7 @@ def walkB (S : St) (c : Cred) (follow : Bool) (R : Path) : Nat → Nat → Path 
       | some (.link a t, _) =>
         if rs = [] ∧ follow = false then .ok q
         else if h = 0 then .error "ELOOP"
-        else walkB S c follow R n (h - 1) (if a then [] else done) (t ++ rs)
+        else walkB S c follow R n (h - 1) (if (S.hands q || a) = true then [] else done) (linkComps S q a t ++ rs)
       | some (.dir, _) => walkB S c follow R n h q rs
       | some (.file _, _) => if rs = [] then .ok q else .error "ENOTDIR"
 
@@ -87,7 +89,7 @@ def rootDenied (S : St) (c : Cred) (R : Path) : Bool :=
     point lies at or under `R`, so whatever the backend resolves, in its own tree, lies
     beneath `R` too. From a root inside such a mount every component is walked here. -/
 def beneathSt (S : St) (R : Path) : St :=
-  { S with hands := fun q => S.hands q && R.isPrefixOf (ownerOf S.mounts q).point }
+  { S with within := R }
 
 /-- `path` (its components; `abs` when it began with `/`) resolved beneath `R`: what the
     walk reaches, when that lies at or under `R`. -/
@@ -222,27 +224,35 @@ theorem ownerOf_prefix_of {ms : List Mnt} {q p : Path} (hq : (ownerOf ms q).poin
   · rw [h]; exact List.nil_prefix
   · exact List.prefix_of_prefix_length_le hq (ownerOf_prefix ms p) (ownerOf_max h hq)
 
-/-- Beneath a root, what is handed over is well formed as the composite's own
+theorem handsIn_of_nil {S : St} (h0 : S.within = []) (q : Path) : handsIn S q = S.hands q := by
+  simp [handsIn, h0, List.isPrefixOf]
+
+/-- Beneath a root, what may be handed over is well formed as the composite's own
     hand-off is, provided no mount's point is past its own point (as `hands` means). -/
-theorem handsWF_beneath {S : St} (R : Path) (hw : HandsWF S)
+theorem handsWF_beneath {S : St} (R : Path) (hw : HandsWF S) (h0 : S.within = [])
     (hoff : ∀ q, S.hands q = true → q ≠ (ownerOf S.mounts q).point) : HandsWF (beneathSt S R) := by
+  have hb : ∀ q, handsIn (beneathSt S R) q = (S.hands q && R.isPrefixOf (ownerOf S.mounts q).point) := fun _ => rfl
   constructor
   · intro q x hq
-    simp only [beneathSt, Bool.and_eq_true] at hq
-    rcases hw.1 _ x hq.1 with hd | hd
+    rw [hb] at hq
+    simp only [Bool.and_eq_true] at hq
+    rcases hw.1 q x (by rw [handsIn_of_nil h0]; exact hq.1) with hd | hd
     · left
-      simp only [beneathSt, Bool.and_eq_true]
-      refine ⟨hd, ?_⟩
+      rw [hb]
+      simp only [Bool.and_eq_true]
+      refine ⟨by rw [← handsIn_of_nil h0]; exact hd, ?_⟩
       have hR := List.isPrefixOf_iff_prefix.mp hq.2
       exact List.isPrefixOf_iff_prefix.mpr
         (hR.trans (ownerOf_prefix_of ((ownerOf_prefix _ q).trans (List.prefix_append _ _))))
     · exact .inr hd
   · intro q hq
-    simp only [beneathSt, Bool.and_eq_true] at hq
-    rcases hw.2 q hq.1 with hd | hd
+    rw [hb] at hq
+    simp only [Bool.and_eq_true] at hq
+    rcases hw.2 q (by rw [handsIn_of_nil h0]; exact hq.1) with hd | hd
     · left
-      simp only [beneathSt, Bool.and_eq_true]
-      refine ⟨hd, ?_⟩
+      rw [hb]
+      simp only [Bool.and_eq_true]
+      refine ⟨by rw [← handsIn_of_nil h0]; exact hd, ?_⟩
       have hR := List.isPrefixOf_iff_prefix.mp hq.2
       -- The mount `q` is in is not at `q` itself, so it is on `q.dropLast`.
       exact List.isPrefixOf_iff_prefix.mpr
@@ -256,11 +266,11 @@ theorem handsWF_beneath {S : St} (R : Path) (hw : HandsWF S)
     resolves (`hands`), which that backend checks. -/
 def NamedFrom (S : St) (c : Cred) (R d : Path) : Prop :=
   ∀ i, R.length ≤ i → i < d.length →
-    S.hands (d.take i) = true ∨ S.hands (d.take (i + 1)) = true ∨
+    handsIn S (d.take i) = true ∨ handsIn S (d.take (i + 1)) = true ∨
       (IsDir S (d.take i) ∧ grants c (metaAt S (d.take i)) 1 = true)
 
 theorem namedFrom_snoc {S : St} {c : Cred} {R d : Path} (x : String) (hn : NamedFrom S c R d)
-    (hx : S.hands d = true ∨ S.hands (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) :
+    (hx : handsIn S d = true ∨ handsIn S (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) :
     NamedFrom S c R (d ++ [x]) := by
   intro i hR hi
   simp only [List.length_append, List.length_singleton] at hi
@@ -286,7 +296,7 @@ def Walked (S : St) (c : Cred) (R d : Path) : Prop :=
   (R <+: d ∧ NamedFrom S c R d) ∨ NamedH S c d
 
 theorem walked_snoc {S : St} {c : Cred} {R d : Path} (x : String) (hw : Walked S c R d)
-    (hx : S.hands d = true ∨ S.hands (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) :
+    (hx : handsIn S d = true ∨ handsIn S (d ++ [x]) = true ∨ (IsDir S d ∧ grants c (metaAt S d) 1 = true)) :
     Walked S c R (d ++ [x]) := by
   rcases hw with ⟨hR, hn⟩ | hn
   · exact .inl ⟨hR.trans (List.prefix_append _ _), namedFrom_snoc x hn hx⟩
@@ -300,7 +310,7 @@ theorem walked_dropLast {S : St} {c : Cred} {R d : Path} (hw : Walked S c R d) (
 
 /-- The directory the walk's `done` (not `R`) is in is past a flagged point, or a directory. -/
 theorem walked_parent {S : St} {c : Cred} {R d : Path} (hwf : HandsWF S) (hw : Walked S c R d) (hne : d ≠ R) :
-    S.hands d.dropLast = true ∨ IsDir S d.dropLast := by
+    handsIn S d.dropLast = true ∨ IsDir S d.dropLast := by
   rcases hw with ⟨hR, hn⟩ | hn
   · obtain ⟨t, rfl⟩ := hR
     have ht : t ≠ [] := by rintro rfl; simp at hne
@@ -322,7 +332,7 @@ theorem walked_named {S : St} {c : Cred} {R d : Path} (hw : Walked S c R d) : Na
   · exact fun i _ hi => hn i hi
 
 theorem walkB_named (S : St) (c : Cred) (f : Bool) (R : Path) (hwf : HandsWF S) :
-    ∀ n h done rs p, Walked S c R done → (S.hands done = true ∨ IsDir S done) →
+    ∀ n h done rs p, Walked S c R done → (handsIn S done = true ∨ IsDir S done) →
       walkB S c f R n h done rs = .ok p → NamedFrom S c R p := by
   intro n
   induction n with
@@ -351,7 +361,7 @@ theorem walkB_named (S : St) (c : Cred) (f : Bool) (R : Path) (hwf : HandsWF S) 
         · cases hw
         · rename_i hg
           have hg : grants c (metaAt S done) 1 = true := by simpa using hg
-          have hs : S.hands done = true ∨ S.hands (done ++ [x]) = true ∨ (IsDir S done ∧ grants c (metaAt S done) 1 = true) :=
+          have hs : handsIn S done = true ∨ handsIn S (done ++ [x]) = true ∨ (IsDir S done ∧ grants c (metaAt S done) 1 = true) :=
             .inr (.inr ⟨hdir, hg⟩)
           split at hw
           · exact ih _ _ _ _ hW hd hw
@@ -380,14 +390,14 @@ theorem walkB_named (S : St) (c : Cred) (f : Bool) (R : Path) (hwf : HandsWF S) 
 /-- Every directory from `R` down to what `R`'s path resolves to is a directory that
     grants the caller search, except where the walk is in or leads into a path handed
     to a backend that resolves its own paths (beneath `R`: `beneathSt`). -/
-theorem beneath_named (S : St) (c : Cred) (f : Bool) (R : Path) (hwf : HandsWF S)
+theorem beneath_named (S : St) (c : Cred) (f : Bool) (R : Path) (hwf : HandsWF S) (h0 : S.within = [])
     (hoff : ∀ q, S.hands q = true → q ≠ (ownerOf S.mounts q).point)
-    (hR : (beneathSt S R).hands R = true ∨ IsDir S R)
+    (hR : handsIn (beneathSt S R) R = true ∨ IsDir S R)
     (abs : Bool) (raw : List String) (p : Path) (h : resolveB S c f R abs raw = .ok p) :
     ∀ i, R.length ≤ i → i < p.length →
-      (beneathSt S R).hands (p.take i) = true ∨ (beneathSt S R).hands (p.take (i + 1)) = true ∨
+      handsIn (beneathSt S R) (p.take i) = true ∨ handsIn (beneathSt S R) (p.take (i + 1)) = true ∨
         (IsDir S (p.take i) ∧ grants c (metaAt S (p.take i)) 1 = true) :=
-  walkB_named (beneathSt S R) c f R (handsWF_beneath R hwf hoff) _ _ _ _ p
+  walkB_named (beneathSt S R) c f R (handsWF_beneath R hwf h0 hoff) _ _ _ _ p
     (.inl ⟨List.prefix_refl R, fun i h1 h2 => absurd h2 (by omega)⟩) hR (resolveB_ok h).2.1
 
 /-- What resolves beneath a root the caller could name: every directory from `/` to the
@@ -522,9 +532,10 @@ theorem beneath_across_mounts :
     ans (walk S u2 true fuel maxLinks M ["up"]) = ("", ["etc", "p"]) := by
   decide
 
-/-- `/pc` mounts a device (backend 1): `home/me` is its user's, with `home/me/f` and
-    an absolute link `home/me/up -> /home/me`, which the device reads from its own
-    root; `vault` only root may search, yet holds the user's `vault/mine/g`; `locked`
+/-- `/pc` mounts a device (backend 1): `home/me` is its user's, with `home/me/f`, an
+    absolute link `home/me/up -> /home/me` and a relative one `home/me/climb ->
+    ../../../../home/me`, which the device reads from its own root (the second climbing
+    no higher than it); `vault` only root may search, yet holds the user's `vault/mine/g`; `locked`
     only root may search, and a mount nested at `/pc/locked/inner` holds `x`; `safe`
     holds `out -> /secret` and `up -> ../secret`, links out of it. The nested mount
     (not flagged) holds the file `x` and the absolute link `al -> /pc/home/me/f`. With
@@ -538,6 +549,7 @@ def deviceTrace (resolves : Bool) : St :=
       else if k = 1 then
         sqlite [(["home"], ⟨.dir, ⟨0o755, 0, 0⟩⟩), (["home", "me"], ⟨.dir, ⟨0o755, 2, 2⟩⟩),
           (["home", "me", "f"], ⟨.file 3, ⟨0o644, 2, 2⟩⟩), (["home", "me", "up"], ⟨.link true ["home", "me"], ⟨0o777, 2, 2⟩⟩),
+          (["home", "me", "climb"], ⟨.link false ["..", "..", "..", "..", "home", "me"], ⟨0o777, 2, 2⟩⟩),
           (["vault"], ⟨.dir, ⟨0o700, 0, 0⟩⟩), (["vault", "mine"], ⟨.dir, ⟨0o755, 2, 2⟩⟩),
           (["vault", "mine", "g"], ⟨.file 1, ⟨0o644, 2, 2⟩⟩), (["locked"], ⟨.dir, ⟨0o700, 0, 0⟩⟩),
           (["safe"], ⟨.dir, ⟨0o755, 2, 2⟩⟩), (["safe", "out"], ⟨.link true ["secret"], ⟨0o777, 2, 2⟩⟩),
@@ -554,7 +566,10 @@ def deviceTrace (resolves : Bool) : St :=
     holds `/pc`, the device follows them in its own tree, beneath the root. A sibling of
     the nested mount, on the device, is the device's alone, past `locked`; in the
     nested mount, which is not flagged, the walk looks up every component (kernel:
-    `x` is a file, so `x/child` is ENOTDIR) and follows its absolute link. -/
+    `x` is a file, so `x/child` is ENOTDIR) and follows its absolute link. From a root
+    inside the device, its links are read as the device reads them (`linkComps`):
+    `up` and `climb` lead to `/pc/home/me` and on to its `f`; on an unflagged device
+    `up` leads to the namespace's `/home/me`, which is not there. -/
 theorem beneath_hands_over :
     ans (resolveB (deviceTrace false) u2 true [] false ["pc", "vault", "mine", "g"]) = ("EACCES", []) ∧
     ans (resolveB (deviceTrace true) u2 true [] false ["pc", "vault", "mine", "g"]) = ("", ["pc", "vault", "mine", "g"]) ∧
@@ -571,7 +586,10 @@ theorem beneath_hands_over :
     ans (resolveB (deviceTrace true) u2 true [] false ["pc", "locked", "sib"]) = ("", ["pc", "locked", "sib"]) ∧
     ans (resolveB (deviceTrace true) kernel true [] false ["pc", "locked", "inner", "x", "child"]) = ("ENOTDIR", []) ∧
     ans (resolveB (deviceTrace true) kernel true [] false ["pc", "locked", "inner", "al"]) = ("", ["pc", "home", "me", "f"]) ∧
-    ans (resolveB (deviceTrace true) kernel true ["pc", "locked", "inner"] false ["al"]) = ("ENOTCAPABLE", []) := by
+    ans (resolveB (deviceTrace true) kernel true ["pc", "locked", "inner"] false ["al"]) = ("ENOTCAPABLE", []) ∧
+    ans (resolveB (deviceTrace true) u2 true ["pc", "home", "me"] false ["up", "f"]) = ("", ["pc", "home", "me", "f"]) ∧
+    ans (resolveB (deviceTrace true) u2 true ["pc", "home", "me"] false ["climb", "f"]) = ("", ["pc", "home", "me", "f"]) ∧
+    ans (resolveB (deviceTrace false) u2 true ["pc", "home", "me"] false ["up", "f"]) = ("ENOENT", []) := by
   decide
 
 end Nimbus.Vfs.CompositeBeneath
