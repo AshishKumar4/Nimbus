@@ -12,6 +12,7 @@ import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
+import { BASH_BUILTINS } from './bash-builtins.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 /**
  * Bytes a file-backed descriptor holds before committing. Matches the stream
@@ -113,14 +114,6 @@ const yieldToEventLoop = typeof eventLoopHost.setImmediate === 'function'
         channel.port1.onmessage = () => waiting.shift()?.();
         return () => new Promise((resolve) => { waiting.push(resolve); channel.port2.postMessage(0); });
     })();
-/** bash 5's builtins: in bash these run in the shell's own process. */
-const BASH_BUILTINS = new Set([
-    '.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete',
-    'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false',
-    'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd',
-    'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source',
-    'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait',
-]);
 export class Interpreter {
     config;
     lastExitCode = 0;
