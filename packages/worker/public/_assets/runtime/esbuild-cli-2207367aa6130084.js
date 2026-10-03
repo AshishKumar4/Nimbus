@@ -565,6 +565,69 @@ return globalThis.Go;
 };
 "use strict";
 (() => {
+  function disposeRpcResource(value) {
+    if (typeof value !== "object" && typeof value !== "function" || value === null)
+      return false;
+    const disposerKey = Symbol.dispose;
+    if (!disposerKey)
+      return false;
+    const disposer = Reflect.get(value, disposerKey);
+    if (typeof disposer !== "function")
+      return false;
+    try {
+      Reflect.apply(disposer, value, []);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  var FILESYSTEM_RPC_METHODS = {
+    stat: "stat",
+    readFile: "readFileBytes",
+    writeFile: "writeFile",
+    readRange: "fsReadRange",
+    writeRange: "fsWriteRange",
+    truncate: "fsTruncate",
+    utimes: "utimes",
+    chmod: "chmod",
+    access: "access",
+    chown: "chown",
+    open: "fsOpen",
+    read: "fsRead",
+    write: "fsWrite",
+    close: "fsClose",
+    readdir: "readdir",
+    mkdir: "mkdir",
+    unlink: "unlink",
+    rmdir: "rmdir",
+    rename: "rename",
+    readlink: "readlink",
+    symlink: "symlink",
+    fsync: "fsSync",
+    revision: "fsRevision",
+    acquire: "fsAcquire",
+    list: "fsList",
+    realpath: "fsRealpath",
+    remove: "fsRemove",
+    copyFile: "fsCopyFile",
+    copyTree: "fsCopyTree",
+    fstat: "fsFstat",
+    dup: "fsDup",
+    seek: "fsSeek",
+    setStatus: "fsSetStatus",
+    readdirHandle: "fsReaddirHandle",
+    ftruncate: "fsFtruncate",
+    fchmod: "fsFchmod",
+    fchown: "fsFchown",
+    futimes: "fsFutimes",
+    appendOnce: "fsAppend",
+    acknowledgeAppend: "fsAppendAck",
+    writeBatch: "writeBatch",
+    writeStream: "writeBatchStream",
+    acquireExclusiveMutation: "fsAcquireExclusiveMutation",
+    releaseExclusiveMutation: "fsReleaseExclusiveMutation"
+  };
   function pending(result) {
     return (typeof result === "object" || typeof result === "function") && result !== null && typeof result.then === "function";
   }
@@ -577,7 +640,70 @@ return globalThis.Go;
   function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
   }
-  function supervisorFilesystem(supervisor, local) {
+  var NODE_SHIM_RPC_METHODS = [
+    "readFile",
+    "writeFileStat",
+    "lstat",
+    "exists",
+    "hasLegacySymlinkUnder",
+    "setUmask",
+    "fsAcquired",
+    "fsStorageGrant",
+    "fsReadRangeUncached",
+    "fsReadBatch"
+  ];
+  var SUPERVISOR_ANSWERED_METHODS = [
+    ...Object.values(FILESYSTEM_RPC_METHODS).filter(
+      (name) => name !== FILESYSTEM_RPC_METHODS.writeStream
+    ),
+    ...NODE_SHIM_RPC_METHODS
+  ];
+  var ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
+  function isSupervisorAnsweredMethod(name) {
+    return typeof name === "string" && ANSWERED.has(name);
+  }
+  var STANDARD_ERRORS = {
+    EvalError,
+    RangeError,
+    ReferenceError,
+    SyntaxError,
+    TypeError,
+    URIError
+  };
+  function supervisorRefusalError(refusal) {
+    const Standard = Object.hasOwn(STANDARD_ERRORS, refusal.name) ? STANDARD_ERRORS[refusal.name] : void 0;
+    const error = new (Standard ?? Error)(refusal.message);
+    if (!Standard && refusal.name !== "Error") {
+      Object.defineProperty(error, "name", { value: refusal.name, configurable: true, writable: true });
+    }
+    for (const [key, value] of Object.entries(refusal.properties)) {
+      Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
+    }
+    return error;
+  }
+  function isAnsweringStub(supervisor) {
+    return typeof Reflect.get(supervisor, "answer") === "function";
+  }
+  function answeringSupervisor(supervisor) {
+    if (!isAnsweringStub(supervisor)) return supervisor;
+    const stub = supervisor;
+    return new Proxy(supervisor, {
+      get(target, name) {
+        if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
+        return async (...args) => {
+          const answer = await stub.answer(name, args);
+          try {
+            if ("refusal" in answer) throw supervisorRefusalError(answer.refusal);
+            return answer.value;
+          } finally {
+            disposeRpcResource(answer);
+          }
+        };
+      }
+    });
+  }
+  function supervisorFilesystem(remote, local) {
+    const supervisor = answeringSupervisor(remote);
     return {
       synchronous: local,
       stat: (...args) => hop(supervisor.stat(...args)),

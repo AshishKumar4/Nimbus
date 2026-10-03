@@ -242,6 +242,8 @@ export interface EsbuildServiceOptions {
      */
     transformHostId?: string;
 }
+/** The workspace paths a build read, from its metafile (`build` always asks for one). */
+export declare function vfsBuildInputs(metafile: esbuild.Metafile | undefined): string[];
 /**
  * What a build reads modules through: a view of the namespace as some
  * credential, each call answered at once (the engine, a synchronous

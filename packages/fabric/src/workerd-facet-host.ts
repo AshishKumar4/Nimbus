@@ -652,6 +652,10 @@ async function runOneShot<T>(
       } finally {
         disposeRpcResource(response);
       }
+    } catch (error) {
+      // A limit refusal pauses the ledger's admissions (beginLoaderFetchWhenFree).
+      endFetch(error);
+      throw error;
     } finally {
       endFetch();
     }

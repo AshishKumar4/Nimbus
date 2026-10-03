@@ -33,7 +33,7 @@ import {
   type CommonJsCellRow,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdField, execIdOf, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -44,7 +44,7 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -110,6 +110,7 @@ import {
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
+import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
   FACET_IMAGE_WRITE_SLICE_BYTES,
@@ -840,6 +841,9 @@ ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
 const __NimbusHostResponse = globalThis.Response;
+// The SUPERVISOR binding's filesystem calls answer a refusal as a value
+// (core vfs-supervisor.ts answeringSupervisor).
+${SUPERVISOR_ANSWERING_SRC}
 
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
@@ -876,7 +880,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // ends it early.
     const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
-    const __supervisor = workerEnv?.SUPERVISOR || null;
+    const __supervisor = workerEnv?.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
     // The same store, namespace and data plan a resident boots on, backed by
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
     // Declared inside the request, beside the shims, so a loader that reuses
@@ -1210,6 +1214,9 @@ ${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
+// The SUPERVISOR binding's filesystem calls answer a refusal as a value
+// (core vfs-supervisor.ts answeringSupervisor).
+${SUPERVISOR_ANSWERING_SRC}
 
 // The process's code: a module per cell, compiled when first required. The
 // only other way a string becomes code in a Worker is \`new Function\` at
@@ -1311,7 +1318,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    const __supervisor = workerEnv?.SUPERVISOR || null;
+    const __supervisor = workerEnv?.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
         await __nimbusReportLearningFailure(__supervisor, error);
@@ -4270,7 +4277,7 @@ export interface LongRunningWorkerSpawnOptions {
   foreground?: ForegroundLaunch;
   restart?: ResidentRestartPolicy;
   port?: number;
-  /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+  /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
   invokerPid?: number;
   /** Inline modules: source text, or small wasm carried by value. */
   modules?: Record<string, string | { wasm: ArrayBuffer }>;
@@ -4351,7 +4358,7 @@ export interface ResidentSpawnOptions {
   attachedTty?: boolean;
   skipSpawn?: boolean;
   callerPid?: number;
-  /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+  /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
   invokerPid?: number;
   bundleProfile?: FacetBundleProfile;
 }
@@ -4419,6 +4426,19 @@ interface ResidentLaunchRecord extends FencedWorkRecord {
    * invoking process to take it from, so the row carries it to the process
    * it spawns.
    */
+  execId?: string;
+  /**
+   * The credential the process ran under (`ProcessEntry.cred`), carried to
+   * the process a re-drive spawns for the same reason. Absent from a row an
+   * earlier release wrote, which is not re-driven: it would run as the
+   * session user, whoever had started it.
+   */
+  cred?: VfsCred;
+}
+
+/** Who a re-driven launch runs as: what its journal row carries in place of the invoker it no longer has. */
+interface RedrivenIdentity {
+  cred: VfsCred;
   execId?: string;
 }
 
@@ -4686,10 +4706,13 @@ export class FacetManager {
         '\x1b[2m[nimbus: the session restarted again while '
         + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`,
       ),
-      onRedriveFailed: (record, e) => this.hooks.notify?.(
-        `\x1b[2m[nimbus: "${record.command}" could not be restarted: `
-        + `${errorMessage(e)}]\x1b[0m\r\n`,
-      ),
+      onRedriveFailed: (record, e) => {
+        console.warn(`[facet-manager] resident pid ${record.pid} ("${record.command}") not re-driven: ${errorMessage(e)}`);
+        this.hooks.notify?.(
+          `\x1b[2m[nimbus: "${record.command}" could not be restarted: `
+          + `${errorMessage(e)}]\x1b[0m\r\n`,
+        );
+      },
     });
     this.launchPump = new PacedWork(ctx, {
       requestTurn: hooks.requestLaunchTurn?.bind(hooks),
@@ -5704,7 +5727,7 @@ export class FacetManager {
       skipSpawn?: boolean;
       /** G4: when skipSpawn is true, the PID the caller allocated. */
       callerPid?: number;
-      /** The process whose command runs the program: its exec id is the program's. */
+      /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
       invokerPid?: number;
       bundleProfile?: FacetBundleProfile;
       /** Return stdout/stderr in the result while keeping supervisor RPC
@@ -5749,8 +5772,12 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      this.processes.reap();
-      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { execId: execIdOf(this.processes, opts.invokerPid) });
+      await this.processes.reap();
+      // A child of the command that ran it, so under its credential: the
+      // program's syscalls answer under the credential the table holds for
+      // its pid. At the top of the table it ran as the session user whoever
+      // started it.
+      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { parentPid: opts.invokerPid });
       // Short foreground `node -e ...` helpers are quiet by design — only
       // notify for user-facing `node <file>` invocations, which covers the
       // real user intent (running scripts, wrangler, etc.).
@@ -6179,7 +6206,7 @@ export class FacetManager {
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
     const attached = mode === 'attached';
-    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { execId: execIdOf(this.processes, opts.invokerPid) });
+    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { parentPid: opts.invokerPid });
     const pid = entry.pid;
     // attached TUI + headless serve are resident long-running processes; only the
     // attached TUI grabs the terminal (raw-mode stdin + live geometry).
@@ -6679,14 +6706,20 @@ export class FacetManager {
 
   /**
    * Re-drive a journalled launch after an instance reset. What the journal
-   * row carries is the recipe and nothing else: env and credentials are never
-   * written to storage, so a worker launch's are re-resolved by the embedder
-   * through `hooks.resolveWorkerLaunch`.
+   * row carries is the recipe, and who the launch ran as (its credential and
+   * exec id); env and secrets are never written to storage, so a worker
+   * launch's are re-resolved by the embedder through
+   * `hooks.resolveWorkerLaunch`.
    */
   private async _redrive(record: ResidentLaunchRecord, attempt: number): Promise<unknown> {
     const { recipe } = record;
+    if (record.cred === undefined) {
+      // Reported through onRedriveFailed, and the row is superseded.
+      throw new Error('its journal entry predates the credential a re-drive runs under, so it is not started as anyone else');
+    }
+    const identity: RedrivenIdentity = { cred: record.cred, ...(record.execId === undefined ? {} : { execId: record.execId }) };
     switch (recipe.kind) {
-      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, record.execId);
+      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, identity);
       case 'worker': {
         // Which resolver a worker recipe re-drives through is decided by
         // `recipe.resident`, and it is not a flag: it is the interpreter
@@ -6715,7 +6748,7 @@ export class FacetManager {
           vfsTextModules: resolved.vfsTextModules,
           mainModule,
           durable: { owner: residentOwner(record) ?? recipe.owner, image: recipe.image },
-        }, attempt, record.execId);
+        }, attempt, identity);
       }
     }
   }
@@ -6739,16 +6772,16 @@ export class FacetManager {
    * `attempt` distinguishes the launch the user asked for from the one re-drive
    * an instance reset earns it, and is carried in the journal rather than in
    * the caller's options because no caller has an opinion about it. So is a
-   * re-drive's `execId`, from the row: the process that invoked the launch
-   * went with the instance.
+   * re-drive's credential and exec id, from the row: the process that invoked
+   * the launch went with the instance.
    */
   private async _spawnResident(
     code: string,
     opts: ResidentSpawnOptions,
     attempt: number,
-    execId?: string,
+    redriven?: RedrivenIdentity,
   ): Promise<{ pid: number }> {
-    this.processes.reap();
+    await this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
     const cwd = opts.cwd || '/home/user';
     let entry: ProcessEntry;
@@ -6759,7 +6792,9 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      entry = this.processes.spawn(command, opts.argv || [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
+      // A child of its invoker, under its credential, as exec's. A re-drive has
+      // no invoker (the journal never holds one): it runs as the row says.
+      entry = this.processes.spawn(command, opts.argv || [], cwd, { parentPid: opts.invokerPid, ...redriven });
     }
     this.processes.setLongRunning(entry.pid);
     if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
@@ -6851,15 +6886,15 @@ export class FacetManager {
       }
     }
     // The recipe is the launch's inputs; the invoker is a pid of this
-    // instance, which a re-drive outlives, so the row carries the exec id.
+    // instance, which a re-drive outlives, so the row carries who it ran as.
     const { invokerPid: _invokerPid, ...inputs } = opts;
     const recipe: NodeRecipe = { kind: 'node', code, opts: { ...inputs, skipSpawn: undefined, callerPid: undefined } };
-    const execId = entry.execId === undefined ? {} : { execId: entry.execId };
+    const ranAs = { cred: entry.cred, ...(entry.execId === undefined ? {} : { execId: entry.execId }) };
     const initial: ResidentLaunchRecord = {
       pid: entry.pid, command, attempt, phase: 'starting', owner,
       recipe,
       restart: residentRestartPolicy(opts.env),
-      ...execId,
+      ...ranAs,
     };
     let duplicateOf: number | null;
     try {
@@ -6903,7 +6938,7 @@ export class FacetManager {
       owner,
       ...(held !== null ? { port: held.port, injectedPort: held.port } : {}),
       restart: residentRestartPolicy(opts.env),
-      ...execId,
+      ...ranAs,
     };
     try {
       if (!ephemeral) await this.launchJournal.journal(record);
@@ -7228,22 +7263,22 @@ export class FacetManager {
     return this._spawnWorker(workerCode, command, cwd, opts, 0);
   }
 
-  /** `attempt` is the journal's re-drive budget, and `execId` a re-drive's exec id, as `_spawnResident` carries them. */
+  /** `attempt` is the journal's re-drive budget, and `redriven` who a re-drive runs as, as `_spawnResident` carries them. */
   private async _spawnWorker(
     workerCode: string,
     command: string,
     cwd: string,
     opts: LongRunningWorkerSpawnOptions,
     attempt: number,
-    execId?: string,
+    redriven?: RedrivenIdentity,
   ): Promise<SpawnedWorker> {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
-    this.processes.reap();
+    await this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
-    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
+    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { parentPid: opts.invokerPid, ...redriven });
     // Stamp the process-table entry so /api/processes exposes this as a
     // long-running process.
     this.processes.setLongRunning(entry.pid);
@@ -7334,6 +7369,7 @@ export class FacetManager {
           owner: opts.durable.owner,
           restart: opts.restart ?? 'never',
           ...(opts.port !== undefined && opts.port > 0 ? { port: opts.port } : {}),
+          cred: entry.cred,
           ...(entry.execId !== undefined ? { execId: entry.execId } : {}),
         };
         // The durable facet name is claimed once, ever, from DO storage — a

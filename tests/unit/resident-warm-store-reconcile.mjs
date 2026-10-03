@@ -136,15 +136,13 @@ await runScenarios(import.meta.path, {
     // The speedup the kept store exists for: what did not change is kept, not
     // refetched, and what changed is current before the first instruction.
     const { authority, sql, cursor, bundle } = await keptStore();
-    const { supervisor, log } = facetSupervisor(authority);
     const fetched = [];
-    const readBatch = supervisor.fsReadBatch;
-    const counting = new Proxy(supervisor, {
-      get(target, name) {
-        if (name !== 'fsReadBatch') return target[name];
-        return async (requests) => { for (const r of requests) fetched.push(r.path); return readBatch(requests); };
-      },
+    let forward;
+    const handle = facetSupervisor(authority, {
+      fsReadBatch: async (requests) => { for (const r of requests) fetched.push(r.path); return forward('fsReadBatch', [requests]); },
     });
+    forward = handle.forward;
+    const { supervisor: counting, log } = handle;
     await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: counting }, sql, bundle, cursor });
     assert.deepEqual(globalThis.__first, { staged: 'NEW-STAGED', kept: 'NEW-KEPT', same: 'SAME' });
     assert.deepEqual(

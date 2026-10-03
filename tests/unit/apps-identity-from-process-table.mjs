@@ -297,8 +297,8 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   const identity = await first.fm.residentIdentity(pid);
   assert.match(identity.owner, /^auto:[a-f0-9]{24}$/, 'the in-process dev server has a derived identity');
   const persisted = await first.ctx.storage.get('vite-config');
-  assert.deepEqual(persisted.identity, { cwd: first.processes.get(pid).cwd, argv: first.processes.get(pid).argv },
-    'the identity inputs are persisted with the dev-server config');
+  assert.deepEqual(persisted.identity, { cwd: first.processes.get(pid).cwd, argv: first.processes.get(pid).argv, cred: first.processes.get(pid).cred },
+    'the identity inputs are persisted with the dev-server config, and who it ran as');
 
   const exposed = await rpcExposeApp(first.self, 5173, { visibility: 'public', name: 'web' });
   assert.equal(exposed.owner, identity.owner);
@@ -341,18 +341,19 @@ async function serve(t, { command, argv, cwd, port, tag }) {
 {
   const t = setup();
   const { self, processes, portRegistry, ctx } = t;
-  // The shell the SDK drives is a real session shell, where `npx` stands in
-  // for the builtin: it adopts the wrapper pid the job allocated (the
-  // bin-spawn contract) and registers the dev server's port under it, then
-  // the shell line returns 0.
+  // The shell the SDK drives is a real session shell over the session's
+  // process table, where `npx` stands in for the builtin: it adopts the
+  // wrapper pid the job allocated (the bin-spawn contract) and registers the
+  // dev server's port under it, then the shell line returns 0.
   const harness = createSqliteVfsTestHarness();
-  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, processes });
   ws.registry.register('npx', async (cmd) => {
     const adopted = cmd.__nimbusBinSpawn.callerPid;
     portRegistry.bindFacetStub(adopted, stub('vite'));
     await t.fm.registerPort(adopted, 5173);
     return 0;
   });
+  self.runtimeWorkspace = ws;
   self.shell = ws.shell;
   self._w1SessionDestroyed = false;
   self.shellProcessPid = null;

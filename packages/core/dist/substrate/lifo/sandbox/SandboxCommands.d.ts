@@ -1,18 +1,9 @@
 import type { Shell } from '../shell/Shell.js';
-import type { CommandRegistry } from '../commands/registry.js';
-import type { Command } from '../commands/types.js';
-import type { SandboxCommands as ISandboxCommands, RunOptions, CommandResult } from './types.js';
+import type { RunOptions, CommandResult } from './types.js';
 /**
- * Wraps Shell.execute() and serializes concurrent calls.
- * Concurrent commands.run() calls are queued (matches real shell behavior).
+ * Run one command line on `shell` and collect its result. Whatever shell it is
+ * given is the one the command acts on; it queues nothing, so two calls on two
+ * shells run at once.
  */
-export declare class SandboxCommandsImpl implements ISandboxCommands {
-    private shell;
-    readonly registry: CommandRegistry;
-    private queue;
-    constructor(shell: Shell, registry: CommandRegistry);
-    run(cmd: string, options?: RunOptions): Promise<CommandResult>;
-    register(name: string, handler: Command): void;
-    private executeWithOptions;
-}
+export declare function runCommand(shell: Shell, cmd: string, options?: RunOptions): Promise<CommandResult>;
 //# sourceMappingURL=SandboxCommands.d.ts.map

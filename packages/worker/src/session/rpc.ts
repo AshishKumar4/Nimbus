@@ -1668,6 +1668,7 @@ export async function _rpcFanoutExecute(
   const claim = claimDynamicWorkers(self.ctx, concurrency);
   const pool = new IsolatePool(self.env, self.ctx, {
     concurrency,
+    claim: claim ?? undefined,
     timeoutMs: poolOpts.timeoutMs,
     tag: poolOpts.tag ?? 'fanout-peer',
     preamble: poolOpts.preamble,

@@ -83,12 +83,32 @@ export class NpmCache {
       hoisted_path TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (project_path, name)
     )`);
+        // A bundle is served only to a principal who may read what it was built
+        // from, so a row that does not say is of no use: a table predating the
+        // `sources` column is dropped and recreated, and its bundles rebuild on
+        // first request, as user_module_transforms' do below.
+        let hasSourcesColumn = true;
+        try {
+            const cols = [...this.sql.exec(`PRAGMA table_info(pkg_esm_bundles)`)];
+            if (cols.length > 0)
+                hasSourcesColumn = cols.some((r) => String(r.name) === 'sources');
+        }
+        catch {
+            hasSourcesColumn = true; /* table absent — CREATE below handles it */
+        }
+        if (!hasSourcesColumn) {
+            try {
+                this.sql.exec(`DROP TABLE pkg_esm_bundles`);
+            }
+            catch { /* non-fatal */ }
+        }
         this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_esm_bundles (
       specifier   TEXT PRIMARY KEY,
       bundle_hash TEXT NOT NULL,
       esm_code    TEXT NOT NULL,
       built_at    INTEGER NOT NULL DEFAULT 0,
-      input_hash  TEXT NOT NULL DEFAULT ''
+      input_hash  TEXT NOT NULL DEFAULT '',
+      sources     TEXT NOT NULL DEFAULT '[]'
     )`);
         // A transform is keyed by (vfs_path, base): the served output bakes the
         // mount base, so one source served under two mounts is two rows. The
@@ -303,24 +323,26 @@ export class NpmCache {
     /** Get a pre-bundled ESM module. */
     getEsmBundle(specifier) {
         this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT specifier, bundle_hash, esm_code, built_at, input_hash
+        const rows = [...this.sql.exec(`SELECT specifier, bundle_hash, esm_code, built_at, input_hash, sources
        FROM pkg_esm_bundles WHERE specifier = ?`, specifier)];
         if (rows.length === 0)
             return null;
         const r = rows[0];
+        const sources = JSON.parse(String(r.sources));
         return {
             specifier: String(r.specifier),
             bundleHash: String(r.bundle_hash),
             esmCode: String(r.esm_code),
             builtAt: Number(r.built_at),
             inputHash: String(r.input_hash),
+            sources: Array.isArray(sources) ? sources.map(String) : [],
         };
     }
     /** Store a pre-bundled ESM module. */
     putEsmBundle(entry) {
         this.ensureSchema();
-        this.sql.exec(`INSERT OR REPLACE INTO pkg_esm_bundles (specifier, bundle_hash, esm_code, built_at, input_hash)
-       VALUES (?, ?, ?, ?, ?)`, entry.specifier, entry.bundleHash, entry.esmCode, entry.builtAt, entry.inputHash);
+        this.sql.exec(`INSERT OR REPLACE INTO pkg_esm_bundles (specifier, bundle_hash, esm_code, built_at, input_hash, sources)
+       VALUES (?, ?, ?, ?, ?, ?)`, entry.specifier, entry.bundleHash, entry.esmCode, entry.builtAt, entry.inputHash, JSON.stringify(entry.sources));
     }
     /** Delete a pre-bundled ESM module (e.g., after package update). */
     deleteEsmBundle(specifier) {

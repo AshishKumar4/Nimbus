@@ -47,6 +47,8 @@ export class SessionProcessSupervisor {
     isLogOrphan = (pid) => !this.table.get(pid);
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
+    /** Releases an ended process's filesystem binding; see setRelease. */
+    release = null;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     defaultSignalAction = null;
     // ── Lifecycle / PID authority ─────────────────────────────────────────
@@ -153,12 +155,57 @@ export class SessionProcessSupervisor {
         return killed;
     }
     /**
-     * Clean up exited processes older than maxAge ms. A reaped pid whose logs
-     * hold no exit (a process killed around its log) is an orphan from here,
-     * which gives its logs a deadline.
+     * Clean up exited processes older than maxAge ms, each released first (see
+     * {@link setRelease}), as {@link reapTree} does: a session prunes its table
+     * this way rather than at each call's return, and an entry forgotten
+     * unreleased left its binding behind. With no release set nothing is
+     * reaped. A reaped pid whose logs hold no exit (a process killed around its
+     * log) is an orphan from here, which gives its logs a deadline.
      */
-    reap(maxAge) {
-        const reaped = this.table.reap(maxAge);
+    async reap(maxAge) {
+        const release = this.release;
+        if (!release)
+            return 0;
+        let reaped = 0;
+        for (const entry of this.table.expired(maxAge)) {
+            await release(entry.pid);
+            this.table.forget(entry.pid);
+            reaped++;
+        }
+        if (reaped > 0)
+            this.logRetention?.();
+        return reaped;
+    }
+    /**
+     * How an ended process lets go of what it bound in the filesystem (its
+     * descriptor scope, its watches): the `releaseProcess` of the filesystem
+     * this table's processes bind to. One slot, set by the workspace composed
+     * over this table, which owns that filesystem; {@link reapTree} calls it
+     * for each entry before forgetting it.
+     */
+    setRelease(release) {
+        this.release = release;
+    }
+    /**
+     * Remove `pid` and every process under it that has ended, now, as a parent
+     * that waited for its children does: what a caller ran to completion has
+     * nothing left to report. Each is released first (see {@link setRelease}),
+     * so what it bound goes with its entry rather than outliving it; with no
+     * release set this refuses. One still running is kept. Logs are
+     * orphaned as by {@link reap}.
+     */
+    async reapTree(pid) {
+        const release = this.release;
+        if (!release)
+            throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
+        let reaped = 0;
+        for (const entry of [this.table.get(pid), ...this.table.descendantsOf(pid)]) {
+            if (entry === undefined || entry.state === 'running')
+                continue;
+            await release(entry.pid);
+            this.table.forget(entry.pid);
+            reaped++;
+        }
         if (reaped > 0)
             this.logRetention?.();
         return reaped;

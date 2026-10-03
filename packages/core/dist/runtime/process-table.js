@@ -12,14 +12,6 @@ export function parseExecId(value) {
         + (typeof value === 'string' ? `${value.length} characters` : typeof value));
 }
 /**
- * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process a runtime starts for a command takes from the command's
- * process, which is not its parent in the table.
- */
-export function execIdOf(processes, pid) {
-    return pid === undefined ? undefined : processes.get(pid)?.execId;
-}
-/**
  * A process's exec id as a field of a record that reports it (a process, or
  * the pid listening on a port): absent when the process has none, so a
  * record about a process no exec named is what it was before exec ids.
@@ -186,17 +178,14 @@ export class ProcessTable {
         }
         return found;
     }
-    /** Clean up exited processes older than maxAge ms. */
-    reap(maxAge = 60_000) {
+    /** Remove `pid`'s entry, now: its owner has seen it end. */
+    forget(pid) {
+        this.processes.delete(pid);
+    }
+    /** The processes that ended more than maxAge ms ago, which a reap may forget. */
+    expired(maxAge = 60_000) {
         const now = Date.now();
-        let reaped = 0;
-        for (const [pid, entry] of this.processes) {
-            if (entry.state !== 'running' && entry.endTime && now - entry.endTime > maxAge) {
-                this.processes.delete(pid);
-                reaped++;
-            }
-        }
-        return reaped;
+        return [...this.processes.values()].filter((entry) => entry.state !== 'running' && entry.endTime !== null && now - entry.endTime > maxAge);
     }
     get stats() {
         const all = [...this.processes.values()];

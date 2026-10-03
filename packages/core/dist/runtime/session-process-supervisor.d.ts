@@ -69,6 +69,8 @@ export declare class SessionProcessSupervisor {
     private readonly isLogOrphan;
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     private onTerminalCb;
+    /** Releases an ended process's filesystem binding; see setRelease. */
+    private release;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     private defaultSignalAction;
     /** Allocate a PID and register a new process. */
@@ -115,11 +117,31 @@ export declare class SessionProcessSupervisor {
      */
     kill(pid: number, exitCode?: number): boolean;
     /**
-     * Clean up exited processes older than maxAge ms. A reaped pid whose logs
-     * hold no exit (a process killed around its log) is an orphan from here,
-     * which gives its logs a deadline.
+     * Clean up exited processes older than maxAge ms, each released first (see
+     * {@link setRelease}), as {@link reapTree} does: a session prunes its table
+     * this way rather than at each call's return, and an entry forgotten
+     * unreleased left its binding behind. With no release set nothing is
+     * reaped. A reaped pid whose logs hold no exit (a process killed around its
+     * log) is an orphan from here, which gives its logs a deadline.
      */
-    reap(maxAge?: number): number;
+    reap(maxAge?: number): Promise<number>;
+    /**
+     * How an ended process lets go of what it bound in the filesystem (its
+     * descriptor scope, its watches): the `releaseProcess` of the filesystem
+     * this table's processes bind to. One slot, set by the workspace composed
+     * over this table, which owns that filesystem; {@link reapTree} calls it
+     * for each entry before forgetting it.
+     */
+    setRelease(release: (pid: number) => Promise<void>): void;
+    /**
+     * Remove `pid` and every process under it that has ended, now, as a parent
+     * that waited for its children does: what a caller ran to completion has
+     * nothing left to report. Each is released first (see {@link setRelease}),
+     * so what it bound goes with its entry rather than outliving it; with no
+     * release set this refuses. One still running is kept. Logs are
+     * orphaned as by {@link reap}.
+     */
+    reapTree(pid: number): Promise<number>;
     get stats(): ProcessTable['stats'];
     /** See ProcessTable.residentRunning — running long-running process count. */
     get residentRunning(): number;

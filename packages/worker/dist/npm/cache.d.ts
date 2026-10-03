@@ -57,6 +57,12 @@ export interface EsmBundleEntry {
     esmCode: string;
     builtAt: number;
     inputHash: string;
+    /**
+     * The VFS paths the bundle was built from. The cache is the workspace's,
+     * shared by every server in it whoever started it, so a reader serves an
+     * entry only to a principal who may read every one of them.
+     */
+    sources: readonly string[];
 }
 export interface UserModuleTransformEntry {
     /** VFS path of the source module (e.g. "home/user/projects/src/App.tsx"). */

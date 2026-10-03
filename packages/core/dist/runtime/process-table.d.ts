@@ -21,10 +21,10 @@ export interface ProcessEntry {
     parentPid?: number;
     /**
      * The caller's name for the exec that started this process (`execId` on
-     * exec, execStream and startProcess), taken at spawn from the parent, or,
-     * for a process a runtime starts for a command, from the command's process
-     * (`execIdOf`), so everything an exec starts carries it. Absent when no
-     * exec named one.
+     * exec, execStream and startProcess), taken at spawn from the parent, so
+     * everything an exec starts carries it; a dev server restored after a
+     * hibernation, or a resident re-driven after a reset, is given the one it
+     * had. Absent when no exec named one.
      */
     execId?: string;
     /** Explicit long-running flag set when a command is handed to a
@@ -40,21 +40,13 @@ export interface ProcessTableSpawnOptions {
     parentPid?: number;
     /**
      * The exec id of a process that does not take its parent's: an exec's own
-     * job, a process a runtime starts for a command, or a resident re-driven
-     * after a reset. Otherwise the parent's is inherited.
+     * job, or a resident re-driven after a reset. Otherwise the parent's is
+     * inherited.
      */
     execId?: string;
 }
 /** An exec id from a caller, or an error that names the rule it broke. */
 export declare function parseExecId(value: unknown): string;
-/**
- * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process a runtime starts for a command takes from the command's
- * process, which is not its parent in the table.
- */
-export declare function execIdOf(processes: {
-    get(pid: number): ProcessEntry | undefined;
-}, pid: number | undefined): string | undefined;
 /**
  * A process's exec id as a field of a record that reports it (a process, or
  * the pid listening on a port): absent when the process has none, so a
@@ -123,8 +115,10 @@ export declare class ProcessTable {
      * several commands run concurrently in one session.
      */
     descendantsOf(pid: number): ProcessEntry[];
-    /** Clean up exited processes older than maxAge ms. */
-    reap(maxAge?: number): number;
+    /** Remove `pid`'s entry, now: its owner has seen it end. */
+    forget(pid: number): void;
+    /** The processes that ended more than maxAge ms ago, which a reap may forget. */
+    expired(maxAge?: number): ProcessEntry[];
     get stats(): {
         total: number;
         running: number;

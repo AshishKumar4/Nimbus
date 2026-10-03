@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 
-import { rpcExec } from '../../packages/worker/src/session/programmatic.ts';
+import { rpcExec, rpcStartProcess } from '../../packages/worker/src/session/programmatic.ts';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 
 // `barrier` returns once two invocations are inside it at the same time, and
@@ -48,7 +48,7 @@ const box = await programmaticHost({
     },
   },
 });
-const { ws, host, rows, sql } = box;
+const { ws, host, rows, sql, held } = box;
 
 try {
   await ws.exec('mkdir -p /home/user/build');
@@ -135,6 +135,16 @@ try {
   const kept = await rpcExec(host, 'pwd', { shellId: 'agent-3', shellRoot: '/home/user/build' });
   assert.equal(kept.stdout.trim(), '/home/user', 'a seed does not reset a shell that already exists');
 
+  // ── A name's first call starts it there, a background one too ────────────
+  // A background call saves nothing it changes, but the name exists from its
+  // first call: the next call on it starts where the first was rooted.
+  await rpcStartProcess(host, 'cd /tmp', { shellId: 'agent-6', shellRoot: '/home/user/build' });
+  assert.equal((await rpcExec(host, 'pwd', { shellId: 'agent-6' })).stdout, '/home/user/build\n',
+    'the name started where its first call, a background one, was rooted');
+  await rpcStartProcess(host, 'cd /tmp', { shellId: 'agent-6' });
+  assert.equal((await rpcExec(host, 'pwd', { shellId: 'agent-6' })).stdout, '/home/user/build\n', 'and its cd was not saved');
+  await Promise.all(held);
+
   // ── Concurrent calls on one name serialize instead of racing ──────────────
   //
   // Both would otherwise read the same cwd and write it back, and the loser's
@@ -150,16 +160,69 @@ try {
   await assert.rejects(() => rpcExec(host, 'pwd', { shellId: '../escape' }), /Invalid|expected|string/i);
   await assert.rejects(() => rpcExec(host, 'pwd', { shellId: '' }), /Invalid|expected|string|small/i);
 
-  assert.ok(
-    [...rows.keys()].every((key) => key.startsWith('nimbus_programmatic_shell:')),
-    'state is stored under the declared prefix and nothing else',
-  );
+  // ── The names are the workspace's: one shell, whichever door it is used by ─
+  await rpcExec(host, 'cd /home/user/build; export DOOR=session', { shellId: 'shared' });
+  assert.equal((await ws.exec('pwd; echo "$DOOR"', { shellId: 'shared' })).stdout, '/home/user/build\nsession\n',
+    'the workspace\'s exec is in the shell the session left');
+  await ws.exec('cd /tmp; export DOOR=workspace', { shellId: 'shared' });
+  assert.equal((await rpcExec(host, 'pwd; echo "$DOOR"', { shellId: 'shared' })).stdout, '/tmp\nworkspace\n', 'and back');
+  assert.equal(rows.size, 0, 'no named shell is kept in the object\'s own storage');
+  assert.equal(sql.exec("SELECT id FROM vfs_shells WHERE id = 'shared'").length, 1, 'it is a row of the workspace');
 
   ws.shell.getEnv().PWD = '/stale';
   await ws.shell.execute(':', { isolateShellState: true });
   assert.equal(ws.shell.getEnv().PWD, ws.shell.getCwd(), 'restoring a shell frame synchronizes PWD with cwd');
 } finally {
   box.close();
+}
+
+// ── Named shells a session stored before they were the workspace's ────────
+// Worker 0.13 kept each in the object's own storage. The first named call
+// adopts every one, except a name the workspace already has, and storage
+// lets them go.
+{
+  const legacy = await programmaticHost();
+  try {
+    await legacy.ws.exec('mkdir -p /home/user/old');
+    legacy.rows.set('nimbus_programmatic_shell:kept', { cwd: '/home/user/old', env: { OLD: '1' } });
+    legacy.rows.set('nimbus_programmatic_shell:taken', { cwd: '/home/user/old', env: {} });
+    await legacy.ws.exec('cd /tmp', { shellId: 'taken' });
+    const kept = await rpcExec(legacy.host, 'pwd; echo "$OLD"', { shellId: 'kept' });
+    assert.equal(kept.stdout, '/home/user/old\n1\n', 'a stored shell is where it was left');
+    assert.equal((await rpcExec(legacy.host, 'pwd', { shellId: 'taken' })).stdout, '/tmp\n', 'the workspace\'s own shell of a name stays');
+    assert.equal(legacy.rows.size, 0, 'storage no longer holds them');
+  } finally {
+    legacy.close();
+  }
+}
+
+// More than one storage delete can take (128 keys).
+{
+  const many = await programmaticHost();
+  try {
+    for (let i = 0; i < 300; i++) many.rows.set(`nimbus_programmatic_shell:old-${i}`, { cwd: '/tmp', env: { N: String(i) } });
+    assert.equal((await rpcExec(many.host, 'pwd; echo "$N"', { shellId: 'old-299' })).stdout, '/tmp\n299\n', 'all 300 were adopted');
+    assert.equal((await rpcExec(many.host, 'echo "$N"', { shellId: 'old-0' })).stdout, '0\n');
+    assert.equal(many.rows.size, 0, 'and storage let every one go');
+  } finally {
+    many.close();
+  }
+}
+
+// An adoption that failed is tried again by the next named call, rather than
+// failing every named call after it.
+{
+  const once = await programmaticHost();
+  try {
+    once.rows.set('nimbus_programmatic_shell:old', { cwd: '/tmp', env: {} });
+    const storage = once.host.ctx.storage;
+    const list = storage.list;
+    storage.list = async () => { storage.list = list; throw new Error('storage is unavailable'); };
+    await assert.rejects(() => rpcExec(once.host, 'pwd', { shellId: 'old' }), /storage is unavailable/);
+    assert.equal((await rpcExec(once.host, 'pwd', { shellId: 'old' })).stdout, '/tmp\n', 'the next call adopted it');
+  } finally {
+    once.close();
+  }
 }
 
 console.log('programmatic named shell: ok');

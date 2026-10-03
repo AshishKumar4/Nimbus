@@ -12,7 +12,9 @@
  */
 
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
-export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
+export type {
+  NamedShell, NamedShellOptions, NimbusWorkspaceOptions, ShellState, WorkspaceExecOptions,
+} from './workspace/nimbus-workspace.js';
 export type {
   NimbusFilesystemAuthority,
   NimbusFilesystemBinding,

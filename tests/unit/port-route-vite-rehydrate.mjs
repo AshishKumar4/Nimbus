@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 // `session/routes.ts` reaches `cloudflare:workers` through its bindings
 // module, which bun cannot resolve outside workerd. Same stub-and-bundle
@@ -87,7 +88,9 @@ function makeWokenSession(storage = {}) {
     sessionBasePathHydrated: true,
     portRegistry: new PortRegistry(),
     processes: {
-      spawn: () => ({ pid: nextPid++ }),
+      // An entry as the process table makes one: under the credential asked
+      // for, else the session user's.
+      spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }),
       appendOutput: () => {},
     },
     ctx: {
@@ -118,7 +121,9 @@ function hibernate(self) {
 }
 
 const HIBERNATED = {
-  'vite-config': { root: ROOT, basePath: `${BASE_PATH}/preview`, port: VITE_PORT },
+  'vite-config': { root: ROOT, basePath: `${BASE_PATH}/preview`, port: VITE_PORT,
+    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
+  },
 };
 
 function request(path) {
@@ -209,6 +214,16 @@ function request(path) {
   assert.match(await response.text(), /hibernated app/);
   assert.equal(woken._viteShimPort, 3100);
   console.log('  [7] a non-default port survives hibernation on the port route');
+}
+
+// 8. A config written before it recorded who the server ran as is not
+//    restored: it would read the project as someone else.
+{
+  const self = makeWokenSession({ 'vite-config': { root: ROOT, basePath: `${BASE_PATH}/preview`, port: VITE_PORT } });
+  const response = await handleFetch(self, request(`/port/${VITE_PORT}/`));
+  assert.equal(response.status, 502, 'nothing serves the port');
+  assert.equal(self.viteDevServer, null, 'and no server was started for it');
+  console.log('  [8] a config that names no credential is not restored');
 }
 
 await rm(outputDir, { recursive: true, force: true });

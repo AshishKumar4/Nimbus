@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-port-mount-test-'));
 const build = await Bun.build({
@@ -96,6 +97,10 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
       return files.has(p) || dirs.has(p);
     },
     isDirectory: (p) => dirs.has(p),
+    // Every file here is readable: the server checks its principal may read a module before bundling it.
+    access: (p) => {
+      if (!files.has(p) && !dirs.has(p)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    },
     readdir: (dir) => {
       if (!dirs.has(dir)) throw new Error(`ENOENT: ${dir}`);
       const names = new Map();
@@ -152,7 +157,8 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
     sessionBasePathHydrated: true,
     portRegistry: new PortRegistry(),
     processes: {
-      spawn: () => ({ pid: nextPid++ }),
+      // An entry as the process table makes one: under the credential asked for, else the session user's.
+      spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }),
       appendOutput: () => {},
     },
     ctx: {
@@ -177,7 +183,9 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 }
 
 const HIBERNATED = {
-  'vite-config': { root: ROOT, basePath: PREVIEW_BASE, port: VITE_PORT },
+  'vite-config': { root: ROOT, basePath: PREVIEW_BASE, port: VITE_PORT,
+    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
+  },
 };
 
 // A request through the `<port>--<sid>` host: the router forwards it as
@@ -295,9 +303,10 @@ function pathRequest(path) {
   console.log('  [5] coalesced identical requests each read the full module body');
 }
 
-// 6. A cold build that throws rejects every coalesced requester with THAT
-//    failure — and does not pin the failure: the next request for the same
-//    module re-enters the cold path instead of inheriting a settled rejection.
+// 6. A cold build that throws answers every coalesced requester with THAT
+//    failure (a 500 naming it, as every other path's failure is answered) —
+//    and does not pin the failure: the next request for the same module
+//    re-enters the cold path instead of inheriting a settled rejection.
 {
   const faults = new Map([['home/user/node_modules/boom-pkg', 1]]);
   const self = makeWokenSession(HIBERNATED, { faults });
@@ -306,16 +315,15 @@ function pathRequest(path) {
     handleFetch(self, hostRequest(path)),
     handleFetch(self, hostRequest(path)),
   ];
-  const outcomes = await Promise.allSettled(attempts);
-  for (const outcome of outcomes) {
-    assert.equal(outcome.status, 'rejected', 'every coalesced requester sees the cold-path failure');
-    assert.match(String(outcome.reason?.message ?? outcome.reason), /injected vfs fault: home\/user\/node_modules\/boom-pkg/);
+  for (const response of await Promise.all(attempts)) {
+    assert.equal(response.status, 500, 'every coalesced requester sees the cold-path failure');
+    assert.match(await response.text(), /injected vfs fault: home\/user\/node_modules\/boom-pkg/);
   }
   assert.equal(faults.get('home/user/node_modules/boom-pkg'), 0, 'exactly one cold attempt consumed the single fault');
   const retry = await handleFetch(self, hostRequest(path));
   assert.equal(retry.status, 200, 'a rejected cold build must not poison the next request');
   assert.match(await retry.text(), /__nimbus_optional_dep_stub = true/);
-  console.log('  [6] a rejected cold build is shared by its waiters and cleared for the next request');
+  console.log('  [6] a failed cold build is shared by its waiters and cleared for the next request');
 }
 
 // 7. Two cold builds for DIFFERENT modules never hold their slices at the

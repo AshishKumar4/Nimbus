@@ -24,10 +24,10 @@ export interface ProcessEntry {
   parentPid?: number;
   /**
    * The caller's name for the exec that started this process (`execId` on
-   * exec, execStream and startProcess), taken at spawn from the parent, or,
-   * for a process a runtime starts for a command, from the command's process
-   * (`execIdOf`), so everything an exec starts carries it. Absent when no
-   * exec named one.
+   * exec, execStream and startProcess), taken at spawn from the parent, so
+   * everything an exec starts carries it; a dev server restored after a
+   * hibernation, or a resident re-driven after a reset, is given the one it
+   * had. Absent when no exec named one.
    */
   execId?: string;
   /** Explicit long-running flag set when a command is handed to a
@@ -44,8 +44,8 @@ export interface ProcessTableSpawnOptions {
   parentPid?: number;
   /**
    * The exec id of a process that does not take its parent's: an exec's own
-   * job, a process a runtime starts for a command, or a resident re-driven
-   * after a reset. Otherwise the parent's is inherited.
+   * job, or a resident re-driven after a reset. Otherwise the parent's is
+   * inherited.
    */
   execId?: string;
 }
@@ -63,18 +63,6 @@ export function parseExecId(value: unknown): string {
     'execId must be 1 to 160 characters from A-Z a-z 0-9 . _ : - and start with a letter or digit, got '
       + (typeof value === 'string' ? `${value.length} characters` : typeof value),
   );
-}
-
-/**
- * The exec id process `pid` carries, if `pid` names a process that has one:
- * what a process a runtime starts for a command takes from the command's
- * process, which is not its parent in the table.
- */
-export function execIdOf(
-  processes: { get(pid: number): ProcessEntry | undefined },
-  pid: number | undefined,
-): string | undefined {
-  return pid === undefined ? undefined : processes.get(pid)?.execId;
 }
 
 /**
@@ -259,17 +247,17 @@ export class ProcessTable {
     return found;
   }
 
-  /** Clean up exited processes older than maxAge ms. */
-  reap(maxAge = 60_000): number {
+  /** Remove `pid`'s entry, now: its owner has seen it end. */
+  forget(pid: number): void {
+    this.processes.delete(pid);
+  }
+
+  /** The processes that ended more than maxAge ms ago, which a reap may forget. */
+  expired(maxAge = 60_000): ProcessEntry[] {
     const now = Date.now();
-    let reaped = 0;
-    for (const [pid, entry] of this.processes) {
-      if (entry.state !== 'running' && entry.endTime && now - entry.endTime > maxAge) {
-        this.processes.delete(pid);
-        reaped++;
-      }
-    }
-    return reaped;
+    return [...this.processes.values()].filter(
+      (entry) => entry.state !== 'running' && entry.endTime !== null && now - entry.endTime > maxAge,
+    );
   }
 
   get stats() {

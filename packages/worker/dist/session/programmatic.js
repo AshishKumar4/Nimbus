@@ -27,95 +27,55 @@ import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPre
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { parseShellState } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { _acquireForRoutedRequest } from './rpc.js';
-const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const ShellStateSchema = z.object({
-    cwd: z.string().startsWith('/'),
-    env: z.record(z.string(), z.string()),
-}).strict();
 /**
- * A second Shell over the session's own kernel, filesystem and command
- * registry — the same objects the interactive shell uses, so a named shell is
- * not a second filesystem or a second process table. Only cwd and environment
- * are its own, which is exactly what makes `cd` stick between calls.
- */
-export function createProgrammaticShell(self, pid, state) {
-    const parent = self.shell;
-    if (!parent)
-        throw new Error('Nimbus shell did not initialize');
-    const shell = new Shell(new HeadlessTerminal(), parent.filesystem, parent.getRegistry(), { ...parent.getEnv(), ...state.env, $: String(pid) }, parent.getProcessRegistry(), {
-        pid,
-        get cred() { return self.processes.cred(pid); },
-        setUmask: (mask) => self.processes.setUmask(pid, mask),
-        runAs: parent.getRunAsHost(),
-    });
-    const hostSignals = parent.getHostProcessSignals();
-    if (hostSignals)
-        shell.setHostProcessSignals(hostSignals);
-    shell.setCwd(state.cwd);
-    return shell;
-}
-/**
- * Run `body` against a named shell's durable state, or against nothing when no
- * `shellId` was given.
- *
- * Serialized per id: two concurrent calls naming one shell would otherwise
- * read the same cwd and race to write it back, and the loser's `cd` would
- * vanish. A background job reads the state but does not write it back — its
- * shell outlives the call, so what it would persist is a snapshot of a moment
+ * Run `body` in the named shell `options.shellId`, or with none when no
+ * `shellId` was given. The named shells are the workspace's
+ * (`NimbusWorkspace.withNamedShell`), so a name means the same shell here and
+ * to the workspace's own `exec`, and calls on it run one at a time. A
+ * background job reads the state but does not write it back: its shell
+ * outlives the call, so what it would persist is a snapshot of a moment
  * nobody asked about.
  */
 async function withShellState(self, options, background, run) {
     if (options.shellId === undefined)
         return run(null);
-    const id = ShellIdSchema.parse(options.shellId);
-    self._programmaticShellQueues ??= new Map();
-    const queues = self._programmaticShellQueues;
-    const previous = queues.get(id) ?? Promise.resolve();
-    let release = () => { };
-    const gate = new Promise((resolve) => { release = resolve; });
-    const tail = previous.catch(() => undefined).then(() => gate);
-    queues.set(id, tail);
-    await previous.catch(() => undefined);
-    try {
-        const key = `${SHELL_STATE_KEY_PREFIX}${id}`;
-        const stored = await self.ctx.storage.get(key);
-        const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
-            ? options.shellRoot
-            : getHome(self);
-        const state = stored === undefined
-            ? { cwd: root, env: {} }
-            : ShellStateSchema.parse(stored);
-        let shell = null;
-        try {
-            return await run({
-                cwd: state.cwd,
-                create: (pid) => {
-                    shell = createProgrammaticShell(self, pid, state);
-                    return shell;
-                },
-            });
-        }
-        finally {
-            const captured = background || shell === null ? state : capturedShellState(shell);
-            await self.ctx.storage.put(key, captured);
-        }
+    const workspace = self.runtimeWorkspace;
+    if (!workspace)
+        throw new Error('Nimbus shell did not initialize');
+    // Once; a failed adoption is not kept, so the next named call tries again.
+    self._storedShellsAdopted ??= adoptStoredShells(self, workspace).catch((error) => {
+        self._storedShellsAdopted = undefined;
+        throw error;
+    });
+    await self._storedShellsAdopted;
+    const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
+        ? options.shellRoot
+        : getHome(self);
+    return workspace.withNamedShell(options.shellId, { start: { cwd: root }, persist: !background }, run);
+}
+/**
+ * The named shells this object's storage holds from before they were the
+ * workspace's (worker 0.13 and earlier kept each under
+ * `SHELL_STATE_KEY_PREFIX`). Each becomes the workspace's shell of that name,
+ * unless the workspace already has one, and leaves storage. Run again after a
+ * failure, it finishes the job: a name already adopted is kept as it is.
+ */
+async function adoptStoredShells(self, workspace) {
+    const stored = await self.ctx.storage.list({ prefix: SHELL_STATE_KEY_PREFIX });
+    for (const [key, state] of stored) {
+        await workspace.withNamedShell(key.slice(SHELL_STATE_KEY_PREFIX.length), { start: parseShellState(state) }, async () => { });
     }
-    finally {
-        release();
-        if (queues.get(id) === tail)
-            queues.delete(id);
+    const keys = [...stored.keys()];
+    for (let at = 0; at < keys.length; at += STORAGE_DELETE_KEYS) {
+        await self.ctx.storage.delete(keys.slice(at, at + STORAGE_DELETE_KEYS));
     }
 }
-function capturedShellState(shell) {
-    const env = { ...shell.getEnv() };
-    // `$` is the pid of the call that just ended, not state of the shell.
-    delete env.$;
-    return { cwd: shell.getCwd(), env };
-}
+/** The most keys one Durable Object storage `delete` takes. */
+const STORAGE_DELETE_KEYS = 128;
 /**
  * The durable half of the port capability lives in `./port-capability.js`, so
  * the facet manager can retire a stale one without importing this module.
@@ -168,12 +128,12 @@ export async function ensureProgrammaticReady(self, options = {}) {
     }
     return { ok: true, preinstalled: preinstall };
 }
-function startShellJob(self, command, options, job, scoped) {
-    const parentShell = self.shell;
-    if (!parentShell)
+function startShellJob(self, command, options, job, named) {
+    const workspace = self.runtimeWorkspace;
+    if (!workspace)
         throw new Error('Nimbus shell did not initialize');
     const line = String(command);
-    const cwd = options.cwd ?? scoped?.cwd ?? parentShell.getCwd?.() ?? '/home/user';
+    const cwd = options.cwd ?? named?.cwd ?? workspace.shell.getCwd();
     const entry = self.processes.spawn(line, [line], cwd, {
         longRunning: job.background,
         cred: options.cred,
@@ -186,8 +146,7 @@ function startShellJob(self, command, options, job, scoped) {
     // is shared by every unnamed call (and the terminal), and two calls running
     // on it at once would read and overwrite each other's variables mid-run.
     // The shell ends with the call, closing the descriptors an `exec` left open.
-    const shell = scoped?.create(entry.pid)
-        ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
+    const shell = named?.open(entry.pid) ?? workspace.shellFor(entry.pid, { cwd, env: options.env });
     const pid = entry.pid;
     if (job.background)
         self.processes.openInput(pid);
@@ -211,8 +170,8 @@ function startShellJob(self, command, options, job, scoped) {
         // The shell already starts from this call's cwd and env. Passing them to
         // a named shell again would pin it to the values the call started with,
         // and its `cd` would not survive the call.
-        cwd: scoped ? options.cwd : undefined,
-        env: scoped ? options.env : undefined,
+        cwd: named ? options.cwd : undefined,
+        env: named ? options.env : undefined,
         onStdout: emit('stdout', job.onStdout),
         onStderr: emit('stderr', job.onStderr),
         signal: controller.signal,
@@ -272,13 +231,13 @@ export async function rpcExecStream(self, command, options = {}) {
     return new Promise((resolve, reject) => {
         // The exit lands after a named shell's state is saved, so a caller that
         // has read `exit` sees its `cd` on the next call.
-        withShellState(self, options, false, (scoped) => streamOnShell(self, command, options, scoped, (started) => {
+        withShellState(self, options, false, (named) => streamOnShell(self, command, options, named, (started) => {
             writer = started;
             resolve(started.stream);
         })).then((exit) => writer.end(exit), (error) => (writer ? writer.fail(error) : reject(error)));
     });
 }
-async function streamOnShell(self, command, options, scoped, started) {
+async function streamOnShell(self, command, options, named, started) {
     const began = Date.now();
     let abort = () => { };
     const writer = createExecStream(() => abort());
@@ -291,7 +250,7 @@ async function streamOnShell(self, command, options, scoped, started) {
         background: false,
         onStdout: sink('stdout'),
         onStderr: sink('stderr'),
-    }, scoped);
+    }, named);
     abort = job.abort;
     started(writer);
     let timeout = null;
@@ -386,10 +345,10 @@ export async function rpcStartProcess(self, command, options = {}) {
     const withPolicy = options.restart === 'on-failure'
         ? { ...options, env: { ...(options.env ?? {}), [RESTART_POLICY_ENV]: 'on-failure' } }
         : options;
-    return withShellState(self, withPolicy, true, (scoped) => startOnShell(self, command, withPolicy, scoped));
+    return withShellState(self, withPolicy, true, (named) => startOnShell(self, command, withPolicy, named));
 }
-async function startOnShell(self, command, options, scoped) {
-    const job = startShellJob(self, command, options, { background: true }, scoped);
+async function startOnShell(self, command, options, named) {
+    const job = startShellJob(self, command, options, { background: true }, named);
     const line = String(command);
     notifyTerminalEvent(self.terminal ?? null, {
         type: 'spawn', pid: job.pid, command: line, longRunning: true, attachedTty: false,

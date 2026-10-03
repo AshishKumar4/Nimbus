@@ -132,6 +132,100 @@ published independently in the `@nimbus-sh` npm scope.
   engine states a reason (a move into itself, a widening chmod), it stays
   the message's words, and its marks (a pending import's) stay on the
   error.
+- Breaking for embedders: `NimbusWorkspace.exec` without a `shellId` is
+  one-shot, as a session's programmatic exec has been since 2026-10-01.
+  Every call ran on the workspace's one shell, one at a time, so a `cd`,
+  `export`, function, alias, `set` option or `umask` in one call reached
+  the next, and of two calls made at once, one doing `cd /tmp`, both
+  printed `/tmp`. Each call now runs as a process of its own with the
+  workspace shell's credential, in a shell of its own built from
+  `ws.shell`'s cwd and environment; the aliases and functions `ws.start()`
+  sources from the login files stay in `ws.shell`. What it changes ends
+  with it: its cwd, environment and umask no longer carry to the next call
+  or to `ws.shell`, and calls made at once run at once without seeing each
+  other's state. A caller that needs state to persist passes a `shellId`:
+  `ws.exec(cmd, { shellId })` runs in a named shell whose cwd and
+  environment persist between calls, one call at a time per name, saved in
+  the workspace's new `vfs_shells` table, which `destroy()` drops. The
+  call's process, and its child processes that have ended (`sudo`'s, say),
+  leave `ws.processes` when the result is returned, and each first lets go
+  of what it bound in the filesystem (the files it held open, its
+  watches), so a bare workspace no longer grows by one process entry and
+  one descriptor scope per call. For a host that runs its own process
+  around a shell, `ws.shellFor(pid, { cwd, env })` and
+  `ws.withNamedShell(id, options, body)` are the two parts `exec` is made
+  of.
+- A session's and a hosted runtime's named shells are the workspace's:
+  `exec(cmd, { shellId })` through the SDK and `ws.exec(cmd, { shellId })`
+  run in the same shell, and calls on a name run one at a time whichever
+  door they come through. Its state moves from the Durable Object's
+  key-value storage to the workspace's `vfs_shells` table. A named shell
+  an earlier release saved is moved there by the first named call, unless
+  the workspace already has a shell of that name. A name's first call
+  saves where it started, a background one (`startProcess`) too, which
+  saves nothing else.
+- Fixed: a wasm program, or a node program (one-shot, resident, worker or
+  opencode), started by a principal other than the session user ran as the
+  session user. Its process was entered at the top of the process table,
+  which gave it the table's default credential, and a Durable Object host
+  answers a program's file syscalls under the credential the table holds
+  for its pid, so `sudo -u agent ./prog.wasm` or `sudo -u agent node x.js`
+  could write where only the session user may. Each is now a child of the
+  command that ran it, under that command's credential, and in its process
+  tree, so an unnamed `ws.exec` also removes an ended wasm run with the
+  call.
+- Fixed: a resident server re-driven after an instance reset came back as
+  the session user, whoever had started it. Its journal entry now records
+  the credential it ran under, with its exec id, and the re-drive runs
+  under it. An entry an earlier release wrote names no credential and is
+  not re-driven; the terminal says why ("could not be restarted"), and the
+  server starts again when its command is run again.
+- Fixed: `vite` and `vite preview` served every file as root, whoever ran
+  them, so a file the principal who started the server may not read was
+  served to anyone with the preview URL. The in-process servers, and the
+  real-vite server's snapshot reads, now read and write as the command
+  that started them, and a refused file answers 403. A dev server
+  persisted for a hibernation restore records who it ran as; one an
+  earlier release persisted is not restored, and `vite` starts it again.
+- `@nimbus-sh/fabric`: a caller can wait for room on the Dynamic Worker
+  ledger instead of polling for it. `beginLoaderFetchWhenFree(ctx, key,
+  { signal, claim })` resolves with the end function `beginLoaderFetch`
+  returns, once `key` is already in flight or one more distinct worker
+  fits. Waits are let in in the order they asked, one per freed slot, by
+  any hold's end, a claim's release or the end of a refusal's pause, so a
+  wait sees Nimbus's releases as well as its own; an aborted `signal`
+  rejects the wait, which then holds nothing. The end function takes the
+  error a call failed with: a "Dynamic worker concurrency limit exceeded"
+  refusal stops the ledger admitting new workers for 50 ms, doubling to
+  2 s while refusals continue, because the platform counts a worker for a
+  moment after its call returns. `IsolatePool` now waits this way: a
+  refused call is sent again as soon as a hold ends or the pause passes,
+  where it used to sleep on a timer of its own (50 ms doubling to 2 s), so
+  a call refused behind ten busy workers no longer waits up to 2 s past the
+  release that would let it in. The 15 s bound is unchanged. A fan-out's
+  own dispatches count inside its claim (`beginLoaderFetch(ctx, key,
+  claim)`, `IsolatePool`'s `claim` option) rather than on top of it, so a
+  5-wide fan-out leaves 5 slots free, not 0. `loaderLedgerStats` adds
+  `waiting` and `pauseMs`, and `dynamicWorkerHeadroom` is 0 while a pause
+  lasts.
+- A filesystem call a process makes and the host refuses (an error with a
+  `code`: ENOENT, ENOTDIR, EEXIST) is answered by `SupervisorRPC` as a
+  value and rethrown in the process, instead of being thrown across the
+  entrypoint. The platform recorded every thrown refusal as an invocation
+  with outcome "exception" and "The Workers runtime canceled this request
+  because it detected that your Worker's code had hung", though its caller
+  was answered at once, so the noise hid real hangs. Node and opencode
+  processes, bash, and the WASI runtimes (python, ruby, clang, wasm) make
+  their filesystem calls through the new `SupervisorRPC.answer(method,
+  args)`, which resolves `{ value }` or `{ refusal }`, and core's
+  `answeringSupervisor` rethrows a refusal as exactly the error the program
+  got before: the same class, name, message and own properties (`code`,
+  `errno`, `syscall`, `path`, `dest`, `detail`, `cause`). A failure without
+  a code, such as a dropped connection, still throws. npm's and git's
+  facets still call the methods directly, which throw as before. A
+  supervisor entrypoint written from scratch (composeFabric's
+  `supervisorEntrypoint`) must implement `answer`; one that extends
+  `SupervisorRPC` inherits it.
 
 ## 2026-10-02
 

@@ -23,10 +23,12 @@
  */
 
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { getSharedRuntimeExternals, BUNDLER_VERSION, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
@@ -57,6 +59,12 @@ import {
 
 export interface ViteDevServerOptions {
   vfs: SqliteVFS;
+  /**
+   * Who the server reads and writes as: the credential of the process it
+   * runs under, the command that started it. Everything it serves, bundles
+   * or synthesizes goes through the VFS as this principal.
+   */
+  cred: VfsCred;
   esbuild: EsbuildService;
   /** Root directory in VFS (e.g. "home/user/projects") */
   root: string;
@@ -1309,7 +1317,7 @@ export class ViteDevServer {
   private logSink: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void } | null = null;
 
   constructor(opts: ViteDevServerOptions) {
-    this.vfs = opts.vfs.as(CRED_KERNEL);
+    this.vfs = opts.vfs.as(opts.cred);
     this.vfsEvents = opts.vfs.events;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
@@ -1420,6 +1428,16 @@ export class ViteDevServer {
   /** esbuild define set for a request served under `base`. */
   private defineFor(base: string): Record<string, string> {
     return { ...this.define, 'import.meta.env.BASE_URL': this.baseUrlValue(base) };
+  }
+
+  /** Whether this server's principal may read `path`. */
+  private mayRead(path: string): boolean {
+    try {
+      this.vfs.access(path, R_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -1672,7 +1690,8 @@ export class ViteDevServer {
             return new Response(null, { status: 302, headers: { ...headers, 'Location': resolved } });
           }
         }
-        return this.serveModule(specifier, headers, base);
+        // Awaited, so a package its principal may not enter answers 403 below.
+        return await this.serveModule(specifier, headers, base);
       }
 
       // / → serve index.html
@@ -1690,9 +1709,17 @@ export class ViteDevServer {
         });
       }
 
-      // Serve from VFS (with transforms for TS/TSX/JSX)
-      return this.serveFile(request, pathname, query, headers, base);
+      // Serve from VFS (with transforms for TS/TSX/JSX). Awaited, so a
+      // read the server's principal is refused lands in the catch below.
+      return await this.serveFile(request, pathname, query, headers, base);
     } catch (e: any) {
+      // The server reads as the principal who started it: a file that
+      // principal may not read is forbidden, not an error of the server's.
+      if (e?.code === 'EACCES' || e?.code === 'EPERM') {
+        return new Response('403 Forbidden: ' + pathname, {
+          status: 403, headers: { ...headers, 'Content-Type': 'text/plain' },
+        });
+      }
       return new Response(`500 Internal Server Error: ${e?.message}`, {
         status: 500, headers: { ...headers, 'Content-Type': 'text/plain' },
       });
@@ -1823,10 +1850,14 @@ export class ViteDevServer {
       // Only use cached bundles built with the current bundler version.
       // Stale bundles (from older bundler versions) are treated as missing
       // and re-bundled on the cold path.
+      // The cache is the workspace's, shared by every server whoever started
+      // it: a bundle is served only to a principal who may read everything it
+      // was built from. Otherwise this server builds its own, as itself.
       if (
         esmBundle &&
         esmBundle.bundleHash === BUNDLER_VERSION &&
-        this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo)
+        this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo) &&
+        esmBundle.sources.every((path) => this.mayRead(path))
       ) {
         let code = esmBundle.esmCode;
         // The persisted bundle is base-independent raw esbuild output; the
@@ -1923,6 +1954,11 @@ export class ViteDevServer {
       //                  re-exports just the named imports the user's
       //                  source uses. esbuild tree-shakes the rest.
       let bundleEntryPath: string = resolved;
+      // A module its principal may not read is refused (403), not bundled
+      // from whatever of its package the principal can see.
+      this.vfs.access(resolved, R_OK);
+      // What the bundle was built from, recorded with it in the shared cache.
+      let bundledSources: string[] = [];
       let synthetic = false;
       let syntheticReferencedFiles: string[] | null = null;
       if (isBarrel) {
@@ -2069,6 +2105,7 @@ export class ViteDevServer {
               // completes. Mirrors the install-time runSlot pattern (see
               // commit 40cfc01); the lease above keeps every other budget
               // owner from allocating beside it until the Response exists.
+              const sources = sliceSources(slice.slice);
               let spec: any = {
                 specifier,
                 entryPath: bundleEntryPath,
@@ -2089,6 +2126,7 @@ export class ViteDevServer {
               }
               if (result && result.ok && result.esmCode) {
                 bundled = result.esmCode;
+                bundledSources = sources;
               } else if (result && result.errorText) {
                 this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
               }
@@ -2111,9 +2149,11 @@ export class ViteDevServer {
               // Base-neutral (see the pooled build above).
               define: this.defineFor(''),
               external: externals.length > 0 ? externals : undefined,
+              fs: this.vfs,
             });
             if (result.outputFiles?.length) {
               bundled = result.outputFiles[0].contents;
+              bundledSources = vfsBuildInputs(result.metafile);
             }
           } catch (e: any) {
             this.log('error', '[vite-dev] esbuild bundle failed for ' + specifier + ': ' + (e?.message || e));
@@ -2136,6 +2176,7 @@ export class ViteDevServer {
                 esmCode: bundled,
                 builtAt: Date.now(),
                 inputHash: barrelInfo?.inputHash ?? '',
+                sources: bundledSources,
               });
             } catch { /* non-fatal */ }
           }

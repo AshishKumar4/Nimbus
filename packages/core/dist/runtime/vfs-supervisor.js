@@ -1,3 +1,4 @@
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 /** Names on the existing supervisor RPC capability; this table owns no state. */
 export const FILESYSTEM_RPC_METHODS = {
     stat: 'stat', readFile: 'readFileBytes', writeFile: 'writeFile', readRange: 'fsReadRange',
@@ -87,13 +88,117 @@ function bytes(result) {
 function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
 }
+/** The calls node's shims make that the bridge does not name. */
+const NODE_SHIM_RPC_METHODS = [
+    'readFile', 'writeFileStat', 'lstat', 'exists', 'hasLegacySymlinkUnder', 'setUmask', 'fsAcquired',
+    'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch',
+];
+export const SUPERVISOR_ANSWERED_METHODS = [
+    ...Object.values(FILESYSTEM_RPC_METHODS).filter((name) => name !== FILESYSTEM_RPC_METHODS.writeStream),
+    ...NODE_SHIM_RPC_METHODS,
+];
+const ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
+export function isSupervisorAnsweredMethod(name) {
+    return typeof name === 'string' && ANSWERED.has(name);
+}
+/** The refusal `error` is, or undefined when it is not one (no string `code`) and must still throw. */
+export function supervisorRefusal(error) {
+    if (!(error instanceof Error) || typeof Reflect.get(error, 'code') !== 'string')
+        return undefined;
+    const properties = {};
+    for (const key of Object.getOwnPropertyNames(error)) {
+        if (key !== 'message' && key !== 'stack')
+            properties[key] = Reflect.get(error, key);
+    }
+    return { name: error.name, message: error.message, properties };
+}
+/**
+ * `call`'s outcome as `answer` resolves it: its value, or its refusal. A
+ * failure without a code is thrown. SupervisorRPC.answer runs its method
+ * through this, and so does any double of it.
+ */
+export async function supervisorAnswer(call) {
+    try {
+        return { value: await call() };
+    }
+    catch (error) {
+        const refusal = supervisorRefusal(error);
+        if (refusal === undefined)
+            throw error;
+        return { refusal };
+    }
+}
+/** Standard constructors the receiver of a thrown error rebuilds it with; any other is an Error bearing its name. */
+const STANDARD_ERRORS = {
+    EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,
+};
+/**
+ * The error `refusal` was, as the facet received it when SupervisorRPC threw
+ * it: a new error of the thrower's type, its message, its own properties, and
+ * no stack of the thrower's (src/workerd/jsg/ser.c++, with
+ * preserveStackInErrors off).
+ */
+export function supervisorRefusalError(refusal) {
+    const Standard = Object.hasOwn(STANDARD_ERRORS, refusal.name) ? STANDARD_ERRORS[refusal.name] : undefined;
+    const error = new (Standard ?? Error)(refusal.message);
+    if (!Standard && refusal.name !== 'Error') {
+        Object.defineProperty(error, 'name', { value: refusal.name, configurable: true, writable: true });
+    }
+    for (const [key, value] of Object.entries(refusal.properties)) {
+        Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
+    }
+    return error;
+}
+/** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it. */
+function isAnsweringStub(supervisor) {
+    return typeof Reflect.get(supervisor, 'answer') === 'function';
+}
+/**
+ * `supervisor`, with its filesystem calls made through `answer` and each
+ * refusal rethrown as the error it is; every other name is the stub's own.
+ * A same-isolate supervisor is handed back as is: its refusals are thrown in
+ * this isolate and cross nothing. The call's value is handed on and its
+ * envelope released.
+ */
+export function answeringSupervisor(supervisor) {
+    if (!isAnsweringStub(supervisor))
+        return supervisor;
+    const stub = supervisor;
+    return new Proxy(supervisor, {
+        get(target, name) {
+            if (!isSupervisorAnsweredMethod(name))
+                return Reflect.get(target, name);
+            return async (...args) => {
+                const answer = await stub.answer(name, args);
+                try {
+                    if ('refusal' in answer)
+                        throw supervisorRefusalError(answer.refusal);
+                    return answer.value;
+                }
+                finally {
+                    disposeRpcResource(answer);
+                }
+            };
+        },
+    });
+}
+/**
+ * Installs {@link answeringSupervisor} as `globalThis.__nimbusAnsweringSupervisor`,
+ * for the facet bodies that are generated text and take it spliced in
+ * (SUPERVISOR_ANSWERING_SRC).
+ */
+export function installAnsweringSupervisor() {
+    Reflect.set(globalThis, '__nimbusAnsweringSupervisor', answeringSupervisor);
+}
 /**
  * Remote facets use the same typed supervisor RPC methods. A synchronous view
  * is a same-isolate capability: an RPC stub answers every property with a
  * callable, so it is never read from the stub, only carried by a local
- * supervisor whose view really is in this isolate.
+ * supervisor whose view really is in this isolate. A remote supervisor's
+ * refusals arrive as answers (answeringSupervisor).
  */
-export function supervisorFilesystem(supervisor, local) {
+export function supervisorFilesystem(remote, local) {
+    const supervisor = answeringSupervisor(remote);
     return {
         synchronous: local,
         stat: (...args) => hop(supervisor.stat(...args)),

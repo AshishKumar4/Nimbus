@@ -50,7 +50,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { documentPolicyOf } from '@nimbus-sh/core/runtime/document-policy.js';
-import { persistedIdentity, startRealVite } from './start-real-vite.js';
+import { devServerIdentity, persistedIdentity, startRealVite } from './start-real-vite.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -76,7 +76,7 @@ import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, CALLER_SCOPES_HEADER, 
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
@@ -141,6 +141,13 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
     // were recorded predate P5 and are vite's default.
     const port = (config.port && Number.isFinite(config.port)) ? config.port : DEFAULT_VITE_PORT;
     if (onlyPort != null && onlyPort !== port) return;
+    // Who the server ran as. A config written before it recorded that is not
+    // restored: it would read the project as someone else.
+    const identity = persistedIdentity(config.identity);
+    if (identity === undefined) {
+      console.warn(`[routes] the dev server persisted for port ${port} records no credential it ran as; not restoring it — run vite again`);
+      return;
+    }
     // Read BEFORE the restore: bringing the server back re-registers the port,
     // and a fresh registration mints a capability nobody was ever handed.
     const persistedCapability = await readPortCapability(self, port);
@@ -160,7 +167,7 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
         port,
         basePath: config.basePath || self.viteBasePath,
         configDir: config.configDir || config.root,
-        identity: persistedIdentity(config.identity),
+        identity,
       }).finally(() => { self._realViteRestore = null; });
       await self._realViteRestore;
       await readoptCapability(self, port, persistedCapability);
@@ -185,13 +192,13 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
     // its capability at registration below.
     const entry = self.processes.spawn(
       'vite (rehydrated, ' + config.root + ')',
-      Array.isArray(config.identity?.argv) ? config.identity.argv.map(String) : [],
-      typeof config.identity?.cwd === 'string' ? config.identity.cwd : config.root,
-      { longRunning: true, execId: persistedIdentity(config.identity)?.execId },
+      identity.argv,
+      identity.cwd,
+      { longRunning: true, cred: identity.cred, execId: identity.execId },
     );
 
     self.viteDevServer = new ViteDevServer({
-      vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: config.root,
+      vfs: self.sqliteFs!, cred: entry.cred, esbuild: self.esbuildService!, root: config.root,
       aliases: config.aliases, define: config.define,
       onHmrMessage: () => {},
       sql: self.ctx.storage.sql,
@@ -1095,12 +1102,14 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // surface still see a real process in `ps` and stream
         // diagnostics into the Process tab.
         const apiVitePort = (typeof body.port === 'number' && body.port > 0) ? body.port : 5173;
+        // The route's caller is the session's owner, so the server runs as
+        // the session user.
         const apiViteEntry = self.processes.spawn(
           'vite (api/start-vite, ' + root + ')', ['vite', '--port', String(apiVitePort)], root,
-          { longRunning: true },
+          { longRunning: true, cred: CRED_SESSION_USER },
         );
         self.viteDevServer = new ViteDevServer({
-          vfs: self.sqliteFs!, esbuild: self.esbuildService!, root,
+          vfs: self.sqliteFs!, cred: apiViteEntry.cred, esbuild: self.esbuildService!, root,
           aliases: body.aliases, define: body.define,
           onHmrMessage: () => {},
           sql: self.ctx.storage.sql,
@@ -1135,7 +1144,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         await self.ctx.storage.put(VITE_CONFIG_KEY, {
           root, aliases: body.aliases, define: body.define,
           injectBasename: body.injectBasename, basePath, port: apiVitePort,
-          identity: { cwd: apiViteEntry.cwd, argv: apiViteEntry.argv },
+          identity: devServerIdentity(apiViteEntry),
         });
 
         return Response.json({ ok: true, root, running: true });

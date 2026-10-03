@@ -75,7 +75,8 @@ export interface RuntimeRunOpts {
     cred?: VfsCred;
     /**
      * The process whose command runs the program. A process the runner spawns
-     * for the run carries its exec id (`ProcessEntry.execId`).
+     * for the run is its child: it takes its credential, and its exec id
+     * (`ProcessEntry.execId`).
      */
     invokerPid?: number;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */

@@ -44,6 +44,7 @@ import * as rpc from '../../../packages/worker/src/session/rpc.ts';
 import { buildSessionSupervisorOps } from '../../../packages/worker/src/session/supervisor-op.ts';
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from '../session-supervisor-ops.mjs';
+import { supervisorDouble } from './supervisor-double.mjs';
 
 plugin({
   name: 'resident-body-cloudflare-workers',
@@ -182,16 +183,12 @@ export function facetSupervisor(authority, overrides = {}) {
       stat: await forward('lstat', [path]),
     });
   }
-  const supervisor = new Proxy({}, {
-    get(_target, name) {
-      if (typeof name !== 'string' || name === 'then') return undefined;
-      if (Object.hasOwn(own, name) && own[name] === undefined) return undefined;
-      return (...args) => {
-        log.calls[name] = (log.calls[name] ?? 0) + 1;
-        return Object.hasOwn(own, name) ? own[name](...args) : forward(name, args);
-      };
-    },
-  });
+  const call = (name, args) => {
+    log.calls[name] = (log.calls[name] ?? 0) + 1;
+    return Object.hasOwn(own, name) ? own[name](...args) : forward(name, args);
+  };
+  // Counted under each call's own name, `answer`'s included.
+  const supervisor = supervisorDouble(call, (name) => Object.hasOwn(own, name) && own[name] === undefined);
   // `forward` is the session's own answer to an op, for an override that
   // decides per call whether to fail or pass through.
   return { supervisor, log, forward };

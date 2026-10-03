@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-real-vite-restore-test-'));
 const build = await Bun.build({
@@ -103,7 +104,8 @@ function makeWokenSession(storage = {}) {
     sessionBasePath: BASE_PATH,
     sessionBasePathHydrated: true,
     portRegistry: new PortRegistry(),
-    processes: { spawn: () => ({ pid: nextPid++ }), appendOutput: () => {} },
+    // An entry as the process table makes one: under the credential asked for, else the session user's.
+    processes: { spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }), appendOutput: () => {} },
     ctx: {
       storage: {
         async get(k) { return store.get(k); },
@@ -133,6 +135,7 @@ const HIBERNATED_REAL = {
   'vite-config': {
     devServer: 'real', root: ROOT, port: VITE_PORT,
     basePath: PREVIEW_BASE, configDir: 'home/user/example-app',
+    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
   },
 };
 

@@ -16,7 +16,7 @@ import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
-import { execIdField, execIdOf } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { handKernelArtifact, projectEntryType, projectFs as viewFs } from '../runtime/project-fs.js';
@@ -324,9 +324,11 @@ export function createViteCommand(self) {
             // process metadata support: same long-running treatment as the
             // dev path, just on the dist/ directory.
             const previewPort = viteConfig.port || 4173; // vite preview default
-            const previewProcEntry = self.processes.spawn('vite preview (' + distRoot + ')', ['vite', ...args], distRoot, { longRunning: true, execId: execIdOf(self.processes, ctx.pid) });
+            // A child of the command, under its credential: the server reads the
+            // build as the principal who ran it.
+            const previewProcEntry = self.processes.spawn('vite preview (' + distRoot + ')', ['vite', ...args], distRoot, { longRunning: true, parentPid: ctx.pid });
             self.viteDevServer = new ViteDevServer({
-                vfs: self.sqliteFs, esbuild: self.esbuildService, root: servedDist,
+                vfs: self.sqliteFs, cred: previewProcEntry.cred, esbuild: self.esbuildService, root: servedDist,
                 onHmrMessage: () => { },
                 sql: self.ctx.storage.sql,
                 basePath: previewBasePath,
@@ -470,8 +472,8 @@ export function createViteCommand(self) {
             : undefined;
         const handedOff = adoptedEntry != null;
         const identity = adoptedEntry
-            ? { cwd: adoptedEntry.cwd, argv: adoptedEntry.argv, ...execIdField(adoptedEntry) }
-            : { cwd: vfsRoot, argv: expandedArgs, ...execIdField(self.processes.get(ctx.pid)) };
+            ? devServerIdentity(adoptedEntry)
+            : { cwd: vfsRoot, argv: expandedArgs, cred: requireVfsCred(ctx.cred, 'vite'), ...execIdField(self.processes.get(ctx.pid)) };
         if (useReal) {
             const vitePort = resolvedPort;
             const previewBasePath = self.viteBasePath;
@@ -547,11 +549,13 @@ export function createViteCommand(self) {
         //
         // The adopted wrapper pid stays `running` in /api/processes with this
         // port; a fresh spawn carries the identity inputs computed above.
-        const viteProcEntry = adoptedEntry ?? self.processes.spawn('vite (' + vfsRoot + ')', identity.argv, identity.cwd, { longRunning: true, execId: identity.execId });
+        const viteProcEntry = adoptedEntry ?? self.processes.spawn('vite (' + vfsRoot + ')', identity.argv, identity.cwd, { longRunning: true, cred: identity.cred, execId: identity.execId });
         if (handedOff)
             self.processes.setLongRunning(viteProcEntry.pid);
         self.viteDevServer = new ViteDevServer({
             vfs: self.sqliteFs,
+            // The server reads and writes as the principal who ran the command.
+            cred: viteProcEntry.cred,
             esbuild: self.esbuildService,
             root: servedRoot,
             port: resolvedPort,

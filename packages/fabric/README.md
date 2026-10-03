@@ -67,6 +67,15 @@ Worker that imports Nimbus's own entry (`@nimbus-sh/sdk/worker`) inherits
 that entry's composition, so a host that names its own namespace composes in
 a Worker that does not import it.
 
+A program's filesystem calls reach the supervisor entrypoint through its
+`answer(method, args)`, which resolves `{ value }`, or `{ refusal }` for an
+error with a `code` (ENOENT, ENOTDIR, EEXIST), and the program's client
+rethrows the refusal as the error a throw would have delivered. A refusal
+thrown from an entrypoint is recorded by the platform as an exception
+("canceled ... your Worker's code had hung") although its caller was
+answered. `SupervisorRPC` implements `answer`, so an entrypoint that extends
+it has it; one written from scratch must implement it too.
+
 The route back to the host (namespace, dispatch method, supervisor
 entrypoint) is minted into every binding the fabric hands a program, in the
 host's isolate, and the entrypoints that answer those bindings read it from
@@ -246,6 +255,43 @@ esbuild facet calls, git network ops, and every resident process for as long
 as it lives. `dynamicWorkerHeadroom(ctx)` is what is left,
 `claimDynamicWorkers(ctx, n)` reserves a width, `loaderLedgerStats(ctx)`
 reports it all, and a limit refusal names the workers in flight.
+
+`beginLoaderFetch(ctx, key)` holds a worker and returns the function that
+ends the hold. To wait for room rather than be refused, take the hold with
+`beginLoaderFetchWhenFree` instead:
+
+```ts
+import { beginLoaderFetchWhenFree } from '@nimbus-sh/fabric';
+
+const end = await beginLoaderFetchWhenFree(ctx, key, { signal: AbortSignal.timeout(15_000) });
+try {
+  return await worker.getEntrypoint().run();
+} catch (error) {
+  end(error); // a limit refusal pauses the ledger; anything else just ends the hold
+  throw error;
+} finally {
+  end();
+}
+```
+
+It resolves, holding `key`, once `key` is already in flight (requests to
+one worker count once) or one more distinct worker fits. Waits are let in in
+the order they asked, one per freed slot, by whoever makes the room: any
+hold's end, a claim's release, or the end of a refusal's pause, so a wait
+sees Nimbus's own releases as well as the caller's. The hold is taken as the
+wait is let in, so no other caller can take the slot first, and it is the
+caller's to end. An aborted `signal` rejects the wait with its reason, and
+the wait holds nothing. A resident process holds its worker for as long as
+it runs, so bound a wait that room may never reach.
+
+The platform counts a worker for a moment after its call returns, which no
+release can show. So a call refused with "Dynamic worker concurrency limit
+exceeded" hands the refusal to its end function, and the ledger then admits
+no new worker for 50 ms, doubling to 2 s while refusals continue
+(`loaderLedgerStats(ctx).pauseMs`; the headroom reads 0 meanwhile).
+`IsolatePool` retries a refused call this way, for 15 s in all. Holds taken
+under a claim (`beginLoaderFetch(ctx, key, claim)`, or `IsolatePool`'s
+`claim` option, which `Fanout` passes) count inside its width.
 
 ## Process fabric
 

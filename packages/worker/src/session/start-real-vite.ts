@@ -18,6 +18,7 @@
 
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
@@ -38,14 +39,14 @@ export interface StartRealViteOptions {
   configDir: string;
   /**
    * The process-table cwd+argv the dev server's pid is given — what the app
-   * verbs derive its identity from. The `vite` builtin passes the wrapper
-   * pid's own (or the argv it was invoked with); restore passes what was
-   * persisted, so the restored server is the same application. Absent for
-   * configs written before identity was persisted: those keep the bare
-   * `[]` at the root, the same across every restore. `execId` is the exec id
-   * the pid carries: the `vite` command's, or what restore persisted.
+   * verbs derive its identity from — and who it runs as. The `vite` builtin
+   * passes the wrapper pid's own (or the argv it was invoked with, under the
+   * command's credential); restore passes what was persisted, so the
+   * restored server is the same application, run by the same principal.
+   * `execId` is the exec id the pid carries: the `vite` command's, or what
+   * restore persisted.
    */
-  identity?: { cwd: string; argv: string[]; execId?: string };
+  identity: DevServerIdentity;
   /** Optional abort signal threaded into the heavy-alloc gate. */
   signal?: AbortSignal;
   /** Called with a human message if vite.config pre-bundling fails (so the
@@ -53,23 +54,42 @@ export interface StartRealViteOptions {
   onConfigError?: (message: string) => void;
 }
 
-/**
- * What a dev server's pid is persisted as, and given back on restore: the
- * cwd+argv its identity derives from, and its exec id when it has one.
- */
-export function devServerIdentity(entry: ProcessEntry): { cwd: string; argv: string[]; execId?: string } {
-  return { cwd: entry.cwd, argv: entry.argv, ...execIdField(entry) };
+/** Who a dev server's pid is: the cwd+argv its identity derives from, its credential, and its exec id when it has one. */
+export interface DevServerIdentity {
+  cwd: string;
+  argv: string[];
+  cred: VfsCred;
+  execId?: string;
 }
 
-/** A persisted dev-server identity, read back; undefined for a config written before it was persisted. */
-export function persistedIdentity(value: unknown): { cwd: string; argv: string[]; execId?: string } | undefined {
-  const identity = value as { cwd?: unknown; argv?: unknown; execId?: unknown } | null | undefined;
+/** What a dev server's pid is persisted as, and given back on restore. */
+export function devServerIdentity(entry: ProcessEntry): DevServerIdentity {
+  return { cwd: entry.cwd, argv: entry.argv, cred: entry.cred, ...execIdField(entry) };
+}
+
+/**
+ * A persisted dev-server identity, read back; undefined for a config written
+ * before it recorded who the server ran as, which is not restored: it would
+ * read the project as someone else.
+ */
+export function persistedIdentity(value: unknown): DevServerIdentity | undefined {
+  const identity = value as { cwd?: unknown; argv?: unknown; cred?: unknown; execId?: unknown } | null | undefined;
   if (typeof identity?.cwd !== 'string' || !Array.isArray(identity.argv)) return undefined;
+  const cred = persistedCred(identity.cred);
+  if (cred === undefined) return undefined;
   return {
     cwd: identity.cwd,
     argv: identity.argv.map(String),
+    cred,
     ...(typeof identity.execId === 'string' ? { execId: identity.execId } : {}),
   };
+}
+
+function persistedCred(value: unknown): VfsCred | undefined {
+  const cred = value as { uid?: unknown; gid?: unknown; groups?: unknown; umask?: unknown } | null | undefined;
+  const id = (n: unknown): n is number => Number.isInteger(n) && Number(n) >= 0;
+  if (!id(cred?.uid) || !id(cred.gid) || !id(cred.umask) || !Array.isArray(cred.groups) || !cred.groups.every(id)) return undefined;
+  return { uid: cred.uid, gid: cred.gid, groups: cred.groups, umask: cred.umask };
 }
 
 export interface StartRealViteResult {
@@ -87,7 +107,9 @@ export interface StartRealViteResult {
 export async function startRealVite(self: any, opts: StartRealViteOptions): Promise<StartRealViteResult> {
   if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
 
-  const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
+  // The user's vite.config is found and bundled as the principal the server
+  // runs as: a config importing a file that principal may not read is refused.
+  const callerFs = self.sqliteFs!.as(opts.identity.cred);
 
   // Reserve the full supervisor allocation budget so a fire-and-forget
   // pre-bundle or VFS payload cannot overlap the cirrus-real boot payload
@@ -107,7 +129,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     const extraSyntheticFiles: Record<string, string> = {};
     const cfgPath = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']
       .map((name) => opts.configDir + '/' + name)
-      .find((p) => kernelFs.exists(p)) ?? null;
+      .find((p) => callerFs.exists(p)) ?? null;
     if (cfgPath) {
       try {
         if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
@@ -132,6 +154,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
             'import.meta.url': JSON.stringify('file:///user-vite-config.js'),
           },
           keepNames: true,
+          fs: callerFs,
         });
         const out = bundleResult.outputFiles?.[0];
         if (out) {
@@ -153,15 +176,17 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       root: opts.root,
       basePath: opts.basePath,
       vfs: self.sqliteFs!,
+      cred: opts.identity.cred,
       vfsEvents: self.sqliteFs!.events,
       userConfigBundle,
       extraSyntheticFiles,
     });
     self.cirrusReal = cirrusReal;
     // Reserve a PID so `ps`/logs show it like any other facet.
+    // Its facet's syscalls answer under this pid's credential.
     const entry = self.processes.spawn(
-      'vite (real, ' + opts.root + ')', opts.identity?.argv ?? [], opts.identity?.cwd ?? opts.root,
-      { longRunning: true, execId: opts.identity?.execId },
+      'vite (real, ' + opts.root + ')', opts.identity.argv, opts.identity.cwd,
+      { longRunning: true, cred: opts.identity.cred, execId: opts.identity.execId },
     );
     // start() is async — it ASSETS-fetches the Vite/plugin-react bundles on
     // first invocation (cached per-isolate after).

@@ -27,6 +27,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
+import { supervisorDouble } from './lib/supervisor-double.mjs';
 
 /** The report, as source: the same text runs under each runtime. */
 const REPORT = String.raw`
@@ -113,13 +114,10 @@ const { host, rawVfs } = createAuthority();
 const dec = new TextDecoder();
 let out = '';
 adoptCtxExports({
-  SupervisorRPC: ({ props }) => new Proxy({}, {
-    get(_target, name) {
-      if (typeof name !== 'string' || name === 'then') return undefined;
-      if (name === 'stdout' || name === 'stderr') return async (data) => { out += dec.decode(data); };
-      if (name === 'reportExit') return async () => {};
-      return (...args) => host.supervisorOp({ op: name, args, pid: props?.pid });
-    },
+  SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
+    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
+    if (name === 'reportExit') return;
+    return host.supervisorOp({ op: name, args, pid: props?.pid });
   }),
 });
 const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-http2-'));

@@ -65,7 +65,10 @@ const manager = new FacetManager(createFacetCtx(world, 'exec-id-staged'), env, p
   requestLaunchTurn: () => { setTimeout(() => { void manager.pumpResidentLaunches(); }, 0); },
   notify: () => {},
 });
-manager.setVfs(vfs, processFiles(vfs));
+const files = processFiles(vfs);
+manager.setVfs(vfs, files);
+// What a workspace composed over this table sets: a reap releases each pid's binding first.
+processes.setRelease((pid) => files.releaseProcess(pid));
 
 const exec = processes.spawn('opencode', ['opencode'], '/home/user/app', { execId: 'j1' });
 const plain = processes.spawn('opencode', ['opencode'], '/home/user/app');

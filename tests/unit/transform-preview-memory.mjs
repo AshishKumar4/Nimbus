@@ -45,7 +45,7 @@ resetInstances();
 instances.memoryLimitBytes = 16 * 1024 * 1024;
 const { ctx, env } = durableObject(await freshFacetClass());
 const esbuild = new EsbuildService(undefined, { transformHost: oxcTransformHost(ctx, env) });
-const server = new ViteDevServer({ vfs, esbuild, root, onHmrMessage() {}, basePath: '/preview', port: 5173 });
+const server = new ViteDevServer({ vfs, cred: CRED_KERNEL, esbuild, root, onHmrMessage() {}, basePath: '/preview', port: 5173 });
 const names = ['Card', ...components];
 const responses = await Promise.all(names.map((name) => {
   const path = `/src/components/${name}`;

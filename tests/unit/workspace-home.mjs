@@ -49,7 +49,8 @@ const out = async (ws, line) => {
   assert.deepEqual([home.type, home.uid, home.gid, home.mode & 0o777], ['directory', 1000, 1000, 0o755], 'the home is the user\'s');
   assert.equal(kernel.exists('home/main/.config'), true);
   assert.equal(kernel.exists('home/user'), false, 'no stray /home/user');
-  assert.match(await out(ws, 'alias ll'), /ls -la/, '~/.nimbusrc is seeded where it is sourced from');
+  // The login files are the workspace shell's; an exec's shell does not read them.
+  assert.match((await ws.shell.execute('alias ll')).stdout, /ls -la/, '~/.nimbusrc is seeded where it is sourced from');
   db.close();
 }
 

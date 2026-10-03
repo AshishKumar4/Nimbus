@@ -103,7 +103,9 @@ The same sandbox handle API works in three modes:
   scope without a shell runs no command, only file calls. It cannot `destroy`
   the workspace. Processes, ports, logs and applications are not confined:
   those verbs are workspace-wide, as the shell's own `ps`, `kill`, `logs` and
-  `nimbus expose`/`app` are.
+  `nimbus expose`/`app` are. A named shell is the workspace's: the
+  embedder's own `workspace.exec(command, { shellId })` runs in the same one,
+  and calls on a name run one at a time whichever of the two makes them.
 
 ```ts
 import { Nimbus } from '@nimbus-sh/sdk';

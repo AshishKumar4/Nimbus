@@ -35,6 +35,18 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
+import { type NamedShell, type NamedShellOptions } from './named-shells.js';
+export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+/** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
+export interface WorkspaceExecOptions extends RunOptions {
+    /**
+     * Run in this named shell, whose cwd and environment persist between calls
+     * the way a terminal tab's do; calls on one name run one at a time. 1 to
+     * 160 characters from `A-Z a-z 0-9 . _ : -`, starting with a letter or
+     * digit. Omitted, the call runs in a shell of its own.
+     */
+    readonly shellId?: string;
+}
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
     readonly sql: SqlDatabase;
@@ -169,6 +181,8 @@ export declare class NimbusWorkspace {
     private readonly supervisorOps;
     readonly filesystem: ProcessFiles;
     private readonly runtimeLease;
+    /** Who the workspace shell acts as, and so every call's process. */
+    private readonly identity;
     /**
      * The namespace as the session user sees it: the shell process's own view,
      * so every write passes the same lease check a command's does. Never the
@@ -200,11 +214,52 @@ export declare class NimbusWorkspace {
     /** The pid the shell's commands run as — the host's identity pid when it
      *  supplied one, else the `sh` this workspace spawned. */
     readonly shellProcessPid: number;
-    private readonly commands;
+    private readonly namedShells;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
     close(): Promise<void>;
-    exec(command: string, options?: RunOptions): Promise<CommandResult>;
+    /**
+     * Run `command` as a process of its own and collect what it printed.
+     *
+     * Without a `shellId` the call runs in a shell built for it alone (see
+     * {@link shellFor}), from the workspace shell's cwd and environment with the
+     * call's `cwd` and `env` on top, under a new process with the workspace
+     * shell's credential and umask. What it changes (its cwd, variables,
+     * functions, aliases, options, umask, descriptors) ends with it: none of it
+     * reaches the next call or the workspace shell, and calls run at once
+     * without seeing each other's. With a `shellId` it runs in that named shell
+     * instead (see {@link withNamedShell}), and `cwd` and `env` hold for this
+     * call only. Either way the process, and its child processes that have
+     * ended, leave the process table when the result is returned.
+     */
+    exec(command: string, options?: WorkspaceExecOptions): Promise<CommandResult>;
+    private runProcess;
+    /**
+     * A shell of its own for process `pid`, a second cwd and environment over
+     * the workspace shell's filesystem, commands and kernel. It starts in
+     * `state.cwd` with the workspace shell's environment and `state.env` on
+     * top. Its commands act as `pid` (`$$`, and the credential and umask
+     * {@link processes} holds for it); `sudo` and `su` go through the workspace
+     * shell's identity, and `kill` reaches what the workspace shell's does.
+     *
+     * For a host that runs a command under a process of its own. When that
+     * process ends, {@link Shell.closeDescriptors} closes what an `exec` in it
+     * left open.
+     */
+    shellFor(pid: number, state: {
+        readonly cwd: string;
+        readonly env?: Readonly<Record<string, string>>;
+    }): Shell;
+    /**
+     * Run `body` in the named shell `id` (see named-shells.ts): in the cwd and
+     * environment the last call on that name left it with, else
+     * `options.start`, one call on the name at a time.
+     *
+     * {@link exec} with a `shellId` is this around one command. A host that
+     * runs its own process around the shell (a session's exec and background
+     * jobs) calls it directly, and builds the shell with `open(pid)`.
+     */
+    withNamedShell<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /**
