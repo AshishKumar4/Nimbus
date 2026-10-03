@@ -14688,11 +14688,20 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   const pending = /* @__PURE__ */ new Map();
   const inputBytes = /* @__PURE__ */ new Map();
   const importsOf = /* @__PURE__ */ new Map();
-  const importedBy = (importer, record2) => {
+  const importOrder2 = /* @__PURE__ */ new Map();
+  const importedBy = (importer, id2, record2) => {
     if (importer === void 0) return;
     const list = importsOf.get(importer) ?? [];
-    list.push(record2);
+    list.push({ id: id2, record: record2 });
     importsOf.set(importer, list);
+  };
+  const importsInOrder = (importer) => {
+    const order = importOrder2.get(importer) ?? [];
+    const at = (id2) => {
+      const i2 = order.indexOf(id2);
+      return i2 < 0 ? order.length : i2;
+    };
+    return (importsOf.get(importer) ?? []).map((entry, i2) => ({ ...entry, i: i2 })).sort((a2, b2) => at(a2.id) - at(b2.id) || a2.record.kind.localeCompare(b2.record.kind) || a2.i - b2.i).map((entry) => entry.record);
   };
   const css = /* @__PURE__ */ new Map();
   const warnings = [];
@@ -14734,6 +14743,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   const vfs = {
     name: plugin.name,
     generateBundle(_options, bundle2) {
+      for (const id2 of inputBytes.keys()) {
+        const info = this.getModuleInfo(id2);
+        importOrder2.set(id2, [...info?.importedIds ?? [], ...info?.dynamicallyImportedIds ?? []]);
+      }
       for (const out of Object.values(bundle2)) {
         if (out.type !== "chunk" || !out.facadeModuleId) continue;
         const order = [];
@@ -14767,14 +14780,14 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
       if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, "");
       if (answer.external) {
-        importedBy(importer, { path: answer.path ?? path3, kind, external: true });
+        importedBy(importer, answer.path ?? path3, { path: answer.path ?? path3, kind, external: true });
         return { id: answer.path ?? path3, external: true };
       }
       const namespace = answer.namespace ?? "file";
       if (mainNamespace === null) mainNamespace = namespace;
       const id2 = idOf(namespace, answer.path);
       pending.set(id2, { namespace, path: answer.path });
-      importedBy(importer, {
+      importedBy(importer, id2, {
         path: fileOf2({ namespace, path: answer.path }),
         kind,
         ...source === answer.path ? {} : { original: source }
@@ -14900,7 +14913,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       outputs[relative(path3)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
     }
     const inputs = {};
-    for (const [id2, bytes] of inputBytes) inputs[fileOf2(decode4(id2))] = { bytes, imports: importsOf.get(id2) ?? [] };
+    for (const [id2, bytes] of inputBytes) inputs[fileOf2(decode4(id2))] = { bytes, imports: importsInOrder(id2) };
     return { outputFiles, errors: [], warnings, metafile: { inputs, outputs } };
   } finally {
     await bundle.close();

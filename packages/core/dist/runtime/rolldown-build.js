@@ -560,16 +560,23 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         return m ? { namespace: m[1], path: m[2] } : { namespace: mainNamespace ?? 'file', path: id };
     };
     const pending = new Map();
-    // The metafile's inputs, as esbuild's: every module the build loaded, keyed
-    // as a diagnostic names it, with its byte count and the imports it made.
     const inputBytes = new Map();
     const importsOf = new Map();
-    const importedBy = (importer, record) => {
+    const importOrder = new Map();
+    const importedBy = (importer, id, record) => {
         if (importer === undefined)
             return;
         const list = importsOf.get(importer) ?? [];
-        list.push(record);
+        list.push({ id, record });
         importsOf.set(importer, list);
+    };
+    const importsInOrder = (importer) => {
+        const order = importOrder.get(importer) ?? [];
+        const at = (id) => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
+        return (importsOf.get(importer) ?? [])
+            .map((entry, i) => ({ ...entry, i }))
+            .sort((a, b) => at(a.id) - at(b.id) || a.record.kind.localeCompare(b.record.kind) || a.i - b.i)
+            .map((entry) => entry.record);
     };
     const css = new Map();
     const warnings = [];
@@ -624,6 +631,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     const vfs = {
         name: plugin.name,
         generateBundle(_options, bundle) {
+            for (const id of inputBytes.keys()) {
+                const info = this.getModuleInfo(id);
+                importOrder.set(id, [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])]);
+            }
             for (const out of Object.values(bundle)) {
                 if (out.type !== 'chunk' || !out.facadeModuleId)
                     continue;
@@ -667,7 +678,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             if (!answer || (!answer.path && !answer.external))
                 return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '');
             if (answer.external) {
-                importedBy(importer, { path: answer.path ?? path, kind: kind, external: true });
+                importedBy(importer, answer.path ?? path, { path: answer.path ?? path, kind: kind, external: true });
                 return { id: answer.path ?? path, external: true };
             }
             const namespace = answer.namespace ?? 'file';
@@ -675,7 +686,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 mainNamespace = namespace;
             const id = idOf(namespace, answer.path);
             pending.set(id, { namespace, path: answer.path });
-            importedBy(importer, {
+            importedBy(importer, id, {
                 path: fileOf({ namespace, path: answer.path }),
                 kind: kind,
                 ...(source === answer.path ? {} : { original: source }),
@@ -824,7 +835,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         }
         const inputs = {};
         for (const [id, bytes] of inputBytes)
-            inputs[fileOf(decode(id))] = { bytes, imports: importsOf.get(id) ?? [] };
+            inputs[fileOf(decode(id))] = { bytes, imports: importsInOrder(id) };
         return { outputFiles, errors: [], warnings, metafile: { inputs, outputs } };
     }
     finally {
