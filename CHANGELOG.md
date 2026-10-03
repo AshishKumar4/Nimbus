@@ -7,7 +7,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 - `find` behaves as GNU findutils 4.10 does for the expression language
   scripts and agents use, checked line for line against the host's GNU find
-  over the same tree (341 command lines: same stdout, stderr and exit
+  over the same tree (381 command lines: same stdout, stderr and exit
   status, in readdir order). It parses GNU's grammar (`( )`, `!`, `-a`, `-o`,
   `,`, the implicit `-print`) with GNU's messages; implements -H/-L/-P with
   loop detection, -maxdepth, -mindepth, -depth, -xdev/-mount, the name,
@@ -16,17 +16,32 @@ published independently in the `@nimbus-sh` npm scope.
   `{} +` as child processes; and reports unreadable directories and goes
   on. What it does not implement it refuses by name, exit 1: -regex,
   -fstype, -ls, -fprint*, -files0-from, -ok, -okdir, -O2 and above, and
-  the -printf directives Nimbus has no facts for (%b %k %S %F %Z). Before, an unknown
-  flag's value became the search path, `-xdev` was refused, and every
-  unreadable directory was skipped in silence.
+  the -printf directives Nimbus has no facts for (%b %k %S %F %Z).
+  Before, an unknown flag's value became the search path, `-xdev` was
+  refused, and every unreadable directory was skipped in silence. Its
+  walk keeps what fts keeps, the directories it is inside, so its memory
+  does not grow with the tree: 2 MiB over 200,000 entries, and a
+  read-ahead window of 4,096 entries on top.
 - `find -xdev` stays on the start point's file system, so `find / -xdev`
   never lists a mounted container file system such as Kinu's /sandbox.
   Without it, find reads directories (16 calls at once) ahead of what it
   prints, in walk order, when the expression only looks: on a mount
   answering each call in 10 ms, `find` over 156 directories took 990 ms
-  where it took 7.7 s.
+  where it took 7.7 s. Under -L or -H it never reads ahead into a link
+  the loop check will refuse.
 - `chmod` takes gnulib's whole mode grammar (`u=g`, `+t`, `g+s`,
   `u+rw-x`, `+111`, five-digit octal), as find -perm does.
+- `sudo`, `su` and `find -exec`/`-execdir` start the program they name as
+  execvp does, in the caller's directory with its streams: a shell
+  function or alias of that name is not what runs, and a program that is
+  not there is `sudo: x: command not found` or `find: 'x': No such file
+  or directory`. `pwd` is a program too (coreutils', `-P` by default) for
+  them to start.
+- `touch -d` and `find -newerXt` read a date with gnulib's ranges: an
+  epoch's fraction keeps its sign (`@-1.5`) and may follow a comma, a
+  number, field or result that overflows and a zone past 24 hours are
+  refused, as is second 60, a date with nothing in it is midnight, and
+  a year before 100 or after 275760 is the year it names.
 - Fixed: after `cd` in a `bash` script, a command started for it by `sudo`
   or `find -exec` ran in the directory the script started in.
 
