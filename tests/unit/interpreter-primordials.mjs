@@ -25,6 +25,14 @@
 //   - a generator function not made by safeGenerator (or genCode, which
 //     calls it): driving its generators (next(), yield*) would look up
 //     %GeneratorPrototype% and %IteratorPrototype%.
+//
+// And the parser bundled with it: acorn, as the interpreter bundle rewrites
+// it (worker scripts/acorn-primordials.mjs), checked by parserReaches. acorn
+// is JavaScript, which the type checker cannot type, so that check is by its
+// syntax tree and acorn's own declarations: no global but the parser realm,
+// no built-in method called but through it, no literal or constructor whose
+// objects inherit, nothing iterated. tests/unit/interpreter-parser-realm.mjs
+// runs the bundled parser in a realm that logs every built-in it reaches.
 
 import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
@@ -53,10 +61,11 @@ const OWN_PROPERTIES = new Set(['length', 'prototype']);
 /**
  * Library types whose members are own data properties of every object the
  * interpreter reads them on: descriptors it makes (dataDescriptor,
- * accessorDescriptor) or [[GetOwnProperty]] returns, and the results of its
- * own generators' next().
+ * accessorDescriptor) or [[GetOwnProperty]] returns, the results of its
+ * own generators' next(), and what RegExp.prototype.exec returns (each
+ * element, `index`).
  */
-const OWN_RECORDS = /^(PropertyDescriptor|TypedPropertyDescriptor|IteratorResult|IteratorYieldResult|IteratorReturnResult)$/;
+const OWN_RECORDS = /^(PropertyDescriptor|TypedPropertyDescriptor|IteratorResult|IteratorYieldResult|IteratorReturnResult|RegExpExecArray)$/;
 /** What gives a generator function SafeGeneratorPrototype. */
 const SAFE_GENERATOR_MAKERS = new Set(['safeGenerator', 'genCode']);
 /** Collections whose methods primordials.ts copies onto their own prototypes. */
@@ -153,3 +162,11 @@ for (const file of FILES) {
 console.log(violations.join('\n'));
 assert.deepEqual(violations, [], `the interpreter goes through ${violations.length} built-ins a program can replace`);
 console.log(`${FILES.length} files: the interpreter calls only the built-ins primordials.ts captured`);
+
+const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
+const { parserReaches } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
+const { parser } = await bundleInterpreter({ start: fileURLToPath(new URL('../../packages/worker/', import.meta.url)) });
+const reaches = parserReaches(parser);
+console.log(reaches.join('\n'));
+assert.deepEqual(reaches, [], `the bundled parser reaches ${reaches.length} built-ins a program can replace`);
+console.log(`the bundled parser (${parser.length} characters) reaches the realm only through parser-realm.ts`);

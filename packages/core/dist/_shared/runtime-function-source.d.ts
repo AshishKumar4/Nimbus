@@ -4,10 +4,10 @@
  * becomes (commonjs-cell.ts) and the interpreter that runs an unstaged one.
  *
  * The interpreter runs this after a program may have replaced built-ins, so
- * nothing here names one: the caller's SourceRealm supplies the two it needs
+ * nothing here names one: the caller's SourceRealm supplies what it needs
  * (the interpreter's, from the launch's start; commonjs-cell's, its own).
  */
-import { type FunctionExpression } from 'acorn';
+import { type FunctionExpression, type Options } from 'acorn';
 /** The constructors whose text a program can hand in at runtime. */
 export declare const RUNTIME_FUNCTION_HEADS: {
     readonly function: "function";
@@ -21,6 +21,12 @@ export interface SourceRealm {
     readonly SyntaxError: new (message: string) => Error;
     /** The message of what the parser threw. */
     messageOf(error: unknown): string;
+    /**
+     * The parser's options for a script (`ecmaVersion: 'latest'`, `sourceType:
+     * 'script'`). acorn reads one option of the object directly, so the
+     * interpreter's inherits nothing.
+     */
+    readonly scriptOptions: Options;
 }
 /** The function literal V8 builds for `new <Kind>Function(...params, body)`. */
 export declare function runtimeFunctionSource(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;

@@ -42,17 +42,11 @@ const MAPPED_ARGUMENTS = "a sloppy function's arguments object is not mapped to 
 const SCRIPT_LEXICALS = "each script's top-level let/const/class is its own, not shared with later scripts";
 const TICKS = 'an async generator or for-await step takes a different number of microtask ticks';
 const CALLER = "Function.prototype.caller reports the interpreter's own frames";
-// The interpreter's own arrays have every element as an own property, so
-// they never meet these (tests/unit/interpreter-isolation.mjs); acorn's do:
-// it builds the tree it returns with push, in the program's realm, when a
-// function is first called, after the test has defined the property.
-const PARSER_ARRAYS = 'acorn, parsing a function on its first call, pushes onto arrays that meet properties the program defined on Array.prototype or Object.prototype indices';
 
 /** test262 files (relative to test/language) the interpreter fails, and why. */
 const KNOWN_FAILURES = {
   'arguments-object/10.6-10-c-ii-1.js': MAPPED_ARGUMENTS,
   'arguments-object/10.6-10-c-ii-2.js': MAPPED_ARGUMENTS,
-  'arguments-object/10.6-11-b-1.js': PARSER_ARRAYS,
   'arguments-object/10.6-13-a-2.js': CALLER,
   'arguments-object/10.6-13-a-3.js': CALLER,
   'arguments-object/mapped/mapped-arguments-nonconfigurable-2.js': MAPPED_ARGUMENTS,
@@ -76,8 +70,6 @@ const KNOWN_FAILURES = {
   'arguments-object/mapped/nonconfigurable-nonwritable-descriptors-set-by-arguments.js': MAPPED_ARGUMENTS,
   'arguments-object/mapped/nonconfigurable-nonwritable-descriptors-set-by-param.js': MAPPED_ARGUMENTS,
   'arguments-object/mapped/writable-enumerable-configurable-descriptor.js': MAPPED_ARGUMENTS,
-  'expressions/array/11.1.4_4-5-1.js': PARSER_ARRAYS,
-  'expressions/array/11.1.4_5-6-1.js': PARSER_ARRAYS,
   'expressions/yield/formal-parameters-after-reassignment-non-strict.js': MAPPED_ARGUMENTS,
   'global-code/decl-lex-restricted-global.js': SCRIPT_LEXICALS,
   'global-code/script-decl-lex-deletion.js': SCRIPT_LEXICALS,
@@ -86,7 +78,6 @@ const KNOWN_FAILURES = {
   'global-code/script-decl-lex-var.js': SCRIPT_LEXICALS,
   'statements/async-function/evaluation-mapped-arguments.js': MAPPED_ARGUMENTS,
   'statements/async-generator/return-undefined-implicit-and-explicit.js': TICKS,
-  'statements/for-in/head-lhs-let.js': PARSER_ARRAYS,
   'statements/for-of/arguments-mapped-aliasing.js': MAPPED_ARGUMENTS,
 };
 

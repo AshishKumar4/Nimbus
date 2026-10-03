@@ -21,14 +21,14 @@ export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-92386265e8b
 export const RESIDENT_STORE_BUILD_ID = "92386265e8b306dc";
 export const RESIDENT_STORE_SHA256 = "92386265e8b306dcf276dc525ae9f7e025f4c0b7cad5b470ab674e836c8cb33c";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-675c00c3b7d9bb94.js";
-export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "675c00c3b7d9bb94";
-export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "675c00c3b7d9bb94842c0fa28d59ad5146c54905e93a78789f345d78cb3e6037";
+export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-755a8965ac896a46.js";
+export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "755a8965ac896a46";
+export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "755a8965ac896a460738c1a8b659f4f091386d070404d6b701c58e7156616bb9";
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-47e80659558639ea.js";
-export const JS_INTERPRETER_BUILD_ID = "47e80659558639ea";
-export const JS_INTERPRETER_SHA256 = "47e80659558639ea87b9b3dd88e05c315891801eadda73518839018de86bcf3a";
+export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-078c89a1d60c5341.js";
+export const JS_INTERPRETER_BUILD_ID = "078c89a1d60c5341";
+export const JS_INTERPRETER_SHA256 = "078c89a1d60c534115f6c6beb62786c8167f90ae2301e3ed80abe2afd24a94d9";
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
-export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-bff75f57cf7c2890.js";
-export const JS_INTERPRETER_OPS_BUILD_ID = "bff75f57cf7c2890";
-export const JS_INTERPRETER_OPS_SHA256 = "bff75f57cf7c28907fc69b3ecf4c87937f8d313785a68214dfd3a8bc8c23226a";
+export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";
+export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";
+export const JS_INTERPRETER_OPS_SHA256 = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";

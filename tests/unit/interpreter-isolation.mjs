@@ -20,10 +20,13 @@
 // field. tests/unit/interpreter-primordials.mjs checks the same property
 // statically; this checks it as a program would find it.
 //
-// The program runs once before the logged run: the interpreter compiles a
-// function on its first call, and compiling parses with acorn, which runs
-// on the realm's built-ins (as any parser written in JavaScript would) and
-// is not what is compared. The logged run compiles nothing.
+// The program runs twice, and both runs are logged, with what the
+// interpreter does before them: it compiles the program, and each function
+// on its first call, and compiling parses, which reaches no built-in a
+// program can replace (core src/interpreter/parser-realm.ts). Node's module
+// loader, which loads the interpreter, is not compared; what the
+// interpreter's own modules do as they load is checked by
+// tests/unit/interpreter-parser-realm.mjs.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -57,6 +60,13 @@ for (let i = 0; i < 3; i++) boxes.push(new Box(i));
 const readers = [];
 for (let i = 0; i < 3; i++) readers.push(() => i + (secret ? 10 : 0));
 out.push(readers.map((r) => r()), boxes.map((b) => b.holds), Box.count, Box.reveal(boxes[0]));
+// What else a parse could be made to change: a name, a key, a literal, a statement.
+const alpha = 'alpha', beta = 'beta';
+const pick = (chosen) => chosen;
+const keyed = { shown: 1 };
+const marks = ['mark'];
+out.push(pick(alpha), Object.keys(keyed), marks[0]);
+out.push('kept statement');
 const [first, , third = 7, ...rest] = [1, 2, undefined, 4, 5];
 const { a, b: { c = 3 } = {}, ...others } = { a: 1, d: 4, e: 5 };
 out.push(first, third, rest, a, c, Object.keys(others));
@@ -102,14 +112,20 @@ const NAMES = [
   ...Array.from({ length: 16 }, (_, i) => String(i)),
 ];
 
+/** Names of the parser's token types and options, and of the interpreter's host operators. */
+const LOAD_NAMES = [
+  'allowHashBang', 'binop', 'keyword', 'beforeExpr', 'startsExpr', 'isLoop', 'isAssign', 'prefix', 'postfix',
+  'rightAssociative', 'updateContext', 'globalReader', 'setSloppy', 'removeSloppy', 'delegate',
+];
+
 /**
  * Each case's replacements, installed by `install(hook)` either `before`
  * the interpreter loads (and after the launch's start captured the
  * primordials) or `after`. Methods acorn (the parser, bundled with the
  * interpreter) calls are left alone: it parses with the realm's built-ins,
- * on the program's own source text. Except push-before-load: a replaced
- * push receives the nodes acorn builds, which the interpreter reads only
- * through its own copy (tree.ts).
+ * on the program's own source text, before any of it is logged, and the
+ * push cases replace what such a parser would call: a push that edits the
+ * nodes it is handed, which the interpreter's parser must never be.
  */
 const CASES = {
   // Array copies made with the receiver's species: a constructor that keeps what it is given.
@@ -120,6 +136,9 @@ const CASES = {
   'array-prototype-proxy': { when: 'after', install: (h) => h.arrayPrototypeProxy() },
   // Lookups of names an internal record or descriptor might not have reach Object.prototype.
   'object-prototype-accessors': { when: 'after', install: (h) => h.objectPrototypeAccessors(NAMES) },
+  // The same, and names the parser's own records and options and the interpreter's host operators
+  // have, before the interpreter loads: what loading it and parsing look up or set must not reach them.
+  'object-prototype-before-load': { when: 'before', install: (h) => h.objectPrototypeAccessors([...NAMES, ...LOAD_NAMES]) },
   // Built-ins replaced before the interpreter loads: the globals, constructed or called.
   'globals-before-load': { when: 'before', install: (h) => h.globals() },
   // Prototype methods replaced before the interpreter loads (WeakMap.prototype.set holds private fields).
@@ -128,9 +147,28 @@ const CASES = {
   'iteration-before-load': { when: 'before', install: (h) => h.iteration() },
   // Function.prototype.toString wrapped before the interpreter loads, as a program would wrap the native one.
   'tostring-before-load': { when: 'before', install: (h) => h.toString() },
-  // Array.prototype.push replaced before the interpreter loads: acorn pushes the nodes it builds, so the
-  // replacement can make an identifier's name an accessor that answers each read differently.
-  'push-before-load': { when: 'before', install: (h) => h.push() },
+  // Array.prototype.push replaced before the interpreter loads, as a parser written in JavaScript would
+  // push the nodes it builds: each replacement edits what it is handed. Natively nothing parses with it.
+  // The `probe` Box reads becomes the closure-held `secret`.
+  'push-before-load': { when: 'before', install: (h) => h.push((n) => { if (n.type === 'Identifier' && n.name === 'probe') n.name = 'secret'; }) },
+  // An identifier becomes another binding in scope.
+  'push-renames-binding': { when: 'before', install: (h) => h.push((n) => { if (n.type === 'Identifier' && n.name === 'alpha') n.name = 'beta'; }) },
+  // A property key is renamed.
+  'push-renames-key': {
+    when: 'before',
+    install: (h) => h.push((n) => { if (n.type === 'Property' && n.key && n.key.type === 'Identifier' && n.key.name === 'shown') n.key.name = 'renamed'; }),
+  },
+  // A literal's value is swapped.
+  'push-swaps-literal': {
+    when: 'before',
+    install: (h) => h.push((n) => { if (n.type === 'Literal' && n.value === 'mark') { n.value = 'swapped'; n.raw = "'swapped'"; } }),
+  },
+  // A statement is dropped from the body it was pushed onto.
+  'push-drops-statement': {
+    when: 'before',
+    install: (h) => h.push((n) => (n.type === 'ExpressionStatement' && n.expression.type === 'CallExpression'
+      && n.expression.arguments.length === 1 && n.expression.arguments[0].value === 'kept statement' ? 'drop' : undefined)),
+  },
 };
 
 if (process.argv[2] !== '--case') {
@@ -332,20 +370,19 @@ async function runCase(name, mode, interpreterFile, opsFile) {
       G.guestToString = wrapper;
       defineProperty(Function.prototype, 'toString', { __proto__: null, value: wrapper, writable: true, enumerable: false, configurable: true });
     },
-    push() {
-      // The program's `probe`, as a node acorn pushes (a call's argument): read once it is `probe`,
-      // after that the name of Box's private name. Natively nothing pushes a node.
+    push(edit) {
+      // Each node pushed is handed to `edit`, which may change it, or answer 'drop' to leave it out.
       const push = Array.prototype.push;
       const replaced = {
         push(...items) {
           record('Array.prototype.push', this, items);
+          const kept = [];
           for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            if (item === null || typeof item !== 'object' || !hasOwn(item, 'type') || item.type !== 'Identifier' || item.name !== 'probe') continue;
-            let reads = 0;
-            defineProperty(item, 'name', { __proto__: null, get: () => (reads++ === 0 ? 'probe' : '#value'), enumerable: true, configurable: true });
+            const node = item !== null && typeof item === 'object' && hasOwn(item, 'type') && typeof item.type === 'string';
+            if (!node || edit(item) !== 'drop') kept[kept.length] = item;
           }
-          return R.apply(push, this, items);
+          return R.apply(push, this, kept);
         },
       }.push;
       defineProperty(Array.prototype, 'push', { __proto__: null, value: replaced, writable: true, enumerable: false, configurable: true });
@@ -357,15 +394,18 @@ async function runCase(name, mode, interpreterFile, opsFile) {
   // The launch's start: the primordials are captured before anything replaces a built-in.
   if (mode === 'interpreted') loadPrimordials(interpreterFile);
   if (testCase.when === 'before') testCase.install(hooks);
-  if (mode === 'interpreted') {
-    const { LAUNCH_PRIMORDIALS } = loadPrimordials(interpreterFile);
-    const { createInterpreter } = require(interpreterFile);
-    interp = createInterpreter(require(opsFile), { dynamicImport: () => Promise.reject(new Error('no imports')), primordials: LAUNCH_PRIMORDIALS });
+  const modules = mode === 'interpreted'
+    ? { primordials: loadPrimordials(interpreterFile), interpreter: require(interpreterFile), ops: require(opsFile) }
+    : null;
+  // Logged from here: Node's module loader, which loaded the interpreter, is not compared.
+  logged = 0;
+  if (modules !== null) {
+    const { LAUNCH_PRIMORDIALS } = modules.primordials;
+    interp = modules.interpreter.createInterpreter(modules.ops, { dynamicImport: () => Promise.reject(new Error('no imports')), primordials: LAUNCH_PRIMORDIALS });
   }
   const program = mode === 'interpreted' ? interp.compileFunction('function', [], PROGRAM) : new Function(PROGRAM);
   await program();
   if (testCase.when === 'after') testCase.install(hooks);
-  logged = 0;
   const result = await program();
   quiet++;
   const entries = [];

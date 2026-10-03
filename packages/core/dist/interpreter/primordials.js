@@ -62,6 +62,35 @@ export const StringPrototypeSlice = String.prototype.slice;
 export const StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
 export const StringPrototypeCharCodeAt = String.prototype.charCodeAt;
 export const SymbolPrototypeToString = Symbol.prototype.toString;
+// What the parser reaches (parser-realm.ts): acorn, as the interpreter bundles
+// it, calls these and no other built-in.
+export const StringPrototypeCharAt = String.prototype.charAt;
+export const StringPrototypeIndexOf = String.prototype.indexOf;
+export const StringPrototypeSubstr = String.prototype.substr;
+export const StringFromCharCode = String.fromCharCode;
+export const ArrayPrototypePop = Array.prototype.pop;
+export const ArrayPrototypeIndexOf = Array.prototype.indexOf;
+export const ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+export const RegExpPrototypeExec = RegExp.prototype.exec;
+/** RegExp.prototype's accessors (source, global, unicode, ...), each reading the regexp's own internal slots. */
+export const RegExpPrototypeAccessors = (() => {
+    const accessors = objectCreate(null);
+    const names = Object.getOwnPropertyNames(RegExp.prototype);
+    for (let i = 0; i < names.length; i++) {
+        const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
+        if (getter !== undefined)
+            accessors[names[i]] = getter;
+    }
+    return accessors;
+})();
+export const NumberPrototypeToString = Number.prototype.toString;
+export const BigIntPrototypeToString = BigInt.prototype.toString;
+export const ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
+export const ObjectPrototypeToString = Object.prototype.toString;
+export const objectDefineProperties = Object.defineProperties;
+export const parseIntOf = parseInt;
+export const parseFloatOf = parseFloat;
+export const SymbolConstructor = Symbol;
 export const SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, 'description')?.get;
 export const globalObject = globalThis;
 const BigIntOf = BigInt;

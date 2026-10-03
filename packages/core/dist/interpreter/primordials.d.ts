@@ -86,6 +86,26 @@ export declare const StringPrototypeSlice: (start?: number, end?: number) => str
 export declare const StringPrototypeLastIndexOf: (searchString: string, position?: number) => number;
 export declare const StringPrototypeCharCodeAt: (index: number) => number;
 export declare const SymbolPrototypeToString: () => string;
+export declare const StringPrototypeCharAt: (pos: number) => string;
+export declare const StringPrototypeIndexOf: (searchString: string, position?: number) => number;
+export declare const StringPrototypeSubstr: (from: number, length?: number) => string;
+export declare const StringFromCharCode: (...codes: number[]) => string;
+export declare const ArrayPrototypePop: () => any;
+export declare const ArrayPrototypeIndexOf: (searchElement: any, fromIndex?: number) => number;
+export declare const ArrayPrototypeLastIndexOf: (searchElement: any, fromIndex?: number) => number;
+export declare const RegExpPrototypeExec: (string: string) => RegExpExecArray | null;
+/** RegExp.prototype's accessors (source, global, unicode, ...), each reading the regexp's own internal slots. */
+export declare const RegExpPrototypeAccessors: {
+    readonly [name: string]: unknown;
+};
+export declare const NumberPrototypeToString: (radix?: number) => string;
+export declare const BigIntPrototypeToString: (radix?: number) => string;
+export declare const ObjectPrototypeHasOwnProperty: (v: PropertyKey) => boolean;
+export declare const ObjectPrototypeToString: () => string;
+export declare const objectDefineProperties: <T>(o: T, properties: PropertyDescriptorMap & ThisType<any>) => T;
+export declare const parseIntOf: typeof parseInt;
+export declare const parseFloatOf: typeof parseFloat;
+export declare const SymbolConstructor: SymbolConstructor;
 export declare const SymbolPrototypeDescription: unknown;
 export declare const globalObject: typeof globalThis;
 declare const BigIntOf: BigIntConstructor;

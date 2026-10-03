@@ -7,7 +7,9 @@
  *     launch's runtime loads it at its start; the interpreter requires it.
  *   - The interpreter, bundled with acorn into one module. It loads late,
  *     after a program may have replaced built-ins, so its code must call
- *     none while it loads: esbuild's CommonJS output would (its interop
+ *     none while it loads or parses: acorn is bundled rewritten to reach the
+ *     realm only through captures (acorn-primordials.mjs, parser-realm.ts),
+ *     and esbuild's CommonJS output would reach it too (its interop
  *     helpers capture Object.defineProperty and walk export lists with
  *     for-of), so it is bundled as an ES module, which needs no helpers, and
  *     its one import and its export statement are then rewritten, by their
@@ -26,8 +28,10 @@
 
 import { parse } from 'acorn';
 import { build } from 'esbuild';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { primordialAcorn } from './acorn-primordials.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 /** How the interpreter requires its primordials: the module beside it. */
@@ -60,13 +64,15 @@ function asCommonJs(esm) {
 
 /**
  * @param {{ start: string }} options  `start`: a directory @nimbus-sh/core resolves from.
- * @returns {Promise<{ primordials: string, interpreter: string, ops: string }>}
+ * @returns {Promise<{ primordials: string, interpreter: string, ops: string, parser: string }>}
+ *   `parser`: acorn's module as the rewrite made it, before bundling.
  */
 export async function bundleInterpreter({ start }) {
   const src = join(resolvePackageDir('@nimbus-sh/core', { start }), 'src/interpreter');
-  const common = { bundle: true, platform: 'neutral', target: 'esnext', mainFields: ['module', 'main'], minify: true, legalComments: 'none', write: false };
+  const common = { bundle: true, platform: 'neutral', target: 'esnext', mainFields: ['module', 'main'], minify: true, legalComments: 'none', write: false, metafile: true };
   // esbuild states strict mode in the CommonJS it makes of an ES module.
   const primordials = await build({ ...common, entryPoints: [join(src, 'primordials.ts')], format: 'cjs' });
+  let parser = null;
   const interpreter = await build({
     ...common,
     entryPoints: [join(src, 'index.ts')],
@@ -75,14 +81,25 @@ export async function bundleInterpreter({ start }) {
       name: 'primordials',
       setup(b) {
         b.onResolve({ filter: /^\.\/primordials\.js$/ }, () => ({ path: `./${PRIMORDIALS_FILE}`, external: true }));
+        // acorn, rewritten to reach the realm only through parser-realm.ts.
+        b.onLoad({ filter: /[\\/]acorn[\\/]dist[\\/]acorn\.mjs$/ }, async (args) => {
+          if (parser !== null) throw new Error(`[interpreter-bundle] acorn loaded twice (${args.path})`);
+          parser = primordialAcorn(await readFile(args.path, 'utf8'), join(src, 'parser-realm.ts')).code;
+          return { contents: parser, loader: 'js' };
+        });
       },
     }],
   });
+  const inputs = Object.keys(interpreter.metafile.inputs);
+  const acornInputs = inputs.filter((path) => /(^|[\\/])acorn[\\/]/.test(path));
+  if (parser === null || acornInputs.length !== 1) {
+    throw new Error(`[interpreter-bundle] acorn must be bundled once, from dist/acorn.mjs, rewritten; bundled ${acornInputs.join(', ') || 'none'}`);
+  }
   // HOST_OPS_SOURCE is built when its module loads: compile and load it to read it.
   const ops = await build({ entryPoints: [join(src, 'host-ops.ts')], bundle: true, format: 'esm', platform: 'neutral', write: false });
   const { HOST_OPS_SOURCE } = await import(`data:text/javascript;base64,${Buffer.from(ops.outputFiles[0].text).toString('base64')}`);
   if (typeof HOST_OPS_SOURCE !== 'string' || HOST_OPS_SOURCE.length === 0) {
     throw new Error('[interpreter-bundle] core src/interpreter/host-ops.ts has no HOST_OPS_SOURCE');
   }
-  return { primordials: primordials.outputFiles[0].text, interpreter: asCommonJs(interpreter.outputFiles[0].text), ops: HOST_OPS_SOURCE };
+  return { primordials: primordials.outputFiles[0].text, interpreter: asCommonJs(interpreter.outputFiles[0].text), ops: HOST_OPS_SOURCE, parser };
 }

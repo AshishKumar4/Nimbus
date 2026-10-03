@@ -108,7 +108,11 @@ import { parse, tokenizer, tokTypes } from 'acorn';
 import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, scriptExpression, } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 /** This module's own built-ins, for the checks it shares with the interpreter. */
-const REALM = { SyntaxError, messageOf: (e) => (e instanceof Error ? e.message : String(e)) };
+const REALM = {
+    SyntaxError,
+    messageOf: (e) => (e instanceof Error ? e.message : String(e)),
+    scriptOptions: { ecmaVersion: 'latest', sourceType: 'script' },
+};
 function isRuntimeFunctionKind(kind) {
     return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
 }

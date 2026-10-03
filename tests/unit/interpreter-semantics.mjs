@@ -177,44 +177,31 @@ async function runCases(interpreterFile, opsFile) {
     check('async code with built-ins replaced', await asyncResult, { v: 9, w: ['patched'] });
   }
   {
-    // acorn pushes the nodes it builds: a replaced push can rename an identifier, here a parameter,
-    // to the interpreter's own `this` binding. The tree is refused, not given that binding's slot.
+    // A parser written in JavaScript pushes the nodes it builds. The interpreter's parser reaches no
+    // built-in a program can replace (parser-realm.ts): a replaced push that would rename a parameter
+    // to the interpreter's own `this` binding, or move a node's type last, is handed no node.
+    // Compiled by V8 as part of this file, and interpreted from the same text while push is replaced.
+    const program = () => { function f(a) { 'use strict'; return [typeof this, a]; } const o = { a: [1, 2] }; return [f.call(1, 2), o.a.length + 1]; };
     const push = Array.prototype.push;
-    Array.prototype.push = function (...items) {
-      for (const item of items) if (item && item.type === 'Identifier' && item.name === 'a') item.name = '%this';
-      return Reflect.apply(push, this, items);
-    };
-    let refused;
-    try {
-      interp.compileFunction('function', [], 'function f(a) { return this; } return f.call(1, 2);')();
-    } catch (e) {
-      refused = e.message;
-    } finally {
-      Array.prototype.push = push;
-    }
-    check('a tree naming an interpreter binding is refused', refused, 'interpreter: the parser produced the identifier %this');
-  }
-  {
-    // A replaced push can also move a node's type after its other fields (delete it, add it back)
-    // without changing anything the node says.
-    const push = Array.prototype.push;
+    let nodes = 0;
     Array.prototype.push = function (...items) {
       for (const item of items) {
-        if (item && typeof item.type === 'string') {
-          const type = item.type;
-          delete item.type;
-          item.type = type;
-        }
+        if (!item || typeof item.type !== 'string') continue;
+        nodes++;
+        if (item.type === 'Identifier' && item.name === 'a') item.name = '%this';
+        const type = item.type;
+        delete item.type;
+        item.type = type;
       }
       return Reflect.apply(push, this, items);
     };
     let result;
     try {
-      result = interp.compileFunction('function', [], 'const o = { a: [1, 2] }; return o.a.length + 1;')();
+      result = F(`return (${program})()`)();
     } finally {
       Array.prototype.push = push;
     }
-    check('a node whose type is no longer its first field', result, 3);
+    check('a replaced push is handed no node of the parse', [result, nodes], [program(), 0]);
   }
   {
     // acorn makes a regular expression literal's value with the realm's RegExp, and a bigint's with
