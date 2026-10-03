@@ -175,11 +175,14 @@ console.log(`the bundled parser (${parser.length} characters) reaches the realm 
 const acornSource = readFileSync(createRequire(join(CORE, 'package.json')).resolve('acorn').replace(/acorn\.js$/, 'acorn.mjs'), 'utf8');
 const ANCHOR = 'var lineBreakG = new RegExp(lineBreak.source, "g");';
 assert.ok(acornSource.includes(ANCHOR) && acornSource.includes('switch (this.input[this.pos]) {'), 'the upgrade fixtures still find their places in acorn');
+// A regexp is safe however it is read once it inherits only captures: each regexp fixture checks lineBreak's is.
+const SAFE_LINE_BREAK = 'var lineBreak = $$.regexp(/\\r\\n?|\\n|\\u2028|\\u2029/);';
 const upgrades = {
   'a cached RegExp.prototype method': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar runRegExp = RegExp.prototype.exec;`), null],
-  'a cached method of a regexp': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar testLine = lineBreak.test;`), '$$.field(lineBreak, "test")'],
+  'a cached method of a regexp': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar testLine = lineBreak.test;`), SAFE_LINE_BREAK],
   'an alias of the source text, indexed': [acornSource.replace('switch (this.input[this.pos]) {', 'var text = this.input; switch (text[this.pos]) {'), '$$.index(text, this.pos)'],
-  'an alias of a regexp, read for its source': [acornSource.replace(ANCHOR, 'var lineBreakAlias = lineBreak;\nvar lineBreakG = new RegExp(lineBreakAlias.source, "g");'), '$$.field(lineBreakAlias, "source")'],
+  'an alias of a regexp, read for its source': [acornSource.replace(ANCHOR, 'var lineBreakAlias = lineBreak;\nvar lineBreakG = new RegExp(lineBreakAlias.source, "g");'), SAFE_LINE_BREAK],
+  "a regexp's source, read by a computed key": [acornSource.replace(ANCHOR, 'var lineBreakG = new RegExp(lineBreak["source"], "g");'), SAFE_LINE_BREAK],
 };
 for (const [name, [text, routed]] of Object.entries(upgrades)) {
   let rewritten = null;

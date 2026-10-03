@@ -148,6 +148,14 @@ export declare class SafeList<T> extends Array<T> {
 export declare const SafeGeneratorPrototype: object;
 /** The same, for the interpreter's own async generators. */
 export declare const SafeAsyncGeneratorPrototype: object;
+/**
+ * The prototype of the parser's regexps (parser-realm.ts): RegExp.prototype's
+ * members as own properties, over nothing, so that what a regexp is asked
+ * (its source, its flags, test, whose own reads of `exec` and of each flag
+ * look here too) reaches no member a program replaced on RegExp.prototype.
+ * Not `constructor`: a regexp's species is then the realm's own %RegExp%.
+ */
+export declare const SafeRegExpPrototype: object;
 export declare const GeneratorPrototypeNext: unknown;
 export declare const GeneratorPrototypeReturn: unknown;
 export declare const GeneratorPrototypeThrow: unknown;

@@ -16,7 +16,8 @@
  * these, as primordials.ts captured it at the launch's start; every method it
  * calls on a string, list, regular expression or function goes through the
  * function here of the method's name; every object and list it makes
- * inherits nothing; its constructors' prototypes inherit nothing. A method
+ * inherits nothing, every regexp only RegExp.prototype's captured members;
+ * its constructors' prototypes inherit nothing. A method
  * here refuses a receiver acorn does not call it on rather than reach the
  * realm (tests/unit/interpreter-primordials.mjs checks the rewritten parser
  * for any other reach, tests/unit/interpreter-parser-realm.mjs runs it in a
@@ -43,7 +44,6 @@ const ArrayPrototypeIndexOf = primordials.ArrayPrototypeIndexOf;
 const ArrayPrototypeLastIndexOf = primordials.ArrayPrototypeLastIndexOf;
 const RegExpPrototypeExec = primordials.RegExpPrototypeExec;
 const RegExpPrototypeAccessors = primordials.RegExpPrototypeAccessors;
-const RegExpPrototype: object = primordials.RegExp.prototype;
 const reflectGet = primordials.reflectGet;
 const NumberPrototypeToString = primordials.NumberPrototypeToString;
 const BigIntPrototypeToString = primordials.BigIntPrototypeToString;
@@ -99,6 +99,16 @@ export function list(...items: unknown[]): SafeList<unknown> {
   const made = new SafeList<unknown>();
   for (let i = 0; i < items.length; i++) made[i] = items[i];
   return made;
+}
+
+/**
+ * A regexp acorn makes (a literal, or with RegExp), made to inherit only
+ * RegExp.prototype's members as the launch captured them: whatever acorn reads
+ * of it or calls on it, by any name, reaches nothing a program replaced.
+ */
+export function regexp<T extends object>(re: T): T {
+  reflectSetPrototypeOf(re, primordials.SafeRegExpPrototype);
+  return re;
 }
 
 /** A constructor of acorn's own and its instances' prototype, made to inherit nothing before any use. */
@@ -285,7 +295,8 @@ export function toString(receiver: unknown, radix?: number): string {
 /**
  * `receiver[key]`: a string's character, or undefined past its end, where a
  * string would look further, through String.prototype; any other object's
- * property (acorn's objects and lists inherit nothing).
+ * property (acorn's objects and lists inherit nothing, its regexps only
+ * captured members).
  */
 export function index(receiver: unknown, key: unknown): unknown {
   if (typeof receiver === 'string') {
@@ -297,19 +308,4 @@ export function index(receiver: unknown, key: unknown): unknown {
     return refuse(`indexed a ${typeof receiver} by a ${typeof key}`);
   }
   return reflectGet(receiver, key);
-}
-
-/** Whether `value` is a regexp acorn made: one with the prototype regexps are made with, which no program can change on it. */
-export function isRegExp(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && reflectGetPrototypeOf(value) === RegExpPrototype;
-}
-
-/**
- * `receiver.name` for a name a regexp answers through RegExp.prototype
- * (`source`, `flags`, `test`): a regexp's accessor, from its own slots (a
- * method of one is refused); any other object's field.
- */
-export function field(receiver: unknown, name: string): unknown {
-  if (typeof receiver !== 'object' || receiver === null) return refuse(`read ${name} of a ${typeof receiver}`);
-  return isRegExp(receiver) ? accessor(receiver, name) : reflectGet(receiver, name);
 }

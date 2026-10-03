@@ -16,7 +16,8 @@
  * these, as primordials.ts captured it at the launch's start; every method it
  * calls on a string, list, regular expression or function goes through the
  * function here of the method's name; every object and list it makes
- * inherits nothing; its constructors' prototypes inherit nothing. A method
+ * inherits nothing, every regexp only RegExp.prototype's captured members;
+ * its constructors' prototypes inherit nothing. A method
  * here refuses a receiver acorn does not call it on rather than reach the
  * realm (tests/unit/interpreter-primordials.mjs checks the rewritten parser
  * for any other reach, tests/unit/interpreter-parser-realm.mjs runs it in a
@@ -60,6 +61,12 @@ export declare const ObjectPrototypeMethods: object;
 export declare function own<T extends object>(fields: T): T;
 /** A list literal's elements, as a list that inherits nothing. */
 export declare function list(...items: unknown[]): SafeList<unknown>;
+/**
+ * A regexp acorn makes (a literal, or with RegExp), made to inherit only
+ * RegExp.prototype's members as the launch captured them: whatever acorn reads
+ * of it or calls on it, by any name, reaches nothing a program replaced.
+ */
+export declare function regexp<T extends object>(re: T): T;
 /** A constructor of acorn's own and its instances' prototype, made to inherit nothing before any use. */
 export declare function nullPrototypes(constructor: Function): void;
 /** `target[key] = value` on an object made with a realm constructor (an error): defined, so no setter it inherits runs. */
@@ -91,15 +98,8 @@ export declare function toString(receiver: unknown, radix?: number): string;
 /**
  * `receiver[key]`: a string's character, or undefined past its end, where a
  * string would look further, through String.prototype; any other object's
- * property (acorn's objects and lists inherit nothing).
+ * property (acorn's objects and lists inherit nothing, its regexps only
+ * captured members).
  */
 export declare function index(receiver: unknown, key: unknown): unknown;
-/** Whether `value` is a regexp acorn made: one with the prototype regexps are made with, which no program can change on it. */
-export declare function isRegExp(value: unknown): boolean;
-/**
- * `receiver.name` for a name a regexp answers through RegExp.prototype
- * (`source`, `flags`, `test`): a regexp's accessor, from its own slots (a
- * method of one is refused); any other object's field.
- */
-export declare function field(receiver: unknown, name: string): unknown;
 //# sourceMappingURL=parser-realm.d.ts.map

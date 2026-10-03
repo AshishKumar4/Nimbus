@@ -75,10 +75,22 @@ if (process.argv[2] !== '--run') {
     [[2, 3, 2], [3, 2], 1, 3, 5, 5, [1, 2, 3, 2]]);
   same('toString', [realm.toString(10n), realm.toString(255, 16)], ['10', 'ff']);
   same('call', realm.call(function (a) { return [this, a]; }, 'self', 1), ['self', 1]);
-  const re = /a/giy;
-  same('field', [realm.field(re, 'source'), realm.field(re, 'flags'), realm.field({ flags: 3 }, 'flags'), realm.index(listOf(7), 0), realm.index({ k: 1 }, 'k')],
-    [re.source, re.flags, 3, 7, 1]);
-  assert.throws(() => realm.field(re, 'test'), /read RegExp.prototype.test/, 'a method read off a regexp is refused');
+  same('index', [realm.index(listOf(7), 0), realm.index({ k: 1 }, 'k')], [7, 1]);
+  {
+    // A regexp the parser makes answers from the captures, whatever RegExp.prototype has become.
+    const re = realm.regexp(/a(b)/giy);
+    const proto = RegExp.prototype;
+    const saved = ['exec', 'global', 'flags', 'source'].map((key) => [key, Object.getOwnPropertyDescriptor(proto, key)]);
+    Object.defineProperty(proto, 'exec', { value: () => null, configurable: true, writable: true });
+    for (const key of ['global', 'flags', 'source']) Object.defineProperty(proto, key, { get: () => 'replaced', configurable: true });
+    let answers;
+    try {
+      answers = [re.source, re.flags, re.global, re.test('xab'), re['source'], realm.test(re, 'ab'), realm.replace('ab', realm.regexp(/b/g), 'c')];
+    } finally {
+      for (const [key, descriptor] of saved) Object.defineProperty(proto, key, descriptor);
+    }
+    same('a regexp of the parser', answers, ['a(b)', 'giy', true, false, 'a(b)', true, 'ac']);
+  }
   assert.throws(() => realm.push([], 1), /something other than its own list/, 'a realm array is refused');
   assert.throws(() => realm.charCodeAt({}, 0), /called charCodeAt on a object/);
 
