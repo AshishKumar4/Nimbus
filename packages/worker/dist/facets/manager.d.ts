@@ -683,7 +683,8 @@ export interface PrefetchBundleOptions {
  * names, and a first run would miss it. A config is the tool's when it is
  * named for the launched package or a package that one depends on (Astro
  * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
- * (eslint.config.js beside Vite) is not.
+ * (eslint.config.js beside Vite) is not. What a config names by a string
+ * (PostCSS's plugins) the tool loads by name: those join the walk's phase 2.
  */
 export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]>;
 /**

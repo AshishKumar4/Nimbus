@@ -62,6 +62,7 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
+import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
 // far the dominant npm pattern; the others catch a long tail of
@@ -615,6 +616,21 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             defer({ specifier: './' + target.replace(/^\.\//, ''), fromDir, alternatives: LOCATED_PACKAGE_BINS });
         }
     }
+    // A tool loads what its config names as the config's own require would
+    // resolve it (postcss-load-config: createRequire(config).resolve(name)),
+    // so each is resolved that way and deferred by its path.
+    async function deferConfigNames(configPath) {
+        const fromDir = configPath.slice(0, configPath.lastIndexOf('/'));
+        const names = configPackageNames(bundle[configPath]).filter((name) => !isFacetProvided(name));
+        const resolved = [];
+        for (const name of names) {
+            const r = await resolveRequireEx(vfs, name, fromDir, undefined, progress);
+            if (r)
+                resolved.push(r.resolved);
+        }
+        for (const target of resolved)
+            defer({ specifier: '/' + target, fromDir, alternatives: resolved.length });
+    }
     let lazy = false;
     // `entry`: the entry file itself, whose own `import()` is a deferral of its
     // main module, not an optional feature, and is followed as required.
@@ -846,6 +862,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
             if (closureExceeded || declined)
                 break;
+            if (root.config && typeof bundle[path] === 'string')
+                await deferConfigNames(path);
         }
         // Also add cwd package.json if it exists (for npm scripts, main field etc).
         const cwdPkg = cwdStripped + '/package.json';
@@ -967,6 +985,34 @@ export async function resolveDeferredImport(vfs, deferral, progress) {
             throw error.cause;
         throw error;
     }
+}
+/** An npm package name: `name` or `@scope/name` (lowercase, URL-safe). */
+const PACKAGE_NAME = /^(?:@[a-z0-9][\w.~-]*\/)?[a-z0-9][\w.~-]*$/;
+/**
+ * The package names a config spells as a string or a property key
+ * (`plugins: { tailwindcss: {} }`, `plugins: ['prettier-plugin-x']`), less
+ * its import and export sources, which the walk follows already. A config
+ * acorn cannot parse (TypeScript) names none.
+ */
+export function configPackageNames(source) {
+    const program = parseJavaScriptProgram(source);
+    if (program === null)
+        return [];
+    const sources = new Set();
+    const names = new Set();
+    forEachNode(program, (node) => {
+        if ((node.type === 'ImportDeclaration' || node.type === 'ExportAllDeclaration' || node.type === 'ExportNamedDeclaration') && node.source) {
+            sources.add(node.source);
+        }
+        let text;
+        if (node.type === 'Literal' && !sources.has(node))
+            text = node.value;
+        else if (node.type === 'Property' && !node.computed && node.key.type === 'Identifier')
+            text = node.key.name;
+        if (typeof text === 'string' && PACKAGE_NAME.test(text))
+            names.add(text);
+    });
+    return [...names];
 }
 /** Phase 2's last tier: the bins of a package the code located by its manifest. */
 const LOCATED_PACKAGE_BINS = Number.MAX_SAFE_INTEGER;

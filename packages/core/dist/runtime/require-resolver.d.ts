@@ -119,6 +119,12 @@ export declare class ClosureBoundExceededError extends Error {
 export interface RequiredModuleRoot {
     path: string;
     text?: string;
+    /**
+     * A tool's config file, which the tool runs: the installed packages it
+     * names by a string (postcss.config.js's `plugins: { tailwindcss: {} }`)
+     * are what the tool loads by name, and they join phase 2.
+     */
+    config?: boolean;
 }
 /** Resolve the complete dependency graph starting from entry code. */
 export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<PrefetchOutcome>;
@@ -129,5 +135,12 @@ export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cw
  * the closure that admits the file stages the package.json files it needs.
  */
 export declare function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null>;
+/**
+ * The package names a config spells as a string or a property key
+ * (`plugins: { tailwindcss: {} }`, `plugins: ['prettier-plugin-x']`), less
+ * its import and export sources, which the walk follows already. A config
+ * acorn cannot parse (TypeScript) names none.
+ */
+export declare function configPackageNames(source: string): string[];
 export {};
 //# sourceMappingURL=require-resolver.d.ts.map
