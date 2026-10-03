@@ -1231,6 +1231,18 @@ export declare class FacetManager {
      */
     private _planResidentData;
     /**
+     * A one-shot's data plan: what its closure reads synchronously by a path its
+     * code spells out (static-fs-refs.ts; readFileSync, or a read-only openSync),
+     * any size, through any links on it, that the module map does not hold. It
+     * is data-plan.ts's `static` rule for synchronous reads, which needs the
+     * closure and a stat per path but no listing. The store fetches it at boot,
+     * so it is held beside the module map rather than carried in it: `vite
+     * build` reads lightningcss's 15.8 MB image with readFileSync(new
+     * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
+     * left the closure no room under the map's bound.
+     */
+    private _staticReadPlan;
+    /**
      * Paths earlier launches of the same build missed in this session. Other
      * sessions' misses (the shared read profile) join the module map instead,
      * in _buildProcessBundle, where a learned module brings its imports.
