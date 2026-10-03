@@ -11,8 +11,8 @@
 // relative target is read against the link's directory as the caller names
 // it, an absolute one as the caller's own path, and only the final name is
 // looked up in storage. Every link lands where naming its target directly
-// would, and a link that climbs past `/` leads nowhere, in this view as in
-// every other.
+// would, and a link that climbs past `/` stops at the caller's own `/`, as
+// POSIX resolves `/..`: never above it, into the store.
 //
 // Covered: the direct view (SqliteVFS.as), the runtime bridge that node and
 // WASI processes go through, WASI's rooted lookups, open descriptions, mkdir,
@@ -104,7 +104,8 @@ const absent = (label, run, codes = ['ENOENT']) => {
   assert.equal(result, null, `${label} reached ${JSON.stringify(result instanceof Uint8Array ? dec.decode(result) : result)}`);
 };
 
-// In A's view these climb past `/`, which leads nowhere.
+// In A's view these climb past `/`, which stops there: they name A's own
+// /tmp/shared.txt, as the links below do.
 const PAST_ROOT = ['/tmp/rel', '/tmp/up/tmp/shared.txt', '/tmp/tmpdir/shared.txt', '/tmp/probe'];
 // And these all name A's own /tmp/shared.txt, which does not exist yet.
 const IN_VIEW = [
@@ -197,11 +198,14 @@ for (const name of ['planted.txt', 'made', 'made-deep/inner', 'made-link', 'via-
   assert.ok(a.exists(`/tmp/${name}`), `${name} was not created in A's own /tmp`);
 }
 assert.equal(a.readFileString('/tmp/via-home-link'), 'mine');
-for (const path of ['/tmp/up/tmp/x', '/tmp/tmpdir/x']) {
-  assert.throws(() => a.writeFile(path, 'x'), { code: 'ENOENT' });
-  assert.throws(() => a.mkdir(path), { code: 'ENOENT' });
-  assert.throws(() => a.symlink('x', path), { code: 'ENOENT' });
+// A link that climbs past `/` stops at A's own `/`, so a write through it
+// lands in A's own /tmp, as one through /tmp/root does.
+for (const [path, name] of [['/tmp/up/tmp/past-root.txt', 'past-root.txt'], ['/tmp/tmpdir/past-tmpdir.txt', 'past-tmpdir.txt']]) {
+  a.writeFile(path, 'mine');
+  assert.equal(a.readFileString(`/tmp/${name}`), 'mine', `${path} landed in A's own /tmp`);
+  assert.equal(root.exists(`${PRIVATE_ROOT}/${name}`), true);
 }
+sharedIntact();
 assert.deepEqual(rows('home/user/tmp-dir/'), [], "a row was placed under the link in PLAIN's home");
 assert.deepEqual(rows(`${PRIVATE_ROOT}/root/`), [], 'a row was placed under a link A made');
 assert.deepEqual(rows(`${PRIVATE_ROOT}/up1/`), [], 'a row was placed under a link A made');
@@ -325,8 +329,8 @@ assert.equal(plain.readFileString('/tmp/p-rel'), 'NOTES');
 assert.equal(plain.readFileString('/tmp/p-root/home/user/notes.txt'), 'NOTES');
 assert.equal(plain.readFileString('/tmp/p-chain'), 'NOTES');
 assert.equal(plain.readFileString('/tmp/plink'), 'NOTES');
-// Past `/`: a missing `..`, as it always has been.
-assert.throws(() => plain.readFile('/tmp/p-climb'), { code: 'ENOENT' });
+// Past `/`: `..` stops at the root, as POSIX resolves `/..`.
+assert.equal(plain.readFileString('/tmp/p-climb'), 'NOTES');
 assert.throws(() => plain.readFile('/tmp/p-loop'), { code: 'ELOOP' });
 assert.equal(plain.readlink('/tmp/p-climb'), '../../home/user/notes.txt');
 assert.equal(plain.resolveSymlink('/tmp/p-chain'), 'home/user/notes.txt');

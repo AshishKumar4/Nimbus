@@ -679,7 +679,7 @@ function mkSetfacl(sqliteVfs: SqliteVFS): CmdFn {
         let perms = vfs.getDefaultAcl(path) ?? 0o755;
         for (const entry of spec!.split(',')) {
           const match = /^(u|user|g|group|o|other)::([rwx-]{0,3})$/.exec(entry.trim());
-          if (!match) throw Object.assign(new Error(`only base entries (u::, g::, o::) are supported: ${entry}`), { code: 'EINVAL' });
+          if (!match) throw syscallError('EINVAL', 'setfacl', path, { detail: `only base entries (u::, g::, o::) are supported: ${entry}` });
           const bits = [...match[2]!].reduce((sum, ch) => sum | (ACL_BITS[ch as keyof typeof ACL_BITS] ?? 0), 0);
           const shift = match[1]![0] === 'u' ? 6 : match[1]![0] === 'g' ? 3 : 0;
           perms = (perms & ~(7 << shift)) | (bits << shift);
@@ -2515,7 +2515,7 @@ function mkRm(vfs: UnixVfs): CmdFn {
     let code = 0;
     for (const target of targets) {
       try { await vfs.remove(resolvePath(ctx.cwd, target), { recursive, force }); }
-      catch (error) { await ctx.stderr.write(`rm: ${target}: ${strerror(error)}\n`); code = 1; }
+      catch (error) { await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`); code = 1; }
     }
     return code;
   };
@@ -3097,44 +3097,6 @@ function mkId(sqliteVfs: SqliteVFS): CmdFn {
       .join(',');
     (await ctx.stdout.write(`uid=${ctx.cred.uid}(${user}) gid=${ctx.cred.gid}(${group}) groups=${groups}\n`));
     return 0;
-  };
-}
-
-function mkChown(sqliteVfs: SqliteVFS): CmdFn {
-  return async (ctx) => {
-    const recursive = ctx.args.includes('-R') || ctx.args.includes('--recursive');
-    const positional = ctx.args.filter((arg) => arg !== '-R' && arg !== '--recursive');
-    if (positional.length < 2) {
-      (await ctx.stderr.write('chown: missing operand\n'));
-      return 1;
-    }
-
-    const vfs = ctx.vfs;
-    let ownership: { uid: number | null; gid: number | null };
-    try {
-      ownership = (await parseChownOwnership(vfs, positional[0]));
-    } catch (error) {
-      (await ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`));
-      return 1;
-    }
-
-    let exitCode = 0;
-    const apply = async (path: string): Promise<void> => {
-      if (recursive && (await statOrThrow(vfs, path)).type === 'directory') {
-        for (const child of (await vfs.readdir(path))) (await apply(`${path}/${child.name}`));
-      }
-      (await vfs.chown(path, ownership.uid, ownership.gid));
-    };
-
-    for (const file of positional.slice(1)) {
-      try {
-        (await apply(resolvePath(ctx.cwd, file)));
-      } catch (error) {
-        (await ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`));
-        exitCode = 1;
-      }
-    }
-    return exitCode;
   };
 }
 
@@ -5080,7 +5042,6 @@ export function registerUnixCommands(
   registry.register('od', wrapStreaming(mkOd()));
   registry.register('hexdump', wrapStreaming(mkHexdump()));
 
-  registry.register('chown', wrap(mkChown(sqliteVfs)));
 
   // ln -s makes a symbolic link; the filesystem has no hard links.
   registry.register('ln', wrap(async ctx => {

@@ -543,7 +543,7 @@ for (const name of ['1.txt', '2.txt', 'sub/3.txt']) await ws.fs.writeFile(`mvtre
 m.fault('writeFile', /\/2\.txt$/);
 const failed = await ws.exec('mv /home/user/mvtree /m/mvtree');
 assert.equal(failed.exitCode, 1);
-assert.match(failed.stderr, /^mv: EIO: injected failure/);
+assert.match(failed.stderr, /^mv: cannot move '\/home\/user\/mvtree' to '\/m\/mvtree': injected failure/);
 assert.equal(ns.stat('/m/mvtree'), null, 'mv leaves no part of a tree behind');
 assert.deepEqual(leftovers('/m'), []);
 for (const name of ['1.txt', '2.txt', 'sub/3.txt']) assert.equal(read(`/home/user/mvtree/${name}`), name);

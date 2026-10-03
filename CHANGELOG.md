@@ -13,14 +13,18 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `normalizeVfsPath('/../home/main/SOUL.md')` kept the leading `..`
   (`../home/main/SOUL.md`), and `resolveVfsPath` too. `..` now stops at the
   root, as POSIX resolves it, and Composite's `normalizePath` is the same
-  normalizer.
+  normalizer. A symlink whose target climbs past `/` now lands at the
+  caller's own `/`, as on Linux, where it led nowhere before; a confined
+  principal's view is unchanged in what it can reach (its own `/`).
 - Fixed: shell errors named a storage key and Node's message:
   `ls /tmp/spoon` printed "ENOENT: no such file or directory, stat
   'tmp/spoon'". `ls`, `chmod`, `cp` and `mv` now print GNU's words with the
   operand as written ("ls: cannot access '/tmp/spoon': No such file or
-  directory"), and a refusal's own reason where it gives one. The shell's
-  four strerror tables are one, `strerror` in `@nimbus-sh/core/vfs/vfs-error.js`;
-  `EPERM` now reads "Operation not permitted", not "Permission denied".
+  directory"), and a refusal's own reason where it gives one; so do `rm`
+  ("cannot remove") and `chown` ("changing ownership of"). The shell's four
+  strerror tables are one, `strerror` in `@nimbus-sh/core/vfs/vfs-error.js`;
+  `EPERM` now reads "Operation not permitted", not "Permission denied". The
+  shell had two `chown` commands; one remains.
 
 ## 2026-10-02
 
