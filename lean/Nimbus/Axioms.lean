@@ -570,10 +570,13 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositeBeneath.lean -/
 
 #print axioms Nimbus.Vfs.CompositeBeneath.prefix_dropLast
-#print axioms Nimbus.Vfs.CompositeBeneath.walkB_contained
+#print axioms Nimbus.Vfs.CompositeBeneath.resolveB_ok
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_contained
 #print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_snoc
 #print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_snoc
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walked_named
 #print axioms Nimbus.Vfs.CompositeBeneath.walkB_named
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_named
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_root_searched

@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A WASI program (`python3`, `ruby`, the shell's wasm commands) follows an
+  absolute symlink. With `/home/user -> /home/main`, every path through the
+  link failed with errno 76, "Capabilities insufficient":
+  `os.chdir('/home/user/site')` raised, `os.path.exists` behind it answered
+  False, and `cd`, `cat` and `ls` in the wasm shell failed, while node
+  resolved the link. A lookup beneath a WASI preopen refused any absolute
+  link target. Now an absolute target resolves from the namespace's `/`, as
+  every other lookup resolves it, and what the lookup reaches must still lie
+  at or under the preopen's root (ENOTCAPABLE otherwise, as `..` at the root
+  and an absolute path still are). A dangling one is ENOENT. The model
+  (VFS-COMP-006, `Nimbus.Vfs.CompositeBeneath`) proves the lookup still
+  stays beneath the root, finds every directory it passes searchable, the
+  ones an absolute link walks from `/` included, and agrees with the
+  unrestricted walk.
+
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
