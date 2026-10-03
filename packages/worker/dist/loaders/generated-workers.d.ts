@@ -5,6 +5,7 @@
  *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)
  *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
+ *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *
  * Consumed by fabric/isolate-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -23,4 +24,6 @@ export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
 /** Declares `function createEsmResolver(host)`; the node shims call it. */
 export declare const ESM_RESOLVER_PREAMBLE: string;
+/** Declares `function createHttp2Module(host)`; the node shims call it. */
+export declare const HTTP2_MODULE_PREAMBLE: string;
 //# sourceMappingURL=generated-workers.d.ts.map
