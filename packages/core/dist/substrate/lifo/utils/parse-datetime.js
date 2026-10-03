@@ -1,19 +1,104 @@
 /**
  * gnulib's parse_datetime, the date grammar GNU's touch -d and find's
  * -newerXt share, in the session's zone (UTC).
+ *
+ * Its arithmetic is gnulib's, in exact integers: every number is a time_t,
+ * a calendar field is a struct tm int, and a step that overflows either
+ * refuses the date, as gnulib's checked arithmetic does.
  */
-/** Whether y-m-d (1-based month) is a real calendar day. */
+const TIME_T_MIN = -(2n ** 63n);
+const TIME_T_MAX = 2n ** 63n - 1n;
+const INT_MIN = -(2n ** 31n);
+const INT_MAX = 2n ** 31n - 1n;
+const BILLION = 1000000000n;
+const DAY_SECONDS = 86400n;
+/** A time_t, or null where gnulib's checked arithmetic overflows. */
+function timeT(value) {
+    return value >= TIME_T_MIN && value <= TIME_T_MAX ? value : null;
+}
+/** A struct tm field, or null where it would not fit an int. */
+function tmInt(value) {
+    return value >= INT_MIN && value <= INT_MAX ? value : null;
+}
+/** Days from 1970-01-01 to the proleptic Gregorian y-m-d (m 1-12): Hinnant's days_from_civil. */
+function daysFromCivil(year, month, day) {
+    const y = month <= 2n ? year - 1n : year;
+    const era = (y >= 0n ? y : y - 399n) / 400n;
+    const yearOfEra = y - era * 400n;
+    const dayOfYear = (153n * ((month + 9n) % 12n) + 2n) / 5n + day - 1n;
+    return era * 146097n + yearOfEra * 365n + yearOfEra / 4n - yearOfEra / 100n + dayOfYear - 719468n;
+}
+/** The proleptic Gregorian year a day counted from the epoch falls in: Hinnant's civil_from_days. */
+function yearOfDay(days) {
+    const z = days + 719468n;
+    const era = (z >= 0n ? z : z - 146096n) / 146097n;
+    const dayOfEra = z - era * 146097n;
+    const yearOfEra = (dayOfEra - dayOfEra / 1460n + dayOfEra / 36524n - dayOfEra / 146096n) / 365n;
+    const dayOfYear = dayOfEra - (365n * yearOfEra + yearOfEra / 4n - yearOfEra / 100n);
+    // The era's year starts in March; January and February belong to the next.
+    return yearOfEra + era * 400n + ((5n * dayOfYear + 2n) / 153n >= 10n ? 1n : 0n);
+}
+/**
+ * timegm(3) of struct tm fields, normalised as mktime normalises them (a
+ * month of 13 is next January, a 32nd day the next month's first): the
+ * seconds since the epoch, or null when the result, or its year as a struct
+ * tm holds it, does not fit.
+ */
+function timegm(tm) {
+    const yearShift = tm.mon >= 0n ? tm.mon / 12n : -((11n - tm.mon) / 12n);
+    const days = daysFromCivil(tm.year + 1900n + yearShift, tm.mon - yearShift * 12n + 1n, 1n) + tm.mday - 1n;
+    if (tmInt(yearOfDay(days) - 1900n) === null)
+        return null;
+    return timeT(days * DAY_SECONDS + tm.hour * 3600n + tm.min * 60n + tm.sec);
+}
+/** The weekday (0 Sunday) of a day counted from the epoch. */
+function weekdayOf(seconds) {
+    const days = (seconds >= 0n ? seconds : seconds - DAY_SECONDS + 1n) / DAY_SECONDS;
+    return Number((((days + 4n) % 7n) + 7n) % 7n);
+}
+/**
+ * `@<seconds>[.<fraction>]` as gnulib's lexer reads it: a sign, which may be
+ * followed by blanks, a time_t, and a fraction after `.` or `,` kept to the
+ * nanosecond and truncated toward minus infinity. In milliseconds, floored.
+ */
+function epochMilliseconds(text) {
+    const m = /^@\s*([+-]?)\s*(\d+)(?:[.,](\d+))?$/.exec(text);
+    if (m === null)
+        return null;
+    const negative = m[1] === '-';
+    let seconds = timeT(negative ? -BigInt(m[2]) : BigInt(m[2]));
+    if (seconds === null)
+        return null;
+    let ns = 0n;
+    if (m[3] !== undefined) {
+        ns = BigInt(m[3].slice(0, 9).padEnd(9, '0'));
+        if (negative && /[1-9]/.test(m[3].slice(9)))
+            ns++;
+        if (negative && ns > 0n) {
+            seconds = timeT(seconds - 1n);
+            if (seconds === null)
+                return null;
+            ns = BILLION - ns;
+        }
+    }
+    return Number(seconds * 1000n + ns / 1000000n);
+}
+/** Whether y-m-d (1-based month) is a real day of the proleptic Gregorian calendar, any year. */
 export function realDay(y, mo, d) {
     if (mo < 1 || mo > 12 || d < 1)
         return false;
-    return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    const year = BigInt(y);
+    const month = BigInt(mo);
+    const next = month === 12n ? daysFromCivil(year + 1n, 1n, 1n) : daysFromCivil(year, month + 1n, 1n);
+    return BigInt(d) <= next - daysFromCivil(year, month, 1n);
 }
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+/** The relative fields added last, in seconds, in gnulib's order. */
+const RELATIVE_SECONDS = [['hour', 3600n], ['minutes', 60n], ['seconds', 1n]];
 const UNITS = {
-    year: ['month', 12], month: ['month', 1], fortnight: ['ms', 14 * 86_400_000], week: ['ms', 7 * 86_400_000],
-    day: ['ms', 86_400_000], hour: ['ms', 3_600_000], minute: ['ms', 60_000], min: ['ms', 60_000],
-    second: ['ms', 1000], sec: ['ms', 1000],
+    year: ['year', 1n], month: ['month', 1n], fortnight: ['day', 14n], week: ['day', 7n], day: ['day', 1n],
+    hour: ['hour', 1n], minute: ['minutes', 1n], min: ['minutes', 1n], second: ['seconds', 1n], sec: ['seconds', 1n],
 };
 const monthNumber = (word) => {
     const w = word.toLowerCase().replace(/\.$/, '');
@@ -47,17 +132,16 @@ const relativeUnit = (word) => {
  */
 export function parseDateTime(text, now) {
     const value = text.trim();
-    const epoch = /^@(-?\d+)(?:\.(\d+))?$/.exec(value);
     // GNU keeps the fraction at nanoseconds; the VFS keeps milliseconds.
-    if (epoch)
-        return Number(epoch[1]) * 1000 + (epoch[2] ? Math.floor(Number(`0.${epoch[2]}`) * 1000) : 0);
+    if (value.startsWith('@'))
+        return epochMilliseconds(value);
     const base = new Date(now);
     let date = null;
     let time = null;
     let zoneMinutes = null;
     let weekday = null;
-    let months = 0;
-    let ms = 0;
+    const rel = { year: 0n, month: 0n, day: 0n, hour: 0n, minutes: 0n, seconds: 0n };
+    let relsSeen = false;
     const tokens = value.toLowerCase().replace(/,/g, ' ').split(/\s+/).filter(Boolean);
     const ordinalWord = (w) => (w === 'last' ? -1 : w === 'this' ? 0 : w === 'next' ? 1 : null);
     const setDate = (y, mo, d) => {
@@ -74,9 +158,10 @@ export function parseDateTime(text, now) {
                 return false;
             h = (h % 12) + (meridian === 'pm' ? 12 : 0);
         }
-        if (h > 23 || mi > 59 || s > 60)
+        // A leap second is refused: mktime moves it to the next minute, which gnulib takes as an invalid time.
+        if (h > 23 || mi > 59 || s > 59)
             return false;
-        time = { h, mi, s, ms: frac ? Math.floor(Number(`0.${frac}`) * 1000) : 0 };
+        time = { h, mi, s, ms: frac ? Number(frac.slice(0, 3).padEnd(3, '0')) : 0 };
         return true;
     };
     const setZone = (word) => {
@@ -89,27 +174,33 @@ export function parseDateTime(text, now) {
         const m = /^([+-])(\d{2}):?(\d{2})$/.exec(word);
         if (!m)
             return false;
-        zoneMinutes = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+        const minutes = Number(m[2]) * 60 + Number(m[3]);
+        // POSIX's TZ range, as gnulib's time_zone_hhmm allows it.
+        if (minutes > 24 * 60)
+            return false;
+        zoneMinutes = (m[1] === '-' ? -1 : 1) * minutes;
         return true;
     };
+    /** gnulib's apply_relative_time: `count` of `unit` added to its field, every step a checked time_t. */
     const relative = (count, unit) => {
-        if (unit[0] === 'month')
-            months += count * unit[1];
-        else
-            ms += count * unit[1];
+        relsSeen = true;
+        const sum = timeT(rel[unit[0]] + count * unit[1]);
+        if (timeT(count * unit[1]) === null || sum === null)
+            return false;
+        rel[unit[0]] = sum;
+        return true;
     };
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
         const next = tokens[i + 1];
         let m;
-        if (t === 'now' || t === 'today')
-            continue;
-        if (t === 'yesterday') {
-            ms -= 86_400_000;
+        if (t === 'now' || t === 'today') {
+            relsSeen = true;
             continue;
         }
-        if (t === 'tomorrow') {
-            ms += 86_400_000;
+        if (t === 'yesterday' || t === 'tomorrow') {
+            if (!relative(t === 'yesterday' ? -1n : 1n, UNITS.day))
+                return null;
             continue;
         }
         if (t === 'ago')
@@ -198,7 +289,8 @@ export function parseDateTime(text, now) {
             }
             const unit = relativeUnit(next);
             if (unit) {
-                relative(ordinal, unit);
+                if (!relative(BigInt(ordinal), unit))
+                    return null;
                 i++;
                 continue;
             }
@@ -214,40 +306,79 @@ export function parseDateTime(text, now) {
         // [+-]N unit[s] [ago], or a unit alone ([ago]) meaning one.
         const nextUnit = next ? relativeUnit(next) : null;
         if ((m = /^([+-]?\d+)$/.exec(t)) && nextUnit) {
-            let count = +m[1];
+            // The lexer's number is a time_t; `ago` negates what it names.
+            let count = timeT(BigInt(m[1]));
+            if (count === null)
+                return null;
             i++;
             if (tokens[i + 1] === 'ago') {
                 count = -count;
                 i++;
             }
-            relative(count, nextUnit);
+            if (!relative(count, nextUnit))
+                return null;
             continue;
         }
         const unit = relativeUnit(t);
         if (unit) {
-            let count = 1;
+            let count = 1n;
             if (next === 'ago') {
-                count = -1;
+                count = -1n;
                 i++;
             }
-            relative(count, unit);
+            if (!relative(count, unit))
+                return null;
             continue;
         }
         return null;
     }
-    // Compose: the named date (or today), the named time (or now's, or midnight
-    // when a date or a day was named), in the named zone; then the weekday; then
-    // the relative items, months by the calendar.
+    // Compose as parse_datetime does: the named date (or today) at the named
+    // time (now's when only relative items were named, else midnight); then the
+    // weekday; then the relative years, months and days, by the calendar; then
+    // the zone; then the relative hours, minutes and seconds.
     const d = date ?? { y: base.getUTCFullYear(), mo: base.getUTCMonth() + 1, d: base.getUTCDate() };
     const t = time
-        ?? (date || weekday ? { h: 0, mi: 0, s: 0, ms: 0 } : { h: base.getUTCHours(), mi: base.getUTCMinutes(), s: base.getUTCSeconds(), ms: base.getUTCMilliseconds() });
-    let dayOfMonth = d.d;
+        ?? (relsSeen && !date && !weekday
+            ? { h: base.getUTCHours(), mi: base.getUTCMinutes(), s: base.getUTCSeconds(), ms: base.getUTCMilliseconds() }
+            : { h: 0, mi: 0, s: 0, ms: 0 });
+    const tm = { year: BigInt(d.y) - 1900n, mon: BigInt(d.mo) - 1n, mday: BigInt(d.d), hour: BigInt(t.h), min: BigInt(t.mi), sec: BigInt(t.s) };
+    let start = timegm(tm);
+    if (start === null)
+        return null;
     if (weekday && !date) {
         const w = weekday;
-        const today = new Date(Date.UTC(d.y, d.mo - 1, d.d)).getUTCDay();
-        // parse_datetime: forward to that day, then whole weeks by the ordinal (today counts as "this").
-        dayOfMonth += ((w.day - today + 7) % 7) + 7 * (w.ordinal - (w.ordinal > 0 && today !== w.day ? 1 : 0));
+        const today = weekdayOf(start);
+        // Forward to that day, then whole weeks by the ordinal (today counts as "this").
+        const mday = tmInt(tm.mday + BigInt(((w.day - today + 7) % 7) + 7 * (w.ordinal - (w.ordinal > 0 && today !== w.day ? 1 : 0))));
+        if (mday === null)
+            return null;
+        tm.mday = mday;
+        start = timegm(tm);
+        if (start === null)
+            return null;
     }
-    const at = Date.UTC(d.y, d.mo - 1 + months, dayOfMonth, t.h, t.mi, t.s, t.ms) - (zoneMinutes ?? 0) * 60_000;
-    return at + ms;
+    if (rel.year !== 0n || rel.month !== 0n || rel.day !== 0n) {
+        const year = tmInt(tm.year + rel.year);
+        const mon = tmInt(tm.mon + rel.month);
+        const mday = tmInt(tm.mday + rel.day);
+        if (year === null || mon === null || mday === null)
+            return null;
+        start = timegm({ ...tm, year, mon, mday });
+        if (start === null)
+            return null;
+    }
+    if (zoneMinutes !== null) {
+        start = timeT(start - BigInt(zoneMinutes) * 60n);
+        if (start === null)
+            return null;
+    }
+    let at = start;
+    for (const [field, size] of RELATIVE_SECONDS) {
+        const delta = timeT(rel[field] * size);
+        const next = delta === null ? null : timeT(at + delta);
+        if (next === null)
+            return null;
+        at = next;
+    }
+    return Number(at * 1000n + BigInt(t.ms));
 }

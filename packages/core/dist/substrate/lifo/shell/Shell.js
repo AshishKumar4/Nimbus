@@ -268,6 +268,10 @@ export class Shell {
     getRegistry() {
         return this.registry;
     }
+    /** execvp(3) of `argv` as a process of this shell's kernel (Interpreter.runProgram). */
+    runProgram(argv, spec) {
+        return this.interpreter.runProgram(argv, spec);
+    }
     /**
      * End a shell that is done: the descriptors an `exec` left open close, as a
      * process's do when it exits. A shell built for one call ends with it.

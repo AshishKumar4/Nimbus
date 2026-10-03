@@ -1,4 +1,5 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
+import { syscallError } from '../../../vfs/vfs-error.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
@@ -815,114 +816,25 @@ export class Interpreter {
                             exitCode = 127;
                         }
                         else {
-                            const shouldRegister = io.registerProcess !== false;
-                            let pid;
-                            const abortController = new AbortController();
-                            let unlinkShellSignal;
-                            const shellSignal = io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal;
-                            unlinkShellSignal = linkAbortSignal(shellSignal, abortController);
-                            const terminalStdin = io.terminalStdin;
                             const identity = io.commandIdentity;
                             if (!identity)
                                 throw new Error('shell command identity is unavailable');
-                            let ctx;
-                            ctx = {
-                                ...io.commandContext,
-                                pid: identity.pid,
-                                cred: identity.cred,
-                                args,
-                                env: { ...this.config.env },
+                            exitCode = await this.runCommand(command, name, args, {
+                                commandContext: io.commandContext,
+                                identity,
                                 cwd: this.config.getCwd(),
+                                env: { ...this.config.env },
                                 vfs: io.vfs ?? this.config.vfs,
                                 stdout,
                                 stderr,
-                                signal: abortController.signal,
                                 stdin,
-                                terminalStdin,
-                                setRawMode: terminalStdin
-                                    ? (v) => { terminalStdin.rawMode = v; }
-                                    : undefined,
-                                getRawMode: terminalStdin
-                                    ? () => terminalStdin.rawMode
-                                    : undefined,
+                                terminalStdin: io.terminalStdin,
                                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                                 isFdPipe: (fd) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
-                                setUmask: identity.setUmask,
-                                runAs: async (cred, argv, options) => io.runAs
-                                    ? (await io.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
-                                    : Promise.resolve(126),
-                            };
-                            // Register process BEFORE executing so ps can see itself
-                            let commandPromise;
-                            if (shouldRegister) {
-                                let resolvePromise;
-                                let rejectPromise;
-                                const registeredPromise = new Promise((resolve, reject) => {
-                                    resolvePromise = resolve;
-                                    rejectPromise = reject;
-                                });
-                                pid = this.config.processRegistry.spawn({
-                                    command: name,
-                                    args: [name, ...args],
-                                    cwd: this.config.getCwd(),
-                                    env: { ...this.config.env },
-                                    isForeground: true,
-                                    promise: registeredPromise,
-                                    abortController,
-                                });
-                                commandPromise = command(ctx).then((code) => {
-                                    resolvePromise?.(code);
-                                    return code;
-                                }, async (err) => {
-                                    if (err?.code === 'EPIPE') {
-                                        // SIGPIPE: a builtin's ends its element (the catch below
-                                        // rethrows it); any other command alone dies, silently.
-                                        resolvePromise?.(141);
-                                        if (BASH_BUILTINS.has(name))
-                                            throw err;
-                                        return 141;
-                                    }
-                                    rejectPromise?.(err);
-                                    if (err instanceof Error && err.name === 'AbortError')
-                                        return 130;
-                                    // Surface the failure: this rejection handler resolves
-                                    // commandPromise to an exit code, so the catch below
-                                    // never sees the error — without this write a throwing
-                                    // registered command dies silently at the prompt.
-                                    (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
-                                    return 1;
-                                });
-                            }
-                            else {
-                                commandPromise = command(ctx);
-                            }
-                            try {
-                                exitCode = await commandPromise;
-                            }
-                            catch (e) {
-                                if (e instanceof Error && e.name === 'AbortError') {
-                                    exitCode = 130;
-                                }
-                                else if (e?.code === 'EPIPE') {
-                                    // A bash builtin's write is the shell's own: in bash SIGPIPE
-                                    // kills the element's subshell, so its element ends.
-                                    if (BASH_BUILTINS.has(name))
-                                        throw e;
-                                    // Any other command is its own process: it alone dies, silently.
-                                    exitCode = 141;
-                                }
-                                else {
-                                    (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
-                                    exitCode = 1;
-                                }
-                            }
-                            finally {
-                                unlinkShellSignal?.();
-                                if (shouldRegister && pid !== undefined) {
-                                    await Promise.resolve();
-                                    this.config.processRegistry.reap(pid);
-                                }
-                            }
+                                signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+                                runAs: io.runAs,
+                                register: io.registerProcess !== false,
+                            });
                             // A signalled command reports the SIGNAL's status, not whatever
                             // code it returned on its way out: `sleep` observes only that
                             // ctx.signal aborted, and cannot tell SIGINT (130) from
@@ -950,6 +862,131 @@ export class Interpreter {
         if (replacesShell)
             throw new ExitSignal(exitCode);
         return exitCode;
+    }
+    /**
+     * execvp(3) of `argv`: argv[0] is found as a program is found (the
+     * registry, then a path from `spec.cwd`), never as a function, an alias or
+     * a builtin, and runs as a process on the streams it is handed. A program
+     * that is not there is ENOENT, as execvp fails, for the caller to report.
+     */
+    async runProgram(argv, spec) {
+        const [name, ...args] = argv;
+        if (name === undefined)
+            return 0;
+        const command = await this.config.registry.resolve(name, { cwd: spec.cwd });
+        if (!command)
+            throw syscallError('ENOENT', 'execvp', name);
+        return await this.runCommand(command, name, args, {
+            ...spec,
+            vfs: bindProcessView(this.config.filesystem, { pid: spec.identity.pid, cred: spec.identity.cred, signal: spec.signal }),
+            register: true,
+        });
+    }
+    /**
+     * A resolved command, run as a process of this shell's: listed for ps,
+     * jobs and kill while it runs, aborted with `spec.signal`, and its failure
+     * (a closed pipe, an abort, a throw) turned into the status a process
+     * would end with.
+     */
+    async runCommand(command, name, args, spec) {
+        const abortController = new AbortController();
+        const unlinkShellSignal = linkAbortSignal(spec.signal, abortController);
+        const { identity, terminalStdin, stderr } = spec;
+        let pid;
+        const ctx = {
+            ...spec.commandContext,
+            pid: identity.pid,
+            cred: identity.cred,
+            args,
+            env: spec.env,
+            cwd: spec.cwd,
+            vfs: spec.vfs,
+            stdout: spec.stdout,
+            stderr,
+            signal: abortController.signal,
+            stdin: spec.stdin,
+            terminalStdin,
+            setRawMode: terminalStdin
+                ? (v) => { terminalStdin.rawMode = v; }
+                : undefined,
+            getRawMode: terminalStdin
+                ? () => terminalStdin.rawMode
+                : undefined,
+            isFdTerminal: spec.isFdTerminal,
+            isFdPipe: spec.isFdPipe,
+            setUmask: identity.setUmask,
+            runAs: async (cred, argv, options) => spec.runAs
+                ? (await spec.runAs(options?.cwd === undefined ? ctx : { ...ctx, cwd: options.cwd }, cred, argv))
+                : 126,
+        };
+        // Register process BEFORE executing so ps can see itself
+        let commandPromise;
+        if (spec.register) {
+            let resolvePromise;
+            let rejectPromise;
+            const registeredPromise = new Promise((resolve, reject) => {
+                resolvePromise = resolve;
+                rejectPromise = reject;
+            });
+            pid = this.config.processRegistry.spawn({
+                command: name,
+                args: [name, ...args],
+                cwd: spec.cwd,
+                env: { ...spec.env },
+                isForeground: true,
+                promise: registeredPromise,
+                abortController,
+            });
+            commandPromise = command(ctx).then((code) => {
+                resolvePromise?.(code);
+                return code;
+            }, async (err) => {
+                if (err?.code === 'EPIPE') {
+                    // SIGPIPE: a builtin's ends its element (the catch below
+                    // rethrows it); any other command alone dies, silently.
+                    resolvePromise?.(141);
+                    if (BASH_BUILTINS.has(name))
+                        throw err;
+                    return 141;
+                }
+                rejectPromise?.(err);
+                if (err instanceof Error && err.name === 'AbortError')
+                    return 130;
+                // Surface the failure: this rejection handler resolves
+                // commandPromise to an exit code, so the catch below
+                // never sees the error — without this write a throwing
+                // registered command dies silently at the prompt.
+                (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
+                return 1;
+            });
+        }
+        else {
+            commandPromise = command(ctx);
+        }
+        try {
+            return await commandPromise;
+        }
+        catch (e) {
+            if (e instanceof Error && e.name === 'AbortError')
+                return 130;
+            if (e?.code === 'EPIPE') {
+                // A bash builtin's write is the shell's own: in bash SIGPIPE
+                // kills the element's subshell, so its element ends.
+                if (BASH_BUILTINS.has(name))
+                    throw e;
+                // Any other command is its own process: it alone dies, silently.
+                return 141;
+            }
+            (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
+            return 1;
+        }
+        finally {
+            unlinkShellSignal();
+            if (spec.register && pid !== undefined) {
+                await Promise.resolve();
+                this.config.processRegistry.reap(pid);
+            }
+        }
     }
     assignEnv(name, value) {
         if (this.config.readonlyNames.has(name))

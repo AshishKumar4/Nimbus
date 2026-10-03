@@ -40,26 +40,39 @@ function compareKeys(a, b) {
 /** One unit of filesystem work: started when there is room ahead of the walk, or at once when the walk needs it. */
 class Task {
     key;
-    listing;
     run;
     scheduler;
+    weigh;
     promise = null;
-    /** A listing started ahead of the walk, holding a place in the read-ahead window until the walk takes it or passes it. */
-    held = false;
-    constructor(key, listing, run, scheduler) {
+    /** The entries of the read-ahead window this task holds until the walk takes it or passes it; 0 when none. */
+    held = 0;
+    constructor(key, run, scheduler, 
+    /** For a listing: how many entries its result holds in the window. */
+    weigh) {
         this.key = key;
-        this.listing = listing;
         this.run = run;
         this.scheduler = scheduler;
+        this.weigh = weigh;
     }
     get started() {
         return this.promise !== null;
+    }
+    /** Whether this task, started ahead of the walk, holds a share of the window. */
+    get windowed() {
+        return this.weigh !== null;
     }
     /** The outcome, starting the work now if nothing has yet. */
     result() {
         if (this.promise === null) {
             this.scheduler.started();
-            this.promise = settle(this.run).finally(() => this.scheduler.settled());
+            const weigh = this.weigh;
+            this.promise = settle(this.run)
+                .then((outcome) => {
+                if (outcome.ok && weigh !== null)
+                    this.scheduler.hold(this, weigh(outcome.value));
+                return outcome;
+            })
+                .finally(() => this.scheduler.settled());
         }
         return this.promise;
     }
@@ -106,13 +119,17 @@ class TaskQueue {
 }
 /** Filesystem calls in flight ahead of the walk, when the walk reads ahead. */
 export const READ_AHEAD_CALLS = 16;
-/** Directory listings held for the walk before it reaches them. */
-const READ_AHEAD_LISTINGS = 256;
+/**
+ * Entries of listings read ahead and held for the walk before it reaches
+ * them: what the window costs in memory (each, with its stats, well under
+ * a kilobyte), whatever the size of a directory.
+ */
+const READ_AHEAD_ENTRIES = 4096;
 /**
  * Starts queued tasks in walk order, at most `calls` filesystem calls at
- * once and at most READ_AHEAD_LISTINGS listings waiting for the walk. A task
- * the walk has passed is dropped from the queue; only the walk itself can
- * still start it (a -depth visit going back to its directory).
+ * once, and no more listings once READ_AHEAD_ENTRIES entries wait for the
+ * walk. A task the walk has passed is dropped from the queue; only the walk
+ * itself can still start it (a -depth visit going back to its directory).
  */
 class Scheduler {
     calls;
@@ -130,8 +147,9 @@ class Scheduler {
     get enabled() {
         return this.calls > 0;
     }
-    task(key, listing, run) {
-        return new Task(key, listing, run, this);
+    /** Work for the walk at `key`; a listing says how many entries its result holds in the window. */
+    task(key, run, weigh = null) {
+        return new Task(key, run, this, weigh);
     }
     /** Queue `task` to run ahead of the walk. */
     ahead(task) {
@@ -149,21 +167,31 @@ class Scheduler {
             this.idle?.();
         this.pump();
     }
-    /** The walk has taken a listing, or passed it: its place in the window is free. */
-    release(task) {
-        if (!task.held)
+    /** A listing read ahead has arrived: its entries wait in the window, unless the walk has already taken or passed it. */
+    hold(task, entries) {
+        if (task.held === 0)
             return;
-        task.held = false;
-        this.held--;
+        task.held += entries;
+        this.held += entries;
+    }
+    /** The walk has taken a listing, or passed it: its share of the window is free. */
+    release(task) {
+        if (task.held === 0)
+            return;
+        this.held -= task.held;
+        task.held = 0;
         this.pump();
     }
-    /** The walk has reached `key`: everything before it is behind the walk. */
+    /** The walk has reached `key`: everything before it is behind the walk, and let go. */
     advance(key) {
         this.position = key;
         for (let task = this.holding.peek(); task !== undefined && compareKeys(task.key, key) < 0; task = this.holding.peek()) {
             this.holding.pop();
             this.release(task);
         }
+        // Queued work the walk has passed would only be dropped when it is popped; while the window is full that may be never.
+        for (let task = this.queue.peek(); task !== undefined && compareKeys(task.key, key) < 0; task = this.queue.peek())
+            this.queue.pop();
     }
     stop() {
         this.stopped = true;
@@ -175,15 +203,16 @@ class Scheduler {
         await new Promise((resolve) => { this.idle = resolve; });
     }
     pump() {
-        while (!this.stopped && this.inFlight < this.calls && this.held < READ_AHEAD_LISTINGS) {
+        while (!this.stopped && this.inFlight < this.calls && this.held < READ_AHEAD_ENTRIES) {
             const task = this.queue.pop();
             if (task === undefined)
                 break;
             if (task.started || compareKeys(task.key, this.position) < 0)
                 continue;
-            if (task.listing) {
-                task.held = true;
-                this.held++;
+            if (task.windowed) {
+                // A listing in flight holds one place, until it says how many entries it brings.
+                task.held = 1;
+                this.held += 1;
                 this.holding.push(task);
             }
             void task.result();
@@ -312,6 +341,17 @@ export class FindEntry {
             return settle(() => this.walker.options.vfs.readdir(this.absolute));
         return this.listingWork.result();
     }
+    /**
+     * Let go of what was read for this file and below it, once the walk is
+     * done with it: it stays only as an entry of its parent's listing, as an
+     * FTSENT does until fts leaves the parent.
+     */
+    release() {
+        this.childEntries = null;
+        this.listingTask = null;
+        this.lstatTask = null;
+        this.followTask = null;
+    }
     /** The entries of this directory's listing, made once for the walk and its read-ahead alike. */
     children(listing) {
         if (this.childEntries !== null)
@@ -391,16 +431,16 @@ export class Walker {
         this.failed = true;
     }
     statTask(entry, follow) {
-        return this.scheduler.task(entry.key, false, () => this.options.vfs.stat(entry.absolute, { follow }));
+        return this.scheduler.task(entry.key, () => this.options.vfs.stat(entry.absolute, { follow }));
     }
     listingTask(entry) {
-        return this.scheduler.task(entry.key, true, async () => {
+        return this.scheduler.task(entry.key, async () => {
             const listing = await this.options.vfs.readdir(entry.absolute);
             // A listing read for -empty is not one the walk enters; only the walk's own are read below.
             if (this.options.readAheadSubtrees && (await this.descends(entry)))
                 this.readAhead(entry, entry.children(listing));
             return listing;
-        });
+        }, (listing) => listing.length);
     }
     /** Whether the walk descends into `entry`, by everything but -prune (which only the visit decides). */
     async descends(entry) {
@@ -457,6 +497,14 @@ export class Walker {
         this.scheduler.stop();
     }
     async walk(entry) {
+        try {
+            await this.walkEntry(entry);
+        }
+        finally {
+            entry.release();
+        }
+    }
+    async walkEntry(entry) {
         if (this.options.signal.aborted) {
             this.stopWalk();
             return;
@@ -517,14 +565,17 @@ export class Walker {
      * Queue what the walk will want from these children: the stats it takes
      * (and the expression's, when it reads them), and the listings of the
      * directories it will descend into. Under -xdev only the stat says whether
-     * a directory is on this device, so a probe queued in its place reads the
-     * stat first and never lists a directory on another one.
+     * a directory is on this device, and when links are followed only the
+     * stats of its ancestors say whether it is one of them; then a probe queued
+     * in its place reads those first, and never lists a directory on another
+     * device or one the walk will refuse as a loop.
      */
     readAhead(parent, children) {
         if (this.readAheadDone.has(parent))
             return;
         this.readAheadDone.add(parent);
         const { options, scheduler } = this;
+        const decidedByStats = options.sameDevice || options.symlinks !== 'P';
         for (const child of children) {
             if (options.prefetchStats || child.statedByWalk)
                 child.prefetchStat();
@@ -532,11 +583,11 @@ export class Walker {
                 continue;
             if (child.direntType !== 'directory' && !(child.direntType === 'symlink' && child.following))
                 continue;
-            if (!options.sameDevice) {
+            if (!decidedByStats) {
                 child.prefetchListing();
                 continue;
             }
-            scheduler.ahead(scheduler.task(child.key, false, async () => {
+            scheduler.ahead(scheduler.task(child.key, async () => {
                 if (await this.descends(child))
                     child.prefetchListing();
             }));

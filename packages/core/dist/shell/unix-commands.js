@@ -5,7 +5,7 @@
  * No stubs, no "not implemented" — each does actual work.
  *
  * Commands: which, env, export, unset, history, clear, alias, date,
- * uptime, tree, find, grep -r, head, tail, wc, diff, sort, uniq,
+ * uptime, tree, grep -r, head, tail, wc, diff, sort, uniq,
  * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
  * du, man/help, basename, dirname, printf, true, false, seq, sleep,
  * touch, stat, file, xxd, od, hexdump, base64, sha256sum, id, hostname,
@@ -33,7 +33,7 @@ import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, syscallError, VFS_STRERROR } from '../vfs/vfs-error.js';
-import { globMatch } from '../substrate/lifo/utils/glob.js';
+import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
@@ -895,448 +895,6 @@ function mkTree(vfs) {
             (await ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`));
         (await ctx.stdout.write(`\n${dirs} directories, ${files} files\n`));
         return 0;
-    };
-}
-/**
- * `find`'s arguments are an EXPRESSION, not a flag list.
- *
- * The flat AND-list this replaced dropped every token it did not recognise,
- * which does not fail — it answers a different question. `find . ! -name x`
- * ran as `find . -name x`, the exact complement of the requested set, and
- * said nothing. An installer's
- *
- *     find "$dir" -mindepth 1 -maxdepth 1 -type d | head -n 1
- *
- * silently became `-maxdepth 1 -type d`, which emits the start directory at
- * depth 0, so the pipeline selected the container instead of the tree in it.
- *
- * So the fix is not `-mindepth`. It is to parse the real grammar —
- *
- *     expr   := or
- *     or     := and (('-o' | '-or') and)*
- *     and    := unary (('-a' | '-and')? unary)*
- *     unary  := ('!' | '-not') unary | '(' expr ')' | primary
- *
- * — with `-a` binding tighter than `-o`, to evaluate it with short-circuit
- * semantics (which is what makes the `-prune -o -print` idiom work), and to
- * REFUSE any token outside the table below rather than ignore it.
- *
- * Every behaviour here was derived by running the same expression under GNU
- * findutils 4.10.0; tests/unit/find-expression-evaluator.mjs carries the
- * differential.
- *
- * Global options   -maxdepth N, -mindepth N, -depth
- * Operators        !, -not, -a, -and, -o, -or, ( )
- * Tests            -name, -iname, -path, -type, -size, -mtime, -newer, -empty
- * Actions          -print, -print0, -delete, -exec … {} \\; | +, -prune, -quit
- *
- * Anything else is `find: unknown predicate '-x'`, exit 1 — the same
- * honesty `uname -m` keeps by answering `wasm`.
- */
-/** A usage error carrying the message GNU find prints for it. */
-class FindUsageError extends Error {
-}
-function mkFind(vfs, registry) {
-    return async (ctx) => {
-        const state = {
-            minDepth: 0,
-            maxDepth: Infinity,
-            depthFirst: false,
-            prune: false,
-            quit: false,
-        };
-        const execBatches = [];
-        let hasAction = false;
-        // ── Emission ──────────────────────────────────────────────────────────
-        const emit = async (entry, terminator) => {
-            (await ctx.stdout.write(entry.display + terminator));
-        };
-        /** Run one command through the registry the session resolves through. */
-        const runExec = async (argv) => {
-            const [name, ...rest] = argv;
-            if (!name)
-                return false;
-            let target;
-            try {
-                target = asResolvedCommand(await registry.resolve(name, { cwd: ctx.cwd }));
-            }
-            catch {
-                target = null;
-            }
-            if (!target) {
-                (await ctx.stderr.write(`find: ${name}: No such file or directory\n`));
-                return false;
-            }
-            try {
-                const code = await target({
-                    pid: ctx.pid,
-                    cred: ctx.cred,
-                    args: rest,
-                    env: ctx.env,
-                    cwd: ctx.cwd,
-                    vfs: ctx.vfs,
-                    stdout: ctx.stdout,
-                    stderr: ctx.stderr,
-                    stdin: '',
-                    signal: ctx.signal,
-                    setUmask: ctx.setUmask,
-                    runAs: ctx.runAs,
-                    execInterpreterDepth: ctx.execInterpreterDepth,
-                });
-                return code === 0;
-            }
-            catch (e) {
-                (await ctx.stderr.write(`find: ${name}: ${errorText(e)}\n`));
-                return false;
-            }
-        };
-        // ── Parser ────────────────────────────────────────────────────────────
-        //
-        // Start paths come first: GNU reads operands until the first token that
-        // begins an expression, so `find a b -type d` walks both a and b.
-        const args = [...ctx.args];
-        let pos = 0;
-        const startsExpression = (tok) => tok.startsWith('-') || tok === '(' || tok === ')' || tok === '!' || tok === ',';
-        const startArgs = [];
-        while (pos < args.length && !startsExpression(args[pos]))
-            startArgs.push(args[pos++]);
-        if (startArgs.length === 0)
-            startArgs.push('.');
-        const peek = () => args[pos];
-        const next = () => args[pos++];
-        /** The argument a predicate requires, or GNU's missing-argument error. */
-        const value = (pred) => {
-            const v = args[pos++];
-            if (v === undefined)
-                throw new FindUsageError(`missing argument to \`${pred}'`);
-            return v;
-        };
-        const positiveInt = (pred) => {
-            const raw = value(pred);
-            if (!/^\d+$/.test(raw)) {
-                throw new FindUsageError(`Expected a positive decimal integer argument to ${pred}, but got \`${raw}'`);
-            }
-            return parseInt(raw, 10);
-        };
-        const TRUE = async () => true;
-        /** Size in the unit's own terms: GNU rounds a partial unit UP. */
-        const sizeInUnits = (bytes, unit) => unit === 1 ? bytes : Math.ceil(bytes / unit);
-        const statOf = async (entry) => {
-            try {
-                return (await statOrThrow(vfs, entry.vfsPath));
-            }
-            catch {
-                return null;
-            }
-        };
-        async function parsePrimary() {
-            const tok = next();
-            if (tok === undefined)
-                throw new FindUsageError('missing expression');
-            switch (tok) {
-                // ── Global options: they configure the walk and evaluate true ──
-                case '-maxdepth':
-                    state.maxDepth = positiveInt('-maxdepth');
-                    return TRUE;
-                case '-mindepth':
-                    state.minDepth = positiveInt('-mindepth');
-                    return TRUE;
-                case '-depth':
-                    state.depthFirst = true;
-                    return TRUE;
-                // ── Tests ──
-                case '-name': {
-                    const pattern = value('-name');
-                    return async (e) => globMatch(pattern, e.name);
-                }
-                case '-iname': {
-                    const pattern = value('-iname').toLowerCase();
-                    return async (e) => globMatch(pattern, e.name.toLowerCase());
-                }
-                case '-path': {
-                    const pattern = value('-path');
-                    return async (e) => globMatch(pattern, e.display);
-                }
-                case '-type': {
-                    const letter = value('-type');
-                    if (letter !== 'f' && letter !== 'd' && letter !== 'l') {
-                        throw new FindUsageError(`Unknown argument to -type: ${letter}`);
-                    }
-                    const wanted = letter === 'f' ? 'file' : letter === 'd' ? 'directory' : 'symlink';
-                    return async (e) => e.type === wanted;
-                }
-                case '-size': {
-                    const raw = value('-size');
-                    const m = raw.match(/^([+-]?)(\d+)([ckMG]?)$/);
-                    if (!m)
-                        throw new FindUsageError(`invalid -size type \`${raw.slice(-1)}'`);
-                    const cmp = m[1];
-                    const count = parseInt(m[2], 10);
-                    const unit = m[3] === 'c' ? 1
-                        : m[3] === 'k' ? 1024
-                            : m[3] === 'M' ? 1024 * 1024
-                                : m[3] === 'G' ? 1024 * 1024 * 1024
-                                    : 512;
-                    return async (e) => {
-                        const st = (await statOf(e));
-                        if (!st)
-                            return false;
-                        const units = sizeInUnits(st.size || 0, unit);
-                        return cmp === '+' ? units > count : cmp === '-' ? units < count : units === count;
-                    };
-                }
-                case '-mtime': {
-                    const raw = value('-mtime');
-                    const m = raw.match(/^([+-]?)(\d+)$/);
-                    if (!m)
-                        throw new FindUsageError(`invalid argument \`${raw}' to \`-mtime'`);
-                    const cmp = m[1];
-                    const dayMs = 86400 * 1000;
-                    const threshold = parseInt(m[2], 10) * dayMs;
-                    const now = Date.now();
-                    return async (e) => {
-                        const st = (await statOf(e));
-                        if (!st)
-                            return false;
-                        const age = now - (st.mtimeMs || 0);
-                        return cmp === '+' ? age > threshold + dayMs
-                            : cmp === '-' ? age < threshold
-                                : age >= threshold && age < threshold + dayMs;
-                    };
-                }
-                case '-newer': {
-                    const ref = value('-newer');
-                    let refMtime;
-                    try {
-                        refMtime = (await statOrThrow(vfs, resolvePath(ctx.cwd, ref))).mtimeMs;
-                    }
-                    catch {
-                        throw new FindUsageError(`'${ref}': No such file or directory`);
-                    }
-                    return async (e) => {
-                        const st = (await statOf(e));
-                        return !!st && (st.mtimeMs || 0) > refMtime;
-                    };
-                }
-                case '-empty':
-                    return async (e) => {
-                        if (e.type === 'directory') {
-                            try {
-                                return (await vfs.readdir(e.vfsPath)).length === 0;
-                            }
-                            catch {
-                                return false;
-                            }
-                        }
-                        const st = (await statOf(e));
-                        return !!st && (st.size || 0) === 0;
-                    };
-                // ── Actions ──
-                case '-print':
-                    hasAction = true;
-                    return async (e) => { (await emit(e, '\n')); return true; };
-                case '-print0':
-                    hasAction = true;
-                    return async (e) => { (await emit(e, '\0')); return true; };
-                case '-delete':
-                    hasAction = true;
-                    // GNU's -delete implies -depth: a directory is removable only once
-                    // its children are gone.
-                    state.depthFirst = true;
-                    return async (e) => {
-                        try {
-                            if (e.type === 'directory')
-                                (await vfs.rmdir(e.vfsPath));
-                            else
-                                (await vfs.unlink(e.vfsPath));
-                            return true;
-                        }
-                        catch (err) {
-                            (await ctx.stderr.write(`find: cannot delete '${e.display}': ${errorText(err)}\n`));
-                            return false;
-                        }
-                    };
-                case '-quit':
-                    hasAction = true;
-                    return async (_e, st) => { st.quit = true; return true; };
-                case '-prune':
-                    // NOT an action: GNU still adds the implicit -print alongside it,
-                    // which is what makes `-prune -o -print` print everything else.
-                    return async (e, st) => {
-                        if (e.type === 'directory')
-                            st.prune = true;
-                        return true;
-                    };
-                case '-exec': {
-                    hasAction = true;
-                    const argv = [];
-                    let terminator = null;
-                    while (pos < args.length) {
-                        const a = next();
-                        // Exactly `;`, as GNU requires. The usual `\;` is the shell's
-                        // escaping of it; a quoted '\;' keeps its backslash and GNU
-                        // rejects that as a missing terminator, so this does too.
-                        if (a === ';') {
-                            terminator = ';';
-                            break;
-                        }
-                        // `+` terminates only directly after the {} placeholder.
-                        if (a === '+' && argv[argv.length - 1] === '{}') {
-                            terminator = '+';
-                            break;
-                        }
-                        argv.push(a);
-                    }
-                    if (terminator === null) {
-                        throw new FindUsageError("missing argument to `-exec'");
-                    }
-                    if (terminator === ';') {
-                        return async (e) => (await runExec(argv.map((a) => a.split('{}').join(e.display))));
-                    }
-                    // `-exec … {} +`: every match joins one invocation, flushed after
-                    // the walk. The trailing {} is where the paths go.
-                    const batch = { argv: argv.slice(0, -1), pending: [] };
-                    execBatches.push(batch);
-                    return async (e) => { batch.pending.push(e.display); return true; };
-                }
-                // ── Grouping ──
-                case '(': {
-                    const inner = (await parseExpr());
-                    if (next() !== ')')
-                        throw new FindUsageError("expected expression after `('");
-                    return inner;
-                }
-            }
-            throw new FindUsageError(`unknown predicate \`${tok}'`);
-        }
-        async function parseUnary() {
-            const tok = peek();
-            if (tok === '!' || tok === '-not') {
-                pos++;
-                const operand = (await parseUnary());
-                return async (e, st) => !(await operand(e, st));
-            }
-            return (await parsePrimary());
-        }
-        async function parseAnd() {
-            let left = (await parseUnary());
-            while (pos < args.length) {
-                const tok = peek();
-                if (tok === ')' || tok === '-o' || tok === '-or')
-                    break;
-                if (tok === '-a' || tok === '-and')
-                    pos++;
-                const right = (await parseUnary());
-                const l = left;
-                left = async (e, st) => (await l(e, st)) && (await right(e, st));
-            }
-            return left;
-        }
-        async function parseExpr() {
-            let left = (await parseAnd());
-            while (peek() === '-o' || peek() === '-or') {
-                pos++;
-                const right = (await parseAnd());
-                const l = left;
-                left = async (e, st) => (await l(e, st)) || (await right(e, st));
-            }
-            return left;
-        }
-        let predicate;
-        try {
-            predicate = pos < args.length ? (await parseExpr()) : TRUE;
-            if (pos < args.length) {
-                throw new FindUsageError(`paths must precede expression: \`${args[pos]}'`);
-            }
-        }
-        catch (e) {
-            if (e instanceof FindUsageError) {
-                (await ctx.stderr.write(`find: ${e.message}\n`));
-                return 1;
-            }
-            throw e;
-        }
-        // With no action anywhere in the expression the whole of it is printed;
-        // -prune deliberately does not count, so `-prune -o -print` still prints.
-        const test = predicate;
-        if (!hasAction) {
-            predicate = async (e, st) => {
-                const matched = await test(e, st);
-                if (matched)
-                    (await emit(e, '\n'));
-                return matched;
-            };
-        }
-        // ── Walk ──────────────────────────────────────────────────────────────
-        let status = 0;
-        const visit = async (entry) => {
-            state.prune = false;
-            if (entry.depth >= state.minDepth)
-                await predicate(entry, state);
-        };
-        const walk = async (entry) => {
-            if (state.quit)
-                return;
-            // A pre-order visit must run before the descent it may prune.
-            if (!state.depthFirst) {
-                await visit(entry);
-                if (state.quit || state.prune)
-                    return;
-            }
-            if (entry.type === 'directory' && entry.depth < state.maxDepth) {
-                let entries = [];
-                try {
-                    entries = (await vfs.readdir(entry.vfsPath));
-                }
-                catch {
-                    entries = [];
-                }
-                for (const child of entries) {
-                    if (state.quit)
-                        break;
-                    await walk({
-                        // A start path ending in a slash (`/`) is joined without another, as GNU find does.
-                        vfsPath: entry.vfsPath.endsWith('/') ? entry.vfsPath + child.name : entry.vfsPath + '/' + child.name,
-                        display: entry.display.endsWith('/') ? entry.display + child.name : entry.display + '/' + child.name,
-                        name: child.name,
-                        type: child.type,
-                        depth: entry.depth + 1,
-                    });
-                }
-            }
-            // Post-order: the visit that -depth and -delete need, after the
-            // children it must outlive.
-            if (state.depthFirst && !state.quit)
-                await visit(entry);
-        };
-        for (const startArg of startArgs) {
-            if (state.quit)
-                break;
-            // `find dir/` prints `dir/empty.txt`, so the separator is not doubled.
-            const display = startArg.length > 1 ? startArg.replace(/\/+$/, '') : startArg;
-            const vfsPath = resolvePath(ctx.cwd, startArg);
-            let type;
-            try {
-                type = (await statOrThrow(vfs, vfsPath)).type;
-            }
-            catch {
-                (await ctx.stderr.write(`find: '${startArg}': No such file or directory\n`));
-                status = 1;
-                continue;
-            }
-            await walk({
-                vfsPath,
-                display,
-                name: display.split('/').pop() || display,
-                type,
-                depth: 0,
-            });
-        }
-        for (const batch of execBatches) {
-            if (batch.pending.length > 0)
-                await runExec([...batch.argv, ...batch.pending]);
-        }
-        return status;
     };
 }
 /** `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`. */
@@ -2860,6 +2418,74 @@ function expandBackslashEscapes(text) {
     });
 }
 /**
+ * pwd(1) as coreutils' program, for what starts one without a shell (find
+ * -execdir, xargs, sudo): the working directory with every link resolved,
+ * or, under -L (the default with POSIXLY_CORRECT), $PWD when it is an
+ * absolute name of that directory with no `.` or `..` in it.
+ */
+function mkPwd(vfs) {
+    return async (ctx) => {
+        let logical = ctx.env.POSIXLY_CORRECT !== undefined;
+        let operands = 0;
+        for (let i = 0; i < ctx.args.length; i++) {
+            const arg = ctx.args[i];
+            if (arg === '--') {
+                operands += ctx.args.length - i - 1;
+                break;
+            }
+            if (arg === '--logical' || arg === '--physical') {
+                logical = arg === '--logical';
+            }
+            else if (arg === '--version') {
+                (await ctx.stdout.write(`pwd (nimbus coreutils) ${NIMBUS_VERSION}\n`));
+                return 0;
+            }
+            else if (arg.startsWith('--')) {
+                (await ctx.stderr.write(`pwd: unrecognized option '${arg}'\nTry 'pwd --help' for more information.\n`));
+                return 1;
+            }
+            else if (arg.startsWith('-') && arg !== '-') {
+                for (const letter of arg.slice(1)) {
+                    if (letter !== 'L' && letter !== 'P') {
+                        (await ctx.stderr.write(`pwd: invalid option -- '${letter}'\nTry 'pwd --help' for more information.\n`));
+                        return 1;
+                    }
+                    logical = letter === 'L';
+                }
+            }
+            else {
+                operands++;
+            }
+        }
+        if (operands > 0)
+            (await ctx.stderr.write('pwd: ignoring non-option arguments\n'));
+        let physical;
+        try {
+            physical = await vfs.realpath(ctx.cwd);
+        }
+        catch (error) {
+            if (!isVfsError(error))
+                throw error;
+            (await ctx.stderr.write(`pwd: ${VFS_STRERROR[error.code]}\n`));
+            return 1;
+        }
+        const named = ctx.env.PWD;
+        if (logical && named !== undefined && named.startsWith('/') && !named.split('/').some((part) => part === '.' || part === '..')) {
+            const same = await vfs.realpath(named).then((path) => path === physical, (error) => {
+                if (isVfsError(error))
+                    return false;
+                throw error;
+            });
+            if (same) {
+                (await ctx.stdout.write(`${named}\n`));
+                return 0;
+            }
+        }
+        (await ctx.stdout.write(`${physical}\n`));
+        return 0;
+    };
+}
+/**
  * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
  * resolves. `echo` is a Shell.builtins entry, NOT in the
  * registry map. xargs's cross-command dispatch goes through
@@ -3123,254 +2749,6 @@ function mkRm(vfs) {
         return code;
     };
 }
-/** Whether y-m-d (1-based month) is a real calendar day. */
-function realDay(y, mo, d) {
-    if (mo < 1 || mo > 12 || d < 1)
-        return false;
-    return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
-}
-const TOUCH_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-const TOUCH_DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-const TOUCH_UNITS = {
-    year: ['month', 12], month: ['month', 1], fortnight: ['ms', 14 * 86_400_000], week: ['ms', 7 * 86_400_000],
-    day: ['ms', 86_400_000], hour: ['ms', 3_600_000], minute: ['ms', 60_000], min: ['ms', 60_000],
-    second: ['ms', 1000], sec: ['ms', 1000],
-};
-const touchMonth = (word) => {
-    const w = word.toLowerCase().replace(/\.$/, '');
-    const i = TOUCH_MONTHS.findIndex((m) => w === m || (w.length >= 3 && m.startsWith(w.slice(0, 3)) && `${m}${['uary', 'ruary', 'ch', 'il', '', 'e', 'y', 'ust', 'tember', 'ober', 'ember', 'ember'][TOUCH_MONTHS.indexOf(m)]}`.startsWith(w)));
-    return i < 0 ? null : i + 1;
-};
-const touchDay = (word) => {
-    const w = word.toLowerCase().replace(/[.,]$/, '');
-    const i = TOUCH_DAYS.findIndex((d) => w.startsWith(d) && `${d}${['day', 'day', 'sday', 'nesday', 'rsday', 'day', 'urday'][TOUCH_DAYS.indexOf(d)]}`.startsWith(w));
-    return i < 0 ? null : i;
-};
-const touchUnit = (word) => {
-    const w = word.toLowerCase().replace(/s$/, '');
-    return Object.hasOwn(TOUCH_UNITS, w) ? TOUCH_UNITS[w] : null;
-};
-/**
- * A GNU `touch -d` date (coreutils' parse_datetime), as milliseconds since the
- * epoch, or null where GNU says "invalid date format". Order-free items, as
- * GNU reads them, in the session's zone (UTC) unless one is given:
- * - `@<seconds>[.<fraction>]`, alone;
- * - a date: `YYYY-MM-DD`, `YYYYMMDD`, `M/D[/YYYY]`, `Mon D[,] [YYYY]`,
- *   `D Mon [YYYY]`; with no year, this year;
- * - a time: `HH:MM[:SS[.frac]]` with `am`/`pm`, or joined to an ISO date by
- *   `T`; a zone `Z`, `UTC`, `GMT`, `±HH[:]MM`;
- * - a day of the week (`wed`, `Wednesday,`), alone or with `last`/`this`/`next`;
- * - relative items: `[+-]N unit[s] [ago]`, `unit ago`, `last`/`next unit`,
- *   `now`, `today`, `yesterday`, `tomorrow`.
- * A date or a day sets the time to midnight unless a time is given; relative
- * items move from what the rest names (now, if nothing). An impossible
- * calendar date or time is refused, as GNU refuses it.
- */
-function parseTouchDate(text, now) {
-    const value = text.trim();
-    const epoch = /^@(-?\d+)(?:\.(\d+))?$/.exec(value);
-    // GNU keeps the fraction at nanoseconds; the VFS keeps milliseconds.
-    if (epoch)
-        return Number(epoch[1]) * 1000 + (epoch[2] ? Math.floor(Number(`0.${epoch[2]}`) * 1000) : 0);
-    const base = new Date(now);
-    let date = null;
-    let time = null;
-    let zoneMinutes = null;
-    let weekday = null;
-    let months = 0;
-    let ms = 0;
-    const tokens = value.toLowerCase().replace(/,/g, ' ').split(/\s+/).filter(Boolean);
-    const ordinalWord = (w) => (w === 'last' ? -1 : w === 'this' ? 0 : w === 'next' ? 1 : null);
-    const setDate = (y, mo, d) => {
-        if (date || !realDay(y, mo, d))
-            return false;
-        date = { y, mo, d };
-        return true;
-    };
-    const setTime = (h, mi, s, frac, meridian) => {
-        if (time)
-            return false;
-        if (meridian) {
-            if (h < 1 || h > 12)
-                return false;
-            h = (h % 12) + (meridian === 'pm' ? 12 : 0);
-        }
-        if (h > 23 || mi > 59 || s > 60)
-            return false;
-        time = { h, mi, s, ms: frac ? Math.floor(Number(`0.${frac}`) * 1000) : 0 };
-        return true;
-    };
-    const setZone = (word) => {
-        if (zoneMinutes !== null)
-            return false;
-        if (word === 'z' || word === 'utc' || word === 'gmt' || word === 'ut') {
-            zoneMinutes = 0;
-            return true;
-        }
-        const m = /^([+-])(\d{2}):?(\d{2})$/.exec(word);
-        if (!m)
-            return false;
-        zoneMinutes = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
-        return true;
-    };
-    const relative = (count, unit) => {
-        if (unit[0] === 'month')
-            months += count * unit[1];
-        else
-            ms += count * unit[1];
-    };
-    for (let i = 0; i < tokens.length; i++) {
-        const t = tokens[i];
-        const next = tokens[i + 1];
-        let m;
-        if (t === 'now' || t === 'today')
-            continue;
-        if (t === 'yesterday') {
-            ms -= 86_400_000;
-            continue;
-        }
-        if (t === 'tomorrow') {
-            ms += 86_400_000;
-            continue;
-        }
-        if (t === 'ago')
-            return null;
-        // An ISO date and time joined by T, with an optional zone on the end.
-        if ((m = /^(\d{4})-(\d{2})-(\d{2})t(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(z|[+-]\d{2}:?\d{2})?$/.exec(t))) {
-            if (!setDate(+m[1], +m[2], +m[3]) || !setTime(+m[4], +m[5], +(m[6] ?? 0), m[7], undefined))
-                return null;
-            if (m[8] && !setZone(m[8]))
-                return null;
-            continue;
-        }
-        if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t))) {
-            if (!setDate(+m[1], +m[2], +m[3]))
-                return null;
-            continue;
-        }
-        if ((m = /^(\d{4})(\d{2})(\d{2})$/.exec(t))) {
-            if (!setDate(+m[1], +m[2], +m[3]))
-                return null;
-            continue;
-        }
-        if ((m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/.exec(t))) {
-            const y = m[3] === undefined ? base.getUTCFullYear() : m[3].length === 2 ? (+m[3] >= 69 ? 1900 : 2000) + +m[3] : +m[3];
-            if (!setDate(y, +m[1], +m[2]))
-                return null;
-            continue;
-        }
-        // A time, with its meridian as the next word or joined to it, and a zone after it.
-        if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(am|pm)?(z|[+-]\d{2}:?\d{2})?$/.exec(t))) {
-            let meridian = m[5];
-            if (!meridian && (next === 'am' || next === 'pm')) {
-                meridian = next;
-                i++;
-            }
-            if (!setTime(+m[1], +m[2], +(m[3] ?? 0), m[4], meridian))
-                return null;
-            if (m[6] && !setZone(m[6]))
-                return null;
-            continue;
-        }
-        if (setZone(t))
-            continue;
-        // A month name, with a day and maybe a year around it.
-        const month = touchMonth(t);
-        if (month !== null) {
-            const before = tokens[i - 1];
-            let day = null;
-            if (next && /^\d{1,2}$/.test(next)) {
-                day = +next;
-                i++;
-            }
-            else if (before && /^\d{1,2}$/.test(before) && date === null && !time)
-                day = +before;
-            if (day === null)
-                return null;
-            let year = base.getUTCFullYear();
-            if (tokens[i + 1] && /^\d{4}$/.test(tokens[i + 1])) {
-                year = +tokens[i + 1];
-                i++;
-            }
-            if (!setDate(year, month, day))
-                return null;
-            continue;
-        }
-        // A day of the month before its month name ("1 Jan 2020") is read with the month.
-        if (/^\d{1,2}$/.test(t) && next && touchMonth(next) !== null)
-            continue;
-        // A year after date(1)'s "Wed Jan  1 10:00:00 UTC 2020".
-        if (/^\d{4}$/.test(t) && date !== null && time !== null) {
-            const d = date;
-            if (!realDay(+t, d.mo, d.d))
-                return null;
-            date = { ...d, y: +t };
-            continue;
-        }
-        const ordinal = ordinalWord(t);
-        if (ordinal !== null && next) {
-            const day = touchDay(next);
-            if (day !== null) {
-                if (weekday)
-                    return null;
-                weekday = { day, ordinal };
-                i++;
-                continue;
-            }
-            const unit = touchUnit(next);
-            if (unit) {
-                relative(ordinal, unit);
-                i++;
-                continue;
-            }
-            return null;
-        }
-        const day = touchDay(t);
-        if (day !== null) {
-            // A day beside a date ("Wed, 01 Jan 2020") only names it; alone it moves to that day.
-            if (!weekday)
-                weekday = { day, ordinal: 0 };
-            continue;
-        }
-        // [+-]N unit[s] [ago], or a unit alone ([ago]) meaning one.
-        if ((m = /^([+-]?\d+)$/.exec(t)) && next && touchUnit(next)) {
-            let count = +m[1];
-            i++;
-            if (tokens[i + 1] === 'ago') {
-                count = -count;
-                i++;
-            }
-            relative(count, touchUnit(next));
-            continue;
-        }
-        const unit = touchUnit(t);
-        if (unit) {
-            let count = 1;
-            if (next === 'ago') {
-                count = -1;
-                i++;
-            }
-            relative(count, unit);
-            continue;
-        }
-        return null;
-    }
-    // Compose: the named date (or today), the named time (or now's, or midnight
-    // when a date or a day was named), in the named zone; then the weekday; then
-    // the relative items, months by the calendar.
-    const d = date ?? { y: base.getUTCFullYear(), mo: base.getUTCMonth() + 1, d: base.getUTCDate() };
-    const t = time
-        ?? (date || weekday ? { h: 0, mi: 0, s: 0, ms: 0 } : { h: base.getUTCHours(), mi: base.getUTCMinutes(), s: base.getUTCSeconds(), ms: base.getUTCMilliseconds() });
-    let dayOfMonth = d.d;
-    if (weekday && !date) {
-        const w = weekday;
-        const today = new Date(Date.UTC(d.y, d.mo - 1, d.d)).getUTCDay();
-        // parse_datetime: forward to that day, then whole weeks by the ordinal (today counts as "this").
-        dayOfMonth += ((w.day - today + 7) % 7) + 7 * (w.ordinal - (w.ordinal > 0 && today !== w.day ? 1 : 0));
-    }
-    const at = Date.UTC(d.y, d.mo - 1 + months, dayOfMonth, t.h, t.mi, t.s, t.ms) - (zoneMinutes ?? 0) * 60_000;
-    return at + ms;
-}
 /** A `touch -t` stamp, `[[CC]YY]MMDDhhmm[.ss]`, in UTC, or null. Two-digit years 69-99 are 19xx, 00-68 20xx. */
 function parseTouchStamp(text, now) {
     const m = /^(\d{8}|\d{10}|\d{12})(?:\.(\d{2}))?$/.exec(text);
@@ -3514,7 +2892,7 @@ function mkTouch(vfs) {
             }
         }
         if (date !== null) {
-            const at = parseTouchDate(date, now);
+            const at = parseDateTime(date, now);
             if (at === null) {
                 await ctx.stderr.write(`touch: invalid date format '${date}'\n`);
                 return 1;
@@ -6106,7 +5484,6 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('date', wrap(mkDate()));
     registry.register('uptime', wrap(mkUptime()));
     registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));
-    registry.register('find', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkFind(vfs, registry))));
     registry.register('grep', textCommand(sqliteVfs, grepCommand));
     // SHELL-R6-B2: head uses streaming wrap so a pipe reader passes
     // through (head terminates after N lines, triggering the abort
@@ -6127,6 +5504,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     // entry is only reached when a command (xargs etc.) looks them up
     // via the registry path.
     registry.register('echo', wrap(mkEcho()));
+    registry.register('pwd', wrap(withInvocationVfs(sqliteVfs, mkPwd)));
     registry.register('cat', textCommand(sqliteVfs, catCommand));
     registry.register('tac', textCommand(sqliteVfs, tacCommand));
     registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));

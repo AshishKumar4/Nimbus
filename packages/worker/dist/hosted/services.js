@@ -4,6 +4,8 @@ import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
+import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
+import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
@@ -188,19 +190,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 // For commands that need stdin we pass a tiny adapter.
                 stdin: staticStdinReader(payload.stdin || ''),
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
-                runAs: async (targetCred, argv) => {
-                    if (argv.length === 0)
-                        return 0;
-                    const child = self.processes.spawn(argv.join(' '), argv, payload.cwd, { parentPid: payload.processPid, cred: targetCred });
-                    let exitCode = 1;
-                    try {
-                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, payload.cwd, payload.stdin, hooks);
-                        return exitCode;
-                    }
-                    finally {
-                        self.processes.exit(child.pid, exitCode);
-                    }
-                },
+                runAs: (targetCred, argv, options) => spawnBuiltin(payload.processPid, targetCred, argv, payload.env, options?.cwd ?? payload.cwd, payload.stdin, hooks),
                 // Reuse the broker's pid and let runtime RPC output reach its
                 // live queues. A direct inline invocation without a managed child
                 // still needs a captured result.
@@ -254,47 +244,61 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes('cp: registry unavailable\n'));
                 return 127;
             }
-            const commandName = normalizeCpCommandName(name);
-            const cmd = await registry.resolve(commandName, { cwd });
+            const cmd = await registry.resolve(normalizeCpCommandName(name), { cwd });
             if (!cmd) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
             }
-            const cred = self.processes.cred(pid);
-            const ac = new AbortController();
-            const ctx = {
-                pid,
-                cred,
-                args, env, cwd,
-                vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid, cred })),
-                stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
-                stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
-                signal: ac.signal,
-                stdin: staticStdinReader(stdin),
-                setUmask: (mask) => { self.processes.setUmask(pid, mask); },
-                runAs: async (targetCred, argv) => {
-                    if (argv.length === 0)
-                        return 0;
-                    const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
-                    let exitCode = 1;
-                    try {
-                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
-                        return exitCode;
-                    }
-                    finally {
-                        self.processes.exit(child.pid, exitCode);
-                    }
-                },
-            };
-            try {
-                const code = await cmd(ctx);
-                return typeof code === 'number' ? code : 0;
-            }
-            catch (e) {
-                hooks.onStderr(textBytes(`${name}: ${e?.message || String(e)}\n`));
-                return 1;
-            }
+            return await runBuiltin(cmd, pid, name, args, env, cwd, stdin, hooks);
         },
+    };
+    /** A registry command run as process `pid`, its output to `hooks`. */
+    const runBuiltin = async (cmd, pid, name, args, env, cwd, stdin, hooks) => {
+        const cred = self.processes.cred(pid);
+        const ac = new AbortController();
+        const ctx = {
+            pid,
+            cred,
+            args, env, cwd,
+            vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid, cred })),
+            stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
+            stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
+            signal: ac.signal,
+            stdin: staticStdinReader(stdin),
+            setUmask: (mask) => { self.processes.setUmask(pid, mask); },
+            runAs: (targetCred, argv, options) => spawnBuiltin(pid, targetCred, argv, env, options?.cwd ?? cwd, stdin, hooks),
+        };
+        try {
+            const code = await cmd(ctx);
+            return typeof code === 'number' ? code : 0;
+        }
+        catch (e) {
+            hooks.onStderr(textBytes(`${name}: ${errorText(e)}\n`));
+            return 1;
+        }
+    };
+    /**
+     * runAs for a builtin run on a process's behalf: execvp of `argv` in a
+     * child of `parentPid` under `cred`, in `cwd`. A program that is not
+     * there is ENOENT, as execvp fails, for the caller to report.
+     */
+    const spawnBuiltin = async (parentPid, cred, argv, env, cwd, stdin, hooks) => {
+        const [name, ...args] = argv;
+        if (name === undefined)
+            return 0;
+        const registry = self._cpRegistry;
+        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd }) : undefined;
+        if (!cmd)
+            throw syscallError('ENOENT', 'execvp', name);
+        const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid, cred });
+        let exitCode = 1;
+        try {
+            exitCode = await runBuiltin(cmd, child.pid, name, args, env, cwd, stdin, hooks);
+            return exitCode;
+        }
+        finally {
+            self.processes.exit(child.pid, exitCode);
+        }
     };
     // Construct the child-process Loader pool when the binding is available.
     // Unit-test hosts without LOADER continue through direct dispatch.
@@ -321,19 +325,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 }
                 const cred = self.processes.cred(pid);
                 const setUmask = (mask) => { self.processes.setUmask(pid, mask); };
-                const runAs = async (_parent, targetCred, argv) => {
-                    if (argv.length === 0)
-                        return 0;
-                    const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
-                    let exitCode = 1;
-                    try {
-                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
-                        return exitCode;
-                    }
-                    finally {
-                        self.processes.exit(child.pid, exitCode);
-                    }
-                };
+                // Where the command line's own command runs, which a `cd` in it may have moved.
+                const runAs = (parent, targetCred, argv) => spawnBuiltin(pid, targetCred, argv, env, parent.cwd, stdin, hooks);
                 const result = await self.shell.execute(String(commandLine), {
                     cwd: cwd || '/home/user',
                     env: { ...self.shell.env, ...(env || {}) },

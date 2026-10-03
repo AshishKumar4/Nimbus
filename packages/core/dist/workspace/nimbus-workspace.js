@@ -29,7 +29,6 @@ import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { textSink } from '../_shared/bytes.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
@@ -399,10 +398,10 @@ function defaultEnv(home) {
  *
  * Every command is credentialed by a live entry in the process table, which is
  * what makes `sudo`, `chown` and the per-process umask mean anything. `runAs`
- * is the privilege-transition path: it spawns a child of the calling process
- * under the requested credential and re-runs the command line through the
- * shell, so the elevated or dropped execution is a real table entry rather
- * than a flag on the parent's.
+ * is how a command starts another (sudo, su, find -exec): a child of the
+ * calling process under the requested credential, a real table entry rather
+ * than a flag on the parent's, that execvp's its argv as a program, with no
+ * shell between them to find a function or an alias by that name.
  */
 function workspaceShellIdentity(processes, shellProcess, getShell) {
     const runAsProcess = async (parent, cred, argv) => {
@@ -412,34 +411,22 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
             parentPid: parent.pid,
             cred,
         });
-        const identity = commandIdentityFor(child.pid);
         let exitCode = 1;
         try {
-            const stdin = parent.stdin && parent.stdin !== parent.terminalStdin
-                ? await parent.stdin.readAll()
-                : undefined;
-            const result = await getShell().execute(argv.map(quoteShellArgument).join(' '), {
+            // The child inherits its parent's descriptors, environment and directory.
+            exitCode = await getShell().runProgram(argv, {
+                identity: commandIdentityFor(child.pid),
                 cwd: parent.cwd,
                 env: parent.env,
-                stdin,
+                stdin: parent.stdin,
+                stdout: parent.stdout,
+                stderr: parent.stderr,
                 terminalStdin: parent.terminalStdin,
+                isFdTerminal: parent.isFdTerminal,
+                isFdPipe: parent.isFdPipe,
                 signal: parent.signal,
-                isolateShellState: true,
-                terminalFds: {
-                    stdin: parent.isFdTerminal?.(0) ?? false,
-                    stdout: parent.isFdTerminal?.(1) ?? false,
-                    stderr: parent.isFdTerminal?.(2) ?? false,
-                },
-                onStdout: textSink((data) => parent.stdout.write(data)),
-                onStderr: textSink((data) => parent.stderr.write(data)),
-                commandContext: {
-                    pid: identity.pid,
-                    cred: identity.cred,
-                    setUmask: identity.setUmask,
-                },
                 runAs: runAsProcess,
             });
-            exitCode = result.exitCode;
             return exitCode;
         }
         finally {
@@ -457,9 +444,6 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         runAs: runAsProcess,
     });
     return commandIdentityFor(shellProcess.pid);
-}
-function quoteShellArgument(value) {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 /**
  * Turn a facet host into commands: runner factories for the runtimes this

@@ -1,8 +1,12 @@
 /**
  * gnulib's parse_datetime, the date grammar GNU's touch -d and find's
  * -newerXt share, in the session's zone (UTC).
+ *
+ * Its arithmetic is gnulib's, in exact integers: every number is a time_t,
+ * a calendar field is a struct tm int, and a step that overflows either
+ * refuses the date, as gnulib's checked arithmetic does.
  */
-/** Whether y-m-d (1-based month) is a real calendar day. */
+/** Whether y-m-d (1-based month) is a real day of the proleptic Gregorian calendar, any year. */
 export declare function realDay(y: number, mo: number, d: number): boolean;
 /**
  * A date as gnulib's parse_datetime reads it (`touch -d`, `find -newermt`),

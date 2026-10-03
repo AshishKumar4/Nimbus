@@ -95,11 +95,7 @@ type ExecutionIo = {
     positionals?: PositionalFrame;
     /** Host-supplied fields merged into each command's CommandContext. */
     commandContext?: Record<string, unknown>;
-    commandIdentity?: {
-        pid: number;
-        cred: VfsCred;
-        setUmask(mask: number): void;
-    };
+    commandIdentity?: CommandIdentity;
     runAs?: CommandRunAsHost;
     vfs?: ProcessView;
     /** The terminal's own shell (bash -i): job notices are printed. */
@@ -107,6 +103,29 @@ type ExecutionIo = {
     /** Files the enclosing redirections hold open, by their stream. */
     openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
+/** The process a command runs as: its pid and credential, and how it sets its umask. */
+export interface CommandIdentity {
+    readonly pid: number;
+    readonly cred: VfsCred;
+    setUmask(mask: number): void;
+}
+/** What a program started by runProgram runs with: its identity, directory, environment and inherited streams. */
+export interface ProgramSpec {
+    readonly identity: CommandIdentity;
+    readonly cwd: string;
+    readonly env: Record<string, string>;
+    readonly stdin?: CommandInputStream;
+    readonly stdout: CommandOutputStream;
+    readonly stderr: CommandOutputStream;
+    readonly terminalStdin?: TerminalInputStream;
+    readonly isFdTerminal?: (fd: number) => boolean;
+    readonly isFdPipe?: (fd: number) => boolean;
+    readonly signal: AbortSignal;
+    /** How the program's own runAs starts a child, as its parent's did. */
+    readonly runAs?: CommandRunAsHost;
+    /** Host-supplied fields merged into the program's CommandContext. */
+    readonly commandContext?: Record<string, unknown>;
+}
 export type TerminalFdState = {
     stdin?: boolean;
     stdout?: boolean;
@@ -183,11 +202,7 @@ export declare class Interpreter {
         terminalFds?: TerminalFdState;
         scriptMode?: boolean;
         commandContext?: Record<string, unknown>;
-        commandIdentity?: {
-            pid: number;
-            cred: VfsCred;
-            setUmask(mask: number): void;
-        };
+        commandIdentity?: CommandIdentity;
         runAs?: CommandRunAsHost;
         signal?: AbortSignal;
         interactive?: boolean;
@@ -217,6 +232,20 @@ export declare class Interpreter {
     private executeSubshell;
     private executeCompoundList;
     private executeSimpleCommand;
+    /**
+     * execvp(3) of `argv`: argv[0] is found as a program is found (the
+     * registry, then a path from `spec.cwd`), never as a function, an alias or
+     * a builtin, and runs as a process on the streams it is handed. A program
+     * that is not there is ENOENT, as execvp fails, for the caller to report.
+     */
+    runProgram(argv: readonly string[], spec: ProgramSpec): Promise<number>;
+    /**
+     * A resolved command, run as a process of this shell's: listed for ps,
+     * jobs and kill while it runs, aborted with `spec.signal`, and its failure
+     * (a closed pipe, an abort, a throw) turned into the status a process
+     * would end with.
+     */
+    private runCommand;
     private assignEnv;
     /**
      * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.

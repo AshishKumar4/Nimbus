@@ -33,14 +33,19 @@ type Key = readonly number[];
 /** One unit of filesystem work: started when there is room ahead of the walk, or at once when the walk needs it. */
 declare class Task<T> {
     readonly key: Key;
-    readonly listing: boolean;
     private readonly run;
     private readonly scheduler;
+    /** For a listing: how many entries its result holds in the window. */
+    private readonly weigh;
     private promise;
-    /** A listing started ahead of the walk, holding a place in the read-ahead window until the walk takes it or passes it. */
-    held: boolean;
-    constructor(key: Key, listing: boolean, run: () => Promise<T>, scheduler: Scheduler);
+    /** The entries of the read-ahead window this task holds until the walk takes it or passes it; 0 when none. */
+    held: number;
+    constructor(key: Key, run: () => Promise<T>, scheduler: Scheduler, 
+    /** For a listing: how many entries its result holds in the window. */
+    weigh: ((value: T) => number) | null);
     get started(): boolean;
+    /** Whether this task, started ahead of the walk, holds a share of the window. */
+    get windowed(): boolean;
     /** The outcome, starting the work now if nothing has yet. */
     result(): Promise<Outcome<T>>;
 }
@@ -48,9 +53,9 @@ declare class Task<T> {
 export declare const READ_AHEAD_CALLS = 16;
 /**
  * Starts queued tasks in walk order, at most `calls` filesystem calls at
- * once and at most READ_AHEAD_LISTINGS listings waiting for the walk. A task
- * the walk has passed is dropped from the queue; only the walk itself can
- * still start it (a -depth visit going back to its directory).
+ * once, and no more listings once READ_AHEAD_ENTRIES entries wait for the
+ * walk. A task the walk has passed is dropped from the queue; only the walk
+ * itself can still start it (a -depth visit going back to its directory).
  */
 declare class Scheduler {
     private readonly calls;
@@ -64,14 +69,17 @@ declare class Scheduler {
     private idle;
     constructor(calls: number);
     get enabled(): boolean;
-    task<T>(key: Key, listing: boolean, run: () => Promise<T>): Task<T>;
+    /** Work for the walk at `key`; a listing says how many entries its result holds in the window. */
+    task<T>(key: Key, run: () => Promise<T>, weigh?: ((value: T) => number) | null): Task<T>;
     /** Queue `task` to run ahead of the walk. */
     ahead(task: Task<unknown>): void;
     started(): void;
     settled(): void;
-    /** The walk has taken a listing, or passed it: its place in the window is free. */
+    /** A listing read ahead has arrived: its entries wait in the window, unless the walk has already taken or passed it. */
+    hold(task: Task<unknown>, entries: number): void;
+    /** The walk has taken a listing, or passed it: its share of the window is free. */
     release(task: Task<unknown>): void;
-    /** The walk has reached `key`: everything before it is behind the walk. */
+    /** The walk has reached `key`: everything before it is behind the walk, and let go. */
     advance(key: Key): void;
     stop(): void;
     /** Once the calls already started have answered: find's reads do not outlive it. */
@@ -171,6 +179,12 @@ export declare class FindEntry {
      * every call reads the directory again, as GNU's -empty and fts each do.
      */
     listing(): Promise<Outcome<VfsDirent[]>>;
+    /**
+     * Let go of what was read for this file and below it, once the walk is
+     * done with it: it stays only as an entry of its parent's listing, as an
+     * FTSENT does until fts leaves the parent.
+     */
+    release(): void;
     /** The entries of this directory's listing, made once for the walk and its read-ahead alike. */
     children(listing: readonly VfsDirent[]): FindEntry[];
     /** The listing, taken by the walk to descend: it no longer holds a place in the read-ahead window. */
@@ -216,12 +230,15 @@ export declare class Walker {
     /** Walk every start point, until the last or until -quit or an abort ends the walk. */
     run(startPoints: readonly string[]): Promise<void>;
     private walk;
+    private walkEntry;
     /**
      * Queue what the walk will want from these children: the stats it takes
      * (and the expression's, when it reads them), and the listings of the
      * directories it will descend into. Under -xdev only the stat says whether
-     * a directory is on this device, so a probe queued in its place reads the
-     * stat first and never lists a directory on another one.
+     * a directory is on this device, and when links are followed only the
+     * stats of its ancestors say whether it is one of them; then a probe queued
+     * in its place reads those first, and never lists a directory on another
+     * device or one the walk will refuse as a loop.
      */
     private readAhead;
     private stopWalk;
