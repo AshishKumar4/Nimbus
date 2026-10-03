@@ -30,6 +30,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import {
   answeringSupervisor,
+  FILESYSTEM_RPC_METHODS,
   SUPERVISOR_ANSWERED_METHODS,
   supervisorFilesystem,
   vfsSupervisor,
@@ -170,6 +171,12 @@ await assert.rejects(entrypoint().answer('cpSpawn', [{}]), TypeError, 'answer ru
 for (const method of SUPERVISOR_ANSWERED_METHODS) {
   assert.equal(typeof SupervisorRPC.prototype[method], 'function', `${method} is a SupervisorRPC method`);
 }
+// One source of truth: every call the bridge makes is answered but the
+// streamed write, whose stream does not travel inside an argument list.
+for (const method of Object.values(FILESYSTEM_RPC_METHODS)) {
+  assert.equal(SUPERVISOR_ANSWERED_METHODS.includes(method), method !== FILESYSTEM_RPC_METHODS.writeStream, method);
+}
+assert.equal(new Set(SUPERVISOR_ANSWERED_METHODS).size, SUPERVISOR_ANSWERED_METHODS.length, 'no method is listed twice');
 
 // ── (2) the client rethrows exactly what the throw delivered ────────────────
 for (const [method, args] of REFUSED) {

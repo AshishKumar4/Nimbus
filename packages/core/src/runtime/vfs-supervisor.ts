@@ -112,24 +112,30 @@ function asBytes<T extends Uint8Array | null>(value: T | ArrayBuffer): T | Uint8
 // here as the error the throw would have delivered. Anything without a code
 // (a dropped connection, a bug) still throws.
 
-/**
- * The SupervisorRPC methods `answer` runs: the filesystem surface, every
- * table entry above but the streamed write, and the calls node's shims make
- * that the bridge does not name. The worker checks each is a method of its
- * SupervisorRPC.
- */
-export const SUPERVISOR_ANSWERED_METHODS = [
-  'stat', 'readFileBytes', 'writeFile', 'fsReadRange', 'fsWriteRange', 'fsTruncate', 'utimes', 'chmod',
-  'access', 'chown', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose', 'readdir', 'mkdir', 'unlink', 'rmdir',
-  'rename', 'readlink', 'symlink', 'fsSync', 'fsRevision', 'fsAcquire', 'fsList', 'fsRealpath', 'fsRemove',
-  'fsCopyFile', 'fsCopyTree', 'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate',
-  'fsFchmod', 'fsFchown', 'fsFutimes', 'fsAppend', 'fsAppendAck', 'writeBatch', 'fsAcquireExclusiveMutation',
-  'fsReleaseExclusiveMutation',
+type BridgeRpcMethod = typeof FILESYSTEM_RPC_METHODS[Method];
+
+/** The calls node's shims make that the bridge does not name. */
+const NODE_SHIM_RPC_METHODS = [
   'readFile', 'writeFileStat', 'lstat', 'exists', 'hasLegacySymlinkUnder', 'setUmask', 'fsAcquired',
   'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch',
 ] as const;
 
-export type SupervisorAnsweredMethod = typeof SUPERVISOR_ANSWERED_METHODS[number];
+/**
+ * The SupervisorRPC methods `answer` runs: the filesystem surface, every
+ * table entry above but the streamed write (a stream does not travel inside
+ * `answer`'s argument list), and the node shims' own calls. The worker checks
+ * each is a method of its SupervisorRPC.
+ */
+export type SupervisorAnsweredMethod =
+  | Exclude<BridgeRpcMethod, typeof FILESYSTEM_RPC_METHODS.writeStream>
+  | typeof NODE_SHIM_RPC_METHODS[number];
+
+export const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[] = [
+  ...Object.values(FILESYSTEM_RPC_METHODS).filter(
+    (name): name is Exclude<BridgeRpcMethod, typeof FILESYSTEM_RPC_METHODS.writeStream> => name !== FILESYSTEM_RPC_METHODS.writeStream,
+  ),
+  ...NODE_SHIM_RPC_METHODS,
+];
 
 const ANSWERED = new Set<string>(SUPERVISOR_ANSWERED_METHODS);
 
