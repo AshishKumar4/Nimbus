@@ -153,6 +153,7 @@ class GuardedProcessBridge {
     rmdir(path) { this.guard(); return this.target.rmdir(path); }
     rename(from, to) { this.guard(); return this.target.rename(from, to); }
     readlink(path) { this.guard(); return this.target.readlink(path); }
+    linkLeadsTo(path, link) { this.guard(); return this.target.linkLeadsTo(path, link); }
     symlink(target, path) { this.guard(); return this.target.symlink(target, path); }
     fsync(handleId) { this.guard(); return this.target.fsync(handleId); }
     revision(path) { this.guard(); return this.target.revision(path); }
@@ -777,6 +778,7 @@ class AwaitingProcessBridge {
     readlink(path) {
         return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.namespace.readlink((await this.path(path, false)))));
     }
+    linkLeadsTo(path, link) { return this.namespace.linkLeadsTo(path, link); }
     symlink(target, path) {
         return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
     }
@@ -1128,6 +1130,8 @@ export class ProcessView {
             throw syscallError('EINVAL', 'readlink', path);
         return target;
     }
+    /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
+    async linkLeadsTo(path, link) { return await this.process.linkLeadsTo(path, link); }
     async chmod(path, mode) { await this.call('chmod', path, () => this.process.chmod(path, mode)); }
     /** chown(2): a null side keeps what the file has (chown -1). */
     async chown(path, uid, gid) {

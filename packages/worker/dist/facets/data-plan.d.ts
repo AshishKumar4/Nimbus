@@ -1,3 +1,4 @@
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 export interface DataPlanEntry {
     path: string;
@@ -13,8 +14,12 @@ export interface DataPlanSource {
     }>;
     /** A file's text, or null when it cannot be read. */
     readText(path: string): Promise<string | null>;
-    /** A symlink's target as stored, or null when the path is not a symlink. */
-    readlink(path: string): Promise<string | null>;
+    /**
+     * Where the symlink at a path leads, as the namespace follows it (its
+     * stored target, re-rooted on a mount that reads its links from its own
+     * root: RuntimeFsBridge.linkLeadsTo), or null when the path is not a symlink.
+     */
+    linkTarget(path: string): Promise<string | null>;
     /** What is at a path, following symlinks, or null. */
     stat(path: string): Promise<{
         kind: string;
@@ -45,6 +50,12 @@ export interface DataPlan {
 export declare const PACKAGE_DATA_MAX_BYTES: number;
 /** The package directory a path sits in: up to the name after its last node_modules. */
 export declare function packageRootOf(k: string): string | null;
+/**
+ * DataPlanSource.linkTarget over a process's bridge: where the symlink at
+ * `path` leads as the namespace follows it, or null when it is no link. A
+ * missing or unreadable component is not a link: the lookup ends there.
+ */
+export declare function linkTargetOf(fs: Pick<RuntimeFsBridge, 'readlink' | 'linkLeadsTo'>, path: string): Promise<string | null>;
 /**
  * The plan for one launch. Walks the namespace once, in pages.
  */

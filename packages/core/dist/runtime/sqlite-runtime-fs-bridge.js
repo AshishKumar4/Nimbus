@@ -790,7 +790,7 @@ export class SqliteRuntimeFsBridge {
                     return step.value;
                 const lookup = step.value;
                 step = walk.next('readlink' in lookup
-                    ? this.leadsTo(lookup.readlink, this.readlink(lookup.readlink) ?? '')
+                    ? this.linkLeadsTo(lookup.readlink, this.readlink(lookup.readlink) ?? '')
                     : lookup.stat === '/' ? this.rootStat() : this.stat(lookup.stat, { followSymlinks: false }));
             }
         }
@@ -878,10 +878,10 @@ export class SqliteRuntimeFsBridge {
         }
         if (stat === null || stat.type !== 'symlink' || typeof this.mounted.readlink !== 'function')
             return null;
-        return this.leadsTo(path, this.mounted.readlink(path));
+        return this.linkLeadsTo(path, this.mounted.readlink(path));
     }
-    /** Where the link at `path`, reading `link`, leads for this walk: the namespace's link-root rule (CompositeVFS.linkLeadsTo). */
-    leadsTo(path, link) {
+    /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
+    linkLeadsTo(path, link) {
         return this.namespace === undefined ? link : this.namespace.linkLeadsTo(path, link);
     }
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */

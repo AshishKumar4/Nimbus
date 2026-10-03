@@ -436,6 +436,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsRealpath(...args) {
         return this._call(this._fsRead('fsRealpath', args));
     }
+    async fsLinkLeadsTo(...args) {
+        return this._call(this._fsRead('fsLinkLeadsTo', args));
+    }
     async fsRemove(...args) {
         return this._call(this._fsMutation('fsRemove', args));
     }

@@ -145,8 +145,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private resolveDataPath;
     /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
     private mountedLink;
-    /** Where the link at `path`, reading `link`, leads for this walk: the namespace's link-root rule (CompositeVFS.linkLeadsTo). */
-    private leadsTo;
+    /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
+    linkLeadsTo(path: string, link: string): string;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */

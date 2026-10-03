@@ -223,6 +223,20 @@ function resolutionFs(source) {
         },
     };
 }
+/**
+ * DataPlanSource.linkTarget over a process's bridge: where the symlink at
+ * `path` leads as the namespace follows it, or null when it is no link. A
+ * missing or unreadable component is not a link: the lookup ends there.
+ */
+export async function linkTargetOf(fs, path) {
+    try {
+        const text = await fs.readlink(path);
+        return text === null ? null : await fs.linkLeadsTo(path, text);
+    }
+    catch {
+        return null;
+    }
+}
 /** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
 /**
@@ -237,7 +251,7 @@ async function throughLinks(source, k) {
         let followed = false;
         for (let i = 1; i <= segs.length; i++) {
             const at = segs.slice(0, i).join('/');
-            const target = await source.readlink('/' + at);
+            const target = await source.linkTarget('/' + at);
             if (target === null)
                 continue;
             const base = target.startsWith('/') ? key(target) : joinKey(parentOf(at), target);
