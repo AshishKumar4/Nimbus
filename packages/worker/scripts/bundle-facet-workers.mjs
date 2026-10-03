@@ -563,6 +563,16 @@ async function main() {
     throw new Error('[bundle-facet-workers/esm-resolver] the bundle no longer declares function createEsmResolver');
   }
 
+  // 4. node:http2, which the node shims embed as source, as the substrate's
+  //    node-compat module map imports it: one module, both runtimes.
+  const http2Module = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'http2-module.ts'),
+    'http2-module',
+  );
+  if (!/^function createHttp2Module\(/m.test(http2Module)) {
+    throw new Error('[bundle-facet-workers/http2-module] the bundle no longer declares function createHttp2Module');
+  }
+
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
   const outPath = join(root, 'src', 'loaders', 'generated-workers.ts');
@@ -575,6 +585,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
     ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
+    ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -596,6 +607,9 @@ async function main() {
     '',
     '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
     `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,
+    '',
+    '/** Declares `function createHttp2Module(host)`; the node shims call it. */',
+    `export const HTTP2_MODULE_PREAMBLE: string = ${JSON.stringify(http2Module)};`,
     '',
   ].join('\n');
 
