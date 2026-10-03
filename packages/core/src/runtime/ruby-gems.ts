@@ -3,6 +3,7 @@ import { direntTypeIn } from '../vfs/dirent-type.js';
 import { extractTarball } from '../_shared/tarball.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 
 const RUBYGEMS_API = 'https://rubygems.org';
 
@@ -528,11 +529,19 @@ async function writeGemExecutableWrapper(
   const binRoot = `${gemHome}/bin`;
   (await ensureDir(vfs, binRoot));
   const scriptPath = `/${gemHome}/gems/${installedKey}/bin/${executable}`;
-  (await vfs.writeFile(`${binRoot}/${executable}`, [
+  // An executable on PATH, as RubyGems writes it: a prior wrapper removed,
+  // then the new one created 0755 (less the umask).
+  const wrapperPath = `${binRoot}/${executable}`;
+  try {
+    await vfs.unlink(wrapperPath);
+  } catch (error) {
+    if (!isVfsError(error, 'ENOENT')) throw error;
+  }
+  (await vfs.writeFile(wrapperPath, [
     '#!/usr/bin/env ruby',
     `load ${JSON.stringify(scriptPath)}`,
     '',
-  ].join('\n')));
+  ].join('\n'), { mode: 0o755 }));
 }
 
 async function writeInstalledGemRecord(vfs: CredentialedVfs, gemHome: string, record: InstalledGemRecord): Promise<void> {
