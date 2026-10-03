@@ -4,24 +4,21 @@
  *
  * Why this exists
  * ───────────────
- * Pre-bundling npm packages (the `Pre-bundling N modules…` step in
- * src/npm/installer.ts) runs inside NimbusIsolatePool isolates so each
- * `esbuild.build()` allocation hits a fresh 128 MiB envelope rather
- * than the supervisor's. The facet needs two pieces of esbuild-wasm
- * at module-load time:
+ * esbuild runs only in a Durable Object's esbuild facet
+ * (src/facets/esbuild-transform.ts), and only for what Nimbus's own engines
+ * do not do: the `esbuild` command, a module nested too deeply for Oxc's
+ * stack, and a build whose rolldown binding died. The facet needs two
+ * pieces of esbuild-wasm, both staged in the static-assets layer and
+ * fetched, digest-checked, only when the facet is loaded:
  *
  *   1. The JS adapter (`esbuild-wasm/esm/browser.js`, ~117 KiB), rewritten
- *      into a function body. The supervisor already imports the same
- *      build as a module for its own transforms, so the adapter is staged
- *      in the static-assets layer rather than embedded a second time as a
- *      string.
+ *      into a function body the facet compiles at startup.
  *
- *   2. The wasm binary (`esbuild.wasm`) — 12 MiB. The host Worker bundles
- *      it already (core's EsbuildService imports `esbuild-wasm/esbuild.wasm`)
- *      and workerd compiles it at script startup, so facets are handed
- *      that compiled WebAssembly.Module (src/runtime/host-wasm.ts). Neither
- *      a staged copy, nor a fetch of it, nor a second compile. This script
- *      only records its size.
+ *   2. The wasm binary (`esbuild.wasm`, 11.4 MiB), a module of the facet's
+ *      module map, compiled when the facet starts. The host Worker carries
+ *      none of it: bundled, wrangler made it a compiled module of the
+ *      Worker, which workerd compiled at startup in every isolate, whether
+ *      or not the isolate ever ran esbuild.
  *
  * Pre-A'.5 design (this script's prior form) embedded the wasm bytes
  * as a base64 string in src/esbuild-wasm-bundle.generated.ts. That
@@ -51,11 +48,15 @@
  *   src/esbuild-wasm-bundle.generated.ts
  *     export const ESBUILD_WASM_VERSION: string;
  *     export const ESBUILD_JS_ASSET_PATH: string;    // /_assets/esbuild-<version>.js
- *     export const ESBUILD_WASM_BYTES: number;       // bundled wasm size
  *     export const ESBUILD_JS_SHA256: string;        // staged adapter digest
+ *     export const ESBUILD_WASM_ASSET_PATH: string;  // /_assets/esbuild-<version>.wasm
+ *     export const ESBUILD_WASM_SHA256: string;      // staged wasm digest
+ *     export const ESBUILD_WASM_BYTES: number;       // staged wasm size
  *
  *   public/_assets/esbuild-<version>.js
  *     The adapter as a function body, picked up by the ASSETS binding.
+ *   public/_assets/esbuild-<version>.wasm
+ *     esbuild-wasm's esbuild.wasm, byte for byte.
  *
  * Run via:
  *   node scripts/bundle-esbuild-wasm.mjs
@@ -143,25 +144,19 @@ async function main() {
     `[bundle-esbuild-wasm] rewrote ${exportBody.split(',').length} exports → object-return shape`,
   );
 
-  // ── 2. The wasm: bundled into the Worker, not staged ────────────────
-  // Core's EsbuildService imports `esbuild-wasm/esbuild.wasm`, so wrangler
-  // already bundles this exact file as a compiled wasm module, and workerd
-  // compiles it at script startup. Facets are handed that WebAssembly.Module
-  // (src/runtime/host-wasm.ts) instead of fetching a second copy from
-  // ASSETS and compiling it again. The generated module records its size,
-  // which the 64 MiB dynamic-worker code budget counts: a compiled module's
-  // wire bytes still count toward it (workerd src/workerd/api/
-  // worker-loader.c++, extractWasmModuleContent), and JS cannot read that
-  // size off a Module.
+  // ── 2. The wasm: staged, byte for byte ──────────────────────────────
+  // The esbuild facet fetches it (digest-checked) when it is loaded and
+  // hands it to its module map, where workerd compiles it at the facet's
+  // startup; no other isolate holds it.
   const wasmBytes = await fs.readFile(WASM_SRC);
-  console.log(
-    `[bundle-esbuild-wasm] esbuild.wasm: ${(wasmBytes.length / (1024 * 1024)).toFixed(1)} MiB, handed to facets as the host's compiled module`,
-  );
   await fs.mkdir(OUT_ASSETS_DIR, { recursive: true });
-  // The JS adapter is staged. Facets splice it into their source as a
-  // string; the supervisor imports esbuild-wasm as a module for its own
-  // transforms, so carrying the adapter inline as well shipped it twice in
-  // the Worker bundle.
+  const wasmAssetName = `esbuild-${version}.wasm`;
+  await fs.writeFile(path.join(OUT_ASSETS_DIR, wasmAssetName), wasmBytes);
+  const wasmSha256 = createHash('sha256').update(wasmBytes).digest('hex');
+  console.log(
+    `[bundle-esbuild-wasm] staged esbuild.wasm → public/_assets/${wasmAssetName} (${(wasmBytes.length / (1024 * 1024)).toFixed(1)} MiB)`,
+  );
+  // The JS adapter, staged beside it: the facet splices it into its source as a string.
   const jsAssetName = `esbuild-${version}.js`;
   const jsAssetOut = path.join(OUT_ASSETS_DIR, jsAssetName);
   const jsBytes = Buffer.from(jsFn, 'utf8');
@@ -172,30 +167,26 @@ async function main() {
   );
 
   // ── 3. Clean up stale staged esbuild assets in public/_assets/ ──────
-  // Keeps the deploy lean: an old version's adapter, and any staged wasm
-  // (no longer staged at all), are removed.
+  // Keeps the deploy lean: an old version's adapter and wasm are removed.
   for (const entry of await fs.readdir(OUT_ASSETS_DIR)) {
-    if (entry.startsWith('esbuild-') && (entry.endsWith('.wasm') || (entry.endsWith('.js') && entry !== jsAssetName))) {
+    if (entry.startsWith('esbuild-') && ((entry.endsWith('.wasm') && entry !== wasmAssetName) || (entry.endsWith('.js') && entry !== jsAssetName))) {
       const stale = path.join(OUT_ASSETS_DIR, entry);
       await fs.unlink(stale);
       console.log(`[bundle-esbuild-wasm] removed stale asset: ${entry}`);
     }
   }
 
-  // ── 4. Emit the generated TS module: version, size and digest only ──
-  // Nothing is inline. The base64 wasm string was 16 MiB and sat in
-  // supervisor module scope for the isolate's lifetime; the JS adapter
-  // followed the wasm to env.ASSETS so the bundle carries esbuild-wasm
-  // once, as the modules the supervisor imports.
+  // ── 4. Emit the generated TS module: paths, sizes and digests only ──
+  // Nothing is inline: the Worker bundle carries no part of esbuild-wasm.
   const header = `/**
  * esbuild-wasm-bundle.generated.ts — AUTO-GENERATED by scripts/bundle-esbuild-wasm.mjs
  * DO NOT EDIT.
  *
- * The esbuild-wasm ${version} artifacts facets use. The wasm is the host
- * Worker's own bundled module (\`esbuild-wasm/esbuild.wasm\`), handed over
- * compiled by src/runtime/host-wasm.ts; the JS adapter lives in the
- * static-assets layer, public/_assets/esbuild-${version}.js, fetched on
- * demand and verified by src/runtime/esbuild-wasm-bytes.ts.
+ * The esbuild-wasm ${version} artifacts the esbuild facet runs: the wasm,
+ * public/_assets/esbuild-${version}.wasm, and the JS adapter,
+ * public/_assets/esbuild-${version}.js, both in the static-assets layer,
+ * fetched when the facet is loaded and verified by
+ * src/runtime/esbuild-wasm-bytes.ts. The host Worker bundles neither.
  *
  * The JS adapter is node_modules/esbuild-wasm/esm/browser.js with the
  * trailing \`export { ... }\` rewritten to \`return { ... };\`, so that
@@ -226,13 +217,14 @@ export const ESBUILD_WASM_VERSION: string = ${JSON.stringify(version)};
  * check, which discovers asset paths by value in generated modules.
  */
 export const ESBUILD_JS_ASSET_PATH: string = ${JSON.stringify('/_assets/' + jsAssetName)};
-/**
- * Bytes of the esbuild.wasm the host bundles: what a facet carrying the
- * host's compiled module counts toward the dynamic-worker code budget.
- */
-export const ESBUILD_WASM_BYTES: number = ${wasmBytes.length};
 /** SHA-256 of the staged public/_assets/esbuild-${version}.js adapter, checked before it is evaluated. */
 export const ESBUILD_JS_SHA256: string = ${JSON.stringify(jsSha256)};
+/** Where esbuild.wasm lives inside env.ASSETS, version-named like the adapter. */
+export const ESBUILD_WASM_ASSET_PATH: string = ${JSON.stringify('/_assets/' + wasmAssetName)};
+/** SHA-256 of the staged esbuild.wasm, checked before the facet compiles it. */
+export const ESBUILD_WASM_SHA256: string = ${JSON.stringify(wasmSha256)};
+/** Bytes of the staged esbuild.wasm: what the facet's module map counts toward the dynamic-worker code budget. */
+export const ESBUILD_WASM_BYTES: number = ${wasmBytes.length};
 `;
   await fs.writeFile(OUT_TS, header, 'utf8');
   const stat = await fs.stat(OUT_TS);

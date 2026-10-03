@@ -7,10 +7,9 @@ import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
-import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-wasm-bytes.js';
+import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { fetchOxcFacetRuntime } from '../runtime/oxc-wasm-bytes.js';
-import { esbuildWasmModule } from '../runtime/host-wasm.js';
 import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
 import { rolldownBuildHost } from './build-facet.js';
 /**
@@ -67,8 +66,8 @@ const ESBUILD_FACET_BODY = [
 export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
- * `wasmModule` is the host Worker's own compiled esbuild module
- * (runtime/host-wasm.ts), shared with the facet rather than compiled again.
+ * `wasm` is the staged esbuild.wasm (fetchEsbuildWasmBytes), compiled by the
+ * facet's module map at its startup: no other isolate holds it.
  * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
  * factory at startup, the one moment code may be generated from a string;
  * each call of the factory is a separate esbuild, and takes the `WebAssembly`
@@ -76,7 +75,7 @@ export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:$
  * the global one unless given). `cliRunner` is the staged runner of the
  * `esbuild` command (fetchEsbuildCliRunner).
  */
-export function esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner, transformRuntime) {
+export function esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime) {
     const source = [
         'import { DurableObject } from "cloudflare:workers";',
         'import wasmModule from "esbuild.wasm";',
@@ -92,7 +91,7 @@ export function esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner, transfor
         mainModule: 'worker.js',
         modules: {
             'worker.js': source,
-            'esbuild.wasm': { wasm: wasmModule },
+            'esbuild.wasm': { wasm },
         },
         globalOutbound: null,
     };
@@ -113,13 +112,13 @@ async function esbuildFacet(ctx, env) {
     }
     const worker = await loader.get(ESBUILD_FACET_WORKER_ID, async () => {
         const assetsEnv = { ASSETS: assets };
-        const [wasmModule, jsFnBody, cliRunner, transformRuntime] = await Promise.all([
-            esbuildWasmModule(),
+        const [wasm, jsFnBody, cliRunner, transformRuntime] = await Promise.all([
+            fetchEsbuildWasmBytes(assetsEnv),
             fetchEsbuildJsFnBody(assetsEnv),
             fetchEsbuildCliRunner(assetsEnv),
             fetchOxcFacetRuntime(assetsEnv),
         ]);
-        return esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner, transformRuntime);
+        return esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime);
     });
     const facetClass = worker.getDurableObjectClass('EsbuildFacet');
     return ctx.facets.get(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));

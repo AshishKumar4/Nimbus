@@ -620,48 +620,6 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
         warnings: [],
     };
 }
-/**
- * Cached reference to the esbuild namespace. Populated on first
- * `loadEsbuild()` call; nullable until then so module-load code paths
- * that never touch bundling can complete without ever evaluating
- * esbuild-wasm's JS at all.
- */
-let _esbuildMod = null;
-let _esbuildLoadPromise = null;
-/**
- * Load the esbuild-wasm namespace. Safe to call many times; concurrent
- * callers share a single in-flight Promise, and a rejection clears the
- * cache so a later call can retry.
- *
- * Exported so `tests/unit/esbuild-wasm-entrypoint.mjs` can drive the real
- * specifier under a Node-style resolver. A test that restated the specifier
- * would grade its own copy of it, and this defect reached production
- * precisely because nothing graded the resolution.
- *
- * The specifier stays a literal: a computed one would defeat the host
- * bundler's static analysis and leave the module out of the deployed worker.
- */
-export async function loadEsbuild() {
-    if (_esbuildMod)
-        return _esbuildMod;
-    if (_esbuildLoadPromise)
-        return _esbuildLoadPromise;
-    _esbuildLoadPromise = (async () => {
-        // Deliberately dynamic: a static import would evaluate esbuild-wasm in
-        // every session, including the ones that only serve a shell and never
-        // bundle. The specifier is still a literal so the host bundler sees it.
-        const mod = await import('esbuild-wasm/esm/browser.js');
-        _esbuildMod = mod;
-        return _esbuildMod;
-    })();
-    try {
-        return await _esbuildLoadPromise;
-    }
-    catch (e) {
-        _esbuildLoadPromise = null;
-        throw e;
-    }
-}
 const __outputDecoder = new TextDecoder();
 /**
  * `lower` is async-module-lowering.ts's `lowerAsyncModule`, passed in because
@@ -956,76 +914,36 @@ export class EsbuildService {
     transformHostId;
     initialized = false;
     initPromise = null;
-    /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
+    /** The in-isolate engine, populated by ensureInit() from `engine`. */
     _esbuild = null;
+    engine;
     /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
     constructor(vfs, options = {}) {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
         this.viteBuildHost = options.viteBuildHost ?? null;
+        this.engine = options.engine ?? null;
         this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
-    /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
+    /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */
     get transformsInIsolate() {
         return this.transformHost === null;
     }
-    /**
-     * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
-     * via `loadEsbuild()` (which itself is deferred) and caches it on
-     * `this._esbuild` so subsequent calls don't pay the dynamic-import
-     * overhead. All call sites that previously used the top-level
-     * `esbuild` namespace now use `this._esbuild!` after `await this.ensureInit()`.
-     */
+    /** Load the in-isolate engine (lazy, on the first call without a host). */
     async ensureInit() {
         if (this.initialized && this._esbuild)
             return;
-        if (this.initPromise)
-            return this.initPromise;
-        this.initPromise = (async () => {
-            try {
-                const esb = await loadEsbuild();
-                this._esbuild = esb;
-                // Keep the bundled precompiled asset off importers' static graph until initialization.
-                const { default: esbuildWasmModule } = await import('esbuild-wasm/esbuild.wasm');
-                if (!(esbuildWasmModule instanceof WebAssembly.Module)) {
-                    throw new Error('esbuild-wasm bundled import is not a WebAssembly.Module. ' +
-                        'Rebuild the worker so wrangler resolves ' +
-                        '`esbuild-wasm/esbuild.wasm` at bundle time. ' +
-                        'NO CDN fallback (100% edge contract).');
-                }
-                // [WRANGLER-DEV-HANG P0b] Time-bound esb.initialize. Workerd
-                // has historically had cases where wasm init blocks indefinitely;
-                // 30 s is well above the typical ~200 ms init time.
-                const INIT_TIMEOUT_MS = 30_000;
-                let initTimeout = null;
-                await Promise.race([
-                    esb.initialize({
-                        wasmModule: esbuildWasmModule,
-                        worker: false,
-                    }),
-                    new Promise((_, reject) => {
-                        initTimeout = setTimeout(() => {
-                            reject(new Error(`esbuild init exceeded ${INIT_TIMEOUT_MS / 1000}s. ` +
-                                `wasmModule type=${typeof esbuildWasmModule}; ` +
-                                `Likely cause: WebAssembly compile/init stall in workerd.`));
-                        }, INIT_TIMEOUT_MS);
-                    }),
-                ]).finally(() => { if (initTimeout)
-                    clearTimeout(initTimeout); });
-                this.initialized = true;
-            }
-            catch (e) {
-                const message = errorText(e);
-                // "Cannot call initialize more than once" means it's already ready
-                if (message.includes('more than once')) {
-                    this.initialized = true;
-                    return;
-                }
-                this.initPromise = null;
-                throw new Error('esbuild init failed: ' + message);
-            }
-        })();
+        if (!this.engine) {
+            throw new Error('EsbuildService: no host for this call, and no engine to run it in this isolate (EsbuildServiceOptions.engine)');
+        }
+        this.initPromise ??= this.engine().then((engine) => {
+            this._esbuild = engine;
+            this.initialized = true;
+        }, (error) => {
+            this.initPromise = null;
+            throw error;
+        });
         return this.initPromise;
     }
     /**

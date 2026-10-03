@@ -2,8 +2,9 @@ import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
  * session, composed the way the supervisor's are: transforms in the object's
- * transform facet (Nimbus's Oxc build), builds in its esbuild facet, never in
- * its isolate, where a transform engine's wasm memory would only grow.
+ * transform facet (Nimbus's Oxc build), builds in its build facet
+ * (rolldown), never in its isolate, where an engine's wasm memory would only
+ * grow.
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 export function loaderFacetHost(env, ctx) {

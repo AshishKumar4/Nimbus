@@ -50,6 +50,18 @@ published independently in the `@nimbus-sh` npm scope.
   the call. A `binary` module that is required rather than imported is its
   bytes, as esbuild's is, and a build with no output path refuses a
   stylesheet import as esbuild does.
+- The Worker no longer bundles esbuild-wasm: its 11.36 MiB wasm was a
+  compiled module of the Worker, which workerd compiled at startup in
+  every isolate, every session's Durable Object included, whether or not it
+  ever ran esbuild. esbuild.wasm is now a staged, digest-checked asset that
+  only the esbuild facet loads, when the built-in `vite build`, the
+  `esbuild` command, a module too deep for Oxc or a build whose rolldown
+  binding died needs it. The Worker
+  upload falls from 19,119 KiB to 7,358 KiB (gzip 4,752 to 1,621 KiB): the
+  wasm and esbuild's 133 KiB JS adapter, which core no longer imports.
+  `EsbuildService` runs a call without a host on an engine its caller
+  supplies (`EsbuildServiceOptions.engine`), and rejects without one; core
+  imports no part of esbuild-wasm.
 - Two more fixes for builds whose binding dies: the facet is aborted only
   once every call still on it is answered (workerd's abort cancels calls in
   flight, which left a sibling of the crashed build to fail instead of

@@ -76,20 +76,8 @@ export declare function getSharedRuntimeExternals(specifier: string): string[];
 export declare function rewriteProvidedCommonJsModules(source: string): string;
 export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string, moduleFactory?: boolean): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
-/**
- * Load the esbuild-wasm namespace. Safe to call many times; concurrent
- * callers share a single in-flight Promise, and a rejection clears the
- * cache so a later call can retry.
- *
- * Exported so `tests/unit/esbuild-wasm-entrypoint.mjs` can drive the real
- * specifier under a Node-style resolver. A test that restated the specifier
- * would grade its own copy of it, and this defect reached production
- * precisely because nothing graded the resolution.
- *
- * The specifier stays a literal: a computed one would defeat the host
- * bundler's static analysis and leave the module out of the deployed worker.
- */
-export declare function loadEsbuild(): Promise<typeof esbuild>;
+/** What an in-isolate engine offers: esbuild's transform and build, ready to call. */
+export type EsbuildEngine = Pick<typeof esbuild, 'transform' | 'build'>;
 export interface EsbuildTransformOptions {
     loader?: 'ts' | 'tsx' | 'jsx' | 'js' | 'css' | 'json';
     format?: 'esm' | 'cjs' | 'iife';
@@ -231,14 +219,14 @@ export interface EsbuildBuildOutcome {
 /**
  * Runs a build in another isolate. Every module is resolved and loaded
  * through `plugin`, which stays with the caller and its filesystem view,
- * while the esbuild heap, which grows with the module graph and is never
- * released, lives in the host.
+ * while the bundler's wasm memory, which grows with the module graph and is
+ * never released, lives in the host.
  */
 export type EsbuildBuildHost = (options: EsbuildHostBuildOptions, plugin: EsbuildRemotePlugin) => Promise<EsbuildBuildOutcome>;
 export interface EsbuildServiceOptions {
-    /** Where transform() and transformMany() run. Absent: this isolate. */
+    /** Where transform() and transformMany() run. Absent: this isolate, on `engine`. */
     transformHost?: EsbuildTransformHost;
-    /** Where build() runs. Absent: this isolate. */
+    /** Where build() runs. Absent: this isolate, on `engine`. */
     buildHost?: EsbuildBuildHost;
     /**
      * Where a build with `viteAssets` (the built-in `vite build`) runs, when not
@@ -246,6 +234,12 @@ export interface EsbuildServiceOptions {
      * esbuild's until Nimbus's bundler does them. Absent: buildHost.
      */
     viteBuildHost?: EsbuildBuildHost;
+    /**
+     * The engine a call without a host runs on in this isolate, loaded on the
+     * first such call (a test's esbuild-wasm or Oxc, a tool's own). Absent:
+     * such a call rejects.
+     */
+    engine?: () => Promise<EsbuildEngine>;
     /**
      * The transform host's code identity, given with the host: equal ids
      * transform equal requests to equal outcomes. It is what lets a launch keep
@@ -291,19 +285,14 @@ export declare class EsbuildService {
     readonly transformHostId: string | null;
     private initialized;
     private initPromise;
-    /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
+    /** The in-isolate engine, populated by ensureInit() from `engine`. */
     private _esbuild;
+    private readonly engine;
     /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
     constructor(vfs?: EsbuildReadFs, options?: EsbuildServiceOptions);
-    /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
+    /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */
     get transformsInIsolate(): boolean;
-    /**
-     * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
-     * via `loadEsbuild()` (which itself is deferred) and caches it on
-     * `this._esbuild` so subsequent calls don't pay the dynamic-import
-     * overhead. All call sites that previously used the top-level
-     * `esbuild` namespace now use `this._esbuild!` after `await this.ensureInit()`.
-     */
+    /** Load the in-isolate engine (lazy, on the first call without a host). */
     private ensureInit;
     /**
      * Transform a single code string (TS→JS, JSX→JS, minify, etc.)

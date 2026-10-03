@@ -2099,8 +2099,8 @@ export class ViteDevServer {
             this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
           }
         } else {
-          // Legacy fallback — in-supervisor esbuild. Used only when no
-          // bundle pool was provided.
+          // Fallback — the EsbuildService's build (its build host). Used
+          // only when no bundle pool was provided.
           try {
             const result = await this.esbuild.build([bundleEntryPath], {
               bundle: true,
