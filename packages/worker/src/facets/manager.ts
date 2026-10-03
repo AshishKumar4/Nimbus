@@ -33,7 +33,7 @@ import {
   type CommonJsCellRow,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdField, execIdOf, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -4270,7 +4270,7 @@ export interface LongRunningWorkerSpawnOptions {
   foreground?: ForegroundLaunch;
   restart?: ResidentRestartPolicy;
   port?: number;
-  /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+  /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
   invokerPid?: number;
   /** Inline modules: source text, or small wasm carried by value. */
   modules?: Record<string, string | { wasm: ArrayBuffer }>;
@@ -4351,7 +4351,7 @@ export interface ResidentSpawnOptions {
   attachedTty?: boolean;
   skipSpawn?: boolean;
   callerPid?: number;
-  /** The process whose command starts this one: its exec id is this one's. Never journalled. */
+  /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
   invokerPid?: number;
   bundleProfile?: FacetBundleProfile;
 }
@@ -5704,7 +5704,7 @@ export class FacetManager {
       skipSpawn?: boolean;
       /** G4: when skipSpawn is true, the PID the caller allocated. */
       callerPid?: number;
-      /** The process whose command runs the program: its exec id is the program's. */
+      /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
       invokerPid?: number;
       bundleProfile?: FacetBundleProfile;
       /** Return stdout/stderr in the result while keeping supervisor RPC
@@ -5750,7 +5750,11 @@ export class FacetManager {
       entry = found;
     } else {
       this.processes.reap();
-      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { execId: execIdOf(this.processes, opts.invokerPid) });
+      // A child of the command that ran it, so under its credential: the
+      // program's syscalls answer under the credential the table holds for
+      // its pid. At the top of the table it ran as the session user whoever
+      // started it.
+      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { parentPid: opts.invokerPid });
       // Short foreground `node -e ...` helpers are quiet by design — only
       // notify for user-facing `node <file>` invocations, which covers the
       // real user intent (running scripts, wrangler, etc.).
@@ -6179,7 +6183,7 @@ export class FacetManager {
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
     const attached = mode === 'attached';
-    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { execId: execIdOf(this.processes, opts.invokerPid) });
+    const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { parentPid: opts.invokerPid });
     const pid = entry.pid;
     // attached TUI + headless serve are resident long-running processes; only the
     // attached TUI grabs the terminal (raw-mode stdin + live geometry).
@@ -6759,7 +6763,9 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      entry = this.processes.spawn(command, opts.argv || [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
+      // A child of its invoker, under its credential, as exec's. A re-drive has
+      // no invoker (the journal never holds one): it carries the row's exec id.
+      entry = this.processes.spawn(command, opts.argv || [], cwd, { parentPid: opts.invokerPid, execId });
     }
     this.processes.setLongRunning(entry.pid);
     if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
@@ -7243,7 +7249,7 @@ export class FacetManager {
     this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
-    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { execId: execId ?? execIdOf(this.processes, opts.invokerPid) });
+    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { parentPid: opts.invokerPid, execId });
     // Stamp the process-table entry so /api/processes exposes this as a
     // long-running process.
     this.processes.setLongRunning(entry.pid);
