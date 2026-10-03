@@ -12,6 +12,8 @@ export interface VfsErrorOptions extends ErrorOptions {
     syscall?: string;
     /** The second path of a call that names two (rename, copyfile, symlink). */
     dest?: string;
+    /** The reason in the filesystem's own words, where it says more than the code's description. */
+    detail?: string;
 }
 export declare class VfsError extends Error {
     readonly code: VfsErrorCode;
@@ -19,6 +21,13 @@ export declare class VfsError extends Error {
     readonly errno: number;
     readonly syscall?: string;
     readonly dest?: string;
+    /**
+     * The reason in the filesystem's own words: `detail` where one was given,
+     * else the message of an error naming no call, which is all reason.
+     * Undefined where the code's description says it; a layer that reports
+     * the error for its own call keeps these words.
+     */
+    readonly detail?: string;
     /**
      * `message` is what Node's message says before the path: the description
      * and the syscall (`no such file or directory, open`). The path follows it
@@ -34,9 +43,7 @@ export declare class VfsError extends Error {
  * `detail` stands in libuv's description where Nimbus knows the reason
  * (`/m is mounted read-only, open '/m/x'`).
  */
-export declare function syscallError(code: VfsErrorCode, syscall: string, path?: string, options?: VfsErrorOptions & {
-    detail?: string;
-}): VfsError;
+export declare function syscallError(code: VfsErrorCode, syscall: string, path?: string, options?: VfsErrorOptions): VfsError;
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
 export declare function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsError;
 export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;

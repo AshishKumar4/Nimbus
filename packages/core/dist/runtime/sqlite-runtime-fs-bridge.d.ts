@@ -77,6 +77,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         expectedRevision?: number;
     }): number;
     writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number>;
+    private writeFileFromSource;
     readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null;
     writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
         createParents?: boolean;
@@ -207,16 +208,20 @@ type BeneathAnswer = {
  * Links resolve (the last only when `follow`), 40 hops, then null (ELOOP):
  * a relative one from its directory, an absolute one from the namespace's
  * `/`, as the unrestricted walk resolves them, and what the walk reaches
- * must lie at or under the root, else ENOTCAPABLE. The one walk for every
- * face: it yields its lookups, which the synchronous bridge answers at once
- * and a face over asynchronous mounts awaits. `root` is normalized; the
- * answer is the resolved path, normalized.
+ * must lie at or under the root, else ENOTCAPABLE. A path the namespace
+ * hands to its backend whole (`handedOver`: CompositeVFS.resolvedByBackend,
+ * MountOptions.resolvesPaths) is neither looked up nor searched here, nor
+ * are its links read: its components are taken lexically, `..` included,
+ * and that backend answers for them. The one walk for every face: it yields
+ * its lookups, which the synchronous bridge answers at once and a face over
+ * asynchronous mounts awaits. `root` is normalized; the answer is the
+ * resolved path, normalized.
  */
 export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: {
     uid: number;
     gid: number;
     groups: readonly number[];
-}): Generator<BeneathLookup, string | null, BeneathAnswer>;
+}, handedOver: (path: string) => boolean): Generator<BeneathLookup, string | null, BeneathAnswer>;
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export declare const BUFFERED_WRITE_BYTES: number;
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
@@ -241,6 +246,9 @@ interface FsError extends Error {
  * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
  * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
  */
-export declare function fsError(code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath): FsError;
+export declare function fsError(code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath, options?: {
+    detail?: string;
+    cause?: unknown;
+}): FsError;
 export {};
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

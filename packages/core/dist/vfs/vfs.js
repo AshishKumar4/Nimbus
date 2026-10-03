@@ -42,8 +42,9 @@ export function readRangeOrWhole(vfs, path, offset, length) {
     };
     if (typeof vfs.readRange !== 'function')
         return whole();
+    // By its code: a backend across RPC answers a plain `{ code }` error.
     const unsupported = (error) => {
-        if (!isVfsError(error, 'ENOTSUP'))
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'ENOTSUP')
             throw error;
         return whole();
     };

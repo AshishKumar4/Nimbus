@@ -119,16 +119,20 @@ function then(value, next) {
  * where the namespace knows more than the code says.
  */
 class Refusal extends VfsError {
-    detail;
     constructor(code, path, detail) {
         super(code, detail ?? VFS_DESCRIPTION[code], path);
-        this.detail = detail;
     }
 }
-/** `run`, a refusal it meets reported as Node's error for `call`: `ENOENT: no such file or directory, open '/x'`. */
+/**
+ * `run`, a refusal it meets, or a backend's own filesystem error, reported as
+ * Node's error for `call`: `ENOENT: no such file or directory, open '/x'`.
+ * The call's syscall and the caller's paths, whatever path the backend was
+ * handed (a mount-relative one, a link's target), and the reason in the
+ * refusal's or the backend's own words; the error met is the cause.
+ */
 function reported(call, run) {
     const report = (error) => {
-        if (!(error instanceof Refusal))
+        if (!isVfsError(error))
             throw error;
         const out = syscallError(error.code, call.syscall, call.path, { detail: error.detail, dest: call.dest, cause: error });
         throw isAsyncMountRefusal(error) ? Object.assign(out, { asyncMount: true }) : out;
@@ -287,7 +291,11 @@ export class CompositeVFS {
                 continue;
             if (made.some((entry) => entry.path === point))
                 continue;
-            made.push({ path: point, kind: 'directory', size: 0, rev: 0, stat: this.madeStat(point) });
+            // One whose entries are a mount's without a feed, and that the walk did
+            // not list, is unlisted: what is in it is not known absent.
+            const holder = this.route(point).mount;
+            const unfed = holder.point !== ROOT_POINT && this.backend(holder)?.changes === undefined;
+            made.push({ path: point, kind: 'directory', size: 0, rev: 0, stat: this.madeStat(point), ...(unfed ? { unlisted: holder.point } : {}) });
         }
         streams.push({ entries: made, more: false });
         streams.push({ entries: walked.filter((entry) => past(entry.path)), more: false });
@@ -515,14 +523,15 @@ export class CompositeVFS {
     }
     /**
      * Whether `path` lies past the point of a mount whose backend resolves its
-     * own paths (MountOptions.resolvesPaths). A walk over this namespace looks
-     * up the mount point, as any other, and no component past it: it hands the
-     * namespace the rest of the path whole.
+     * own paths (MountOptions.resolvesPaths), and is not a directory above a
+     * mount nested in it. A walk over this namespace looks up the mount point
+     * and the directories above a nested mount, as any other, and no component
+     * that is the backend's alone: it hands the namespace the rest whole.
      */
     resolvedByBackend(path) {
         const at = normalizePath(path);
         const { mount } = this.route(at);
-        return mount.options.resolvesPaths === true && at !== mount.point;
+        return mount.options.resolvesPaths === true && at !== mount.point && !this.isStructural(at);
     }
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
     realpath(path) {
@@ -538,6 +547,19 @@ export class CompositeVFS {
      * rest is spelled as given (normalized), and the one stat that proves it
      * is there follows them.
      */
+    /**
+     * A link's target as this namespace resolves it: the one link-root rule
+     * for a mount whose backend resolves its own paths. Such a backend reads
+     * its links from its own root, so an absolute target re-roots at the mount
+     * point and a relative one climbs no higher than it; either comes back as
+     * the namespace path it leads to. Any other backend's link is its target.
+     */
+    linkTarget(mount, rel, link) {
+        if (!mount.options.resolvesPaths)
+            return link;
+        const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(rel)}/${link}`);
+        return inBackend === ROOT_POINT ? mount.point : `${mount.point}${inBackend}`;
+    }
     realpathAt(input, sync) {
         return then(this.resolve(input, true, sync), (resolved) => {
             const follow = this.route(resolved).mount.options.resolvesPaths === true;
@@ -780,9 +802,14 @@ export class CompositeVFS {
                         // search permission on what is there, as on Linux: the mounted
                         // root, or the directory a backend holds at that path. A
                         // backend that resolves its own paths checks its own, its root
-                        // included, when it is handed a path.
+                        // included, when the path ends in it; on the way to a mount
+                        // nested in it, they are checked here, as any other backend's.
                         shadowParent = false;
-                        if (final || this.route(prefix).mount.options.resolvesPaths)
+                        if (final)
+                            continue;
+                        // `..` inside such a backend is lexical, so where the path ends is too.
+                        const holder = this.route(prefix).mount;
+                        if (holder.options.resolvesPaths && this.route(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder)
                             continue;
                         const mount = this.table.mounts.get(prefix);
                         return then(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
@@ -1279,21 +1306,23 @@ export class CompositeVFS {
                             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
                                 return sourceOps.copy(source.rel, target.rel, options);
                             }
-                            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync), target.rel);
+                            // A link copied out of its filesystem keeps where it led there.
+                            const relink = (rel, link) => (source.mount === target.mount ? link : this.linkTarget(source.mount, rel, link));
+                            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync), target.rel, relink);
                         });
                     });
                 });
             });
         });
     }
-    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
-    copyBytes(from, fromRel, stat, to, toRel) {
+    /** Copy an entry (a tree when it is a directory) between backends, links as links (`relink` gives a copied link's target). */
+    copyBytes(from, fromRel, stat, to, toRel, relink) {
         const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
         if (stat.type === 'symlink') {
             if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
                 throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
             }
-            return then(from.readlink(fromRel), (target) => then(to.symlink(target, toRel), () => 1));
+            return then(from.readlink(fromRel), (target) => then(to.symlink(relink(fromRel, target), toRel), () => 1));
         }
         if (stat.type === 'file') {
             return then(from.readFile(fromRel), (bytes) => then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1));
@@ -1303,7 +1332,7 @@ export class CompositeVFS {
             const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
             return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
                 ? n
-                : then(this.copyBytes(from, child, childStat, to, dest), (m) => n + m)));
+                : then(this.copyBytes(from, child, childStat, to, dest, relink), (m) => n + m)));
         }), 1)));
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
@@ -1340,7 +1369,15 @@ export class CompositeVFS {
             if (typeof backend.removeRecursive === 'function') {
                 const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
                 return then(backend.removeRecursive(rel), (report) => (report
-                    ? { removed: report.removed.map(at), kept: report.kept.map(at), failures: report.failures.map((f) => ({ ...f, path: at(f.path) })) }
+                    ? {
+                        removed: report.removed.map(at),
+                        kept: report.kept.map(at),
+                        // Each failure named as Node names the call that met it, on the namespace's path.
+                        failures: report.failures.map((f) => ({
+                            path: at(f.path),
+                            error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
+                        })),
+                    }
                     : { removed: [path], kept: [], failures: [] }));
             }
             return this.walkRemove(backend, rel, path);
@@ -1383,7 +1420,9 @@ export class CompositeVFS {
                     keepWithAncestors(entry.rel);
                     failures.push({
                         path: at(entry.rel),
-                        error: isVfsError(cause) ? cause : syscallError('EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), { detail: String(cause) }),
+                        error: syscallError(isVfsError(cause) ? cause.code : 'EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), {
+                            detail: isVfsError(cause) ? cause.detail : String(cause), cause,
+                        }),
                     });
                 };
                 try {
@@ -1487,7 +1526,7 @@ export class CompositeVFS {
         return reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)));
     }
     async readlink(path) {
-        return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
+        return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))));
     }
     async chmod(path, mode) {
         return reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)));
@@ -1526,7 +1565,7 @@ export class CompositeVFS {
             rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
             removeRecursive: (path) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true))),
             symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
-            readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
+            readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))))),
             chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),
             chown: (path, uid, gid) => syncValue(reported({ syscall: 'chown', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)))),
             utimes: (path, a, m) => syncValue(reported({ syscall: 'utime', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)))),

@@ -110,13 +110,18 @@ export interface MountOptions {
      * mount. The backend follows its own links, in its own tree, and answers
      * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
      * will not show, or a parent it makes on write. A `..` inside the mount is
-     * taken lexically, so it leaves the mount only past its root.
+     * taken lexically, so it leaves the mount only past its root. readlink
+     * answers where a link leads in this namespace (`linkTarget`: an absolute
+     * target re-rooted at the mount point, a relative one climbing no higher
+     * than it), so a walk over the namespace that follows it (a launch's
+     * staged view) lands where the backend does.
      *
      * The namespace still owns everything up to and including the mount
      * point: root links that lead into it, ENXIO with `absentReason` while the
      * source answers null, the mount point as a directory (EBUSY, EISDIR, mkdir
      * -p a no-op), EROFS under `readOnly`, EXDEV across mounts, and any mount
-     * nested inside it. Permissions inside the mount, its root's included, are
+     * nested inside it (the backend never sees a path into one, so the
+     * directories on the way are looked up and searched here). Permissions inside the mount, its root's included, are
      * the backend's: a view's credential reaches it through its `as`. A walk
      * over the namespace (a process's synchronous bridge) asks
      * `resolvedByBackend` and hands such a path over whole too.
@@ -228,9 +233,10 @@ export declare class CompositeVFS implements VFS {
     composes(path: string): boolean;
     /**
      * Whether `path` lies past the point of a mount whose backend resolves its
-     * own paths (MountOptions.resolvesPaths). A walk over this namespace looks
-     * up the mount point, as any other, and no component past it: it hands the
-     * namespace the rest of the path whole.
+     * own paths (MountOptions.resolvesPaths), and is not a directory above a
+     * mount nested in it. A walk over this namespace looks up the mount point
+     * and the directories above a nested mount, as any other, and no component
+     * that is the backend's alone: it hands the namespace the rest whole.
      */
     resolvedByBackend(path: string): boolean;
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
@@ -243,6 +249,14 @@ export declare class CompositeVFS implements VFS {
      * rest is spelled as given (normalized), and the one stat that proves it
      * is there follows them.
      */
+    /**
+     * A link's target as this namespace resolves it: the one link-root rule
+     * for a mount whose backend resolves its own paths. Such a backend reads
+     * its links from its own root, so an absolute target re-roots at the mount
+     * point and a relative one climbs no higher than it; either comes back as
+     * the namespace path it leads to. Any other backend's link is its target.
+     */
+    private linkTarget;
     private realpathAt;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred: VfsCred, actor?: string): CompositeVFS;
@@ -353,7 +367,7 @@ export declare class CompositeVFS implements VFS {
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
      */
     private copyAt;
-    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
+    /** Copy an entry (a tree when it is a directory) between backends, links as links (`relink` gives a copied link's target). */
     private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     private rmdirAt;

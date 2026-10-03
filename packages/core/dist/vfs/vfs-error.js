@@ -30,6 +30,9 @@ export class VfsError extends Error {
             this.syscall = options.syscall;
         if (options?.dest !== undefined)
             this.dest = options.dest;
+        const detail = options?.detail ?? (options?.syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
+        if (detail !== undefined)
+            this.detail = detail;
     }
 }
 /**
@@ -39,8 +42,7 @@ export class VfsError extends Error {
  * (`/m is mounted read-only, open '/m/x'`).
  */
 export function syscallError(code, syscall, path, options = {}) {
-    const { detail, ...rest } = options;
-    return new VfsError(code, `${detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...rest, syscall });
+    return new VfsError(code, `${options.detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...options, syscall });
 }
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
 export function isVfsError(error, code) {
@@ -62,7 +64,7 @@ export function toVfsError(error, syscall, path, dest) {
     if (error instanceof VfsError) {
         if (error.syscall !== undefined || error.path !== undefined)
             return error;
-        return syscallError(error.code, syscall, path, { detail: error.message.slice(error.code.length + 2), dest, cause: error });
+        return syscallError(error.code, syscall, path, { detail: error.detail, dest, cause: error });
     }
     if ((typeof error !== 'object' || error === null) && typeof error !== 'function')
         return error;

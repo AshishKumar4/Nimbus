@@ -640,7 +640,7 @@ class AwaitingProcessBridge {
                 throw fsError('ENOTDIR', 'path', path.path);
             return (base === '/' ? '' : base) + '/' + path.path;
         }
-        const walk = walkBeneath(normalizeVfsPath(base), path, follow, this.cred);
+        const walk = walkBeneath(normalizeVfsPath(base), path, follow, this.cred, (name) => this.namespace.resolvedByBackend(name));
         for (let step = walk.next();;) {
             if (step.done) {
                 if (step.value === null)
