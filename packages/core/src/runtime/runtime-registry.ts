@@ -101,8 +101,10 @@ export interface RuntimeRunOpts {
    * The program's code reads stdin synchronously (stdin-read.ts), which
    * cannot wait for bytes arriving after it runs: a one-shot runner reads up
    * to STDIN_SYNC_READ_BYTES of a pipe before starting it, or has the program
-   * read its `< file` whole first. Never set for a program that starts a
-   * server.
+   * read its `< file` whole first. Without `stdin` or `stdinFile`, the
+   * program's own live input channel is its stdin (a child_process child's,
+   * __nimbusBinSpawn.liveInput), and the program reads that ahead, to the
+   * same bound. Never set for a program that starts a server.
    */
   stdinReadsSync?: boolean;
   /**
@@ -346,11 +348,14 @@ export function buildRuntimeHandler(
     // for its stdin, so its code is not asked.
     const programStdin = async (code: string, path: string | null, dir: string, launchesServer: boolean)
       : Promise<Pick<RuntimeRunOpts, 'stdin' | 'stdinReadsSync' | 'stdinFile'>> => {
-      if (pipedStdin === undefined) return {};
+      const ownChannel = binSpawn?.liveInput === true;
+      if (pipedStdin === undefined && !ownChannel) return {};
       // A `< file` is the file itself; nothing is read from its stream here.
-      const source = pipedStdin.file
-        ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-        : { stdin: pipedStdin };
+      // The process's own channel is read by the program itself.
+      const source = pipedStdin === undefined ? {}
+        : pipedStdin.file
+          ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+          : { stdin: pipedStdin };
       if (launchesServer || binSpawn?.forceLongRunning === true) return source;
       const key = normalizeVfsPath(dir);
       const readsSync = await programReadsStdinSync({

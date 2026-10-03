@@ -868,6 +868,9 @@ export default {
     const __nimbusLiveInputPid = Number(args.stdinPid || 0);
     // It ends within what was read ahead: taken whole before the entry runs.
     const __nimbusStdinWhole = args.stdinWhole === true;
+    // The program reads fd 0 synchronously and its own channel is its stdin:
+    // read ahead here, until the end or the bound (node-shims, __nimbusPrepareStdin).
+    const __nimbusStdinSyncRead = args.stdinSyncRead === true;
     // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
     const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
     // Per invocation, not per module: this body is cached on
@@ -5744,6 +5747,12 @@ export class FacetManager {
        */
       stdinWhole?: boolean;
       /**
+       * The program reads stdin synchronously, and its stdin is its own live
+       * input channel (a child_process child's): it reads the channel before
+       * it starts, until the end or STDIN_SYNC_READ_BYTES.
+       */
+      stdinSyncRead?: boolean;
+      /**
        * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
        * program reads stdin synchronously, so it reads the file first.
        */
@@ -5993,7 +6002,7 @@ export class FacetManager {
 
   private async _execViaLoader(
     code: string,
-    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; stdinPipe?: unknown; stdinWhole?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean }; captureOutput?: boolean },
+    opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; stdinPipe?: unknown; stdinWhole?: boolean; stdinSyncRead?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean }; captureOutput?: boolean },
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     dataPlan: string[],
@@ -6025,6 +6034,7 @@ export class FacetManager {
       // or not. A `< file`: the file fd 0 is.
       stdinPid: opts.stdinPipe ? entry.pid : 0,
       ...(opts.stdinWhole ? { stdinWhole: true } : {}),
+      ...(opts.stdinSyncRead ? { stdinSyncRead: true } : {}),
       ...(opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
       captureOutput: !!opts.captureOutput,
       cred: { ...entry.cred, groups: [...entry.cred.groups] },

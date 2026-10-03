@@ -8,9 +8,13 @@
 // through a text decoder: 0xff written after the child started arrived as
 // efbfbd (the reviewer, FlyingPartridge). What has to hold, against the
 // host's Node: bytes written after the child printed READY (a lone 0xff, a
-// NUL, a UTF-8 sequence split across two writes) reach it unchanged. (A
-// program `python3 -` reads in pieces: core-wasm-runtime-bun; this probe
-// stages only bash.)
+// NUL, a UTF-8 sequence split across two writes) reach it unchanged; and a
+// child that reads fd 0 synchronously gets all of it when its parent writes
+// it in pieces (`a`, 5 s, `b`, end; the child starts within them): the child's
+// own channel was then its stdin, and nothing read it ahead of the program,
+// so readFileSync(0) threw EAGAIN on what had not arrived yet. (A program
+// `python3 -` reads in pieces: core-wasm-runtime-bun; this probe stages only
+// bash.)
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -23,11 +27,13 @@ import { join } from 'node:path';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
+const SYNC_READER = "console.log('SYNC ' + JSON.stringify(require('fs').readFileSync(0, 'utf8')))";
 const READER = "console.log('READY'); const c = []; process.stdin.on('data', (d) => c.push(d)); process.stdin.on('end', () => console.log('GOT ' + Buffer.concat(c).toString('hex')));";
 
 const PROGRAM = [
   "const { spawn } = require('child_process');",
   `const READER = ${JSON.stringify(READER)};`,
+  `const SYNC_READER = ${JSON.stringify(SYNC_READER)};`,
   'const settle = (name, start) => new Promise((resolve) => {',
   "  const stuck = setTimeout(() => resolve(name + ' stuck'), 30000);",
   "  start((result) => { clearTimeout(stuck); resolve(name + ' ' + JSON.stringify(result)); });",
@@ -37,6 +43,9 @@ const PROGRAM = [
   "  ['bytes-after-start', (done) => { const c = spawn('node', ['-e', READER]); let out = ''; let sent = false;",
   "    c.stdout.on('data', (d) => { out += d; if (!sent && out.includes('READY')) { sent = true; c.stdin.write(Buffer.from([0xff, 0x00, 0xc3])); c.stdin.end(Buffer.from([0xa9, 0x0a])); } });",
   "    c.on('close', (code) => done({ code, got: (/GOT (\\S*)/.exec(out) || [])[1] })); }],",
+  // A synchronous reader of fd 0, written to in delayed pieces after it starts.
+  "  ['sync-read-delayed', (done) => { const c = spawn('node', ['-e', SYNC_READER]); let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; });",
+  "    c.on('close', (code) => done({ code, out: out.trim().split('\\n').pop() })); c.stdin.write('a'); setTimeout(() => c.stdin.end('b'), 5000); }],",
   '];',
   "(async () => { for (const [name, start] of cases) console.log('BYTES ' + await settle(name, start)); })();",
 ].join('\n');
@@ -53,7 +62,10 @@ try {
 } finally {
   rmSync(hostDir, { recursive: true, force: true });
 }
-assert.deepEqual(expected, ['BYTES bytes-after-start {"code":0,"got":"ff00c3a90a"}'], 'the host reads the bytes');
+assert.deepEqual(expected, [
+  'BYTES bytes-after-start {"code":0,"got":"ff00c3a90a"}',
+  'BYTES sync-read-delayed {"code":0,"out":"SYNC \\"ab\\""}',
+], 'the host reads the bytes, and a synchronous read gets all of them');
 
 // ── Nimbus, through the broker ──────────────────────────────────────────────
 const W = '/home/user/w';
