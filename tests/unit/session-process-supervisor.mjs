@@ -205,13 +205,18 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.deepEqual(processes.writeInput(entry.pid, 'after-kill'), { ok: false });
 }
 
-// ── reap drops old exited entries ────────────────────────────────────
+// ── reap releases and drops old exited entries ──────────────────────
 {
   const processes = new SessionProcessSupervisor();
   const dead = processes.spawn('node done.js', [], '/');
   const live = processes.spawn('vite', [], '/', { longRunning: true });
   processes.exit(dead.pid, 0);
-  assert.equal(processes.reap(-1), 1);
+  assert.equal(await processes.reap(-1), 0, 'a table with no release reaps nothing');
+  assert.equal(processes.get(dead.pid)?.state, 'exited');
+  const released = [];
+  processes.setRelease(async (pid) => { released.push(pid); });
+  assert.equal(await processes.reap(-1), 1);
+  assert.deepEqual(released, [dead.pid], 'the entry is released before it is forgotten');
   assert.equal(processes.get(dead.pid), undefined);
   assert.equal(processes.get(live.pid)?.state, 'running');
 }
@@ -364,6 +369,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 {
   const RETAIN = 10 * 60 * 1000;
   const processes = new SessionProcessSupervisor();
+  processes.setRelease(async () => {});
   let fired = 0;
   processes.setLogPersist({
     load() { return null; }, persistChunks() {}, persistExit() {}, dropPid() {}, pruneBeforeSeq() {},
@@ -379,11 +385,11 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   const realNow = Date.now;
   Date.now = () => realNow() + 1;
   try {
-    assert.equal(processes.reap(0), 1);
+    assert.equal(await processes.reap(0), 1);
   } finally { Date.now = realNow; }
   assert.equal(fired, before + 1, 'the reap fired the hook');
   assert.equal(processes.nextLogExpiry(), lastOutput + 3 * RETAIN, 'the orphan deadline');
-  assert.equal(processes.reap(0), 0);
+  assert.equal(await processes.reap(0), 0);
   assert.equal(fired, before + 1, 'a reap that removes nothing does not');
 }
 

@@ -350,7 +350,7 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
       assert.equal(main.processes.get(childPid)?.state, 'exited', 'it is not left running');
       // reap takes what exited more than maxAge ms ago.
       await new Promise((resolve) => setTimeout(resolve, 5));
-      main.processes.reap(0);
+      await main.processes.reap(0);
       assert.equal(main.processes.get(childPid), undefined, 'and it is reaped');
     }
     assert.deepEqual(await spawn('hintedtool', [], env), ['', 'hintedtool: command not found\nhint: install it with: nimbus install hintedtool\n', 127], 'and with none, the install hint');

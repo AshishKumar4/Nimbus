@@ -202,12 +202,22 @@ export class SessionProcessSupervisor {
   }
 
   /**
-   * Clean up exited processes older than maxAge ms. A reaped pid whose logs
-   * hold no exit (a process killed around its log) is an orphan from here,
-   * which gives its logs a deadline.
+   * Clean up exited processes older than maxAge ms, each released first (see
+   * {@link setRelease}), as {@link reapTree} does: a session prunes its table
+   * this way rather than at each call's return, and an entry forgotten
+   * unreleased left its binding behind. With no release set nothing is
+   * reaped. A reaped pid whose logs hold no exit (a process killed around its
+   * log) is an orphan from here, which gives its logs a deadline.
    */
-  reap(maxAge?: number): number {
-    const reaped = this.table.reap(maxAge);
+  async reap(maxAge?: number): Promise<number> {
+    const release = this.release;
+    if (!release) return 0;
+    let reaped = 0;
+    for (const entry of this.table.expired(maxAge)) {
+      await release(entry.pid);
+      this.table.forget(entry.pid);
+      reaped++;
+    }
     if (reaped > 0) this.logRetention?.();
     return reaped;
   }
@@ -227,8 +237,8 @@ export class SessionProcessSupervisor {
    * Remove `pid` and every process under it that has ended, now, as a parent
    * that waited for its children does: what a caller ran to completion has
    * nothing left to report. Each is released first (see {@link setRelease}),
-   * so what it bound goes with its entry rather than outliving it, and with
-   * no release set nothing is reaped. One still running is kept. Logs are
+   * so what it bound goes with its entry rather than outliving it; with no
+   * release set this refuses. One still running is kept. Logs are
    * orphaned as by {@link reap}.
    */
   async reapTree(pid: number): Promise<number> {

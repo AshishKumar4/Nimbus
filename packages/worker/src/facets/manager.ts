@@ -5772,7 +5772,7 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      this.processes.reap();
+      await this.processes.reap();
       // A child of the command that ran it, so under its credential: the
       // program's syscalls answer under the credential the table holds for
       // its pid. At the top of the table it ran as the session user whoever
@@ -6781,7 +6781,7 @@ export class FacetManager {
     attempt: number,
     redriven?: RedrivenIdentity,
   ): Promise<{ pid: number }> {
-    this.processes.reap();
+    await this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
     const cwd = opts.cwd || '/home/user';
     let entry: ProcessEntry;
@@ -7275,7 +7275,7 @@ export class FacetManager {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
-    this.processes.reap();
+    await this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
     const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { parentPid: opts.invokerPid, ...redriven });
