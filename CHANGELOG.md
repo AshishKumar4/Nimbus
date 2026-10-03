@@ -104,7 +104,9 @@ published independently in the `@nimbus-sh` npm scope.
   (a UTF-8 BOM was dropped) and take esbuild's MIME table and Go's content
   sniffing. A url() in what css-tree keeps as written (a custom property's
   value, a declaration it cannot parse) is loaded and rewritten like any
-  other, as esbuild does; a malformed `@import` (no URL, a url() of more
+  other, as esbuild does, but not one in an at-rule's prelude, parsed or
+  kept as written (an unknown at-rule's), which esbuild never loads; a
+  malformed `@import` (no URL, a url() of more
   than one string, a block) is kept as written with esbuild's warning,
   never followed, and ends the imports after it, as does a `@layer`
   statement after an `@import`. The Vite dev server inlines a stylesheet's

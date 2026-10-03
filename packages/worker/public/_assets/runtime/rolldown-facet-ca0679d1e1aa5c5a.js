@@ -13829,6 +13829,7 @@ function urlSites(source, node) {
   const sites = [];
   walker_default2(node, function(inner) {
     if (inner.type === "Atrule" && atRuleName(inner) === "import") return walker_default2.skip;
+    if (this.atrule?.prelude === inner) return walker_default2.skip;
     if (this.atrulePrelude || !inner.loc) return;
     if (inner.type === "Url") {
       const text = sourceOf(source, inner);

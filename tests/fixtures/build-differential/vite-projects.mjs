@@ -266,6 +266,16 @@ globalThis.__result = { bom, manifest, page, bin, eot, md, xhtml, sfnt, gifish, 
       'src/b.css': '.b { color: b }\n',
     },
   },
+  // An unknown at-rule's prelude, which css-tree keeps as written: its url()
+  // is not loaded (esbuild loads no prelude's), its block's url()s are.
+  'vite-review-unknown-atrule-prelude-url': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@future x: url(./missing.png){.x{color:red;background:url(./a.png)}}.main{color:blue}\n@media (min-width: 1px) and url(./also-missing.png) { .y { color: y } }\n',
+      'src/a.png': PNG,
+    },
+  },
   'vite-css-rules': {
     entry: 'src/main.js',
     files: {

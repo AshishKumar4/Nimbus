@@ -427,8 +427,11 @@ export function sheetUrls(sheet: ParsedSheet): SheetUrl[] {
  */
 function urlSites(source: string, node: CssNode): { site: SheetUrl; write(text: string): void }[] {
   const sites: { site: SheetUrl; write(text: string): void }[] = [];
-  walk(node, function (this: { atrulePrelude?: CssNode | null }, inner: CssNode) {
+  walk(node, function (this: { atrule?: CssNode | null; atrulePrelude?: CssNode | null }, inner: CssNode) {
     if (inner.type === 'Atrule' && atRuleName(inner) === 'import') return walk.skip;
+    // An at-rule's prelude, parsed or kept as written (an unknown at-rule's
+    // Raw): css-tree's prelude context covers only a parsed one. Its block is walked.
+    if (this.atrule?.prelude === inner) return walk.skip;
     if (this.atrulePrelude || !inner.loc) return;
     if (inner.type === 'Url') {
       const text = sourceOf(source, inner);
