@@ -590,6 +590,29 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 fewest = alternatives;
         return fewest === Infinity ? undefined : deferredDynamic.get(fewest).shift();
     }
+    // A package the code locates by its manifest (`require.resolve('vite/package.json')`)
+    // is one it uses from where it is installed: vinext reads that manifest's
+    // `bin` and imports Vite's CLI from the path it names. Those bins are a
+    // guess at what the code does with the package, so they wait behind every
+    // deferral the code names itself.
+    function deferBins(manifestPath) {
+        let manifest;
+        try {
+            manifest = JSON.parse(String(bundle[manifestPath]));
+        }
+        catch {
+            return;
+        }
+        const bin = manifest !== null && typeof manifest === 'object' && 'bin' in manifest ? manifest.bin : undefined;
+        const targets = typeof bin === 'string' ? [bin] : bin !== null && typeof bin === 'object' ? Object.values(bin) : [];
+        const fromDir = manifestPath.slice(0, manifestPath.lastIndexOf('/'));
+        for (const target of targets) {
+            // npm links no bin outside its package.
+            if (typeof target !== 'string' || target.split('/').includes('..'))
+                continue;
+            defer({ specifier: './' + target.replace(/^\.\//, ''), fromDir, alternatives: LOCATED_PACKAGE_BINS });
+        }
+    }
     let lazy = false;
     // `entry`: the entry file itself, whose own `import()` is a deferral of its
     // main module, not an optional feature, and is followed as required.
@@ -702,6 +725,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const r = await resolveStaticDependency(specifier, fromDir);
             if (r)
                 (await addFile(r.resolved));
+            if (r && !policy && namesManifest(specifier))
+                deferBins(r.resolved);
         }
         // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
         // require of './x' from this file's directory (pi-coding-agent's bin).
@@ -895,6 +920,14 @@ function isFacetProvided(id) {
     if (id.startsWith('node:'))
         return true;
     return BUILTINS.has(id) || FACET_PROVIDED_PACKAGES.includes(id);
+}
+/** Phase 2's last tier: the bins of a package the code located by its manifest. */
+const LOCATED_PACKAGE_BINS = Number.MAX_SAFE_INTEGER;
+/** `pkg/package.json` or `@scope/pkg/package.json`: an installed package's manifest, by name. */
+function namesManifest(specifier) {
+    const parts = specifier.split('/');
+    return parts.length === (specifier.startsWith('@') ? 3 : 2) && parts[parts.length - 1] === 'package.json'
+        && !parts[0].startsWith('.') && parts[0] !== '';
 }
 // Note: the shared resolver helpers are imported directly from
 // src/_shared/exports-resolver.js by every caller (W2.6a D6 — single
