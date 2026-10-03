@@ -36,9 +36,8 @@ await assertElevation('su accepts a named target user', 'su', ['user', '-c', 'wh
 
 // In a workspace, the command sudo starts is a program, found as execvp
 // finds one: not a shell function or an alias by that name, and one that
-// is not there is sudo's "command not found", not the shell's. The
-// workspace's shell keeps what each line defines, so the line that
-// redefines `echo` comes last.
+// is not there is sudo's "command not found", not the shell's. Each line
+// unsets what it defines: the workspace's shell is one session.
 {
   const workspaceHarness = createSqliteVfsTestHarness();
   const ws = await NimbusWorkspace.create({ sql: workspaceHarness.sql, transactions: workspaceHarness.ctx });
@@ -47,11 +46,11 @@ await assertElevation('su accepts a named target user', 'su', ['user', '-c', 'wh
     return [result.stdout, result.stderr, result.exitCode];
   };
   assert.deepEqual(await run("printf 'x\\n' > /tmp/f && chmod 644 /tmp/f"), ['', '', 0]);
-  assert.deepEqual(await run("alias cat='printf ALIAS'\nsudo -u user cat /tmp/f"), ['x\n', '', 0], 'an alias is not a program');
-  assert.deepEqual(await run('job() { echo JOB; }; sudo -u user job'), ['', 'sudo: job: command not found\n', 1]);
+  assert.deepEqual(await run("alias cat='printf ALIAS'\nsudo -u user cat /tmp/f; unalias cat"), ['x\n', '', 0], 'an alias is not a program');
+  assert.deepEqual(await run('job() { echo JOB; }; sudo -u user job; s=$?; unset -f job; (exit $s)'), ['', 'sudo: job: command not found\n', 1]);
   assert.deepEqual(await run('sudo -u user nosuchcommand'), ['', 'sudo: nosuchcommand: command not found\n', 1]);
   assert.deepEqual(await run('mkdir -p /tmp/sub && cd /tmp/sub && sudo -u user pwd'), ['/tmp/sub\n', '', 0], 'in the caller\'s directory');
-  assert.deepEqual(await run("echo() { printf 'WRONG\\n'; }; sudo -u user echo hi"), ['hi\n', '', 0], 'a function is not a program');
+  assert.deepEqual(await run("echo() { printf 'WRONG\\n'; }; sudo -u user echo hi; unset -f echo"), ['hi\n', '', 0], 'a function is not a program');
   await ws.close();
 }
 

@@ -673,18 +673,15 @@ const CHANGING = [
 ];
 
 // -exec starts a program, as execvp does: a shell function, an alias or a
-// builtin of the shell find was started from is not one. Each script runs as
-// one command line: under the host's sh, and in the workspace's shell.
-// The workspace's shell keeps what a command line defines, so each script's
-// name is its own, and a script that redefines `echo` comes after every
-// script that runs it.
+// builtin of the shell find was started from is not one. Each script runs in
+// a shell of its own on both sides: the host's sh, and Nimbus's `sh -c`.
 const SCRIPTS = [
-  "cd a && find . -name f.js -exec echo '{}' ';'",
-  "job() { echo JOB; }; find a/f.js -exec job '{}' ';'; echo \"status $?\"",
-  "task() { echo TASK; }; find a/f.js -exec task '{}' +; echo \"status $?\"",
-  "alias cat='echo ALIAS'\nfind a/f.js -exec cat '{}' ';'",
   "echo() { printf 'WRONG\\n'; }; find a/f.js -exec echo '{}' ';'",
   "echo() { printf 'WRONG\\n'; }; find a/f.js a/g.ts -exec echo '{}' +",
+  "job() { echo JOB; }; find a/f.js -exec job '{}' ';'; echo \"status $?\"",
+  "job() { echo JOB; }; find a/f.js -exec job '{}' +; echo \"status $?\"",
+  "alias cat='echo ALIAS'\nfind a/f.js -exec cat '{}' ';'",
+  "cd a && find . -name f.js -exec echo '{}' ';'",
 ];
 
 let compared = 0;
@@ -716,7 +713,7 @@ for (const { setup, argv, cwd, then } of CHANGING) {
 }
 
 for (const script of SCRIPTS) {
-  const nimbus = await ws.exec(script, { cwd: W });
+  const nimbus = await ws.exec(`sh -c ${shQuote(script)}`, { cwd: W });
   report(script, runHost([], W, '', script), { stdout: nimbus.stdout, stderr: nimbus.stderr, status: nimbus.exitCode });
 }
 

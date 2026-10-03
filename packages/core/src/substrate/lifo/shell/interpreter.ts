@@ -138,6 +138,8 @@ export interface BuiltinExecutionContext {
   executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
   /** Bind a name to the running function. False outside one, where it is an error. */
   declareLocal(name: string): boolean;
+  /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
+  unsetFunction(name: string): boolean;
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: InterpreterConfig;
   getLastExitCode(): number;
@@ -219,6 +221,9 @@ type ExecutionIo = {
   /** Files the enclosing redirections hold open, by their stream. */
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
+
+/** A shell's function definitions, by name. */
+export type FunctionTable = ReadonlyMap<string, CompoundCommandNode>;
 
 /** The process a command runs as: its pid and credential, and how it sets its umask. */
 export interface CommandIdentity {
@@ -356,6 +361,15 @@ export class Interpreter {
 
   constructor(config: InterpreterConfig) {
     this.config = config;
+  }
+
+  /** The functions this shell defines, for a run whose own definitions must not outlast it (restoreFunctions). */
+  saveFunctions(): FunctionTable {
+    return new Map(this.functions);
+  }
+
+  restoreFunctions(saved: FunctionTable): void {
+    this.functions = new Map(saved);
   }
 
   /**
@@ -759,6 +773,7 @@ export class Interpreter {
           setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
           executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
           declareLocal: (name) => this.declareLocal(name),
+          unsetFunction: (name) => this.functions.delete(name),
           shell: this.config,
           interactive: redirIo.interactive,
           getLastExitCode: () => this.lastExitCode,
@@ -1085,6 +1100,7 @@ export class Interpreter {
               setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
               executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
           declareLocal: (name) => this.declareLocal(name),
+          unsetFunction: (name) => this.functions.delete(name),
           shell: this.config,
           interactive: io.interactive,
           getLastExitCode: () => this.lastExitCode,
