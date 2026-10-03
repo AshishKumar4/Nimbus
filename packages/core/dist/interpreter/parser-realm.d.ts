@@ -31,10 +31,8 @@ export declare const objectCreate: {
     (o: object | null): any;
     (o: object | null, properties: PropertyDescriptorMap & ThisType<any>): any;
 };
-export declare const objectKeys: {
-    (o: object): string[];
-    (o: {}): string[];
-};
+/** Object.keys, as a list that inherits nothing. */
+export declare function objectKeys(target: object): SafeList<unknown>;
 export declare const objectDefineProperties: <T>(o: T, properties: PropertyDescriptorMap & ThisType<any>) => T;
 export declare const objectHasOwn: (o: object, v: PropertyKey) => boolean;
 export { arrayIsArray };
@@ -58,6 +56,16 @@ export declare const consoleWarn: undefined;
 export declare const ObjectPrototypeMethods: object;
 /** An object literal's fields on an object that inherits nothing (made as V8 keeps fast: empty, then filled). */
 export declare function own<T extends object>(fields: T): T;
+/**
+ * `args[index]`, a function's argument by a number: one it has, or undefined,
+ * where an arguments object would look further. A key that is not a number
+ * (`'0'`, `'length'`) is refused rather than read differently.
+ */
+export declare function argument(args: ArrayLike<unknown>, index: unknown): unknown;
+/** `value`, which acorn enumerates with for-in, once checked to inherit nothing of the realm's. */
+export declare function owned<T>(value: T): T;
+/** `this`, which acorn constructs with `new this(...)`, once checked to be a constructor of its own, made to inherit nothing. */
+export declare function ownConstructor(value: unknown): unknown;
 /** A list literal's elements, as a list that inherits nothing. */
 export declare function list(...items: unknown[]): SafeList<unknown>;
 /**
@@ -85,8 +93,8 @@ export declare function lastIndexOf(receiver: unknown, search: unknown, from?: n
 /** Array.prototype.push of one item (the rewrite refuses any other count), onto a list that inherits nothing. */
 export declare function push(receiver: unknown, item: unknown): number;
 export declare function pop(receiver: unknown): unknown;
-/** RegExp.prototype.exec, which reads nothing but the regexp's own lastIndex and internal slots. */
-export declare function exec(receiver: unknown, input: string): RegExpExecArray | null;
+/** RegExp.prototype.exec, its match a list that inherits nothing. */
+export declare function exec(receiver: unknown, input: string): SafeList<unknown> | null;
 /** RegExp.prototype.test, without its lookup of `exec` on the regexp. */
 export declare function test(receiver: unknown, input: string): boolean;
 /** String.prototype.replace of each match (or the first, without `g`) by a string with no `$` patterns. */
@@ -94,7 +102,7 @@ export declare function replace(receiver: unknown, re: unknown, replacement: unk
 /** String.prototype.split by a regexp: the text between matches, and each match's captures. */
 export declare function split(receiver: unknown, re: unknown): SafeList<unknown>;
 /** String.prototype.match by a regexp without `g`: its exec. */
-export declare function match(receiver: unknown, re: unknown): RegExpExecArray | null;
+export declare function match(receiver: unknown, re: unknown): SafeList<unknown> | null;
 /** Function.prototype.call, of a function of acorn's own. */
 export declare function call(receiver: unknown, thisArg: unknown, ...args: unknown[]): unknown;
 /** A number's or bigint's toString. */

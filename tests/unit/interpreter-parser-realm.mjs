@@ -97,6 +97,21 @@ if (process.argv[2] !== '--run') {
       new realm.RegExp('a', 'g').flags, realm.RegExp().source], [true, true, 'g', '(?:)']);
   }
   assert.throws(() => realm.push([], 1), /something other than its own list/, 'a realm array is refused');
+  {
+    // What the parser is handed back inherits nothing: lists of keys, of a match, of its arguments.
+    const safeList = Object.getPrototypeOf(listOf());
+    const match = realm.exec(realm.regexp(/b(c)/), 'abc');
+    same('owned results', [Object.getPrototypeOf(realm.objectKeys({ a: 1 })) === safeList, Object.getPrototypeOf(match) === safeList, match.index, plain(match),
+      Object.getPrototypeOf(realm.match('ab', realm.regexp(/b/))) === safeList, realm.argument([5], 0), realm.argument([5], 1), realm.argument([5], -1)],
+    [true, true, 1, ['bc', 'c'], true, 5, undefined, undefined]);
+    function Own() {}
+    realm.nullPrototypes(Own);
+    same('owned and ownConstructor', [realm.owned(realm.own({ a: 1 })).a, realm.owned(listOf(1))[0], realm.ownConstructor(Own) === Own], [1, 1, true]);
+    assert.throws(() => realm.argument([5], '0'), /read arguments by a string/, 'a key that is not a number is refused');
+    assert.throws(() => realm.owned({}), /enumerated an object of the realm's/);
+    assert.throws(() => realm.owned([]), /enumerated an object of the realm's/);
+    assert.throws(() => realm.ownConstructor(function () {}), /constructed something other than a constructor of its own/);
+  }
   assert.throws(() => realm.charCodeAt({}, 0), /called charCodeAt on a object/);
 
   const { buildInterpreterFiles } = await import('./lib/interpreter-build.mjs');

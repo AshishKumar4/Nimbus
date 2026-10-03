@@ -27,7 +27,7 @@
 //     %GeneratorPrototype% and %IteratorPrototype%.
 //
 // And the parser bundled with it: acorn, as the interpreter bundle rewrites
-// it (worker scripts/acorn-primordials.mjs), checked by parserReaches. acorn
+// it (worker scripts/acorn-primordials.mjs), checked by parser-audit.mjs, which shares nothing with the rewrite. acorn
 // is JavaScript, which the type checker cannot type, so that check is by its
 // syntax tree and acorn's own declarations: no global but the parser realm,
 // no built-in method called but through it, no literal or constructor whose
@@ -164,9 +164,12 @@ assert.deepEqual(violations, [], `the interpreter goes through ${violations.leng
 console.log(`${FILES.length} files: the interpreter calls only the built-ins primordials.ts captured`);
 
 const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
-const { parserReaches, primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
+const { primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
+const { auditParser } = await import('../../packages/worker/scripts/parser-audit.mjs');
+const parserRealm = await import('../../packages/core/src/interpreter/parser-realm.ts');
+const audit = (code) => auditParser(code, parserRealm);
 const { parser } = await bundleInterpreter({ start: fileURLToPath(new URL('../../packages/worker/', import.meta.url)) });
-const reaches = parserReaches(parser);
+const reaches = audit(parser);
 console.log(reaches.join('\n'));
 assert.deepEqual(reaches, [], `the bundled parser reaches ${reaches.length} built-ins a program can replace`);
 console.log(`the bundled parser (${parser.length} characters) reaches the realm only through parser-realm.ts`);
@@ -189,7 +192,7 @@ const upgrades = {
   // parser-realm's RegExp makes a regexp safe however it is reached: called, constructed, or by another name.
   'a regexp made by calling RegExp': [acornSource.replace(LINE_BREAK, 'var lineBreak = RegExp("\\\\r\\\\n?|\\\\n|\\\\u2028|\\\\u2029");'), 'var lineBreak = $$.RegExp('],
   'a regexp made by RegExp under another name': [acornSource.replace(LINE_BREAK, 'var makeRegExp = RegExp;\nvar lineBreak = makeRegExp("\\\\n");'), 'var makeRegExp = $$.RegExp;'],
-  "SyntaxError under another name, whose error's fields are set": [acornSource.replace('var err = new SyntaxError(message);', 'var Raise = SyntaxError; var err = new Raise(message);'), /holds SyntaxError other than to construct it/],
+  "SyntaxError under another name, whose error's fields are set": [acornSource.replace('var err = new SyntaxError(message);', 'var Raise = SyntaxError; var err = new Raise(message);'), /holds SyntaxError other than to construct it|new Raise, which is not a constructor of acorn's own/],
   "an error of the realm's handed on before it is thrown": [acornSource.replace('err.raisedAt = this.pos;', 'err.raisedAt = this.pos; this.lastError = err;'), /used other than to set its fields and throw it/],
 };
 for (const [name, [text, expected]] of Object.entries(upgrades)) {
@@ -199,7 +202,44 @@ for (const [name, [text, expected]] of Object.entries(upgrades)) {
     continue;
   }
   assert.ok(typeof expected === 'string' && rewritten.includes(expected), `${name}: made safe (${expected})`);
-  assert.deepEqual(parserReaches(rewritten), [], `${name}: no reach once rewritten`);
-  assert.ok(parserReaches(text).length > 0, `${name}: found by the check unrewritten`);
+  assert.deepEqual(audit(rewritten), [], `${name}: no reach once rewritten`);
+  assert.ok(audit(text).length > 0, `${name}: found by the check unrewritten`);
 }
 console.log(`${Object.keys(upgrades).length} upgrade fixtures: refused or made safe`);
+
+// What a parser could reach the realm through, as code added to acorn: the rewrite refuses it or makes it
+// safe, and the audit, which shares nothing with the rewrite, finds it as written in the bundled parser.
+const SNIPPETS = {
+  'new of a parameter': ['function upgradeFixture(Ctor) { return new Ctor(); }', /not a constructor of acorn's own/, /new of Ctor/],
+  'new of a member': ['function upgradeFixture() { return new this.constructor(); }', /new of an expression/, /new of this\.constructor/],
+  'new this': ['function upgradeFixture() { return new this(); }', 'new ($$.ownConstructor(this))()', /new this, unchecked/],
+  'a method by a computed key': ['function upgradeFixture(o, name) { return o[name](); }', /by a computed key/, /a call by a computed key/],
+  'for-in': ['function upgradeFixture(o) { var n = 0; for (var k in o) { n++; } return n; }', 'in $$.owned(o)', /for-in over an object not checked/],
+  'an element of arguments': ['function upgradeFixture() { return arguments[1]; }', '$$.argument(arguments, 1)', /arguments used other than for its length/],
+  'arguments written': ['function upgradeFixture(x) { arguments[0] = 2; return x; }', /arguments used other than for its length or an element/, /arguments used other than/],
+  'arguments by a string key': ["function upgradeFixture(x) { return arguments['0']; }", /arguments used other than for its length or an element/, /arguments used other than/],
+  'arguments compared': ['function upgradeFixture() { return arguments === arguments; }', /arguments used other than/, /arguments used other than/],
+  'a method a function inherits, through an alias': ['var upgradeAlias = isIdentifierStart; function upgradeFixture() { if (upgradeAlias.trace) upgradeAlias.trace(); }',
+    /a member of upgradeAlias, a function that inherits Function.prototype/, /a member of upgradeAlias, a function that inherits Function.prototype/],
+  'a call of a name acorn sets nowhere': ['function upgradeFixture(o) { return o.trace(); }', /a call of trace, a name acorn sets nowhere/, /a call of trace, a name the parser sets nowhere/],
+  'a function declared in a block': ['if (false) { function parseInt() {} }', /a function declared in a block/, /a function declared in a block/],
+  'a caught exception read': ['function upgradeFixture(f) { try { return f(); } catch (e) { return e.pos; } }', /the caught e/, /the caught e/],
+  'destructuring': ['function upgradeFixture(o) { var { a } = o; return a; }', /ObjectPattern/, /ObjectPattern/],
+  'a rest parameter': ['function upgradeFixture(...items) { return items; }', /RestElement/, /RestElement/],
+  "a built-in method of Object.keys' list": ['function upgradeFixture(o) { return Object.keys(o).map(function (k) { return k; }); }', /built-in method map|a call of map, a name acorn sets nowhere/, /a call of map/],
+  'a let declaration': ['function upgradeFixture() { let x = 1; return x; }', /let declaration/, /let declaration/],
+  'a computed read': ['function upgradeFixture(o, k) { return o[k]; }', '$$.index(o, k) : o[k]', /a computed read/],
+  'a read of a built-in method': ['function upgradeFixture(s) { return s.padStart; }', /built-in padStart/, /a read of padStart/],
+};
+for (const [name, [snippet, rewrite, finding]] of Object.entries(SNIPPETS)) {
+  const found = audit(`${parser}\n${snippet}\n`);
+  assert.ok(found.some((f) => finding.test(f)), `${name}: the audit finds it as written (${found.join('; ')})`);
+  let rewritten = null;
+  try { rewritten = primordialAcorn(`${acornSource}\n${snippet}\n`, '/parser-realm.ts').code; } catch (e) {
+    assert.ok(rewrite instanceof RegExp && rewrite.test(e.message), `${name}: refused for its reason (${e.message})`);
+    continue;
+  }
+  assert.ok(typeof rewrite === 'string' && rewritten.includes(rewrite), `${name}: made safe (${rewrite})`);
+  assert.deepEqual(audit(rewritten), [], `${name}: no reach once rewritten`);
+}
+console.log(`${Object.keys(SNIPPETS).length} escapes: refused or made safe by the rewrite, found as written by the audit`);

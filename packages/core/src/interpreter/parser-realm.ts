@@ -51,11 +51,15 @@ const BigIntPrototypeToString = primordials.BigIntPrototypeToString;
 const SafeList = primordials.SafeList;
 type SafeList<T> = primordials.SafeList<T>;
 const SafeListPrototype: object = SafeList.prototype;
+const ObjectPrototype = primordials.ObjectPrototype;
 
 // ── The built-ins acorn names ──
 
 export const objectCreate = primordials.objectCreate;
-export const objectKeys = primordials.objectKeys;
+/** Object.keys, as a list that inherits nothing. */
+export function objectKeys(target: object): SafeList<unknown> {
+  return listCopy(primordials.objectKeys(target));
+}
 export const objectDefineProperties = primordials.objectDefineProperties;
 export const objectHasOwn = primordials.objectHasOwn;
 export { arrayIsArray };
@@ -92,6 +96,46 @@ export function own<T extends object>(fields: T): T {
   const made = {};
   reflectSetPrototypeOf(made, null);
   return objectAssign(made, fields);
+}
+
+/** A copy of an array-like as a list that inherits nothing. */
+function listCopy(from: ArrayLike<unknown>): SafeList<unknown> {
+  const made = new SafeList<unknown>();
+  for (let i = 0; i < from.length; i++) made[i] = from[i];
+  return made;
+}
+
+/**
+ * `args[index]`, a function's argument by a number: one it has, or undefined,
+ * where an arguments object would look further. A key that is not a number
+ * (`'0'`, `'length'`) is refused rather than read differently.
+ */
+export function argument(args: ArrayLike<unknown>, index: unknown): unknown {
+  if (typeof index !== 'number') return refuse(`read arguments by a ${typeof index}`);
+  return index >= 0 && index < args.length && index % 1 === 0 ? args[index] : undefined;
+}
+
+/**
+ * Whether `value` inherits nothing of the realm's: it is an object or
+ * function whose prototype is null, or is an object that inherits nothing
+ * (a constructor's prototype of acorn's, a list's, a regexp's), never
+ * Object.prototype.
+ */
+function inheritsNothing(value: unknown): boolean {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false;
+  const proto = reflectGetPrototypeOf(value);
+  return proto === null || (proto !== ObjectPrototype && reflectGetPrototypeOf(proto) === null);
+}
+
+/** `value`, which acorn enumerates with for-in, once checked to inherit nothing of the realm's. */
+export function owned<T>(value: T): T {
+  return inheritsNothing(value) ? value : refuse('enumerated an object of the realm\'s');
+}
+
+/** `this`, which acorn constructs with `new this(...)`, once checked to be a constructor of its own, made to inherit nothing. */
+export function ownConstructor(value: unknown): unknown {
+  const own = typeof value === 'function' && reflectGetPrototypeOf(value) === null && inheritsNothing(reflectGet(value, 'prototype'));
+  return own ? value : refuse('constructed something other than a constructor of its own');
 }
 
 /** A list literal's elements, as a list that inherits nothing. */
@@ -197,13 +241,27 @@ export function pop(receiver: unknown): unknown {
 }
 
 /** RegExp.prototype.exec, which reads nothing but the regexp's own lastIndex and internal slots. */
-export function exec(receiver: unknown, input: string): RegExpExecArray | null {
+function execRealm(receiver: unknown, input: string): RegExpExecArray | null {
   return reflectApply(RegExpPrototypeExec, receiver, [input]);
+}
+
+/** A match as a list that inherits nothing: its elements, `index` and `input` (acorn reads no groups). */
+function matchList(match: RegExpExecArray | null): SafeList<unknown> | null {
+  if (match === null) return null;
+  const list = listCopy(match);
+  reflectDefineProperty(list, 'index', dataDescriptor(match.index, true, true, true));
+  reflectDefineProperty(list, 'input', dataDescriptor(match.input, true, true, true));
+  return list;
+}
+
+/** RegExp.prototype.exec, its match a list that inherits nothing. */
+export function exec(receiver: unknown, input: string): SafeList<unknown> | null {
+  return matchList(execRealm(receiver, input));
 }
 
 /** RegExp.prototype.test, without its lookup of `exec` on the regexp. */
 export function test(receiver: unknown, input: string): boolean {
-  return exec(receiver, input) !== null;
+  return execRealm(receiver, input) !== null;
 }
 
 function accessor(re: unknown, name: string): unknown {
@@ -240,7 +298,7 @@ function eachMatch(input: string, re: unknown, visit: (match: RegExpExecArray) =
     search = RegExp(typeof source === 'string' ? source : '', `${flagsOf(re)}g`);
   }
   for (;;) {
-    const match = exec(search, input);
+    const match = execRealm(search, input);
     if (match === null) return;
     // acorn's patterns never match empty text, which a global search would have to step past.
     if (match[0].length === 0) refuse('matched empty text');
@@ -253,7 +311,7 @@ export function replace(receiver: unknown, re: unknown, replacement: unknown): s
   const input = text(receiver, 'replace');
   if (typeof replacement !== 'string' || reflectApply(StringPrototypeIndexOf, replacement, ['$']) >= 0) refuse('replaced by a pattern');
   if (accessor(re, 'global') !== true) {
-    const first = exec(re, input);
+    const first = execRealm(re, input);
     if (first === null) return input;
     return reflectApply(StringPrototypeSlice, input, [0, first.index]) + replacement
       + reflectApply(StringPrototypeSlice, input, [first.index + first[0].length]);
@@ -282,7 +340,7 @@ export function split(receiver: unknown, re: unknown): SafeList<unknown> {
 }
 
 /** String.prototype.match by a regexp without `g`: its exec. */
-export function match(receiver: unknown, re: unknown): RegExpExecArray | null {
+export function match(receiver: unknown, re: unknown): SafeList<unknown> | null {
   const input = text(receiver, 'match');
   if (accessor(re, 'global') === true) refuse('matched with a global regexp');
   return exec(re, input);

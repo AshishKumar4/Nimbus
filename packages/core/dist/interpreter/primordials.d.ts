@@ -100,6 +100,7 @@ export declare const RegExpPrototypeAccessors: {
 };
 export declare const NumberPrototypeToString: (radix?: number) => string;
 export declare const BigIntPrototypeToString: (radix?: number) => string;
+export declare const ObjectPrototype: object;
 export declare const ObjectPrototypeHasOwnProperty: (v: PropertyKey) => boolean;
 export declare const ObjectPrototypeToString: () => string;
 export declare const objectDefineProperties: <T>(o: T, properties: PropertyDescriptorMap & ThisType<any>) => T;
