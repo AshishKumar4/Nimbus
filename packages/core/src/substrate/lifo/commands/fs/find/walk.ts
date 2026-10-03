@@ -571,18 +571,21 @@ export class Walker {
    * Queue what the walk will want from these children: the stats it takes
    * (and the expression's, when it reads them), and the listings of the
    * directories it will descend into. Under -xdev only the stat says whether
-   * a directory is on this device, so a probe queued in its place reads the
-   * stat first and never lists a directory on another one.
+   * a directory is on this device, and when links are followed only the
+   * stats of its ancestors say whether it is one of them; then a probe queued
+   * in its place reads those first, and never lists a directory on another
+   * device or one the walk will refuse as a loop.
    */
   private readAhead(parent: FindEntry, children: readonly FindEntry[]): void {
     if (this.readAheadDone.has(parent)) return;
     this.readAheadDone.add(parent);
     const { options, scheduler } = this;
+    const decidedByStats = options.sameDevice || options.symlinks !== 'P';
     for (const child of children) {
       if (options.prefetchStats || child.statedByWalk) child.prefetchStat();
       if (child.depth >= options.maxDepth) continue;
       if (child.direntType !== 'directory' && !(child.direntType === 'symlink' && child.following)) continue;
-      if (!options.sameDevice) {
+      if (!decidedByStats) {
         child.prefetchListing();
         continue;
       }

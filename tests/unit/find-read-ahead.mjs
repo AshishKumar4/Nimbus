@@ -38,14 +38,15 @@ fill('', 0);
 const calls = [];
 let inFlight = 0;
 let mostInFlight = 0;
-const slow = new Proxy(backing, {
+/** `vfs` mounted at `at`, with every readdir and stat a round trip, counted. */
+const slowly = (vfs, at) => new Proxy(vfs, {
   get(target, key) {
     if (key === 'sync') return undefined;
     const value = Reflect.get(target, key);
     if (typeof value !== 'function') return value;
     if (key !== 'readdir' && key !== 'stat') return value.bind(target);
     return async (...args) => {
-      calls.push({ method: key, path: args[0] });
+      calls.push({ mount: at, method: key, path: args[0] });
       inFlight++;
       mostInFlight = Math.max(mostInFlight, inFlight);
       try {
@@ -58,6 +59,7 @@ const slow = new Proxy(backing, {
   },
   has(target, key) { return key !== 'sync' && key in target; },
 });
+const slow = slowly(backing, '/slow');
 
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
@@ -70,7 +72,8 @@ async function find(args) {
   const result = await ws.exec(`find ${args}`);
   const ms = performance.now() - started;
   assert.equal(result.exitCode, 0, `find ${args}: ${result.stderr}`);
-  return { stdout: result.stdout, ms, readdirs: calls.filter((call) => call.method === 'readdir'), stats: calls.filter((call) => call.method === 'stat'), mostInFlight };
+  const made = calls.filter((call) => call.mount === '/slow');
+  return { stdout: result.stdout, ms, readdirs: made.filter((call) => call.method === 'readdir'), stats: made.filter((call) => call.method === 'stat'), mostInFlight };
 }
 
 // ── Read ahead, and print what reading one thing at a time prints ──────────
@@ -118,6 +121,24 @@ assert.equal((await find('/slow -maxdepth 1')).readdirs.length, 1, '-maxdepth 1 
   const made = calls.length;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(calls.length, made, 'and none is started after it');
+}
+
+// ── -L: a link back to an ancestor is never listed, read ahead or not ─────
+{
+  const looped = new MemoryVFS({ uid: 1000, gid: 1000 });
+  looped.mkdir('/a');
+  looped.mkdir('/a/b');
+  looped.writeFile('/a/b/f', new Uint8Array(1));
+  looped.symlink('..', '/a/up');
+  looped.symlink('.', '/a/self');
+  ws.filesystem.vfs.mount('/loop', slowly(looped, '/loop'));
+  calls.length = 0;
+  const quick = await ws.exec('find -L /loop');
+  const listed = calls.filter((call) => call.method === 'readdir').map((call) => call.path).sort();
+  const plain = await ws.exec("find -L /loop -print -o -exec true ';'");
+  assert.deepEqual([quick.stdout, quick.stderr, quick.exitCode], [plain.stdout, plain.stderr, plain.exitCode], 'the same walk read ahead or not');
+  assert.match(quick.stderr, /File system loop detected; '\/loop\/a\/up' is part of the same file system loop as '\/loop'/);
+  assert.deepEqual(listed, ['/', '/a', '/a/b'], 'each directory listed once: neither loop link is');
 }
 
 // ── -xdev: the mount point is listed, and nothing on the mount is read but its stat ──
