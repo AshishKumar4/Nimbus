@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A read or write through a SQLite link that leads into a mount below its
+  point (`/home/user/dir -> /s/top`) reaches the mount. A process's bridge
+  resolved such a link's target inside SQLite, where `/s` is nothing, so
+  every read and write through it answered ENOENT, on a synchronous mount
+  as on an asynchronous one; a link to the mount point itself worked. The
+  bridge now walks the target component by component, as it walks the rest
+  of the path, naming a relative target from the link's directory as the
+  engine names it.
+
 ## 2026-10-03
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

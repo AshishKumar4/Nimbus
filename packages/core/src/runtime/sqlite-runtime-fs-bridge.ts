@@ -837,13 +837,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         pending.unshift(...legacyTarget.split('/').filter(Boolean));
         continue;
       }
-      const target = this.vfs.resolveSymlink(candidate);
-      if (target === null) return null;
+      // The link's own target, walked here component by component as the
+      // rest of the path is: it may lead onto a mount, which SQLite cannot
+      // resolve inside itself (a link to /m/dir/x answered ENOENT at m).
       // Hops are counted, as Linux does (40): a link met again on a longer
       // path is one more hop, not a cycle.
       if (++hops > MAX_LINK_HOPS) return null;
-      pending.unshift(...target.split('/').filter(Boolean));
+      const target = this.vfs.readlink(candidate);
+      // A relative target is taken from the link's directory under the
+      // name the engine gives it: a confined caller may spell its own /tmp
+      // by its storage name, and the engine names it /tmp.
+      const from = target.startsWith('/') ? '' : this.vfs.resolveName(resolved.join('/'), false)?.name ?? resolved.join('/');
       resolved.length = 0;
+      resolved.push(...from.split('/').filter(Boolean));
+      pending.unshift(...target.split('/').filter(Boolean));
     }
 
     return resolved.join('/');
