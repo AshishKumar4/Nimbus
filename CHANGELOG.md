@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-02
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
+file, so a mount that cannot tell must answer `unknown`, as described
+below.
+
 - `find` behaves as GNU findutils 4.10 does for the expression language
   scripts and agents use, checked line for line against the host's GNU find
   over the same tree (381 command lines: same stdout, stderr and exit
@@ -71,18 +84,6 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: functions and aliases a `sh -c` or `bash -c` script defined
   stayed defined in the session after it, and `unset -f` removed a
   variable rather than the function. `unset` takes bash's -f, -v and -n.
-
-## 2026-10-02
-
-Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
-0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
-unchanged. The carets are minor-strict, so every range on core, worker,
-fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
-`WorkspaceFs`, no longer a `ProcessView`; and core's
-`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
-`defaultGemHome` give way to `pythonSitePackages(home)` and
-`gemHomeFor(home)`, as described below.
-
 - Code a node program produces while it runs now runs in the same launch.
   Before, Workers' ban on compiling code at runtime meant such code (a
   `Function` or `AsyncFunction` constructor's text, `vm.runInThisContext`, a
@@ -91,9 +92,11 @@ fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
   Nuxt dev server failed its first run. Nimbus now runs it in its own
   JavaScript interpreter, and still records it so the next launch compiles
   it natively. Interpreted code observes what V8 would: test262 passes on
-  39,145 of the 39,191 tests V8 passes, and the interpreter itself calls
-  none of the built-ins a program can replace (its parser, acorn, still
-  does). It loads only when a program first produces such code; each
+  39,152 of the 39,191 tests V8 passes, and neither the interpreter nor its
+  parser calls a built-in a program can replace. Nimbus rewrites acorn's
+  syntax tree at build time to use built-ins captured when the launch
+  starts, and the build fails if anything in the parser still reaches the
+  program's. It loads only when a program first produces such code; each
   launch's map carries it (240 KiB). Measured locally, it runs 1.1 to 1.9
   times slower than native on framework code and about 45 times slower on
   tight generated code such as a JSON-schema validator, for that first
