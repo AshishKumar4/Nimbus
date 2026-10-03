@@ -14,6 +14,7 @@
  * pretending.
  */
 import { parseRuntimeManifest } from './runtime-manifest.js';
+import { resolveContext } from '../substrate/lifo/commands/registry.js';
 const NIMBUS_USAGE = [
     'usage: nimbus install <name>[@<version>] | nimbus install --list | nimbus install --available | nimbus uninstall <name>',
     '       nimbus expose <port|pid> [--public] [--name <name>]',
@@ -282,7 +283,7 @@ async function runNimbusStart(args, ctx, registry) {
         ctx.stderr.write('usage: nimbus start [--restart never|on-failure] <command> [args...]\n');
         return 2;
     }
-    const handler = registry.resolve ? await registry.resolve(command, { cwd: ctx.cwd }) : null;
+    const handler = registry.resolve ? await registry.resolve(command, resolveContext(ctx.cwd, ctx.env)) : null;
     if (!handler) {
         ctx.stderr.write(`nimbus start: ${command}: command not found\n`);
         return 127;

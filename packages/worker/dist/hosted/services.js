@@ -6,6 +6,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contr
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
 import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
+import { resolveContext } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
 import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
@@ -212,22 +213,18 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
     // attached to `this._cpRegistry` by the shell-init path (see
     // construction near line 2058 — registry passed as ctor arg there).
     const cmdRegistryAdapter = {
-        // Consult the live shell registry FIRST so dynamically-registered
-        // commands (registerUnixCommands / git / npm / wrangler etc.) are seen
-        // even if they're not in the static _CP_PURE_BUILTIN allow-list. Falls
-        // back to the static facet-direct table for known facet-only commands.
-        // Returns null
-        // (→ exit 127) for everything unknown.
+        // The static tables keep their kinds (node/npm/git/... run in a facet
+        // even though they are registry entries too). Every other name runs as
+        // a pure builtin, which resolves it once, as the shell would, from the
+        // child's cwd and PATH: a registered command, or a program execvp's
+        // search finds; nothing found is "command not found", 127. Null (also
+        // 127) only while no registry is attached.
         resolve: (name) => {
             const commandName = normalizeCpCommandName(name);
-            const registry = self._cpRegistry;
-            if (registry && typeof registry.has === 'function' && registry.has(commandName)) {
-                // Registered — classify by name. Reuse the static table so
-                // facet-direct commands (node/npm/git/...) keep their kind
-                // even when they ALSO happen to be registry entries.
-                return _classifyCommand(commandName) || { kind: 'pure-builtin' };
-            }
-            return _classifyCommand(commandName);
+            const classified = _classifyCommand(commandName);
+            if (classified)
+                return classified;
+            return self._cpRegistry ? { kind: 'pure-builtin' } : null;
         },
         runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
             const registry = self._cpRegistry;
@@ -235,7 +232,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes('cp: registry unavailable\n'));
                 return 127;
             }
-            const cmd = await registry.resolve(normalizeCpCommandName(name), { cwd });
+            const cmd = await registry.resolve(normalizeCpCommandName(name), resolveContext(cwd, env));
             if (!cmd) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
@@ -288,7 +285,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         if (name === undefined)
             return { status: 0, signal: null };
         const registry = self._cpRegistry;
-        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd: parent.cwd }) : undefined;
+        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), resolveContext(parent.cwd, parent.env)) : undefined;
         if (!cmd)
             throw syscallError('ENOENT', 'execvp', name);
         const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });

@@ -1,7 +1,7 @@
 import type { ScriptNode, CompoundCommandNode } from './types.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
-import type { CommandRegistry } from '../commands/registry.js';
+import { type CommandRegistry } from '../commands/registry.js';
 import type { ChildExit, CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { type CapturedCommand } from './expander.js';

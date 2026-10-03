@@ -21,7 +21,7 @@
  * metadata was never set", and wasm-magic files with such modes stay
  * executable until touched. No migration.
  */
-import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
+import { type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
 import type { ProcessView } from '../runtime/process-files.js';
 export interface ShebangLine {
     /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
@@ -55,5 +55,25 @@ export declare function basename(path: string): string;
 export declare function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatchDecision;
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
 export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
+/**
+ * What execvp's search of PATH finds for a bare name: the first executable
+ * regular file, or, when every file it finds is not executable, the first
+ * of those (which execvp fails with EACCES).
+ */
+export type PathSearchResult = {
+    readonly kind: 'program';
+    readonly path: string;
+} | {
+    readonly kind: 'not-executable';
+    readonly path: string;
+} | null;
+/**
+ * execvp's search for `name`, a name with no slash, along the caller's PATH:
+ * each directory in turn, a directory entry of that name passed over, a
+ * file that is not executable remembered and passed over.
+ */
+export declare function searchPath(fs: ExecInspectionFs, name: string, from: ResolveContext): Promise<PathSearchResult>;
+/** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
+export declare function programPathOf(command: object): string | undefined;
 export declare function installPathExecResolver(registry: CommandRegistry, fs: ExecInspectionFs, getCwd: () => string): void;
 //# sourceMappingURL=exec-dispatch.d.ts.map

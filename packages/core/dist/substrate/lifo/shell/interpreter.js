@@ -1,4 +1,5 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
+import { resolveContext } from '../commands/registry.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
@@ -822,8 +823,9 @@ export class Interpreter {
                         });
                     }
                     else {
-                        // Check registry
-                        const command = await this.config.registry.resolve(name, { cwd: this.config.getCwd() });
+                        // Check registry; a bare name not registered is searched for on the
+                        // PATH this command runs with, a `PATH=x cmd` prefix included.
+                        const command = await this.config.registry.resolve(name, resolveContext(this.config.getCwd(), this.config.env));
                         if (!command) {
                             (await stderr.write(`${name}: command not found\n`));
                             exitCode = 127;
@@ -890,7 +892,7 @@ export class Interpreter {
         const [name, ...args] = argv;
         if (name === undefined)
             return exited(0);
-        const command = await this.config.registry.resolve(name, { cwd: spec.cwd });
+        const command = await this.config.registry.resolve(name, resolveContext(spec.cwd, spec.env));
         if (!command)
             throw syscallError('ENOENT', 'execvp', name);
         return await this.runCommand(command, name, args, {

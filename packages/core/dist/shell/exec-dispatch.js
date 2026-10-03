@@ -21,6 +21,7 @@
  * metadata was never set", and wasm-magic files with such modes stay
  * executable until touched. No migration.
  */
+import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { isVfsError } from '../vfs/vfs-error.js';
 /** Bytes of head to inspect: covers magic + the longest useful `#!` line. */
@@ -95,16 +96,91 @@ async function inspect(fs, path) {
         throw error;
     }
 }
+/**
+ * The directories `from.path` names, in order, as execvp reads them: an
+ * empty entry is the current directory, and a relative one is taken from it.
+ */
+function pathDirectories(from) {
+    const directories = [];
+    for (const entry of from.path.split(':')) {
+        const directory = '/' + resolveVfsPath(entry, normalizeVfsPath(from.cwd));
+        if (!directories.includes(directory))
+            directories.push(directory);
+    }
+    return directories;
+}
+/**
+ * execvp's search for `name`, a name with no slash, along the caller's PATH:
+ * each directory in turn, a directory entry of that name passed over, a
+ * file that is not executable remembered and passed over.
+ */
+export async function searchPath(fs, name, from) {
+    let notExecutable = null;
+    for (const directory of pathDirectories(from)) {
+        const candidate = directory === '/' ? `/${name}` : `${directory}/${name}`;
+        const inspected = await inspect(fs, candidate);
+        if (inspected === null || inspected === 'directory')
+            continue;
+        if (isExecutableMode(inspected.mode, isWasmMagic(inspected.head)))
+            return { kind: 'program', path: candidate };
+        notExecutable ??= candidate;
+    }
+    return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
+}
+/** The file each command a PATH search resolved runs: what `type` and `command -v` report for it. */
+const programPaths = new WeakMap();
+/** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
+export function programPathOf(command) {
+    return programPaths.get(command);
+}
+/** A command whose resolution failed on what the namespace could not answer: it fails as execve's error does. */
+function failing(name, error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return async (ctx) => {
+        (await ctx.stderr.write(`${name}: ${message}\n`));
+        return 126;
+    };
+}
 export function installPathExecResolver(registry, fs, getCwd) {
     const originalResolve = registry.resolve.bind(registry);
     registry.resolve = async (name, from) => {
         const found = await originalResolve(name, from);
         if (found)
             return found;
-        if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
+        if (!name)
             return undefined;
+        const context = from ?? resolveContext(getCwd(), undefined);
+        // A bare name is searched for along the caller's PATH, as execvp
+        // searches it; the file found then resolves by its path, through every
+        // resolver (an npm bin shim is the npm program it names), and the
+        // command it gives runs that file and no other.
+        if (!name.includes('/')) {
+            let hit;
+            try {
+                hit = await searchPath(fs, name, context);
+            }
+            catch (error) {
+                return failing(name, error);
+            }
+            if (hit === null)
+                return undefined;
+            if (hit.kind === 'not-executable') {
+                const path = hit.path;
+                return async (ctx) => {
+                    (await ctx.stderr.write(`${path}: Permission denied\n`));
+                    return 126;
+                };
+            }
+            const command = await registry.resolve(hit.path, context);
+            if (!command)
+                return undefined;
+            const program = async (ctx) => await command(ctx);
+            programPaths.set(program, hit.path);
+            return program;
         }
-        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(from?.cwd ?? getCwd()));
+        if (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))
+            return undefined;
+        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(context.cwd));
         let inspected;
         try {
             inspected = await inspect(fs, resolved);
@@ -113,11 +189,7 @@ export function installPathExecResolver(registry, fs, getCwd) {
             // What the namespace cannot answer (an absent mount, a backend's I/O
             // error) fails this command, as execve's error does; the rest of the
             // line still runs.
-            const message = error instanceof Error ? error.message : String(error);
-            return async (ctx) => {
-                (await ctx.stderr.write(`${name}: ${message}\n`));
-                return 126;
-            };
+            return failing(name, error);
         }
         if (inspected === null)
             return undefined;
@@ -179,9 +251,11 @@ export function installPathExecResolver(registry, fs, getCwd) {
                         (await ctx.stderr.write(`${name}: too many levels of interpreters\n`));
                         return 126;
                     }
-                    let interpCmd = await registry.resolve(interp, { cwd: ctx.cwd });
+                    // `#!/usr/bin/env node` names node, which env finds on the script's PATH.
+                    const from = resolveContext(ctx.cwd, ctx.env);
+                    let interpCmd = await registry.resolve(interp, from);
                     if (!interpCmd && interp.includes('/')) {
-                        interpCmd = await registry.resolve(basename(interp), { cwd: ctx.cwd });
+                        interpCmd = await registry.resolve(basename(interp), from);
                     }
                     if (!interpCmd) {
                         (await ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`));

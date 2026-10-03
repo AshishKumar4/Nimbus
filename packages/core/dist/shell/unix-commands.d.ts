@@ -13,7 +13,7 @@
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { type ResolveContext } from '../substrate/lifo/commands/registry.js';
 /**
  * The registry these commands dispatch through: registration, and name
  * resolution for `which`, `type`, `command` and `xargs`.

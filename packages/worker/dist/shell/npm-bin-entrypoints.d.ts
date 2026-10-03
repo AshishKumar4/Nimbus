@@ -1,7 +1,7 @@
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager } from '../facets/manager.js';
-import type { ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
+import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 type Output = {
     write(data: string): void;
 };

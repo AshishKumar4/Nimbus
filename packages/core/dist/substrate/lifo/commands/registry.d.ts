@@ -1,13 +1,22 @@
 import type { Command } from './types.js';
 /**
- * Where a command name is being resolved from. A name that is a path (./x,
- * ../x) or one found under the caller's node_modules/.bin depends on the
- * calling shell's cwd, and the registry is shared by every shell of a
- * workspace: the session's, each named shell, each exec.
+ * Where a command name is being resolved from. The registry is shared by
+ * every shell of a workspace (the session's, each named shell, each exec),
+ * and a name may depend on the caller: a path (./x, ../x) or one under its
+ * node_modules/.bin on its cwd, and a bare name not registered here on the
+ * PATH of the environment it is invoked from, as execvp searches it.
  */
 export interface ResolveContext {
     cwd: string;
+    /** The invoking environment's PATH. */
+    path: string;
 }
+/**
+ * The context a caller resolves from: its directory and its environment's
+ * PATH. One without an environment, or whose environment has no PATH,
+ * searches the session's default PATH.
+ */
+export declare function resolveContext(cwd: string, env: Readonly<Record<string, string>> | undefined): ResolveContext;
 export declare class CommandRegistry {
     private commands;
     private lazy;

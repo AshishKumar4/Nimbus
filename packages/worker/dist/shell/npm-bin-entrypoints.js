@@ -1,11 +1,11 @@
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
-import { resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
+import { resolveNpmBin, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { DEFAULT_PATH } from '@nimbus-sh/core/constants.js';
+import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { z } from 'zod/v4';
 const NpmBinPackageMetadataSchema = z.object({
     name: z.string().optional(),
@@ -35,19 +35,24 @@ export function installNpmBinFallbackResolver(registry, deps) {
         }
     };
     registry.resolve = async function resolveWithNpmBins(name, from) {
-        const cwd = from?.cwd || deps.getCwd() || '/home/user';
-        // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
-        // same program as the bare name: same runtime choice, TTY and lifecycle.
+        const context = from ?? resolveContext(deps.getCwd() || '/home/user', undefined);
+        const cwd = context.cwd;
+        // An npm bin shim by path (a launcher's `exec`, or the file a search of
+        // PATH found for a bare name) is the same program as the bare name: same
+        // runtime choice, TTY and lifecycle. The command that runs looks the
+        // shim up again through its own view, at the same path.
         if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
             const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
             if (!bin)
-                return await upstreamResolve(name, from);
-            return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
+                return await upstreamResolve(name, context);
+            return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name));
         }
-        const upstream = await upstreamResolve(name, from);
+        // Registered commands, then PATH (searched upstream), then the bins of
+        // the node_modules directories from the cwd up.
+        const upstream = await upstreamResolve(name, context);
         if (upstream)
             return upstream;
-        if (!await probe(() => resolveNpmBinForInvocation(inspector, cwd, DEFAULT_PATH, name))) {
+        if (!await probe(() => resolveNpmBin(inspector, cwd, name))) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
@@ -65,7 +70,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             hintHandler.__nimbusRuntimeInstallHint = true;
             return hintHandler;
         }
-        return binHandler(name, async (ctx, vfs) => await resolveNpmBinForInvocation(vfs, ctx.cwd || '/home/user', ctx.env?.PATH || DEFAULT_PATH, name));
+        return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name));
     };
     function binHandler(name, lookup) {
         return async (ctx) => {
@@ -74,7 +79,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             const vfs = projectFs(ctx.vfs);
             let bin;
             try {
-                bin = await lookup(ctx, vfs);
+                bin = await lookup(vfs);
             }
             catch (error) {
                 ctx.stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -179,10 +184,6 @@ export function installNpmBinFallbackResolver(registry, deps) {
             return exitCode;
         };
     }
-}
-async function resolveNpmBinForInvocation(vfs, cwd, envPath, name) {
-    return await resolveNpmBinFromPath(vfs, cwd, envPath, name)
-        ?? await resolveNpmBin(vfs, cwd, name);
 }
 async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, disposition) {
     const shellLine = `${name} ${argv.join(' ')}`.trim();
