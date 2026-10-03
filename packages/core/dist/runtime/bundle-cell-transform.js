@@ -23,7 +23,6 @@ import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
-import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
 /**
  * Bundled ESM this large is lowered by the bounded declaration rewrite in the
@@ -133,7 +132,7 @@ export function prepareBundleCell(path, source) {
         code,
         options: rewriteOnly
             ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
-            : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl, true), dynamicImportParent: absUrl, moduleMetadata },
+            : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', dynamicImportParent: absUrl, moduleMetadata },
     });
     let src;
     try {
@@ -178,7 +177,7 @@ export function settleBundleCell(cell, outcome) {
             throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
         return { code: esbuildDiagnosticShim(cell.path, outcome.error), lowered: cell.lowered, failed: true };
     }
-    return { code: bindImportMetaResolve(outcome.code, cell.absUrl), lowered: cell.lowered, failed: false };
+    return { code: outcome.code, lowered: cell.lowered, failed: false };
 }
 /**
  * The entry script as the facet compiles it: each dynamic `import()` routed to

@@ -101,6 +101,15 @@ return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
     [parent, [parent, 'argument'], parent, 'user binding', true]);
 }
 
+// routeImports false binds import.meta alone: a transform routes import()
+// once lowering has turned the cell's imports into member reads.
+{
+  const rewritten = rewriteDynamicImports('return [import.meta.url, import("./y.js")];', parent, true, false);
+  assert.doesNotMatch(rewritten, /__nimbusDynamicImport/);
+  assert.match(rewritten, /import\("\.\/y\.js"\)/);
+  assert.match(rewritten, /__nimbusMetadataModule\.__nimbusImportMeta\.url/);
+}
+
 // A script the parse refuses is returned as written, for the compile to report.
 assert.equal(rewriteDynamicImports('import(', parent), 'import(');
 // Code with no import() is returned as is, unparsed.

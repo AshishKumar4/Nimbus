@@ -99,8 +99,8 @@ for (const c of cases) {
   const changes = [
     // The session's own step: which bundled ESM takes the bounded rewrite.
     edit('bundle-cell-transform.ts', '512 * 1024', '256 * 1024'),
-    // A helper it reaches: the name import.meta.resolve is bound to.
-    edit('import-meta-transform.ts', "'__nimbusImportMetaResolveForModule'", "'__nimbusImportMetaResolveForCell'"),
+    // A helper it reaches: the name import.meta is bound through.
+    edit('dynamic-import-rewrite.ts', "'__nimbusMetadataModule'", "'__nimbusMetadataCell'"),
     // The service the host is called through: which requests it pre-rewrites.
     edit('esbuild-service.ts', "options.loader === 'jsx')", "options.loader === 'jsx' || options.loader === 'ts')"),
   ];

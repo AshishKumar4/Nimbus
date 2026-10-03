@@ -9529,6 +9529,22 @@ function __makeLoadingExports(mod) {
  * Nothing here compiles source: request-time code generation is not
  * available in a Worker, so a file the launch did not map cannot run.
  */
+// import.meta of the module file at \`filename\`, evaluated as \`url\`: an
+// entry script's or a loaded module's. It lives on the module, not in source
+// text, so the five CommonJS arguments stay as they are, and
+// import.meta.resolve keeps its parent even when extracted and called later.
+// The registry's own import.meta cannot serve: its module URLs all live
+// under file:///bundle/, never at the file's own path. dirname and filename
+// name the file, without the URL's query or fragment.
+function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href) {
+  return Object.assign(Object.create(null), {
+    dirname: __pathMod.dirname(filename),
+    filename,
+    url,
+    resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, url),
+  });
+}
+
 function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
@@ -9566,19 +9582,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   globalThis.__currentModulePath = resolvedPath;
   const moduleUrl = evaluationKey.startsWith("file:")
     ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
-  // Evaluation metadata lives on the module, not in source text. Keeping
-  // it here preserves the five CommonJS arguments and captures the parent
-  // even when import.meta.resolve is extracted and called later. The
-  // registry's own import.meta cannot serve: its module URLs all live under
-  // file:///bundle/, never at the file's own path.
-  // dirname and filename name the file, without the URL's query or fragment.
-  const importMeta = Object.assign(Object.create(null), {
-    dirname: __pathMod.dirname("/" + resolvedPath),
-    filename: "/" + resolvedPath,
-    url: moduleUrl,
-    resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl),
-  });
-  Object.defineProperty(mod, "__nimbusImportMeta", { value: importMeta });
+  Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
   try {
     const normalizedPath = resolvedPath.replace(/^\\/+/, "");
     let cell = __nimbusModuleCell(normalizedPath);

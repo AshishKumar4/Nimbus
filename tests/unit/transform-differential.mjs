@@ -25,7 +25,6 @@ import { generateTransformFacetRuntimeSource } from '../../packages/core/src/run
 import { prepareBundleCell, settleBundleCell } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { lowerAsyncModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
-import { importMetaDefines } from '../../packages/core/src/runtime/import-meta-transform.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 import { isOxcStackExhaustion } from '../../packages/core/src/runtime/oxc-transform.ts';
@@ -76,7 +75,6 @@ async function observe(code, lowered) {
   const requires = [];
   const module = { exports: {}, __nimbusImportMeta: { url: 'file:///app/x.js', dirname: '/app', filename: '/app/x.js', resolve: (s) => s } };
   globalThis.__nimbusDynamicImport = (_parent, specifier) => { requires.push(`import(${String(specifier)})`); return Promise.resolve({}); };
-  globalThis.__nimbusImportMetaResolveForModule = () => (s) => s;
   globalThis.__trace = (label) => requires.push(`trace:${label}`);
   let threw = null;
   const log = console.log;
@@ -118,7 +116,8 @@ const outcomes = {
   async entry(engine, name, source) {
     const url = `file:///app/${name}`;
     try {
-      const { code } = await engine.transform(source, { loader: loaderOf(name), format: 'cjs', define: importMetaDefines(url), supported: { 'dynamic-import': true, 'import-meta': false } });
+      // The entry script's request, as runtime-registry.ts makes it.
+      const { code } = await runTransformRequest(engine, source, { loader: loaderOf(name), format: 'cjs', dynamicImportParent: url, moduleMetadata: true }, rewriteDynamicImports, lowerAsyncModule);
       return await observe(code, true);
     } catch (error) {
       return { refused: true, topLevelAwait: /top-level await.*not supported.*cjs/i.test(String(error.message)) };

@@ -30,7 +30,6 @@ import {
   type EsbuildTransformOutcome,
   type EsbuildTransformRequest,
 } from './esbuild-service.js';
-import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
 
 /**
@@ -171,7 +170,7 @@ export function prepareBundleCell(path: string, source: string): BundleCell {
     code,
     options: rewriteOnly
       ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
-      : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl, true), dynamicImportParent: absUrl, moduleMetadata },
+      : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', dynamicImportParent: absUrl, moduleMetadata },
   });
   let src: string;
   try {
@@ -212,7 +211,7 @@ export function settleBundleCell(cell: BundleCell, outcome: EsbuildTransformOutc
     if (outcome.transient) throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
     return { code: esbuildDiagnosticShim(cell.path, outcome.error), lowered: cell.lowered, failed: true };
   }
-  return { code: bindImportMetaResolve(outcome.code, cell.absUrl), lowered: cell.lowered, failed: false };
+  return { code: outcome.code, lowered: cell.lowered, failed: false };
 }
 
 /**
