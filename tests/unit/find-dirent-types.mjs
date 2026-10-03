@@ -119,7 +119,8 @@ const isFile = (path) => /\/f\d$/.test(path);
 
 // ── Node's Dirent over the real bridge: an untyped link is a link, dangling or not ──
 {
-  const rawVfs = new SqliteVFS(createSqliteVfsTestHarness().sql, createSqliteVfsTestHarness().ctx);
+  const bridgeHarness = createSqliteVfsTestHarness();
+  const rawVfs = new SqliteVFS(bridgeHarness.sql, bridgeHarness.ctx);
   const kernel = rawVfs.as(CRED_KERNEL);
   kernel.mkdir('links/target', { recursive: true });
   kernel.symlink('target', 'links/to-dir');
