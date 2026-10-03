@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-02
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
+file, so a mount that cannot tell must answer `unknown`, as described
+below.
+
 - A command name nothing registers is searched for on the PATH of the
   environment that invokes it, as execvp searches it, by the shell (a
   `PATH=x cmd` prefix included), a script's commands, `sudo`,
@@ -21,20 +34,18 @@ published independently in the `@nimbus-sh` npm scope.
   searches the default PATH. `type`, `command -v` and `which` report the
   file that runs (`tool is /home/main/.local/bin/tool`), where `type`
   called it a builtin or missed it.
-
-## 2026-10-02
-
-Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
-0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
-unchanged. The carets are minor-strict, so every range on core, worker,
-fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
-`WorkspaceFs`, no longer a `ProcessView`; and core's
-`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
-`defaultGemHome` give way to `pythonSitePackages(home)` and
-`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
-file, so a mount that cannot tell must answer `unknown`, as described
-below.
-
+- Fixed: an ES module entry script's `import.meta` had only `url` and
+  `resolve`; `import.meta.dirname`, `import.meta.filename`, and
+  `import.meta` as an object or destructured were undefined. A module the
+  program loaded already had them. So `npx sv create` (sv 1.0 finds its
+  package.json from `import.meta.dirname`) failed with "Could not locate
+  the package.json of sv". The entry now gets the same metadata object as
+  every loaded module. Also fixed on the way: in a module that reads
+  `import.meta`, an import binding spelled `__nimbusDynamicImport` captured
+  its `import()` calls; `import()` is now routed after the module's
+  imports are lowered.
+- Fixed: a chunk written to a `child_process` child's stdin while the child
+  waited for input was read twice.
 - `find` behaves as GNU findutils 4.10 does for the expression language
   scripts and agents use, checked line for line against the host's GNU find
   over the same tree (381 command lines: same stdout, stderr and exit
