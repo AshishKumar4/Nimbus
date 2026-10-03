@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // A host that bundles in its own Durable Object, outside the session (Kinu's
-// slates), reaches the supervisor's esbuild through the public `facet-host`
-// entry, so its builds run in the object's esbuild facet and not in its
-// isolate. Kinu built `new EsbuildService(vfs)` because nothing public offered
+// slates), reaches the supervisor's builds through the public `facet-host`
+// entry, so its builds run in the object's build facet (rolldown) and not in
+// its isolate. Kinu built `new EsbuildService(vfs)` because nothing public offered
 // the hosted one: esbuild-wasm then held 28 MiB of the 128 MB isolate at first
 // use and 44 MiB after ten rebuilds, never released.
 
@@ -48,9 +48,10 @@ const ctx = { facets: { get: async (id, spec) => { loaded.push(`facet:${(await s
 const service = supervisorEsbuildService(ctx, env, kernel);
 const result = await service.build(['/slate/client.tsx'], { format: 'esm' });
 
-assert.deepEqual(builds, [{ entryPoints: ['/slate/client.tsx'], plugin: 'object' }], 'the build ran in the esbuild facet');
+assert.deepEqual(builds, [{ entryPoints: ['/slate/client.tsx'], plugin: 'object' }], 'the build ran in the build facet');
 assert.equal(result.outputFiles[0].contents, 'built in the facet');
-assert.equal(loaded.length, 2, 'one loader worker and one facet, esbuild instantiated in neither the test nor the caller');
-assert.match(loaded[1], /^facet:EsbuildFacet$/);
+assert.equal(loaded.length, 2, 'one loader worker and one facet, no bundler instantiated in the test or the caller');
+assert.match(loaded[0], /^nimbus-build:rolldown-/);
+assert.match(loaded[1], /^facet:BuildFacet$/);
 
 console.log('facet-host-esbuild-service: ok');

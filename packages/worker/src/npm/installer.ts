@@ -63,7 +63,7 @@ import {
 } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '@nimbus-sh/platform/w7-frame.js';
-import type { BundlePool, BundlePoolProvider } from '../facets/esbuild-bundle-pool.js';
+import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
@@ -90,7 +90,6 @@ import {
 } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import {
-  prebundleOne,
   buildSliceForSpecifierWithCap,
   externalsForSpecifier,
   type PrebundleSpec,
@@ -2079,11 +2078,9 @@ export class NpmInstaller {
     installed: Map<string, ResolvedPackage>,
     fs: CredentialedVfs,
   ): Promise<void> {
-    // Pre-bundle now runs in IsolatePool isolates (src/pre-bundle-facet.ts);
-    // each facet ships its own bundled esbuild-wasm via the preamble. The
-    // supervisor's EsbuildService is no longer on the bundle path — it
-    // still serves the transform path (TS/JSX → JS) which is small and
-    // fits in the supervisor's heap.
+    // Pre-bundle runs in the session's build facet (facets/prebundle-pool.ts),
+    // from slices the supervisor walks (npm/pre-bundle-facet.ts); the
+    // supervisor never holds a bundler.
     //
     // We gate on this.esbuild presence purely as a feature flag: a caller
     // that constructs the installer without esbuild (e.g. minimal
@@ -2324,33 +2321,11 @@ export class NpmInstaller {
     //     lucide-react is barrel-skipped at af8de12 and the cap
     //     mostly applies to non-barrel large packages.)
     //
-    // esbuild's WASM linear memory is per-FACET (~30–80 MiB) and lives
-    // outside the supervisor. Per-slot try/catch handles failures —
-    // /preview/@modules/ on-demand bundling recovers.
-    // The esbuild-wasm bytes ride in the session's shared bundle pool
-    // (facets/esbuild-bundle-pool.ts), constructed once per session and
-    // disposed with the installer and dev server — not per pre-bundle
-    // phase — so the supervisor retains one copy, leased once from the
-    // shared allocation budget. See src/esbuild-wasm-bytes.ts for why
-    // the bytes are never cached supervisor-side beyond that.
-    //
-    // Bytes are shipped into each facet via IsolatePool's
-    // `wasmModules` option which workerd registers in the LOADER
-    // `modules` map as `{ wasm: ArrayBuffer }`. Workerd compiles at
-    // module-load (startup phase, where wasm code generation is
-    // permitted), and the pool's generated worker.js exposes the
-    // resulting WebAssembly.Module on globalThis.__NIMBUS_WASM
-    // for the user fn (prebundleOne) to read at request time.
-    //
-    // Why this works when previous attempts didn't:
-    //   - inlining bytes in preamble: 16 MiB per dispatch OOM'd
-    //     supervisor (commit dead0e3 fixed by removing it)
-    //   - WebAssembly.compile at request time: blocked by workerd
-    //     ("Wasm code generation disallowed by embedder")
-    //   - RPC of pre-compiled WebAssembly.Module: structured-clone
-    //     refuses ("Unable to deserialize cloned data")
-    //   - LOADER modules-map: bytes ride INSIDE the worker code blob
-    //     before workerd compiles it; bypasses all three failure modes.
+    // The bundler's wasm memory lives in the session's build facet
+    // (facets/prebundle-pool.ts → build-facet.ts `prebundle`), outside the
+    // supervisor; its staged parts load into the facet's module map once
+    // per isolate, so the supervisor keeps no copy. Per-spec try/catch
+    // handles failures — /preview/@modules/ on-demand bundling recovers.
     //
     // Defensive logger: onProgress is user-supplied and can throw
     // (downstream WS write, JSON.stringify on a circular value, etc.).
@@ -2365,9 +2340,9 @@ export class NpmInstaller {
       }
     };
 
-    // Acquired BEFORE any per-slice lease below: first construction
-    // reserves the full supervisor budget while the wasm bytes are
-    // fetched, so a slice lease taken first would wait on itself.
+    // Acquired BEFORE any slice is built: acquiring loads the build facet,
+    // whose staged parts pass through the supervisor once, so they are
+    // gone again before a slice lease is held beside them.
     let pool: BundlePool;
     try {
       pool = await this.bundlePool.acquire();
@@ -2407,9 +2382,8 @@ export class NpmInstaller {
 
           // Build slice for THIS spec only. Released by explicit nulling
           // at the end of every code path through this iteration so the
-          // bytes are GC-eligible before pool.submit's RPC layer has
-          // finished tearing down its own references for the previous
-          // slot. With concurrency=1 and 28 MiB caps, peak supervisor
+          // bytes are GC-eligible before the RPC layer has finished
+          // tearing down its own references for the previous spec. With concurrency=1 and 28 MiB caps, peak supervisor
           // slice memory is ~34 MiB (slice + spec metadata).
           //
           // Defensive: buildSliceForSpecifierWithCap performs sync VFS
@@ -2499,15 +2473,7 @@ export class NpmInstaller {
 
           let result: PrebundleResult | null = null;
           try {
-            // pool.submit is per-task (no auto slot pinning). All slots
-            // share slot index 0 in the underlying #dispatchSlot — that's
-            // fine for our use (we don't need stable warm slots beyond
-            // "esbuild compiled once per slot's lifetime"; for pre-bundle
-            // the slot HAS to compile esbuild on first call regardless).
-            result = await pool.submit<PrebundleSpec, PrebundleResult>(
-              prebundleOne,
-              spec,
-            );
+            result = await pool.prebundle(spec);
           } catch (e: any) {
             const msg = describeError(e);
             safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
@@ -2516,11 +2482,9 @@ export class NpmInstaller {
           } finally {
             // Drop the spec reference (which transitively held slice.slice)
             // immediately after the RPC settles, regardless of outcome.
-            // pool.submit's facet-pool fix (timer leak) ensures the rejected
-            // promise's `args` aren't pinned by a 60s timer; this finally
-            // releases our supervisor-side handle the moment the await
-            // resolves so the next iteration starts from a low-water-mark
-            // heap. Combined defense — see commit msg.
+            // This finally releases our supervisor-side handle the moment
+            // the await resolves so the next iteration starts from a
+            // low-water-mark heap.
             spec = null;
           }
 
@@ -2576,7 +2540,7 @@ export class NpmInstaller {
     try {
       // Promise.all rejects on the first slot rejection. Every per-slot
       // failure mode that can throw inside runSlot is caught above
-      // (slice walk, externals, pool.submit, putEsmBundle) — but a
+      // (slice walk, externals, pool.prebundle, putEsmBundle) — but a
       // future regression that adds an unguarded throw to runSlot
       // would bubble out here. The outer try/finally guarantees the
       // diag counters get updated for whatever partial run completed;

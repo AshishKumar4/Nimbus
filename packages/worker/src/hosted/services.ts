@@ -11,7 +11,7 @@ import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 import type { CommandRegistry } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
 import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
-import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
+import { PrebundlePool } from "../facets/prebundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import type { NpmInstaller } from "../npm/installer.js";
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
@@ -30,10 +30,6 @@ import { WebSocketRelay } from "../session/ws-relay.js";
 // They are imported here (so call sites in this file work unchanged) and
 // re-exported (so external callers importing them from
 // `./nimbus-session.js` keep working — back-compat).
-//
-// (esbuild wasm bytes are fetched from env.ASSETS by
-//  src/esbuild-wasm-bytes.ts at pool-construction time; A'.5 dropped
-//  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
 // Helpers needed by this class file's own logic (not just re-export).
 import { _classifyCommand } from "../session/helpers.js";
 import { z } from "zod/v4";
@@ -94,8 +90,8 @@ function normalizeCpCommandName(name: string): string {
   }
   return text;
 }
-export function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): EsbuildBundlePool {
-    if (!self.bundlePool) self.bundlePool = new EsbuildBundlePool(runtimeContext.env, runtimeContext.ctx);
+export function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): PrebundlePool {
+    if (!self.bundlePool) self.bundlePool = new PrebundlePool(runtimeContext.env, runtimeContext.ctx);
     return self.bundlePool;
   }
 

@@ -438,6 +438,85 @@ async function bundleOxcFacet() {
   return runtime;
 }
 
+/**
+ * The build facet's runtime (scripts/rolldown-facet/entry.mjs) as an ES
+ * module: rolldown's JavaScript API, pinned to the staged binding's version,
+ * and core's esbuild-contract adapter (runtime/rolldown-build.ts). The Node
+ * modules rolldown imports and a facet has no use for are shims.mjs; node:path
+ * is workerd's. rolldown finds its binding at globalThis.__nimbusRolldownBinding,
+ * which the facet installs before it imports this module.
+ */
+async function bundleRolldownFacet() {
+  const shims = join(root, 'scripts', 'rolldown-facet', 'shims.mjs');
+  const rolldownPkg = JSON.parse(readFileSync(join(root, 'node_modules', 'rolldown', 'package.json'), 'utf8'));
+  const artifacts = readFileSync(join(root, 'src', 'napi-wasm-artifacts.generated.ts'), 'utf8');
+  const stagedVersion = /"name": "rolldown",\s*"version": "([^"]+)"/.exec(artifacts)?.[1];
+  if (rolldownPkg.version !== stagedVersion) {
+    throw new Error(`[bundle-facet-workers/rolldown-facet] rolldown ${rolldownPkg.version} is installed; the staged binding is ${stagedVersion}`);
+  }
+  const result = await build({
+    entryPoints: [join(root, 'scripts', 'rolldown-facet', 'entry.mjs')],
+    bundle: true,
+    format: 'esm',
+    target: 'esnext',
+    platform: 'neutral',
+    mainFields: ['module', 'main'],
+    conditions: ['import', 'default'],
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+    plugins: [{
+      name: 'rolldown-facet-shims',
+      setup(b) {
+        b.onResolve({ filter: /^node:path$/ }, () => ({ path: 'node:path', external: true }));
+        b.onResolve({ filter: /^node:(worker_threads|tty|os|util|module|fs|fs\/promises|process|url|readline|child_process)$/ }, () => ({ path: shims }));
+        // rolldown's binding loader (createRequire, native shards, WASI fallbacks): the facet's binding instead.
+        b.onResolve({ filter: /\/binding-[A-Za-z0-9_-]+\.mjs$/ }, (args) => ({ path: args.path, namespace: 'rolldown-binding' }));
+        b.onLoad({ filter: /.*/, namespace: 'rolldown-binding' }, () => ({
+          contents: [
+            'export const t = () => {',
+            '  const binding = globalThis.__nimbusRolldownBinding;',
+            '  if (!binding) throw new Error("Nimbus: the build facet imported rolldown before installing its binding");',
+            '  return binding;',
+            '};',
+            'export const n = (mod) => mod;',
+          ].join('\n'),
+          loader: 'js',
+        }));
+      },
+    }],
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/rolldown-facet] esbuild produced no output');
+  }
+  const runtime = result.outputFiles[0].text;
+  const imports = [...runtime.matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+  if (imports.some((specifier) => specifier !== 'node:path')) {
+    throw new Error(`[bundle-facet-workers/rolldown-facet] the runtime imports ${imports.join(', ')}; only node:path is allowed`);
+  }
+  for (const name of ['build', 'prebundle']) {
+    if (!new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`).test(runtime)) throw new Error(`[bundle-facet-workers/rolldown-facet] the runtime no longer exports ${name}`);
+  }
+  return runtime;
+}
+
+/** The build facet's runtime, staged (stageRuntimeSource). */
+function stageRolldownFacet(src) {
+  return stageRuntimeSource(src, {
+    prefix: 'rolldown-facet',
+    generated: 'rolldown-facet-artifact.generated.ts',
+    constant: 'ROLLDOWN_FACET',
+    description: [
+      'Pins the staged runtime of the build facet: scripts/rolldown-facet/entry.mjs',
+      'as an ES module (rolldown\'s JavaScript API over the staged threadless',
+      'binding, and @nimbus-sh/core runtime/rolldown-build.ts). Only the build',
+      'facet imports it, so facets/build-facet.ts fetches it from ASSETS when',
+      'that facet is built.',
+    ],
+  });
+}
+
 /** The transform facet's runtime, staged (stageRuntimeSource). */
 function stageOxcFacet(src) {
   return stageRuntimeSource(src, {
@@ -593,6 +672,8 @@ async function main() {
   const esbuildCli = stageEsbuildCli(esbuildCliSrc);
   const oxcFacetSrc = await bundleOxcFacet();
   const oxcFacet = stageOxcFacet(oxcFacetSrc);
+  const rolldownFacetSrc = await bundleRolldownFacet();
+  const rolldownFacet = stageRolldownFacet(rolldownFacetSrc);
 
   console.log(
     `[bundle-facet-workers] wrote ${kernelOutPath} ` +
@@ -613,6 +694,10 @@ async function main() {
   console.log(
     `[bundle-facet-workers] staged ${oxcFacet.assetPath} and wrote ${oxcFacet.generatedPath} ` +
     `(oxc-facet=${(oxcFacetSrc.length / 1024).toFixed(2)} KiB)`,
+  );
+  console.log(
+    `[bundle-facet-workers] staged ${rolldownFacet.assetPath} and wrote ${rolldownFacet.generatedPath} ` +
+    `(rolldown-facet=${(rolldownFacetSrc.length / 1024).toFixed(2)} KiB)`,
   );
 }
 

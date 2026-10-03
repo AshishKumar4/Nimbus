@@ -5,6 +5,8 @@
  *
  *   bun packages/worker/scripts/napi-wasm/build.mjs --work <dir> --out <dir> [--spec rolldown,satteri]
  *
+ * `--spec none` builds the loader alone (no Rust toolchain needed).
+ *
  * Keep this Bun orchestrator at <=4 GiB. If Cargo needs a separate 16 GiB
  * cgroup, name the bounded runner explicitly; builds remain serial:
  *   NIMBUS_CARGO_RUNNER=/mnt/scratch/nimbus/run-bounded \
@@ -60,7 +62,8 @@ function arg(name, required = true) {
 }
 const WORK = path.resolve(arg('--work'));
 const OUT = path.resolve(arg('--out'));
-const SELECTED = (arg('--spec', false) ?? Object.keys(SPECS).join(',')).split(',');
+const specArg = arg('--spec', false) ?? Object.keys(SPECS).join(',');
+const SELECTED = specArg === 'none' ? [] : specArg.split(',');
 for (const name of SELECTED) if (!SPECS[name]) throw new Error(`napi-wasm: no spec named ${name}`);
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');

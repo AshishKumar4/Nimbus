@@ -234,9 +234,9 @@ export class NimbusSession extends CloudflareDurableObject {
     webSocketRelay = null;
     esbuildService = null;
     /**
-     * The session's single esbuild facet pool, shared by the npm installer's
-     * pre-bundler and the dev server's on-demand /@modules/ path. Lazy; see
-     * ensureBundlePool. Disposed with the installer and dev server.
+     * The session's pre-bundle pool (its build facet), shared by the npm
+     * installer's pre-bundler and the dev server's on-demand /@modules/ path.
+     * Lazy; see ensureBundlePool. Disposed with the installer and dev server.
      */
     bundlePool = null;
     viteDevServer = null;

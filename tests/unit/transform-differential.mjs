@@ -190,7 +190,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   // calls and arrays 585 deep; Bun's stack holds more (3,027 deep arrays). Sizes stay where esbuild's
   // own wasm fits a Worker (it grows to 108 MiB for 3,000 concatenated terms,
   // 268 MiB for 5,000), and where one esbuild instance can take them all in
-  // turn (esbuild-build-host.mjs runs a 5,000-deep array on a fresh one).
+  // turn (esbuild-facet-stack-fallback.mjs runs a 5,000-deep array on a fresh one).
   const terms = (n, f) => Array.from({ length: n }, (_, i) => f(i));
   const deep = {
     'concat-3000.mjs': `export const s = ${terms(3000, (i) => `"p${i}"`).join(' + ')};`,

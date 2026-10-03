@@ -63,8 +63,22 @@ export interface NapiWasmBindingHost {
   trampoline: WebAssembly.Module;
   /** Wasm pages the binding's imported memory starts at (its declared minimum). */
   memoryPages: number;
+  /**
+   * The binding's linear memory, when the host makes it (to watch what the
+   * binding grows to): `memoryPages` initial pages, maximum 65536, unshared.
+   * Absent: the loader makes it.
+   */
+  memory?: WebAssembly.Memory;
   /** The binding's name, for diagnostics. */
   name: string;
+  /**
+   * Called once if the binding dies: a trap (a Rust panic aborts), or the
+   * host's stack overflowing inside it (a RangeError). The instance is
+   * unusable from then on and no promise it holds will settle, so the host
+   * settles its own callers and drops the binding. Absent: the error is
+   * thrown as an uncaught one.
+   */
+  onFatal?(error: unknown): void;
 }
 
 /** What the loader calls on the binding instance besides napi. */
@@ -500,7 +514,7 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   // stack may suspend, so only such a binding takes the JSPI trampoline.
   const pumped = WebAssembly.Module.exports(host.binding).some((e) => e.name === 'nimbus_napi_pump');
   const jspi = pumped && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
-  const memory = new WebAssembly.Memory({ initial: host.memoryPages, maximum: 65536 });
+  const memory = host.memory ?? new WebAssembly.Memory({ initial: host.memoryPages, maximum: 65536 });
   const getMemory = () => memory;
   const fds = new Map<number, FilesystemFd>([
     [0, { kind: 'stdin' }],
@@ -562,9 +576,15 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   let fatal: unknown = null;
 
   const die = (error: unknown) => {
+    if (fatal !== null) return;
     fatal = error;
-    // A trap (a Rust panic aborts) leaves the instance unusable. Surface it
-    // as an uncaught error rather than leave every pending promise hanging.
+    while (waiting > 0) context.decreaseWaitingRequestCounter();
+    // A trap or a stack overflow leaves the instance unusable: tell the host,
+    // or surface it as an uncaught error.
+    if (host.onFatal) {
+      host.onFatal(error);
+      return;
+    }
     queueMicrotask(() => {
       throw error;
     });
@@ -636,6 +656,21 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   };
 
   const context = createContext();
+  // What the binding holds open (threadsafe functions, async work) holds a
+  // Node host's event loop open until released; a dead binding releases
+  // nothing, so a fatal error lets go of it all.
+  let waiting = 0;
+  const increaseWaiting = context.increaseWaitingRequestCounter.bind(context);
+  const decreaseWaiting = context.decreaseWaitingRequestCounter.bind(context);
+  context.increaseWaitingRequestCounter = () => {
+    waiting++;
+    increaseWaiting();
+  };
+  context.decreaseWaitingRequestCounter = () => {
+    if (waiting === 0) return;
+    waiting--;
+    decreaseWaiting();
+  };
   const { napiModule } = instantiateNapiModuleSync(host.binding, {
     context,
     asyncWorkPoolSize: 0,

@@ -10,6 +10,7 @@ import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
+import { prewarmBuildFacet } from '../facets/build-facet.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath, type RuntimeSpec } from '@nimbus-sh/core/runtime/runtime-registry.js';
@@ -651,12 +652,15 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       return 1;
     }
 
+    // Its first build waits on the build facet: start loading it now.
+    prewarmBuildFacet(self.ctx, self.env);
+
     // First-run banner — only when invoked as `wrangler`, and only once
     // per session. Makes it OBVIOUS to the user that they're not running
     // real wrangler, and that Nimbus is doing something different.
     if (invokedAs === 'wrangler' && !self.wranglerAliasBannerShown) {
       ctx.stdout.write(
-        '\x1b[2m\u2388  wrangler (Nimbus DO-in-DO mode) — bundling via esbuild-wasm, running via env.LOADER\x1b[0m\n',
+        '\x1b[2m\u2388  wrangler (Nimbus DO-in-DO mode) — bundling via rolldown, running via env.LOADER\x1b[0m\n',
       );
       self.wranglerAliasBannerShown = true;
     }

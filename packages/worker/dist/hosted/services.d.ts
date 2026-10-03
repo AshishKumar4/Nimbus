@@ -1,6 +1,6 @@
 import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
-import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
+import { PrebundlePool } from "../facets/prebundle-pool.js";
 import type { NpmInstaller } from "../npm/installer.js";
 import { WebSocketRelay } from "../session/ws-relay.js";
 import type { SessionInternal } from '../session/internal.js';
@@ -28,7 +28,7 @@ export interface RuntimeServiceContext {
     /** The host's own authority: a session has exactly one, and this is it. */
     filesystem: () => NimbusFilesystemAuthority;
 }
-export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): EsbuildBundlePool;
+export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): PrebundlePool;
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;
 export declare function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): WebSocketRelay;
 export declare function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): any;
@@ -38,7 +38,7 @@ export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeCont
 export declare function _envFlagDefaultOn(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, name: string): boolean;
 export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {
-    ensureBundlePool: () => EsbuildBundlePool;
+    ensureBundlePool: () => PrebundlePool;
     ensureFacetManager: () => ComposedFacetManager;
     _ensureWebSocketRelay: () => WebSocketRelay;
     _ensureFacetProcessManager: () => any;

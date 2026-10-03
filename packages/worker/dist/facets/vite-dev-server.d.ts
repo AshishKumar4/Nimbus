@@ -12,7 +12,7 @@
  *     ├── /*.ts,*.tsx,*.jsx    → esbuild transform → JS with import rewrites + alias resolution
  *     ├── /*.css               → serve as text/css (with @import inlining, @tailwind stripping, @apply expansion)
  *     ├── /*.css?import        → wrap CSS in JS that injects <style> tag
- *     ├── /@modules/<pkg>      → resolve from node_modules, bundle via esbuild facet (synthetic-entry for barrels)
+ *     ├── /@modules/<pkg>      → resolve from node_modules, bundle in the build facet (synthetic-entry for barrels)
  *     ├── /@vite/client        → HMR client script
  *     ├── /*.json (as module)  → export default { ... }
  *     ├── /*.svg,*.png,... (as module) → export default "/preview/path/to/asset"
@@ -23,7 +23,7 @@
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import type { BundlePoolProvider } from './esbuild-bundle-pool.js';
+import type { BundlePoolProvider } from './prebundle-pool.js';
 export interface ViteDevServerOptions {
     vfs: SqliteVFS;
     esbuild: EsbuildService;
@@ -53,11 +53,11 @@ export interface ViteDevServerOptions {
     /** Durable Object state. */
     ctx?: DurableObjectState;
     /**
-     * The session's esbuild facet pool, shared with the install-time
-     * pre-bundler. When provided, /preview/@modules/<spec> misses bundle in
-     * that pool's isolate instead of the supervisor's EsbuildService.
-     * Without it, the supervisor falls back to in-process esbuild (legacy
-     * behaviour used by callers without a LOADER binding).
+     * The session's pre-bundle pool (its build facet), shared with the
+     * install-time pre-bundler. When provided, /preview/@modules/<spec>
+     * misses bundle there from a slice, rather than through the session's
+     * EsbuildService and its VFS plugin (the path callers without a LOADER
+     * binding take).
      */
     bundlePool?: BundlePoolProvider;
     /**
@@ -73,6 +73,74 @@ export interface ViteDevServerOptions {
         appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void;
     };
 }
+/**
+ * esbuild, when bundling CJS source with `external` specifiers, leaves the
+ * `require("pkg")` calls in the output wrapped in a `__require()` helper that
+ * falls back to the global `require`. In the browser there is no global
+ * `require`, so every such call throws.
+ *
+ * The fix: detect all distinct `__require("X")` specifiers in the output,
+ * emit a top-level ESM `import * as __ns_X from "X"` for each, and replace
+ * every `__require("X")` call with a reference to that namespace (with
+ * default-export interop — `__ns_X.default ?? __ns_X`).
+ *
+ * Before:
+ *   var __require = ((x) => typeof require !== "undefined" ? require : ...);
+ *   var React = __require("react");
+ *
+ * After:
+ *   import * as __nimbus_ext__react from "react";
+ *   const __nimbus_req = (id) => {
+ *     if (id === "react") return __nimbus_ext__react.default ?? __nimbus_ext__react;
+ *     throw new Error("require: " + id);
+ *   };
+ *   var __require = ((x) => typeof require !== "undefined" ? require : ...);
+ *   var React = __nimbus_req("react");
+ *
+ * We inject `__nimbus_req` but keep esbuild's `__require` definition so we
+ * don't have to rewrite its declaration — we just replace the call-sites.
+ */
+export declare function rewriteExternalRequires(code: string, basePath: string): string;
+/**
+ * esbuild bundles CJS packages by wrapping them in __commonJS helpers.
+ * The resulting ESM bundle only has `export default require_X()` — no named
+ * exports. This breaks `import { createRoot } from "react-dom/client"`.
+ *
+ * We fix this by STATICALLY analyzing the bundled source to find CJS export
+ * patterns, then emitting named exports for each found name. We cannot use
+ * `new Function()` or `eval()` to get runtime export keys because the
+ * Cloudflare Workers runtime disallows string-to-code generation outside of
+ * module initialization.
+ *
+ * Patterns we detect (scanning the entire bundled text, not just the top level):
+ *   - `exports.NAME = ...`
+ *   - `exports["NAME"] = ...`
+ *   - `Object.defineProperty(exports, "NAME", ...)`
+ *   - `module.exports.NAME = ...`
+ *   - `module.exports = { NAME, NAME2, ... }` (object literal)
+ *
+ * Input  (esbuild output):
+ *   var require_X = __commonJS({ "...": function(exports) { exports.jsx = ...; exports.jsxs = ...; } });
+ *   export default require_X();
+ *
+ * Output (synthesized):
+ *   var require_X = __commonJS({...});
+ *   const __nimbus_ns = require_X();
+ *   export default __nimbus_ns;
+ *   export const jsx = __nimbus_ns.jsx;
+ *   export const jsxs = __nimbus_ns.jsxs;
+ *
+ * Note: we emit `export const NAME = __nimbus_ns.NAME` per key rather than
+ * `export const { NAME, ... } = __nimbus_ns` destructuring. The former
+ * preserves live binding semantics slightly better and avoids issues when
+ * a key name happens to shadow a keyword or identifier.
+ *
+ * Returns the original code unchanged if:
+ *   - The bundle already has named exports (not a CJS-only bundle)
+ *   - No `export default` pattern found
+ *   - No CJS export patterns found in the bundle source
+ */
+export declare function synthesizeCjsNamedExports(code: string): string;
 /**
  * Importer context for `#X` subpath-import resolution. The dev-server
  * passes this through `rewriteAllImports` whenever it knows the source
@@ -132,7 +200,7 @@ export declare class ViteDevServer {
     private injectBasename;
     private env;
     private ctx;
-    /** The session's esbuild facet pool; null = legacy in-supervisor esbuild. */
+    /** The session's pre-bundle pool; null = bundle through the EsbuildService. */
     private readonly bundlePool;
     /**
      * In-flight on-demand-bundle coalescing map. When the browser fires
@@ -162,11 +230,11 @@ export declare class ViteDevServer {
     private logSink;
     constructor(opts: ViteDevServerOptions);
     /**
-     * The session's shared esbuild pool for on-demand bundling of
+     * The session's pre-bundle pool for on-demand bundling of
      * /preview/@modules/<spec> requests that miss both the in-memory and
-     * pkg_esm_bundles caches. Null when no pool was provided (legacy
-     * in-supervisor fallback). Acquired BEFORE the slice lease — see
-     * EsbuildBundlePool.acquire.
+     * pkg_esm_bundles caches. Null when no pool was provided (the
+     * EsbuildService fallback). Acquired BEFORE the slice lease — see
+     * PrebundlePool.acquire.
      */
     private ensureOnDemandPool;
     /** Detect TailwindCSS usage in the project */

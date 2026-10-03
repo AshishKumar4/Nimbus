@@ -12,10 +12,8 @@
 // real registered vite command with an in-isolate esbuild.
 
 import assert from 'node:assert/strict';
-import { plugin } from 'bun';
 import { Database } from 'bun:sqlite';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -26,6 +24,7 @@ import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 
 const USER = CRED_SESSION_USER;
 const PID = 7;
@@ -107,15 +106,6 @@ const install = (dir, opts = {}) => installer.install(dir, { pid: PID, cred: USE
 
 // ── vite build replaces a dist/ root built ─────────────────────────────────
 {
-  // esbuild-wasm's module, as the Worker's bundler hands it over.
-  const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-  const wasmModule = await WebAssembly.compile(await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')));
-  plugin({
-    name: 'esbuild-wasm-asset',
-    setup(build) {
-      build.onLoad({ filter: /esbuild-wasm\/esbuild\.wasm$/ }, () => ({ exports: { default: wasmModule }, loader: 'object' }));
-    },
-  });
   const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
   // vite-command.ts transitively imports `cloudflare:workers`; bundled with the stub the route tests use.
   const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-root-artifacts-test-'));
@@ -148,7 +138,7 @@ const install = (dir, opts = {}) => installer.install(dir, { pid: PID, cred: USE
     getFilesystemAuthority() { return files; },
     ensureBundlePool() { return null; },
     sqliteFs: vfs,
-    esbuildService: new EsbuildService(files.namespaceFs(CRED_KERNEL)),
+    esbuildService: new EsbuildService(files.namespaceFs(CRED_KERNEL), { engine: esbuildEngine }),
   }));
 
   user.mkdir('home/user/v');
@@ -170,4 +160,5 @@ const install = (dir, opts = {}) => installer.install(dir, { pid: PID, cred: USE
 }
 
 await harness.close?.();
+await stopEsbuildEngine();
 console.log('root-owned-tool-artifacts: ok');

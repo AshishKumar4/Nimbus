@@ -469,24 +469,16 @@ function registerWasmRuntimes(deps) {
     // wasm-runner allocates pids for what it runs, off the SAME supervisor the
     // shell identity uses — the host's own when it supplied one.
     const processes = deps.processes;
-    // Loaded on the first TypeScript or ESM script and not before. The module
-    // statically imports `esbuild-wasm/esbuild.wasm`, which only wrangler
-    // resolves — node instantiates it as a wasm module and fails on its Go
-    // imports — so a host outside Cloudflare must be able to run a shell, bash
-    // and python without that module ever entering its graph.
-    let esbuild = null;
     const wasmRunner = once(async () => {
         const [{ wasmRunnerSpec }, { buildRuntimeHandler }] = await Promise.all([
             import('../runtime/wasm-runner.js'),
             import('../runtime/runtime-registry.js'),
         ]);
         return buildRuntimeHandler(wasmRunnerSpec({ filesystem: deps.filesystem, facets: deps.facets, processes }), {
+            // wasm-runner reads its .wasm itself (bypassesScriptRead), so the
+            // registry never asks a workspace for a transformer: none is loaded.
             getEsbuild: () => {
-                if (!esbuild) {
-                    esbuild = import('../runtime/esbuild-service.js')
-                        .then((module) => new module.EsbuildService(deps.filesystem.namespaceFs(CRED_KERNEL)));
-                }
-                return esbuild;
+                throw new Error('Nimbus: a workspace runs no JavaScript source, so it has no transformer');
             },
             registry: deps.registry,
         });

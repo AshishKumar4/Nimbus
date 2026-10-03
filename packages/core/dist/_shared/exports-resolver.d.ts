@@ -7,9 +7,9 @@
  *   1. Supervisor (TS) — package and require resolution import the typed
  *      functions directly.
  *
- *   2. IsolatePool isolates (JS string) — `src/loaders/pre-bundle-preamble.ts`
- *      embeds `getExportsResolverJS()` as part of the pool preamble so the
- *      pre-bundle facet uses identical resolution semantics to the supervisor.
+ *   2. The build facet's pre-bundles (runtime/prebundle-slice.ts, bundled
+ *      into the facet's runtime) import the typed functions too, so a
+ *      pre-bundle resolves exactly as the supervisor does.
  *
  *   3. User-shell `node` runtime (JS string) — `src/node-shims.ts` embeds
  *      the same JS source so `require()` from inside a user's `node` script

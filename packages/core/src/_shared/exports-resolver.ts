@@ -9,9 +9,9 @@ import { z } from 'zod/v4';
  *   1. Supervisor (TS) — package and require resolution import the typed
  *      functions directly.
  *
- *   2. IsolatePool isolates (JS string) — `src/loaders/pre-bundle-preamble.ts`
- *      embeds `getExportsResolverJS()` as part of the pool preamble so the
- *      pre-bundle facet uses identical resolution semantics to the supervisor.
+ *   2. The build facet's pre-bundles (runtime/prebundle-slice.ts, bundled
+ *      into the facet's runtime) import the typed functions too, so a
+ *      pre-bundle resolves exactly as the supervisor does.
  *
  *   3. User-shell `node` runtime (JS string) — `src/node-shims.ts` embeds
  *      the same JS source so `require()` from inside a user's `node` script
@@ -63,22 +63,30 @@ export interface ResolvablePackageJson {
 // resolveConditionValue skips it and a valid sibling (`default`) still
 // resolves. Rejecting the whole field would lose that sibling, which the
 // hand-rolled walk this replaced did not.
-const ExportsFieldSchema: z.ZodType<ExportsField> = z.lazy(() => z.union([
-  z.string(),
-  z.null(),
-  z.array(ExportsFieldSchema),
-  z.record(z.string(), ExportsFieldSchema),
-]).catch(null));
-
+//
 // Each entry field validates on its own: a field the resolver cannot read
 // (`main: 7`) is dropped, the others stay. Whole-object rejection would lose
 // a valid `main` next to a bad `module`, which the runtime resolver tolerates.
-const ResolvablePackageJsonSchema: z.ZodType<ResolvablePackageJson> = z.object({
-  exports: ExportsFieldSchema.optional(),
-  imports: ExportsFieldSchema.optional(),
-  main: z.string().optional().catch(undefined),
-  module: z.string().optional().catch(undefined),
-});
+//
+// Built on first use, so a bundle that needs only the resolver (the build
+// facet's runtime) leaves zod out.
+let packageJsonSchema: z.ZodType<ResolvablePackageJson> | null = null;
+function resolvablePackageJsonSchema(): z.ZodType<ResolvablePackageJson> {
+  if (packageJsonSchema) return packageJsonSchema;
+  const exportsField: z.ZodType<ExportsField> = z.lazy(() => z.union([
+    z.string(),
+    z.null(),
+    z.array(exportsField),
+    z.record(z.string(), exportsField),
+  ]).catch(null));
+  packageJsonSchema = z.object({
+    exports: exportsField.optional(),
+    imports: exportsField.optional(),
+    main: z.string().optional().catch(undefined),
+    module: z.string().optional().catch(undefined),
+  });
+  return packageJsonSchema;
+}
 
 /**
  * The entry-point fields of a package.json read off disk, or null when the
@@ -88,7 +96,7 @@ const ResolvablePackageJsonSchema: z.ZodType<ResolvablePackageJson> = z.object({
  */
 export function parseResolvablePackageJson(text: string): ResolvablePackageJson | null {
   try {
-    const result = ResolvablePackageJsonSchema.safeParse(JSON.parse(text));
+    const result = resolvablePackageJsonSchema().safeParse(JSON.parse(text));
     return result.success ? result.data : null;
   } catch { return null; }
 }

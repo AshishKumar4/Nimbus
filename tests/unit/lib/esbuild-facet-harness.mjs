@@ -8,12 +8,12 @@
 // cap the memory the facet's esbuilds hold, or end the latest esbuild's Go
 // program (`exitGo`). `durableObject` is a Durable Object as
 // esbuild-transform.ts sees it (`env.LOADER`, `ctx.facets`), so a case drives
-// the same `esbuildBuildHost` a session does.
+// the same `esbuildStackFallbackHost` a session does.
 
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { esbuildFacetWorkerCode } from '../../../packages/worker/src/facets/esbuild-transform.ts';
-import { ESBUILD_JS_ASSET_PATH } from '../../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
+import { ESBUILD_JS_ASSET_PATH, ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_SHA256 } from '../../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 import { OXC_FACET_ASSET_PATH } from '../../../packages/worker/src/oxc-facet-artifact.generated.ts';
 
@@ -47,8 +47,9 @@ WebAssembly.instantiate = function (module, imports) {
   return Reflect.apply(instantiate, WebAssembly, [module, imports]);
 };
 
-const resolveFromCore = createRequire(new URL('../../../packages/core/package.json', import.meta.url));
-const wasmBytes = await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm'));
+// The staged wasm, verified like a deploy's.
+const wasmBytes = await readFile(new URL(`../../../packages/worker/public${ESBUILD_WASM_ASSET_PATH}`, import.meta.url));
+if (createHash('sha256').update(wasmBytes).digest('hex') !== ESBUILD_WASM_SHA256) throw new Error('esbuild-facet-harness: the staged esbuild.wasm is not the pinned one');
 const staged = (path) => readFile(new URL(`../../../packages/worker/public${path}`, import.meta.url), 'utf8');
 
 // The staged adapter is a function body returning esbuild's API. Its
@@ -91,7 +92,7 @@ const countedJsFnBody = [
 globalThis.__esbuilds = esbuilds;
 
 const wasmModule = await WebAssembly.compile(wasmBytes);
-const facetSource = esbuildFacetWorkerCode(wasmModule, countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH))
+const facetSource = esbuildFacetWorkerCode(wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength), countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH))
   .modules['worker.js']
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
   .replace('import wasmModule from "esbuild.wasm";', 'const { wasmModule } = globalThis.__facetImports;');
@@ -130,9 +131,9 @@ export function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
         }
         const instance = instances.get(name);
         if (++counts.stubs <= brokenStubs) {
-          return { build: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
+          return { transformMany: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
         }
-        return { build: async () => (await instance, { built: true }) };
+        return { transformMany: async (requests) => structuredClone(await (await instance).transformMany(structuredClone(requests))) };
       },
     },
   };

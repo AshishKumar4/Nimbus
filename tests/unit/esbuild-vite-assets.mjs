@@ -9,31 +9,16 @@
 // template died with "Unexpected \"\"" / "The JSX syntax extension is not
 // currently enabled" while `npm run dev` worked.
 //
-// Service, esbuild-wasm, resolver plugin and SQLite VFS stay real (same
-// shim pattern as esbuild-vfs-credentials.mjs).
+// Service, esbuild-wasm (the test's in-isolate engine, lib/esbuild-engine.mjs),
+// resolver plugin and SQLite VFS stay real.
 
 import assert from 'node:assert/strict';
-import { plugin } from 'bun';
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 
-const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-const wasmModule = await WebAssembly.compile(
-  await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')),
-);
-plugin({
-  name: 'esbuild-wasm-asset',
-  setup(build) {
-    build.onLoad({ filter: /esbuild-wasm\/esbuild\.wasm$/ }, () => ({
-      exports: { default: wasmModule },
-      loader: 'object',
-    }));
-  },
-});
-const { EsbuildService, loadEsbuild } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
 const {
   VITE_FILE_LOADER_EXTS,
   splitImportQuery,
@@ -98,7 +83,7 @@ try {
     console.log('esbuild-vite-assets: loader map is extension/modifier-keyed');
   }
 
-  const service = new EsbuildService(kernel);
+  const service = new EsbuildService(kernel, { engine: esbuildEngine });
 
   // ── Red-then-green: same .svg import fails as JS without viteAssets ───
   // (esbuild's build() REJECTS on failure — errors never reach result.errors)
@@ -184,6 +169,6 @@ try {
 
   console.log('esbuild-vite-assets: PASS');
 } finally {
-  (await loadEsbuild()).stop();
+  await stopEsbuildEngine();
   harness.db.close();
 }

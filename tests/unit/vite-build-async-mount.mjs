@@ -10,9 +10,7 @@
 // and a mount's link into SQLite builds the project it names, there.
 
 import assert from 'node:assert/strict';
-import { plugin } from 'bun';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -22,17 +20,9 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
 
-// esbuild-wasm's module, as the Worker's bundler hands it over.
-const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-const wasmModule = await WebAssembly.compile(await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')));
-plugin({
-  name: 'esbuild-wasm-asset',
-  setup(build) {
-    build.onLoad({ filter: /esbuild-wasm\/esbuild\.wasm$/ }, () => ({ exports: { default: wasmModule }, loader: 'object' }));
-  },
-});
 const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
 
 // vite-command.ts transitively imports `cloudflare:workers`; bundled with the stub the route tests use.
@@ -77,7 +67,7 @@ registry.register('vite', createViteCommand({
   ensureBundlePool() { return null; },
   sqliteFs: vfs,
   // The session's own service: the kernel's synchronous view, which a mount without a sync face refuses.
-  esbuildService: new EsbuildService(files.namespaceFs(CRED_KERNEL)),
+  esbuildService: new EsbuildService(files.namespaceFs(CRED_KERNEL), { engine: esbuildEngine }),
 }));
 
 /** Kinu's project (index.html naming main.js) at `dir`, then `vite build` there. */
@@ -117,4 +107,5 @@ const linked = await build('/m/lv');
 assert.equal(linked.code, 0, linked.stderr);
 assert.equal(linked.stdout.replaceAll('m/lv/', 'home/user/v/'), home.stdout);
 assert.match(vfs.as(CRED_SESSION_USER).readFileString('home/user/lv/dist/index.html'), /assets\/main-[A-Z0-9]+\.js/);
+await stopEsbuildEngine();
 console.log('vite-build-async-mount: ok');

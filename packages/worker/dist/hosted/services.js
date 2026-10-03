@@ -4,11 +4,7 @@ import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
-import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
-import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
-import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
-import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
-import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
+import { PrebundlePool } from "../facets/prebundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
 import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
@@ -26,10 +22,6 @@ import { WebSocketRelay } from "../session/ws-relay.js";
 // They are imported here (so call sites in this file work unchanged) and
 // re-exported (so external callers importing them from
 // `./nimbus-session.js` keep working — back-compat).
-//
-// (esbuild wasm bytes are fetched from env.ASSETS by
-//  src/esbuild-wasm-bytes.ts at pool-construction time; A'.5 dropped
-//  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
 // Helpers needed by this class file's own logic (not just re-export).
 import { _classifyCommand } from "../session/helpers.js";
 import { z } from "zod/v4";
@@ -60,7 +52,7 @@ function normalizeCpCommandName(name) {
 }
 export function ensureBundlePool(self, runtimeContext) {
     if (!self.bundlePool)
-        self.bundlePool = new EsbuildBundlePool(runtimeContext.env, runtimeContext.ctx);
+        self.bundlePool = new PrebundlePool(runtimeContext.env, runtimeContext.ctx);
     return self.bundlePool;
 }
 export function ensureFacetManager(self, runtimeContext) {
@@ -175,17 +167,36 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return 127;
             }
             // Synthesize a CommandContext for the internal shell substrate.
+            const stdoutStream = { write: (d) => hooks.onStdout(textBytes(String(d))) };
+            const stderrStream = { write: (d) => hooks.onStderr(textBytes(String(d))) };
             const ac = new AbortController();
             const cred = self.processes.cred(payload.processPid);
-            const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
             const ctx = {
-                ...io,
+                pid: payload.processPid,
                 cred,
                 args: payload.args || [],
+                env: payload.env || {},
+                cwd: payload.cwd || '/home/user',
                 vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: payload.processPid, cred })),
+                stdout: stdoutStream,
+                stderr: stderrStream,
                 signal: ac.signal,
+                // For commands that need stdin we pass a tiny adapter.
+                stdin: staticStdinReader(payload.stdin || ''),
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
-                runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
+                runAs: async (targetCred, argv) => {
+                    if (argv.length === 0)
+                        return 0;
+                    const child = self.processes.spawn(argv.join(' '), argv, payload.cwd, { parentPid: payload.processPid, cred: targetCred });
+                    let exitCode = 1;
+                    try {
+                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, payload.cwd, payload.stdin, hooks);
+                        return exitCode;
+                    }
+                    finally {
+                        self.processes.exit(child.pid, exitCode);
+                    }
+                },
                 // Reuse the broker's pid and let runtime RPC output reach its
                 // live queues. A direct inline invocation without a managed child
                 // still needs a captured result.
@@ -239,72 +250,47 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes('cp: registry unavailable\n'));
                 return 127;
             }
-            const cmd = await registry.resolve(normalizeCpCommandName(name), { cwd });
+            const commandName = normalizeCpCommandName(name);
+            const cmd = await registry.resolve(commandName, { cwd });
             if (!cmd) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
             }
-            return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
+            const cred = self.processes.cred(pid);
+            const ac = new AbortController();
+            const ctx = {
+                pid,
+                cred,
+                args, env, cwd,
+                vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid, cred })),
+                stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
+                stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
+                signal: ac.signal,
+                stdin: staticStdinReader(stdin),
+                setUmask: (mask) => { self.processes.setUmask(pid, mask); },
+                runAs: async (targetCred, argv) => {
+                    if (argv.length === 0)
+                        return 0;
+                    const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
+                    let exitCode = 1;
+                    try {
+                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
+                        return exitCode;
+                    }
+                    finally {
+                        self.processes.exit(child.pid, exitCode);
+                    }
+                },
+            };
+            try {
+                const code = await cmd(ctx);
+                return typeof code === 'number' ? code : 0;
+            }
+            catch (e) {
+                hooks.onStderr(textBytes(`${name}: ${e?.message || String(e)}\n`));
+                return 1;
+            }
         },
-    };
-    /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
-    const processIo = (pid, env, cwd, stdin, hooks) => ({
-        pid,
-        env,
-        cwd,
-        stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
-        stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
-        stdin: staticStdinReader(stdin),
-    });
-    /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
-    const runBuiltin = async (cmd, name, args, io) => {
-        const cred = self.processes.cred(io.pid);
-        const ac = new AbortController();
-        const ctx = {
-            ...io,
-            cred,
-            args,
-            vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: io.pid, cred })),
-            signal: ac.signal,
-            setUmask: (mask) => { self.processes.setUmask(io.pid, mask); },
-            runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
-        };
-        try {
-            const code = await cmd(ctx);
-            return { status: typeof code === 'number' ? code : 0, signal: null };
-        }
-        catch (e) {
-            // A write that finds its reader gone ends the process, silently.
-            if (isBrokenPipe(e))
-                return KILLED_BY_SIGPIPE;
-            await io.stderr.write(`${name}: ${errorText(e)}\n`);
-            return { status: 1, signal: null };
-        }
-    };
-    /**
-     * runAs for a builtin run on a process's behalf: execvp of `argv` in a
-     * child of `parent` under `cred`, inheriting `parent`'s descriptors,
-     * environment and directory. A program that is not there is ENOENT, as
-     * execvp fails, for the caller to report.
-     */
-    const spawnBuiltin = async (parent, cred, argv) => {
-        const [name, ...args] = argv;
-        if (name === undefined)
-            return { status: 0, signal: null };
-        const registry = self._cpRegistry;
-        const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd: parent.cwd }) : undefined;
-        if (!cmd)
-            throw syscallError('ENOENT', 'execvp', name);
-        const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
-        let exitCode = 1;
-        try {
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
-            exitCode = ended.status;
-            return ended;
-        }
-        finally {
-            self.processes.exit(child.pid, exitCode);
-        }
     };
     // Construct the child-process Loader pool when the binding is available.
     // Unit-test hosts without LOADER continue through direct dispatch.
@@ -331,8 +317,19 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 }
                 const cred = self.processes.cred(pid);
                 const setUmask = (mask) => { self.processes.setUmask(pid, mask); };
-                // The child inherits from the command that starts it: its pipes and redirections, and the directory a `cd` moved to.
-                const runAs = (parent, targetCred, argv) => spawnBuiltin(parent, targetCred, argv);
+                const runAs = async (_parent, targetCred, argv) => {
+                    if (argv.length === 0)
+                        return 0;
+                    const child = self.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
+                    let exitCode = 1;
+                    try {
+                        exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
+                        return exitCode;
+                    }
+                    finally {
+                        self.processes.exit(child.pid, exitCode);
+                    }
+                };
                 const result = await self.shell.execute(String(commandLine), {
                     cwd: cwd || '/home/user',
                     env: { ...self.shell.env, ...(env || {}) },
