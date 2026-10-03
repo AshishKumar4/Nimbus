@@ -14,7 +14,7 @@ import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
 import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
-import { isVfsError } from '../../../vfs/vfs-error.js';
+import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill } from '../commands/system/kill.js';
 function shellPromptParts(env, cwd) {
@@ -1013,7 +1013,7 @@ export class Shell {
         }
         catch (e) {
             if (isVfsError(e)) {
-                (await stderr.write(`cd: ${target}: ${e.message}\n`));
+                (await stderr.write(`cd: ${target}: ${strerror(e)}\n`));
                 return 1;
             }
             throw e;

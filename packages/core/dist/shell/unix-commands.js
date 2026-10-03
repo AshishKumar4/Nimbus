@@ -5520,9 +5520,17 @@ export function registerUnixCommands(registry, sqliteVfs) {
             return 1;
         }
         const path = resolvePath(ctx.cwd, operands[1]);
-        if (force)
-            await ctx.vfs.remove(path, { force: true });
-        await ctx.vfs.symlink(operands[0], path);
+        try {
+            if (force)
+                await ctx.vfs.remove(path, { force: true });
+            await ctx.vfs.symlink(operands[0], path);
+        }
+        catch (error) {
+            if (!isVfsError(error))
+                throw error;
+            await ctx.stderr.write(`ln: failed to create symbolic link '${operands[1]}': ${strerror(error)}\n`);
+            return 1;
+        }
         return 0;
     }));
     registry.register('test', wrap(mkTest(sqliteVfs)));
