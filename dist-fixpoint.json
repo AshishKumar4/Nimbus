@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b9b37011228506b5b04730221f9af5121a99daaf1c371d419e521b4ad670a13c",
+  "fingerprint": "50838b0f808ae78519ff2f710edcf3352e4f1e23a49512b3c28468b5ba72ddee",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -358,8 +358,8 @@
     "packages/core/dist/runtime/require-resolution.d.ts.map": "04cde9b4daae1d7bfd4b43e942ea87aa23e8c8770b7bf8b57fadc6878c0173a0",
     "packages/core/dist/runtime/require-resolution.js": "631ffdaa5fa3678241e4959a1831d5ba103644c98f0a61cbbca6ca1a37a0cd53",
     "packages/core/dist/runtime/require-resolver.d.ts": "7c833b8fa721ad6dcd52511bc0ef4424cdc1010e229ef091c9f35df1a3d4c6c7",
-    "packages/core/dist/runtime/require-resolver.d.ts.map": "63ebe7fc396a1fde06acba5969b23b8f9e0ea8c0508fff5eded28b208ecfd13f",
-    "packages/core/dist/runtime/require-resolver.js": "fea686400933e01fa193ac65ce908f85b4fb6fdc9581c854b09bfe09c1a57dac",
+    "packages/core/dist/runtime/require-resolver.d.ts.map": "29bfd3e35b8f88cf51933bddc3a51dd2a51f9a8e63830443d703ff76d6f0b96a",
+    "packages/core/dist/runtime/require-resolver.js": "d774f940e879878dc09a5981e0336276e65f97751c0e0d2dc960e771715d8f78",
     "packages/core/dist/runtime/rolldown-build.d.ts": "a8c1f1e75e3ee20b03a3f1c0e61b6b4332ffbeba4b41c5cc7a564b137b10b8e8",
     "packages/core/dist/runtime/rolldown-build.d.ts.map": "d2a4dfeb54303e88463801e03b7b01b34008b12c9102ee32d0bdde7411eaf6e3",
     "packages/core/dist/runtime/rolldown-build.js": "dfd0d1d69d9ad795fa6d3e393cedc1c47f97026d31dcc39564cd23e7985a53df",
@@ -1146,7 +1146,7 @@
     "packages/core/src/runtime/python-pip.ts": "a7fb34d735348e72aab961cd0b3870863bfc5194120ea5c902cab4318d0ae974",
     "packages/core/src/runtime/python-server-adapter.ts": "166dd887cefb0e5e2b31a22a4ae34682124547a0779da70b4e76b338a9364dd6",
     "packages/core/src/runtime/require-resolution.ts": "7f977a512ad8bea7fbb09c1c20dae3cd3b51880b8cbf20fa84cc32cbda532545",
-    "packages/core/src/runtime/require-resolver.ts": "b547a4d55f55c4604d770a41014689af35458cd87f449989456938280e0deaf4",
+    "packages/core/src/runtime/require-resolver.ts": "c573725398b4ed7619950f700f05f309a9356baa915436fa5bbe91e9ac94e74d",
     "packages/core/src/runtime/rolldown-build.ts": "d482170298403815b66734e6eb35e5c984c4dd31854ca54113479b76741d0d45",
     "packages/core/src/runtime/router-basename.ts": "64cd3f6058823f0f0d3c98491b4fc83c080007d63b0c63e78be202c9f76a0989",
     "packages/core/src/runtime/ruby-gems.ts": "df2d3b361c56fdbc357c368a355dfa8d60a39d5df2560569dd25c7273a2e13c5",
