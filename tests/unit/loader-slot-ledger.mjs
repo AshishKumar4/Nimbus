@@ -14,7 +14,8 @@
 //   (3) the platform's limit message is classified in the taxonomy,
 //       and the failure names the workers that were in flight;
 //   (4) a resident process holds its worker for as long as it is resident,
-//       and a one-shot for its run, on the same per-DO ledger.
+//       and a one-shot for its run, on the same per-DO ledger, which a
+//       one-shot the platform refuses at the limit pauses.
 
 import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
@@ -122,6 +123,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   }));
   const ctx = createFacetCtx(world, 'resident-ledger-do');
   let oneShotMidFlight = [];
+  let refuseOneShot = false;
   const env = {
     LOADER: {
       get: world.loader.get,
@@ -129,6 +131,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
         return {
           getEntrypoint: () => ({
             async fetch() {
+              if (refuseOneShot) throw new Error(CAP_MESSAGE);
               oneShotMidFlight = loaderLedgerStats(ctx).inFlightWorkers;
               return new Response('ran');
             },
@@ -165,8 +168,8 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   await handle.done;
   assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'a killed process gives its slot back');
 
-  await host.runOnce({
-    pid: 8,
+  const runOnce = (pid) => host.runOnce({
+    pid,
     writerId: crypto.randomUUID(),
     code: async () => ({
       compatibilityDate: '2025-01-01',
@@ -177,8 +180,14 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
     request: new Request('https://run/'),
     onWriterActivated() {},
   }, async (response) => response.text());
+  await runOnce(8);
   assert.equal(oneShotMidFlight.length, 1, "the one-shot's run was a worker in flight on the same ledger");
   assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'and it drained');
+
+  refuseOneShot = true;
+  await assert.rejects(runOnce(9), (error) => error.message.startsWith(CAP_MESSAGE));
+  assert.ok(loaderLedgerStats(ctx).pauseMs > 0, 'the refused one-shot paused the ledger for everyone waiting on it');
+  assert.equal(dynamicWorkerHeadroom(ctx), 0);
 }
 
 console.log('ok - loader-slot-ledger (distinct workers in flight counted, released on settle, limit named, one ledger)');
