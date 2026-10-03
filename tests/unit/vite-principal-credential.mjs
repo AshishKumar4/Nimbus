@@ -24,6 +24,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createRequire } from 'node:module';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 
 const AGENT = { uid: 2000, gid: 2000, groups: [2000], umask: 0o022 };
@@ -125,7 +126,10 @@ try {
   await rm(realViteDir, { recursive: true, force: true });
 }
 
-const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+const { EsbuildService, BUNDLER_VERSION } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+const { buildWithRolldown } = await import('../../packages/core/src/runtime/rolldown-build.ts');
+const { NpmCache } = await import('../../packages/worker/src/npm/cache.ts');
+const rolldown = await import(createRequire(new URL('../../packages/worker/package.json', import.meta.url)).resolve('rolldown'));
 const processes = new SessionProcessSupervisor();
 const stored = new Map();
 const storage = {
@@ -146,7 +150,13 @@ const host = {
   ensureFacetManager() {},
   facetManager: null,
   sqliteFs: vfs,
-  esbuildService: new EsbuildService(files.namespaceFs(CRED_KERNEL), { engine: esbuildEngine }),
+  // The session's service as production builds it (supervisorEsbuildService):
+  // esbuild transforms, rolldown bundles (rolldownBuildHost, here over the
+  // native binding rather than the build facet).
+  esbuildService: new EsbuildService(files.namespaceFs(CRED_KERNEL), {
+    engine: esbuildEngine,
+    buildHost: async (options, plugin) => structuredClone(await buildWithRolldown(rolldown, structuredClone(options), plugin)),
+  }),
   processes,
   ctx: { storage, waitUntil() {} },
   env: {},
@@ -202,6 +212,21 @@ try {
     const { code } = await vite(['build'], AGENT);
     assert.notEqual(code, 0, 'the agent may not replace the session user\'s build');
     assert.equal(user.readFileString('home/user/v/dist/index.html'), before, 'which is left as it was');
+  }
+
+  // ── a cached bundle that says nothing of what it was built from ─────────
+  {
+    const own = await vite(['--force'], CRED_SESSION_USER);
+    assert.equal(own.code, 0, own.stderr);
+    // As a writer that recorded no provenance left it (sources []).
+    new NpmCache(harness.sql).putEsmBundle({
+      specifier: 'pkg', bundleHash: BUNDLER_VERSION, esmCode: "export default 'from-unknown-provenance';",
+      builtAt: Date.now(), inputHash: '', sources: [],
+    });
+    const module = await served('/@modules/pkg');
+    assert.equal(module.status, 200, module.body);
+    assert.equal(module.body.includes('from-unknown-provenance'), false, 'a bundle with no recorded sources is never served: it is rebuilt');
+    host.viteDevServer.stop();
   }
 
   // ── the shared module cache, and a package the agent may not enter ──────

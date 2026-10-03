@@ -612,6 +612,16 @@ async function build(
     return m ? { namespace: m[1], path: m[2] } : { namespace: mainNamespace ?? 'file', path: id };
   };
   const pending = new Map<string, { namespace: string; path: string }>();
+  // The metafile's inputs, as esbuild's: every module the build loaded, keyed
+  // as a diagnostic names it, with its byte count and the imports it made.
+  const inputBytes = new Map<string, number>();
+  const importsOf = new Map<string, esbuild.Metafile['inputs'][string]['imports']>();
+  const importedBy = (importer: string | undefined, record: esbuild.Metafile['inputs'][string]['imports'][number]) => {
+    if (importer === undefined) return;
+    const list = importsOf.get(importer) ?? [];
+    list.push(record);
+    importsOf.set(importer, list);
+  };
   const css = new Map<string, CssModule>();
   const warnings: esbuild.Message[] = [];
   const template = (names: string | undefined, fallback: string) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
@@ -698,11 +708,19 @@ async function build(
       if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, kind, plugin.name);
       if (answer?.warnings?.length) for (const w of answer.warnings) warnings.push(message(w.text ?? ''));
       if (!answer || (!answer.path && !answer.external)) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '');
-      if (answer!.external) return { id: answer!.path ?? path, external: true };
+      if (answer!.external) {
+        importedBy(importer, { path: answer!.path ?? path, kind: kind as esbuild.ImportKind, external: true });
+        return { id: answer!.path ?? path, external: true };
+      }
       const namespace = answer!.namespace ?? 'file';
       if (mainNamespace === null) mainNamespace = namespace;
       const id = idOf(namespace, answer!.path!);
       pending.set(id, { namespace, path: answer!.path! });
+      importedBy(importer, {
+        path: fileOf({ namespace, path: answer!.path! }),
+        kind: kind as esbuild.ImportKind,
+        ...(source === answer!.path ? {} : { original: source }),
+      });
       return id;
     },
     async load(id: string) {
@@ -713,6 +731,7 @@ async function build(
       if (!answer || answer.contents === undefined) raise(`No loader produced ${fileOf({ namespace, path })}`);
       const loader = answer!.loader ?? 'js';
       const contents = answer!.contents!;
+      inputBytes.set(id, typeof contents === 'string' ? new TextEncoder().encode(contents).length : contents.length);
       const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
       const lastSlash = path.lastIndexOf('/');
       loaded.set(id, {
@@ -831,7 +850,9 @@ async function build(
       outputFiles.push({ path, contents });
       outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
     }
-    return { outputFiles, errors: [], warnings, metafile: { inputs: {}, outputs } };
+    const inputs: esbuild.Metafile['inputs'] = {};
+    for (const [id, bytes] of inputBytes) inputs[fileOf(decode(id))] = { bytes, imports: importsOf.get(id) ?? [] };
+    return { outputFiles, errors: [], warnings, metafile: { inputs, outputs } };
   } finally {
     await bundle.close();
   }
