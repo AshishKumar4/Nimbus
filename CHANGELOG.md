@@ -20,10 +20,10 @@ published independently in the `@nimbus-sh` npm scope.
   `ws.exec(cmd, { shellId })` runs in a named shell whose cwd and
   environment persist between calls, one call at a time per name, saved in
   the workspace's new `vfs_shells` table, which `destroy()` drops. The
-  call's process, and whatever it started that has ended, leaves
-  `ws.processes` when the result is returned, so a bare workspace's table
-  no longer grows by one entry per call. For a host that runs its own
-  process around a shell, `ws.shellFor(pid, { cwd, env })` and
+  call's process, and its child processes that have ended (`sudo`'s, say),
+  leave `ws.processes` when the result is returned, so a bare workspace's
+  table no longer grows by one entry per call. For a host that runs its
+  own process around a shell, `ws.shellFor(pid, { cwd, env })` and
   `ws.withNamedShell(id, options, body)` are the two parts `exec` is made
   of.
 - A session's and a hosted runtime's named shells are the workspace's:
