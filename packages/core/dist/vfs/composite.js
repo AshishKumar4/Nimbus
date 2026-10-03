@@ -555,18 +555,6 @@ export class CompositeVFS {
         return reported({ syscall: 'realpath', path }, () => this.realpathAt(path, false));
     }
     /**
-     * Where a call on `path` lands: the lookup every call here takes, as the
-     * caller's credential walks it. Every link on the way is followed, the
-     * last one only when `follow` (a call that acts on a link itself does not),
-     * and a missing last component is named rather than refused, as a call
-     * that creates it names it; `creating` lets missing directories on the way
-     * through as well, as mkdir -p makes them. Refused as the lookup refuses
-     * (ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO), reported for `syscall`.
-     */
-    async resolveAsync(path, options) {
-        return reported({ syscall: options.syscall, path }, () => this.resolve(path, options.follow, false, options.creating === true));
-    }
-    /**
      * Where the link at `path`, reading `link` (readlink's text), leads in
      * this namespace: the one link-root rule, for a walk over the namespace
      * that follows the link itself. A mount whose backend resolves its own
@@ -605,6 +593,18 @@ export class CompositeVFS {
         });
     }
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
+    /**
+     * Refuse mutations before they reach a backend. `guard` is asked, for every
+     * mutation a view with a credential makes, at the name it was given and at
+     * each namespace path it lands at, right before the backend is called, on
+     * the route this namespace resolved: what is checked is where the mutation
+     * goes, with no second lookup between. An exclusive-mutation lease is one
+     * (ProcessFiles). For every view of this table; the embedder's own view
+     * (no credential) is not asked.
+     */
+    guardMutations(guard) {
+        this.table.guard = guard;
+    }
     as(cred, actor) {
         const principal = actor === undefined ? { cred } : { cred, actor };
         const key = principalKey(principal);
@@ -780,10 +780,15 @@ export class CompositeVFS {
                 throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
             return then(this.reachable(path, sync), () => {
                 const ops = this.ops(route, sync);
+                const call = (fn) => {
+                    if (write)
+                        this.guardMutation([input, path]);
+                    return run(fn, route.rel);
+                };
                 // A backend that resolves its own paths answers a missing path itself.
                 if (route.mount.options.resolvesPaths && typeof ops[name] === 'function')
-                    return run(this.method(ops, name, path), route.rel);
-                return this.capability(ops, name, route.rel, path, (fn) => run(fn, route.rel));
+                    return call(this.method(ops, name, path));
+                return this.capability(ops, name, route.rel, path, call);
             });
         });
     }
@@ -1183,8 +1188,9 @@ export class CompositeVFS {
             return then(this.reachable(path, sync), () => run(this.ops(route, sync), route.rel, path));
         });
     }
-    onMutation(input, follow, sync, what, run) {
-        return then(this.resolve(input, follow, sync), (path) => {
+    /** `parents`: missing directories on the way are made first (makeTree), where the lookup lands. */
+    onMutation(input, follow, sync, what, run, parents = false) {
+        return then(this.resolve(input, follow, sync, parents), (path) => {
             this.present(path);
             // unlink(2) refuses a directory before anything else (Linux), and a
             // mount point is one.
@@ -1206,8 +1212,28 @@ export class CompositeVFS {
                 throw new Refusal('EBUSY', path, `a mount point cannot be ${what}`);
             if (route.mount.options.readOnly)
                 throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
-            return then(this.reachable(path, sync), () => run(this.ops(route, sync), route.rel, path));
+            return then(this.reachable(path, sync), () => then(parents ? this.makeTree(parentOf(path), undefined, sync) : undefined, () => {
+                this.guardMutation([input, path]);
+                return run(this.ops(route, sync), route.rel, path);
+            }));
         });
+    }
+    /**
+     * Refuses this view's mutation at each of `paths` (the names it was given
+     * and the namespace paths it lands at) by the table's guard
+     * (guardMutations), for a view with a credential. Called right before the
+     * backend is, on the path this namespace resolved.
+     */
+    guardMutation(paths) {
+        const guard = this.table.guard;
+        const cred = this.viewer.cred;
+        if (guard === undefined || cred === null)
+            return;
+        for (const path of paths) {
+            const refusal = guard(cred, normalizePath(path));
+            if (refusal !== null)
+                throw new Refusal(refusal.code, path, refusal.detail);
+        }
     }
     mkdirAt(input, options, sync) {
         return then(this.resolve(input, false, sync, options?.recursive === true), (path) => {
@@ -1222,40 +1248,54 @@ export class CompositeVFS {
             if (route.mount.options.readOnly)
                 throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
             if (!options?.recursive) {
-                return then(this.reachable(path, sync), () => this.ops(route, sync).mkdir(route.rel, options));
-            }
-            // -p across mounts: each missing component in the filesystem it lives on.
-            const parts = path.slice(1).split('/');
-            const make = (i) => {
-                if (i > parts.length)
-                    return undefined;
-                const at = `/${parts.slice(0, i).join('/')}`;
-                if (this.isStructural(at))
-                    return make(i + 1);
-                const r = this.route(at);
-                if (i === 1 || this.isStructural(`/${parts.slice(0, i - 1).join('/')}`)) {
-                    return then(this.reachable(at, sync), () => step(r, at, i));
-                }
-                return step(r, at, i);
-            };
-            const step = (r, at, i) => {
-                const ops = this.ops(r, sync);
-                // Nothing is mounted below a directory that is not structural, so
-                // a backend that resolves its own paths makes the rest in one call.
-                if (r.mount.options.resolvesPaths)
-                    return ops.mkdir(this.route(path).rel, { recursive: true, mode: options.mode });
-                return then(this.softStat(ops, r.rel, true), (stat) => {
-                    if (stat !== null) {
-                        if (stat.type !== 'directory') {
-                            throw new Refusal(i === parts.length ? 'EEXIST' : 'ENOTDIR', at);
-                        }
-                        return make(i + 1);
-                    }
-                    return then(ops.mkdir(r.rel, { mode: options.mode }), () => make(i + 1));
+                return then(this.reachable(path, sync), () => {
+                    this.guardMutation([input, path]);
+                    return this.ops(route, sync).mkdir(route.rel, options);
                 });
-            };
-            return make(1);
+            }
+            this.guardMutation([input, path]);
+            return this.makeTree(path, options.mode, sync);
         });
+    }
+    /**
+     * mkdir -p of a resolved namespace path, across mounts: each missing
+     * component in the filesystem it lives on, each checked by the mutation
+     * guard right before it is made.
+     */
+    makeTree(path, mode, sync) {
+        const parts = path === ROOT_POINT ? [] : path.slice(1).split('/');
+        const make = (i) => {
+            if (i > parts.length)
+                return undefined;
+            const at = `/${parts.slice(0, i).join('/')}`;
+            if (this.isStructural(at))
+                return make(i + 1);
+            const r = this.route(at);
+            if (i === 1 || this.isStructural(`/${parts.slice(0, i - 1).join('/')}`)) {
+                return then(this.reachable(at, sync), () => step(r, at, i));
+            }
+            return step(r, at, i);
+        };
+        const step = (r, at, i) => {
+            const ops = this.ops(r, sync);
+            // Nothing is mounted below a directory that is not structural, so
+            // a backend that resolves its own paths makes the rest in one call.
+            if (r.mount.options.resolvesPaths) {
+                this.guardMutation([at, path]);
+                return ops.mkdir(this.route(path).rel, { recursive: true, mode });
+            }
+            return then(this.softStat(ops, r.rel, true), (stat) => {
+                if (stat !== null) {
+                    if (stat.type !== 'directory') {
+                        throw new Refusal(i === parts.length ? 'EEXIST' : 'ENOTDIR', at);
+                    }
+                    return make(i + 1);
+                }
+                this.guardMutation([at]);
+                return then(ops.mkdir(r.rel, { mode }), () => make(i + 1));
+            });
+        };
+        return make(1);
     }
     renameAt(fromInput, toInput, sync) {
         return then(this.resolve(fromInput, false, sync), (from) => then(this.resolve(toInput, false, sync), (to) => {
@@ -1272,7 +1312,10 @@ export class CompositeVFS {
             }
             if (source.mount.options.readOnly)
                 throw new Refusal('EROFS', from, `${source.mount.point} is mounted read-only`);
-            return then(this.reachable(from, sync), () => then(this.reachable(to, sync), () => this.renameIn(source, target, from, sync)));
+            return then(this.reachable(from, sync), () => then(this.reachable(to, sync), () => {
+                this.guardMutation([fromInput, from, toInput, to]);
+                return this.renameIn(source, target, from, sync);
+            }));
         }));
     }
     renameIn(source, target, from, sync) {
@@ -1337,6 +1380,7 @@ export class CompositeVFS {
                                 if (existing.type === 'directory')
                                     throw new Refusal('EISDIR', to);
                             }
+                            this.guardMutation([toInput, to]);
                             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
                                 return sourceOps.copy(source.rel, target.rel, options);
                             }
@@ -1487,11 +1531,14 @@ export class CompositeVFS {
     async readRange(path, offset, length) {
         return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'readRange', false, (fn, rel) => fn(rel, offset, length)));
     }
+    /** `parents`: make the missing directories above where the write lands first (mkdir -p), as the write's own lookup resolves it. */
     async writeFile(path, data, options) {
-        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, options)));
+        const mode = options?.mode === undefined ? undefined : { mode: options.mode };
+        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, mode), options?.parents === true));
     }
-    async writeRange(path, offset, bytes) {
-        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)));
+    /** `parents`: as writeFile's. */
+    async writeRange(path, offset, bytes, options) {
+        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes), options?.parents === true));
     }
     async truncate(path, size) {
         return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)));

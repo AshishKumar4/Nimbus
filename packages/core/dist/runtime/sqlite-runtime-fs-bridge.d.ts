@@ -161,12 +161,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * confined caller's /tmp/x is its private file, not the shared tmp/x.
      */
     private leaseAllows;
-    /**
-     * leaseAllows, for a face that resolves a mutation's path itself (the
-     * awaiting face over an asynchronous mount): each of `paths`, the names
-     * it was given and reaches, refused as Node's error for `call`.
-     */
-    assertMayMutate(paths: readonly string[], call: FsCall): void;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
     private openRoot;
@@ -256,12 +250,6 @@ export declare function modeAllows(stat: {
     gid: number;
     groups: readonly number[];
 }): boolean;
-/** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
-export interface FsCall {
-    syscall: string;
-    path: RuntimeFsPath;
-    dest?: RuntimeFsPath;
-}
 /** An error carrying the fields Node's `fs` puts on a failed syscall. */
 interface FsError extends Error {
     code: string;

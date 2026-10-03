@@ -2404,27 +2404,44 @@ export class SqliteVFS {
     assertMutationAllowed(path) {
         this.assertMutationsAllowed([path]);
     }
+    /**
+     * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
+     * is its own file), is refused: another owner's exclusive-mutation lease
+     * covers it (EBUSY), or it lies outside the root of the lease whose work is
+     * running (EPERM). Null when it may go ahead. What this engine's own
+     * mutations are refused with; a namespace that lays other filesystems over
+     * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
+     */
+    mutationRefusal(path, cred) {
+        return this.refusalAt(this.storageKey(path, cred));
+    }
+    refusalAt(key) {
+        const normalized = normalizeVfsPath(key);
+        // Another owner's lease first (EBUSY), whoever asks; then a lease
+        // holder's own root (EPERM), which bounds where its work may land.
+        if (this.activeMutationOwner === null &&
+            normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
+            this.exclusiveMutationLeases.size > 0) {
+            return { code: 'EBUSY', detail: 'locked while an exclusive mutation is active' };
+        }
+        for (const [owner, root] of this.exclusiveMutationLeases) {
+            if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
+                continue;
+            return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
+        }
+        if (this.activeMutationOwner !== null) {
+            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+            if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
+                return { code: 'EPERM', detail: `outside the exclusive mutation root /${ownedRoot ?? ''}` };
+            }
+        }
+        return null;
+    }
     assertMutationsAllowed(paths) {
         for (const path of paths) {
-            const normalized = normalizeVfsPath(path);
-            // Another owner's lease first (EBUSY), whoever asks; then a lease
-            // holder's own root (EPERM), which bounds where its work may land.
-            if (this.activeMutationOwner === null &&
-                normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
-                this.exclusiveMutationLeases.size > 0) {
-                throw vfsError('EBUSY', normalized, 'locked while an exclusive mutation is active');
-            }
-            for (const [owner, root] of this.exclusiveMutationLeases) {
-                if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
-                    continue;
-                throw vfsError('EBUSY', normalized, `locked by an exclusive mutation at /${root}`);
-            }
-            if (this.activeMutationOwner !== null) {
-                const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
-                if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
-                    throw vfsError('EPERM', normalized, `outside the exclusive mutation root /${ownedRoot ?? ''}`);
-                }
-            }
+            const refusal = this.refusalAt(path);
+            if (refusal !== null)
+                throw vfsError(refusal.code, normalizeVfsPath(path), refusal.detail);
         }
     }
     mkdir(path, options, cred) {

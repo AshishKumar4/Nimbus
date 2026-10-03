@@ -22,6 +22,7 @@
  */
 import type { SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import { type VfsErrorCode } from './vfs-error.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
@@ -154,7 +155,17 @@ interface Table {
     mounts: Map<string, Mount>;
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
     synthesized: Map<string, Set<string>>;
+    /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
+    guard?: MutationGuard;
 }
+/**
+ * Why a mutation by `cred` at the namespace path `path` is refused (an
+ * exclusive-mutation lease covers it), or null: CompositeVFS.guardMutations.
+ */
+export type MutationGuard = (cred: VfsCred, path: string) => {
+    code: VfsErrorCode;
+    detail: string;
+} | null;
 interface Views {
     refs: Map<string, WeakRef<CompositeVFS>>;
     gone: FinalizationRegistry<string>;
@@ -252,20 +263,6 @@ export declare class CompositeVFS implements VFS {
     /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
     realpathAsync(path: string): Promise<string>;
     /**
-     * Where a call on `path` lands: the lookup every call here takes, as the
-     * caller's credential walks it. Every link on the way is followed, the
-     * last one only when `follow` (a call that acts on a link itself does not),
-     * and a missing last component is named rather than refused, as a call
-     * that creates it names it; `creating` lets missing directories on the way
-     * through as well, as mkdir -p makes them. Refused as the lookup refuses
-     * (ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO), reported for `syscall`.
-     */
-    resolveAsync(path: string, options: {
-        follow: boolean;
-        creating?: boolean;
-        syscall: string;
-    }): Promise<string>;
-    /**
      * Where the link at `path`, reading `link` (readlink's text), leads in
      * this namespace: the one link-root rule, for a walk over the namespace
      * that follows the link itself. A mount whose backend resolves its own
@@ -288,6 +285,16 @@ export declare class CompositeVFS implements VFS {
      */
     private realpathAt;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
+    /**
+     * Refuse mutations before they reach a backend. `guard` is asked, for every
+     * mutation a view with a credential makes, at the name it was given and at
+     * each namespace path it lands at, right before the backend is called, on
+     * the route this namespace resolved: what is checked is where the mutation
+     * goes, with no second lookup between. An exclusive-mutation lease is one
+     * (ProcessFiles). For every view of this table; the embedder's own view
+     * (no credential) is not asked.
+     */
+    guardMutations(guard: MutationGuard): void;
     as(cred: VfsCred, actor?: string): CompositeVFS;
     /** Who this view acts as. */
     get principal(): Principal;
@@ -380,8 +387,22 @@ export declare class CompositeVFS implements VFS {
     private readdirOf;
     private emptyIfMissing;
     private onFile;
+    /** `parents`: missing directories on the way are made first (makeTree), where the lookup lands. */
     private onMutation;
+    /**
+     * Refuses this view's mutation at each of `paths` (the names it was given
+     * and the namespace paths it lands at) by the table's guard
+     * (guardMutations), for a view with a credential. Called right before the
+     * backend is, on the path this namespace resolved.
+     */
+    private guardMutation;
     private mkdirAt;
+    /**
+     * mkdir -p of a resolved namespace path, across mounts: each missing
+     * component in the filesystem it lives on, each checked by the mutation
+     * guard right before it is made.
+     */
+    private makeTree;
     private renameAt;
     private renameIn;
     /**
@@ -414,10 +435,15 @@ export declare class CompositeVFS implements VFS {
     }): Promise<VfsStat | null>;
     readFile(path: string): Promise<Uint8Array>;
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
+    /** `parents`: make the missing directories above where the write lands first (mkdir -p), as the write's own lookup resolves it. */
     writeFile(path: string, data: Uint8Array, options?: {
         mode?: number;
+        parents?: boolean;
     }): Promise<void>;
-    writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void>;
+    /** `parents`: as writeFile's. */
+    writeRange(path: string, offset: number, bytes: Uint8Array, options?: {
+        parents?: boolean;
+    }): Promise<void>;
     truncate(path: string, size: number): Promise<void>;
     readdir(path: string): Promise<VfsDirent[]>;
     /**

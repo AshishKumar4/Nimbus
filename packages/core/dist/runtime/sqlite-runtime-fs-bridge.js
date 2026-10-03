@@ -916,15 +916,6 @@ export class SqliteRuntimeFsBridge {
     leaseAllows(path) {
         this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
     }
-    /**
-     * leaseAllows, for a face that resolves a mutation's path itself (the
-     * awaiting face over an asynchronous mount): each of `paths`, the names
-     * it was given and reaches, refused as Node's error for `call`.
-     */
-    assertMayMutate(paths, call) {
-        called(call, () => { for (const path of paths)
-            this.leaseAllows(path); });
-    }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     sqlitePath(path, followSymlinks, call) {
         const located = this.locateMutation(path, followSymlinks, call);

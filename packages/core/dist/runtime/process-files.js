@@ -175,7 +175,6 @@ class GuardedProcessBridge {
     }
     fstat(handleId) { this.guard(); return this.target.fstat(handleId); }
     descriptorPath(handleId) { this.guard(); return this.target.descriptorPath(handleId); }
-    assertMayMutate(paths, call) { this.guard(); return this.target.assertMayMutate(paths, call); }
     dup(handleId) { this.guard(); return this.target.dup(handleId); }
     seek(handleId, offset, whence) { this.guard(); return this.target.seek(handleId, offset, whence); }
     setStatus(handleId, status) { this.guard(); return this.target.setStatus(handleId, status); }
@@ -234,6 +233,10 @@ export class ProcessFiles {
         this.bufferedWriteBytes = options.bufferedWriteBytes;
         this.namespace = engine.namespace;
         this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
+        // An exclusive-mutation lease holds wherever a process's mutation lands,
+        // on a mount as on SQLite: checked by the namespace on the route it
+        // resolved, right before the backend is called.
+        this.vfs.guardMutations((cred, path) => engine.mutationRefusal(path, cred));
         this.proc = standardProc();
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
@@ -625,19 +628,6 @@ class AwaitingProcessBridge {
         }
         return answer instanceof Promise ? answer.catch(refused) : answer;
     }
-    /** The directory a path relative to a descriptor or beneath a root is taken from. */
-    base(path) {
-        return 'root' in path ? '/' + normalizeVfsPath(path.root)
-            : this.awaited.get(path.directory)?.path ?? this.bridge.descriptorPath(path.directory);
-    }
-    /** The name `path` gives before any lookup, as the synchronous bridge reads it (pathArgument). */
-    given(path) {
-        if (typeof path === 'string')
-            return path;
-        if (!('root' in path) && path.path.startsWith('/'))
-            return path.path;
-        return this.base(path) + '/' + path.path;
-    }
     /**
      * `path` as an absolute namespace path; a path beneath a root (a WASI
      * preopen) walked by `walkBeneath`, the synchronous bridge's own walk,
@@ -646,7 +636,8 @@ class AwaitingProcessBridge {
     async path(path, follow = true) {
         if (typeof path === 'string')
             return path;
-        const base = this.base(path);
+        const base = 'root' in path ? '/' + normalizeVfsPath(path.root)
+            : this.awaited.get(path.directory)?.path ?? this.bridge.descriptorPath(path.directory);
         if (!path.beneath) {
             if (path.path.startsWith('/'))
                 return path.path;
@@ -667,28 +658,6 @@ class AwaitingProcessBridge {
                 ? this.namespace.linkLeadsTo(lookup.readlink, await this.namespace.readlink(lookup.readlink))
                 : await this.namespace.stat(lookup.stat, { follow: false }));
         }
-    }
-    /**
-     * Where a mutation on `path` lands, checked against exclusive-mutation
-     * leases as the synchronous bridge checks one (locateMutation): at the
-     * name the caller gave, and at the name the namespace's lookup reaches
-     * (CompositeVFS.resolveAsync, the walk the mutation itself then takes),
-     * links on the way followed and the last one only when the mutation
-     * follows it. So a dangling last link leads into what it names for a
-     * write, and is the link itself for an unlink. Every awaited mutation
-     * goes through here and acts at the path it answers. A lookup that fails
-     * here fails the mutation too, which refuses in its own words.
-     */
-    async landing(path, call, follow, creating = false) {
-        const p = await this.path(path, follow);
-        const reached = await this.namespace.resolveAsync(p, { follow, creating, syscall: call.syscall }).catch((error) => {
-            if (error instanceof VfsError)
-                return null;
-            throw error;
-        });
-        this.live();
-        this.bridge.assertMayMutate(reached === null ? [this.given(path)] : [this.given(path), reached], call);
-        return p;
     }
     receipt() {
         const r = this.clock();
@@ -726,26 +695,23 @@ class AwaitingProcessBridge {
     }
     writeFile(path, bytes, options) {
         return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
-            const p = await this.landing(path, { syscall: 'write', path }, true, options?.createParents === true);
-            if (options?.createParents)
-                await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
-            await this.namespace.writeFile(p, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
+            // createParents makes the directories above where the write lands, in
+            // the same lookup as the write (a link's target's, not the link's).
+            const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+            await this.namespace.writeFile(await this.path(path), data, { parents: options?.createParents === true });
             return this.clock();
         });
     }
     writeRange(path, offset, bytes, options) {
         return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-            const p = await this.landing(path, { syscall: 'write', path }, true, options?.createParents === true);
-            if (options?.createParents)
-                await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
-            await this.namespace.writeRange(p, offset, bytes);
+            await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
             return this.receipt();
         });
     }
     async writeFileFrom(path, size, source) {
         // The bridge refuses a path on an asynchronous mount before reading the source.
         return this.either([path], () => this.bridge.writeFileFrom(path, size, source), async () => {
-            const p = await this.landing(path, { syscall: 'write', path }, true);
+            const p = await this.path(path);
             // An asynchronous mount takes the whole file in one write, as a
             // synchronous one does (SqliteRuntimeFsBridge.writeFileFrom), and not
             // for a process released while its source was read.
@@ -757,14 +723,13 @@ class AwaitingProcessBridge {
     }
     truncate(path, size, options) {
         return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-            await this.namespace.truncate(await this.landing(path, { syscall: 'truncate', path }, true), size);
+            await this.namespace.truncate((await this.path(path)), size);
             return this.receipt();
         });
     }
     utimes(path, atimeMs, mtimeMs, options) {
         return this.either([path], () => this.bridge.utimes(path, atimeMs, mtimeMs, options), async () => {
-            // The namespace's utimes follows the last link, as its chmod and chown do.
-            const p = await this.landing(path, { syscall: 'utimes', path }, true);
+            const p = (await this.path(path, options?.followSymlinks !== false));
             const now = Date.now();
             const kept = atimeMs === undefined || mtimeMs === undefined ? await this.namespace.stat(p) : null;
             await this.namespace.utimes(p, atimeMs === undefined ? (kept?.atimeMs ?? now) : (atimeMs ?? now), mtimeMs === undefined ? (kept?.mtimeMs ?? now) : (mtimeMs ?? now));
@@ -773,13 +738,13 @@ class AwaitingProcessBridge {
     }
     chmod(path, mode) {
         return this.either([path], () => this.bridge.chmod(path, mode), async () => {
-            await this.namespace.chmod(await this.landing(path, { syscall: 'chmod', path }, true), mode);
+            await this.namespace.chmod((await this.path(path)), mode);
             return this.receipt();
         });
     }
     chown(path, uid, gid, options) {
         return this.either([path], () => this.bridge.chown(path, uid, gid, options), async () => {
-            await this.namespace.chown(await this.landing(path, { syscall: 'chown', path }, true), uid, gid);
+            await this.namespace.chown((await this.path(path, options?.followSymlinks !== false)), uid, gid);
             return this.receipt();
         });
     }
@@ -797,19 +762,16 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.readdir(path, options), async () => (await this.namespace.readdir((await this.path(path, options?.followSymlinks !== false)))).map((entry) => ({ name: entry.name, type: entry.type })));
     }
     mkdir(path, options) {
-        return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir(await this.landing(path, { syscall: 'mkdir', path }, false, options?.recursive === true), options));
+        return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
     }
     unlink(path) {
-        return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink(await this.landing(path, { syscall: 'unlink', path }, false)));
+        return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink((await this.path(path, false))));
     }
     rmdir(path) {
-        return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir(await this.landing(path, { syscall: 'rmdir', path }, false)));
+        return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
     }
     rename(from, to) {
-        return this.either([from, to], () => this.bridge.rename(from, to), async () => {
-            const call = { syscall: 'rename', path: from, dest: to };
-            return this.namespace.rename(await this.landing(from, call, false), await this.landing(to, call, false));
-        });
+        return this.either([from, to], () => this.bridge.rename(from, to), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
     }
     realpath(path) {
         return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
@@ -819,11 +781,11 @@ class AwaitingProcessBridge {
     }
     linkLeadsTo(path, link) { return this.bridge.linkLeadsTo(path, link); }
     symlink(target, path) {
-        return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, await this.landing(path, { syscall: 'symlink', path: target, dest: path }, false)));
+        return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
     }
     remove(path, options) {
         return this.either([path], () => this.bridge.remove(path, options), async () => {
-            const p = await this.landing(path, { syscall: 'remove', path }, false);
+            const p = (await this.path(path, false));
             const stat = await this.namespace.stat(p, { follow: false });
             if (stat === null) {
                 if (options?.force)
@@ -841,12 +803,11 @@ class AwaitingProcessBridge {
         });
     }
     copyFile(from, to) {
-        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy(await this.path(from), await this.landing(to, { syscall: 'copyfile', path: from, dest: to }, false), { recursive: false }));
+        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
     }
     copyTree(from, to, options) {
         return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
-            const target = await this.landing(to, { syscall: 'cp', path: from, dest: to }, false);
-            await this.namespace.copy(await this.path(from), target, { recursive: true, preserve: options?.preserve });
+            await this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
             return 0;
         });
     }
@@ -864,8 +825,7 @@ class AwaitingProcessBridge {
     open(path, flags) {
         return this.either([path], () => this.bridge.open(path, flags), async () => {
             const follow = flags.followSymlinks !== false;
-            const mutates = flags.write || flags.create || flags.truncate || flags.append;
-            const p = mutates ? await this.landing(path, { syscall: 'open', path }, follow) : await this.path(path, follow);
+            const p = await this.path(path, follow);
             const stat = await this.namespace.stat(p, { follow });
             // O_NOFOLLOW on a trailing link is ELOOP, as the synchronous bridge
             // answers: there is no descriptor on the link itself, and a write
