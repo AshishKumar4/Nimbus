@@ -46,10 +46,20 @@ function compareKeys(a: Key, b: Key): number {
   return a.length - b.length;
 }
 
+/** What the scheduler sees of a task, whatever it produces. */
+interface Work {
+  readonly key: Key;
+  readonly started: boolean;
+  /** Whether, started ahead of the walk, it holds a share of the window. */
+  readonly windowed: boolean;
+  /** The entries of the window it holds until the walk takes it or passes it; 0 when none. */
+  held: number;
+  start(): void;
+}
+
 /** One unit of filesystem work: started when there is room ahead of the walk, or at once when the walk needs it. */
-class Task<T> {
+class Task<T> implements Work {
   private promise: Promise<Outcome<T>> | null = null;
-  /** The entries of the read-ahead window this task holds until the walk takes it or passes it; 0 when none. */
   held = 0;
 
   constructor(
@@ -64,9 +74,12 @@ class Task<T> {
     return this.promise !== null;
   }
 
-  /** Whether this task, started ahead of the walk, holds a share of the window. */
   get windowed(): boolean {
     return this.weigh !== null;
+  }
+
+  start(): void {
+    void this.result();
   }
 
   /** The outcome, starting the work now if nothing has yet. */
@@ -87,13 +100,13 @@ class Task<T> {
 
 /** A min-heap of tasks by walk order. */
 class TaskQueue {
-  private readonly heap: Task<unknown>[] = [];
+  private readonly heap: Work[] = [];
 
-  peek(): Task<unknown> | undefined {
+  peek(): Work | undefined {
     return this.heap[0];
   }
 
-  push(task: Task<unknown>): void {
+  push(task: Work): void {
     const heap = this.heap;
     heap.push(task);
     for (let i = heap.length - 1; i > 0;) {
@@ -104,7 +117,7 @@ class TaskQueue {
     }
   }
 
-  pop(): Task<unknown> | undefined {
+  pop(): Work | undefined {
     const heap = this.heap;
     const top = heap[0];
     const last = heap.pop();
@@ -162,7 +175,7 @@ class Scheduler {
   }
 
   /** Queue `task` to run ahead of the walk. */
-  ahead(task: Task<unknown>): void {
+  ahead(task: Work): void {
     if (!this.enabled || task.started) return;
     this.queue.push(task);
     this.pump();
@@ -179,14 +192,14 @@ class Scheduler {
   }
 
   /** A listing read ahead has arrived: its entries wait in the window, unless the walk has already taken or passed it. */
-  hold(task: Task<unknown>, entries: number): void {
+  hold(task: Work, entries: number): void {
     if (task.held === 0) return;
     task.held += entries;
     this.held += entries;
   }
 
   /** The walk has taken a listing, or passed it: its share of the window is free. */
-  release(task: Task<unknown>): void {
+  release(task: Work): void {
     if (task.held === 0) return;
     this.held -= task.held;
     task.held = 0;
@@ -225,7 +238,7 @@ class Scheduler {
         this.held += 1;
         this.holding.push(task);
       }
-      void task.result();
+      task.start();
     }
   }
 }
