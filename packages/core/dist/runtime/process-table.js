@@ -182,17 +182,10 @@ export class ProcessTable {
     forget(pid) {
         this.processes.delete(pid);
     }
-    /** Clean up exited processes older than maxAge ms. */
-    reap(maxAge = 60_000) {
+    /** The processes that ended more than maxAge ms ago, which a reap may forget. */
+    expired(maxAge = 60_000) {
         const now = Date.now();
-        let reaped = 0;
-        for (const [pid, entry] of this.processes) {
-            if (entry.state !== 'running' && entry.endTime && now - entry.endTime > maxAge) {
-                this.processes.delete(pid);
-                reaped++;
-            }
-        }
-        return reaped;
+        return [...this.processes.values()].filter((entry) => entry.state !== 'running' && entry.endTime !== null && now - entry.endTime > maxAge);
     }
     get stats() {
         const all = [...this.processes.values()];

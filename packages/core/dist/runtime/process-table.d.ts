@@ -117,8 +117,8 @@ export declare class ProcessTable {
     descendantsOf(pid: number): ProcessEntry[];
     /** Remove `pid`'s entry, now: its owner has seen it end. */
     forget(pid: number): void;
-    /** Clean up exited processes older than maxAge ms. */
-    reap(maxAge?: number): number;
+    /** The processes that ended more than maxAge ms ago, which a reap may forget. */
+    expired(maxAge?: number): ProcessEntry[];
     get stats(): {
         total: number;
         running: number;
