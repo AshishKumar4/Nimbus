@@ -8427,8 +8427,7 @@ error: the Oxc transform crashed (${reason})`);
       edits.push({ start: site.ss, end: site.d + 1, text: call });
     }
     if (!edits.length && !metas.length) return code;
-    if (!metas.length) return applyEdits(code, edits, metas, null, 0);
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), () => afterDirectives(code));
   }
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
@@ -8556,7 +8555,7 @@ error: the Oxc transform crashed (${reason})`);
       try {
         const token = tokenizer2(code.slice(start, end), { ecmaVersion: "latest" }).getToken();
         const value = Reflect.get(token, "value");
-        if (token.type === types$1.name && typeof value === "string" && value.startsWith(METADATA_BINDING)) names.add(value);
+        if (token.type === types$1.name && typeof value === "string" && (value.startsWith(METADATA_BINDING) || value.startsWith(DYNAMIC_IMPORT_HELPER))) names.add(value);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
       }
@@ -8648,19 +8647,36 @@ error: the Oxc transform crashed (${reason})`);
         if (typeof Reflect.get(statement, "directive") !== "string") break;
         insertion = statement.end;
       }
-      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
+      return applyEdits(code, collected.edits, collected.metas, collected.names ?? escapedCaptureNames(code), () => insertion);
     }
     return code;
   }
+  function freeName(name, code, names) {
+    let free = name;
+    while (code.includes(free) || names.has(free)) free += "_";
+    return free;
+  }
   function applyEdits(code, edits, metas, names, insertion) {
+    let prologue = "";
     if (metas.length) {
-      let binding = METADATA_BINDING;
-      while (code.includes(binding) || names?.has(binding)) binding += "_";
+      const binding = freeName(METADATA_BINDING, code, names);
       for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-      edits.push({ start: insertion, end: insertion, text: `
+      prologue += `
 "use strict";
 const ${binding} = arguments[2];
-` });
+`;
+    }
+    const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
+    const calls = edits.filter((edit) => edit.text.startsWith(DYNAMIC_IMPORT_HELPER + "("));
+    if (calls.length && loader !== DYNAMIC_IMPORT_HELPER) {
+      for (const call of calls) call.text = loader + call.text.slice(DYNAMIC_IMPORT_HELPER.length);
+      prologue += `
+const ${loader} = globalThis.${DYNAMIC_IMPORT_HELPER};
+`;
+    }
+    if (prologue) {
+      const at3 = insertion();
+      edits.push({ start: at3, end: at3, text: prologue });
     }
     edits.sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];
