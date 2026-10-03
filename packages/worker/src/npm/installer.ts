@@ -95,6 +95,7 @@ import {
   type PrebundleSpec,
   type PrebundleResult,
 } from './pre-bundle-facet.js';
+import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import {
   CHUNK_SIZE,
   PRE_BUNDLE_CONCURRENCY,
@@ -2459,6 +2460,9 @@ export class NpmInstaller {
             continue;
           }
 
+          // What the bundle can have read, recorded with it: the cache is
+          // shared, and a server serves it only to a principal who may read it all.
+          const sources = sliceSources(slice.slice);
           let spec: PrebundleSpec | null = {
             specifier: next.specifier,
             entryPath: next.entryPath,
@@ -2519,6 +2523,7 @@ export class NpmInstaller {
               esmCode: result.esmCode,
               builtAt: Date.now(),
               inputHash: next.inputHash ?? '',
+              sources,
             });
             okCount++;
           } catch (e: any) {

@@ -107,7 +107,9 @@ export interface StartRealViteResult {
 export async function startRealVite(self: any, opts: StartRealViteOptions): Promise<StartRealViteResult> {
   if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
 
-  const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
+  // The user's vite.config is found and bundled as the principal the server
+  // runs as: a config importing a file that principal may not read is refused.
+  const callerFs = self.sqliteFs!.as(opts.identity.cred);
 
   // Reserve the full supervisor allocation budget so a fire-and-forget
   // pre-bundle or VFS payload cannot overlap the cirrus-real boot payload
@@ -127,7 +129,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     const extraSyntheticFiles: Record<string, string> = {};
     const cfgPath = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']
       .map((name) => opts.configDir + '/' + name)
-      .find((p) => kernelFs.exists(p)) ?? null;
+      .find((p) => callerFs.exists(p)) ?? null;
     if (cfgPath) {
       try {
         if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
@@ -152,6 +154,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
             'import.meta.url': JSON.stringify('file:///user-vite-config.js'),
           },
           keepNames: true,
+          fs: callerFs,
         });
         const out = bundleResult.outputFiles?.[0];
         if (out) {

@@ -1017,6 +1017,17 @@ export interface EsbuildServiceOptions {
   transformHostId?: string;
 }
 
+/** The namespace a build resolves workspace files into. */
+const VFS_NAMESPACE = 'nimbus-vfs';
+
+/** The workspace paths a build read, from its metafile (`build` always asks for one). */
+export function vfsBuildInputs(metafile: esbuild.Metafile | undefined): string[] {
+  const prefix = VFS_NAMESPACE + ':';
+  return Object.keys(metafile?.inputs ?? {})
+    .filter((key) => key.startsWith(prefix))
+    .map((key) => key.slice(prefix.length));
+}
+
 /**
  * What a build reads modules through: a view of the namespace as some
  * credential, each call answered at once (the engine, a synchronous
@@ -1705,7 +1716,7 @@ export class EsbuildService {
             if (suffix && VITE_ASSET_QUERY_SUFFIXES[suffix]) {
               return { path: resolved, namespace: 'nimbus-vfs-' + suffix };
             }
-            return { path: resolved, namespace: 'nimbus-vfs' };
+            return { path: resolved, namespace: VFS_NAMESPACE };
           }
           if (!viteAssets && !spec.startsWith('/') && !spec.startsWith('.') && !spec.startsWith('#')) {
             // Mark as external if not found (common for Node built-ins)
@@ -1727,12 +1738,17 @@ export class EsbuildService {
               return { contents: await vfs.readFile(stripped), loader, resolveDir };
             }
             return { contents: await vfs.readFileString(stripped), loader, resolveDir };
-          } catch {
+          } catch (error) {
+            // A file the build's principal may not read is refused as such, not missing.
+            const code = error instanceof Error ? Reflect.get(error, 'code') : undefined;
+            if (typeof code === 'string' && code !== 'ENOENT') {
+              return { errors: [{ text: `${code}: cannot read ${path}` }] };
+            }
             return { errors: [{ text: 'File not found in VFS: ' + path }] };
           }
         };
 
-        build.onLoad({ filter: /.*/, namespace: 'nimbus-vfs' }, (args) => {
+        build.onLoad({ filter: /.*/, namespace: VFS_NAMESPACE }, (args) => {
           const loader = viteAssets
             ? (viteAssetLoader(args.path) ?? inferLoader(args.path))
             : inferLoader(args.path);

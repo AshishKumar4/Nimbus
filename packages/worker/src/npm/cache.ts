@@ -84,6 +84,12 @@ export interface EsmBundleEntry {
   esmCode: string;
   builtAt: number;
   inputHash: string;
+  /**
+   * The VFS paths the bundle was built from. The cache is the workspace's,
+   * shared by every server in it whoever started it, so a reader serves an
+   * entry only to a principal who may read every one of them.
+   */
+  sources: readonly string[];
 }
 
 export interface UserModuleTransformEntry {
@@ -172,12 +178,25 @@ export class NpmCache {
       PRIMARY KEY (project_path, name)
     )`);
 
+    // A bundle is served only to a principal who may read what it was built
+    // from, so a row that does not say is of no use: a table predating the
+    // `sources` column is dropped and recreated, and its bundles rebuild on
+    // first request, as user_module_transforms' do below.
+    let hasSourcesColumn = true;
+    try {
+      const cols = [...this.sql.exec(`PRAGMA table_info(pkg_esm_bundles)`)];
+      if (cols.length > 0) hasSourcesColumn = cols.some((r) => String((r as any).name) === 'sources');
+    } catch { hasSourcesColumn = true; /* table absent — CREATE below handles it */ }
+    if (!hasSourcesColumn) {
+      try { this.sql.exec(`DROP TABLE pkg_esm_bundles`); } catch { /* non-fatal */ }
+    }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_esm_bundles (
       specifier   TEXT PRIMARY KEY,
       bundle_hash TEXT NOT NULL,
       esm_code    TEXT NOT NULL,
       built_at    INTEGER NOT NULL DEFAULT 0,
-      input_hash  TEXT NOT NULL DEFAULT ''
+      input_hash  TEXT NOT NULL DEFAULT '',
+      sources     TEXT NOT NULL DEFAULT '[]'
     )`);
 
     // A transform is keyed by (vfs_path, base): the served output bakes the
@@ -441,18 +460,20 @@ export class NpmCache {
   getEsmBundle(specifier: string): EsmBundleEntry | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT specifier, bundle_hash, esm_code, built_at, input_hash
+      `SELECT specifier, bundle_hash, esm_code, built_at, input_hash, sources
        FROM pkg_esm_bundles WHERE specifier = ?`,
       specifier,
     )];
     if (rows.length === 0) return null;
     const r = rows[0];
+    const sources: unknown = JSON.parse(String(r.sources));
     return {
       specifier: String(r.specifier),
       bundleHash: String(r.bundle_hash),
       esmCode: String(r.esm_code),
       builtAt: Number(r.built_at),
       inputHash: String(r.input_hash),
+      sources: Array.isArray(sources) ? sources.map(String) : [],
     };
   }
 
@@ -460,10 +481,10 @@ export class NpmCache {
   putEsmBundle(entry: EsmBundleEntry): void {
     this.ensureSchema();
     this.sql.exec(
-      `INSERT OR REPLACE INTO pkg_esm_bundles (specifier, bundle_hash, esm_code, built_at, input_hash)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO pkg_esm_bundles (specifier, bundle_hash, esm_code, built_at, input_hash, sources)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       entry.specifier, entry.bundleHash, entry.esmCode,
-      entry.builtAt, entry.inputHash,
+      entry.builtAt, entry.inputHash, JSON.stringify(entry.sources),
     );
   }
 

@@ -37,6 +37,11 @@ export interface SlicedDir {
 }
 export type SliceEntry = SlicedFile | SlicedDir;
 
+/** The files a slice holds: everything a bundle built from it can have read. */
+export function sliceSources(slice: readonly SliceEntry[]): string[] {
+  return slice.flatMap((entry) => (entry.isDir ? [] : [entry.path]));
+}
+
 /** What the supervisor sends per pre-bundle. */
 export interface PrebundleSpec {
   /** Bare specifier being bundled, e.g. "framer-motion" or "react/jsx-runtime". */

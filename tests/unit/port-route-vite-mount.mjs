@@ -299,9 +299,10 @@ function pathRequest(path) {
   console.log('  [5] coalesced identical requests each read the full module body');
 }
 
-// 6. A cold build that throws rejects every coalesced requester with THAT
-//    failure — and does not pin the failure: the next request for the same
-//    module re-enters the cold path instead of inheriting a settled rejection.
+// 6. A cold build that throws answers every coalesced requester with THAT
+//    failure (a 500 naming it, as every other path's failure is answered) —
+//    and does not pin the failure: the next request for the same module
+//    re-enters the cold path instead of inheriting a settled rejection.
 {
   const faults = new Map([['home/user/node_modules/boom-pkg', 1]]);
   const self = makeWokenSession(HIBERNATED, { faults });
@@ -310,16 +311,15 @@ function pathRequest(path) {
     handleFetch(self, hostRequest(path)),
     handleFetch(self, hostRequest(path)),
   ];
-  const outcomes = await Promise.allSettled(attempts);
-  for (const outcome of outcomes) {
-    assert.equal(outcome.status, 'rejected', 'every coalesced requester sees the cold-path failure');
-    assert.match(String(outcome.reason?.message ?? outcome.reason), /injected vfs fault: home\/user\/node_modules\/boom-pkg/);
+  for (const response of await Promise.all(attempts)) {
+    assert.equal(response.status, 500, 'every coalesced requester sees the cold-path failure');
+    assert.match(await response.text(), /injected vfs fault: home\/user\/node_modules\/boom-pkg/);
   }
   assert.equal(faults.get('home/user/node_modules/boom-pkg'), 0, 'exactly one cold attempt consumed the single fault');
   const retry = await handleFetch(self, hostRequest(path));
   assert.equal(retry.status, 200, 'a rejected cold build must not poison the next request');
   assert.match(await retry.text(), /__nimbus_optional_dep_stub = true/);
-  console.log('  [6] a rejected cold build is shared by its waiters and cleared for the next request');
+  console.log('  [6] a failed cold build is shared by its waiters and cleared for the next request');
 }
 
 // 7. Two cold builds for DIFFERENT modules never hold their slices at the
