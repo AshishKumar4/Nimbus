@@ -707,6 +707,7 @@ ${RESIDENCY_MISS_REPORT}
     } catch {}
 
     const mod = { exports: {} };
+    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
@@ -1148,6 +1149,7 @@ ${RESIDENCY_MISS_REPORT}
     }
 
     const mod = { exports: {} };
+    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
     __require.main = mod;
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;

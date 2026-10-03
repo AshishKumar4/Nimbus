@@ -39,7 +39,6 @@
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
-import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { errorText } from '../_shared/error-text.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 import { programReadsStdinSync } from './stdin-read.js';
@@ -390,30 +389,20 @@ export function buildRuntimeHandler(spec, ctx0) {
             try {
                 const eb = await getEsbuild();
                 const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
-                // Substitute `import.meta.url` at compile-time so esbuild's
-                // CJS output doesn't reduce it to `undefined` (its default
-                // for unknown import.meta references). The substitution
-                // value is a real `file://<absolute-path>` URL — exactly
-                // what real Node returns when running this script. Tools
-                // that compute `fileURLToPath(import.meta.url)` (create-vite,
-                // most modern CLIs) then resolve relative paths against
-                // the actual script location.
-                //
-                // Without this, `create-vite` does
-                //   r(import.meta.url) → fileURLToPath(undefined) → throws
-                //   → falls into a different code path
-                //   → readdirSync(wrong-template-dir) returns []
-                //   → "Scaffolding..." but writes no files.
                 const absUrl = 'file:///' + resolvedPath.replace(/^\/+/, '');
                 const transformed = await eb.transform(code, {
                     loader,
                     format: 'cjs',
-                    define: importMetaDefines(absUrl),
                     // Its import() calls are the process's: kept, and routed to the
                     // process's ESM loader (dynamic-import-rewrite.ts).
                     dynamicImportParent: absUrl,
+                    // Its import.meta is the module's own, as every loaded module's:
+                    // url, resolve, dirname and filename name the script, read
+                    // directly, as an object or destructured (the runner's
+                    // __nimbusFileImportMeta). CommonJS output alone would make it {}.
+                    moduleMetadata: true,
                 });
-                code = bindImportMetaResolve(transformed.code, absUrl);
+                code = transformed.code;
             }
             catch (e) {
                 ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${errorText(e)}\n`);
