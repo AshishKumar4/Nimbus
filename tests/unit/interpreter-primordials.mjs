@@ -25,9 +25,17 @@
 //   - a generator function not made by safeGenerator (or genCode, which
 //     calls it): driving its generators (next(), yield*) would look up
 //     %GeneratorPrototype% and %IteratorPrototype%.
+//
+// And the parser bundled with it: acorn, as the interpreter bundle rewrites
+// it (worker scripts/acorn-primordials.mjs), checked by parserReaches. acorn
+// is JavaScript, which the type checker cannot type, so that check is by its
+// syntax tree and acorn's own declarations: no global but the parser realm,
+// no built-in method called but through it, no literal or constructor whose
+// objects inherit, nothing iterated. tests/unit/interpreter-parser-realm.mjs
+// runs the bundled parser in a realm that logs every built-in it reaches.
 
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,10 +61,11 @@ const OWN_PROPERTIES = new Set(['length', 'prototype']);
 /**
  * Library types whose members are own data properties of every object the
  * interpreter reads them on: descriptors it makes (dataDescriptor,
- * accessorDescriptor) or [[GetOwnProperty]] returns, and the results of its
- * own generators' next().
+ * accessorDescriptor) or [[GetOwnProperty]] returns, the results of its
+ * own generators' next(), and what RegExp.prototype.exec returns (each
+ * element, `index`).
  */
-const OWN_RECORDS = /^(PropertyDescriptor|TypedPropertyDescriptor|IteratorResult|IteratorYieldResult|IteratorReturnResult)$/;
+const OWN_RECORDS = /^(PropertyDescriptor|TypedPropertyDescriptor|IteratorResult|IteratorYieldResult|IteratorReturnResult|RegExpExecArray)$/;
 /** What gives a generator function SafeGeneratorPrototype. */
 const SAFE_GENERATOR_MAKERS = new Set(['safeGenerator', 'genCode']);
 /** Collections whose methods primordials.ts copies onto their own prototypes. */
@@ -153,3 +162,44 @@ for (const file of FILES) {
 console.log(violations.join('\n'));
 assert.deepEqual(violations, [], `the interpreter goes through ${violations.length} built-ins a program can replace`);
 console.log(`${FILES.length} files: the interpreter calls only the built-ins primordials.ts captured`);
+
+const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
+const { parserReaches, primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
+const { parser } = await bundleInterpreter({ start: fileURLToPath(new URL('../../packages/worker/', import.meta.url)) });
+const reaches = parserReaches(parser);
+console.log(reaches.join('\n'));
+assert.deepEqual(reaches, [], `the bundled parser reaches ${reaches.length} built-ins a program can replace`);
+console.log(`the bundled parser (${parser.length} characters) reaches the realm only through parser-realm.ts`);
+
+// What an acorn upgrade could add, which the rewrite must refuse or make safe however it is spelled.
+const acornSource = readFileSync(createRequire(join(CORE, 'package.json')).resolve('acorn').replace(/acorn\.js$/, 'acorn.mjs'), 'utf8');
+const ANCHOR = 'var lineBreakG = new RegExp(lineBreak.source, "g");';
+const LINE_BREAK = 'var lineBreak = /\\r\\n?|\\n|\\u2028|\\u2029/;';
+for (const place of [ANCHOR, LINE_BREAK, 'switch (this.input[this.pos]) {', 'var err = new SyntaxError(message);', 'err.raisedAt = this.pos;']) {
+  assert.ok(acornSource.includes(place), `the upgrade fixtures still find their place in acorn: ${place}`);
+}
+// A regexp is safe however it is read once it inherits only captures: each regexp fixture checks lineBreak's is.
+const SAFE_LINE_BREAK = 'var lineBreak = $$.regexp(/\\r\\n?|\\n|\\u2028|\\u2029/);';
+const upgrades = {
+  'a cached RegExp.prototype method': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar runRegExp = RegExp.prototype.exec;`), /built-in exec|RegExp's members/],
+  'a cached method of a regexp': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar testLine = lineBreak.test;`), SAFE_LINE_BREAK],
+  'an alias of the source text, indexed': [acornSource.replace('switch (this.input[this.pos]) {', 'var text = this.input; switch (text[this.pos]) {'), '$$.index(text, this.pos)'],
+  'an alias of a regexp, read for its source': [acornSource.replace(ANCHOR, 'var lineBreakAlias = lineBreak;\nvar lineBreakG = new RegExp(lineBreakAlias.source, "g");'), SAFE_LINE_BREAK],
+  "a regexp's source, read by a computed key": [acornSource.replace(ANCHOR, 'var lineBreakG = new RegExp(lineBreak["source"], "g");'), SAFE_LINE_BREAK],
+  // parser-realm's RegExp makes a regexp safe however it is reached: called, constructed, or by another name.
+  'a regexp made by calling RegExp': [acornSource.replace(LINE_BREAK, 'var lineBreak = RegExp("\\\\r\\\\n?|\\\\n|\\\\u2028|\\\\u2029");'), 'var lineBreak = $$.RegExp('],
+  'a regexp made by RegExp under another name': [acornSource.replace(LINE_BREAK, 'var makeRegExp = RegExp;\nvar lineBreak = makeRegExp("\\\\n");'), 'var makeRegExp = $$.RegExp;'],
+  "SyntaxError under another name, whose error's fields are set": [acornSource.replace('var err = new SyntaxError(message);', 'var Raise = SyntaxError; var err = new Raise(message);'), /holds SyntaxError other than to construct it/],
+  "an error of the realm's handed on before it is thrown": [acornSource.replace('err.raisedAt = this.pos;', 'err.raisedAt = this.pos; this.lastError = err;'), /used other than to set its fields and throw it/],
+};
+for (const [name, [text, expected]] of Object.entries(upgrades)) {
+  let rewritten = null;
+  try { rewritten = primordialAcorn(text, '/parser-realm.ts').code; } catch (e) {
+    assert.ok(expected instanceof RegExp && expected.test(e.message), `${name}: refused for its reason (${e.message})`);
+    continue;
+  }
+  assert.ok(typeof expected === 'string' && rewritten.includes(expected), `${name}: made safe (${expected})`);
+  assert.deepEqual(parserReaches(rewritten), [], `${name}: no reach once rewritten`);
+  assert.ok(parserReaches(text).length > 0, `${name}: found by the check unrewritten`);
+}
+console.log(`${Object.keys(upgrades).length} upgrade fixtures: refused or made safe`);

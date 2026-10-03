@@ -7,9 +7,10 @@
 // compiled function must not keep its unit's AST, which is many times its
 // text (tests/unit/interpreter-closures.mjs checks the closures that could),
 // nor the interpreter's copy of it (tree.ts): this watches the nodes acorn
-// builds, through the Array.prototype.push it builds them with, and the
-// nodes of the copy, through the Object.freeze it freezes each with, and
-// counts those still alive once the compiled functions are all that is held.
+// builds, through the Reflect.get the copy reads each of their fields with,
+// and the nodes of the copy, through the Object.freeze it freezes each with
+// (both as the launch captured them at its start), and counts those still
+// alive once the compiled functions are all that is held.
 //
 // Under bun this builds the interpreter and measures in node with
 // --expose-gc, so the heap is measured after full collections.
@@ -53,20 +54,32 @@ if (process.argv[2] !== '--measure') {
     return getHeapStatistics().used_heap_size;
   };
   const isNode = (item) => item !== null && typeof item === 'object' && typeof item.type === 'string' && typeof item.start === 'number';
-  // The interpreter freezes each node of its copy of a tree with the Object.freeze its launch captured
-  // at its start (primordials.ts): this launch captures one that watches them, while the unit compiles.
+  // The interpreter reads each field of the nodes acorn builds with the Reflect.get, and freezes each
+  // node of its copy of a tree with the Object.freeze, its launch captured at its start
+  // (primordials.ts): this launch captures ones that watch them, while the unit compiles.
   const freeze = Object.freeze;
+  const get = Reflect.get;
+  const watched = [];
+  let seen = new WeakSet();
   const copies = [];
-  let watchCopies = false;
+  let watching = false;
   Object.freeze = function (o) {
-    if (watchCopies && isNode(o)) copies[copies.length] = new WeakRef(o);
+    if (watching && isNode(o)) copies[copies.length] = new WeakRef(o);
     return Reflect.apply(freeze, Object, [o]);
+  };
+  Reflect.get = function (target, key, receiver) {
+    if (watching && key === 'type' && isNode(target) && !seen.has(target) && Object.getPrototypeOf(target) !== null) {
+      seen.add(target);
+      watched[watched.length] = new WeakRef(target);
+    }
+    return arguments.length < 3 ? get(target, key) : get(target, key, receiver);
   };
   let interp;
   try {
     interp = loadInterpreter(process.argv[3], process.argv[4], () => Promise.reject(new Error('no imports')));
   } finally {
     Object.freeze = freeze;
+    Reflect.get = get;
   }
   const run = (text) => interp.compileFunction('function', [], text)();
   const labelled = (name, i) => run(`${name}: for (let k = 0; k < 2; k++) { for (;;) { ${i % 2 ? 'break' : 'continue'} ${name}; } }`);
@@ -87,21 +100,13 @@ if (process.argv[2] !== '--measure') {
   }
   source += 'return fns;';
   const beforeUnit = used();
-  // acorn builds every list of the AST with push: watch what it pushes, while the unit compiles.
-  const watched = [];
-  const push = Array.prototype.push;
-  Array.prototype.push = function (...items) {
-    for (let i = 0; i < items.length; i++) if (isNode(items[i])) watched[watched.length] = new WeakRef(items[i]);
-    return Reflect.apply(push, this, items);
-  };
   let held;
-  watchCopies = true;
+  watching = true;
   try {
     held = run(source);
     for (let i = 0; i < held.length; i++) held[i](i, 0);
   } finally {
-    Array.prototype.push = push;
-    watchCopies = false;
+    watching = false;
   }
   // A WeakRef keeps its target alive until the job that made it ends.
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -112,9 +117,10 @@ if (process.argv[2] !== '--measure') {
   for (let i = 0; i < copies.length; i++) if (copies[i].deref() !== undefined) copiesAlive++;
   const nodesWatched = watched.length;
   const copiesWatched = copies.length;
-  // The probe's own WeakRefs are not what the functions hold.
+  // The probe's own WeakRefs and table are not what the functions hold.
   watched.length = 0;
   copies.length = 0;
+  seen = null;
   const retained = used() - beforeUnit;
   const units = { functions: FUNCTIONS, sourceBytes: source.length, retained, nodesWatched, nodesAlive: alive, copiesWatched, copiesAlive };
   globalThis.keep = held;

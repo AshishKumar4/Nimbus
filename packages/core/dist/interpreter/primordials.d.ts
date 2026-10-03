@@ -86,6 +86,26 @@ export declare const StringPrototypeSlice: (start?: number, end?: number) => str
 export declare const StringPrototypeLastIndexOf: (searchString: string, position?: number) => number;
 export declare const StringPrototypeCharCodeAt: (index: number) => number;
 export declare const SymbolPrototypeToString: () => string;
+export declare const StringPrototypeCharAt: (pos: number) => string;
+export declare const StringPrototypeIndexOf: (searchString: string, position?: number) => number;
+export declare const StringPrototypeSubstr: (from: number, length?: number) => string;
+export declare const StringFromCharCode: (...codes: number[]) => string;
+export declare const ArrayPrototypePop: () => any;
+export declare const ArrayPrototypeIndexOf: (searchElement: any, fromIndex?: number) => number;
+export declare const ArrayPrototypeLastIndexOf: (searchElement: any, fromIndex?: number) => number;
+export declare const RegExpPrototypeExec: (string: string) => RegExpExecArray | null;
+/** RegExp.prototype's accessors (source, global, unicode, ...), each reading the regexp's own internal slots. */
+export declare const RegExpPrototypeAccessors: {
+    readonly [name: string]: unknown;
+};
+export declare const NumberPrototypeToString: (radix?: number) => string;
+export declare const BigIntPrototypeToString: (radix?: number) => string;
+export declare const ObjectPrototypeHasOwnProperty: (v: PropertyKey) => boolean;
+export declare const ObjectPrototypeToString: () => string;
+export declare const objectDefineProperties: <T>(o: T, properties: PropertyDescriptorMap & ThisType<any>) => T;
+export declare const parseIntOf: typeof parseInt;
+export declare const parseFloatOf: typeof parseFloat;
+export declare const SymbolConstructor: SymbolConstructor;
 export declare const SymbolPrototypeDescription: unknown;
 export declare const globalObject: typeof globalThis;
 declare const BigIntOf: BigIntConstructor;
@@ -128,6 +148,15 @@ export declare class SafeList<T> extends Array<T> {
 export declare const SafeGeneratorPrototype: object;
 /** The same, for the interpreter's own async generators. */
 export declare const SafeAsyncGeneratorPrototype: object;
+/**
+ * The prototype of the parser's regexps (parser-realm.ts): RegExp.prototype's
+ * members as own properties, over nothing, so that what a regexp is asked
+ * (its source, its flags, test, whose own reads of `exec` and of each flag
+ * look here too) reaches no member a program replaced on RegExp.prototype.
+ * Not `constructor`, nor @@split or @@matchAll, which search with a new
+ * regexp of the realm's own (its species), whose `exec` is the realm's.
+ */
+export declare const SafeRegExpPrototype: object;
 export declare const GeneratorPrototypeNext: unknown;
 export declare const GeneratorPrototypeReturn: unknown;
 export declare const GeneratorPrototypeThrow: unknown;

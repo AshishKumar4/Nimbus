@@ -114,7 +114,11 @@ import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 export type { RuntimeFunctionKind } from './runtime-function-source.js';
 
 /** This module's own built-ins, for the checks it shares with the interpreter. */
-const REALM: SourceRealm = { SyntaxError, messageOf: (e) => (e instanceof Error ? e.message : String(e)) };
+const REALM: SourceRealm = {
+  SyntaxError,
+  messageOf: (e) => (e instanceof Error ? e.message : String(e)),
+  scriptOptions: { ecmaVersion: 'latest', sourceType: 'script' },
+};
 
 function isRuntimeFunctionKind(kind: string): kind is RuntimeFunctionKind {
   return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);

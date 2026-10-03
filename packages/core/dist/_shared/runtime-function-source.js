@@ -4,7 +4,7 @@
  * becomes (commonjs-cell.ts) and the interpreter that runs an unstaged one.
  *
  * The interpreter runs this after a program may have replaced built-ins, so
- * nothing here names one: the caller's SourceRealm supplies the two it needs
+ * nothing here names one: the caller's SourceRealm supplies what it needs
  * (the interpreter's, from the launch's start; commonjs-cell's, its own).
  */
 import { parse } from 'acorn';
@@ -39,7 +39,7 @@ export function runtimeFunctionSource(kind, params, body) {
 function functionLiteral(text, bodyStart, emptyBody, realm) {
     let program;
     try {
-        program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
+        program = parse(text, realm.scriptOptions);
     }
     catch (e) {
         return realm.messageOf(e);
@@ -113,7 +113,7 @@ export function parseRuntimeFunction(kind, params, body, realm) {
 export function scriptExpression(code, realm) {
     let program;
     try {
-        program = parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+        program = parse(code, realm.scriptOptions);
     }
     catch (e) {
         throw new realm.SyntaxError(realm.messageOf(e));

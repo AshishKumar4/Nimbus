@@ -4,10 +4,10 @@
  * becomes (commonjs-cell.ts) and the interpreter that runs an unstaged one.
  *
  * The interpreter runs this after a program may have replaced built-ins, so
- * nothing here names one: the caller's SourceRealm supplies the two it needs
+ * nothing here names one: the caller's SourceRealm supplies what it needs
  * (the interpreter's, from the launch's start; commonjs-cell's, its own).
  */
-import { parse, type FunctionExpression, type ModuleDeclaration, type Program, type Statement } from 'acorn';
+import { parse, type FunctionExpression, type ModuleDeclaration, type Options, type Program, type Statement } from 'acorn';
 
 /** The constructors whose text a program can hand in at runtime. */
 export const RUNTIME_FUNCTION_HEADS = {
@@ -34,6 +34,12 @@ export interface SourceRealm {
   readonly SyntaxError: new (message: string) => Error;
   /** The message of what the parser threw. */
   messageOf(error: unknown): string;
+  /**
+   * The parser's options for a script (`ecmaVersion: 'latest'`, `sourceType:
+   * 'script'`). acorn reads one option of the object directly, so the
+   * interpreter's inherits nothing.
+   */
+  readonly scriptOptions: Options;
 }
 
 /** The function literal V8 builds for `new <Kind>Function(...params, body)`. */
@@ -50,7 +56,7 @@ export function runtimeFunctionSource(kind: RuntimeFunctionKind, params: readonl
 function functionLiteral(text: string, bodyStart: number, emptyBody: boolean, realm: SourceRealm): FunctionExpression | string {
   let program: Program;
   try {
-    program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
+    program = parse(text, realm.scriptOptions);
   } catch (e) {
     return realm.messageOf(e);
   }
@@ -135,7 +141,7 @@ export interface ScriptExpression {
 export function scriptExpression(code: string, realm: SourceRealm): ScriptExpression | null {
   let program: Program;
   try {
-    program = parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+    program = parse(code, realm.scriptOptions);
   } catch (e) {
     throw new realm.SyntaxError(realm.messageOf(e));
   }

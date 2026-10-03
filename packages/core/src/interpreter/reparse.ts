@@ -10,19 +10,10 @@
  * parse already accepted the text, so this parse fails only on a bug.
  */
 import { parse, type Options } from 'acorn';
-import { Error, newSafeList, reflectGetPrototypeOf, reflectSetPrototypeOf, stringSlice } from './intrinsics.js';
+import { Error, newSafeList, stringSlice } from './intrinsics.js';
 import type { FunctionNode } from './scope.js';
+import { own } from './parser-realm.js';
 import { type Owned, ownProgram } from './tree.js';
-
-// acorn assigns each node's fields as it builds it. A program may since have
-// defined accessors on Object.prototype under those names (test262 defines
-// `callee`), which the assignments would run into; nodes inherit nothing.
-// The prototype of acorn's nodes is read off a node: its typings declare
-// Node only as an interface, and a namespace import would be built at load
-// with Object.defineProperty, which a program may have replaced.
-const NodePrototype = reflectGetPrototypeOf(parse('0', { ecmaVersion: 'latest' }));
-if (NodePrototype === null) throw new Error('interpreter: acorn nodes no longer have a prototype of their own');
-reflectSetPrototypeOf(NodePrototype, null);
 
 /** What precedes a function's parameters, which decides how its text is wrapped. */
 export type FunctionSyntax =
@@ -64,6 +55,9 @@ const OPTIONS: Options = {
   // A sloppy method's arrow may use super; the unit's parse checked that it sits in a method.
   allowSuperOutsideMethod: true,
 };
+// What the parser is given inherits nothing: it reads one option directly (parser-realm.ts).
+const SCRIPT_OPTIONS: Options = own({ ...OPTIONS, sourceType: 'script' });
+const MODULE_OPTIONS: Options = own({ ...OPTIONS, sourceType: 'module' });
 
 /** The text before and after the function's own, for its syntax and strictness. */
 function wrapper(syntax: FunctionSyntax, strict: boolean, module: boolean): readonly [string, string] {
@@ -89,7 +83,7 @@ export function reparseFunction(site: FunctionSite): Reparsed {
   const text = `${before}${stringSlice(site.source, site.start, site.end)}${around[1]}`;
   // The copy of the program lists its functions; the one spanning the function's text is it.
   const functions = newSafeList<Owned<FunctionNode>>();
-  ownProgram(parse(text, { ...OPTIONS, sourceType: site.module ? 'module' : 'script' }), functions);
+  ownProgram(parse(text, site.module ? MODULE_OPTIONS : SCRIPT_OPTIONS), functions);
   const start = before.length;
   const end = start + (site.end - site.start);
   for (let i = 0; i < functions.length; i++) {

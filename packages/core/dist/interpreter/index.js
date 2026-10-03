@@ -9,10 +9,11 @@
  * as the program: values, objects, prototypes and functions are the
  * program's own, never copies or proxies.
  *
- * The code is parsed once (acorn), analyzed once (scope.ts) and compiled
- * once into closures (compile.ts); calling an interpreted function runs
- * those closures. host-ops.ts supplies the operators and the native function
- * objects interpreted functions are.
+ * The code is parsed once (acorn, bundled to reach only the built-ins the
+ * launch captured at its start: parser-realm.ts), analyzed once (scope.ts)
+ * and compiled once into closures (compile.ts); calling an interpreted
+ * function runs those closures. host-ops.ts supplies the operators and the
+ * native function objects interpreted functions are.
  *
  * Not supported, refused with UnsupportedSyntax before any of the code runs:
  * `using` declarations, TypeScript and JSX, and the bodies of `with`
@@ -27,6 +28,7 @@ import { moduleCell } from './modules.js';
 import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
+import { own } from './parser-realm.js';
 import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
@@ -34,7 +36,10 @@ export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 const WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
 /** Extensions whose text is not JavaScript acorn can parse. */
 const UNPARSED_EXTENSIONS = { '.ts': true, '.mts': true, '.cts': true, '.tsx': true, '.jsx': true };
-const PARSE = { ecmaVersion: 'latest', allowHashBang: true };
+// What the parser is given inherits nothing: it reads one option directly (parser-realm.ts).
+const MODULE_OPTIONS = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'module' });
+const COMMONJS_OPTIONS = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'script', allowReturnOutsideFunction: true });
+const SCRIPT_OPTIONS = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'script' });
 function extensionOf(path) {
     const base = stringSlice(path, stringLastIndexOf(path, '/') + 1);
     const dot = stringLastIndexOf(base, '.');
@@ -94,6 +99,7 @@ function hasModuleSyntax(program) {
 /** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
 const REALM = {
     SyntaxError,
+    scriptOptions: own({ ecmaVersion: 'latest', sourceType: 'script' }),
     messageOf(error) {
         const message = isObject(error) ? reflectGet(error, 'message') : undefined;
         return typeof message === 'string' ? message : stringOf(error);
@@ -146,7 +152,7 @@ export function createInterpreter(hostOps, host) {
             };
             let module = null;
             try {
-                module = ownProgram(parseQuick(text, { ...PARSE, sourceType: 'module' }));
+                module = ownProgram(parseQuick(text, MODULE_OPTIONS));
             }
             catch {
                 // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
@@ -155,7 +161,7 @@ export function createInterpreter(hostOps, host) {
                 return compileCell(module);
             let script;
             try {
-                script = ownProgram(parseQuick(text, { ...PARSE, sourceType: 'script', allowReturnOutsideFunction: true }));
+                script = ownProgram(parseQuick(text, COMMONJS_OPTIONS));
             }
             catch (error) {
                 // Top-level await or import.meta without imports or exports: still a module.
@@ -178,7 +184,7 @@ export function createInterpreter(hostOps, host) {
             return interpreter.compileFunction('function', [], body);
         },
         runScript(text) {
-            const program = ownProgram(parse(text, { ...PARSE, sourceType: 'script' }));
+            const program = ownProgram(parse(text, SCRIPT_OPTIONS));
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
             const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);

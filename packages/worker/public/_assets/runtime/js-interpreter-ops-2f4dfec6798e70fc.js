@@ -33,16 +33,18 @@ const operators = (function () {
   });
 })();
 function hostOperators(rt) {
-  const ops = operators(rt.ownKeys);
   const g = rt.global, hasOwn = rt.hasOwn;
   const globals = { __proto__: null, "Object": () => g.Object, "Function": () => g.Function, "Array": () => g.Array, "Number": () => g.Number, "String": () => g.String, "Boolean": () => g.Boolean, "Symbol": () => g.Symbol, "BigInt": () => g.BigInt, "Math": () => g.Math, "JSON": () => g.JSON, "Date": () => g.Date, "RegExp": () => g.RegExp, "Error": () => g.Error, "TypeError": () => g.TypeError, "RangeError": () => g.RangeError, "SyntaxError": () => g.SyntaxError, "ReferenceError": () => g.ReferenceError, "EvalError": () => g.EvalError, "URIError": () => g.URIError, "AggregateError": () => g.AggregateError, "Promise": () => g.Promise, "Proxy": () => g.Proxy, "Reflect": () => g.Reflect, "Map": () => g.Map, "Set": () => g.Set, "WeakMap": () => g.WeakMap, "WeakSet": () => g.WeakSet, "WeakRef": () => g.WeakRef, "FinalizationRegistry": () => g.FinalizationRegistry, "ArrayBuffer": () => g.ArrayBuffer, "SharedArrayBuffer": () => g.SharedArrayBuffer, "DataView": () => g.DataView, "Uint8Array": () => g.Uint8Array, "Int8Array": () => g.Int8Array, "Uint16Array": () => g.Uint16Array, "Int16Array": () => g.Int16Array, "Uint32Array": () => g.Uint32Array, "Int32Array": () => g.Int32Array, "Float32Array": () => g.Float32Array, "Float64Array": () => g.Float64Array, "BigInt64Array": () => g.BigInt64Array, "BigUint64Array": () => g.BigUint64Array, "Uint8ClampedArray": () => g.Uint8ClampedArray, "Intl": () => g.Intl, "Atomics": () => g.Atomics, "globalThis": () => g.globalThis, "undefined": () => g.undefined, "NaN": () => g.NaN, "Infinity": () => g.Infinity, "isNaN": () => g.isNaN, "isFinite": () => g.isFinite, "parseInt": () => g.parseInt, "parseFloat": () => g.parseFloat, "encodeURIComponent": () => g.encodeURIComponent, "decodeURIComponent": () => g.decodeURIComponent, "encodeURI": () => g.encodeURI, "decodeURI": () => g.decodeURI, "escape": () => g.escape, "unescape": () => g.unescape, "console": () => g.console, "process": () => g.process, "Buffer": () => g.Buffer, "setTimeout": () => g.setTimeout, "clearTimeout": () => g.clearTimeout, "setInterval": () => g.setInterval, "clearInterval": () => g.clearInterval, "setImmediate": () => g.setImmediate, "clearImmediate": () => g.clearImmediate, "queueMicrotask": () => g.queueMicrotask, "structuredClone": () => g.structuredClone, "fetch": () => g.fetch, "Request": () => g.Request, "Response": () => g.Response, "Headers": () => g.Headers, "URL": () => g.URL, "URLSearchParams": () => g.URLSearchParams, "TextEncoder": () => g.TextEncoder, "TextDecoder": () => g.TextDecoder, "AbortController": () => g.AbortController, "AbortSignal": () => g.AbortSignal, "Event": () => g.Event, "EventTarget": () => g.EventTarget, "crypto": () => g.crypto, "performance": () => g.performance, "atob": () => g.atob, "btoa": () => g.btoa, "Blob": () => g.Blob, "FormData": () => g.FormData, "ReadableStream": () => g.ReadableStream, "WritableStream": () => g.WritableStream, "TransformStream": () => g.TransformStream, "WebAssembly": () => g.WebAssembly, "navigator": () => g.navigator, "require": () => g.require, "module": () => g.module, "exports": () => g.exports, "__filename": () => g.__filename, "__dirname": () => g.__dirname };
-  ops.globalReader = (name) => (hasOwn(globals, name) ? globals[name] : undefined);
-  ops.setSloppy = function (o, k, v) { o[k] = v; };
-  ops.removeSloppy = function (o, k) { return delete o[k]; };
   const delegate = function* (iterable) { return yield* iterable; };
   delegate.prototype = rt.SafeGeneratorPrototype;
-  ops.delegate = delegate;
-  return ops;
+  // Every field in the literal: one set afterwards would run a setter a program put on Object.prototype.
+  return {
+    ...operators(rt.ownKeys),
+    globalReader: (name) => (hasOwn(globals, name) ? globals[name] : undefined),
+    setSloppy: function (o, k, v) { o[k] = v; },
+    removeSloppy: function (o, k) { return delete o[k]; },
+    delegate,
+  };
 }
 function sloppy(rt) {
 const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;

@@ -63,6 +63,34 @@ export const StringPrototypeSlice = String.prototype.slice;
 export const StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
 export const StringPrototypeCharCodeAt = String.prototype.charCodeAt;
 export const SymbolPrototypeToString = Symbol.prototype.toString;
+// What the parser reaches (parser-realm.ts): acorn, as the interpreter bundles
+// it, calls these and no other built-in.
+export const StringPrototypeCharAt = String.prototype.charAt;
+export const StringPrototypeIndexOf = String.prototype.indexOf;
+export const StringPrototypeSubstr = String.prototype.substr;
+export const StringFromCharCode = String.fromCharCode;
+export const ArrayPrototypePop = Array.prototype.pop;
+export const ArrayPrototypeIndexOf = Array.prototype.indexOf;
+export const ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+export const RegExpPrototypeExec = RegExp.prototype.exec;
+/** RegExp.prototype's accessors (source, global, unicode, ...), each reading the regexp's own internal slots. */
+export const RegExpPrototypeAccessors: { readonly [name: string]: unknown } = (() => {
+  const accessors: { [name: string]: unknown } = objectCreate(null);
+  const names = Object.getOwnPropertyNames(RegExp.prototype);
+  for (let i = 0; i < names.length; i++) {
+    const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
+    if (getter !== undefined) accessors[names[i]] = getter;
+  }
+  return accessors;
+})();
+export const NumberPrototypeToString = Number.prototype.toString;
+export const BigIntPrototypeToString = BigInt.prototype.toString;
+export const ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
+export const ObjectPrototypeToString = Object.prototype.toString;
+export const objectDefineProperties = Object.defineProperties;
+export const parseIntOf = parseInt;
+export const parseFloatOf = parseFloat;
+export const SymbolConstructor = Symbol;
 export const SymbolPrototypeDescription: unknown = Reflect.getOwnPropertyDescriptor(Symbol.prototype, 'description')?.get;
 export const globalObject: typeof globalThis = globalThis;
 const BigIntOf = BigInt;
@@ -142,6 +170,24 @@ export const SafeAsyncGeneratorPrototype: object = objectCreate(null);
   copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype) ?? {}, [Symbol.iterator]);
   copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ['next', 'return', 'throw']);
   copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
+}
+/**
+ * The prototype of the parser's regexps (parser-realm.ts): RegExp.prototype's
+ * members as own properties, over nothing, so that what a regexp is asked
+ * (its source, its flags, test, whose own reads of `exec` and of each flag
+ * look here too) reaches no member a program replaced on RegExp.prototype.
+ * Not `constructor`, nor @@split or @@matchAll, which search with a new
+ * regexp of the realm's own (its species), whose `exec` is the realm's.
+ */
+export const SafeRegExpPrototype: object = objectCreate(null);
+{
+  const keys = Reflect.ownKeys(RegExp.prototype);
+  const members: PropertyKey[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key !== 'constructor' && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
+  }
+  copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
 }
 export const GeneratorPrototypeNext: unknown = reflectGet(SafeGeneratorPrototype, 'next');
 export const GeneratorPrototypeReturn: unknown = reflectGet(SafeGeneratorPrototype, 'return');

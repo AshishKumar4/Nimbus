@@ -207,16 +207,18 @@ const operators = (function () {
   });
 })();
 function hostOperators(rt) {
-  const ops = operators(rt.ownKeys);
   const g = rt.global, hasOwn = rt.hasOwn;
   const globals = { __proto__: null, ${WELL_KNOWN_GLOBALS_LIST} };
-  ops.globalReader = (name) => (hasOwn(globals, name) ? globals[name] : undefined);
-  ops.setSloppy = function (o, k, v) { o[k] = v; };
-  ops.removeSloppy = function (o, k) { return delete o[k]; };
   const delegate = function* (iterable) { return yield* iterable; };
   delegate.prototype = rt.SafeGeneratorPrototype;
-  ops.delegate = delegate;
-  return ops;
+  // Every field in the literal: one set afterwards would run a setter a program put on Object.prototype.
+  return {
+    ...operators(rt.ownKeys),
+    globalReader: (name) => (hasOwn(globals, name) ? globals[name] : undefined),
+    setSloppy: function (o, k, v) { o[k] = v; },
+    removeSloppy: function (o, k) { return delete o[k]; },
+    delegate,
+  };
 }
 function sloppy(rt) {${FACTORIES}}
 const strict = (function () {
