@@ -259,7 +259,9 @@ export async function prefetchForRequire(
     return declined === null;
   }
 
-  // Metadata spends the same delta allowance as source.
+  // Metadata spends the same delta allowance as source. In phase 2 (lazy),
+  // metadata the required graph did not already read is as optional as the
+  // module it resolves: bounded, and evictable.
   async function stageCell(path: string, kind: 'module' | 'metadata' = 'module'): Promise<string | null> {
     if (declined || closureExceeded) return null;
     if (bundle[path] !== undefined) return bundle[path];
@@ -272,10 +274,11 @@ export async function prefetchForRequire(
       catch { declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' }; return null; }
     }
     let size = 0;
-    if (!reuseHeld && (policy || kind === 'module')) {
+    const counted = !policy && (kind === 'module' || lazy);
+    if (!reuseHeld && (policy || counted)) {
       try { size = (await vfs.stat(path))?.size ?? 0; } catch { /* the read decides */ }
       if (!fits(path, size)) return null;
-      if (!policy && kind === 'module' && bytesSeen + size > maxBundleBytes) {
+      if (counted && bytesSeen + size > maxBundleBytes) {
         if (!lazy) closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
         return null;
       }
@@ -296,9 +299,9 @@ export async function prefetchForRequire(
       additionalBytes += actual;
       additionalFiles++;
     }
-    if (!policy && kind === 'module') bytesSeen += size;
+    if (counted) bytesSeen += size;
     bundle[path] = content;
-    if (lazy && kind === 'module') speculative.add(path);
+    if (lazy) speculative.add(path);
     if (progress) await progress(content.length);
     return content;
   }
@@ -480,17 +483,16 @@ export async function prefetchForRequire(
     // The process runs such a module lowered to CommonJS, and its require
     // takes a package's "require" branch. A module runner that evaluates the
     // same source itself (Vite's, under Astro) imports a package with
-    // import(), which takes the "import" branch: that file waits in phase 2,
-    // one deferral, when it is another.
+    // import(), which takes the "import" branch: phase 2 resolves it as one
+    // deferral (the same file as the require branch adds nothing).
     for (const match of stripped.matchAll(IMPORT_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded || declined) break;
       const r = await resolveStaticDependency(specifier, fromDir);
       if (r) (await addFile(r.resolved));
-      if (policy || /^[./#]|^file:/.test(specifier)) continue;
-      const imported = await resolveDynamicImport(specifier, fromDir);
-      if (imported !== null && imported !== r?.resolved) defer({ specifier, fromDir, alternatives: 1, path: imported });
+      // Resolved in phase 2, where what it reads is optional too.
+      if (!policy && !/^[./#]|^file:/.test(specifier)) defer({ specifier, fromDir, alternatives: 1 });
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
     const deferrals = new Set<string>();

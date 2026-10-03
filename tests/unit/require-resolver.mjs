@@ -392,4 +392,30 @@ console.log('require-resolver: createRequire ok');
   assert.equal(r.bundle[clsx + 'clsx.mjs'], files[clsx + 'clsx.mjs'], 'and the import branch');
   assert.deepEqual([...r.speculative], [clsx + 'clsx.mjs'], 'the import branch is phase 2; a package with one entry adds nothing');
 }
+// The import branch is optional, and so is the metadata only it reads. A dual
+// package whose import branch sits under its own package scope
+// (esm/package.json) reads that manifest to resolve it: past the bound, it is
+// left out, and the required closure (the require branch) still launches.
+// Metadata the required graph reads stays required.
+{
+  const huge = JSON.stringify({ type: 'module', padding: 'x'.repeat(4096) });
+  const files = {
+    'home/user/app/node_modules/fw/bin.mjs': "import dual from 'dual'; export default dual;",
+    'home/user/app/node_modules/dual/package.json': JSON.stringify({ name: 'dual', exports: { '.': { import: './esm/index.js', default: './cjs/index.js' } } }),
+    'home/user/app/node_modules/dual/cjs/index.js': 'module.exports = 1;',
+    'home/user/app/node_modules/dual/esm/package.json': huge,
+    'home/user/app/node_modules/dual/esm/index.js': 'export default 1;',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/fw/bin.mjs';
+  const required = [entry, 'home/user/app/node_modules/dual/cjs/index.js'].reduce((n, path) => n + files[path].length, 0);
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry, required + 64);
+  assert.ok(!('kind' in r), `the optional branch's metadata is no refusal: ${JSON.stringify(r)}`);
+  assert.equal(r.bundle['home/user/app/node_modules/dual/cjs/index.js'], files['home/user/app/node_modules/dual/cjs/index.js']);
+  assert.equal(r.bundle['home/user/app/node_modules/dual/esm/package.json'], undefined, 'metadata past the bound is left out');
+  assert.ok(!r.speculative.has('home/user/app/node_modules/dual/package.json'), "the required graph's metadata stays required");
+  const roomy = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
+  assert.equal(roomy.bundle['home/user/app/node_modules/dual/esm/index.js'], files['home/user/app/node_modules/dual/esm/index.js'], 'with room, the import branch is staged');
+  assert.ok(roomy.speculative.has('home/user/app/node_modules/dual/esm/package.json'), 'with the metadata only it read, as optional');
+}
 console.log('require-resolver: speculative dynamic imports ok');
