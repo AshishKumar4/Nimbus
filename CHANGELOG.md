@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a shell script that `child_process.spawn` starts (`spawn('./s.sh')`,
+  by absolute path, by its name on PATH, or `spawn('sh', ['s.sh'])`) got
+  no stdin. The broker ran it on an empty fixed stdin and never said its
+  descriptors were pipes, so `sh` took its stdin for a terminal and handed
+  its commands none, and a script of `cat` printed nothing. A child's stdin
+  is now a pipe its command reads as the parent writes it, for every kind
+  of child the broker runs: a registry command, a shell, or a program found
+  by name or path. It used to be what had been written once the parent
+  ended stdin or half a second had passed. So such a child answers each
+  line before its parent ends, as under Node, and a child that reads its
+  stdin waits for its parent to end it rather than giving up after half a
+  second. `sh` hands its stdin on to its program's commands as a stream,
+  where it read all of it first. A node run by a child's script reads the
+  script's stdin, not the child's queue, whose pid it inherits in its
+  environment. A runtime whose stdout is a pipe still hands its output
+  back when it exits.
+
 ## 2026-10-03
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

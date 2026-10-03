@@ -5,7 +5,7 @@ import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
-import type { ChildExit, Command, CommandContext, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
+import type { ChildExit, Command, CommandContext, CommandInputStream, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
 import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 
@@ -40,7 +40,7 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 
 /** What a builtin run for a process inherits from it: its pid, environment, directory and descriptors. */
-type BuiltinIo = Pick<CommandContext, 'pid' | 'env' | 'cwd' | 'stdin' | 'stdout' | 'stderr'>;
+type BuiltinIo = Pick<CommandContext, 'pid' | 'env' | 'cwd' | 'stdin' | 'stdout' | 'stderr' | 'isFdTerminal'>;
 
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
   ASSETS?: Fetcher;
@@ -180,7 +180,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     const facetMgrAdapter = {
       execStream: async (
         codeJson: string,
-        opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[] },
+        opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[]; stdin?: CommandInputStream },
         hooks: OutputHooks,
       ): Promise<number> => {
         // codeJson is a payload from FacetProcessManager._dispatch facet-direct
@@ -214,7 +214,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         }
         // Synthesize a CommandContext for the internal shell substrate.
         const ac = new AbortController();
-        const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
+        const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', opts.stdin ?? staticStdinReader(payload.stdin || ''), hooks);
         const ctx = {
           ...io,
           cred,
@@ -274,7 +274,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         args: string[],
         env: Record<string, string>,
         cwd: string,
-        stdin: string,
+        stdin: CommandInputStream,
         hooks: OutputHooks,
       ): Promise<number> => {
         const registry: CommandRegistry | null = self._cpRegistry;
@@ -285,14 +285,20 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
       },
     };
-    /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
-    const processIo = (pid: number, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): BuiltinIo => ({
+    /**
+     * A process's descriptors, environment and directory: its stdin, and its
+     * output over the broker's hooks. They are pipes (or /dev/null), never a
+     * terminal: the broker has none to give a child, and a shell that took
+     * its stdin for one read nothing from it.
+     */
+    const processIo = (pid: number, env: Record<string, string>, cwd: string, stdin: CommandInputStream, hooks: OutputHooks): BuiltinIo => ({
       pid,
       env,
       cwd,
       stdout: { write: (d: string) => hooks.onStdout(textBytes(String(d))) },
       stderr: { write: (d: string) => hooks.onStderr(textBytes(String(d))) },
-      stdin: staticStdinReader(stdin),
+      stdin,
+      isFdTerminal: () => false,
     });
     /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
     const runBuiltin = async (cmd: Command, name: string, args: string[], io: BuiltinIo): Promise<ChildExit> => {
@@ -334,7 +340,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
       let exitCode = 1;
       try {
-        const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
+        const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
         exitCode = ended.status;
         return ended;
       } finally {
@@ -363,7 +369,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           commandLine: string,
           env: Record<string, string>,
           cwd: string,
-          stdin: string,
+          stdin: CommandInputStream,
           hooks: OutputHooks,
         ): Promise<number> => {
           if (!self.shell) {
