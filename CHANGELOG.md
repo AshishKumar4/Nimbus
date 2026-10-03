@@ -83,6 +83,28 @@ published independently in the `@nimbus-sh` npm scope.
   `EsbuildService` runs a call without a host on an engine its caller
   supplies (`EsbuildServiceOptions.engine`), and rejects without one; core
   imports no part of esbuild-wasm.
+- `vite build`'s stylesheets are read and written by css-tree 3.2.1 (its
+  parser, generator, walker and tokenizer; not its lexer or grammar data),
+  with esbuild 0.24.2's import order and cascade rules ported from its
+  linker above that: each sheet resolved, loaded and parsed once per build
+  (a 13-sheet chain importing each next sheet twice made 8,190 resolve and
+  8,190 load calls; now 13, as esbuild), layer-ordering statements before
+  `@import` kept, an earlier duplicate keeping the layer order it set,
+  external imports keeping their importers' conditions (nested through
+  `data:` sheets as esbuild does) and their last place, conditions compared
+  by token (whitespace inside a string counts), escaped at-keywords, bad
+  url() tokens left alone, comments that are not whitespace, a no-break
+  space in a name, and an `@import` of a non-CSS module refused as esbuild
+  refuses it. Emitted assets are named by their bytes before any script or
+  stylesheet names them, the stylesheet by its own bytes, so a changed image
+  or rule changes every name that depends on it (the script's and sheet's
+  names stayed put before); an asset's path is written into the script as
+  an escaped string, not substituted into its text, and two different files
+  at one output path fail the build as in esbuild. Data URLs keep every byte
+  (a UTF-8 BOM was dropped) and take esbuild's MIME table and Go's content
+  sniffing. The Vite dev server inlines a stylesheet's `@import`s with the
+  same layer, conditions and nesting included, and roots each url() so an
+  inlined sheet's url()s still name their files.
 - `vite build`'s stylesheet reads each `@import`'s conditions from its
   tokens: a `)` or `,` inside a string or a url(), an escape, a comment, or
   a `layer()` name directly followed by media no longer cut a `supports()`

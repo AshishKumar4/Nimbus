@@ -26,7 +26,7 @@
  * Self-contained but for types and css-bundle.ts: the build facet's runtime
  * bundles it (rolldown-facet/preamble.ts).
  */
-import { bundleCss, CssError } from './css-bundle.js';
+import { bundleCss, CssError, percentEscapedDataUrl } from './css-bundle.js';
 /** esbuild options a Nimbus build may pass; anything else is refused. */
 const SUPPORTED = new Set([
     'entryPoints', 'bundle', 'format', 'target', 'platform', 'outdir', 'outfile', 'sourcemap', 'minify', 'external',
@@ -36,18 +36,123 @@ const SUPPORTED = new Set([
 const LOADER_MODULE_TYPES = {
     js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', empty: 'empty',
 };
-/** esbuild's MIME types by extension (internal/helpers/mime.go), as a data URL writes them. */
+/** esbuild's MIME types by extension (internal/helpers/mime.go at v0.24.2). */
 const MIME_TYPES = {
-    '.avif': 'image/avif', '.css': 'text/css;charset=utf-8', '.gif': 'image/gif', '.htm': 'text/html;charset=utf-8',
-    '.html': 'text/html;charset=utf-8', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.js': 'text/javascript;charset=utf-8',
-    '.json': 'application/json;charset=utf-8', '.mjs': 'text/javascript;charset=utf-8', '.pdf': 'application/pdf',
-    '.png': 'image/png', '.svg': 'image/svg+xml', '.txt': 'text/plain;charset=utf-8', '.wasm': 'application/wasm',
-    '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2', '.xml': 'text/xml;charset=utf-8',
-    '.ttf': 'font/ttf', '.otf': 'font/otf', '.ico': 'image/x-icon', '.mp4': 'video/mp4', '.webm': 'video/webm',
-    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+    '.css': 'text/css; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.markdown': 'text/markdown; charset=utf-8',
+    '.md': 'text/markdown; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.xhtml': 'application/xhtml+xml; charset=utf-8',
+    '.xml': 'text/xml; charset=utf-8',
+    '.avif': 'image/avif', '.gif': 'image/gif', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.png': 'image/png',
+    '.svg': 'image/svg+xml', '.webp': 'image/webp',
+    '.eot': 'application/vnd.ms-fontobject', '.otf': 'font/otf', '.sfnt': 'font/sfnt', '.ttf': 'font/ttf',
+    '.woff': 'font/woff', '.woff2': 'font/woff2',
+    '.pdf': 'application/pdf', '.wasm': 'application/wasm', '.webmanifest': 'application/manifest+json',
 };
+const bytesOfText = (text) => Uint8Array.from(text, (c) => c.charCodeAt(0));
+const exactSig = (sig, ct) => {
+    const pat = bytesOfText(sig);
+    return (data) => (data.length >= pat.length && pat.every((b, i) => data[i] === b) ? ct : '');
+};
+const maskedSig = (mask, pat, ct, skipWS = false) => {
+    const m = bytesOfText(mask);
+    const p = bytesOfText(pat);
+    return (data, firstNonWS) => {
+        const d = skipWS ? data.subarray(firstNonWS) : data;
+        return d.length >= p.length && p.every((b, i) => (d[i] & m[i]) === b) ? ct : '';
+    };
+};
+const htmlSig = (sig) => (data, firstNonWS) => {
+    const d = data.subarray(firstNonWS);
+    if (d.length < sig.length + 1)
+        return '';
+    for (let i = 0; i < sig.length; i++) {
+        const b = sig.charCodeAt(i);
+        const db = b >= 0x41 && b <= 0x5a ? d[i] & 0xdf : d[i];
+        if (b !== db)
+            return '';
+    }
+    return d[sig.length] === 0x20 || d[sig.length] === 0x3e ? 'text/html; charset=utf-8' : '';
+};
+const mp4Sig = (data) => {
+    if (data.length < 12)
+        return '';
+    const boxSize = ((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]) >>> 0;
+    if (data.length < boxSize || boxSize % 4 !== 0)
+        return '';
+    if (String.fromCharCode(...data.subarray(4, 8)) !== 'ftyp')
+        return '';
+    for (let st = 8; st < boxSize; st += 4) {
+        if (st === 12)
+            continue;
+        if (String.fromCharCode(...data.subarray(st, st + 3)) === 'mp4')
+            return 'video/mp4';
+    }
+    return '';
+};
+const textSig = (data, firstNonWS) => {
+    for (const b of data.subarray(firstNonWS)) {
+        if (b <= 0x08 || b === 0x0b || (b >= 0x0e && b <= 0x1a) || (b >= 0x1c && b <= 0x1f))
+            return '';
+    }
+    return 'text/plain; charset=utf-8';
+};
+const SNIFF_SIGNATURES = [
+    ...['<!DOCTYPE HTML', '<HTML', '<HEAD', '<SCRIPT', '<IFRAME', '<H1', '<DIV', '<FONT', '<TABLE', '<A', '<STYLE', '<TITLE', '<B', '<BODY', '<BR', '<P', '<!--'].map(htmlSig),
+    maskedSig('\xFF\xFF\xFF\xFF\xFF', '<?xml', 'text/xml; charset=utf-8', true),
+    exactSig('%PDF-', 'application/pdf'),
+    exactSig('%!PS-Adobe-', 'application/postscript'),
+    maskedSig('\xFF\xFF\x00\x00', '\xFE\xFF\x00\x00', 'text/plain; charset=utf-16be'),
+    maskedSig('\xFF\xFF\x00\x00', '\xFF\xFE\x00\x00', 'text/plain; charset=utf-16le'),
+    maskedSig('\xFF\xFF\xFF\x00', '\xEF\xBB\xBF\x00', 'text/plain; charset=utf-8'),
+    exactSig('\x00\x00\x01\x00', 'image/x-icon'),
+    exactSig('\x00\x00\x02\x00', 'image/x-icon'),
+    exactSig('BM', 'image/bmp'),
+    exactSig('GIF87a', 'image/gif'),
+    exactSig('GIF89a', 'image/gif'),
+    maskedSig('\xFF\xFF\xFF\xFF\x00\x00\x00\x00\xFF\xFF\xFF\xFF\xFF\xFF', 'RIFF\x00\x00\x00\x00WEBPVP', 'image/webp'),
+    exactSig('\x89PNG\x0D\x0A\x1A\x0A', 'image/png'),
+    exactSig('\xFF\xD8\xFF', 'image/jpeg'),
+    maskedSig('\xFF\xFF\xFF\xFF\x00\x00\x00\x00\xFF\xFF\xFF\xFF', 'FORM\x00\x00\x00\x00AIFF', 'audio/aiff'),
+    maskedSig('\xFF\xFF\xFF', 'ID3', 'audio/mpeg'),
+    maskedSig('\xFF\xFF\xFF\xFF\xFF', 'OggS\x00', 'application/ogg'),
+    maskedSig('\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF', 'MThd\x00\x00\x00\x06', 'audio/midi'),
+    maskedSig('\xFF\xFF\xFF\xFF\x00\x00\x00\x00\xFF\xFF\xFF\xFF', 'RIFF\x00\x00\x00\x00AVI ', 'video/avi'),
+    maskedSig('\xFF\xFF\xFF\xFF\x00\x00\x00\x00\xFF\xFF\xFF\xFF', 'RIFF\x00\x00\x00\x00WAVE', 'audio/wave'),
+    mp4Sig,
+    exactSig('\x1A\x45\xDF\xA3', 'video/webm'),
+    maskedSig('\x00'.repeat(34) + '\xFF\xFF', '\x00'.repeat(34) + 'LP', 'application/vnd.ms-fontobject'),
+    exactSig('\x00\x01\x00\x00', 'font/ttf'),
+    exactSig('OTTO', 'font/otf'),
+    exactSig('ttcf', 'font/collection'),
+    exactSig('wOFF', 'font/woff'),
+    exactSig('wOF2', 'font/woff2'),
+    exactSig('\x1F\x8B\x08', 'application/x-gzip'),
+    exactSig('PK\x03\x04', 'application/zip'),
+    exactSig('Rar!\x1A\x07\x00', 'application/x-rar-compressed'),
+    exactSig('Rar!\x1A\x07\x01\x00', 'application/x-rar-compressed'),
+    exactSig('\x00\x61\x73\x6D', 'application/wasm'),
+    textSig,
+];
+/** Go's http.DetectContentType (net/http/sniff.go, go1.23), which esbuild falls back on. */
+function detectContentType(bytes) {
+    const data = bytes.subarray(0, 512);
+    let firstNonWS = 0;
+    while (firstNonWS < data.length && [0x09, 0x0a, 0x0c, 0x0d, 0x20].includes(data[firstNonWS]))
+        firstNonWS++;
+    for (const sig of SNIFF_SIGNATURES) {
+        const ct = sig(data, firstNonWS);
+        if (ct)
+            return ct;
+    }
+    return 'application/octet-stream';
+}
+/** esbuild's guessMimeType: by extension, else by the bytes; `; ` written `;`. */
+function guessMimeType(ext, bytes) {
+    return (MIME_TYPES[ext] ?? MIME_TYPES[ext.toLowerCase()] ?? detectContentType(bytes)).replaceAll('; ', ';');
+}
 function extensionOf(path) {
-    const base = path.slice(path.lastIndexOf('/') + 1);
+    const bare = path.replace(/[?#].*$/, '');
+    const base = bare.slice(bare.lastIndexOf('/') + 1);
     const dot = base.lastIndexOf('.');
     return dot > 0 ? base.slice(dot).toLowerCase() : '';
 }
@@ -57,33 +162,18 @@ function base64Of(bytes) {
         latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
     return btoa(latin1);
 }
-/** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text. */
+/** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text, every byte kept (a BOM too). */
 export function dataUrlOf(path, bytes) {
-    const mime = MIME_TYPES[extensionOf(path)] ?? 'application/octet-stream';
+    const mime = guessMimeType(extensionOf(path), bytes);
     const encoded = `data:${mime};base64,${base64Of(bytes)}`;
     let text;
     try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
     }
     catch {
         return encoded;
     }
-    let trailing = text.length;
-    while (trailing > 0) {
-        const c = text.charCodeAt(trailing - 1);
-        if (c > 0x20 || c === 9 || c === 10 || c === 13)
-            break;
-        trailing--;
-    }
-    let escaped = `data:${mime},`;
-    for (let i = 0; i < text.length; i++) {
-        const c = text.charCodeAt(i);
-        const hex = (n) => '%' + n.toString(16).toUpperCase().padStart(2, '0');
-        if (c === 9 || c === 10 || c === 13 || c === 35 || i >= trailing || (c === 37 && /^[0-9a-fA-F]{2}/.test(text.slice(i + 1, i + 3))))
-            escaped += hex(c);
-        else
-            escaped += text[i];
-    }
+    const escaped = percentEscapedDataUrl(mime, text);
     return escaped.length < encoded.length ? escaped : encoded;
 }
 /** esbuild's [hash]: eight base32 characters of the content's digest. */
@@ -104,6 +194,13 @@ async function contentHash(bytes) {
             break;
     }
     return out;
+}
+/** esbuild's output name template filled in: `[name]`, `[hash]` and `[ext]`. */
+function fill(template, { name, hash, ext }) {
+    return template.replace(/\[name\]/g, name).replace(/\[hash\]/g, hash).replace(/\[ext\]/g, ext);
+}
+function sameBytes(a, b) {
+    return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 /** `to`, relative to the directory of `from` (both relative to the output root). */
 function relativeUrl(from, to) {
@@ -466,23 +563,40 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     const css = new Map();
     const warnings = [];
     const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
-    // Emitted assets, by module: the `file` loader's (from JavaScript or a stylesheet's url()).
+    // Emitted assets (the `file` loader's, from JavaScript or a stylesheet's
+    // url()), by output path. A name holds its bytes' hash before any script or
+    // stylesheet names it, so theirs follow from it; two different files at one
+    // path are an error, as in esbuild.
     const assetFiles = new Map();
-    const assetMarkers = [];
-    const emitAsset = async (module, bytes) => {
-        const key = `${module.namespace}:${module.path}`;
-        const known = assetFiles.get(key);
-        if (known)
-            return known.fileName;
-        // The marker after `__NIMBUS_ASSET_1` is `_10`: a marker ends at `__`, so `_1__` never matches inside `_10__`.
-        const base = module.path.slice(module.path.lastIndexOf('/') + 1);
-        const ext = extensionOf(base);
-        const name = ext ? base.slice(0, -ext.length) : base;
-        const hash = await contentHash(bytes);
-        const fileName = (options.assetNames ?? '[name]-[hash]').replace(/\[name\]/g, name).replace(/\[hash\]/g, hash).replace(/\[ext\]/g, ext.slice(1)) + ext;
-        assetFiles.set(key, { fileName, contents: bytes });
-        return fileName;
+    const assetNames = new Map();
+    const collisions = new Set();
+    const emitAsset = (module, bytes) => {
+        const key = fileOf(module);
+        if (!assetNames.has(key)) {
+            assetNames.set(key, (async () => {
+                const base = module.path.slice(module.path.lastIndexOf('/') + 1);
+                const ext = extensionOf(base);
+                const name = ext ? base.slice(0, -ext.length) : base;
+                const fileName = fill(options.assetNames ?? '[name]-[hash]', { name, hash: await contentHash(bytes), ext: ext.slice(1) }) + ext;
+                const known = assetFiles.get(fileName);
+                if (known && !sameBytes(known, bytes))
+                    collisions.add(fileName);
+                else
+                    assetFiles.set(fileName, bytes);
+                return fileName;
+            })());
+        }
+        return assetNames.get(key);
     };
+    // Where an entry's script and stylesheet are written, relative to the output
+    // directory: the path a `file` import's string is relative to.
+    const entryDir = (() => {
+        if (options.outfile)
+            return '';
+        const names = options.entryNames ?? '[name]';
+        const dir = names.slice(0, names.lastIndexOf('/') + 1);
+        return dir.includes('[') ? null : dir;
+    })();
     const raise = (text, pluginName = '') => {
         raised.push(message(text, null, pluginName));
         throw new Error(text);
@@ -583,11 +697,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             // (and `text`) modules are exactly that, so a string value is a JSON one.
             const value = (string) => ({ code: JSON.stringify(string), moduleType: 'json' });
             if (loader === 'file') {
-                // Loads run concurrently: the marker is claimed before the await.
-                const entry = [`__NIMBUS_ASSET_${assetMarkers.length}__`, ''];
-                assetMarkers.push(entry);
-                entry[1] = await emitAsset({ namespace, path }, bytesOf());
-                return value(entry[0]);
+                if (entryDir === null)
+                    raise(`Nimbus's bundler does not support a placeholder in the directory of entryNames with the "file" loader (${fileOf({ namespace, path })})`);
+                return value(relativeUrl(`${entryDir}entry.js`, await emitAsset({ namespace, path }, bytesOf())));
             }
             if (loader === 'dataurl')
                 return value(dataUrlOf(path, bytesOf()));
@@ -637,10 +749,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         const relative = (path) => path.replace(/^\/+/, '');
         for (const out of output) {
             if (out.type === 'chunk') {
-                let code = out.code;
-                for (const [marker, fileName] of assetMarkers)
-                    code = code.split(marker).join(relativeUrl(out.fileName, fileName));
-                const contents = encoder.encode(code);
+                const contents = encoder.encode(out.code);
                 const path = at(out.fileName);
                 outputFiles.push({ path, contents });
                 const entry = out.isEntry && out.facadeModuleId ? decode(out.facadeModuleId) : null;
@@ -648,22 +757,26 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 const cssOfChunk = (cssOrder.get(out.fileName) ?? []).map((id) => css.get(id));
                 let cssBundle;
                 if (cssOfChunk.length) {
-                    const cssFileName = out.fileName.replace(/\.js$/, '.css');
-                    const cssPath = at(cssFileName);
+                    // The stylesheet sits beside the script, named by the same template and its own bytes' hash.
+                    const cssDir = out.fileName.slice(0, out.fileName.lastIndexOf('/') + 1);
                     const sheetAssets = {
-                        emit: async (module, bytes) => relativeUrl(cssFileName, await emitAsset(module, bytes)),
+                        emit: async (module, bytes) => relativeUrl(`${cssDir}sheet.css`, await emitAsset(module, bytes)),
                         dataUrl: dataUrlOf,
                     };
                     let bundled;
                     try {
-                        bundled = await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true });
+                        bundled = encoder.encode(await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true }));
                     }
                     catch (error) {
                         if (error instanceof CssError)
                             throw new BuildError([error.diagnostic]);
                         throw error;
                     }
-                    outputFiles.push({ path: cssPath, contents: encoder.encode(bundled) });
+                    const cssFileName = options.outfile
+                        ? out.fileName.replace(/\.js$/, '') + '.css'
+                        : fill(options.entryNames ?? '[name]', { name: out.name, hash: await contentHash(bundled), ext: 'css' }) + '.css';
+                    const cssPath = at(cssFileName);
+                    outputFiles.push({ path: cssPath, contents: bundled });
                     outputs[relative(cssPath)] = { imports: [], exports: [], inputs: {}, bytes: bundled.length };
                     cssBundle = relative(cssPath);
                 }
@@ -680,7 +793,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
             }
         }
-        for (const { fileName, contents } of assetFiles.values()) {
+        if (collisions.size) {
+            throw new BuildError([...collisions].map((fileName) => message(`Two output files share the same path but have different contents: ${at(fileName).replace(/^\/+/, '')}`)));
+        }
+        for (const [fileName, contents] of assetFiles) {
             const path = at(fileName);
             outputFiles.push({ path, contents });
             outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };

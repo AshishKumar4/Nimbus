@@ -14,7 +14,7 @@ export const viteBuildOptions = (name) => ({
 });
 
 // Bytes that are not UTF-8, for loaders that must keep bytes whole.
-const PNG = '\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u00ff\u00fe';
+export const PNG = '\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u00ff\u00fe';
 
 export const VITE_PROJECTS = {
   'vite-asset-loaders': {
@@ -52,6 +52,190 @@ globalThis.__result = { file, inl, b64, wasm, blob: Array.from(blob).join(','), 
       'src/all.png': Uint8Array.from({ length: 256 }, (_, i) => i),
       'src/all.node': Uint8Array.from({ length: 256 }, (_, i) => 255 - i),
       'src/note.txt': 'note text\n',
+    },
+  },
+  // ── The 3b review (InstitutionalPinniped): each a reproduced difference ──
+  // A 13-sheet chain, each importing the next twice: every sheet is resolved
+  // and loaded once, as esbuild does (the expansion was 8,190 of each).
+  'vite-review-import-chain': {
+    entry: 'src/main.js',
+    compareReads: true,
+    files: {
+      'src/main.js': "import './c0.css';\nglobalThis.__result = 1;\n",
+      ...Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`src/c${i}.css`, i < 12 ? `@import "./c${i + 1}.css";\n@import "./c${i + 1}.css";\n.c${i} { color: red }\n` : '.c12 { color: blue }\n'])),
+    },
+  },
+  // Asset paths are written into the script as strings, escaped: a file name
+  // with a backtick or `${`, and a user string that looks like a marker.
+  'vite-review-asset-names-escaped': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import tick from './a`b.png'; import tpl from './logo${1+1}.png';\nglobalThis.__result = { tick, tpl, user: '__NIMBUS_ASSET_0__', user2: `__NIMBUS_ASSET_1__` };\n",
+      'src/a`b.png': PNG,
+      'src/logo${1+1}.png': PNG + 'x',
+    },
+  },
+  // A layer-ordering statement may come before @import.
+  'vite-review-layer-statement-before-import': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@layer low, high;\n@import "./a.css" layer(high);\n.m { color: m }\n',
+      'src/a.css': '.a { color: a }\n',
+    },
+  },
+  // Dropping an earlier duplicate keeps the layer order it set (esbuild: an empty `@layer a;`).
+  'vite-review-duplicate-named-layer': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./a.css" layer(a);\n@import "./b.css" layer(b);\n@import "./a.css" layer(a);\n',
+      'src/a.css': '.x { color: red }\n',
+      'src/b.css': '.x { color: blue }\n',
+    },
+  },
+  // An external import inside an imported sheet keeps its importers' conditions.
+  'vite-review-external-inherits-conditions': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./a.css" layer(a);\n@import "./b.css" screen;\n.m { color: m }\n',
+      'src/a.css': '@import "https://e.test/a.css";\n.a { color: a }\n',
+      'src/b.css': '@import "https://e.test/b.css" print;\n.b { color: b }\n',
+    },
+  },
+  // Duplicate external imports keep their last place.
+  'vite-review-external-last-occurrence': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "https://e.test/A.css";\n@import "https://e.test/B.css";\n@import "https://e.test/A.css";\n.m { color: m }\n',
+    },
+  },
+  // Conditions compare by token: whitespace inside a string is significant.
+  'vite-review-condition-string-whitespace': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./a.css" supports(font-variation-settings: "wght" 400);\n@import "./a.css" supports(font-variation-settings: "w g h t" 400);\n',
+      'src/a.css': '.a { color: red }\n',
+    },
+  },
+  // A `;` inside a nested block of a condition does not end the @import.
+  'vite-review-semicolon-in-supports': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./a.css" supports(--x: {foo:bar;});\n.y { color: y }\n',
+      'src/a.css': '.a { color: red }\n',
+    },
+  },
+  // A comment between two compound selectors is not whitespace; NBSP is a name character.
+  'vite-review-selectors': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      // UTF-8 bytes: a no-break space in a class name.
+      'src/main.css': new TextEncoder().encode('.x/**/.y { color: red }\n.p\u00a0q { color: blue }\n.r /* c */ .s { color: green }\n'),
+    },
+  },
+  // An escaped at-keyword is still @import.
+  'vite-review-escaped-import': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@\\69mport "./a.css";\n.m { color: m }\n',
+      'src/a.css': '.a { color: a }\n',
+    },
+  },
+  // A bad url() token is not a URL to resolve.
+  'vite-review-bad-url': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '.a { background: url(./a b.png) }\n.b { color: b }\n',
+      'src/a b.png': PNG,
+    },
+  },
+  // A stylesheet cannot @import a module of another loader.
+  'vite-review-import-text-loader': {
+    entry: 'src/main.js',
+    fails: true,
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./a.txt";\n.m { color: m }\n',
+      'src/a.txt': 'not css',
+    },
+  },
+  'vite-review-import-raw-css': {
+    entry: 'src/main.js',
+    fails: true,
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@import "./a.css?raw";\n.m { color: m }\n',
+      'src/a.css': '.a { color: a }\n',
+    },
+  },
+  // Data URLs keep every byte (a UTF-8 BOM too) and take esbuild's MIME type,
+  // by extension or else by sniffing the bytes.
+  'vite-review-data-urls': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': `import bom from './bom.txt?inline'; import manifest from './app.webmanifest?inline'; import page from './page.unknownext?inline';
+import bin from './bin.txt?inline'; import eot from './f.eot?inline'; import md from './r.md?inline'; import xhtml from './p.xhtml?inline';
+import sfnt from './f.sfnt?inline'; import gifish from './g.data?inline'; import plain from './t.data?inline';
+globalThis.__result = { bom, manifest, page, bin, eot, md, xhtml, sfnt, gifish, plain };`,
+      'src/bom.txt': '\u00ef\u00bb\u00bfwith a bom\n',
+      'src/app.webmanifest': '{"name":"app"}',
+      'src/page.unknownext': '<!DOCTYPE html><html><body>hi</body></html>',
+      'src/bin.txt': '\u0000\u0001\u0002\u00ff binary',
+      'src/f.eot': 'eot',
+      'src/r.md': '# readme',
+      'src/p.xhtml': '<html/>',
+      'src/f.sfnt': 'sfnt',
+      'src/g.data': 'GIF89a....',
+      'src/t.data': 'just some text',
+    },
+  },
+  // Two different files at one output path are an error, as in esbuild.
+  'vite-review-asset-name-collision': {
+    entry: 'src/main.js',
+    fails: true,
+    options: { assetNames: 'assets/[name]' },
+    files: {
+      'src/main.js': "import a from './a/img.png'; import b from './b/img.png';\nglobalThis.__result = { a, b };\n",
+      'src/a/img.png': PNG,
+      'src/b/img.png': PNG + 'b',
+    },
+  },
+  // esbuild's layer bookkeeping, each branch: names inside layer blocks,
+  // anonymous layers, a sheet that only orders layers, statements merged.
+  'vite-css-layers-graph': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@layer base;\n@import "./nested.css" layer(z);\n@import "./order.css" supports(display: grid);\n@import "./anon.css" layer;\n@import "./order.css" supports(display: grid);\n@import "./nested.css" layer(z) screen;\n@import "./anon.css" layer;\n@import "./plain.css";\n@import "./plain.css" layer(p);\n.m { color: m }\n',
+      'src/nested.css': '@layer x { @layer y { .n { color: n } } }\n@layer w;\n@media print { @layer v { .p { color: p } } }\n',
+      'src/order.css': '@layer one, two;\n@layer three;\n',
+      'src/anon.css': '@layer inner { .a { color: a } }\n.a2 { color: a2 }\n',
+      'src/plain.css': '.plain { color: plain }\n',
+    },
+  },
+  'vite-css-layers-external': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './main.css';\nimport './second.css';\nglobalThis.__result = 1;\n",
+      'src/main.css': '@layer first;\n@import "https://e.test/a.css" layer(ext) screen;\n@import "./child.css" layer(c) supports(display: flex) print;\n.m { color: m }\n',
+      'src/child.css': '@import "https://e.test/b.css" layer(inner) supports(display: grid) (min-width: 1px);\n@import url(//cdn.test/c.css);\n.c { color: c }\n',
+      'src/second.css': '@import "https://e.test/a.css" layer(ext) screen;\n@import "./child.css" layer(c) supports(display: flex) print;\n.s { color: s }\n',
+    },
+  },
+  'vite-css-charset-and-legal': {
+    entry: 'src/main.js',
+    files: {
+      'src/main.js': "import './a.css';\nimport './b.css';\nglobalThis.__result = 1;\n",
+      'src/a.css': '@charset "utf-8";\n/*! license a */\n@import "./b.css";\n.a { color: a /* inner */ }\n/* @preserve kept */\n',
+      'src/b.css': '/*! license b */\n.b { color: b }\n',
     },
   },
   'vite-css-rules': {

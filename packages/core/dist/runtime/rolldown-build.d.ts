@@ -40,6 +40,7 @@ export interface RolldownApi {
 type RolldownOutput = {
     type: 'chunk';
     fileName: string;
+    name: string;
     code: string;
     isEntry: boolean;
     facadeModuleId: string | null;
@@ -53,7 +54,7 @@ type RolldownOutput = {
     fileName: string;
     source: string | Uint8Array;
 };
-/** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text. */
+/** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text, every byte kept (a BOM too). */
 export declare function dataUrlOf(path: string, bytes: Uint8Array): string;
 /** `Build failed with N errors:` and one line per error, as esbuild words its rejection. */
 export declare function esbuildFailureText(errors: readonly esbuild.Message[]): string;

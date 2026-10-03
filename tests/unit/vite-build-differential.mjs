@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
-import { VITE_PROJECTS, viteBuildOptions } from '../fixtures/build-differential/vite-projects.mjs';
+import { PNG, VITE_PROJECTS, viteBuildOptions } from '../fixtures/build-differential/vite-projects.mjs';
 
 const fromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const esbuild = await import(fromCore.resolve('esbuild-wasm/esm/browser.js'));
@@ -44,11 +44,20 @@ function memoryFs(name, files) {
   const at = new Map(Object.entries(files).map(([p, text]) => [`home/user/${name}/${p}`, typeof text !== 'string' ? text : /[^\x00-\x7f]/.test(text) && !/[^\x00-\xff]/.test(text) ? latin1(text) : new TextEncoder().encode(text)]));
   const strip = (p) => p.replace(/^\/+/, '');
   const isDir = (p) => [...at.keys()].some((k) => k.startsWith(strip(p).replace(/\/+$/, '') + '/'));
+  // Reads of each file: what a build costs its plugin's caller, an RPC each in a session.
+  const reads = new Map();
+  const read = (p) => {
+    reads.set(strip(p), (reads.get(strip(p)) ?? 0) + 1);
+    const b = at.get(strip(p));
+    if (!b) throw new Error(`ENOENT ${p}`);
+    return b;
+  };
   return {
+    reads,
     exists: (p) => at.has(strip(p)) || isDir(p),
     isDirectory: (p) => !at.has(strip(p)) && isDir(p),
-    readFile: (p) => { const b = at.get(strip(p)); if (!b) throw new Error(`ENOENT ${p}`); return b; },
-    readFileString: (p) => { const b = at.get(strip(p)); if (!b) throw new Error(`ENOENT ${p}`); return new TextDecoder().decode(b); },
+    readFile: (p) => read(p),
+    readFileString: (p) => new TextDecoder().decode(read(p)),
   };
 }
 
@@ -107,7 +116,7 @@ async function observe(name, project, result) {
   delete globalThis.__result;
   await import(file);
   const resolveValue = (value) => {
-    if (typeof value === 'string') return value.startsWith('data:') ? dataUrl(value) : files.has(new URL(value, `file:///root/${entryName}`).pathname.slice('/root/'.length)) ? named(value, entryName, files) : value;
+    if (typeof value === 'string') return value.startsWith('data:') ? dataUrl(value) : files.has(decodeURIComponent(new URL(value, `file:///root/${entryName}`).pathname.slice('/root/'.length))) ? named(value, entryName, files) : value;
     if (Array.isArray(value)) return value.map(resolveValue);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolveValue(v)]));
     return value;
@@ -117,14 +126,18 @@ async function observe(name, project, result) {
   return seen;
 }
 
+const only = process.env.ONLY ? process.env.ONLY.split(',') : null;
 try {
-  for (const [name, project] of Object.entries(VITE_PROJECTS)) {
+  for (const [name, project] of Object.entries(VITE_PROJECTS).filter(([n]) => !only || only.some((o) => n.includes(o)))) {
     const seen = {};
+    const reads = {};
     for (const [engine, buildHost] of Object.entries(hosts)) {
-      const service = new EsbuildService(memoryFs(name, project.files), { buildHost });
+      const fs = memoryFs(name, project.files);
+      const service = new EsbuildService(fs, { buildHost });
       try {
-        const result = await service.build([`/home/user/${name}/${project.entry}`], viteBuildOptions(name));
+        const result = await service.build([`/home/user/${name}/${project.entry}`], { ...viteBuildOptions(name), ...project.options });
         seen[engine] = await observe(name, project, result);
+        reads[engine] = fs.reads;
       } catch (error) {
         seen[engine] = {
           failure: String(error.message).replace(/^Build failed with (\d+) errors?:\n(error: Cannot read directory ".*": not implemented on js\n)?/, 'Build failed:\n'),
@@ -134,7 +147,41 @@ try {
     }
     assert.deepEqual(seen.rolldown, seen.esbuild, `${name}:\n  esbuild:  ${JSON.stringify(seen.esbuild)}\n  rolldown: ${JSON.stringify(seen.rolldown)}`);
     assert.equal(Boolean(seen.rolldown.failure), Boolean(project.fails), `${name}: ${project.fails ? "must fail" : "must build"}: ${JSON.stringify(seen.esbuild).slice(0, 600)}`);
-    console.log(`  ok  ${name}: ${project.fails ? 'the same failure' : `the same app${seen.rolldown.css ? ' and stylesheet' : ''}`}`);
+    if (project.compareReads) {
+      // No file is read more often than esbuild reads it.
+      for (const [path, count] of reads.rolldown) assert.ok(count <= (reads.esbuild.get(path) ?? 0), `${name}: ${path} read ${count} times, esbuild ${reads.esbuild.get(path)}`);
+    }
+    console.log(`  ok  ${name}: ${project.fails ? 'the same failure' : `the same app${seen.rolldown.css ? ' and stylesheet' : ''}`}${project.compareReads ? `, ${[...reads.rolldown.values()].reduce((a, b) => a + b, 0)} reads (esbuild ${[...reads.esbuild.values()].reduce((a, b) => a + b, 0)})` : ''}`);
+  }
+
+  // Content-hashed names: an output's name changes when, and only when, its
+  // bytes do. Built twice, an image and the stylesheet changed between.
+  if (!only || only.some((o) => 'hashes'.includes(o))) {
+    const base = {
+      'src/main.js': "import logo from './logo.png';\nimport './main.css';\nglobalThis.__result = { logo };\n",
+      'src/main.css': '.a { color: red; background: url(./bg.png) }\n',
+      'src/logo.png': PNG,
+      'src/bg.png': PNG + 'bg',
+    };
+    const variants = {
+      'logo': { 'src/logo.png': PNG + 'B' },
+      'css': { 'src/main.css': '.a { color: blue; background: url(./bg.png) }\n' },
+      'bg': { 'src/bg.png': PNG + 'bg2' },
+    };
+    const outputs = async (files) => {
+      const result = await new EsbuildService(memoryFs('hashes', files), { buildHost: hosts.rolldown }).build(['/home/user/hashes/src/main.js'], viteBuildOptions('hashes'));
+      return new Map(result.outputFiles.map((f) => [f.path.replace(/^.*\/dist\//, '').replace(/-[A-Za-z0-9_-]{8}(?=\.)/, ''), { name: f.path, bytes: digest(f.contents) }]));
+    };
+    const before = await outputs(base);
+    for (const [label, change] of Object.entries(variants)) {
+      const after = await outputs({ ...base, ...change });
+      for (const [key, was] of before) {
+        const now = after.get(key);
+        assert.ok(now, `hashes/${label}: ${key} is still emitted`);
+        assert.equal(now.name !== was.name, now.bytes !== was.bytes, `hashes/${label}: ${key}'s name ${now.name === was.name ? 'kept' : 'changed'} though its bytes ${now.bytes === was.bytes ? 'did not change' : 'changed'}`);
+      }
+    }
+    console.log('  ok  content-hashed names change exactly when their bytes do (an image, the stylesheet, an image the stylesheet names)');
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

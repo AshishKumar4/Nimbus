@@ -3,35 +3,40 @@
  * by esbuild 0.24's rules (what the built-in `vite build` shipped before).
  *
  * rolldown 1.2 no longer bundles CSS, so rolldown-build.ts loads every CSS
- * module as an empty JavaScript module and hands a chunk's CSS modules here in
- * the order the chunk's JavaScript first imports them. From there:
+ * module as an empty JavaScript module and hands a chunk's CSS modules here
+ * in the order the chunk's JavaScript imports them. Each sheet is read
+ * through css-syntax.ts (css-tree), and the graph and cascade policy is
+ * esbuild's linker, ported (internal/linker/linker.go at v0.24.2):
  *
- *   - Each file's `@import`s are inlined before it, recursively. A file
- *     imported more than once (by `@import`, or by JavaScript and `@import`)
- *     keeps its LAST place, as the cascade does, and a later import with
- *     fewer conditions makes an earlier conditional one redundant
- *     (esbuild's isConditionalImportRedundant). Each import's conditions wrap
- *     its rules, one level per import: `@media`, then `@supports`, then
- *     `@layer`, innermost import innermost.
- *   - An `@import` of a URL (`http:`, `https:`, `//`) stays an `@import`,
- *     hoisted to the top with its conditions; `@charset` becomes one
- *     `@charset "UTF-8";` first.
- *   - Every `url()` naming a file is resolved and loaded through the build's
- *     plugin (kind `url-token`); a `file` loader makes it an emitted asset,
- *     written as a path relative to the stylesheet, a `dataurl` loader a
- *     data URL; any other loader cannot be a URL, as in esbuild. `data:`,
- *     `http(s):`, `//` and `#` URLs are left alone.
- *   - `@import` paths resolve with kind `import-rule`. Paths go to the plugin
- *     as written: a bare `url(img/x.png)` is a package path there, as it was
- *     to esbuild under Nimbus's plugin.
+ *   - Every sheet is resolved, loaded and parsed once per build, however
+ *     often it is imported (each resolve and load is a call back to the
+ *     session that owns the files).
+ *   - The import order is esbuild's findImportedFilesInCSSOrder: depth-first,
+ *     every `@import` evaluated each time it appears, a sheet already on the
+ *     import stack skipped (a cycle); each import's conditions wrap all it
+ *     imports. Layer names a sheet orders before its first `@import` come
+ *     first; external imports (`http:`, `https:`, `//`, or resolved external)
+ *     are hoisted to the top, keeping their importers' conditions (nested
+ *     through `data:` stylesheet imports where one `@import` cannot carry them).
+ *   - A sheet or external import that appears again later, under conditions
+ *     that apply wherever the earlier ones did (isConditionalImportRedundant),
+ *     keeps only its last place; the earlier place keeps the layer order it
+ *     set (`@layer a;`), and redundant layer statements are dropped and
+ *     adjacent ones merged, as esbuild does.
+ *   - A sheet's `url()`s are resolved and loaded through the build's plugin
+ *     (kind `url-token`): a `file` loader makes an emitted asset, written as
+ *     a path relative to the stylesheet, a `dataurl` loader a data URL; any
+ *     other loader cannot be a URL. `data:`, `http(s):`, `//` and `#` URLs
+ *     are left alone. `@import` paths resolve with kind `import-rule`, and
+ *     what they load must be CSS.
+ *   - `@charset` becomes one `@charset "UTF-8";` first; legal comments move
+ *     to the end, once each.
  *
- * Legal comments (`/*!`, or naming `@license` or `@preserve`) move to the end
- * of the sheet, once each, as esbuild's `legalComments: 'eof'` does.
- *
- * Minifying removes the other comments and the whitespace
- * and last semicolons a stylesheet does not need; it does not rewrite values,
- * so a minified sheet is larger than esbuild's, never different in meaning.
+ * Minifying prints rules as css-tree's generator does (no comments, no
+ * whitespace a rule does not need); it does not rewrite values, so a sheet
+ * is larger than esbuild's, never different in meaning.
  */
+import { componentsEqual, parseSheet, printComponents, quoteString, sheetRules, sheetUrls, } from './css-syntax.js';
 export class CssError extends Error {
     diagnostic;
     constructor(diagnostic) {
@@ -39,265 +44,38 @@ export class CssError extends Error {
         this.diagnostic = diagnostic;
     }
 }
-function tokenize(css) {
-    const tokens = [];
-    let i = 0;
-    const n = css.length;
-    const stringEnd = (start) => {
-        const quote = css[start];
-        let j = start + 1;
-        while (j < n && css[j] !== quote && css[j] !== '\n')
-            j += css[j] === '\\' ? 2 : 1;
-        return Math.min(j + 1, n);
-    };
-    while (i < n) {
-        const c = css[i];
-        if (c === '/' && css[i + 1] === '*') {
-            const end = css.indexOf('*/', i + 2);
-            const stop = end < 0 ? n : end + 2;
-            tokens.push({ kind: 'comment', text: css.slice(i, stop), at: i });
-            i = stop;
-        }
-        else if (/\s/.test(c)) {
-            let j = i;
-            while (j < n && /\s/.test(css[j]))
-                j++;
-            tokens.push({ kind: 'ws', text: css.slice(i, j), at: i });
-            i = j;
-        }
-        else if (c === '"' || c === "'") {
-            const end = stringEnd(i);
-            tokens.push({ kind: 'string', text: css.slice(i, end), at: i });
-            i = end;
-        }
-        else if ((c === 'u' || c === 'U') && /^url\(/i.test(css.slice(i, i + 4)) && !/[\w-]/.test(css[i - 1] ?? '')) {
-            // url( "x" ) or url(x): one token, whatever is inside.
-            let j = i + 4;
-            while (j < n && /\s/.test(css[j]))
-                j++;
-            if (css[j] === '"' || css[j] === "'") {
-                const end = stringEnd(j);
-                let k = end;
-                while (k < n && /\s/.test(css[k]))
-                    k++;
-                if (css[k] === ')') {
-                    tokens.push({ kind: 'url', text: css.slice(i, k + 1), at: i, url: unescape(css.slice(j + 1, end - 1)), quoted: true, inner: j, innerLength: end - j });
-                    i = k + 1;
-                    continue;
-                }
-            }
-            else {
-                let k = j;
-                while (k < n && css[k] !== ')')
-                    k += css[k] === '\\' ? 2 : 1;
-                // esbuild reports an unquoted url() at the token, a quoted one at its string.
-                tokens.push({ kind: 'url', text: css.slice(i, k + 1), at: i, url: unescape(css.slice(j, k).trimEnd()), quoted: false, inner: i, innerLength: k + 1 - i });
-                i = k + 1;
-                continue;
-            }
-            tokens.push({ kind: 'other', text: c, at: i });
-            i++;
-        }
-        else if (c === ';') {
-            tokens.push({ kind: 'semicolon', text: c, at: i });
-            i++;
-        }
-        else if (c === '{') {
-            tokens.push({ kind: 'open', text: c, at: i });
-            i++;
-        }
-        else if (c === '}') {
-            tokens.push({ kind: 'close', text: c, at: i });
-            i++;
-        }
-        else if (c === '\\') {
-            tokens.push({ kind: 'other', text: css.slice(i, i + 2), at: i });
-            i += 2;
-        }
-        else {
-            let j = i + 1;
-            while (j < n && !/[\s"'/;{}\\]/.test(css[j]) && !/^url\(/i.test(css.slice(j, j + 4)))
-                j++;
-            tokens.push({ kind: 'other', text: css.slice(i, j), at: i });
-            i = j;
-        }
-    }
-    return tokens;
+const isExternalUrl = (url) => /^(data:|https?:|\/\/|#)/i.test(url);
+const isRemoteImport = (path) => /^(https?:)?\/\//i.test(path);
+const isCssLoader = (loader) => loader === 'css' || loader === 'global-css' || loader === 'local-css';
+/** How esbuild names a module in a diagnostic: `<namespace>:<path>`, the path alone for `file`. */
+function fileOf(module) {
+    return module.namespace === 'file' || module.namespace === '' ? module.path : `${module.namespace}:${module.path}`;
 }
-function unescape(text) {
-    return text.replace(/\\([0-9a-fA-F]{1,6}\s?|[\s\S])/g, (_, e) => (/^[0-9a-fA-F]/.test(e) ? String.fromCodePoint(parseInt(e, 16)) : e));
-}
-/** A string of a parsed string token's value. */
-function stringValue(token) {
-    return unescape(token.slice(1, token.endsWith(token[0]) && token.length > 1 ? -1 : undefined));
-}
-const isExternalUrl = (url) => /^(data:|https?:|\/\/|#)/i.test(url) || url === '';
-const NO_CONDITIONS = [];
-/** esbuild's bestQuoteCharForString: the quote that needs the fewest escapes, none for a URL that needs fewer still. */
-function bestQuote(text, url) {
-    let none = 0;
-    let single = 2;
-    let double = 2;
-    for (const c of text) {
-        if (c === "'") {
-            none++;
-            single++;
-        }
-        else if (c === '"') {
-            none++;
-            double++;
-        }
-        else if (c === '(' || c === ')' || c === ' ' || c === '\t')
-            none++;
-        else if (c === '\\' || c === '\n' || c === '\r' || c === '\f') {
-            none++;
-            single++;
-            double++;
-        }
-    }
-    if (url && none < single && none < double)
-        return '';
-    return single < double ? "'" : '"';
-}
-/** esbuild's printQuotedWithQuote: `text` quoted with `quote` (none: a URL's), escaped as it needs. */
-function quoted(text, quote) {
-    let out = quote;
-    const chars = [...text];
-    chars.forEach((c, i) => {
-        if (c === '\0' || c === '\r' || c === '\n' || c === '\f') {
-            out += '\\' + c.codePointAt(0).toString(16) + (/^[0-9a-fA-F\s]/.test(chars[i + 1] ?? '') ? ' ' : '');
-        }
-        else if (c === '\\' || c === quote || (quote === '' && (c === '(' || c === ')' || c === ' ' || c === '\t' || c === '"' || c === "'"))) {
-            out += '\\' + c;
-        }
-        else {
-            out += c;
-        }
-    });
-    return out + quote;
-}
-function conditionTokens(tokens) {
-    const out = [];
-    for (const token of tokens) {
-        if (token.kind === 'ws' || token.kind === 'comment')
-            out.push({ kind: token.kind, text: token.text });
-        // Strings and URLs as esbuild prints a condition's: re-quoted the cheapest way.
-        else if (token.kind === 'string')
-            out.push({ kind: 'atom', text: (() => { const value = stringValue(token.text); return quoted(value, bestQuote(value, false)); })() });
-        else if (token.kind === 'url')
-            out.push({ kind: 'atom', text: `url(${quoted(token.url, bestQuote(token.url, true))})` });
-        else if (token.text.startsWith('\\'))
-            out.push({ kind: 'atom', text: token.text });
-        else {
-            for (const piece of token.text.split(/([()])/)) {
-                if (piece)
-                    out.push({ kind: piece === '(' ? 'open' : piece === ')' ? 'close' : 'word', text: piece });
-            }
-        }
-    }
-    return out;
-}
-/** Condition tokens as text: comments dropped, as esbuild prints them. */
-function conditionText(tokens) {
-    return tokens.map((t) => (t.kind === 'comment' ? '' : t.text)).join('').trim();
-}
-/** `@import <url> [layer|layer(x)] [supports(...)] [media]`'s conditions, or null for none. */
-function parseLevel(tokens) {
-    let i = 0;
-    const skip = () => {
-        while (i < tokens.length && (tokens[i].kind === 'ws' || tokens[i].kind === 'comment'))
-            i++;
-    };
-    // The index of the `)` that closes the `(` at `open`.
-    const closing = (open) => {
-        let depth = 0;
-        for (let k = open; k < tokens.length; k++) {
-            if (tokens[k].kind === 'open')
-                depth++;
-            else if (tokens[k].kind === 'close' && --depth === 0)
-                return k;
-        }
-        return tokens.length;
-    };
-    const isFunction = (name) => tokens[i]?.kind === 'word' && tokens[i].text.toLowerCase() === name && tokens[i + 1]?.kind === 'open';
-    let layerOf = null;
-    let supportsOf = null;
-    skip();
-    if (isFunction('layer')) {
-        const end = closing(i + 1);
-        layerOf = { name: conditionText(tokens.slice(i + 2, end)) };
-        i = end + 1;
-    }
-    else if (tokens[i]?.kind === 'word' && tokens[i].text.toLowerCase() === 'layer') {
-        layerOf = { name: null };
-        i++;
-    }
-    skip();
-    if (isFunction('supports')) {
-        const end = closing(i + 1);
-        // esbuild parenthesizes whatever supports() holds, a condition already in parentheses too.
-        supportsOf = `(${conditionText(tokens.slice(i + 2, end))})`;
-        i = end + 1;
-    }
-    const media = conditionText(tokens.slice(i));
-    if (!layerOf && !supportsOf && !media)
-        return null;
-    return { media: media || null, supports: supportsOf, layer: layerOf };
-}
-function wrap(body, conditions) {
-    let out = body;
-    for (const level of [...conditions].reverse()) {
-        if (level.layer)
-            out = level.layer.name === null ? `@layer {\n${out}\n}` : `@layer ${level.layer.name} {\n${out}\n}`;
-        if (level.supports)
-            out = `@supports ${level.supports} {\n${out}\n}`;
-        if (level.media)
-            out = `@media ${level.media} {\n${out}\n}`;
-    }
-    return out;
-}
-const same = (a, b) => (a ?? '').replace(/\s+/g, '') === (b ?? '').replace(/\s+/g, '');
-/** esbuild's isConditionalImportRedundant: `later` applies wherever `earlier` would. */
-function redundant(earlier, later) {
-    if (later.length > earlier.length)
-        return false;
-    for (let i = 0; i < later.length; i++) {
-        const a = earlier[i];
-        const b = later[i];
-        if (same(a.layer ? a.layer.name ?? '\0' : null, b.layer ? b.layer.name ?? '\0' : null) && Boolean(a.layer) === Boolean(b.layer)) {
-            const sameSupports = same(a.supports, b.supports);
-            const sameMedia = same(a.media, b.media);
-            if (sameSupports && sameMedia)
-                continue;
-            if (sameMedia && !b.supports)
-                continue;
-            if (sameSupports && !b.media)
-                continue;
-        }
-        return false;
-    }
-    return true;
-}
+const utf8Length = (text) => new TextEncoder().encode(text).length;
 export async function bundleCss(modules, plugin, assets, { minify }) {
-    const pieces = [];
-    const externals = [];
-    const legal = [];
-    let charset = false;
     const fail = (module, at, length, text, pluginName = '') => {
         const before = module.source.slice(0, at);
-        const line = before.split('\n').length;
-        const lineStart = before.lastIndexOf('\n') + 1;
-        const lineEnd = module.source.indexOf('\n', at);
+        const line = before.split(/\r\n|\r|\n/).length;
+        const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1;
+        const lineEnd = module.source.slice(at).search(/\r|\n/);
         throw new CssError({
             id: '', pluginName, text, notes: [], detail: undefined,
             location: {
-                file: fileOf(module), namespace: '', line, column: at - lineStart, length,
-                lineText: module.source.slice(lineStart, lineEnd < 0 ? undefined : lineEnd), suggestion: '',
+                file: fileOf(module), namespace: '', line, column: utf8Length(before.slice(lineStart)),
+                length: utf8Length(module.source.slice(at, at + length)),
+                lineText: module.source.slice(lineStart, lineEnd < 0 ? undefined : at + lineEnd), suggestion: '',
             },
         });
     };
+    // Every resolve and load once per build: each is a call to the session.
+    const resolved = new Map();
+    const loadedModules = new Map();
     const resolve = async (from, path, kind, at, length) => {
-        const answer = await plugin.resolve({ path, importer: from.path, namespace: from.namespace, resolveDir: from.resolveDir, kind, with: {} });
+        const key = `${fileOf(from)}\0${kind}\0${path}`;
+        if (!resolved.has(key)) {
+            resolved.set(key, plugin.resolve({ path, importer: from.path, namespace: from.namespace, resolveDir: from.resolveDir, kind, with: {} }));
+        }
+        const answer = await resolved.get(key);
         if (answer?.errors?.length)
             fail(from, at, length, answer.errors[0].text ?? 'error', plugin.name);
         if (!answer || (!answer.path && !answer.external))
@@ -305,152 +83,330 @@ export async function bundleCss(modules, plugin, assets, { minify }) {
         return answer;
     };
     const load = async (from, module, at, length) => {
-        const answer = await plugin.load({ path: module.path, namespace: module.namespace, suffix: '', with: {} });
+        const key = fileOf(module);
+        if (!loadedModules.has(key))
+            loadedModules.set(key, plugin.load({ path: module.path, namespace: module.namespace, suffix: '', with: {} }));
+        const answer = await loadedModules.get(key);
         if (answer?.errors?.length)
             fail(from, at, length, answer.errors[0].text ?? 'error', plugin.name);
         if (!answer || answer.contents === undefined)
             fail(from, at, length, `Could not load ${fileOf(module)}`);
         return answer;
     };
-    /** Inline one file's imports before it, as pieces; `stack` stops a cycle. */
-    const flatten = async (module, conditions, stack) => {
-        const id = fileOf(module);
-        if (stack.has(id))
-            return;
-        stack.add(id);
-        const tokens = tokenize(module.source);
-        let body = '';
-        let depth = 0;
-        let rulesSeen = false;
-        for (let i = 0; i < tokens.length; i++) {
-            const token = tokens[i];
-            if (token.kind === 'open')
-                depth++;
-            if (token.kind === 'close')
-                depth--;
-            if (depth === 0 && token.kind === 'other' && /^@charset$/i.test(token.text)) {
-                charset = true;
-                while (i < tokens.length && tokens[i].kind !== 'semicolon')
-                    i++;
+    // ── The graph: each sheet once, its imports resolved in order ──────────────
+    const files = new Map();
+    const add = async (module) => {
+        const key = fileOf(module);
+        const known = files.get(key);
+        if (known)
+            return known;
+        const file = { key, module, sheet: parseSheet(module.source), targets: [], rules: [] };
+        files.set(key, file);
+        if (file.sheet.missingUrl)
+            fail(module, file.sheet.missingUrl.at, file.sheet.missingUrl.length, 'Expected URL token');
+        for (const rule of file.sheet.imports) {
+            if (isRemoteImport(rule.path)) {
+                file.targets.push({ kind: 'external', path: rule.path });
                 continue;
             }
-            if (depth === 0 && token.kind === 'other' && /^@import$/i.test(token.text) && !rulesSeen) {
-                let j = i + 1;
-                while (j < tokens.length && (tokens[j].kind === 'ws' || tokens[j].kind === 'comment'))
-                    j++;
-                const target = tokens[j];
-                let end = j + 1;
-                while (end < tokens.length && tokens[end].kind !== 'semicolon')
-                    end++;
-                const condition = conditionTokens(tokens.slice(j + 1, end));
-                const printed = conditionText(condition);
-                const path = target?.kind === 'string' ? stringValue(target.text) : target?.kind === 'url' ? target.url : null;
-                if (path === null)
-                    fail(module, token.at, token.text.length, 'Expected URL token');
-                const own = parseLevel(condition);
-                if (/^(https?:)?\/\//i.test(path)) {
-                    externals.push(`@import ${JSON.stringify(path)}${printed ? ' ' + printed : ''};`);
-                }
-                else {
-                    const where = target.kind === 'url' ? [target.inner, target.innerLength] : [target.at, target.text.length];
-                    const answer = await resolve(module, path, 'import-rule', where[0], where[1]);
-                    if (answer.external) {
-                        externals.push(`@import ${JSON.stringify(answer.path ?? path)}${printed ? ' ' + printed : ''};`);
-                    }
-                    else {
-                        const child = { namespace: answer.namespace ?? 'file', path: answer.path };
-                        const loaded = await load(module, child, where[0], where[1]);
-                        const source = typeof loaded.contents === 'string' ? loaded.contents : new TextDecoder().decode(loaded.contents);
-                        const lastSlash = child.path.lastIndexOf('/');
-                        await flatten({ ...child, source, resolveDir: loaded.resolveDir ?? (lastSlash > 0 ? child.path.slice(0, lastSlash) : '/') }, own ? [...conditions, own] : conditions, stack);
-                    }
-                }
-                i = end;
+            const answer = await resolve(module, rule.path, 'import-rule', rule.at, rule.length);
+            if (answer.external) {
+                file.targets.push({ kind: 'external', path: answer.path ?? rule.path });
                 continue;
             }
-            if (depth === 0 && token.kind === 'other' && !/^@(import|charset|layer)$/i.test(token.text))
-                rulesSeen = true;
-            if (token.kind === 'url') {
-                body += await rewriteUrl(module, token);
+            const child = { namespace: answer.namespace ?? 'file', path: answer.path };
+            const loaded = await load(module, child, rule.at, rule.length);
+            if (loaded.loader === 'empty') {
+                file.targets.push({ kind: 'empty' });
                 continue;
             }
-            if (token.kind === 'comment' && isLegal(token.text)) {
-                legal.push(token.text);
-                continue;
-            }
-            body += token.text;
+            if (!isCssLoader(loaded.loader ?? 'css'))
+                fail(module, rule.at, rule.length, `Cannot import ${JSON.stringify(fileOf(child))} into a CSS file`);
+            const source = typeof loaded.contents === 'string' ? loaded.contents : new TextDecoder().decode(loaded.contents);
+            const lastSlash = child.path.lastIndexOf('/');
+            const resolveDir = loaded.resolveDir ?? (lastSlash > 0 ? child.path.slice(0, lastSlash) : '/');
+            file.targets.push({ kind: 'file', file: await add({ ...child, source, resolveDir }) });
         }
-        stack.delete(id);
-        pieces.push({ id, module, conditions, body });
+        return file;
     };
-    const rewriteUrl = async (module, token) => {
-        if (isExternalUrl(token.url))
-            return token.text;
-        const answer = await resolve(module, token.url, 'url-token', token.inner, token.innerLength);
-        if (answer.external)
-            return `url(${JSON.stringify(answer.path ?? token.url)})`;
-        const target = { namespace: answer.namespace ?? 'file', path: answer.path };
-        const loaded = await load(module, target, token.inner, token.innerLength);
-        const bytes = typeof loaded.contents === 'string' ? new TextEncoder().encode(loaded.contents) : loaded.contents;
-        if (loaded.loader === 'file')
-            return `url(${JSON.stringify(await assets.emit(target, bytes))})`;
-        if (loaded.loader === 'dataurl')
-            return `url(${JSON.stringify(assets.dataUrl(target.path, bytes))})`;
-        return fail(module, token.inner, token.innerLength, `Cannot use ${JSON.stringify(fileOf(target))} as a URL`);
-    };
+    const roots = [];
     for (const module of modules)
-        await flatten(module, NO_CONDITIONS, new Set());
-    // A file imported more than once keeps its last place: an earlier import is
-    // dropped when a later one of the same file applies wherever it would.
-    const later = new Map();
-    const kept = [];
-    for (let i = pieces.length - 1; i >= 0; i--) {
-        const piece = pieces[i];
-        const seen = later.get(piece.id) ?? [];
-        if (seen.some((conditions) => redundant(piece.conditions, conditions)))
-            continue;
-        seen.push(piece.conditions);
-        later.set(piece.id, seen);
-        kept.unshift(piece);
+        roots.push(await add(module));
+    // ── Each sheet's url()s, then its rules printed once ───────────────────────
+    for (const file of files.values()) {
+        // Each url()'s URL, and whether it is a path the bundle wrote (an emitted file's).
+        const urls = new Map();
+        for (const { url, at, length, innerAt, innerLength } of sheetUrls(file.sheet)) {
+            if (urls.has(url) || isExternalUrl(url))
+                continue;
+            const answer = await resolve(file.module, url, 'url-token', at, length);
+            if (answer.external) {
+                urls.set(url, { url: answer.path ?? url, written: false });
+                continue;
+            }
+            const target = { namespace: answer.namespace ?? 'file', path: answer.path };
+            const loaded = await load(file.module, target, at, length);
+            const bytes = typeof loaded.contents === 'string' ? new TextEncoder().encode(loaded.contents) : loaded.contents;
+            if (loaded.loader === 'file')
+                urls.set(url, { url: await assets.emit(target, bytes), written: true });
+            else if (loaded.loader === 'dataurl')
+                urls.set(url, { url: assets.dataUrl(target.path, bytes), written: false });
+            // esbuild places this one at the URL inside the token.
+            else
+                fail(file.module, innerAt, innerLength, `Cannot use ${JSON.stringify(fileOf(target))} as a URL`);
+        }
+        file.rules = sheetRules(file.sheet, (url) => urls.get(url) ?? { url, written: false });
     }
-    const head = [...(charset ? ['@charset "UTF-8";'] : []), ...new Set(externals)];
-    const sheets = kept.map((piece) => {
-        const body = piece.body.trim();
-        return minify ? wrap(body, piece.conditions) : `/* ${fileOf(piece.module)} */\n${wrap(body, piece.conditions)}\n`;
-    });
-    const tail = [...new Set(legal)];
-    if (minify)
-        return minifyCss([...head, ...sheets].join('')) + '\n' + tail.map((c) => c + '\n').join('');
-    return `${head.length ? head.join('\n') + '\n\n' : ''}${sheets.join('\n')}${tail.map((c) => c + '\n').join('')}`;
+    const order = importOrder(roots);
+    return printBundle(order, minify);
 }
-const isLegal = (comment) => comment.startsWith('/*!') || /@(license|preserve)\b/.test(comment);
-/** How esbuild names a module in a diagnostic: `<namespace>:<path>`, the path alone for `file`. */
-function fileOf(module) {
-    return module.namespace === 'file' || module.namespace === '' ? module.path : `${module.namespace}:${module.path}`;
+/** esbuild's isConditionalImportRedundant: `later` applies wherever `earlier` would. */
+function isConditionalImportRedundant(earlier, later) {
+    if (later.length > earlier.length)
+        return false;
+    for (let i = 0; i < later.length; i++) {
+        const a = earlier[i];
+        const b = later[i];
+        if (componentsEqual(a.layers, b.layers)) {
+            const sameSupports = componentsEqual(a.supports, b.supports);
+            const sameMedia = componentsEqual(a.media, b.media);
+            if (sameSupports && sameMedia)
+                continue;
+            if (sameMedia && b.supports.length === 0)
+                continue;
+            if (sameSupports && b.media.length === 0)
+                continue;
+        }
+        return false;
+    }
+    return true;
 }
-/** CSS without comments, and without whitespace or last semicolons it does not need. */
-export function minifyCss(css) {
-    let out = '';
-    let pendingSpace = false;
-    for (const token of tokenize(css)) {
-        if (token.kind === 'comment') {
-            pendingSpace = true;
+/** esbuild's importConditionsAreEqual. */
+function conditionsAreEqual(a, b) {
+    return a.length === b.length && a.every((x, i) => componentsEqual(x.layers, b[i].layers) && componentsEqual(x.supports, b[i].supports) && componentsEqual(x.media, b[i].media));
+}
+const layersEqual = (a, b) => a.length === b.length && a.every((x, i) => x.length === b[i].length && x.every((y, j) => y === b[i][j]));
+/** esbuild's findImportedFilesInCSSOrder (linker.go), over this build's graph. */
+function importOrder(roots) {
+    let order = [];
+    let hasExternalImport = false;
+    const visit = (file, visited, wrapping) => {
+        if (visited.includes(file))
+            return;
+        const stack = [...visited, file];
+        if (file.sheet.layersPreImport.length)
+            order.push({ kind: 'layers', layers: file.sheet.layersPreImport, conditions: wrapping });
+        file.sheet.imports.forEach((rule, i) => {
+            const target = file.targets[i];
+            const conditions = rule.conditions ? [...wrapping, rule.conditions] : wrapping;
+            if (target.kind === 'file')
+                visit(target.file, stack, conditions);
+            else if (target.kind === 'external') {
+                order.push({ kind: 'external', path: target.path, layers: [], conditions });
+                hasExternalImport = true;
+            }
+        });
+        order.push({ kind: 'file', file, layers: [], conditions: wrapping });
+    };
+    for (const root of roots)
+        visit(root, [], []);
+    // External imports must come first: hoist them, and the layer statements before them.
+    if (hasExternalImport) {
+        const hoisted = [];
+        const rest = [];
+        let layerPrefix = true;
+        for (const entry of order) {
+            if ((entry.kind === 'layers' && layerPrefix) || entry.kind === 'external')
+                hoisted.push(entry);
+            else
+                rest.push(entry);
+            if (entry.kind !== 'layers')
+                layerPrefix = false;
+        }
+        order = [...hoisted, ...rest];
+    }
+    // A duplicate keeps its last place; an earlier one keeps only the layers it orders.
+    {
+        const fileDuplicates = new Map();
+        const externalDuplicates = new Map();
+        for (let i = order.length - 1; i >= 0; i--) {
+            const entry = order[i];
+            if (entry.kind === 'file') {
+                const duplicates = fileDuplicates.get(entry.file) ?? [];
+                if (duplicates.some((j) => isConditionalImportRedundant(entry.conditions, order[j].conditions))) {
+                    order[i] = { kind: 'layers', layers: entry.file.sheet.layersPostImport, conditions: entry.conditions };
+                    continue;
+                }
+                fileDuplicates.set(entry.file, [...duplicates, i]);
+            }
+            else if (entry.kind === 'external') {
+                const duplicates = externalDuplicates.get(entry.path) ?? [];
+                if (duplicates.some((j) => isConditionalImportRedundant(entry.conditions, order[j].conditions))) {
+                    order[i] = { kind: 'layers', layers: [], conditions: entry.conditions };
+                    continue;
+                }
+                externalDuplicates.set(entry.path, [...duplicates, i]);
+            }
+        }
+    }
+    // Layer statements take effect at their first place: drop the redundant ones.
+    {
+        const kept = [];
+        const layerDuplicates = [];
+        next: for (const original of order) {
+            const entry = { ...original };
+            if (entry.kind === 'layers') {
+                // Conditions past the first anonymous layer, or past the last layer when nothing is named, do nothing.
+                const anonymous = entry.conditions.findIndex((c) => c.layers.length === 1 && !c.layers[0].children);
+                if (anonymous >= 0) {
+                    entry.conditions = entry.conditions.slice(0, anonymous);
+                    entry.layers = [];
+                }
+                if (entry.layers.length === 0) {
+                    let end = entry.conditions.length;
+                    while (end > 0 && entry.conditions[end - 1].layers.length === 0)
+                        end--;
+                    entry.conditions = entry.conditions.slice(0, end);
+                }
+                if (entry.conditions.length === 0 && entry.layers.length === 0)
+                    continue;
+            }
+            const layersKey = entry.kind === 'file' ? entry.file.sheet.layersPostImport : entry.layers;
+            let index = layerDuplicates.findIndex((d) => layersEqual(d.layers, layersKey));
+            if (index < 0) {
+                layerDuplicates.push({ layers: layersKey, indices: [] });
+                index = layerDuplicates.length - 1;
+            }
+            const duplicates = layerDuplicates[index].indices;
+            for (let j = duplicates.length - 1; j >= 0; j--) {
+                const at = duplicates[j];
+                if (!isConditionalImportRedundant(entry.conditions, kept[at].conditions))
+                    continue;
+                if (entry.kind !== 'layers') {
+                    // An empty layer statement right before an identical full one is not needed.
+                    if (j === duplicates.length - 1 && at === kept.length - 1) {
+                        const other = kept[at];
+                        if (other.kind === 'layers' && conditionsAreEqual(entry.conditions, other.conditions)) {
+                            duplicates.splice(j, 1);
+                            kept.length = at;
+                            duplicates.push(kept.length);
+                            kept.push(entry);
+                            continue next;
+                        }
+                    }
+                    // Other entries stay: they do more than order layers.
+                    kept.push(entry);
+                }
+                continue next;
+            }
+            duplicates.push(kept.length);
+            kept.push(entry);
+        }
+        order = kept;
+    }
+    // Adjacent layer statements under equal conditions merge.
+    const merged = [];
+    for (const entry of order) {
+        const prev = merged[merged.length - 1];
+        if (entry.kind === 'layers' && prev?.kind === 'layers' && conditionsAreEqual(prev.conditions, entry.conditions)) {
+            merged[merged.length - 1] = { ...prev, layers: [...prev.layers, ...entry.layers] };
             continue;
         }
-        if (token.kind === 'ws') {
-            pendingSpace = true;
-            continue;
+        merged.push(entry);
+    }
+    return merged;
+}
+/** esbuild's wrapRulesWithConditions: `rules` inside each level of `conditions`, innermost last. */
+function wrapRules(rules, conditions, minify) {
+    const block = (prelude, inner) => minify ? `${prelude}{${inner.join('')}}` : `${prelude} {\n${inner.join('\n')}\n}`;
+    let out = rules;
+    for (let i = conditions.length - 1; i >= 0; i--) {
+        const item = conditions[i];
+        for (const layer of item.layers) {
+            const name = layer.children ? printComponents(layer.children, minify) : '';
+            if (out.length === 0) {
+                // An empty anonymous layer does nothing; an empty named one still orders its name.
+                if (!layer.children)
+                    continue;
+                out = [`@layer ${name};`];
+                continue;
+            }
+            out = [block(name ? `@layer ${name}` : '@layer', out)];
         }
-        const prev = out[out.length - 1];
-        if (token.kind === 'close' && prev === ';')
-            out = out.slice(0, -1);
-        // A string ends and starts itself: no space is needed on either side of
-        // one, but after a colon (a condition's `(content: "x")`, as esbuild keeps it).
-        const needsSpace = !/[{};,"']/.test(prev ?? ';') && !/^[{};,]/.test(token.text) && (token.kind !== 'string' || prev === ':');
-        if (pendingSpace && needsSpace)
-            out += ' ';
-        pendingSpace = false;
-        out += token.text;
+        if (out.length > 0) {
+            for (const supports of item.supports)
+                out = [block(`@supports (${printComponents(supports.children ?? [], minify)})`, out)];
+        }
+        if (out.length > 0 && item.media.length > 0)
+            out = [block(`@media ${printComponents(item.media, minify)}`, out)];
     }
     return out;
+}
+/** An `@import` of `path` under one level of conditions, as esbuild prints it. */
+function printImport(path, conditions, minify) {
+    const parts = conditions ? [conditions.layers, conditions.supports, conditions.media].filter((p) => p.length) : [];
+    const printed = parts.map((p) => printComponents(p, minify)).join(' ');
+    return minify ? `@import${quoteString(path)}${printed};` : `@import ${quoteString(path)}${printed ? ' ' + printed : ''};`;
+}
+/** esbuild's EncodeStringAsShortestDataURL. */
+export function shortestDataUrl(mimeType, text) {
+    const bytes = new TextEncoder().encode(text);
+    let latin1 = '';
+    for (let i = 0; i < bytes.length; i += 0x8000)
+        latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const encoded = `data:${mimeType};base64,${btoa(latin1)}`;
+    const escaped = percentEscapedDataUrl(mimeType, text);
+    return escaped.length < encoded.length ? escaped : encoded;
+}
+/** esbuild's EncodeStringAsPercentEscapedDataURL, for text that came from valid UTF-8. */
+export function percentEscapedDataUrl(mimeType, text) {
+    let trailing = text.length;
+    while (trailing > 0) {
+        const c = text.charCodeAt(trailing - 1);
+        if (c > 0x20 || c === 9 || c === 10 || c === 13)
+            break;
+        trailing--;
+    }
+    let out = `data:${mimeType},`;
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        const hex = (n) => '%' + n.toString(16).toUpperCase().padStart(2, '0');
+        if (c === 9 || c === 10 || c === 13 || c === 35 || i >= trailing || (c === 37 && /^[0-9a-fA-F]{2}/.test(text.slice(i + 1, i + 3))))
+            out += hex(c);
+        else
+            out += text[i];
+    }
+    return out;
+}
+/** The bundle: `@charset`, then each place in the order, then the legal comments. */
+function printBundle(order, minify) {
+    const pieces = [];
+    const legal = [];
+    let charset = false;
+    for (const entry of order) {
+        if (entry.kind === 'layers') {
+            const statement = entry.layers.length ? [`@layer ${entry.layers.map((name) => name.join('.')).join(minify ? ',' : ', ')};`] : [];
+            pieces.push(wrapRules(statement, entry.conditions, minify).join(minify ? '' : '\n'));
+        }
+        else if (entry.kind === 'external') {
+            // Conditions past the first nest as imports of data: stylesheets, innermost first.
+            let path = entry.path;
+            for (let i = entry.conditions.length - 1; i > 0; i--)
+                path = shortestDataUrl('text/css', printImport(path, entry.conditions[i], minify));
+            pieces.push(printImport(path, entry.conditions[0], minify));
+        }
+        else {
+            const file = entry.file;
+            if (file.sheet.hasCharset)
+                charset = true;
+            for (const comment of file.sheet.legal)
+                if (!legal.includes(comment))
+                    legal.push(comment);
+            const body = wrapRules(file.rules, entry.conditions, minify).join(minify ? '' : '\n');
+            pieces.push(minify ? body : `/* ${fileOf(file.module)} */\n${body}`);
+        }
+    }
+    const head = charset ? ['@charset "UTF-8";'] : [];
+    const sheet = [...head, ...pieces.filter((piece) => piece !== '')].join(minify ? '' : '\n');
+    return `${sheet}\n${legal.map((comment) => comment + '\n').join('')}`;
 }

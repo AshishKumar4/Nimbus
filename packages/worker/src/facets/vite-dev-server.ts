@@ -45,6 +45,7 @@ import {
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { resolvePackageEntry, resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { injectRouterBasename, shouldProcessForRouter } from '@nimbus-sh/core/runtime/router-basename.js';
+import { devStylesheet } from './dev-stylesheet.js';
 import { rewriteJavaScriptModuleSource, type StaticModuleSpecifierContext } from '@nimbus-sh/core/runtime/module-source-rewriter.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import {
@@ -2586,20 +2587,8 @@ export class ViteDevServer {
 
     // CSS handling
     if (ext === '.css') {
-      let css = this.vfs.readFileString(vfsPath);
-      // Resolve @import "./other.css" (but pass through @import url(...) for Google Fonts etc.)
-      const cssDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : this.root;
-      css = css.replace(/@import\s+["']([^"']+)["']\s*;/g, (_match: string, importPath: string) => {
-        if (importPath.startsWith('http')) return _match;
-        const resolvedPath = importPath.startsWith('/')
-          ? this.root + importPath
-          : cssDir + '/' + importPath;
-        try {
-          return this.vfs.readFileString(resolvedPath);
-        } catch {
-          return `/* @import "${importPath}" not found */`;
-        }
-      });
+      // Its @imports inlined by the CSS layer `vite build` uses, its url()s rooted at `base`.
+      let css = await devStylesheet(this.vfs, this.root, base, vfsPath);
 
       // Process Tailwind CSS directives if project uses Tailwind
       if (this.hasTailwind) {

@@ -3,34 +3,38 @@
  * by esbuild 0.24's rules (what the built-in `vite build` shipped before).
  *
  * rolldown 1.2 no longer bundles CSS, so rolldown-build.ts loads every CSS
- * module as an empty JavaScript module and hands a chunk's CSS modules here in
- * the order the chunk's JavaScript first imports them. From there:
+ * module as an empty JavaScript module and hands a chunk's CSS modules here
+ * in the order the chunk's JavaScript imports them. Each sheet is read
+ * through css-syntax.ts (css-tree), and the graph and cascade policy is
+ * esbuild's linker, ported (internal/linker/linker.go at v0.24.2):
  *
- *   - Each file's `@import`s are inlined before it, recursively. A file
- *     imported more than once (by `@import`, or by JavaScript and `@import`)
- *     keeps its LAST place, as the cascade does, and a later import with
- *     fewer conditions makes an earlier conditional one redundant
- *     (esbuild's isConditionalImportRedundant). Each import's conditions wrap
- *     its rules, one level per import: `@media`, then `@supports`, then
- *     `@layer`, innermost import innermost.
- *   - An `@import` of a URL (`http:`, `https:`, `//`) stays an `@import`,
- *     hoisted to the top with its conditions; `@charset` becomes one
- *     `@charset "UTF-8";` first.
- *   - Every `url()` naming a file is resolved and loaded through the build's
- *     plugin (kind `url-token`); a `file` loader makes it an emitted asset,
- *     written as a path relative to the stylesheet, a `dataurl` loader a
- *     data URL; any other loader cannot be a URL, as in esbuild. `data:`,
- *     `http(s):`, `//` and `#` URLs are left alone.
- *   - `@import` paths resolve with kind `import-rule`. Paths go to the plugin
- *     as written: a bare `url(img/x.png)` is a package path there, as it was
- *     to esbuild under Nimbus's plugin.
+ *   - Every sheet is resolved, loaded and parsed once per build, however
+ *     often it is imported (each resolve and load is a call back to the
+ *     session that owns the files).
+ *   - The import order is esbuild's findImportedFilesInCSSOrder: depth-first,
+ *     every `@import` evaluated each time it appears, a sheet already on the
+ *     import stack skipped (a cycle); each import's conditions wrap all it
+ *     imports. Layer names a sheet orders before its first `@import` come
+ *     first; external imports (`http:`, `https:`, `//`, or resolved external)
+ *     are hoisted to the top, keeping their importers' conditions (nested
+ *     through `data:` stylesheet imports where one `@import` cannot carry them).
+ *   - A sheet or external import that appears again later, under conditions
+ *     that apply wherever the earlier ones did (isConditionalImportRedundant),
+ *     keeps only its last place; the earlier place keeps the layer order it
+ *     set (`@layer a;`), and redundant layer statements are dropped and
+ *     adjacent ones merged, as esbuild does.
+ *   - A sheet's `url()`s are resolved and loaded through the build's plugin
+ *     (kind `url-token`): a `file` loader makes an emitted asset, written as
+ *     a path relative to the stylesheet, a `dataurl` loader a data URL; any
+ *     other loader cannot be a URL. `data:`, `http(s):`, `//` and `#` URLs
+ *     are left alone. `@import` paths resolve with kind `import-rule`, and
+ *     what they load must be CSS.
+ *   - `@charset` becomes one `@charset "UTF-8";` first; legal comments move
+ *     to the end, once each.
  *
- * Legal comments (`/*!`, or naming `@license` or `@preserve`) move to the end
- * of the sheet, once each, as esbuild's `legalComments: 'eof'` does.
- *
- * Minifying removes the other comments and the whitespace
- * and last semicolons a stylesheet does not need; it does not rewrite values,
- * so a minified sheet is larger than esbuild's, never different in meaning.
+ * Minifying prints rules as css-tree's generator does (no comments, no
+ * whitespace a rule does not need); it does not rewrite values, so a sheet
+ * is larger than esbuild's, never different in meaning.
  */
 import type * as esbuild from 'esbuild-wasm';
 import type { EsbuildRemotePlugin } from './esbuild-service.js';
@@ -59,6 +63,8 @@ export declare class CssError extends Error {
 export declare function bundleCss(modules: readonly CssModule[], plugin: EsbuildRemotePlugin, assets: CssAssets, { minify }: {
     minify: boolean;
 }): Promise<string>;
-/** CSS without comments, and without whitespace or last semicolons it does not need. */
-export declare function minifyCss(css: string): string;
+/** esbuild's EncodeStringAsShortestDataURL. */
+export declare function shortestDataUrl(mimeType: string, text: string): string;
+/** esbuild's EncodeStringAsPercentEscapedDataURL, for text that came from valid UTF-8. */
+export declare function percentEscapedDataUrl(mimeType: string, text: string): string;
 //# sourceMappingURL=css-bundle.d.ts.map
