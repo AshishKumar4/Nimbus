@@ -120,6 +120,13 @@ export declare class SessionProcessSupervisor {
      * which gives its logs a deadline.
      */
     reap(maxAge?: number): number;
+    /**
+     * Remove `pid` and every process under it that has ended, now, as a parent
+     * that waited for its children does: what a caller ran to completion has
+     * nothing left to report. One still running is kept. Logs are orphaned as
+     * by {@link reap}.
+     */
+    reapTree(pid: number): number;
     get stats(): ProcessTable['stats'];
     /** See ProcessTable.residentRunning — running long-running process count. */
     get residentRunning(): number;

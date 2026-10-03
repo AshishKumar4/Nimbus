@@ -35,6 +35,47 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
+/** Where a shell is: its working directory and its environment. */
+export interface ShellState {
+    readonly cwd: string;
+    readonly env: Readonly<Record<string, string>>;
+}
+/** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
+export interface WorkspaceExecOptions extends RunOptions {
+    /**
+     * Run in this named shell, whose cwd and environment persist between calls
+     * the way a terminal tab's do; calls on one name run one at a time. 1 to
+     * 160 characters from `A-Z a-z 0-9 . _ : -`, starting with a letter or
+     * digit. Omitted, the call runs in a shell of its own.
+     */
+    readonly shellId?: string;
+}
+/** A named shell, held by one call: see {@link NimbusWorkspace.withNamedShell}. */
+export interface NamedShell {
+    /** Its working directory, where the process the call runs as starts. */
+    readonly cwd: string;
+    /** The shell, built for `pid`, the process the call runs as. */
+    open(pid: number): Shell;
+}
+export interface NamedShellOptions {
+    /**
+     * Where a name with no saved state starts: absent, in the directory the
+     * workspace started in (`fs.cwd`), with nothing beyond the workspace shell's
+     * environment.
+     */
+    readonly start?: {
+        readonly cwd: string;
+        readonly env?: Readonly<Record<string, string>>;
+    };
+    /**
+     * Save what the shell holds when the call settles; the default. False for a
+     * call whose shell outlives it, such as a background job: what it would
+     * save is a moment nobody asked about.
+     */
+    readonly persist?: boolean;
+}
+/** A saved shell state, or an error naming what is wrong with it. */
+export declare function parseShellState(value: unknown): ShellState;
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
     readonly sql: SqlDatabase;
@@ -169,6 +210,8 @@ export declare class NimbusWorkspace {
     private readonly supervisorOps;
     readonly filesystem: ProcessFiles;
     private readonly runtimeLease;
+    /** Who the workspace shell acts as, and so every call's process. */
+    private readonly identity;
     /**
      * The namespace as the session user sees it: the shell process's own view,
      * so every write passes the same lease check a command's does. Never the
@@ -200,11 +243,61 @@ export declare class NimbusWorkspace {
     /** The pid the shell's commands run as — the host's identity pid when it
      *  supplied one, else the `sh` this workspace spawned. */
     readonly shellProcessPid: number;
-    private readonly commands;
+    /** One queue per named shell; see {@link withNamedShell}. */
+    private readonly shellQueues;
+    private shellTableMade;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
     close(): Promise<void>;
-    exec(command: string, options?: RunOptions): Promise<CommandResult>;
+    /**
+     * Run `command` as a process of its own and collect what it printed.
+     *
+     * Without a `shellId` the call runs in a shell built for it alone (see
+     * {@link shellFor}), from the workspace shell's cwd and environment with the
+     * call's `cwd` and `env` on top, under a new process with the workspace
+     * shell's credential and umask. What it changes (its cwd, variables,
+     * functions, aliases, options, umask, descriptors) ends with it: none of it
+     * reaches the next call or the workspace shell, and calls run at once
+     * without seeing each other's. With a `shellId` it runs in that named shell
+     * instead (see {@link withNamedShell}), and `cwd` and `env` hold for this
+     * call only. Either way the process, and whatever it started that has
+     * ended, leaves the process table when the result is returned.
+     */
+    exec(command: string, options?: WorkspaceExecOptions): Promise<CommandResult>;
+    private runProcess;
+    /**
+     * A shell of its own for process `pid`, a second cwd and environment over
+     * the workspace shell's filesystem, commands and kernel. It starts in
+     * `state.cwd` with the workspace shell's environment and `state.env` on
+     * top. Its commands act as `pid` (`$$`, and the credential and umask
+     * {@link processes} holds for it); `sudo` and `su` go through the workspace
+     * shell's identity, and `kill` reaches what the workspace shell's does.
+     *
+     * For a host that runs a command under a process of its own. When that
+     * process ends, {@link Shell.closeDescriptors} closes what an `exec` in it
+     * left open.
+     */
+    shellFor(pid: number, state: {
+        readonly cwd: string;
+        readonly env?: Readonly<Record<string, string>>;
+    }): Shell;
+    /**
+     * Run `body` in the named shell `id`: in the cwd and environment the last
+     * call on that name left it with, else `options.start`. What the shell
+     * holds when `body` settles is saved in this workspace's database, so a
+     * name outlives this object and its host's restarts.
+     *
+     * Calls on one name run one at a time, in the order they were made: two at
+     * once would read one state and race to write it back, and the loser's
+     * `cd` would vanish. Calls on different names run at once. A call's
+     * functions, aliases, options, umask and descriptors are its process's and
+     * end with it; only cwd and environment persist.
+     *
+     * {@link exec} with a `shellId` is this around one command. A host that
+     * runs its own process around the shell (a session's exec and background
+     * jobs) calls it directly, and builds the shell with `open(pid)`.
+     */
+    withNamedShell<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /**

@@ -26,7 +26,7 @@ class RuntimeOwner {
     options;
     terminal;
     _cpRegistry;
-    _programmaticShellQueues = new Map();
+    _storedShellsAdopted;
     _hostedProcesses = new Map();
     _hostedProcessWaiters = new Map();
     _cirrusHmrWsClients = new Map();
@@ -92,6 +92,7 @@ class RuntimeOwner {
     get ctx() { return this.options.ctx; }
     get _w1SessionDestroyed() { return this.closing !== null; }
     get env() { return this.options.env; }
+    get runtimeWorkspace() { return this.options.workspace; }
     get sqliteFs() { return this.options.workspace.vfs; }
     get kernel() { return this.options.workspace.kernel; }
     get shell() { return this.options.workspace.shell; }

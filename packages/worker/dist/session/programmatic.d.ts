@@ -17,26 +17,12 @@ import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
 import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
+import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
     env?: Record<string, string>;
     getEnv(): Record<string, string>;
-    getCwd(): string;
-    execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{
-        exitCode: number;
-    }>;
-    closeDescriptors(): Promise<void>;
-}
-interface ProgrammaticShellExecuteOptions {
-    cwd?: string;
-    env?: Record<string, string>;
-    /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. A returned promise is backpressure. */
-    onStdout?: (data: Uint8Array) => void | Promise<void>;
-    onStderr?: (data: Uint8Array) => void | Promise<void>;
-    signal?: AbortSignal;
-    stdin?: string;
-    commandContext?: Record<string, unknown>;
 }
 type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
@@ -63,6 +49,11 @@ export interface ProgrammaticHost extends TimerHost {
     _w1JanitorAt: number | null;
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
+    /**
+     * Whose shells every call runs in, one of its own or a named one (see
+     * `withShellState`). Composed over this host's `processes`.
+     */
+    readonly runtimeWorkspace: NimbusWorkspace | null;
     shell: ProgrammaticShell | null;
     shellProcessPid: number | null;
     sqliteFs: SqliteVFS | null;
@@ -73,8 +64,8 @@ export interface ProgrammaticHost extends TimerHost {
     viteDevServer: ProgrammaticViteServer | null;
     cirrusReal: ProgrammaticCirrusServer | null;
     _cpRegistry: MinShellRegistry | null;
-    /** One serialization queue per named durable shell. See `withShellState`. */
-    _programmaticShellQueues?: Map<string, Promise<void>>;
+    /** Named shells this object's storage held before they were the workspace's, once adopted. See `withShellState`. */
+    _storedShellsAdopted?: Promise<void>;
     _viteShimPid: number | null;
     _viteShimPort: number | null;
     _cirrusHmrWsClients?: {
@@ -125,9 +116,8 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
     cred?: VfsCred;
     /**
      * Run in a NAMED shell whose cwd and environment persist between calls, the
-     * way an interactive terminal does. Omitted, the call runs on the session's
-     * one shell and nothing is remembered — the behaviour every programmatic
-     * exec has always had.
+     * way an interactive terminal does; it is the workspace's shell of that name.
+     * Omitted, the call runs in a shell of its own and nothing is remembered.
      */
     shellId?: string;
     /** @internal Initial cwd for a shellId with no durable state yet. */
@@ -148,16 +138,6 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
      */
     restart?: ResidentRestartPolicy;
 }
-/**
- * A second Shell over the session's own kernel, filesystem and command
- * registry — the same objects the interactive shell uses, so a named shell is
- * not a second filesystem or a second process table. Only cwd and environment
- * are its own, which is exactly what makes `cd` stick between calls.
- */
-export declare function createProgrammaticShell(self: ProgrammaticHost, pid: number, state: {
-    cwd: string;
-    env: Record<string, string>;
-}): ProgrammaticShell;
 export interface ProgrammaticDestroyOptions {
     reason?: string;
 }

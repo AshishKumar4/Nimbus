@@ -123,6 +123,8 @@ export declare class ProcessTable {
      * several commands run concurrently in one session.
      */
     descendantsOf(pid: number): ProcessEntry[];
+    /** Remove `pid` if it has ended. A running process is kept. */
+    forget(pid: number): boolean;
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge?: number): number;
     get stats(): {
