@@ -31,6 +31,7 @@ import assert from 'node:assert/strict';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
+import { readRangeOrWhole } from '../../packages/core/src/vfs/vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { READ_AHEAD_CALLS } from '../../packages/core/src/substrate/lifo/commands/fs/find/walk.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -381,6 +382,28 @@ async function only(backend, expected, label, run) {
     await fs.close(handle.id);
     await ws.filesystem.releaseProcess(pid);
   }
+  // A backend across RPC refuses with a plain `{ code }` error, thrown or rejected.
+  const plainRefusal = () => Object.assign(new Error('ENOTSUP: no ranged read here'), { code: 'ENOTSUP' });
+  for (const [point, sync] of [['/rpc', false], ['/rpcs', true]]) {
+    const backing = new MemoryVFS();
+    backing.writeFile('/f.txt', enc.encode('one\ntwo\nthree\n'));
+    const face = remote(backing, { sync });
+    const refusing = new Proxy(face.vfs, {
+      get(target, key) {
+        if (key === 'readRange') return sync ? () => { throw plainRefusal(); } : async () => { throw plainRefusal(); };
+        if (key === 'sync' && sync) {
+          return new Proxy(target.sync, { get: (inner, name) => (name === 'readRange' ? () => { throw plainRefusal(); } : Reflect.get(inner, name)) });
+        }
+        return Reflect.get(target, key);
+      },
+    });
+    ws.filesystem.vfs.mount(point, refusing);
+    const result = await ws.exec(`cat ${point}/f.txt && head -c 3 ${point}/f.txt`);
+    assert.equal(result.stdout, 'one\ntwo\nthree\none', `a plain coded refusal on ${point} is read whole: ${result.stderr}`);
+  }
+  assert.equal(dec.decode(readRangeOrWhole({ readFile: () => enc.encode('abcdef'), readRange() { throw plainRefusal(); } }, '/x', 2, 2)), 'cd', 'thrown');
+  assert.equal(dec.decode(await readRangeOrWhole({ readFile: async () => enc.encode('abcdef'), readRange: async () => { throw plainRefusal(); } }, '/x', 2, 2)), 'cd', 'rejected');
+  assert.throws(() => readRangeOrWhole({ readFile: () => enc.encode('x'), readRange() { throw Object.assign(new Error('gone'), { code: 'EIO' }); } }, '/x', 0, 1), { code: 'EIO' }, 'any other code stands');
   await ws.close();
 }
 

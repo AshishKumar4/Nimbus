@@ -233,8 +233,9 @@ export function readRangeOrWhole(vfs: Pick<VFS, 'readFile' | 'readRange'>, path:
     return 'then' in bytes ? bytes.then((all) => all.slice(offset, offset + length)) : bytes.slice(offset, offset + length);
   };
   if (typeof vfs.readRange !== 'function') return whole();
+  // By its code: a backend across RPC answers a plain `{ code }` error.
   const unsupported = (error: unknown): Awaitable<Uint8Array> => {
-    if (!isVfsError(error, 'ENOTSUP')) throw error;
+    if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'ENOTSUP') throw error;
     return whole();
   };
   try {
