@@ -14790,7 +14790,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       importedBy(importer, id2, {
         path: fileOf2({ namespace, path: answer.path }),
         kind,
-        ...source === answer.path ? {} : { original: source }
+        // esbuild records what the importer wrote for every internal import,
+        // a path spelled as it resolves included.
+        original: source
       });
       return id2;
     },
