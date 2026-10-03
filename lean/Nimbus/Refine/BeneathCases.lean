@@ -101,19 +101,28 @@ def directed : Json :=
 def device : Json :=
   let S := deviceTrace true
   -- What the device itself refuses its user (`vault`) is not a resolution: no step asks it.
-  let steps : List (Path × Bool × Bool × List String) :=
-    [([], true, false, ["pc", "home", "me", "f"]), ([], true, false, ["pc", "home", "me", "..", "me", "f"]),
-     ([], true, false, ["pc", "home", "me", "up", "f"]), ([], true, false, ["pc", "locked", "inner", "x"]),
-     (["pc", "home", "me"], true, false, ["f"]), (["pc", "home", "me"], true, false, [".."])]
+  let steps : List (Cred × Path × Bool × Bool × List String) :=
+    [(u2, [], true, false, ["pc", "home", "me", "f"]), (u2, [], true, false, ["pc", "home", "me", "..", "me", "f"]),
+     (u2, [], true, false, ["pc", "home", "me", "up", "f"]), (u2, [], true, false, ["pc", "locked", "inner", "x"]),
+     (u2, ["pc", "home", "me"], true, false, ["f"]), (u2, ["pc", "home", "me"], true, false, [".."]),
+     (u2, ["pc", "safe"], true, false, ["out"]), (u2, ["pc", "safe"], true, false, ["up"]),
+     (u2, ["pc"], true, false, ["safe", "out"]), (u2, [], true, false, ["pc", "safe", "up"]),
+     -- A sibling of the nested mount, handed over past `locked` (as kernel: the device
+     -- itself would refuse uid 2 its own `locked`, which is no resolution).
+     (kernel, [], true, false, ["pc", "locked", "sib"]),
+     -- The nested mount is not flagged: below it every component is looked up.
+     (kernel, [], true, false, ["pc", "locked", "inner", "x", "child"]), (kernel, [], true, false, ["pc", "locked", "inner", "x"]),
+     (kernel, [], true, false, ["pc", "locked", "inner", "al"]), (kernel, ["pc", "locked", "inner"], true, false, ["al"]),
+     (kernel, [], false, false, ["pc", "locked", "inner", "al"])]
   .obj [("mounts", .arr (S.mounts.map fun m =>
       .obj [("point", .str (key m.point)), ("backend", .str s!"b{m.bk}"), ("resolvesPaths", .bool (m.point == ["pc"]))])),
     ("backends", .obj [("b0", backendJson (S.bks 0)), ("b1", backendJson (S.bks 1)), ("b2", backendJson (S.bks 2))]),
-    ("steps", .arr (steps.map fun (R, f, abs, raw) => stepJson S u2 R f abs raw))]
+    ("steps", .arr (steps.map fun (c, R, f, abs, raw) => stepJson S c R f abs raw))]
 
 def fixture : String :=
   fixtureText [("fixture", .str "beneath"), ("model", .str "Nimbus.Vfs.CompositeBeneath.resolveB"),
       ("principals", .arr (creds.map credJson)),
-      ("note", .str "a lookup of path beneath root (a preopen, RESOLVE_BENEATH) through the composite, the root first resolved from / (EACCES unless every directory from / to root grants search), then as composite-perm's walk (search checked on every directory left from root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at root or an absolute path; an absolute link resolves from /, and an answer that does not lie at or under root is ENOTCAPABLE; .. elsewhere pops one component, so at a mount's root it reaches the mount point's parent; a missing last component resolves; past the point of a mount with resolvesPaths (not on the way to a mount nested in it) nothing is looked up or searched, and .. is lexical")]
+      ("note", .str "a lookup of path beneath root (a preopen, RESOLVE_BENEATH) through the composite, the root first resolved from / (EACCES unless every directory from / to root grants search), then as composite-perm's walk (search checked on every directory left from root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at root or an absolute path; an absolute link resolves from /, and an answer that does not lie at or under root is ENOTCAPABLE; .. elsewhere pops one component, so at a mount's root it reaches the mount point's parent; a missing last component resolves; past the point of a mount with resolvesPaths whose point lies at or under root (not on the way to a mount nested in it) nothing is looked up or searched, and .. is lexical; from a root inside such a mount every component is walked")]
     ([directed, device] ++ runGen 0x42454E45 (casesOf 150 genCase))
 
 end Nimbus.Refine.BeneathCases

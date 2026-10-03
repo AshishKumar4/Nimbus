@@ -576,6 +576,11 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
 #print axioms Nimbus.Vfs.CompositeBeneath.walked_snoc
 #print axioms Nimbus.Vfs.CompositeBeneath.walked_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_prefix
+#print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_mem
+#print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_max
+#print axioms Nimbus.Vfs.CompositeBeneath.ownerOf_prefix_of
+#print axioms Nimbus.Vfs.CompositeBeneath.handsWF_beneath
 #print axioms Nimbus.Vfs.CompositeBeneath.walked_parent
 #print axioms Nimbus.Vfs.CompositeBeneath.walked_named
 #print axioms Nimbus.Vfs.CompositeBeneath.walkB_named
@@ -648,6 +653,9 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositePerm.root_dir
 #print axioms Nimbus.Vfs.CompositePerm.named_snoc
 #print axioms Nimbus.Vfs.CompositePerm.named_dropLast
+#print axioms Nimbus.Vfs.CompositePerm.structural_dir
+#print axioms Nimbus.Vfs.CompositePerm.handed_hands
+#print axioms Nimbus.Vfs.CompositePerm.unhanded_dir
 #print axioms Nimbus.Vfs.CompositePerm.namedH_snoc
 #print axioms Nimbus.Vfs.CompositePerm.namedH_dropLast
 #print axioms Nimbus.Vfs.CompositePerm.namedH_parent

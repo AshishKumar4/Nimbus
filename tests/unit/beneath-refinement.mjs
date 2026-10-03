@@ -94,7 +94,10 @@ async function answer(proc, kernel, step) {
   // model's ENOENT) answers null, as a string path does.
   if (step.expect.error === 'ENOENT') return reached === null ? step.expect : { reached: identity(reached) };
   if ('error' in step.expect) return { reached: identity(reached) };
-  const expected = await kernel.stat(step.expect.path, { followSymlinks: false });
+  // Followed as the step follows: a model path the walk handed to a backend
+  // that resolves its own paths (resolvesPaths) may end in a link the
+  // backend follows; anywhere else a followed model path is no link.
+  const expected = await kernel.stat(step.expect.path, { followSymlinks: step.follow });
   if (identity(reached) !== identity(expected)) return { reached: identity(reached), model: identity(expected) };
   if (reached !== null && step.follow && reached.type !== 'symlink') {
     const path = await proc.realpath(beneath);

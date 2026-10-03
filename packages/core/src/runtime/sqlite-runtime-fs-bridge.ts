@@ -774,12 +774,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // The root is found by name, so every directory above it must grant
       // search (VFS-COMP-006) before anything is looked up beneath it.
       const root = normalizeVfsPath('root' in path ? path.root : this.description(path.directory).node.path());
-      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name) => this.namespace?.resolvedByBackend(name) === true);
+      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true);
       for (let step = walk.next(); ; ) {
         if (step.done) return step.value;
         const lookup = step.value;
         step = walk.next('readlink' in lookup
-          ? this.readlink(lookup.readlink) ?? ''
+          ? this.leadsTo(lookup.readlink, this.readlink(lookup.readlink) ?? '')
           : lookup.stat === '/' ? this.rootStat() : this.stat(lookup.stat, { followSymlinks: false }));
       }
     }
@@ -806,7 +806,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // them, are never followed). The walk itself stays here, except on a
       // mount whose backend resolves its own paths: its links are its own.
       if (this.namespace?.composes('/' + candidate)) {
-        const link = this.namespace.resolvedByBackend('/' + candidate) ? null : this.mountedLink('/' + candidate);
+        const to = '/' + [...resolved, segment, ...pending].join('/');
+        const link = this.namespace.resolvedByBackend('/' + candidate, '/', to) ? null : this.mountedLink('/' + candidate);
         if (link === null) {
           resolved.push(segment);
           continue;
@@ -859,7 +860,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       throw error;
     }
     if (stat === null || stat.type !== 'symlink' || typeof this.mounted!.readlink !== 'function') return null;
-    return this.mounted!.readlink(path);
+    return this.leadsTo(path, this.mounted!.readlink(path));
+  }
+
+  /** Where the link at `path`, reading `link`, leads for this walk: the namespace's link-root rule (CompositeVFS.linkLeadsTo). */
+  private leadsTo(path: string, link: string): string {
+    return this.namespace === undefined ? link : this.namespace.linkLeadsTo(path, link);
   }
 
   /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
@@ -1086,17 +1092,19 @@ type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number }
  * a relative one from its directory, an absolute one from the namespace's
  * `/`, as the unrestricted walk resolves them, and what the walk reaches
  * must lie at or under the root, else ENOTCAPABLE. A path the namespace
- * hands to its backend whole (`handedOver`: CompositeVFS.resolvedByBackend,
- * MountOptions.resolvesPaths) is neither looked up nor searched here, nor
- * are its links read: its components are taken lexically, `..` included,
- * and that backend answers for them. The one walk for every face: it yields
+ * hands to its backend whole beneath this root (`handedOver`, asked with
+ * where the lookup goes on to lexically: CompositeVFS.resolvedByBackend
+ * within the root, a resolvesPaths mount whose point lies at or under it, so
+ * the backend's own links stay beneath it) is neither looked up nor searched
+ * here, nor are its links read: its components are taken lexically, `..`
+ * included, and that backend answers for them. The one walk for every face: it yields
  * its lookups, which the synchronous bridge answers at once and a face over
  * asynchronous mounts awaits. `root` is normalized; the answer is the
  * resolved path, normalized.
  */
 export function* walkBeneath(
   root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
-  handedOver: (path: string) => boolean,
+  handedOver: (path: string, to: string) => boolean,
 ): Generator<BeneathLookup, string | null, BeneathAnswer> {
   const name = typeof path === 'string' ? path : path.path;
   if (root !== '') yield { stat: '/' + root };
@@ -1108,7 +1116,8 @@ export function* walkBeneath(
     const segment = pending.shift()!;
     const dir = resolved.join('/');
     const candidate = dir === '' ? segment : `${dir}/${segment}`;
-    const handed = handedOver('/' + dir) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate));
+    const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
+    const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
     if (!handed) {
       const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
       if (searched === null) throw fsError('ENOENT', 'path', path);

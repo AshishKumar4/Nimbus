@@ -17,18 +17,26 @@ published independently in the `@nimbus-sh` npm scope.
   above the one its user consented to (EACCES) could serve none of its
   files, and a backend that makes a write's missing parents got ENOENT from
   the walk's parent check. Now the backend follows its own links and answers
-  for each component itself; `..` inside the mount is lexical. Its links are
-  read as it resolves them: `readlink` answers the namespace path a link
-  leads to, an absolute target re-rooted at the mount point and a relative
-  one climbing no higher than it, and a link copied off the mount keeps
-  that. So a node launch that stages `/ro/link -> /home/user/x` reads the
-  mount's `/home/user/x`; it used to read, and write, SQLite's. A WASI
-  program (`python3`, `ruby`, the shell's wasm commands) reads such a mount
-  too: its lookup beneath a preopen hands the rest of the path to the
+  for each component itself; `..` inside the mount is lexical. `readlink`
+  answers a link's text as written, so `cp` copies a link as the same link.
+  Where the namespace follows one of its links itself (a node launch's
+  staged view, a process's walks), `CompositeVFS.linkLeadsTo` answers where
+  it leads, as the backend reads it: an absolute target re-rooted at the
+  mount point, a relative one climbing no higher than it. So a node launch
+  that stages `/ro/link -> /home/user/x` reads the mount's `/home/user/x`.
+  A WASI program (`python3`, `ruby`, the shell's wasm commands) reads such a
+  mount too: its lookup beneath a preopen hands the rest of the path to the
   backend the same way, so `cat /pc/home/me/f` in the wasm shell reads the
   consented file instead of failing with "Permission denied" at
-  `/pc/home`; the model (VFS-COMP-005, VFS-COMP-006) hands the same paths
-  over and still proves the lookup stays beneath the preopen. The namespace
+  `/pc/home`. Only when the preopen holds the mount point, though: the
+  backend follows links anywhere in its own tree, so beneath a preopen
+  inside the mount every component is looked up here, links read, and one
+  leading out is ENOTCAPABLE. A lookup hands a path over by where it goes:
+  a directory on the way to a mount nested in it is the backend's when the
+  lookup stays on the backend, and looked up here when it goes on into the
+  nested mount. The model (VFS-COMP-005, VFS-COMP-006) hands over the same
+  paths, by the mount each is in and where the lookup goes, and still
+  proves the lookup stays beneath the preopen. The namespace
   still owns the way in: root links into the mount, ENXIO with
   `absentReason`, the mount point (EBUSY, EISDIR, `mkdir -p` has nothing to
   do), EROFS under `readOnly`, EXDEV across mounts (so `mv`, `cp` and

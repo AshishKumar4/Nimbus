@@ -171,10 +171,11 @@ export interface MountOptions {
    * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
    * will not show, or a parent it makes on write. A `..` inside the mount is
    * taken lexically, so it leaves the mount only past its root. readlink
-   * answers where a link leads in this namespace (`linkTarget`: an absolute
-   * target re-rooted at the mount point, a relative one climbing no higher
-   * than it), so a walk over the namespace that follows it (a launch's
-   * staged view) lands where the backend does.
+   * answers a link's text, as written; a walk over the namespace that
+   * follows a link itself (a launch's staged view, a process's walks) asks
+   * `linkLeadsTo` where it leads (an absolute target re-rooted at the mount
+   * point, a relative one climbing no higher than it), so it lands where the
+   * backend does.
    *
    * The namespace still owns everything up to and including the mount
    * point: root links that lead into it, ENXIO with `absentReason` while the
@@ -587,7 +588,7 @@ export class CompositeVFS implements VFS {
       for (let i = 0; i < links.length; i += WALK_CONCURRENCY) {
         await Promise.all(links.slice(i, i + WALK_CONCURRENCY).map(async ({ name, stat }) => {
           const target = await this.readlink(`${dir}/${name}`).catch(() => null);
-          if (target !== null) put(`${dir}/${name}`, stat, target);
+          if (target !== null) put(`${dir}/${name}`, stat, this.linkLeadsTo(`${dir}/${name}`, target));
         }));
       }
       listed.add(dir);
@@ -675,16 +676,26 @@ export class CompositeVFS implements VFS {
   }
 
   /**
-   * Whether `path` lies past the point of a mount whose backend resolves its
-   * own paths (MountOptions.resolvesPaths), and is not a directory above a
-   * mount nested in it. A walk over this namespace looks up the mount point
-   * and the directories above a nested mount, as any other, and no component
-   * that is the backend's alone: it hands the namespace the rest whole.
+   * Whether a walk over this namespace, at `path` on its way to `to` (the
+   * rest of the lookup, taken lexically), hands `path` to its backend: it
+   * lies past the point of a mount whose backend resolves its own paths
+   * (MountOptions.resolvesPaths), and is not a directory above a mount
+   * nested in it that the lookup goes on into. As `resolve` does, the walk
+   * looks up the mount point, and the directories on the way into a nested
+   * mount, as any other, and no component that is the backend's alone.
+   *
+   * A walk confined `within` a directory (a WASI preopen) hands a path over
+   * only when that mount's point lies at or under it: the backend follows
+   * its links anywhere in its own tree, which is then within too. From a
+   * directory inside such a mount the walk looks each component up itself.
    */
-  resolvedByBackend(path: string): boolean {
+  resolvedByBackend(path: string, within: string = ROOT_POINT, to: string = path): boolean {
     const at = normalizePath(path);
     const { mount } = this.route(at);
-    return mount.options.resolvesPaths === true && at !== mount.point && !this.isStructural(at);
+    if (mount.options.resolvesPaths !== true || at === mount.point) return false;
+    if (this.isStructural(at) && this.route(normalizePath(to)).mount !== mount) return false;
+    const bound = normalizePath(within);
+    return bound === ROOT_POINT || mount.point === bound || mount.point.startsWith(`${bound}/`);
   }
 
   /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
@@ -704,16 +715,20 @@ export class CompositeVFS implements VFS {
    * is there follows them.
    */
   /**
-   * A link's target as this namespace resolves it: the one link-root rule
-   * for a mount whose backend resolves its own paths. Such a backend reads
-   * its links from its own root, so an absolute target re-roots at the mount
-   * point and a relative one climbs no higher than it; either comes back as
-   * the namespace path it leads to. Any other backend's link is its target.
+   * Where the link at `path`, reading `link` (readlink's text), leads in
+   * this namespace: the one link-root rule, for a walk over the namespace
+   * that follows the link itself. A mount whose backend resolves its own
+   * paths reads its links from its own root, so an absolute target re-roots
+   * at the mount point and a relative one climbs no higher than it; either
+   * comes back as the namespace path it leads to. Any other link leads to
+   * its text. readlink answers the text, as written, so a copied link is the
+   * same link.
    */
-  private linkTarget(mount: Mount, rel: string, link: string): string {
-    if (!mount.options.resolvesPaths) return link;
-    const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(rel)}/${link}`);
-    return inBackend === ROOT_POINT ? mount.point : `${mount.point}${inBackend}`;
+  linkLeadsTo(path: string, link: string): string {
+    const route = this.route(normalizePath(path));
+    if (!route.mount.options.resolvesPaths) return link;
+    const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(route.rel)}/${link}`);
+    return inBackend === ROOT_POINT ? route.mount.point : `${route.mount.point}${inBackend}`;
   }
 
   private realpathAt(input: string, sync: boolean): Awaitable<string> {
@@ -1423,25 +1438,21 @@ export class CompositeVFS implements VFS {
             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
               return sourceOps.copy(source.rel, target.rel, options);
             }
-            // A link copied out of its filesystem keeps where it led there.
-            const relink = (rel: string, link: string): string => (source.mount === target.mount ? link : this.linkTarget(source.mount, rel, link));
-            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel, relink);
+            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync) as SyncVFS, target.rel);
           });
         });
       });
     }); });
   }
 
-  /** Copy an entry (a tree when it is a directory) between backends, links as links (`relink` gives a copied link's target). */
-  private copyBytes(
-    from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string, relink: (rel: string, link: string) => string,
-  ): Awaitable<number> {
+  /** Copy an entry (a tree when it is a directory) between backends, links as links. */
+  private copyBytes(from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
     if (stat.type === 'symlink') {
       if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
         throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
       }
-      return then(from.readlink(fromRel), (target) => then(to.symlink!(relink(fromRel, target), toRel), () => 1));
+      return then(from.readlink(fromRel), (target) => then(to.symlink!(target, toRel), () => 1));
     }
     if (stat.type === 'file') {
       return then(from.readFile(fromRel), (bytes) => then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1));
@@ -1452,7 +1463,7 @@ export class CompositeVFS implements VFS {
         const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
         return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
           ? n
-          : then(this.copyBytes(from, child, childStat, to, dest, relink), (m) => n + m)));
+          : then(this.copyBytes(from, child, childStat, to, dest), (m) => n + m)));
       }), 1)));
   }
 
@@ -1654,8 +1665,7 @@ export class CompositeVFS implements VFS {
   }
 
   async readlink(path: string): Promise<string> {
-    return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) =>
-      then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))));
+    return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
   }
 
   async chmod(path: string, mode: number): Promise<void> {
@@ -1711,7 +1721,7 @@ export class CompositeVFS implements VFS {
       symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () =>
         this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
       readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () =>
-        this.onFile(path, false, true, (ops, rel, at) => then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))))),
+        this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
       chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () =>
         this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),
       chown: (path, uid, gid) => syncValue(reported({ syscall: 'chown', path }, () =>
