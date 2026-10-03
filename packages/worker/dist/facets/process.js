@@ -199,7 +199,9 @@ export class FacetProcessManager {
             : { ...req, command: normalizedCommand };
         // Resolve command kind. Resolution failure → exit 127 (command not
         // found), no facet at all. Same shell semantics.
-        const reg = shellPlan ? { kind: 'shell-direct' } : this.deps.commandRegistry.resolve(normalizedCommand);
+        const reg = shellPlan
+            ? { kind: 'shell-direct' }
+            : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
         const kind = reg ? reg.kind : 'unknown';
         // Dispatch after the cpSpawn RPC has had a chance to return to the
         // parent facet. That lets immediate child.stdin.write(); child.stdin.end()
@@ -519,10 +521,8 @@ export class FacetProcessManager {
         }
         child.stdinChunks.push(data);
         child.stdinTotalBytes += data.byteLength;
-        // Flush any waiters
-        for (const w of child.stdinWaiters.splice(0)) {
-            w({ data, ended: false });
-        }
+        for (const w of child.stdinWaiters.splice(0))
+            w();
         return { ok: true };
     }
     stdinEnd(childPid) {
@@ -530,9 +530,19 @@ export class FacetProcessManager {
         if (!child)
             return;
         child.stdinClosed = true;
-        for (const w of child.stdinWaiters.splice(0)) {
-            w({ data: EMPTY_BYTES, ended: true });
+        for (const w of child.stdinWaiters.splice(0))
+            w();
+    }
+    /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
+    _takeStdin(child) {
+        const data = child.stdinChunks.shift();
+        if (data !== undefined) {
+            child.stdinTotalBytes -= data.byteLength;
+            return { data, ended: false };
         }
+        if (child.stdinClosed || child.exitCode !== null)
+            return { data: EMPTY_BYTES, ended: true };
+        return null;
     }
     /**
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
@@ -542,14 +552,11 @@ export class FacetProcessManager {
         const child = this.children.get(childPid);
         if (!child)
             return { data: EMPTY_BYTES, ended: true };
-        if (child.stdinChunks.length > 0) {
-            const data = child.stdinChunks.shift();
-            child.stdinTotalBytes -= data.byteLength;
-            return { data, ended: false };
-        }
-        if (child.stdinClosed)
-            return { data: EMPTY_BYTES, ended: true };
-        // Long-poll
+        const ready = this._takeStdin(child);
+        if (ready)
+            return ready;
+        // Long-poll. The chunk that wakes this reader stays queued until taken
+        // here, so no other reader is handed it too.
         return new Promise((resolve) => {
             const timer = setTimeout(() => {
                 const idx = child.stdinWaiters.indexOf(wrapped);
@@ -557,9 +564,9 @@ export class FacetProcessManager {
                     child.stdinWaiters.splice(idx, 1);
                 resolve({ data: EMPTY_BYTES, ended: false });
             }, Math.min(waitMs, 5000));
-            const wrapped = (r) => {
+            const wrapped = () => {
                 clearTimeout(timer);
-                resolve(r);
+                resolve(this._takeStdin(child) ?? { data: EMPTY_BYTES, ended: false });
             };
             child.stdinWaiters.push(wrapped);
         });
@@ -746,11 +753,9 @@ export class FacetProcessManager {
             const fresh = child.outputs[w.fd].filter((c) => c.seq > w.sinceSeq);
             w.resolve({ chunks: fresh, closed: true, maxSeq: child.outputSeq[w.fd] });
         }
-        // Wake stdin waiters with ended=true so a child blocked on cpReadStdin
-        // unblocks and exits cleanly.
-        for (const w of child.stdinWaiters.splice(0)) {
-            w({ data: EMPTY_BYTES, ended: true });
-        }
+        // A child blocked on cpReadStdin is told stdin ended, and exits cleanly.
+        for (const w of child.stdinWaiters.splice(0))
+            w();
     }
     /**
      * Late-arriving reportExit from the facet. Idempotent; if kill() or

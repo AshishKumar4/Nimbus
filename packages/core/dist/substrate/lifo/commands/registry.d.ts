@@ -18,6 +18,13 @@ export interface ResolveContext {
      * credential decides the namespace too, as a confined principal's /tmp.)
      */
     view: ProcessView;
+    /**
+     * Whether a bare name nothing registers may be searched for, on PATH and
+     * in the cwd's node_modules/.bin. False answers registered names alone
+     * (with the runtimes the workspace can install), as an absolute #!
+     * interpreter's name, or `which`'s builtin check, asks.
+     */
+    search: boolean;
 }
 /**
  * The context a caller resolves from: its directory, its environment's

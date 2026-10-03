@@ -5,6 +5,8 @@ import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/reg
 type Output = {
     write(data: string): void;
 };
+/** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
+export declare function isRuntimeInstallHint(command: object): boolean;
 type RegistryLike = {
     resolve(name: string, from?: ResolveContext): Promise<unknown> | unknown;
 };

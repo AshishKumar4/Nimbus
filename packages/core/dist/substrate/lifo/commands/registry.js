@@ -5,7 +5,7 @@ import { DEFAULT_PATH } from '../../../constants.js';
  * no PATH, searches the session's default PATH.
  */
 export function resolveContext(cwd, env, view) {
-    return { cwd, path: env?.PATH ?? DEFAULT_PATH, view };
+    return { cwd, path: env?.PATH ?? DEFAULT_PATH, view, search: true };
 }
 export class CommandRegistry {
     commands = new Map();

@@ -8,6 +8,10 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { z } from 'zod/v4';
+/** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
+export function isRuntimeInstallHint(command) {
+    return '__nimbusRuntimeInstallHint' in command && command.__nimbusRuntimeInstallHint === true;
+}
 const NpmBinPackageMetadataSchema = z.object({
     name: z.string().optional(),
     keywords: z.array(z.string()).optional(),
@@ -54,7 +58,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
         const upstream = await upstreamResolve(name, context);
         if (upstream)
             return upstream;
-        if (!await probe(() => resolveNpmBin(inspector, cwd, name))) {
+        if (!context.search || !await probe(() => resolveNpmBin(inspector, cwd, name))) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
@@ -84,8 +88,10 @@ export function installNpmBinFallbackResolver(registry, deps) {
     function binHandler(name, lookup, executesShim) {
         return async (ctx) => {
             const invocationCwd = ctx.cwd || '/home/user';
-            // The bin as this command sees it, through its own view.
+            // The bin as this command sees it, through its own view; what it runs
+            // is resolved through that view too.
             const vfs = projectFs(ctx.vfs);
+            const from = resolveContext(invocationCwd, ctx.env, ctx.vfs);
             let bin;
             try {
                 bin = await lookup(vfs);
@@ -122,7 +128,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             // program: run it the way a path-shaped invocation of it runs.
             const runtimeName = await npmBinRuntimeForTarget(vfs, bin.targetPath);
             if (runtimeName === null) {
-                const execCmd = await upstreamResolve('/' + bin.shimPath);
+                const execCmd = await upstreamResolve('/' + bin.shimPath, from);
                 if (typeof execCmd !== 'function') {
                     ctx.stderr.write(`${name}: command not found\n`);
                     return 127;
@@ -133,7 +139,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
             const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
             const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
-            const runtimeCmd = await upstreamResolve(runtimeName);
+            const runtimeCmd = await upstreamResolve(runtimeName, from);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
                 return 1;

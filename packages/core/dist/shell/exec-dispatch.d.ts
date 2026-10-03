@@ -75,8 +75,20 @@ export type PathSearchResult = {
  * allows it, the check a path-shaped invocation makes before it runs.
  */
 export declare function searchPath(name: string, from: ResolveContext): Promise<PathSearchResult>;
-/** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
-export declare function programPathOf(command: object): string | undefined;
+/**
+ * What a command this resolver gave stands for, as `type`, `command -v` and
+ * `which` report it: the file a search of PATH found (executable or not, as
+ * bash reports either), or a resolution that failed on what the namespace
+ * could not answer, which they report as not found.
+ */
+export type Resolution = {
+    readonly kind: 'program';
+    readonly path: string;
+} | {
+    readonly kind: 'failed';
+};
+/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+export declare function resolutionOf(command: object): Resolution | undefined;
 /**
  * Resolve path-shaped names, and bare names along PATH, to what the file is.
  * Everything is looked at through the caller's view; `fs` is the view of a

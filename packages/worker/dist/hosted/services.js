@@ -1,6 +1,7 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
+import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
@@ -217,17 +218,25 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
     // construction near line 2058 — registry passed as ctor arg there).
     const cmdRegistryAdapter = {
         // The static tables keep their kinds (node/npm/git/... run in a facet
-        // even though they are registry entries too). Every other name runs as
-        // a pure builtin, which resolves it once, as the shell would, from the
-        // child's cwd and PATH: a registered command, or a program execvp's
-        // search finds; nothing found is "command not found", 127. Null (also
-        // 127) only while no registry is attached.
-        resolve: (name) => {
+        // even though they are registry entries too). Another registered
+        // command runs inline, as a pure builtin. Any other name (a runtime
+        // that is not installed is not registered) is a program
+        // the child's PATH may find, which runs as one named by its path does
+        // (facet-direct): its own pid, live stdin, its output on its queues.
+        // That dispatch searches PATH from the child's cwd, as execvp does, and
+        // finding nothing is "command not found", 127. Null (also 127) only
+        // while no registry is attached.
+        resolve: async (name, from) => {
             const commandName = normalizeCpCommandName(name);
             const classified = _classifyCommand(commandName);
             if (classified)
                 return classified;
-            return self._cpRegistry ? { kind: 'pure-builtin' } : null;
+            const registry = self._cpRegistry;
+            if (!registry)
+                return null;
+            const view = processView(from.pid, self.processes.cred(from.pid));
+            const registered = await registry.resolve(commandName, { ...resolveContext(from.cwd, from.env, view), search: false });
+            return { kind: registered && !isRuntimeInstallHint(registered) ? 'pure-builtin' : 'facet-direct' };
         },
         runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
             const registry = self._cpRegistry;

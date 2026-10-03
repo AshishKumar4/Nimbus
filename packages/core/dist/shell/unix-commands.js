@@ -17,7 +17,7 @@ import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
-import { programPathOf, searchPath } from './exec-dispatch.js';
+import { resolutionOf, searchPath } from './exec-dispatch.js';
 import sedCommand from '../substrate/lifo/commands/text/sed.js';
 import grepCommand from '../substrate/lifo/commands/text/grep.js';
 import tailCommand from '../substrate/lifo/commands/text/tail.js';
@@ -256,19 +256,30 @@ async function _registryResolved(registry, name, from, options = {}) {
     }
     return null;
 }
-/** Resolve a command name to a path: the executable file execvp's search
- *  of the caller's PATH finds (as the caller sees the namespace), else a
- *  registered command's canonical path. Returns null if not findable. */
+/**
+ * What `which` knows of a name, from one search of PATH: the executable file
+ * execvp's search of the caller's PATH finds (as the caller sees the
+ * namespace), else a registered command's canonical path; and whether the
+ * name is a registered command, which `which -a` calls a shell built-in. A
+ * directory that cannot be read (an I/O error) finds nothing, as GNU which's
+ * stat finds nothing there.
+ */
 async function _whichLookup(registry, name, from) {
-    const hit = name.includes('/') ? null : await searchPath(name, from);
+    if (name.includes('/'))
+        return { path: null, builtin: false };
+    const registered = await _registryResolved(registry, name, { ...from, search: false }, { includeInstallHints: true });
+    let hit = null;
+    try {
+        hit = await searchPath(name, from);
+    }
+    catch (error) {
+        if (!isVfsError(error))
+            throw error;
+    }
+    const builtin = registered !== null && !isRuntimeInstallHintHandler(registered);
     if (hit?.kind === 'program')
-        return hit.path;
-    const canonicalPath = _CANONICAL_BIN_PATHS[name];
-    if (!canonicalPath)
-        return null;
-    return await _registryResolved(registry, name, from, { includeInstallHints: true })
-        ? canonicalPath
-        : null;
+        return { path: hit.path, builtin };
+    return { path: registered === null ? null : _CANONICAL_BIN_PATHS[name] ?? null, builtin };
 }
 function mkWhich(vfs, registry) {
     return async (ctx) => {
@@ -305,11 +316,7 @@ function mkWhich(vfs, registry) {
         let anyMissing = false;
         const from = resolveContext(ctx.cwd, ctx.env, vfs);
         for (const name of names) {
-            // Classify: is it a registered command (a shell builtin), not one found on PATH?
-            const resolved = await _registryResolved(registry, name, from);
-            const isBuiltin = resolved !== null && programPathOf(resolved) === undefined;
-            // 1. PATH-walk + canonical-bin lookup.
-            const path = await _whichLookup(registry, name, from);
+            const { path, builtin: isBuiltin } = await _whichLookup(registry, name, from);
             let found = false;
             if (path) {
                 if (!silent)
@@ -353,7 +360,7 @@ function mkWhereis(vfs, registry) {
         }
         const from = resolveContext(ctx.cwd, ctx.env, vfs);
         for (const name of names) {
-            const path = await _whichLookup(registry, name, from);
+            const { path } = await _whichLookup(registry, name, from);
             if (path) {
                 (await ctx.stdout.write(`${name}: ${path}\n`));
             }
@@ -403,15 +410,16 @@ function mkCommand(vfs, registry) {
             // (by its canonical path where it has one); exit 0 if found.
             const name = args[0];
             const resolved = await _registryResolved(registry, name, from);
-            const program = resolved === null ? undefined : programPathOf(resolved);
-            const path = program ?? (resolved === null ? null : _CANONICAL_BIN_PATHS[name] ?? null);
+            const resolution = resolved === null ? undefined : resolutionOf(resolved);
+            const found = resolved !== null && resolution?.kind !== 'failed';
+            const path = resolution?.kind === 'program' ? resolution.path : _CANONICAL_BIN_PATHS[name] ?? null;
             if (mode === '-v') {
-                if (resolved === null)
+                if (!found)
                     return 1;
                 (await ctx.stdout.write(`${path ?? name}\n`));
                 return 0;
             }
-            if (resolved === null) {
+            if (!found) {
                 (await ctx.stderr.write(`command: ${name}: not found\n`));
                 return 1;
             }
@@ -466,11 +474,11 @@ function mkType(vfs, registry) {
                 const resolved = typeof registry.resolve === 'function'
                     ? asResolvedCommand(await registry.resolve(name, from))
                     : null;
-                const program = resolved === null ? undefined : programPathOf(resolved);
-                if (program !== undefined) {
-                    (await ctx.stdout.write(`${name} is ${program}\n`));
+                const resolution = resolved === null ? undefined : resolutionOf(resolved);
+                if (resolution?.kind === 'program') {
+                    (await ctx.stdout.write(`${name} is ${resolution.path}\n`));
                 }
-                else if (resolved && !isRuntimeInstallHintHandler(resolved)) {
+                else if (resolved && resolution === undefined && !isRuntimeInstallHintHandler(resolved)) {
                     (await ctx.stdout.write(`${name} is a shell builtin\n`));
                 }
                 else {
