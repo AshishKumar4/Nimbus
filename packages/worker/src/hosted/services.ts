@@ -227,8 +227,10 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           // live queues. A direct inline invocation without a managed child
           // still needs a captured result.
           __nimbusCaptureOutput: !self.facetProcessManager?.isChild(payload.processPid),
+          // A child's runtime reads its stdin from its own live channel, the
+          // broker's queue for its pid (NIMBUS_CP_CHILD_PID), as the parent writes it.
           ...(self.facetProcessManager?.isChild(payload.processPid) ? {
-            __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
+            __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' '), liveInput: true },
           } : {}),
         };
         try {

@@ -280,6 +280,14 @@ export function buildRuntimeHandler(
         command?: string;
         forceLongRunning?: boolean;
         attachedTty?: boolean;
+        /**
+         * The reserved process's own live input channel is its stdin (a
+         * child_process child's: the broker's queue for its pid), which
+         * ctx.stdin streams too. The program reads that channel itself; piping
+         * ctx.stdin into a second one for the same pid would have the
+         * parent's writes land in either, out of order.
+         */
+        liveInput?: boolean;
       };
     };
     // A facet-hosted runtime streams its output to the session terminal over
@@ -295,13 +303,14 @@ export function buildRuntimeHandler(
     const captureOutput = typeof nimbusCtx.__nimbusCaptureOutput === 'boolean'
       ? nimbusCtx.__nimbusCaptureOutput
       : ctx.isFdTerminal?.(1) === false || ctx.isFdTerminal?.(2) === false;
-    // fd 0 the same way: a pipe or redirect is the program's stdin. It used
-    // to be dropped, so `echo hi | node x.js` read nothing.
-    const pipedStdin = ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
-      ? ctx.stdin : undefined;
     // A bin wrapper or child-process broker may already own the process
     // entry; preserve it for eval/stdin programs as well as script files.
     const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
+    // fd 0 the same way: a pipe or redirect is the program's stdin. It used
+    // to be dropped, so `echo hi | node x.js` read nothing. A process whose
+    // live input channel already is that stdin reads the channel.
+    const pipedStdin = binSpawn?.liveInput !== true && ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
+      ? ctx.stdin : undefined;
     const reservedProcess = binSpawn ? {
       skipSpawn: true, callerPid: binSpawn.callerPid,
       forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
