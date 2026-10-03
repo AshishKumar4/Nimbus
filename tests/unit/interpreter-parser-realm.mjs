@@ -68,13 +68,17 @@ if (process.argv[2] !== '--run') {
   same('test', [realm.test(/^(?:if|for)$/, 'for'), realm.test(/^(?:if|for)$/, 'fo')], [true, false]);
   const text = 'abcabc';
   same('string methods', [realm.slice(text, 1), realm.slice(text, 1, -1), realm.indexOf(text, 'c'), realm.indexOf(text, 'c', 3), realm.lastIndexOf(text, 'a', 2),
-    realm.lastIndexOf(text, 'a'), realm.charAt(text, 2), realm.charCodeAt(text, 9), realm.substr(text, 2, 3), realm.stringIndex(text, 1), realm.stringIndex(text, 6)],
-  [text.slice(1), text.slice(1, -1), text.indexOf('c'), text.indexOf('c', 3), text.lastIndexOf('a', 2), text.lastIndexOf('a'), text.charAt(2), text.charCodeAt(9), text.substr(2, 3), text[1], text[6]]);
+    realm.lastIndexOf(text, 'a'), realm.charAt(text, 2), realm.charCodeAt(text, 9), realm.substr(text, 2, 3), realm.index(text, 1), realm.index(text, 6), realm.index(text, 'length')],
+  [text.slice(1), text.slice(1, -1), text.indexOf('c'), text.indexOf('c', 3), text.lastIndexOf('a', 2), text.lastIndexOf('a'), text.charAt(2), text.charCodeAt(9), text.substr(2, 3), text[1], text[6], text.length]);
   const list = listOf(1, 2, 3, 2);
   same('list methods', [realm.slice(list, 1), realm.slice(list, -2), realm.indexOf(list, 2), realm.lastIndexOf(list, 2), realm.push(list, 5), realm.pop(list), list],
     [[2, 3, 2], [3, 2], 1, 3, 5, 5, [1, 2, 3, 2]]);
   same('toString', [realm.toString(10n), realm.toString(255, 16)], ['10', 'ff']);
   same('call', realm.call(function (a) { return [this, a]; }, 'self', 1), ['self', 1]);
+  const re = /a/giy;
+  same('field', [realm.field(re, 'source'), realm.field(re, 'flags'), realm.field({ flags: 3 }, 'flags'), realm.index(listOf(7), 0), realm.index({ k: 1 }, 'k')],
+    [re.source, re.flags, 3, 7, 1]);
+  assert.throws(() => realm.field(re, 'test'), /read RegExp.prototype.test/, 'a method read off a regexp is refused');
   assert.throws(() => realm.push([], 1), /something other than its own list/, 'a realm array is refused');
   assert.throws(() => realm.charCodeAt({}, 0), /called charCodeAt on a object/);
 
@@ -113,8 +117,10 @@ async function run(dir) {
     { kind: 'module', path: '/w/interpreter.js', text: readFileSync(interpreterFile, 'utf8') },
     ...SYNTAX,
   ].map((u) => ({ __proto__: null, kind: u.kind, path: u.path ?? '', text: u.text, params: u.params ?? [], refused: u.refused === true }));
-  // Names the bundle reads as properties: where a lookup that misses an object reaches Object.prototype.
+  // Names a lookup that misses an object could ask Object.prototype for: those the bundle reads as
+  // properties, and every name in the corpus, whose names acorn keys its own records by.
   const names = new Set(readFileSync(interpreterFile, 'utf8').match(/(?<=\.)[A-Za-z_$][\w$]*/g));
+  for (const unit of corpus) for (const name of unit.text.match(/[A-Za-z_$][\w$]*/g) ?? []) names.add(name);
   for (let i = 0; i < 64; i++) names.add(String(i));
   for (const name of ['type', 'start', 'end', 'name', 'value', 'raw', 'regex', 'bigint', 'body', 'kind', 'key', 'computed', 'directive']) names.add(name);
 
@@ -193,7 +199,12 @@ async function run(dir) {
   };
 
   const iterator = getProto(getProto([][S.iterator]()));
+  const generator = getProto(function* () {}.prototype);
+  const asyncGenerator = getProto(async function* () {}.prototype);
   const prototypes = {
+    '%GeneratorPrototype%': generator, '%AsyncGeneratorPrototype%': asyncGenerator, '%AsyncIteratorPrototype%': getProto(asyncGenerator),
+    '%GeneratorFunction.prototype%': getProto(function* () {}), '%AsyncFunction.prototype%': getProto(async function () {}),
+    '%AsyncGeneratorFunction.prototype%': getProto(async function* () {}), '%RegExpStringIteratorPrototype%': getProto('a'.matchAll(/a/g)),
     'Array.prototype': A.prototype, 'String.prototype': String.prototype, 'Number.prototype': Number.prototype,
     'Boolean.prototype': Boolean.prototype, 'BigInt.prototype': BigInt.prototype, 'Symbol.prototype': S.prototype,
     'RegExp.prototype': RegExp.prototype, 'Function.prototype': Function.prototype, 'Error.prototype': Error.prototype,
@@ -202,7 +213,10 @@ async function run(dir) {
     '%StringIteratorPrototype%': getProto(''[S.iterator]()), 'Map.prototype': Map.prototype, 'Set.prototype': Set.prototype,
     'WeakMap.prototype': WeakMap.prototype, 'WeakSet.prototype': WeakSet.prototype, 'Promise.prototype': Promise.prototype,
   };
-  const statics = { Object: O, Array: A, String, Number, Symbol: S, RegExp, Reflect: R, JSON, Math, BigInt, Map, Set, Promise };
+  const statics = {
+    Object: O, Array: A, String, Number, Symbol: S, RegExp, Reflect: R, JSON, Math, BigInt, Map, Set, Promise, Function, Error,
+    SyntaxError, TypeError,
+  };
   const objectPrototypeKeys = new Set(ownKeys(O.prototype));
   const globals = ['Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'RegExp', 'Reflect', 'JSON', 'Math', 'BigInt', 'Error',
     'SyntaxError', 'TypeError', 'RangeError', 'ReferenceError', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Proxy', 'Function',

@@ -22,9 +22,13 @@
  *     declares it on (`nullPrototypes`), so a field a node lacks is not looked
  *     up anywhere, and no field acorn sets runs a setter;
  *   - a field set on an error acorn made with the realm's constructor is
- *     defined (`define`); a character of the source text past its end is
- *     undefined without a lookup (`stringIndex`); a regexp's source read
- *     where it is declared is the string it is.
+ *     defined (`define`); a computed read is parser-realm's `index`, which
+ *     reads a string's character without looking past its end; a read of a
+ *     name a regexp answers through RegExp.prototype (`source`, `flags`,
+ *     `test`) is parser-realm's `field`, from the regexp's own slots, or
+ *     the string it is, for a regexp read where a literal declares it; a
+ *     built-in's member acorn reads is its capture, and any other read of
+ *     a built-in method's name stops the build.
  *
  * Anything the rewrite does not know how to make safe (a global it has no
  * capture for, `instanceof`, a template literal, an iteration) stops the
@@ -47,9 +51,17 @@ const GLOBAL_MEMBERS = {
   Array: { isArray: 'arrayIsArray' },
   String: { fromCharCode: 'stringFromCharCode' },
   Symbol: { iterator: 'symbolIterator' },
+  console: { warn: 'consoleWarn' },
 };
 
-/** Globals acorn names, each parser-realm's export of the same name. */
+/**
+ * parser-realm's exports that are records of captured methods, and the names
+ * they hold: what acorn reads of Object.prototype, through the binding it
+ * keeps it in (`var ref = Object.prototype; var toString = ref.toString`).
+ */
+const RECORDS = { ObjectPrototypeMethods: new Set(['hasOwnProperty', 'toString']) };
+
+/** Globals acorn names, each parser-realm's export of the same name: called, constructed or tested with typeof, never read from. */
 const GLOBALS = new Set(['String', 'RegExp', 'SyntaxError', 'Error', 'BigInt', 'parseInt', 'parseFloat', 'Symbol', 'console']);
 
 /** Methods of strings, lists, regexps and functions acorn calls: parser-realm's functions of these names. */
@@ -61,22 +73,69 @@ export const ROUTED_METHODS = new Set([
 /** Realm constructors whose instances acorn sets fields on. */
 const REALM_CONSTRUCTORS = new Set(['SyntaxError', 'Error', 'RegExp']);
 
-/** Names a built-in prototype or constructor has, in the realm running the build. */
+/**
+ * Names the built-in prototypes have, in the realm running the build: what
+ * a read of a string, number, list, regexp, function or error (or any object
+ * that inherits from Object.prototype) finds there. (A constructor's own
+ * members, `String.raw`, are read only through the constructor, which acorn
+ * names only as a global.) Not `length`, which each of those has as its own.
+ */
 const BUILTIN_NAMES = (() => {
   const iterator = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
   const owners = [
-    Object, Object.prototype, Function.prototype, Array, Array.prototype, String, String.prototype, Number, Number.prototype,
-    Boolean.prototype, BigInt.prototype, Symbol, Symbol.prototype, RegExp, RegExp.prototype, Error.prototype, iterator,
+    Object.prototype, Function.prototype, Array.prototype, String.prototype, Number.prototype, Boolean.prototype,
+    BigInt.prototype, Symbol.prototype, RegExp.prototype, Error.prototype, iterator,
   ];
   const names = new Set();
   for (const owner of owners) for (const name of Object.getOwnPropertyNames(owner)) names.add(name);
-  for (const name of ['length', 'prototype', 'name', 'constructor']) names.delete(name);
+  names.delete('length');
   return names;
 })();
 
 /** RegExp.prototype's accessors (source, flags, global, ...). */
 const REGEXP_ACCESSORS = new Set(Object.getOwnPropertyNames(RegExp.prototype)
   .filter((name) => typeof Object.getOwnPropertyDescriptor(RegExp.prototype, name).get === 'function'));
+
+/**
+ * Names a regexp answers through RegExp.prototype that acorn reads, as
+ * fields of its own objects (`node.source`, `scope.flags`, `node.test`) or of
+ * a regexp: read through parser-realm's `field`, which answers a regexp's
+ * accessor from its internal slots and refuses a method of one, since which
+ * the receiver is cannot be known from the syntax.
+ */
+function routedFields(acornFields) {
+  const names = new Set(REGEXP_ACCESSORS);
+  for (const name of Object.getOwnPropertyNames(RegExp.prototype)) if (acornFields.has(name)) names.add(name);
+  return names;
+}
+
+/** Names acorn sets as fields of its objects: assigned, or keys of its object literals. */
+function acornFieldNames(program) {
+  const names = new Set();
+  walk(program, (node) => {
+    if (node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' && !node.left.computed) names.add(node.left.property.name);
+    if (node.type === 'Property' && !node.computed && node.key.type === 'Identifier') names.add(node.key.name);
+  });
+  return names;
+}
+
+/** A name, `this`, or a chain of fields from one: what can be read again without doing anything else. */
+function isPlainChain(node) {
+  if (node.type === 'Identifier') return node.name !== REALM;
+  if (node.type === 'ThisExpression') return true;
+  return node.type === 'MemberExpression' && !node.computed && isPlainChain(node.object);
+}
+
+/** Whether `member` is read: not called, assigned, updated or deleted. */
+function isRead(member, parent) {
+  if (!parent) return true;
+  if (parent.type === 'CallExpression' && parent.callee === member) return false;
+  if (parent.type === 'AssignmentExpression' && parent.left === member) return false;
+  if (parent.type === 'UpdateExpression') return false;
+  if (parent.type === 'UnaryExpression' && parent.operator === 'delete') return false;
+  if (parent.type === 'ForInStatement' && parent.left === member) return false;
+  return true;
+}
 
 const SKIP_KEYS = new Set(['type', 'start', 'end', 'loc', 'range']);
 
@@ -211,13 +270,6 @@ function isReference(id, parent) {
   }
 }
 
-/** The name a member expression's chain ends in: `x` for `x`, `y` for `a.b.y`. */
-function finalName(node) {
-  if (node.type === 'Identifier') return node.name;
-  if (node.type === 'MemberExpression' && !node.computed) return node.property.name;
-  return null;
-}
-
 /** An object literal, or the one the rewrite gave parser-realm's `own`. */
 function objectLiteral(node) {
   if (!node) return null;
@@ -308,6 +360,19 @@ export function primordialAcorn(source, realmSpecifier) {
     const decl = references.get(id);
     return decl && decl !== 'arguments' ? moduleBindings.get(decl) ?? null : null;
   };
+  const acornFields = acornFieldNames(program);
+  const fields = routedFields(acornFields);
+  // One of parser-realm's records: named (`Object.prototype`), or a module binding that holds it (`ref`).
+  const recordExpression = (n) => {
+    if (!n || n.type !== 'MemberExpression' || n.computed || n.object.type !== 'Identifier' || references.get(n.object) !== null) return null;
+    const members = GLOBAL_MEMBERS[n.object.name];
+    const capture = members && members[n.property.name];
+    return capture && RECORDS[capture] ? capture : null;
+  };
+  const recordOf = (n) => {
+    const binding = n.type === 'Identifier' ? bindingOf(n) : null;
+    return recordExpression(n) ?? recordExpression(binding && binding.init);
+  };
   const constructors = new Set();
   const realmInstances = new Set();
   walk(program, (node, parent) => {
@@ -336,6 +401,7 @@ export function primordialAcorn(source, realmSpecifier) {
           return;
         }
         if (!GLOBALS.has(node.name)) refuse(node, `acorn names the global ${node.name}, which parser-realm has no capture of`);
+        if (parent.type === 'MemberExpression' && parent.object === node) refuse(node, `acorn reads ${node.name}'s members, which are the realm's`);
         rewrites.set(node, () => `${REALM}.${node.name}`);
         return;
       }
@@ -371,20 +437,50 @@ export function primordialAcorn(source, realmSpecifier) {
         return;
       }
       case 'MemberExpression': {
-        if (parent && parent.type === 'CallExpression' && parent.callee === node) return;
-        if (parent && parent.type === 'AssignmentExpression' && parent.left === node) return;
-        if (node.computed && finalName(node.object) === 'input') {
-          rewrites.set(node, () => `${REALM}.stringIndex(${emit(node.object)}, ${emit(node.property)})`);
+        // A global's member is the global's capture (above); `this` is always one of acorn's objects.
+        if (node.object.type === 'Identifier' && references.get(node.object) === null) return;
+        if (!isRead(node, parent) || node.object.type === 'ThisExpression') return;
+        // A computed read may index a string: past its end, a string would look further. Where the
+        // object is a name or a chain of fields (read twice, as reading them does nothing else), a
+        // string goes to parser-realm and anything else is read here, where V8 caches its shape.
+        if (node.computed) {
+          if (isPlainChain(node.object)) {
+            rewrites.set(node, () => {
+              const object = emit(node.object);
+              return `(typeof ${object} === "string" ? ${REALM}.index(${object}, ${emit(node.property)}) : ${object}[${emit(node.property)}])`;
+            });
+          } else {
+            rewrites.set(node, () => `${REALM}.index(${emit(node.object)}, ${emit(node.property)})`);
+          }
           return;
         }
-        if (!node.computed && REGEXP_ACCESSORS.has(node.property.name) && node.object.type === 'Identifier') {
-          const binding = bindingOf(node.object);
-          const init = binding && binding.init;
-          if (init && init.type === 'Literal' && init.regex) {
-            const value = Reflect.get(new RegExp(init.regex.pattern, init.regex.flags), node.property.name);
-            rewrites.set(node, () => JSON.stringify(value));
-          }
+        const name = node.property.name;
+        // A regexp declared by a literal: its accessor's value, now.
+        const binding = node.object.type === 'Identifier' ? bindingOf(node.object) : null;
+        if (REGEXP_ACCESSORS.has(name) && binding && binding.init && binding.init.type === 'Literal' && binding.init.regex) {
+          const value = Reflect.get(new RegExp(binding.init.regex.pattern, binding.init.regex.flags), name);
+          rewrites.set(node, () => JSON.stringify(value));
+          return;
         }
+        const record = recordOf(node.object);
+        if (record) {
+          if (!RECORDS[record].has(name)) refuse(node, `acorn reads ${name} of ${record}, which parser-realm does not hold`);
+          rewrites.set(node, () => `${REALM}.${record}.${name}`);
+          return;
+        }
+        if (fields.has(name)) {
+          // As a computed read is: a regexp goes to parser-realm, anything else is read here.
+          if (isPlainChain(node.object)) {
+            rewrites.set(node, () => {
+              const object = emit(node.object);
+              return `(${REALM}.isRegExp(${object}) ? ${REALM}.field(${object}, ${JSON.stringify(name)}) : ${object}.${name})`;
+            });
+          } else {
+            rewrites.set(node, () => `${REALM}.field(${emit(node.object)}, ${JSON.stringify(name)})`);
+          }
+          return;
+        }
+        if (BUILTIN_NAMES.has(name) && !acornFields.has(name)) refuse(node, `a read of the built-in ${name}, which acorn has no field of`);
         return;
       }
       case 'BinaryExpression':
@@ -424,11 +520,13 @@ export function primordialAcorn(source, realmSpecifier) {
 /**
  * What of the realm the rewritten parser `code` can still reach, one line
  * each (none, for the parser the interpreter bundles): a global other than
- * parser-realm's namespace; a built-in method called by name; a method no
- * code of acorn's defines; a list or object literal that inherits; a
- * constructor whose prototype inherits; a field set on an error made by the
- * realm's constructor; a regexp's accessor or a source character read
- * through the realm; syntax that iterates or consults the realm.
+ * parser-realm's namespace; a built-in method called or read by name, on
+ * any receiver but `this`; a method no code of acorn's defines; a computed
+ * read, or a read of a name a regexp answers, not made through parser-realm;
+ * a member of one of parser-realm's exports other than what a record holds;
+ * a list or object literal that inherits; a constructor whose prototype
+ * inherits; a field set on an error made by the realm's constructor; syntax
+ * that iterates or consults the realm.
  */
 export function parserReaches(code) {
   const program = parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
@@ -437,15 +535,28 @@ export function parserReaches(code) {
   const reaches = [];
   const at = (node, what) => reaches.push(`${where(code, node)}: ${what}`);
   const isRealm = (node) => node.type === 'Identifier' && node.name === REALM && references.get(node) !== null;
-  const rootedInRealm = (node) => {
-    let n = node;
-    while (n.type === 'MemberExpression') n = n.object;
-    return isRealm(n);
+  /** `typeof o === "string" ? $$.index(o, k) : o[k]`, the rewrite's guarded computed read, for `o[k]` its alternate. */
+  const guarded = (member, conditional) => {
+    if (!conditional || conditional.type !== 'ConditionalExpression' || conditional.alternate !== member || !isPlainChain(member.object)) return false;
+    const text = (n) => code.slice(n.start, n.end);
+    const test = conditional.test, consequent = conditional.consequent;
+    return test.type === 'BinaryExpression' && test.operator === '===' && test.left.type === 'UnaryExpression' && test.left.operator === 'typeof'
+      && text(test.left.argument) === text(member.object) && test.right.type === 'Literal' && test.right.value === 'string'
+      && isRealmCall(consequent, 'index') && text(consequent.arguments[0]) === text(member.object) && text(consequent.arguments[1]) === text(member.property);
+  };
+  /** `$$.isRegExp(o) ? $$.field(o, "name") : o.name`, the rewrite's guarded field read, for `o.name` its alternate. */
+  const guardedField = (member, conditional) => {
+    if (!conditional || conditional.type !== 'ConditionalExpression' || conditional.alternate !== member || !isPlainChain(member.object)) return false;
+    const text = (n) => code.slice(n.start, n.end);
+    const test = conditional.test, consequent = conditional.consequent;
+    return isRealmCall(test, 'isRegExp') && text(test.arguments[0]) === text(member.object)
+      && isRealmCall(consequent, 'field') && text(consequent.arguments[0]) === text(member.object)
+      && consequent.arguments[1].type === 'Literal' && consequent.arguments[1].value === member.property.name;
   };
   const isRealmCall = (node, name) => node && node.type === 'CallExpression' && node.callee.type === 'MemberExpression'
     && isRealm(node.callee.object) && !node.callee.computed && node.callee.property.name === name;
 
-  // Module bindings: constructors and their nulling, regexp-valued names, realm instances.
+  // Module bindings: constructors and their nulling, realm instances.
   const declarations = new Map();
   for (const s of program.body) {
     if (s.type === 'VariableDeclaration') for (const d of s.declarations) declarations.set(d.id, { statement: s, init: d.init });
@@ -453,34 +564,8 @@ export function parserReaches(code) {
   }
   const initializers = new Map();
   walk(program, (n) => { if (n.type === 'VariableDeclarator') initializers.set(n.id, n.init); });
-  const regexpNames = new Set();
-  const regexpReturning = new Set();
-  const regexpValued = (n) => {
-    if (!n) return false;
-    if (n.type === 'Literal' && n.regex) return true;
-    if (n.type === 'NewExpression' && n.callee.type === 'MemberExpression' && isRealm(n.callee.object) && n.callee.property.name === 'RegExp') return true;
-    if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && regexpReturning.has(n.callee.name)) return true;
-    if (n.type === 'LogicalExpression' || n.type === 'ConditionalExpression') return childNodes(n).some(regexpValued);
-    if (n.type === 'AssignmentExpression') return regexpValued(n.right);
-    return false;
-  };
-  walk(program, (node) => {
-    if (node.type === 'FunctionDeclaration') {
-      let returns = false;
-      walk(node.body, (n) => { if (n.type === 'ReturnStatement' && regexpValued(n.argument)) returns = true; });
-      if (returns) regexpReturning.add(node.id.name);
-    }
-  });
-  // Regexp-valued locals by their declaration, regexp-valued fields by name.
-  const regexpBindings = new Set();
-  walk(program, (node) => {
-    if (node.type === 'VariableDeclarator' && regexpValued(node.init)) regexpBindings.add(node.id);
-    if (node.type === 'AssignmentExpression' && regexpValued(node.right)) {
-      if (node.left.type === 'Identifier') regexpBindings.add(references.get(node.left));
-      else { const name = finalName(node.left); if (name) regexpNames.add(name); }
-    }
-  });
-  const regexpReceiver = (n) => (n.type === 'Identifier' ? regexpBindings.has(references.get(n)) : regexpNames.has(finalName(n)));
+  const acornFields = acornFieldNames(program);
+  const fields = routedFields(acornFields);
 
   const nulled = new Set();
   walk(program, (node) => {
@@ -527,7 +612,7 @@ export function parserReaches(code) {
       case 'CallExpression': {
         const callee = node.callee;
         if (callee.type !== 'MemberExpression' || callee.computed) return;
-        if (rootedInRealm(callee.object) || isRealm(callee.object)) return;
+        if (isRealm(callee.object)) return;
         const name = callee.property.name;
         const own = callee.object.type === 'ThisExpression';
         if (BUILTIN_NAMES.has(name) && !(own && methods.has(name))) at(node, `a call of the built-in method ${name}`);
@@ -535,13 +620,22 @@ export function parserReaches(code) {
         return;
       }
       case 'MemberExpression': {
-        if (node.computed && finalName(node.object) === 'input' && !(parent && parent.type === 'AssignmentExpression' && parent.left === node)) {
-          at(node, 'a character of the source text read through the realm');
+        const object = node.object;
+        if (object.type === 'MemberExpression' && isRealm(object.object)) {
+          // A member of one of parser-realm's exports: only a record's, and only what it holds.
+          const record = !object.computed && RECORDS[object.property.name];
+          if (!record || node.computed || !record.has(node.property.name)) at(node, `a member of ${code.slice(object.start, object.end)}, which is the realm's`);
+        } else if (isRead(node, parent) && object.type !== 'ThisExpression' && !isRealm(object)) {
+          const name = node.computed ? null : node.property.name;
+          if (name === null) {
+            if (!guarded(node, parent)) at(node, 'a computed read, which may index a string past its end');
+          } else if (fields.has(name)) {
+            if (!guardedField(node, parent)) at(node, `a read of ${name}, which a regexp answers through the realm`);
+          } else if (BUILTIN_NAMES.has(name) && !acornFields.has(name)) {
+            at(node, `a read of the built-in ${name}`);
+          }
         }
-        if (!node.computed && REGEXP_ACCESSORS.has(node.property.name) && regexpReceiver(node.object)) {
-          at(node, `RegExp.prototype.${node.property.name} read through the realm`);
-        }
-        if (!node.computed && node.object.type === 'Identifier' && (node.property.name === 'prototype' || (parent && parent.type === 'AssignmentExpression' && parent.left === node))) {
+        if (!node.computed && object.type === 'Identifier' && (node.property.name === 'prototype' || (parent && parent.type === 'AssignmentExpression' && parent.left === node))) {
           const decl = references.get(node.object);
           const entry = decl && declarations.get(decl);
           if (entry && entry.init && isFunction(entry.init) && !nullingFollows(node.object)) at(node, `a constructor whose prototype inherits (${node.object.name})`);

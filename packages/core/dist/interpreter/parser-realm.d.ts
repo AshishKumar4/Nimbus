@@ -49,6 +49,7 @@ export declare const parseFloat: typeof globalThis.parseFloat;
 export declare const Symbol: SymbolConstructor;
 /** acorn warns on the console only for a missing ecmaVersion, which the interpreter always gives. */
 export declare const console: undefined;
+export declare const consoleWarn: undefined;
 /**
  * What acorn reads of Object.prototype (`hasOwnProperty`, `toString`, for its
  * fallbacks when Object.hasOwn or Array.isArray is missing, which it never
@@ -87,6 +88,18 @@ export declare function match(receiver: unknown, re: unknown): RegExpExecArray |
 export declare function call(receiver: unknown, thisArg: unknown, ...args: unknown[]): unknown;
 /** A number's or bigint's toString. */
 export declare function toString(receiver: unknown, radix?: number): string;
-/** `input[index]` of the source text: its character, or undefined past its end (where a string would look further). */
-export declare function stringIndex(receiver: unknown, index: number): string | undefined;
+/**
+ * `receiver[key]`: a string's character, or undefined past its end, where a
+ * string would look further, through String.prototype; any other object's
+ * property (acorn's objects and lists inherit nothing).
+ */
+export declare function index(receiver: unknown, key: unknown): unknown;
+/** Whether `value` is a regexp acorn made: one with the prototype regexps are made with, which no program can change on it. */
+export declare function isRegExp(value: unknown): boolean;
+/**
+ * `receiver.name` for a name a regexp answers through RegExp.prototype
+ * (`source`, `flags`, `test`): a regexp's accessor, from its own slots (a
+ * method of one is refused); any other object's field.
+ */
+export declare function field(receiver: unknown, name: string): unknown;
 //# sourceMappingURL=parser-realm.d.ts.map

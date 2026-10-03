@@ -35,7 +35,7 @@
 // runs the bundled parser in a realm that logs every built-in it reaches.
 
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -164,9 +164,28 @@ assert.deepEqual(violations, [], `the interpreter goes through ${violations.leng
 console.log(`${FILES.length} files: the interpreter calls only the built-ins primordials.ts captured`);
 
 const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
-const { parserReaches } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
+const { parserReaches, primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
 const { parser } = await bundleInterpreter({ start: fileURLToPath(new URL('../../packages/worker/', import.meta.url)) });
 const reaches = parserReaches(parser);
 console.log(reaches.join('\n'));
 assert.deepEqual(reaches, [], `the bundled parser reaches ${reaches.length} built-ins a program can replace`);
 console.log(`the bundled parser (${parser.length} characters) reaches the realm only through parser-realm.ts`);
+
+// What an acorn upgrade could add, which the rewrite must refuse or make safe however it is spelled.
+const acornSource = readFileSync(createRequire(join(CORE, 'package.json')).resolve('acorn').replace(/acorn\.js$/, 'acorn.mjs'), 'utf8');
+const ANCHOR = 'var lineBreakG = new RegExp(lineBreak.source, "g");';
+assert.ok(acornSource.includes(ANCHOR) && acornSource.includes('switch (this.input[this.pos]) {'), 'the upgrade fixtures still find their places in acorn');
+const upgrades = {
+  'a cached RegExp.prototype method': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar runRegExp = RegExp.prototype.exec;`), null],
+  'a cached method of a regexp': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar testLine = lineBreak.test;`), '$$.field(lineBreak, "test")'],
+  'an alias of the source text, indexed': [acornSource.replace('switch (this.input[this.pos]) {', 'var text = this.input; switch (text[this.pos]) {'), '$$.index(text, this.pos)'],
+  'an alias of a regexp, read for its source': [acornSource.replace(ANCHOR, 'var lineBreakAlias = lineBreak;\nvar lineBreakG = new RegExp(lineBreakAlias.source, "g");'), '$$.field(lineBreakAlias, "source")'],
+};
+for (const [name, [text, routed]] of Object.entries(upgrades)) {
+  let rewritten = null;
+  try { rewritten = primordialAcorn(text, '/parser-realm.ts').code; } catch (e) { assert.equal(routed, null, `${name}: refused (${e.message})`); continue; }
+  assert.ok(routed !== null && rewritten.includes(routed), `${name}: made safe (${routed})`);
+  assert.deepEqual(parserReaches(rewritten), [], `${name}: no reach once rewritten`);
+  assert.ok(parserReaches(text).length > 0, `${name}: found by the check unrewritten`);
+}
+console.log(`${Object.keys(upgrades).length} upgrade fixtures: refused or made safe`);

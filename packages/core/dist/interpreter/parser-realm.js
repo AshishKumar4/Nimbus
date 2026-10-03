@@ -42,6 +42,8 @@ const ArrayPrototypeIndexOf = primordials.ArrayPrototypeIndexOf;
 const ArrayPrototypeLastIndexOf = primordials.ArrayPrototypeLastIndexOf;
 const RegExpPrototypeExec = primordials.RegExpPrototypeExec;
 const RegExpPrototypeAccessors = primordials.RegExpPrototypeAccessors;
+const RegExpPrototype = primordials.RegExp.prototype;
+const reflectGet = primordials.reflectGet;
 const NumberPrototypeToString = primordials.NumberPrototypeToString;
 const BigIntPrototypeToString = primordials.BigIntPrototypeToString;
 const SafeList = primordials.SafeList;
@@ -64,6 +66,7 @@ export const parseFloat = primordials.parseFloatOf;
 export const Symbol = primordials.SymbolConstructor;
 /** acorn warns on the console only for a missing ecmaVersion, which the interpreter always gives. */
 export const console = undefined;
+export const consoleWarn = undefined;
 /**
  * What acorn reads of Object.prototype (`hasOwnProperty`, `toString`, for its
  * fallbacks when Object.hasOwn or Array.isArray is missing, which it never
@@ -263,8 +266,34 @@ export function toString(receiver, radix) {
         return reflectApply(NumberPrototypeToString, receiver, [radix]);
     return refuse(`called toString on a ${typeof receiver}`);
 }
-/** `input[index]` of the source text: its character, or undefined past its end (where a string would look further). */
-export function stringIndex(receiver, index) {
-    const input = text(receiver, 'index');
-    return index >= 0 && index < input.length && index % 1 === 0 ? reflectApply(StringPrototypeCharAt, input, [index]) : undefined;
+/**
+ * `receiver[key]`: a string's character, or undefined past its end, where a
+ * string would look further, through String.prototype; any other object's
+ * property (acorn's objects and lists inherit nothing).
+ */
+export function index(receiver, key) {
+    if (typeof receiver === 'string') {
+        if (key === 'length')
+            return receiver.length;
+        return typeof key === 'number' && key >= 0 && key < receiver.length && key % 1 === 0
+            ? reflectApply(StringPrototypeCharAt, receiver, [key]) : undefined;
+    }
+    if (typeof receiver !== 'object' || receiver === null || (typeof key !== 'string' && typeof key !== 'number')) {
+        return refuse(`indexed a ${typeof receiver} by a ${typeof key}`);
+    }
+    return reflectGet(receiver, key);
+}
+/** Whether `value` is a regexp acorn made: one with the prototype regexps are made with, which no program can change on it. */
+export function isRegExp(value) {
+    return typeof value === 'object' && value !== null && reflectGetPrototypeOf(value) === RegExpPrototype;
+}
+/**
+ * `receiver.name` for a name a regexp answers through RegExp.prototype
+ * (`source`, `flags`, `test`): a regexp's accessor, from its own slots (a
+ * method of one is refused); any other object's field.
+ */
+export function field(receiver, name) {
+    if (typeof receiver !== 'object' || receiver === null)
+        return refuse(`read ${name} of a ${typeof receiver}`);
+    return isRegExp(receiver) ? accessor(receiver, name) : reflectGet(receiver, name);
 }
