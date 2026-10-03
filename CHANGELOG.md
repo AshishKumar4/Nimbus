@@ -20,7 +20,13 @@ published independently in the `@nimbus-sh` npm scope.
   where it read all of it first. A node run by a child's script reads the
   script's stdin, not the child's queue, whose pid it inherits in its
   environment. A runtime whose stdout is a pipe still hands its output
-  back when it exits.
+  back when it exits. A command that does not read its stdin no longer
+  waits on it: the shell's builtins (`printf`, `true`, `echo`, `test` and
+  others) used to read their stdin to its end before running, so `sleep 5 |
+  true` took 5 seconds.
+- Fixed: bytes a parent wrote to a long-running child's stdin (a server it
+  started with `child_process.spawn`) were decoded as UTF-8 on the way, so
+  a byte that is not UTF-8 arrived as U+FFFD. They arrive as written.
 
 ## 2026-10-03
 
