@@ -19,7 +19,11 @@ published independently in the `@nimbus-sh` npm scope.
   stays beneath the root, finds every directory it passes searchable, the
   ones an absolute link walks from `/` included, and agrees with the
   unrestricted walk.
-
+- `python3` and `ruby` fail when they cannot enter the shell's working
+  directory, naming it (`python3: can't enter working directory '/x':
+  [Errno 44] No such file or directory`, exit 1), instead of running the
+  program in `/`. `cd /home/user/site && python3 -m http.server` served
+  "Directory listing for /".
 
 ## 2026-10-02
 

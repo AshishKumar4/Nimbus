@@ -228,6 +228,7 @@ export function makeRubyRunnerFactory(deps: {
         rbArgv,
         userEnv,
         progName,
+        binName,
         cwd,
       };
 
@@ -571,6 +572,8 @@ interface RubyFacetArgs {
   rbArgv: string[];
   userEnv: Record<string, string>;
   progName: string;
+  /** The command that ran it (ruby, ruby3, gem, ...): what its own refusals name. */
+  binName: string;
   cwd: string;
 }
 
@@ -580,6 +583,7 @@ export interface RubyFacetCallArgs {
   rbArgv: string[];
   userEnv: Record<string, string>;
   progName: string;
+  binName: string;
   cwd: string;
 }
 
@@ -642,6 +646,7 @@ function toRubyCallArgs(args: RubyFacetArgs): RubyFacetCallArgs {
     rbArgv: args.rbArgv,
     userEnv: args.userEnv,
     progName: args.progName,
+    binName: args.binName,
     cwd: args.cwd,
   };
 }
@@ -691,6 +696,7 @@ async function dispatchRubyFacet(
       rbArgv: inArgs.rbArgv,
       userEnv: inArgs.userEnv,
       progName: inArgs.progName,
+      binName: inArgs.binName,
       cwd: inArgs.cwd,
     });
   };
@@ -1313,6 +1319,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   // String keys so ENV[k] = v works without TypeError.
   const envHashRb = rubyHashLiteral(args.userEnv || {});
   const cwdRb = rubyStringLiteral(args.cwd || '/home/user');
+  const cwdRefusalRb = rubyStringLiteral(args.binName + ": can't enter working directory '" + (args.cwd || '/home/user') + "': ");
 
   const preludeRb = [
     // Reset exit state FIRST so partial prelude failures still
@@ -1330,7 +1337,10 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     'ENV["GEM_HOME"] ||= File.join(ENV["HOME"], ".gem")',
     'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
     'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
-    'begin; Dir.chdir(' + cwdRb + '); rescue Exception; end',
+    // A cwd it cannot enter fails the run before the program starts (the
+    // body below), as a shell's cd fails, rather than running it in '/'.
+    '$__nimbus_cwd_error = nil',
+    'begin; Dir.chdir(' + cwdRb + '); rescue SystemCallError => e; $__nimbus_cwd_error = e; end',
     'begin; $LOAD_PATH.unshift(Dir.pwd) unless $LOAD_PATH.include?(Dir.pwd); rescue Exception; end',
     'begin; (ENV["NIMBUS_GEM_LIBS"] || "").split(":").reverse_each { |p| $LOAD_PATH.unshift(p) if p && p != "" && !$LOAD_PATH.include?(p) }; rescue Exception; end',
   ].join('; ');
@@ -1343,6 +1353,10 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   const userWrapper = [
     '$__nimbus_main = Fiber.new do',
     '  begin',
+    '    if $__nimbus_cwd_error',
+    '      $stderr.write(' + cwdRefusalRb + ' + "[Errno #{$__nimbus_cwd_error.errno}] #{SystemCallError.new(nil, $__nimbus_cwd_error.errno).message}\\\\n")',
+    '      raise SystemExit.new(1)',
+    '    end',
     '    ' + 'eval(' + userCodeRb + ', TOPLEVEL_BINDING, ' + progNameRb + ', 1)',
     '  rescue SystemExit => e',
     '    $__nimbus_exit = e.status',
