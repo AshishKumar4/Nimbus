@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { asciiBytes, concatBytes, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU uniq (coreutils 9.7) on bytes: -c, -d, -D/--all-repeated, --group,
 // -u, -i, -f, -s, -w, -z, and an OUTPUT operand. Lines compare as bytes
@@ -90,7 +91,7 @@ const command: Command = async (ctx) => {
     for await (const chunk of inputChunks(ctx, operands[0])) parts.push(chunk);
     input = concatBytes(parts);
   } catch (error) {
-    await ctx.stderr.write(`uniq: ${operands[0]}: ${fsErrorText(error)}\n`);
+    await ctx.stderr.write(`uniq: ${operands[0]}: ${strerror(error)}\n`);
     return 1;
   }
 
@@ -160,7 +161,7 @@ const command: Command = async (ctx) => {
     try {
       await ctx.vfs.writeFile(resolve(ctx.cwd, operands[1]), bytes);
     } catch (error) {
-      await ctx.stderr.write(`uniq: ${operands[1]}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`uniq: ${operands[1]}: ${strerror(error)}\n`);
       return 1;
     }
     return 0;

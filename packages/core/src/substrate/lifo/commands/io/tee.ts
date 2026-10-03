@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU tee (coreutils 9.7) on bytes, streaming: standard input to standard
 // output and every FILE as it arrives. -a appends; a FILE that cannot be
@@ -43,7 +44,7 @@ const command: Command = async (ctx) => {
       else if ((await ctx.vfs.stat(path)) === null) await ctx.vfs.writeFile(path, new Uint8Array(0));
       outputs.push({ path, offset: 0 });
     } catch (error) {
-      await ctx.stderr.write(`tee: ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`tee: ${file}: ${strerror(error)}\n`);
       status = 1;
     }
   }
@@ -55,7 +56,7 @@ const command: Command = async (ctx) => {
         else if (append) await ctx.vfs.appendFile(out.path, chunk);
         else { await ctx.vfs.writeRange(out.path, out.offset, chunk); out.offset += chunk.length; }
       } catch (error) {
-        await ctx.stderr.write(`tee: ${out.path}: ${fsErrorText(error)}\n`);
+        await ctx.stderr.write(`tee: ${out.path}: ${strerror(error)}\n`);
         status = 1;
       }
     }

@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { asciiBytes, concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU nl (coreutils 9.7) on bytes. Logical pages of header, body and footer
 // sections, delimited by lines that are exactly `\:\:\:`, `\:\:` and `\:`
@@ -142,7 +143,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
       bytes = concatBytes(parts);
     } catch (error) {
-      await ctx.stderr.write(`nl: ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`nl: ${file}: ${strerror(error)}\n`);
       status = 1;
       continue;
     }

@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a filesystem refusal kept its reason only in its `cause`. A
+  confined principal's widening `chmod` reached the caller as "EPERM:
+  operation not permitted, chmod" and lost "use u+x". Every SqliteVFS
+  refusal now carries its reason as its own field, kept when a layer
+  rewords the error for its call (`VfsError.detail`).
+- Fixed: `normalizeVfsPath('/../home/main/SOUL.md')` kept the leading `..`
+  (`../home/main/SOUL.md`), and `resolveVfsPath` too. `..` now stops at the
+  root, as POSIX resolves it, and Composite's `normalizePath` is the same
+  normalizer.
+- Fixed: shell errors named a storage key and Node's message:
+  `ls /tmp/spoon` printed "ENOENT: no such file or directory, stat
+  'tmp/spoon'". `ls`, `chmod`, `cp` and `mv` now print GNU's words with the
+  operand as written ("ls: cannot access '/tmp/spoon': No such file or
+  directory"), and a refusal's own reason where it gives one. The shell's
+  four strerror tables are one, `strerror` in `@nimbus-sh/core/vfs/vfs-error.js`;
+  `EPERM` now reads "Operation not permitted", not "Permission denied".
+
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { concatBytes, fsErrorText, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // util-linux rev (2.41) in a UTF-8 locale: each line's characters reversed,
 // its newline kept (a last line without one gets none). A NUL is a
@@ -23,7 +24,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
       bytes = concatBytes(parts);
     } catch (error) {
-      await ctx.stderr.write(`rev: cannot open ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`rev: cannot open ${file}: ${strerror(error)}\n`);
       status = 1;
       continue;
     }

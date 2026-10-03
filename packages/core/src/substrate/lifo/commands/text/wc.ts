@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { asciiBytes, fsErrorText, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU wc (coreutils 9.7) in a UTF-8 locale, on bytes: -l counts newlines;
 // -w counts runs of non-space characters (a byte that is not valid UTF-8 is
@@ -142,7 +143,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file)) counter.feed(chunk);
       results.push({ label: file, counts: counter.finish(), regular: file !== undefined && file !== '-' });
     } catch (error) {
-      await ctx.stderr.write(`wc: ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`wc: ${file}: ${strerror(error)}\n`);
       status = 1;
       results.push({ label: file, counts: null, regular: false });
     }

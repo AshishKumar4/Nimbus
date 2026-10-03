@@ -39,12 +39,15 @@ export interface VfsErrorOptions extends ErrorOptions {
   syscall?: string;
   /** The second path of a call that names two (rename, copyfile, symlink). */
   dest?: string;
+  /** Why, in Nimbus's words, where it knows more than the code says (`use u+x`). */
+  detail?: string;
 }
 
 export class VfsError extends Error {
   readonly errno: number;
   declare readonly syscall?: string;
   declare readonly dest?: string;
+  declare readonly detail?: string;
 
   /**
    * `message` is what Node's message says before the path: the description
@@ -59,6 +62,7 @@ export class VfsError extends Error {
     this.errno = VFS_ERRNO[code];
     if (options?.syscall !== undefined) this.syscall = options.syscall;
     if (options?.dest !== undefined) this.dest = options.dest;
+    if (options?.detail !== undefined) this.detail = options.detail;
   }
 }
 
@@ -72,10 +76,9 @@ export function syscallError(
   code: VfsErrorCode,
   syscall: string,
   path?: string,
-  options: VfsErrorOptions & { detail?: string } = {},
+  options: VfsErrorOptions = {},
 ): VfsError {
-  const { detail, ...rest } = options;
-  return new VfsError(code, `${detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...rest, syscall });
+  return new VfsError(code, `${options.detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...options, syscall });
 }
 
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
@@ -94,6 +97,7 @@ export function isVfsErrorCode(code: unknown): code is VfsErrorCode {
  * error's own where it names one. The layer's error is the cause.
  * A VfsError naming a call or a path is returned as it is; one naming
  * neither (a storage quota's) keeps its words and gains this call's.
+ * A layer's own reason (`detail`) is kept as the description.
  * Anything without a known code is returned as it is.
  */
 export function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown {
@@ -107,7 +111,8 @@ export function toVfsError(error: unknown, syscall: string, path: string, dest?:
     const call = 'syscall' in error && typeof error.syscall === 'string' ? error.syscall : syscall;
     // The caller's second path belongs to its own call, not to another the layer names.
     const second = 'dest' in error && typeof error.dest === 'string' ? error.dest : call === syscall ? dest : undefined;
-    return syscallError(code, call, 'path' in error && typeof error.path === 'string' ? error.path : path, { dest: second, cause: error });
+    const detail = 'detail' in error && typeof error.detail === 'string' ? error.detail : undefined;
+    return syscallError(code, call, 'path' in error && typeof error.path === 'string' ? error.path : path, { dest: second, detail, cause: error });
   }
   return error;
 }
@@ -139,6 +144,19 @@ export function renameOutcome(error: unknown): RenameOutcome | undefined {
     if (renamed === 'none' || renamed === 'all') return renamed;
   }
   return undefined;
+}
+
+/**
+ * What GNU coreutils print for a filesystem error after the operand: the
+ * refusal's own reason where Nimbus gives one, else strerror(3) for its code.
+ */
+export function strerror(error: unknown): string {
+  if (error instanceof VfsError && error.detail !== undefined) return error.detail;
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  if (isVfsErrorCode(code)) return VFS_STRERROR[code];
+  if (error instanceof Error) return error.message;
+  // An errno this table does not name is printed as its name.
+  return typeof code === 'string' ? code : String(error);
 }
 
 /** strerror(3) for a code: the text GNU coreutils print. */

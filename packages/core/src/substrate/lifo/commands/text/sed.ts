@@ -1,8 +1,9 @@
 import type { Command, CommandInputStream, CommandOutputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { decodeLossless, encodeLossless, fsErrorText, readAllInput, writeBytes } from '../../utils/bytes-io.js';
+import { decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU sed 4.9, on bytes (text is held losslessly, bytes-io.ts: an invalid
 // byte goes out as it came in). Every command but `e` (a sed script here
@@ -532,7 +533,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
       }
     }
   } catch (error) {
-    await ctx.stderr.write(`sed: couldn't open file: ${fsErrorText(error)}\n`);
+    await ctx.stderr.write(`sed: couldn't open file: ${strerror(error)}\n`);
     return 1;
   }
   if (scripts.length === 0) {
@@ -578,7 +579,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
       const { lines, terminated } = splitLines(decodeLossless(bytes), delim);
       return { name: file, lines, terminated };
     } catch (error) {
-      await ctx.stderr.write(`sed: can't read ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`sed: can't read ${file}: ${strerror(error)}\n`);
       status = 2;
       return null;
     }
@@ -849,7 +850,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         const base = target.slice(target.lastIndexOf('/') + 1);
         const backup = inPlace.includes('*') ? inPlace.replaceAll('*', base) : target + inPlace;
         try { await ctx.vfs.writeFile(resolve(ctx.cwd, backup.includes('/') ? backup : target.slice(0, target.lastIndexOf('/') + 1) + backup), await ctx.vfs.readFile(path)); }
-        catch (error) { await ctx.stderr.write(`sed: couldn't open file ${backup}: ${fsErrorText(error)}\n`); return 4; }
+        catch (error) { await ctx.stderr.write(`sed: couldn't open file ${backup}: ${strerror(error)}\n`); return 4; }
       }
       await ctx.vfs.writeFile(path, encodeLossless(out.join('')));
       out.length = 0;
@@ -858,7 +859,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
   }
   for (const [file, w] of writeFiles) {
     try { await ctx.vfs.writeFile(resolve(ctx.cwd, file), encodeLossless(w.chunks.join(''))); }
-    catch (error) { await ctx.stderr.write(`sed: couldn't open file ${file}: ${fsErrorText(error)}\n`); status = 4; }
+    catch (error) { await ctx.stderr.write(`sed: couldn't open file ${file}: ${strerror(error)}\n`); status = 4; }
   }
   return quitCode ?? status;
 }

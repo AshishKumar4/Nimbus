@@ -37,9 +37,10 @@ export function normalizeVfsPath(p: string): string {
   if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
   const segments = text.split('/');
   const out: string[] = [];
+  // `..` at the root stays at the root, as POSIX resolves `/..`.
   for (const seg of segments) {
-    if (seg === '..' && out.length > 0) out.pop();
-    else if (seg !== '.' && seg !== '' && seg !== undefined) out.push(seg);
+    if (seg === '..') out.pop();
+    else if (seg !== '.' && seg !== '') out.push(seg);
   }
   return out.join('/');
 }

@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { asciiBytes, concatBytes, fsErrorText, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU head (coreutils 9.7) on bytes: -n [-]N lines, -c [-]N bytes (with
 // GNU's suffixes), the obsolete -N, -q, -v, -z. A positive count stops
@@ -109,7 +110,7 @@ const command: Command = async (ctx) => {
       await copy(firstChunk.done ? null : firstChunk.value, chunks, mode, delim, (bytes) => writeBytes(ctx.stdout, bytes));
     } catch (error) {
       if (isBrokenPipe(error)) throw error;
-      await ctx.stderr.write(`head: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`head: cannot open '${file}' for reading: ${strerror(error)}\n`);
       status = 1;
     }
   }

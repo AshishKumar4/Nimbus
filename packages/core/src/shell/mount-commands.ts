@@ -11,8 +11,8 @@ import type {
   NimbusMountUsage,
 } from '../runtime/os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { fsErrorMessage } from './unix-commands.js';
 import { statOrThrow } from '../vfs/vfs.js';
+import { strerror } from '../vfs/vfs-error.js';
 
 /** The mount `path` (absolute, normalized) lives on: the longest mount point
  *  containing it; of equal ones the later, which shadows the earlier. */
@@ -164,7 +164,7 @@ function createDfCommand(filesystem: NimbusFilesystemAuthority): Command {
         try {
           await statOrThrow(ctx.vfs, path);
         } catch (error) {
-          await ctx.stderr.write(`df: ${operand}: ${fsErrorMessage(error)}\n`);
+          await ctx.stderr.write(`df: ${operand}: ${strerror(error)}\n`);
           status = 1;
           continue;
         }

@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { fsErrorText, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
+import { inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU cat (coreutils 9.7) on bytes: -A -b -e -E -n -s -t -T -u -v. Without
 // options the bytes pass through untouched, chunk by chunk.
@@ -100,7 +101,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file, { slice })) await writeBytes(ctx.stdout, plain ? chunk : render(chunk));
     } catch (error) {
       if (isBrokenPipe(error)) throw error;
-      await ctx.stderr.write(`cat: ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`cat: ${file}: ${strerror(error)}\n`);
       status = 1;
     }
   }

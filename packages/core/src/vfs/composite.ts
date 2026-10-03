@@ -25,6 +25,7 @@ import type {
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
+import { normalizeVfsPath } from './path.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -228,13 +229,7 @@ function firstComponent(path: string): string | undefined {
 
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export function normalizePath(path: string): string {
-  const out: string[] = [];
-  for (const segment of String(path).split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') out.pop();
-    else out.push(segment);
-  }
-  return `/${out.join('/')}`;
+  return `/${normalizeVfsPath(String(path))}`;
 }
 
 function parentOf(path: string): string {

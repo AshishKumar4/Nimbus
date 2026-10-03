@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { concatBytes, fsErrorText, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
+import { concatBytes, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU tail (coreutils 9.7) on bytes: -n [+]N lines, -c [+]N bytes, -N, -q,
 // -v, -z. Output is the input's own bytes: nothing is added or re-encoded.
@@ -76,7 +77,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
       bytes = concatBytes(parts);
     } catch (error) {
-      await ctx.stderr.write(`tail: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`tail: cannot open '${file}' for reading: ${strerror(error)}\n`);
       status = 1;
       continue;
     }

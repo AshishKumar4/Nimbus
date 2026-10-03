@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 import { adjustMode, compileMode } from '../../utils/mode-change.js';
 
@@ -47,8 +47,10 @@ const command: Command = async (ctx) => {
     try {
       (await applyChmod(resolve(ctx.cwd, file)));
     } catch (e) {
-      const message = isVfsError(e) || e instanceof Error ? e.message : String(e);
-      await ctx.stderr.write(`chmod: cannot access '${file}': ${message}\n`);
+      // GNU's words: a name that is not there cannot be accessed; a change
+      // the filesystem refuses is a change of permissions that failed.
+      const what = isVfsError(e, 'ENOENT') || isVfsError(e, 'ENOTDIR') ? 'cannot access' : 'changing permissions of';
+      await ctx.stderr.write(`chmod: ${what} '${file}': ${strerror(e)}\n`);
       exitCode = 1;
     }
   }

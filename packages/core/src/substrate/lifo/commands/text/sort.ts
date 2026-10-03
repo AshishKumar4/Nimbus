@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU sort (coreutils 9.7) in en_US.UTF-8, on bytes. Keys (-k, -t), the
 // orderings -n -g -h -M -V, modifiers -b -d -f -i -r, -u, -s, -c/-C, -m, -o,
@@ -378,7 +379,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
       bytes = concatBytes(parts);
     } catch (error) {
-      await ctx.stderr.write(`sort: cannot read: ${file}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`sort: cannot read: ${file}: ${strerror(error)}\n`);
       return 2;
     }
     let start = 0;
@@ -452,7 +453,7 @@ const command: Command = async (ctx) => {
   const bytes = concatBytes(out);
   if (output !== undefined && output !== '-') {
     try { await ctx.vfs.writeFile(resolve(ctx.cwd, output), bytes); }
-    catch (error) { await ctx.stderr.write(`sort: open failed: ${output}: ${fsErrorText(error)}\n`); return 2; }
+    catch (error) { await ctx.stderr.write(`sort: open failed: ${output}: ${strerror(error)}\n`); return 2; }
     return 0;
   }
   await writeBytes(ctx.stdout, bytes);

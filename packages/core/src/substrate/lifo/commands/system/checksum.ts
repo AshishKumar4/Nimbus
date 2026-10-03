@@ -1,6 +1,7 @@
 import type { Command, CommandContext } from '../types.js';
 import { createHash } from 'node:crypto';
-import { concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU coreutils 9.7's checksum tools on one engine: md5sum, sha1sum,
 // sha224sum, sha256sum, sha384sum, sha512sum, b2sum, cksum and sum. Input is
@@ -319,7 +320,7 @@ async function sumFiles(ctx: CommandContext, o: Options): Promise<number> {
     try {
       result = await hashFile(ctx, file, o.algorithm, o.bits);
     } catch (error) {
-      await ctx.stderr.write(`${o.program}: ${quoteName(file)}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`${o.program}: ${quoteName(file)}: ${strerror(error)}\n`);
       status = 1;
       continue;
     }
@@ -379,7 +380,7 @@ async function checkFiles(ctx: CommandContext, o: Options): Promise<number> {
       for await (const chunk of inputChunks(ctx, list)) parts.push(chunk);
       text = decodeLossless(concatBytes(parts));
     } catch (error) {
-      await ctx.stderr.write(`${o.program}: ${quoteName(list)}: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`${o.program}: ${quoteName(list)}: ${strerror(error)}\n`);
       status = 1;
       continue;
     }
@@ -424,7 +425,7 @@ async function checkFiles(ctx: CommandContext, o: Options): Promise<number> {
         const code = (error as { code?: string }).code;
         if (o.ignoreMissing && code === 'ENOENT') continue;
         unreadable++;
-        await ctx.stderr.write(`${o.program}: ${quoteName(name)}: ${fsErrorText(error)}\n`);
+        await ctx.stderr.write(`${o.program}: ${quoteName(name)}: ${strerror(error)}\n`);
         await say(`${name}: FAILED open or read\n`);
         continue;
       }

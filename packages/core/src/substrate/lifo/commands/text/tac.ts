@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
-import { concatBytes, decodeLossless, encodeLossless, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
+import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU tac (coreutils 9.7) on bytes: records in reverse order, each keeping
 // its separator (after it, or before it with -b); -s STRING, -r (the
@@ -66,7 +67,7 @@ const command: Command = async (ctx) => {
       for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
       bytes = concatBytes(parts);
     } catch (error) {
-      await ctx.stderr.write(`tac: failed to open '${file}' for reading: ${fsErrorText(error)}\n`);
+      await ctx.stderr.write(`tac: failed to open '${file}' for reading: ${strerror(error)}\n`);
       status = 1;
       continue;
     }

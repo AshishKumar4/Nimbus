@@ -180,16 +180,6 @@ export function isBrokenPipe(error: unknown): boolean {
   return (error as { code?: string })?.code === 'EPIPE';
 }
 
-/** GNU's text for a filesystem error. */
-export function fsErrorText(error: unknown): string {
-  const code = (error as { code?: string })?.code;
-  if (code === 'ENOENT') return 'No such file or directory';
-  if (code === 'EACCES' || code === 'EPERM') return 'Permission denied';
-  if (code === 'EISDIR') return 'Is a directory';
-  if (code === 'ENOTDIR') return 'Not a directory';
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** Records split on `delim`: each without its delimiter; `terminated` says whether the last had one. */
 export function splitRecords(bytes: Uint8Array, delim: number): { records: Uint8Array[]; terminated: boolean } {
   const records: Uint8Array[] = [];
