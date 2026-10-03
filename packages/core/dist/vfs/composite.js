@@ -429,7 +429,7 @@ export class CompositeVFS {
                 await Promise.all(links.slice(i, i + WALK_CONCURRENCY).map(async ({ name, stat }) => {
                     const target = await this.readlink(`${dir}/${name}`).catch(() => null);
                     if (target !== null)
-                        put(`${dir}/${name}`, stat, target);
+                        put(`${dir}/${name}`, stat, this.linkLeadsTo(`${dir}/${name}`, target));
                 }));
             }
             listed.add(dir);
@@ -522,16 +522,28 @@ export class CompositeVFS {
         return false;
     }
     /**
-     * Whether `path` lies past the point of a mount whose backend resolves its
-     * own paths (MountOptions.resolvesPaths), and is not a directory above a
-     * mount nested in it. A walk over this namespace looks up the mount point
-     * and the directories above a nested mount, as any other, and no component
-     * that is the backend's alone: it hands the namespace the rest whole.
+     * Whether a walk over this namespace, at `path` on its way to `to` (the
+     * rest of the lookup, taken lexically), hands `path` to its backend: it
+     * lies past the point of a mount whose backend resolves its own paths
+     * (MountOptions.resolvesPaths), and is not a directory above a mount
+     * nested in it that the lookup goes on into. As `resolve` does, the walk
+     * looks up the mount point, and the directories on the way into a nested
+     * mount, as any other, and no component that is the backend's alone.
+     *
+     * A walk confined `within` a directory (a WASI preopen) hands a path over
+     * only when that mount's point lies at or under it: the backend follows
+     * its links anywhere in its own tree, which is then within too. From a
+     * directory inside such a mount the walk looks each component up itself.
      */
-    resolvedByBackend(path) {
+    resolvedByBackend(path, within = ROOT_POINT, to = path) {
         const at = normalizePath(path);
         const { mount } = this.route(at);
-        return mount.options.resolvesPaths === true && at !== mount.point && !this.isStructural(at);
+        if (mount.options.resolvesPaths !== true || at === mount.point)
+            return false;
+        if (this.isStructural(at) && this.route(normalizePath(to)).mount !== mount)
+            return false;
+        const bound = normalizePath(within);
+        return bound === ROOT_POINT || mount.point === bound || mount.point.startsWith(`${bound}/`);
     }
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
     realpath(path) {
@@ -548,17 +560,21 @@ export class CompositeVFS {
      * is there follows them.
      */
     /**
-     * A link's target as this namespace resolves it: the one link-root rule
-     * for a mount whose backend resolves its own paths. Such a backend reads
-     * its links from its own root, so an absolute target re-roots at the mount
-     * point and a relative one climbs no higher than it; either comes back as
-     * the namespace path it leads to. Any other backend's link is its target.
+     * Where the link at `path`, reading `link` (readlink's text), leads in
+     * this namespace: the one link-root rule, for a walk over the namespace
+     * that follows the link itself. A mount whose backend resolves its own
+     * paths reads its links from its own root, so an absolute target re-roots
+     * at the mount point and a relative one climbs no higher than it; either
+     * comes back as the namespace path it leads to. Any other link leads to
+     * its text. readlink answers the text, as written, so a copied link is the
+     * same link.
      */
-    linkTarget(mount, rel, link) {
-        if (!mount.options.resolvesPaths)
+    linkLeadsTo(path, link) {
+        const route = this.route(normalizePath(path));
+        if (!route.mount.options.resolvesPaths)
             return link;
-        const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(rel)}/${link}`);
-        return inBackend === ROOT_POINT ? mount.point : `${mount.point}${inBackend}`;
+        const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(route.rel)}/${link}`);
+        return inBackend === ROOT_POINT ? route.mount.point : `${route.mount.point}${inBackend}`;
     }
     realpathAt(input, sync) {
         return then(this.resolve(input, true, sync), (resolved) => {
@@ -1306,23 +1322,21 @@ export class CompositeVFS {
                             if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
                                 return sourceOps.copy(source.rel, target.rel, options);
                             }
-                            // A link copied out of its filesystem keeps where it led there.
-                            const relink = (rel, link) => (source.mount === target.mount ? link : this.linkTarget(source.mount, rel, link));
-                            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync), target.rel, relink);
+                            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync), target.rel);
                         });
                     });
                 });
             });
         });
     }
-    /** Copy an entry (a tree when it is a directory) between backends, links as links (`relink` gives a copied link's target). */
-    copyBytes(from, fromRel, stat, to, toRel, relink) {
+    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
+    copyBytes(from, fromRel, stat, to, toRel) {
         const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
         if (stat.type === 'symlink') {
             if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
                 throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
             }
-            return then(from.readlink(fromRel), (target) => then(to.symlink(relink(fromRel, target), toRel), () => 1));
+            return then(from.readlink(fromRel), (target) => then(to.symlink(target, toRel), () => 1));
         }
         if (stat.type === 'file') {
             return then(from.readFile(fromRel), (bytes) => then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1));
@@ -1332,7 +1346,7 @@ export class CompositeVFS {
             const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
             return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
                 ? n
-                : then(this.copyBytes(from, child, childStat, to, dest, relink), (m) => n + m)));
+                : then(this.copyBytes(from, child, childStat, to, dest), (m) => n + m)));
         }), 1)));
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
@@ -1526,7 +1540,7 @@ export class CompositeVFS {
         return reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)));
     }
     async readlink(path) {
-        return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))));
+        return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
     }
     async chmod(path, mode) {
         return reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)));
@@ -1565,7 +1579,7 @@ export class CompositeVFS {
             rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
             removeRecursive: (path) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true))),
             symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
-            readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => then(this.method(ops, 'readlink', at)(rel), (link) => this.linkTarget(this.route(at).mount, rel, link))))),
+            readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
             chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),
             chown: (path, uid, gid) => syncValue(reported({ syscall: 'chown', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)))),
             utimes: (path, a, m) => syncValue(reported({ syscall: 'utime', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)))),

@@ -111,10 +111,11 @@ export interface MountOptions {
      * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
      * will not show, or a parent it makes on write. A `..` inside the mount is
      * taken lexically, so it leaves the mount only past its root. readlink
-     * answers where a link leads in this namespace (`linkTarget`: an absolute
-     * target re-rooted at the mount point, a relative one climbing no higher
-     * than it), so a walk over the namespace that follows it (a launch's
-     * staged view) lands where the backend does.
+     * answers a link's text, as written; a walk over the namespace that
+     * follows a link itself (a launch's staged view, a process's walks) asks
+     * `linkLeadsTo` where it leads (an absolute target re-rooted at the mount
+     * point, a relative one climbing no higher than it), so it lands where the
+     * backend does.
      *
      * The namespace still owns everything up to and including the mount
      * point: root links that lead into it, ENXIO with `absentReason` while the
@@ -232,13 +233,20 @@ export declare class CompositeVFS implements VFS {
      */
     composes(path: string): boolean;
     /**
-     * Whether `path` lies past the point of a mount whose backend resolves its
-     * own paths (MountOptions.resolvesPaths), and is not a directory above a
-     * mount nested in it. A walk over this namespace looks up the mount point
-     * and the directories above a nested mount, as any other, and no component
-     * that is the backend's alone: it hands the namespace the rest whole.
+     * Whether a walk over this namespace, at `path` on its way to `to` (the
+     * rest of the lookup, taken lexically), hands `path` to its backend: it
+     * lies past the point of a mount whose backend resolves its own paths
+     * (MountOptions.resolvesPaths), and is not a directory above a mount
+     * nested in it that the lookup goes on into. As `resolve` does, the walk
+     * looks up the mount point, and the directories on the way into a nested
+     * mount, as any other, and no component that is the backend's alone.
+     *
+     * A walk confined `within` a directory (a WASI preopen) hands a path over
+     * only when that mount's point lies at or under it: the backend follows
+     * its links anywhere in its own tree, which is then within too. From a
+     * directory inside such a mount the walk looks each component up itself.
      */
-    resolvedByBackend(path: string): boolean;
+    resolvedByBackend(path: string, within?: string, to?: string): boolean;
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
     realpath(path: string): string;
     /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
@@ -250,13 +258,16 @@ export declare class CompositeVFS implements VFS {
      * is there follows them.
      */
     /**
-     * A link's target as this namespace resolves it: the one link-root rule
-     * for a mount whose backend resolves its own paths. Such a backend reads
-     * its links from its own root, so an absolute target re-roots at the mount
-     * point and a relative one climbs no higher than it; either comes back as
-     * the namespace path it leads to. Any other backend's link is its target.
+     * Where the link at `path`, reading `link` (readlink's text), leads in
+     * this namespace: the one link-root rule, for a walk over the namespace
+     * that follows the link itself. A mount whose backend resolves its own
+     * paths reads its links from its own root, so an absolute target re-roots
+     * at the mount point and a relative one climbs no higher than it; either
+     * comes back as the namespace path it leads to. Any other link leads to
+     * its text. readlink answers the text, as written, so a copied link is the
+     * same link.
      */
-    private linkTarget;
+    linkLeadsTo(path: string, link: string): string;
     private realpathAt;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred: VfsCred, actor?: string): CompositeVFS;
@@ -367,7 +378,7 @@ export declare class CompositeVFS implements VFS {
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
      */
     private copyAt;
-    /** Copy an entry (a tree when it is a directory) between backends, links as links (`relink` gives a copied link's target). */
+    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
     private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     private rmdirAt;
