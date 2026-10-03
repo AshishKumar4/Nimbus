@@ -83,6 +83,8 @@ const ENTRIES = [
   { path: 'w/noexec/inside', type: 'file', content: 'i', mode: 0o644, age: 1 * DAY },
   { path: 'w/noexec/sub', type: 'dir', mode: 0o755, age: 1 * DAY },
   { path: 'w/node_modules', type: 'dir', mode: 0o755, age: 1 * DAY },
+  // A second before the epoch, for dates with a sign and a fraction.
+  { path: 'w/pre-epoch', type: 'file', content: '', mode: 0o644, age: NOW + 1 * SECOND },
   { path: 'w/node_modules/pkg', type: 'dir', mode: 0o755, age: 1 * DAY },
   { path: 'w/node_modules/pkg/index.js', type: 'file', content: 'module.exports = 1;\n', mode: 0o644, age: 1 * DAY },
   { path: 'w/node_modules/pkg/package.json', type: 'file', content: '{}\n', mode: 0o644, age: 1 * DAY },
@@ -169,8 +171,10 @@ const secondsOf = (entry) => (NOW - entry.age) / SECOND;
   for (const entry of ENTRIES) if (entry.type !== 'link' && !SHUT.includes(entry.path)) fs.chmodSync(path.join(base, entry.path), entry.mode);
   for (const entry of [...ENTRIES].reverse()) {
     const target = path.join(base, entry.path);
-    if (entry.type === 'link') fs.lutimesSync(target, secondsOf(entry), secondsOf(entry));
-    else fs.utimesSync(target, secondsOf(entry), secondsOf(entry));
+    // A Date: Bun reads a negative number of seconds as now.
+    const at = new Date(NOW - entry.age);
+    if (entry.type === 'link') fs.lutimesSync(target, at, at);
+    else fs.utimesSync(target, at, at);
   }
   for (const shut of SHUT) fs.chmodSync(path.join(base, shut), ENTRIES.find((entry) => entry.path === shut).mode);
 }
@@ -374,6 +378,22 @@ const CASES = [
   ['.', '-newermt', `@${(NOW - 3 * DAY) / SECOND}`],
   ['.', '-type', 'f', '-newerat', '1 week ago'],
   ['.', '-newermt', `${new Date(NOW - 2 * DAY).toISOString().slice(0, 10)} 12:00`],
+  ['.', '-name', 'pre-epoch', '-newermt', '@-1.5'],
+  ['.', '-name', 'pre-epoch', '-newermt', '@-1,5'],
+  ['.', '-name', 'pre-epoch', '-newermt', '@-1.0001'],
+  ['.', '-name', 'pre-epoch', '-newermt', '@-0.5'],
+  ['.', '-name', 'pre-epoch', '-newermt', '@- 1.5'],
+  ['.', '-name', 'pre-epoch', '!', '-newermt', '@-1'],
+  ['.', '-maxdepth', '1', '-newermt', '@ 5'],
+  ['.', '-maxdepth', '1', '-newermt', '@+5'],
+  ['.', '-type', 'f', '-newermt', ''],
+  ['.', '-maxdepth', '1', '-newermt', '@9223372036854775807'],
+  ['.', '-maxdepth', '1', '-newermt', '@-9223372036854775808'],
+  ['.', '-maxdepth', '0', '-newermt', '2020-01-01 12:00 +2400'],
+  ['.', '-maxdepth', '0', '-newermt', '2020-01-01 12:00 -2400'],
+  ['.', '-maxdepth', '0', '-newermt', '1000000 years'],
+  ['.', '-maxdepth', '0', '-newermt', '2147483520 days'],
+  ['.', '-maxdepth', '0', '-newermt', '1000000 years ago'],
   ['.', '-maxdepth', '1', '-cnewer', 'README.md'],
 
   // Permissions and ownership
@@ -613,6 +633,18 @@ const CASES = [
   ['.', '-newermm'],
   ['.', '-newertm', 'a'],
   ['.', '-newermt', 'garbage'],
+  ['.', '-newermt', '@999999999999999999999999999999999999'],
+  ['.', '-newermt', '@9223372036854775808'],
+  ['.', '-newermt', '@-9223372036854775809'],
+  ['.', '-newermt', '@.5'],
+  ['.', '-newermt', '@5.'],
+  ['.', '-newermt', '2020-01-01 12:00 +9999'],
+  ['.', '-newermt', '2020-01-01 12:00 +2401'],
+  ['.', '-newermt', '2020-01-01 23:59:60'],
+  ['.', '-newermt', '3000000000 years'],
+  ['.', '-newermt', '1 year 2147483647 months'],
+  ['.', '-newermt', '100000000000 days'],
+  ['.', '-newermt', '9223372036854775807 seconds'],
   ['.', '-newermt'],
   ['.', '-used'],
 ];

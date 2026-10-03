@@ -141,6 +141,12 @@ try {
   for (const d of ['noon', 'midnight', '2020-02-31', '2021-02-29', '2020-01-01 25:00', '13:00pm', '@1600000000 +1 day', '1 hour']) {
     await same(['-d', d, 'f']);
   }
+  // gnulib's ranges and its signed fractions: an epoch before 1970, a zone past 24 hours, a second
+  // past 59, a field or a time that overflows, and no date at all (midnight).
+  for (const d of ['@-1.5', '@-1,5', '@ 5', '', '2020-01-01 12:00 +2400', '2020-01-01 12:00 +9999', '@99999999999999999999',
+    '2020-01-01 23:59:60', '3000000000 years', '9223372036854775807 seconds']) {
+    await same(['-d', d, 'f']);
+  }
   await same(['-t', '202002310000', 'f']);
   await same(['-t', '202002290000', 'f']);
   // -h: a link is never followed, and nothing is created (-h implies -c).
