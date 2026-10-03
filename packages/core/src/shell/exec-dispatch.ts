@@ -95,7 +95,7 @@ export function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatch
 }
 
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
-export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath' | 'access'>;
+export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
 
 /**
  * What is at a path-shaped name: nothing runnable, a directory, or a file
@@ -178,18 +178,26 @@ export function programPathOf(command: object): string | undefined {
   return programPaths.get(command);
 }
 
-/** A command whose resolution failed on what the namespace could not answer: it fails as execve's error does. */
+/**
+ * A command whose resolution failed on what the namespace could not answer,
+ * or would not show the caller: it fails as execve's error does.
+ */
 function failing(name: string, error: unknown): Command {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = isDenied(error) ? 'Permission denied' : error instanceof Error ? error.message : String(error);
   return async (ctx): Promise<number> => {
     (await ctx.stderr.write(`${name}: ${message}\n`));
     return 126;
   };
 }
 
+/**
+ * Resolve path-shaped names, and bare names along PATH, to what the file is.
+ * Everything is looked at through the caller's view; `fs` is the view of a
+ * caller that resolves without a context of its own.
+ */
 export function installPathExecResolver(
   registry: CommandRegistry,
-  fs: ExecInspectionFs,
+  fs: ProcessView,
   getCwd: () => string,
 ): void {
   const originalResolve = registry.resolve.bind(registry);
@@ -231,7 +239,7 @@ export function installPathExecResolver(
     const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(context.cwd));
     let inspected: Inspected;
     try {
-      inspected = await inspect(fs, resolved);
+      inspected = await inspect(context.view, resolved);
     } catch (error) {
       // What the namespace cannot answer (an absent mount, a backend's I/O
       // error) fails this command, as execve's error does; the rest of the

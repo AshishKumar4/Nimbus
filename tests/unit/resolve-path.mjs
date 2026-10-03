@@ -119,6 +119,11 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   assert.deepEqual(await run(main, '/home/main/.local/bin/hello-cli; echo s=$?'), ['s=126\n', '/home/main/.local/bin/hello-cli: Permission denied\n', 0]);
   assert.deepEqual(await run(main, 'hello-cli; echo s=$?'), ['s=126\n', '/home/main/.local/bin/hello-cli: Permission denied\n', 0], 'nor by its bare name');
   kernel.chmod('home/main/.local/bin/hello-cli', 0o755);
+  // A shim the caller cannot reach (a directory it may not search) is EACCES, not "not found".
+  const prefix = 'home/main/.local/lib/node_modules';
+  assert.equal(await materializeNpmBinShims(kernel, prefix, 'private/bin'), 1);
+  kernel.chmod('private', 0o700);
+  assert.deepEqual(await run(main, '/private/bin/hello-cli; echo s=$?'), ['s=126\n', '/private/bin/hello-cli: Permission denied\n', 0]);
 }
 
 // ── child_process.spawn in a Worker program searches the child's PATH ─────
@@ -192,6 +197,31 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   }
 }
 await main.close();
+
+// ── A principal whose /tmp is its own finds, inspects and runs its own file ──
+{
+  const confined = await workspace(undefined);
+  const kernel = confined.vfs.as(CRED_KERNEL);
+  kernel.mkdir('var/agents/u/tmp', { recursive: true, mode: 0o700 });
+  for (const dir of ['var', 'var/agents', 'var/agents/u']) kernel.chmod(dir, 0o755);
+  kernel.chown('var/agents/u/tmp', 1000, 1000);
+  // The shared /tmp's tool: a node program, and one that is not executable at all.
+  kernel.mkdir('tmp/shared', { recursive: true });
+  kernel.writeFile('tmp/tool', '#!/usr/bin/env node\nconsole.log("PUBLIC")\n');
+  kernel.chmod('tmp/tool', 0o755);
+  kernel.writeFile('tmp/plain', 'echo PUBLIC\n');
+  kernel.chmod('tmp/plain', 0o644);
+  kernel.mkdir('other', { recursive: true });
+  kernel.writeFile('other/plain', '#!/bin/sh\necho OTHER\n');
+  kernel.chmod('other/plain', 0o755);
+  confined.vfs.confinePrincipal(1000, 'var/agents/u/tmp');
+  const setup = await run(confined, "printf '#!/bin/sh\\necho PRIVATE\\n' > /tmp/tool && cp /tmp/tool /tmp/plain && chmod 700 /tmp/tool /tmp/plain", '/');
+  assert.deepEqual(setup, ['', '', 0]);
+  assert.deepEqual(await run(confined, 'PATH=/tmp tool', '/'), ['PRIVATE\n', '', 0], 'by bare name, the caller\'s own file and its own interpreter');
+  assert.deepEqual(await run(confined, '/tmp/tool', '/'), ['PRIVATE\n', '', 0], 'and by path');
+  assert.deepEqual(await run(confined, 'PATH=/tmp:/other plain', '/'), ['PRIVATE\n', '', 0], 'its first executable file, not the shared one');
+  await confined.close();
+}
 
 // ── No HOME: the default home's PATH, unchanged ───────────────────────────
 {
