@@ -32,6 +32,7 @@ import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
+import { dirname, resolve } from '../substrate/lifo/utils/path.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
@@ -39,6 +40,7 @@ import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-err
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
+import { isDirectory } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
  * registry takes a command context; the ones registered below read the string
@@ -107,19 +109,12 @@ function isRuntimeInstallHintHandler(handler) {
     return !!handler && !!handler.__nimbusRuntimeInstallHint;
 }
 // ── Helpers ─────────────────────────────────────────────────────────────
+/**
+ * `p` as an absolute path, against `cwd`: the path a command's operand
+ * names, which is also what its errors name (never a storage key).
+ */
 function resolvePath(cwd, p) {
-    if (p.startsWith('/'))
-        return p.replace(/^\/+/, '');
-    const c = (cwd || '/home/user').replace(/^\/+/, '');
-    const parts = (c + '/' + p).split('/');
-    const out = [];
-    for (const s of parts) {
-        if (s === '..')
-            out.pop();
-        else if (s !== '.' && s !== '')
-            out.push(s);
-    }
-    return out.join('/');
+    return resolve(cwd || '/home/user', p);
 }
 async function readSymlinkTarget(vfs, path) {
     return await vfs.isSymlink(path) ? (await vfs.readlink(path)) : null;
@@ -132,7 +127,7 @@ async function resolveSymlinkPath(vfs, startPath) {
             return current;
         current = target.startsWith('/')
             ? resolvePath('/', target)
-            : resolvePath('/' + (current.includes('/') ? current.slice(0, current.lastIndexOf('/')) : ''), target);
+            : resolvePath(dirname(current), target);
     }
     return null;
 }
@@ -871,9 +866,11 @@ function mkUptime() {
 }
 function mkTree(vfs) {
     return async (ctx) => {
-        const args = ctx.args.filter(a => !a.startsWith('-') && (ctx.args.indexOf(a) !== ctx.args.indexOf('-L') + 1));
-        const root = args[0] ? resolvePath(ctx.cwd, args[0]) : (ctx.cwd || '/home/user').replace(/^\/+/, '');
-        const maxDepth = ctx.args.includes('-L') ? parseInt(ctx.args[ctx.args.indexOf('-L') + 1]) || 3 : 3;
+        const level = ctx.args.indexOf('-L');
+        // `-L n` takes the next word; the first other non-option word is the directory.
+        const operand = ctx.args.find((a, i) => !a.startsWith('-') && (level === -1 || i !== level + 1)) ?? '.';
+        const root = resolvePath(ctx.cwd, operand);
+        const maxDepth = level === -1 ? 3 : parseInt(ctx.args[level + 1]) || 3;
         const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
         let dirs = 0, files = 0, total = 0;
         let truncated = false;
@@ -895,7 +892,7 @@ function mkTree(vfs) {
                     (await ctx.stdout.write(prefix + connector + e.name + '\n'));
                     if ((await direntTypeIn(vfs, path, e)) === 'directory') {
                         dirs++;
-                        (await walk(path + '/' + e.name, prefix + childPrefix, depth + 1));
+                        (await walk(resolvePath(path, e.name), prefix + childPrefix, depth + 1));
                     }
                     else {
                         files++;
@@ -904,8 +901,12 @@ function mkTree(vfs) {
             }
             catch { }
         }
-        const name = root.split('/').pop() || root;
-        (await ctx.stdout.write(name + '\n'));
+        // tree prints the directory as the caller named it, and refuses one it cannot open.
+        if (!(await isDirectory(vfs, root))) {
+            (await ctx.stdout.write(`${operand}  [error opening dir]\n\n0 directories, 0 files\n`));
+            return 2;
+        }
+        (await ctx.stdout.write(operand + '\n'));
         (await walk(root, '', 1));
         if (truncated)
             (await ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`));
@@ -1011,7 +1012,7 @@ async function headBytes(ctx, files, limit) {
     }
     let exit = 0;
     for (const f of files) {
-        const path = absolutePath(ctx.cwd, f);
+        const path = resolvePath(ctx.cwd, f);
         try {
             if (files.length > 1)
                 (await ctx.stdout.write(`==> ${f} <==\n`));
@@ -1065,9 +1066,6 @@ async function streamStdinBytes(ctx, writer, limit) {
     }
 }
 /** Absolute, mount-aware path — `ctx.vfs` resolves virtual mounts like /dev. */
-function absolutePath(cwd, target) {
-    return '/' + resolvePath(cwd, target);
-}
 async function readWholeFileString(ctx, path) {
     if ((await statOrThrow(ctx.vfs, path)).type === 'directory') {
         throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
@@ -3206,7 +3204,7 @@ function mkStat(vfs, sqliteVfs) {
             };
             const activeFormat = format ?? (terse ? STATFS_TERSE_FORMAT : null);
             for (const f of files) {
-                const displayPath = f.startsWith('/') ? f : resolvePath(ctx.cwd, f).replace(/^\/*/, '/');
+                const displayPath = f.startsWith('/') ? f : resolvePath(ctx.cwd, f);
                 if (activeFormat !== null) {
                     const expanded = expandStatFormat(activeFormat, (directive) => statFsDirective(directive, facts, displayPath));
                     if ('error' in expanded) {
@@ -3243,7 +3241,7 @@ function mkStat(vfs, sqliteVfs) {
                 try {
                     const fp = resolvePath(ctx.cwd, f);
                     st = (await statOrThrow(vfs, fp));
-                    displayPath = '/' + fp;
+                    displayPath = fp;
                 }
                 catch (_e) {
                     (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
@@ -3930,7 +3928,7 @@ function mkReadlink(vfs) {
                 // (matches `readlink -f` which canonicalizes anyway).
                 const resolved = (await resolveSymlinkPath(vfs, fp));
                 if (resolved !== null) {
-                    (await ctx.stdout.write('/' + resolved + '\n'));
+                    (await ctx.stdout.write(resolved + '\n'));
                     continue;
                 }
                 (await ctx.stderr.write(`readlink: ${t}: Too many levels of symbolic links\n`));
@@ -4585,7 +4583,7 @@ class DumpByteSource {
                 // Named operands read through ctx.vfs — the mount-aware seam the
                 // host handed the command — so /dev and other mounts resolve while
                 // an embedder's credentialed view keeps its authorization.
-                this.currentPath = absolutePath(this.ctx.cwd, file);
+                this.currentPath = resolvePath(this.ctx.cwd, file);
                 (await this.ctx.vfs.readRange(this.currentPath, 0, 1));
                 this.cursor = 0;
                 this.haveOpen = true;
@@ -5293,7 +5291,7 @@ function mkXxd() {
         // routes through ctx.vfs like every other named path, so dumps may land
         // on devices and mounts as they do on Unix.
         const output = operands[1];
-        const outAbs = output !== undefined && output !== '-' ? absolutePath(ctx.cwd, output) : null;
+        const outAbs = output !== undefined && output !== '-' ? resolvePath(ctx.cwd, output) : null;
         let offset = 0;
         let fileOffset = 0;
         let pending = [];
