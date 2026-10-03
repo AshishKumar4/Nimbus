@@ -8656,6 +8656,19 @@ error: the Oxc transform crashed (${reason})`);
     while (code.includes(free) || names.has(free)) free += "_";
     return free;
   }
+  function namesLoader(code, names) {
+    if (names.has(DYNAMIC_IMPORT_HELPER)) return true;
+    if (!code.includes(DYNAMIC_IMPORT_HELPER)) return false;
+    try {
+      for (const token of tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true })) {
+        if (token.type === types$1.name && Reflect.get(token, "value") === DYNAMIC_IMPORT_HELPER) return true;
+      }
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return true;
+    }
+    return false;
+  }
   function applyEdits(code, edits, metas, names, insertion) {
     let prologue = "";
     if (metas.length) {
@@ -8666,9 +8679,9 @@ error: the Oxc transform crashed (${reason})`);
 const ${binding} = arguments[2];
 `;
     }
-    const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
     const calls = edits.filter((edit) => edit.text.startsWith(DYNAMIC_IMPORT_HELPER + "("));
-    if (calls.length && loader !== DYNAMIC_IMPORT_HELPER) {
+    if (calls.length && namesLoader(code, names)) {
+      const loader = freeName(DYNAMIC_IMPORT_HELPER, code, names);
       for (const call of calls) call.text = loader + call.text.slice(DYNAMIC_IMPORT_HELPER.length);
       prologue += `
 const ${loader} = globalThis.${DYNAMIC_IMPORT_HELPER};
