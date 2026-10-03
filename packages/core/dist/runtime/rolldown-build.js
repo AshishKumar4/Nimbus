@@ -32,25 +32,30 @@ const LOADER_MODULE_TYPES = {
     js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', base64: 'base64', dataurl: 'dataurl', empty: 'empty',
 };
 /**
- * Where `module` names `source` as an import (static, dynamic, re-exported or
- * required): the span of the first such string literal, by the parser, so a
- * same-text string elsewhere in the file does not stand in for it.
+ * Where `module` names each specifier, by kind: the span of the first string
+ * literal of each kind (static import or re-export, dynamic import, require),
+ * by the parser, so a same-text string elsewhere in the file, or an import of
+ * another kind, does not stand in for it. esbuild reports an unresolved
+ * import once per specifier and kind, at its first occurrence, and so does
+ * this. Keyed `<kind>\0<specifier>`.
  */
-function importSpan(module, source, parse) {
+function importSpans(module, parse) {
+    const spans = new Map();
     let program;
     try {
         program = parse(module.source, { lang: module.lang });
     }
     catch {
-        return null;
+        return spans;
     }
-    let found = null;
-    const literal = (node) => {
+    const literal = (kind, node) => {
         const n = node;
-        if (n?.type !== 'Literal' || n.value !== source || typeof n.start !== 'number' || typeof n.end !== 'number')
+        if (n?.type !== 'Literal' || typeof n.value !== 'string' || typeof n.start !== 'number' || typeof n.end !== 'number')
             return;
-        if (found === null || n.start < found[0])
-            found = [n.start, n.end];
+        const key = `${kind}\0${n.value}`;
+        const known = spans.get(key);
+        if (!known || n.start < known[0])
+            spans.set(key, [n.start, n.end]);
     };
     const visit = (node) => {
         if (!node || typeof node !== 'object')
@@ -65,16 +70,18 @@ function importSpan(module, source, parse) {
             case 'ImportDeclaration':
             case 'ExportNamedDeclaration':
             case 'ExportAllDeclaration':
+                literal('import-statement', n.source);
+                break;
             case 'ImportExpression':
-                literal(n.source);
+                literal('dynamic-import', n.source);
                 break;
             case 'TSExternalModuleReference':
-                literal(n.expression);
+                literal('require-call', n.expression);
                 break;
             case 'CallExpression': {
                 const callee = n.callee;
                 if (callee?.type === 'Identifier' && callee.name === 'require')
-                    literal(n.arguments?.[0]);
+                    literal('require-call', n.arguments?.[0]);
                 break;
             }
         }
@@ -83,7 +90,7 @@ function importSpan(module, source, parse) {
                 visit(child);
     };
     visit(program);
-    return found;
+    return spans;
 }
 const utf8Length = (text) => new TextEncoder().encode(text).length;
 /** `bytes` in base64. */
@@ -226,13 +233,18 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         raised.push(message(text, null, pluginName));
         throw new Error(text);
     };
-    // An import that did not resolve, placed at its string literal as esbuild
-    // places it (column and length in UTF-8 bytes). The import stays external
-    // so the build goes on to report every other error with it.
-    const unresolvedImport = (text, importer, source, pluginName, parse) => {
+    // An import that did not resolve, placed at its string literal of its kind
+    // as esbuild places it (column and length in UTF-8 bytes). The import stays
+    // external so the build goes on to report every other error with it.
+    // Each importer is parsed once per build, on its first unresolved import.
+    const spansOf = new Map();
+    const unresolvedImport = (text, importer, source, kind, pluginName, parse) => {
         const from = importer ? loaded.get(importer) : undefined;
         let location = null;
-        const span = from?.lang ? importSpan(from, source, parse) : null;
+        let spans = importer ? spansOf.get(importer) : undefined;
+        if (!spans && importer && from?.lang)
+            spansOf.set(importer, (spans = importSpans(from, parse)));
+        const span = spans?.get(`${kind}\0${source}`);
         if (from && span) {
             const before = from.source.slice(0, span[0]);
             const line = before.split(/\r\n|\r|\n/).length;
@@ -260,12 +272,12 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 with: extra.attributes ?? {},
             });
             if (answer?.errors?.length)
-                return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, plugin.name, parse);
+                return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, kind, plugin.name, parse);
             if (answer?.warnings?.length)
                 for (const w of answer.warnings)
                     warnings.push(message(w.text ?? ''));
             if (!answer || (!answer.path && !answer.external))
-                return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, '', parse);
+                return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '', parse);
             if (answer.external)
                 return { id: answer.path ?? path, external: true };
             const namespace = answer.namespace ?? 'file';
@@ -296,14 +308,18 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 lang: loader === 'js' || loader === 'jsx' || loader === 'ts' || loader === 'tsx' ? loader : undefined,
             });
             if (loader === 'css') {
+                // esbuild bundles a JavaScript build's stylesheets into a sheet beside it, so it needs a place for that sheet.
+                if (!options.outdir && !options.outfile)
+                    raise(`Cannot import ${JSON.stringify(fileOf({ namespace, path }))} into a JavaScript file without an output path configured`);
                 css.push({ id, path, source: text });
                 return { code: '', moduleType: 'js', moduleSideEffects: true };
             }
-            // A Uint8Array of the bytes, decoded from base64 as esbuild's __toBinary does:
-            // rolldown's `binary` takes a string, and would store its UTF-8.
+            // A Uint8Array of the bytes, decoded from base64 as esbuild's __toBinary
+            // does (rolldown's `binary` takes a string, and would store its UTF-8);
+            // CommonJS, so a require() gets the array itself.
             if (loader === 'binary') {
                 const bytes = typeof contents === 'string' ? new TextEncoder().encode(contents) : contents;
-                return { code: `export default /* @__PURE__ */ Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
+                return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
             }
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)

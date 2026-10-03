@@ -10,7 +10,7 @@ import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/
 import type { FacetProcessManager } from '../facets/process.js';
 import type { ComposedFacetManager, FacetManagerHostHooks } from '../facets/compose.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import type { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
+import type { PrebundlePool } from '../facets/prebundle-pool.js';
 import type { NpmInstaller } from '../npm/installer.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
@@ -81,7 +81,7 @@ class RuntimeOwner {
   facetManagerComposed: ComposedFacetManager | null = null;
   facetProcessManager: FacetProcessManager | null = null;
   esbuildService: EsbuildService | null = null;
-  bundlePool: EsbuildBundlePool | null = null;
+  bundlePool: PrebundlePool | null = null;
   npmInstaller: NpmInstaller | null = null;
   fetchProxyEntrypoint: ServiceStub | null = null;
   viteDevServer: ViteDevServer | null = null;

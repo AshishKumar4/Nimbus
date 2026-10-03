@@ -41,8 +41,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-      "bytes": 201937,
-      "sha256": "a122615f0f30d4d6305532848b32cd2cc3d0e3575476009da19278ac00dfed30"
+      "bytes": 201947,
+      "sha256": "f074459d57aeecc2436edb904d28cf439fe08c67c93cdce63aae8bdf857d90f6"
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,

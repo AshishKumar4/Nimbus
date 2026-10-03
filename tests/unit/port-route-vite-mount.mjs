@@ -120,14 +120,14 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
 }
 
 /**
- * A bundle pool whose facet never runs: every submit is parked until the
- * test settles it, so the supervisor side of a cold build can be held at
+ * A bundle pool whose facet never runs: every pre-bundle is parked until
+ * the test settles it, so the supervisor side of a cold build can be held at
  * the exact point where its slice is resident.
  */
 function makeParkedBundlePool() {
   const submits = [];
   const pool = {
-    submit: (_fn, spec) => new Promise((resolve, reject) => {
+    prebundle: (spec) => new Promise((resolve, reject) => {
       submits.push({ specifier: spec.specifier, sliceBytes: spec.slice.reduce((n, e) => n + (e.bytes?.length ?? 0), 0), resolve, reject });
     }),
   };

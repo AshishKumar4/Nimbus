@@ -12,7 +12,7 @@
  *     ├── /*.ts,*.tsx,*.jsx    → esbuild transform → JS with import rewrites + alias resolution
  *     ├── /*.css               → serve as text/css (with @import inlining, @tailwind stripping, @apply expansion)
  *     ├── /*.css?import        → wrap CSS in JS that injects <style> tag
- *     ├── /@modules/<pkg>      → resolve from node_modules, bundle via esbuild facet (synthetic-entry for barrels)
+ *     ├── /@modules/<pkg>      → resolve from node_modules, bundle in the build facet (synthetic-entry for barrels)
  *     ├── /@vite/client        → HMR client script
  *     ├── /*.json (as module)  → export default { ... }
  *     ├── /*.svg,*.png,... (as module) → export default "/preview/path/to/asset"
@@ -162,7 +162,7 @@ const ASSET_EXTS = new Set([
  * We inject `__nimbus_req` but keep esbuild's `__require` definition so we
  * don't have to rewrite its declaration — we just replace the call-sites.
  */
-function rewriteExternalRequires(code, basePath) {
+export function rewriteExternalRequires(code, basePath) {
     // Find all `__require("specifier")` calls where the specifier is bare
     // (not a relative/absolute path). Bare specifiers are the only ones that
     // can be external.
@@ -238,7 +238,7 @@ function rewriteExternalRequires(code, basePath) {
  *   - No `export default` pattern found
  *   - No CJS export patterns found in the bundle source
  */
-function synthesizeCjsNamedExports(code) {
+export function synthesizeCjsNamedExports(code) {
     // Quick check: does the bundle already have named exports?
     if (/(^|\n)\s*export\s+(?:const|let|var|function|class|\{|\*)\b/.test(code)) {
         return code;
@@ -1170,7 +1170,7 @@ export class ViteDevServer {
     injectBasename;
     env;
     ctx = null;
-    /** The session's esbuild facet pool; null = legacy in-supervisor esbuild. */
+    /** The session's pre-bundle pool; null = bundle through the EsbuildService. */
     bundlePool;
     /**
      * In-flight on-demand-bundle coalescing map. When the browser fires
@@ -1243,11 +1243,11 @@ export class ViteDevServer {
         this.detectTailwind();
     }
     /**
-     * The session's shared esbuild pool for on-demand bundling of
+     * The session's pre-bundle pool for on-demand bundling of
      * /preview/@modules/<spec> requests that miss both the in-memory and
-     * pkg_esm_bundles caches. Null when no pool was provided (legacy
-     * in-supervisor fallback). Acquired BEFORE the slice lease — see
-     * EsbuildBundlePool.acquire.
+     * pkg_esm_bundles caches. Null when no pool was provided (the
+     * EsbuildService fallback). Acquired BEFORE the slice lease — see
+     * PrebundlePool.acquire.
      */
     async ensureOnDemandPool() {
         if (!this.bundlePool)
@@ -1747,13 +1747,12 @@ export class ViteDevServer {
         // supervisor isolate. For large modules (lucide-react, ~18 MiB
         // unpacked) that OOM'd the supervisor and surfaced as CF error
         // 1101 on /preview/@modules/lucide-react, taking down the entire
-        // preview. We now dispatch the bundle work to the session's shared
-        // esbuild IsolatePool — the same pool, isolate and 128 MiB heap the
-        // install-time pre-bundler uses. Supervisor never bundles esbuild
-        // for any path.
+        // preview. We now dispatch the bundle work to the session's build
+        // facet from a slice — the same pool and isolate the install-time
+        // pre-bundler uses. The supervisor never runs a bundler.
         //
-        // Falls back to in-supervisor esbuild ONLY if no bundle pool was
-        // provided (legacy callers / tests).
+        // Falls back to the EsbuildService (its build host) ONLY if no bundle
+        // pool was provided (legacy callers / tests).
         const resolved = this.resolvePackage(specifier);
         // Barrel packages (lucide-react, @phosphor-icons/react, react-icons,
         // @mui/icons-material, …) ship hundreds/thousands of tiny re-export
@@ -1850,9 +1849,9 @@ export class ViteDevServer {
             let sliceLease = null;
             try {
                 if (onDemandPool) {
-                    // Facet path — supervisor stays at 0 esbuild bytes.
+                    // Facet path — the supervisor holds no bundler.
                     try {
-                        const { buildSliceForSpecifierWithCap, prebundleOne, BUNDLER_VERSION, } = await import('../npm/pre-bundle-facet.js');
+                        const { buildSliceForSpecifierWithCap, BUNDLER_VERSION, } = await import('../npm/pre-bundle-facet.js');
                         const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
                         const projDir = this.root;
                         const nmDir = projDir + '/node_modules';
@@ -1920,7 +1919,7 @@ export class ViteDevServer {
                             slice = null;
                             let result = null;
                             try {
-                                result = await onDemandPool.submit(prebundleOne, spec);
+                                result = await onDemandPool.prebundle(spec);
                             }
                             finally {
                                 spec = null;

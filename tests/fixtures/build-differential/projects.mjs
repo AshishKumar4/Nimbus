@@ -115,6 +115,12 @@ export default { fetch() { return Response.json({ cjs: cjs.value, named, esm, tw
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
     files: { 'src/index.js': "const s = './missing.js'; const \u00e9 = '\u{1F600}'; import { x } from './missing.js';\nexport default { fetch() { return new Response(s + x + \u00e9); } };" },
   },
+  // One specifier imported, required and imported dynamically, twice each:
+  // esbuild reports each kind once, at its first occurrence.
+  'worker-unresolved-each-kind': {
+    options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
+    files: { 'src/index.js': "import './missing.js';\nexport const a = () => require('./missing.js');\nexport const b = () => require('./missing.js');\nimport './missing.js';\nexport const c = () => import('./missing.js');\nexport default { fetch() { return new Response('x'); } };" },
+  },
   // Every import that does not resolve is an error, in esbuild's order (file, line, column), with the other errors.
   'worker-unresolved-every-import': {
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',

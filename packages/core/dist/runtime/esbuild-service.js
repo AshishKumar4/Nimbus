@@ -50,8 +50,11 @@ import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from '.
  *        request at serve time so one bundle serves every mount base. v7
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
+ *   v12 — pre-bundles built by rolldown in the build facet
+ *        (runtime/prebundle-slice.ts) instead of esbuild-wasm; v11 rows hold
+ *        esbuild's output.
  */
-export const BUNDLER_VERSION = 'v11';
+export const BUNDLER_VERSION = 'v12';
 // ── Shared-runtime externals ────────────────────────────────────────────
 /**
  * Returns the list of specifiers that must be marked `external` when bundling

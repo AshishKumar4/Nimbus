@@ -69,37 +69,52 @@ export async function freshFacetClass() {
  * A Durable Object as build-facet.ts sees it; `counts` says what it was asked
  * for. `classFor(id)` is the facet class the loader hands out for a worker
  * id (a fresh evaluation per id is a fresh isolate); by default, `BuildFacet`.
+ * As in workerd, aborting a facet cancels every call to it still in flight,
+ * its answer's delivery included: `deliveryDelayMs(call, argument)` holds the
+ * answer of the call-th facet call (0-based), whose first argument is
+ * `argument`, that long on its way back.
  */
-export function durableObject(BuildFacet, classFor = async () => BuildFacet) {
-  const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], aborted: [] };
+export function durableObject(BuildFacet, classFor = async () => BuildFacet, { deliveryDelayMs = () => 0 } = {}) {
+  const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], aborted: [], prebundling: 0, mostPrebundling: 0, calls: 0 };
   const facets = new Map();
+  const inFlight = new Map();
+  // One call to facet `name`: run inside it (its memories counted), answered after its delivery delay unless aborted first.
+  const call = (name, argument, run) => new Promise((resolve, reject) => {
+    const calls = inFlight.get(name) ?? new Set();
+    inFlight.set(name, calls);
+    const entry = { reject };
+    calls.add(entry);
+    const delay = deliveryDelayMs(counts.calls++, argument);
+    // While the facet runs, its own memories are counted: the binding's is created on its first call.
+    WebAssembly.Memory = class extends NativeMemory { constructor(d) { super(d); memories.push(this); } };
+    run()
+      .finally(() => { WebAssembly.Memory = NativeMemory; })
+      .then(async (value) => {
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        return structuredClone(value);
+      })
+      .then(resolve, reject)
+      .finally(() => calls.delete(entry));
+  });
   const ctx = {
     id: { toString: () => 'build-facet-do' },
     facets: {
-      abort(name) {
+      abort(name, reason) {
         counts.aborted.push(name);
         facets.delete(name);
+        for (const entry of inFlight.get(name) ?? []) entry.reject(reason instanceof Error ? reason : new Error(String(reason)));
+        inFlight.delete(name);
       },
       get(name, load) {
         if (!facets.has(name)) facets.set(name, load().then(({ class: FacetClass }) => { counts.facetInstances++; return new FacetClass({}, {}); }));
         const instance = facets.get(name);
         return {
-          warm: async () => {
-            WebAssembly.Memory = class extends NativeMemory { constructor(d) { super(d); memories.push(this); } };
-            try {
-              await (await instance).warm();
-            } finally {
-              WebAssembly.Memory = NativeMemory;
-            }
-          },
-          build: async (options, plugin) => {
-            // While the facet runs, its own memories are counted: the binding's is created on the first build.
-            WebAssembly.Memory = class extends NativeMemory { constructor(d) { super(d); memories.push(this); } };
-            try {
-              return structuredClone(await (await instance).build(structuredClone(options), plugin));
-            } finally {
-              WebAssembly.Memory = NativeMemory;
-            }
+          warm: () => call(name, undefined, async () => (await instance).warm()),
+          build: (options, plugin) => call(name, options, async () => (await instance).build(structuredClone(options), plugin)),
+          prebundle: (spec) => {
+            counts.prebundling++;
+            counts.mostPrebundling = Math.max(counts.mostPrebundling, counts.prebundling);
+            return call(name, spec, async () => (await instance).prebundle(structuredClone(spec))).finally(() => counts.prebundling--);
           },
         };
       },

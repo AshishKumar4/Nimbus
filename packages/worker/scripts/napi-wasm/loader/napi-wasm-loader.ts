@@ -63,6 +63,12 @@ export interface NapiWasmBindingHost {
   trampoline: WebAssembly.Module;
   /** Wasm pages the binding's imported memory starts at (its declared minimum). */
   memoryPages: number;
+  /**
+   * The binding's linear memory, when the host makes it (to watch what the
+   * binding grows to): `memoryPages` initial pages, maximum 65536, unshared.
+   * Absent: the loader makes it.
+   */
+  memory?: WebAssembly.Memory;
   /** The binding's name, for diagnostics. */
   name: string;
   /**
@@ -508,7 +514,7 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   // stack may suspend, so only such a binding takes the JSPI trampoline.
   const pumped = WebAssembly.Module.exports(host.binding).some((e) => e.name === 'nimbus_napi_pump');
   const jspi = pumped && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
-  const memory = new WebAssembly.Memory({ initial: host.memoryPages, maximum: 65536 });
+  const memory = host.memory ?? new WebAssembly.Memory({ initial: host.memoryPages, maximum: 65536 });
   const getMemory = () => memory;
   const fds = new Map<number, FilesystemFd>([
     [0, { kind: 'stdin' }],

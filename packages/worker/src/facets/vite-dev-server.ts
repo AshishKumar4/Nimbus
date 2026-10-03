@@ -12,7 +12,7 @@
  *     ├── /*.ts,*.tsx,*.jsx    → esbuild transform → JS with import rewrites + alias resolution
  *     ├── /*.css               → serve as text/css (with @import inlining, @tailwind stripping, @apply expansion)
  *     ├── /*.css?import        → wrap CSS in JS that injects <style> tag
- *     ├── /@modules/<pkg>      → resolve from node_modules, bundle via esbuild facet (synthetic-entry for barrels)
+ *     ├── /@modules/<pkg>      → resolve from node_modules, bundle in the build facet (synthetic-entry for barrels)
  *     ├── /@vite/client        → HMR client script
  *     ├── /*.json (as module)  → export default { ... }
  *     ├── /*.svg,*.png,... (as module) → export default "/preview/path/to/asset"
@@ -32,7 +32,7 @@ import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
-import type { BundlePool, BundlePoolProvider } from './esbuild-bundle-pool.js';
+import type { BundlePool, BundlePoolProvider } from './prebundle-pool.js';
 import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import {
@@ -83,11 +83,11 @@ export interface ViteDevServerOptions {
   /** Durable Object state. */
   ctx?: DurableObjectState;
   /**
-   * The session's esbuild facet pool, shared with the install-time
-   * pre-bundler. When provided, /preview/@modules/<spec> misses bundle in
-   * that pool's isolate instead of the supervisor's EsbuildService.
-   * Without it, the supervisor falls back to in-process esbuild (legacy
-   * behaviour used by callers without a LOADER binding).
+   * The session's pre-bundle pool (its build facet), shared with the
+   * install-time pre-bundler. When provided, /preview/@modules/<spec>
+   * misses bundle there from a slice, rather than through the session's
+   * EsbuildService and its VFS plugin (the path callers without a LOADER
+   * binding take).
    */
   bundlePool?: BundlePoolProvider;
   /**
@@ -243,7 +243,7 @@ const ASSET_EXTS = new Set([
  * We inject `__nimbus_req` but keep esbuild's `__require` definition so we
  * don't have to rewrite its declaration — we just replace the call-sites.
  */
-function rewriteExternalRequires(code: string, basePath: string): string {
+export function rewriteExternalRequires(code: string, basePath: string): string {
   // Find all `__require("specifier")` calls where the specifier is bare
   // (not a relative/absolute path). Bare specifiers are the only ones that
   // can be external.
@@ -328,7 +328,7 @@ function rewriteExternalRequires(code: string, basePath: string): string {
  *   - No `export default` pattern found
  *   - No CJS export patterns found in the bundle source
  */
-function synthesizeCjsNamedExports(code: string): string {
+export function synthesizeCjsNamedExports(code: string): string {
   // Quick check: does the bundle already have named exports?
   if (/(^|\n)\s*export\s+(?:const|let|var|function|class|\{|\*)\b/.test(code)) {
     return code;
@@ -1277,7 +1277,7 @@ export class ViteDevServer {
   private injectBasename: boolean;
   private env: any;
   private ctx: DurableObjectState | null = null;
-  /** The session's esbuild facet pool; null = legacy in-supervisor esbuild. */
+  /** The session's pre-bundle pool; null = bundle through the EsbuildService. */
   private readonly bundlePool: BundlePoolProvider | null;
   /**
    * In-flight on-demand-bundle coalescing map. When the browser fires
@@ -1353,11 +1353,11 @@ export class ViteDevServer {
   }
 
   /**
-   * The session's shared esbuild pool for on-demand bundling of
+   * The session's pre-bundle pool for on-demand bundling of
    * /preview/@modules/<spec> requests that miss both the in-memory and
-   * pkg_esm_bundles caches. Null when no pool was provided (legacy
-   * in-supervisor fallback). Acquired BEFORE the slice lease — see
-   * EsbuildBundlePool.acquire.
+   * pkg_esm_bundles caches. Null when no pool was provided (the
+   * EsbuildService fallback). Acquired BEFORE the slice lease — see
+   * PrebundlePool.acquire.
    */
   private async ensureOnDemandPool(): Promise<BundlePool | null> {
     if (!this.bundlePool) return null;
@@ -1892,13 +1892,12 @@ export class ViteDevServer {
     // supervisor isolate. For large modules (lucide-react, ~18 MiB
     // unpacked) that OOM'd the supervisor and surfaced as CF error
     // 1101 on /preview/@modules/lucide-react, taking down the entire
-    // preview. We now dispatch the bundle work to the session's shared
-    // esbuild IsolatePool — the same pool, isolate and 128 MiB heap the
-    // install-time pre-bundler uses. Supervisor never bundles esbuild
-    // for any path.
+    // preview. We now dispatch the bundle work to the session's build
+    // facet from a slice — the same pool and isolate the install-time
+    // pre-bundler uses. The supervisor never runs a bundler.
     //
-    // Falls back to in-supervisor esbuild ONLY if no bundle pool was
-    // provided (legacy callers / tests).
+    // Falls back to the EsbuildService (its build host) ONLY if no bundle
+    // pool was provided (legacy callers / tests).
     const resolved = this.resolvePackage(specifier);
     // Barrel packages (lucide-react, @phosphor-icons/react, react-icons,
     // @mui/icons-material, …) ship hundreds/thousands of tiny re-export
@@ -2008,11 +2007,10 @@ export class ViteDevServer {
       let sliceLease: ResizableCreditLease | null = null;
       try {
         if (onDemandPool) {
-          // Facet path — supervisor stays at 0 esbuild bytes.
+          // Facet path — the supervisor holds no bundler.
           try {
             const {
               buildSliceForSpecifierWithCap,
-              prebundleOne,
               BUNDLER_VERSION,
             } = await import('../npm/pre-bundle-facet.js');
             const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
@@ -2084,7 +2082,7 @@ export class ViteDevServer {
               slice = null;
               let result: any = null;
               try {
-                result = await onDemandPool.submit(prebundleOne, spec);
+                result = await onDemandPool.prebundle(spec);
               } finally {
                 spec = null;
               }

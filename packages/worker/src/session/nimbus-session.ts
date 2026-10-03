@@ -28,7 +28,7 @@ import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquire
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
-import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
+import { PrebundlePool } from '../facets/prebundle-pool.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -332,11 +332,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   webSocketRelay: WebSocketRelay | null = null;
   esbuildService: EsbuildService | null = null;
   /**
-   * The session's single esbuild facet pool, shared by the npm installer's
-   * pre-bundler and the dev server's on-demand /@modules/ path. Lazy; see
-   * ensureBundlePool. Disposed with the installer and dev server.
+   * The session's pre-bundle pool (its build facet), shared by the npm
+   * installer's pre-bundler and the dev server's on-demand /@modules/ path.
+   * Lazy; see ensureBundlePool. Disposed with the installer and dev server.
    */
-  bundlePool: EsbuildBundlePool | null = null;
+  bundlePool: PrebundlePool | null = null;
   viteDevServer: ViteDevServer | null = null;
   /**
    * runtime primitive support (P5): PID + port the default-Cirrus vite shim is
@@ -1154,7 +1154,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   /** The session's esbuild facet pool provider; constructing it does no work. */
-  ensureBundlePool(): EsbuildBundlePool { return this.#runtimeServices.ensureBundlePool(); }
+  ensureBundlePool(): PrebundlePool { return this.#runtimeServices.ensureBundlePool(); }
 
   /**
    * The session's FacetManager, composed through the one factory every host

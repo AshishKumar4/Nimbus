@@ -16,6 +16,10 @@ import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-buil
 import { prewarmBuildFacet, rolldownBuildHost, BUILD_FACET_WORKER_ID } from '../../packages/worker/src/facets/build-facet.ts';
 import { STAGED_BINDING_ARTIFACTS } from '../../packages/worker/src/napi-wasm-artifacts.generated.ts';
 import { PROJECTS, WRANGLER_OPTIONS } from '../fixtures/build-differential/projects.mjs';
+import { CASES, FILES, NODE_MODULES } from '../fixtures/prebundle-differential/packages.mjs';
+import { prebundleSlice } from '../../packages/core/src/runtime/prebundle-slice.ts';
+import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
+import { PRE_BUNDLE_CONCURRENCY } from '../../packages/platform/src/limits.ts';
 import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 
 const MiB = 1024 * 1024;
@@ -85,6 +89,59 @@ try {
     console.log('  ok  a warm-up loads the facet and creates its binding; the first build reuses both');
   }
 
+  // ── A binding grown past its mark is left behind after the call ─────────────
+  // 150,000 object literals (3.1 MiB of source) grow it to about 90 MiB.
+  {
+    const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet);
+    const host = rolldownBuildHost(ctx, env);
+    const big = memoryFs('big', { 'a.js': `export const a = [${Array.from({ length: 150_000 }, (_, i) => `{x:${i},y:"s${i}"}`).join(',')}];` });
+    const small = PROJECTS['worker-routes'];
+    const built = await new EsbuildService(big, { buildHost: host }).build(['/home/user/big/a.js'], WRANGLER_OPTIONS);
+    assert.ok(built.outputFiles[0].contents.length > 3_000_000, 'the big build answers');
+    assert.ok(memories.at(-1).buffer.byteLength > 64 * MiB, `${memories.at(-1).buffer.byteLength / MiB} MiB`);
+    assert.equal(counts.aborted.length, 1, 'its facet is aborted once the call is answered');
+    await new EsbuildService(memoryFs('worker-routes', small.files), { buildHost: host }).build([`/home/user/worker-routes/${small.entry}`], small.options);
+    assert.equal(counts.loaderIds.length, 2, 'the next build starts a fresh isolate');
+    console.log(`  ok  a binding grown past 64 MiB (${(memories.at(-2).buffer.byteLength / MiB).toFixed(0)} MiB) is left behind; the next build starts a fresh isolate`);
+  }
+
+  // ── Pre-bundles run in the same facet, from their slices, one at a time ─────
+  {
+    const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet);
+    const sliceOf = (files) => Object.entries(files).map(([path, v]) => ({ path: '/' + path, bytes: typeof v === 'string' ? new TextEncoder().encode(v) : v, isDir: false }));
+    const specOf = ({ specifier, entry, define }, files = FILES) => ({
+      specifier, entryPath: `${NODE_MODULES}/${entry}`, externals: specifier.startsWith('react') ? (specifier === 'react' ? [] : ['react']) : ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+      slice: sliceOf(files), bundlerVersion: 'test', define,
+    });
+    const pool = await new PrebundlePool(env, ctx).acquire();
+    const before = counts.loaderIds.length;
+    assert.equal(before, 1, 'acquire loads the facet');
+    const results = await Promise.all(CASES.map((c) => pool.prebundle(specOf(c))));
+    assert.equal(counts.mostPrebundling, PRE_BUNDLE_CONCURRENCY, 'pre-bundles run one at a time');
+    for (const [i, c] of CASES.entries()) {
+      const native = await prebundleSlice(specOf(c), (o, p) => buildWithRolldown(rolldownNative, structuredClone(o), p));
+      assert.deepEqual([results[i].ok, results[i].esmCode, results[i].errorText], [native.ok, native.esmCode, native.errorText], `${c.specifier}: the staged binding pre-bundles what the native one does`);
+    }
+    // A module nested past the stack: that pre-bundle fails saying so, and the next one runs on a fresh isolate.
+    const deep = specOf({ specifier: 'deep-sum', entry: 'deep-sum/index.js' }, {
+      'home/user/app/node_modules/deep-sum/package.json': '{"name":"deep-sum","main":"index.js"}',
+      'home/user/app/node_modules/deep-sum/index.js': `const t = 1; exports.x = ${Array.from({ length: 10_000 }, () => 't').join(' + ')};`,
+    });
+    const warn = console.warn;
+    console.warn = () => {};
+    let crashed;
+    try {
+      crashed = await pool.prebundle(deep);
+    } finally {
+      console.warn = warn;
+    }
+    assert.deepEqual([crashed.ok, crashed.errorText], [false, "Nimbus's bundler ran out of stack: a module nests too deeply for it (Maximum call stack size exceeded.)"]);
+    const after = await pool.prebundle(specOf(CASES.find((c) => c.specifier === 'cjs-lib')));
+    assert.equal(after.ok, true);
+    assert.equal(counts.loaderIds.length, 2, 'the next pre-bundle loads a fresh isolate');
+    console.log(`  ok  ${CASES.length} pre-bundles through PrebundlePool: one facet load, one at a time, native rolldown's output; a dying binding fails only its own`);
+  }
+
   // ── A failed build crosses RPC as esbuild's did ─────────────────────────────
   {
     const { ctx, env } = durableObject(BuildFacet);
@@ -129,9 +186,13 @@ try {
     const settled = (promise) => promise.then(({ outputFiles: [{ contents }] }) => ({ code: typeof contents === 'string' ? contents : new TextDecoder().decode(contents) }), (error) => ({ failure: error.message }));
     const warned = [];
     const warn = console.warn;
+    // The build of fine/b.js gets its answer `ms` late.
+    const siblingLate = (ms) => (_call, options) => (options?.entryPoints?.[0] === '/home/user/fine/b.js' ? ms : 0);
     for (const withFallback of [true, false]) {
       // Each loader id is a fresh evaluation of the facet module: a fresh isolate.
-      const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet);
+      // The sibling's answer arrives 50 ms after the deep build's: that first
+      // crashed answer must not abort the facet while this one is on its way.
+      const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: siblingLate(50) });
       const fallbackBuilds = [];
       const fallback = async (options, plugin) => {
         fallbackBuilds.push(options.entryPoints[0]);
@@ -164,8 +225,50 @@ try {
       assert.equal(fresh, died + 1, 'on a fresh isolate');
       assert.ok(counts.aborted.length > 0 && counts.aborted.every((name) => name.endsWith(`:g${died}`)), 'the dead facet is aborted');
     }
+    // A call on the dead generation that gets an error instead of its answer
+    // (here, its facet aborted under it) is that death too: esbuild builds it.
+    {
+      const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: siblingLate(2000) });
+      const fallbackBuilds = [];
+      const host = rolldownBuildHost(ctx, env, async (options, plugin) => {
+        fallbackBuilds.push(options.entryPoints[0]);
+        return structuredClone(await buildWithEsbuild(esbuild, structuredClone(options), plugin));
+      });
+      const build = (fs, entry) => settled(new EsbuildService(fs, { buildHost: host }).build([entry], WRANGLER_OPTIONS));
+      console.warn = () => {};
+      try {
+        const sibling = build(fine, '/home/user/fine/b.js');
+        const first = await within(build(deep, '/home/user/deep/a.js'), 'the deep build');
+        assert.match(first.code, /var x = t \+ t/);
+        ctx.facets.abort(counts.loaderIds[0], new Error('aborted under its call'));
+        assert.match((await within(sibling, 'the aborted sibling')).code, /var y = 2/, 'the aborted sibling is built by esbuild');
+      } finally {
+        console.warn = warn;
+      }
+      assert.deepEqual(fallbackBuilds.sort(), ['/home/user/deep/a.js', '/home/user/fine/b.js']);
+    }
+    // Another Durable Object's dead binding moves this one to the next
+    // generation too, without cancelling the build it still has in flight.
+    {
+      const a = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: (call) => (call === 0 ? 300 : 0) });
+      const b = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet);
+      const hostA = rolldownBuildHost(a.ctx, a.env);
+      const hostB = rolldownBuildHost(b.ctx, b.env);
+      console.warn = () => {};
+      try {
+        const long = settled(new EsbuildService(fine, { buildHost: hostA }).build(['/home/user/fine/b.js'], WRANGLER_OPTIONS));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.ok((await within(settled(new EsbuildService(deep, { buildHost: hostB }).build(['/home/user/deep/a.js'], WRANGLER_OPTIONS)), 'b')).failure);
+        const next = await within(settled(new EsbuildService(fine, { buildHost: hostA }).build(['/home/user/fine/b.js'], WRANGLER_OPTIONS)), 'a, again');
+        assert.match(next.code, /const y = 2|var y = 2/, 'the next build runs on the next generation');
+        assert.match((await within(long, 'a, in flight')).code, /const y = 2|var y = 2/, 'the build in flight on the retired generation still answers');
+        assert.equal(a.counts.aborted.length, 1, 'and its facet is aborted once it has');
+      } finally {
+        console.warn = warn;
+      }
+    }
     await esbuild.stop();
-    console.log('  ok  a binding that dies answers every build on it (esbuild builds them, or each fails saying why); the next build gets a fresh isolate');
+    console.log('  ok  a binding that dies answers every build on it (esbuild builds them, or each fails saying why); the next build gets a fresh isolate; a retired facet is aborted only once its calls are answered');
   }
   assert.match(BUILD_FACET_WORKER_ID, /^nimbus-build:rolldown-1\.2\.11-[0-9a-f]{16}:/);
 } finally {

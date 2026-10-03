@@ -26,7 +26,7 @@ import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsLi
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
-import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
+import { PrebundlePool } from '../facets/prebundle-pool.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -93,11 +93,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     webSocketRelay: WebSocketRelay | null;
     esbuildService: EsbuildService | null;
     /**
-     * The session's single esbuild facet pool, shared by the npm installer's
-     * pre-bundler and the dev server's on-demand /@modules/ path. Lazy; see
-     * ensureBundlePool. Disposed with the installer and dev server.
+     * The session's pre-bundle pool (its build facet), shared by the npm
+     * installer's pre-bundler and the dev server's on-demand /@modules/ path.
+     * Lazy; see ensureBundlePool. Disposed with the installer and dev server.
      */
-    bundlePool: EsbuildBundlePool | null;
+    bundlePool: PrebundlePool | null;
     viteDevServer: ViteDevServer | null;
     /**
      * runtime primitive support (P5): PID + port the default-Cirrus vite shim is
@@ -634,7 +634,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Snapshot + persist OOM ring. Delegator → ./session/diag.ts (S10). */
     _w5PersistRing(): Promise<void> | null;
     /** The session's esbuild facet pool provider; constructing it does no work. */
-    ensureBundlePool(): EsbuildBundlePool;
+    ensureBundlePool(): PrebundlePool;
     /**
      * The session's FacetManager, composed through the one factory every host
      * uses (`facets/compose.ts`). What is wired here is only what is the

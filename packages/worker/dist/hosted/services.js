@@ -4,7 +4,7 @@ import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
-import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
+import { PrebundlePool } from "../facets/prebundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
 import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
@@ -22,10 +22,6 @@ import { WebSocketRelay } from "../session/ws-relay.js";
 // They are imported here (so call sites in this file work unchanged) and
 // re-exported (so external callers importing them from
 // `./nimbus-session.js` keep working — back-compat).
-//
-// (esbuild wasm bytes are fetched from env.ASSETS by
-//  src/esbuild-wasm-bytes.ts at pool-construction time; A'.5 dropped
-//  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
 // Helpers needed by this class file's own logic (not just re-export).
 import { _classifyCommand } from "../session/helpers.js";
 import { z } from "zod/v4";
@@ -56,7 +52,7 @@ function normalizeCpCommandName(name) {
 }
 export function ensureBundlePool(self, runtimeContext) {
     if (!self.bundlePool)
-        self.bundlePool = new EsbuildBundlePool(runtimeContext.env, runtimeContext.ctx);
+        self.bundlePool = new PrebundlePool(runtimeContext.env, runtimeContext.ctx);
     return self.bundlePool;
 }
 export function ensureFacetManager(self, runtimeContext) {

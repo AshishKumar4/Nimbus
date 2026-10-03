@@ -7052,18 +7052,20 @@ var LOADER_MODULE_TYPES = {
   dataurl: "dataurl",
   empty: "empty"
 };
-function importSpan(module, source, parse2) {
+function importSpans(module, parse2) {
+  const spans = /* @__PURE__ */ new Map();
   let program;
   try {
     program = parse2(module.source, { lang: module.lang });
   } catch {
-    return null;
+    return spans;
   }
-  let found = null;
-  const literal2 = (node) => {
+  const literal2 = (kind, node) => {
     const n5 = node;
-    if (n5?.type !== "Literal" || n5.value !== source || typeof n5.start !== "number" || typeof n5.end !== "number") return;
-    if (found === null || n5.start < found[0]) found = [n5.start, n5.end];
+    if (n5?.type !== "Literal" || typeof n5.value !== "string" || typeof n5.start !== "number" || typeof n5.end !== "number") return;
+    const key = `${kind}\0${n5.value}`;
+    const known = spans.get(key);
+    if (!known || n5.start < known[0]) spans.set(key, [n5.start, n5.end]);
   };
   const visit = (node) => {
     if (!node || typeof node !== "object") return;
@@ -7076,22 +7078,24 @@ function importSpan(module, source, parse2) {
       case "ImportDeclaration":
       case "ExportNamedDeclaration":
       case "ExportAllDeclaration":
+        literal2("import-statement", n5.source);
+        break;
       case "ImportExpression":
-        literal2(n5.source);
+        literal2("dynamic-import", n5.source);
         break;
       case "TSExternalModuleReference":
-        literal2(n5.expression);
+        literal2("require-call", n5.expression);
         break;
       case "CallExpression": {
         const callee = n5.callee;
-        if (callee?.type === "Identifier" && callee.name === "require") literal2(n5.arguments?.[0]);
+        if (callee?.type === "Identifier" && callee.name === "require") literal2("require-call", n5.arguments?.[0]);
         break;
       }
     }
     for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child);
   };
   visit(program);
-  return found;
+  return spans;
 }
 var utf8Length = (text) => new TextEncoder().encode(text).length;
 function base64Of(bytes) {
@@ -7198,10 +7202,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     raised.push(message(text, null, pluginName));
     throw new Error(text);
   };
-  const unresolvedImport = (text, importer, source, pluginName, parse2) => {
+  const spansOf = /* @__PURE__ */ new Map();
+  const unresolvedImport = (text, importer, source, kind, pluginName, parse2) => {
     const from = importer ? loaded.get(importer) : void 0;
     let location = null;
-    const span = from?.lang ? importSpan(from, source, parse2) : null;
+    let spans = importer ? spansOf.get(importer) : void 0;
+    if (!spans && importer && from?.lang) spansOf.set(importer, spans = importSpans(from, parse2));
+    const span = spans?.get(`${kind}\0${source}`);
     if (from && span) {
       const before = from.source.slice(0, span[0]);
       const line = before.split(/\r\n|\r|\n/).length;
@@ -7227,9 +7234,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         kind,
         with: extra.attributes ?? {}
       });
-      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? "error", importer, source, plugin.name, parse2);
+      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? "error", importer, source, kind, plugin.name, parse2);
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
-      if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, "", parse2);
+      if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, "", parse2);
       if (answer.external) return { id: answer.path ?? path3, external: true };
       const namespace = answer.namespace ?? "file";
       if (mainNamespace === null) mainNamespace = namespace;
@@ -7255,12 +7262,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         lang: loader === "js" || loader === "jsx" || loader === "ts" || loader === "tsx" ? loader : void 0
       });
       if (loader === "css") {
+        if (!options.outdir && !options.outfile) raise(`Cannot import ${JSON.stringify(fileOf({ namespace, path: path3 }))} into a JavaScript file without an output path configured`);
         css.push({ id: id2, path: path3, source: text });
         return { code: "", moduleType: "js", moduleSideEffects: true };
       }
       if (loader === "binary") {
         const bytes = typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
-        return { code: `export default /* @__PURE__ */ Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
+        return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytes))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
       }
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path: path3 })})`);
@@ -7346,10 +7354,244 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   }
 }
 
+// ../core/src/_shared/exports-resolver.ts
+var DEFAULT_ESM_CONDITIONS = ["import", "module", "browser", "default"];
+function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
+  if (exportsField === void 0 || exportsField === null) return null;
+  if (typeof exportsField === "string") {
+    return subpath === "." ? exportsField : null;
+  }
+  if (Array.isArray(exportsField)) {
+    for (const item of exportsField) {
+      const r3 = resolveExports(item, subpath, conditions);
+      if (r3) return r3;
+    }
+    return null;
+  }
+  if (typeof exportsField !== "object") return null;
+  const keys = Object.keys(exportsField);
+  if (keys.length === 0) return null;
+  const isSubpathMap = keys[0].startsWith(".") || keys[0].startsWith("#");
+  if (isSubpathMap) {
+    if (subpath in exportsField) {
+      const target = exportsField[subpath];
+      if (target === null) return null;
+      return resolveConditionValue(target, conditions);
+    }
+    const wildcardKeys = keys.filter((k2) => k2.includes("*")).sort((a2, b2) => b2.length - a2.length);
+    for (const pattern of wildcardKeys) {
+      const target = exportsField[pattern];
+      const starIdx = pattern.indexOf("*");
+      const prefix = pattern.slice(0, starIdx);
+      const suffix = pattern.slice(starIdx + 1);
+      if (subpath.startsWith(prefix) && (suffix ? subpath.endsWith(suffix) : true) && subpath.length >= prefix.length + suffix.length) {
+        if (target === null) return null;
+        const matched = subpath.slice(
+          prefix.length,
+          suffix ? subpath.length - suffix.length : void 0
+        );
+        const resolved = resolveConditionValue(target, conditions);
+        if (resolved) return resolved.split("*").join(matched);
+      }
+    }
+    return null;
+  }
+  if (subpath !== ".") return null;
+  return resolveConditionValue(exportsField, conditions);
+}
+function resolveConditionValue(target, conditions) {
+  if (target === null || target === void 0) return null;
+  if (typeof target === "string") return target;
+  if (Array.isArray(target)) {
+    for (const item of target) {
+      const r3 = resolveConditionValue(item, conditions);
+      if (r3) return r3;
+    }
+    return null;
+  }
+  if (typeof target !== "object") return null;
+  for (const cond of conditions) {
+    if (cond in target) {
+      const r3 = resolveConditionValue(target[cond], conditions);
+      if (r3) return r3;
+    }
+  }
+  if (!conditions.includes("default") && "default" in target) {
+    return resolveConditionValue(target.default, conditions);
+  }
+  return null;
+}
+function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
+  if (pkg.exports !== void 0 && pkg.exports !== null) {
+    const entry = resolveExports(pkg.exports, subpath, conditions);
+    if (entry) return entry;
+    return null;
+  }
+  if (subpath === ".") {
+    if (conditions.includes("module") && pkg.module) return pkg.module;
+    if (pkg.main) return pkg.main;
+    return null;
+  }
+  return subpath;
+}
+
+// ../core/src/runtime/prebundle-slice.ts
+var EXTS = ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cjs", ".json", ".css"];
+var INDEX_FILES = ["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs"];
+var SWAPS = { js: [".ts", ".tsx"], jsx: [".tsx", ".ts"], mjs: [".mts", ".ts"], cjs: [".cts", ".ts"] };
+var ESM_CONDITIONS = ["import", "module", "browser", "default"];
+var CJS_CONDITIONS = ["require", "node", "browser", "default"];
+function loaderOf(path3) {
+  if (path3.endsWith(".ts") || path3.endsWith(".mts") || path3.endsWith(".cts")) return "ts";
+  if (path3.endsWith(".tsx")) return "tsx";
+  if (path3.endsWith(".jsx")) return "jsx";
+  if (path3.endsWith(".json")) return "json";
+  if (path3.endsWith(".css")) return "css";
+  if (path3.endsWith(".wasm") || path3.endsWith(".node")) return "binary";
+  return "js";
+}
+function normalizePath(p) {
+  const out = [];
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (out.length > 0) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return (p.startsWith("/") ? "/" : "") + out.join("/");
+}
+var bare = (path3) => !path3.startsWith("/") && !path3.startsWith(".") && !path3.startsWith("#");
+async function prebundleSlice(spec, build3) {
+  const t0 = Date.now();
+  const warnings = [];
+  const failed = (errorText) => ({ specifier: spec.specifier, ok: false, esmCode: "", errorText, elapsed: Date.now() - t0, warnings });
+  if (!spec || typeof spec !== "object" || !Array.isArray(spec.slice)) throw new Error("prebundleSlice: the spec has no slice");
+  const norm = (p) => p.startsWith("/") ? p : "/" + p;
+  const files = /* @__PURE__ */ new Map();
+  const dirs = /* @__PURE__ */ new Set();
+  for (const entry of spec.slice) {
+    if (entry.isDir) dirs.add(norm(entry.path));
+    else files.set(norm(entry.path), entry.bytes);
+  }
+  for (const p of files.keys()) {
+    for (let slash = p.lastIndexOf("/"); slash > 0; slash = p.lastIndexOf("/", slash - 1)) dirs.add(p.slice(0, slash));
+  }
+  const fileExists = (p) => files.has(norm(p));
+  const dirExists = (p) => dirs.has(norm(p));
+  const packageJson = (path3) => {
+    try {
+      return JSON.parse(new TextDecoder().decode(files.get(norm(path3))));
+    } catch {
+      return null;
+    }
+  };
+  const tryResolve = (base) => {
+    const n5 = normalizePath(base);
+    for (const ext of EXTS) if (fileExists(n5 + ext)) return n5 + ext;
+    const swap = /\.(js|mjs|cjs|jsx)$/.exec(n5);
+    if (swap) {
+      const without = n5.slice(0, n5.length - swap[0].length);
+      for (const ext of SWAPS[swap[1]] ?? []) if (fileExists(without + ext)) return without + ext;
+    }
+    if (dirExists(n5)) {
+      for (const index of INDEX_FILES) if (fileExists(n5 + "/" + index)) return n5 + "/" + index;
+    }
+    return null;
+  };
+  const resolvePackageImport = (specifier, fromDir) => {
+    for (let dir = fromDir.replace(/^\/+/, ""); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
+      const pkgJsonPath = "/" + dir + "/package.json";
+      if (!fileExists(pkgJsonPath)) continue;
+      const pkg = packageJson(pkgJsonPath);
+      const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
+      return target ? tryResolve("/" + dir + "/" + target.replace(/^\.\//, "")) : null;
+    }
+    return null;
+  };
+  const resolveBarePkg = (specifier, fromDir, conditions) => {
+    const parts = specifier.split("/");
+    const scoped = specifier.startsWith("@");
+    const pkgName = parts.slice(0, scoped ? 2 : 1).join("/");
+    const subpath = parts.slice(scoped ? 2 : 1).join("/");
+    for (let dir = fromDir.replace(/^\/+/, ""); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
+      const nm = "/" + dir + "/node_modules/" + pkgName;
+      if (!dirExists(nm)) continue;
+      const pkg = fileExists(nm + "/package.json") ? packageJson(nm + "/package.json") : null;
+      const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
+      const resolved = entry && tryResolve(nm + "/" + entry.replace(/^\.\//, "")) || subpath && tryResolve(nm + "/" + subpath) || tryResolve(nm + "/index");
+      if (resolved) return resolved;
+    }
+    return null;
+  };
+  const externalExact = /* @__PURE__ */ new Set();
+  const externalPrefixes = [];
+  for (const pattern of spec.externals) {
+    if (pattern.endsWith("/*")) externalPrefixes.push(pattern.slice(0, -1));
+    else externalExact.add(pattern);
+  }
+  const isExternal = (s2) => externalExact.has(s2) || externalPrefixes.some((prefix) => s2.startsWith(prefix));
+  const plugin = {
+    name: "nimbus-pre-bundle-slice",
+    async resolve(args2) {
+      const at = (path3) => path3 ? { path: path3, namespace: "nimbus-slice" } : null;
+      if (args2.path.startsWith("#") && args2.resolveDir) {
+        const resolved = at(resolvePackageImport(args2.path, args2.resolveDir));
+        if (resolved) return resolved;
+        warnings.push(`unresolved subpath import "${args2.path}" from ${args2.importer || "?"} (no owning package.json#imports entry); marked external`);
+        return { external: true };
+      }
+      if (bare(args2.path) && isExternal(args2.path)) return { external: true };
+      if (args2.path.startsWith("/")) {
+        const resolved = at(tryResolve(args2.path));
+        if (resolved) return resolved;
+      }
+      if (args2.path.startsWith(".") && args2.resolveDir) {
+        const resolved = at(tryResolve(args2.resolveDir + "/" + args2.path));
+        if (resolved) return resolved;
+      }
+      if (bare(args2.path)) {
+        const conditions = args2.kind === "require-call" || args2.kind === "require-resolve" ? CJS_CONDITIONS : ESM_CONDITIONS;
+        const resolved = at(resolveBarePkg(args2.path, args2.resolveDir || "/home/user", conditions));
+        if (resolved) return resolved;
+        warnings.push(`unresolved bare import "${args2.path}" from ${args2.importer || "?"} \u2192 marked external`);
+      }
+      return { external: true };
+    },
+    async load(args2) {
+      const bytes = files.get(norm(args2.path));
+      if (!bytes) return { errors: [{ text: "pre-bundle slice miss: " + args2.path }] };
+      const loader = loaderOf(args2.path);
+      const lastSlash = args2.path.lastIndexOf("/");
+      const resolveDir = lastSlash > 0 ? args2.path.slice(0, lastSlash) : "/";
+      return { contents: loader === "binary" ? bytes : new TextDecoder().decode(bytes), loader, resolveDir };
+    }
+  };
+  const outcome = await build3({
+    entryPoints: [norm(spec.entryPath)],
+    bundle: true,
+    format: "esm",
+    target: "esnext",
+    platform: "browser",
+    conditions: ESM_CONDITIONS,
+    mainFields: ["module", "browser", "main"],
+    define: spec.define && Object.keys(spec.define).length > 0 ? spec.define : void 0
+  }, plugin);
+  if (outcome.failure) return failed(outcome.errors[0]?.text || outcome.failure);
+  const script = outcome.outputFiles.find((file) => !file.path.endsWith(".css")) ?? outcome.outputFiles[0];
+  if (!script) return failed("no output produced");
+  return { specifier: spec.specifier, ok: true, esmCode: new TextDecoder().decode(script.contents), elapsed: Date.now() - t0, warnings };
+}
+
 // scripts/rolldown-facet/entry.mjs
 function build2(options, plugin) {
   return buildWithRolldown({ rolldown }, options, plugin);
 }
+function prebundle(spec) {
+  return prebundleSlice(spec, build2);
+}
 export {
-  build2 as build
+  build2 as build,
+  prebundle
 };

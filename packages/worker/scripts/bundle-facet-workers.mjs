@@ -495,7 +495,9 @@ async function bundleRolldownFacet() {
   if (imports.some((specifier) => specifier !== 'node:path')) {
     throw new Error(`[bundle-facet-workers/rolldown-facet] the runtime imports ${imports.join(', ')}; only node:path is allowed`);
   }
-  if (!/export\s*\{[^}]*\bbuild\b/.test(runtime)) throw new Error('[bundle-facet-workers/rolldown-facet] the runtime no longer exports build');
+  for (const name of ['build', 'prebundle']) {
+    if (!new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`).test(runtime)) throw new Error(`[bundle-facet-workers/rolldown-facet] the runtime no longer exports ${name}`);
+  }
   return runtime;
 }
 

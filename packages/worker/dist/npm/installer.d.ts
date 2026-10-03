@@ -29,7 +29,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
 import { type NpmLogEmitter } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import type { BundlePoolProvider } from '../facets/esbuild-bundle-pool.js';
+import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
 export interface InstallProgress {
     phase: InstallPhase;

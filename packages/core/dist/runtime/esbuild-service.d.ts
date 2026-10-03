@@ -41,8 +41,11 @@ import type { Awaitable } from '../vfs/vfs.js';
  *        request at serve time so one bundle serves every mount base. v7
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
+ *   v12 — pre-bundles built by rolldown in the build facet
+ *        (runtime/prebundle-slice.ts) instead of esbuild-wasm; v11 rows hold
+ *        esbuild's output.
  */
-export declare const BUNDLER_VERSION = "v11";
+export declare const BUNDLER_VERSION = "v12";
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
  * `specifier` so that React / React-DOM / Scheduler share a single instance

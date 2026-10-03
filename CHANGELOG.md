@@ -33,6 +33,30 @@ published independently in the `@nimbus-sh` npm scope.
   longer kept alive by a dead binding.
 - The build facet starts loading when `wrangler dev` starts, while it
   reads its config, rather than when its first build asks for it.
+- npm pre-bundles (the install's `Pre-bundling N modules…` step and the
+  Vite dev server's on-demand `/@modules/` bundles) run on rolldown in the
+  build facet instead of esbuild-wasm in an isolate pool: the supervisor
+  still walks each specifier's slice of package files and sends it with
+  the call, so a pre-bundle makes no calls back, and they still run one at
+  a time. rolldown's runtime loads from the facet's staged module map, so
+  no pre-bundle dispatches any source; `EsbuildBundlePool` and the
+  pre-bundle preamble are gone. On 32 real specifiers (React, framer-motion,
+  @mui/material, recharts, three, date-fns, lodash-es, vue, …) the served
+  modules export the same names with the same types as esbuild's; each
+  bundle took 2-454 ms where esbuild-wasm took 7-1,078 ms. Cached
+  pre-bundles are rebuilt once (`BUNDLER_VERSION` v12). The binding keeps
+  what the largest bundle grew it to (60 MiB after @mui/material), so a
+  build facet whose binding passes 64 MiB is replaced by a fresh one after
+  the call. A `binary` module that is required rather than imported is its
+  bytes, as esbuild's is, and a build with no output path refuses a
+  stylesheet import as esbuild does.
+- Two more fixes for builds whose binding dies: the facet is aborted only
+  once every call still on it is answered (workerd's abort cancels calls in
+  flight, which left a sibling of the crashed build to fail instead of
+  falling back to esbuild), and a call on that dead generation that gets an
+  error instead of an answer falls back too. An unresolved import is placed
+  at the first literal of its own kind (import, require, dynamic import),
+  as esbuild reports each.
 - A `NimbusWorkspace` no longer holds a lazily built esbuild service: its
   only runtimes are bash, python and wasm-runner, which reads its `.wasm`
   itself, so nothing in it ever transformed source.

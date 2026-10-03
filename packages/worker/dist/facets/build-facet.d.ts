@@ -1,6 +1,7 @@
 import type { EsbuildBuildHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { type StagedSourceEnv } from '../runtime/staged-source.js';
+import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export declare const BUILD_FACET_WORKER_ID: string;
 /** The staged parts of the build facet, each verified against its pinned digest. */
 export interface BuildFacetParts {
@@ -33,4 +34,20 @@ export declare function prewarmBuildFacet(ctx: DurableObjectState, env: unknown)
  * without one, its failure says what happened.
  */
 export declare function rolldownBuildHost(ctx: DurableObjectState, env: unknown, fallback?: EsbuildBuildHost): EsbuildBuildHost;
+/**
+ * Pre-bundles one npm specifier from its slice in the Durable Object's build
+ * facet (core runtime/prebundle-slice.ts on rolldown): the slice crosses
+ * once, with the call, and the bundle comes back. A failed pre-bundle is a
+ * result (`ok: false`), as is one whose binding died under it, which also
+ * retires that generation; a call that throws drops the stub, as a build's
+ * does.
+ */
+export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult>;
+/**
+ * Loads the Durable Object's build facet and waits for it: the staged parts
+ * fetched and verified, the binding instantiated. What prewarmBuildFacet
+ * starts, for a caller that wants the load behind it before it allocates
+ * (a pre-bundle's slice). Rejects as the load does.
+ */
+export declare function loadBuildFacet(ctx: DurableObjectState, env: unknown): Promise<void>;
 //# sourceMappingURL=build-facet.d.ts.map
