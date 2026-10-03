@@ -35,11 +35,11 @@ const lease = rawVfs.acquireExclusiveMutation('/repo');
 
 assert.throws(
   () => rawVfs.acquireExclusiveMutation('/repo/nested'),
-  /EBUSY: repo\/nested overlaps exclusive mutation at repo/,
+  /EBUSY: repo\/nested: overlaps the exclusive mutation at \/repo/,
 );
 assert.throws(
   () => vfs.writeFile('repo/concurrent.txt', 'must-not-land'),
-  /EBUSY: repo\/concurrent\.txt is locked by exclusive mutation at repo/,
+  /EBUSY: repo\/concurrent\.txt: locked by an exclusive mutation at \/repo/,
 );
 assert.equal(vfs.exists('repo/concurrent.txt'), false);
 vfs.mkdir('repo/injected/../../outside-dir', { recursive: true });
@@ -47,16 +47,16 @@ assert.equal(vfs.exists('repo/injected'), false);
 assert.equal(vfs.isDirectory('outside-dir'), true);
 assert.throws(
   () => legacySymlinks.set('repo/concurrent-link', 'target.txt'),
-  /EBUSY: repo\/concurrent-link is locked by exclusive mutation at repo/,
+  /EBUSY: repo\/concurrent-link: locked by an exclusive mutation at \/repo/,
 );
 assert.throws(
   () => legacySymlinks.delete('repo/legacy-link'),
-  /EBUSY: repo\/legacy-link is locked by exclusive mutation at repo/,
+  /EBUSY: repo\/legacy-link: locked by an exclusive mutation at \/repo/,
 );
 assert.equal(legacySymlinks.readlink('repo/legacy-link'), 'target.txt');
 assert.throws(
   () => vfs.writeFile('.nimbus-symlinks.json', '{"repo/injected":"target.txt"}'),
-  /EBUSY: \.nimbus-symlinks\.json is locked while an exclusive mutation is active/,
+  /EBUSY: \.nimbus-symlinks\.json: locked while an exclusive mutation is active/,
 );
 assert.equal(legacySymlinks.readlink('repo/injected'), null);
 
@@ -98,7 +98,7 @@ const escaped = await vfs.writeStream(encodeWriteBatchStream({
   chunks: [],
 }), { mutationOwner: lease.owner });
 assert.equal(escaped.ok, false);
-assert.match(escaped.error.message, /EPERM: escape\.txt is outside exclusive mutation root repo/);
+assert.match(escaped.error.message, /EPERM: escape\.txt: outside the exclusive mutation root \/repo/);
 assert.equal(vfs.exists('escape.txt'), false);
 
 rawVfs.releaseExclusiveMutation(lease.owner);
@@ -112,12 +112,12 @@ vfs.symlink('repo', 'outside-link');
 const symlinkEscapeLease = rawVfs.acquireExclusiveMutation('/repo');
 await assert.rejects(
   async () => bridge.writeFile('/repo/out-link/injected.txt', 'blocked'),
-  /EBUSY: repo\/out-link\/injected\.txt is locked by exclusive mutation at repo/,
+  /EBUSY: locked by an exclusive mutation at \/repo, write '\/repo\/out-link\/injected\.txt'/,
 );
 assert.equal(vfs.exists('outside-dir/injected.txt'), false);
 await assert.rejects(
   async () => bridge.mkdir('/outside-link/new-dir'),
-  /EBUSY: repo\/new-dir is locked by exclusive mutation at repo/,
+  /EBUSY: locked by an exclusive mutation at \/repo, mkdir '\/outside-link\/new-dir'/,
 );
 assert.equal(vfs.exists('repo/new-dir'), false);
 rawVfs.releaseExclusiveMutation(symlinkEscapeLease.owner);
@@ -125,11 +125,11 @@ rawVfs.releaseExclusiveMutation(symlinkEscapeLease.owner);
 const destroyLease = rawVfs.acquireGlobalExclusiveMutation();
 assert.throws(
   () => rawVfs.acquireExclusiveMutation('/repo'),
-  /EBUSY: repo overlaps exclusive mutation at /,
+  /EBUSY: repo: overlaps the exclusive mutation at \/$/m,
 );
 assert.throws(
   () => vfs.writeFile('anywhere.txt', 'blocked'),
-  /EBUSY: anywhere\.txt is locked by exclusive mutation at /,
+  /EBUSY: anywhere\.txt: locked by an exclusive mutation at \/$/m,
 );
 rawVfs.releaseExclusiveMutation(destroyLease.owner);
 
@@ -188,7 +188,7 @@ const lateLease = rawVfs.acquireExclusiveMutation('/late');
 releaseSuffix();
 const lateResult = await lateWrite;
 assert.equal(lateResult.ok, false);
-assert.match(lateResult.error.message, /EBUSY: late\/file\.txt is locked by exclusive mutation at late/);
+assert.match(lateResult.error.message, /EBUSY: late\/file\.txt: locked by an exclusive mutation at \/late/);
 assert.equal(vfs.exists('late/file.txt'), false);
 rawVfs.releaseExclusiveMutation(lateLease.owner);
 
