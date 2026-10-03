@@ -18,6 +18,7 @@ import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { resolutionOf, searchPath } from './exec-dispatch.js';
+import { BASH_BUILTINS } from '../substrate/lifo/shell/bash-builtins.js';
 import sedCommand from '../substrate/lifo/commands/text/sed.js';
 import grepCommand from '../substrate/lifo/commands/text/grep.js';
 import tailCommand from '../substrate/lifo/commands/text/tail.js';
@@ -300,10 +301,12 @@ async function _whichLookup(registry, name, from) {
 /**
  * What `command -v`/`-V` and `type` report a name as: what runs it, at the
  * file a user sees. A program a search of PATH found is that file
- * (executable or not, as bash reports either); a path is itself; any other
- * command the workspace knows is where `_knownCommandPath` puts it, or else
- * a shell builtin (a runtime's install hint with no bin is not found). A
- * resolution that failed is not found.
+ * (executable or not, as bash reports either); a path is itself; a command
+ * that is one of bash's builtins is a shell builtin, whatever PATH holds of
+ * its name, as bash classifies builtins before files; any other command the
+ * workspace knows (external, runtime, npm or gem) is where
+ * `_knownCommandPath` puts it, or else a shell builtin (a runtime's install
+ * hint with no bin is not found). A resolution that failed is not found.
  */
 async function _describeCommand(registry, name, from) {
     const resolved = await _registryResolved(registry, name, from, { includeInstallHints: true });
@@ -316,10 +319,13 @@ async function _describeCommand(registry, name, from) {
         return { kind: 'file', path: resolution.path };
     if (name.includes('/'))
         return { kind: 'file', path: name };
+    const hint = isRuntimeInstallHintHandler(resolved);
+    if (!hint && BASH_BUILTINS.has(name))
+        return { kind: 'builtin' };
     const path = await _knownCommandPath(name, from);
     if (path !== null)
         return { kind: 'file', path };
-    return isRuntimeInstallHintHandler(resolved) ? null : { kind: 'builtin' };
+    return hint ? null : { kind: 'builtin' };
 }
 function mkWhich(vfs, registry) {
     return async (ctx) => {

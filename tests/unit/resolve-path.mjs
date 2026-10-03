@@ -192,6 +192,20 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
   assert.deepEqual(await run(main, 'command -v echo; command -V echo; type echo'), ['echo\necho is a shell builtin\necho is a shell builtin\n', '', 0]);
 }
 
+// ── A shell builtin is the builtin whatever PATH holds of its name ───────
+// As bash 5 answers with an executable `echo` first on PATH: only which,
+// which searches PATH alone, names the file.
+{
+  const kernel = main.vfs.as(CRED_KERNEL);
+  kernel.mkdir('shadow/bin', { recursive: true });
+  kernel.writeFile('shadow/bin/echo', '#!/bin/sh\necho custom\n');
+  kernel.chmod('shadow/bin/echo', 0o755);
+  assert.deepEqual(
+    await run(main, 'PATH=/shadow/bin type echo; PATH=/shadow/bin command -V echo; PATH=/shadow/bin command -v echo; PATH=/shadow/bin echo hi; PATH=/shadow/bin which echo'),
+    ['echo is a shell builtin\necho is a shell builtin\necho\nhi\n/shadow/bin/echo\n', '', 0],
+  );
+}
+
 // ── which searches PATH once ─────────────────────────────────────────────
 {
   const backing = new MemoryVFS({ uid: 0, gid: 0 });
