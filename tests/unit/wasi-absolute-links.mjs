@@ -19,10 +19,15 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { plugin } from 'bun';
 import { runScript } from './lib/bash-preamble.mjs';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { RUBY_RUNNER_PREAMBLE_TAIL } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
+import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -119,9 +124,10 @@ if (hasHost('ruby')) {
   const stand = 'function __nimbusInstallRubyFs() {}\nfunction __wasiAdoptSupervisor() {}\nasync function __nimbusRubyEval(boot, code) { globalThis.__evaluated.push(code); return { status: 0 }; }';
   new Function('globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}\n${stand}`).call(scope, scope);
   scope.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });
-  const guest = async (cwd) => {
+  const call = (cwd) => ({ userCode: 'puts "ran in #{Dir.pwd}"', rbArgv: ['-e'], userEnv: { HOME: '/tmp' }, progName: '-e', binName: 'ruby', cwd });
+  const guest = async (cwd, args = call(cwd)) => {
     evaluated.length = 0;
-    await scope.__rubyRun({ userCode: 'puts "ran in #{Dir.pwd}"', rbArgv: ['-e'], userEnv: { HOME: '/tmp' }, progName: '-e', binName: 'ruby', cwd });
+    await scope.__rubyRun(args);
     return spawnSync('ruby', ['-e', evaluated.join('\n')], { encoding: 'utf8', cwd: '/' });
   };
   const refused = await guest(missing);
@@ -131,6 +137,33 @@ if (hasHost('ruby')) {
   const entered = await guest('/tmp');
   assert.equal(entered.stdout, 'ran in /tmp\n');
   assert.match(entered.stderr, /__NIMBUS_RUBY_EXIT_0\n$/);
+
+  // A resident ruby (a server) hands its facet the same call: its process
+  // worker, with the VM stood in for, records what it passes __rubyRun.
+  plugin({
+    name: 'cloudflare-shims',
+    setup(build) {
+      build.module('cloudflare:workers', () => ({
+        loader: 'object',
+        exports: { DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } },
+      }));
+    },
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'wasi-absolute-links-'));
+  try {
+    writeFileSync(join(dir, 'ruby+stdlib.wasm'), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    writeFileSync(join(dir, 'worker.mjs'), buildRubySocketProcessWorker([
+      'function __wasiAdoptSupervisor() {}',
+      'globalThis.__nimbusRubyStep = async () => ({ resumed: false, alive: false, wakeAfter: null });',
+      'globalThis.__rubyRun = async (args) => { globalThis.__residentArgs = args; return { exitCode: 0, stdout: "", stderr: "" }; };',
+    ].join('\n')));
+    const { NimbusProcess } = await import(join(dir, 'worker.mjs'));
+    await new NimbusProcess({}, {}).startProcess(call(missing));
+    const resident = await guest(missing, globalThis.__residentArgs);
+    assert.match(resident.stderr, new RegExp(`^ruby: can't enter working directory '${missing}': `), `the resident names its command: ${resident.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 } else {
   console.log('wasi-absolute-links: ruby prelude SKIPPED (no host ruby)');
 }

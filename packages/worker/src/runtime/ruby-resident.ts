@@ -230,6 +230,7 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     '      rbArgv: args.rbArgv || [],',
     '      userEnv: args.userEnv || {},',
     '      progName: args.progName || "ruby",',
+    '      binName: args.binName || "ruby",',
     '      cwd: args.cwd || "/home/user",',
     '    };',
     '    globalThis.__nimbusRubyProcessPromise = globalThis.__rubyRun(globalThis.__nimbusRubyProcessArgs).then((result) => {',
