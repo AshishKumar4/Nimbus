@@ -21,14 +21,23 @@ published independently in the `@nimbus-sh` npm scope.
   refused, and every unreadable directory was skipped in silence. Its
   walk keeps what fts keeps, the directories it is inside, so its memory
   does not grow with the tree: 2 MiB over 200,000 entries, and a
-  read-ahead window of 4,096 entries on top.
+  read-ahead window of 4,096 entries on top. It is slower than the find
+  it replaces on a local tree, because it stats every directory, as fts
+  does: over 10,525 entries in SQLite, a plain walk takes 19 ms where it
+  took 11, and `-type f` 78 ms where it took 12, since a regular file
+  takes a stat to be told from a device (Nimbus's readdir reports both as
+  files).
 - `find -xdev` stays on the start point's file system, so `find / -xdev`
   never lists a mounted container file system such as Kinu's /sandbox.
   Without it, find reads directories (16 calls at once) ahead of what it
-  prints, in walk order, when the expression only looks: on a mount
-  answering each call in 10 ms, `find` over 156 directories took 990 ms
-  where it took 7.7 s. Under -L or -H it never reads ahead into a link
-  the loop check will refuse.
+  prints, in walk order, when the expression only looks. That helps only
+  where the mount serves calls concurrently: on a test mount (a
+  MemoryVFS whose every call sleeps 10 ms), `find` over 156 directories
+  took 990 ms where it took 7.7 s. It is not a measurement of /sandbox,
+  and a mount that answers one call at a time (as Kinu's MountedSyncVFS
+  is reported to) gains nothing from it; there, -xdev is the remedy.
+  Under -L or -H it never reads ahead into a link the loop check will
+  refuse.
 - `chmod` takes gnulib's whole mode grammar (`u=g`, `+t`, `g+s`,
   `u+rw-x`, `+111`, five-digit octal), as find -perm does.
 - `sudo`, `su` and `find -exec`/`-execdir` start the program they name as
@@ -42,8 +51,14 @@ published independently in the `@nimbus-sh` npm scope.
   number, field or result that overflows and a zone past 24 hours are
   refused, as is second 60, a date with nothing in it is midnight, and
   a year before 100 or after 275760 is the year it names.
-- Fixed: after `cd` in a `bash` script, a command started for it by `sudo`
-  or `find -exec` ran in the directory the script started in.
+- Fixed: a command `sudo` or `find -exec` started from a `sh -c` or
+  `bash -c` script ran in the directory the script started in and wrote
+  to the outer shell's stdout, past the script's `cd`, redirections and
+  pipes. It now inherits the script command's directory, descriptors and
+  environment.
+- Fixed: functions and aliases a `sh -c` or `bash -c` script defined
+  stayed defined in the session after it, and `unset -f` removed a
+  variable rather than the function. `unset` takes bash's -f, -v and -n.
 
 ## 2026-10-02
 
