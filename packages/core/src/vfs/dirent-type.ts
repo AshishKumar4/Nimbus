@@ -6,7 +6,7 @@
  */
 
 import type { RuntimeDirentType, RuntimeFileType } from '../runtime/os-contracts.js';
-import { S_IFMT } from './vfs.js';
+import { S_IFMT, type Awaitable } from './vfs.js';
 
 /** Every dirent type but 'unknown': what an entry is once readdir, or a stat, has said. */
 export type KnownDirentType = Exclude<RuntimeDirentType, 'unknown'>;
@@ -34,4 +34,31 @@ const KNOWN_DIRENT_TYPES: readonly KnownDirentType[] = ['file', 'directory', 'sy
 export function direntTypeOfStat(stat: { readonly mode?: number; readonly type: RuntimeFileType }): KnownDirentType {
   const format = (stat.mode ?? 0) & S_IFMT;
   return KNOWN_DIRENT_TYPES.find((type) => DIRENT_TYPES[type].format === format) ?? stat.type;
+}
+
+/** What a stat says of a file's type: its coarse type, and its mode where the backend gives one. */
+type TypedStat = { readonly mode?: number; readonly type: RuntimeFileType };
+
+/**
+ * An entry's exact type, as a caller of readdir(3) learns it: what d_type
+ * says, and for an entry its backend could not type (DT_UNKNOWN), the stat
+ * the listing bundled with it, else what `lstat` says. Null when the entry
+ * has gone since the listing.
+ */
+export async function direntTypeOf(
+  entry: { readonly type: RuntimeDirentType; readonly stat?: TypedStat },
+  lstat: () => Awaitable<TypedStat | null>,
+): Promise<KnownDirentType | null> {
+  if (entry.type !== 'unknown') return entry.type;
+  const stat = entry.stat ?? await lstat();
+  return stat === null ? null : direntTypeOfStat(stat);
+}
+
+/** direntTypeOf for an entry of directory `dir`, lstat'ing it on `fs` when it must. */
+export function direntTypeIn(
+  fs: { stat(path: string, options?: { follow?: boolean }): Awaitable<TypedStat | null> },
+  dir: string,
+  entry: { readonly name: string; readonly type: RuntimeDirentType; readonly stat?: TypedStat },
+): Promise<KnownDirentType | null> {
+  return direntTypeOf(entry, () => fs.stat(dir === '/' ? `/${entry.name}` : `${dir}/${entry.name}`, { follow: false }));
 }

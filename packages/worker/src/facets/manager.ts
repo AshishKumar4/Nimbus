@@ -44,8 +44,9 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
   clearPortCapability,
@@ -187,6 +188,11 @@ import {
  */
 type LaunchFs = RuntimeFsBridge;
 const launchAdapters = new WeakMap<LaunchFs, BridgeRequireFs>();
+
+/** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
+function launchEntryType(vfs: LaunchFs, dir: string, entry: RuntimeVfsDirEntry): Promise<KnownDirentType | null> {
+  return direntTypeOf(entry, () => vfs.stat(`${dir}/${entry.name}`, { followSymlinks: false }));
+}
 function filesOf(fs: LaunchFs): BridgeRequireFs {
   let files = launchAdapters.get(fs);
   if (files === undefined) { files = requireFsOverBridge(fs); launchAdapters.set(fs, files); }
@@ -2649,7 +2655,7 @@ export async function greedyAddMainEntries(
         {
           const sibs = await (async () => vfs.readdir(entryDir))().catch(() => []);
           for (const sib of sibs) {
-            if (sib.type !== 'file') continue;
+            if ((await launchEntryType(vfs, entryDir, sib)) !== 'file') continue;
             // Hash-chunk pattern: <name>.<hash>.<cjs|mjs|js>. Hash must
             // be 6+ chars AND look like a hash, not an English word —
             // either contain digits/underscore/dash, or contain BOTH
@@ -2674,7 +2680,7 @@ export async function greedyAddMainEntries(
           const sharedStripped = sharedDir.replace(/^\/+/, '');
           if (await (async () => filesOf(vfs).isDirectory(sharedStripped))().catch(() => false)) {
             for (const sh of await (async () => vfs.readdir(sharedDir))().catch(() => [])) {
-              if (sh.type !== 'file') continue;
+              if ((await launchEntryType(vfs, sharedDir, sh)) !== 'file') continue;
               if (!/\.(cjs|mjs|js)$/.test(sh.name)) continue;
               (await addOne(sharedDir + '/' + sh.name));
             }
@@ -3185,7 +3191,7 @@ export async function addBinTargetSiblings(
   const queue: string[] = [pkgRoot];
   while (queue.length > 0 && visited < MAX_PKG_FILES) {
     const dir = queue.shift()!;
-    let entries: { name: string; type: string }[];
+    let entries: RuntimeVfsDirEntry[];
     try { entries = (await vfs.readdir(dir)); } catch { continue; }
     for (const e of entries) {
       if (visited >= MAX_PKG_FILES) break;
@@ -3193,7 +3199,7 @@ export async function addBinTargetSiblings(
       if (e.name === 'node_modules') continue;
       if (e.name === '.git') continue;
       const child = dir + '/' + e.name;
-      if (e.type === 'directory') {
+      if ((await launchEntryType(vfs, dir, e)) === 'directory') {
         if (!shouldVisitBinPackageDirectory(pkgRoot, child, bundleProfile)) continue;
         queue.push(child);
         continue;
@@ -3532,15 +3538,16 @@ async function addCwdProjectFiles(
 
   while (queue.length > 0 && visited < MAX_PROJECT_FILES) {
     const dir = queue.shift()!;
-    let entries: { name: string; type: string }[];
+    let entries: RuntimeVfsDirEntry[];
     try { entries = (await vfs.readdir(dir)); } catch { continue; }
     for (const e of entries) {
       if (visited >= MAX_PROJECT_FILES) break;
       visited++;
       if (e.name === '.' || e.name === '..') continue;
-      if (e.type === 'directory' && SKIP_DIRS.has(e.name)) continue;
+      const isDirectory = (await launchEntryType(vfs, dir, e)) === 'directory';
+      if (isDirectory && SKIP_DIRS.has(e.name)) continue;
       const child = dir + '/' + e.name;
-      if (e.type === 'directory') {
+      if (isDirectory) {
         queue.push(child);
         continue;
       }

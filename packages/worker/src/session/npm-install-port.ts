@@ -45,7 +45,7 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         // Materialise on-PATH bin shims even for partial installs — the
         // bin linker already skips entries whose target never landed, so
         // a partial tree safely exposes exactly the bins that installed.
-        const vfs: Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'mkdir' | 'writeFile' | 'chmod'> =
+        const vfs: Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat' | 'mkdir' | 'writeFile' | 'chmod'> =
           sqliteFs.as(CRED_KERNEL);
         linkedBins = await materializeNpmBinShims(
           vfs,

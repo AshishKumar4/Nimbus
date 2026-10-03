@@ -2,6 +2,7 @@ import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return bytes + 'B';
@@ -28,7 +29,7 @@ const command: Command = async (ctx) => {
     const entries = (await ctx.vfs.readdir(dirPath));
     for (const entry of entries) {
       const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
-      if (entry.type === 'file') {
+      if ((await direntTypeIn(ctx.vfs, dirPath, entry)) === 'file') {
         const st = (await statOrThrow(ctx.vfs, fullPath));
         total += st.size;
       } else {
@@ -47,7 +48,7 @@ const command: Command = async (ctx) => {
       for (const entry of entries) {
         const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
         const displayPath = name === '/' ? '/' + entry.name : name + '/' + entry.name;
-        if (entry.type === 'file') {
+        if ((await direntTypeIn(ctx.vfs, dirPath, entry)) === 'file') {
           const st = (await statOrThrow(ctx.vfs, fullPath));
           total += st.size;
         } else {

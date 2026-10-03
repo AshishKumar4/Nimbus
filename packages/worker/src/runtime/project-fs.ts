@@ -11,7 +11,8 @@ import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
-import { syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString'
@@ -29,6 +30,22 @@ export type ProjectFs = {
   /** A directory's entries, typed as the namespace types them: a mount's may name a device, or say it cannot tell. */
   readdir(key: string): Awaitable<Array<Pick<VfsDirent, 'name' | 'type'>>>;
 };
+
+/** The exact type of `entry` in `dir`, lstat'ing it where its listing could not type it; null when it has gone. */
+export function projectEntryType(
+  fs: Pick<ProjectFs, 'lstat'>,
+  dir: string,
+  entry: Pick<VfsDirent, 'name' | 'type'>,
+): Promise<KnownDirentType | null> {
+  return direntTypeOf(entry, async () => {
+    try {
+      return await fs.lstat(`${dir}/${entry.name}`);
+    } catch (error) {
+      if (isVfsError(error, 'ENOENT')) return null;
+      throw error;
+    }
+  });
+}
 
 /** The principal's `view` in the engine's call shape. */
 export function projectFs(view: ProcessView): ProjectFs {

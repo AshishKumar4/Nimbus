@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
 
 // ─── ANSI helpers ───
@@ -168,7 +169,7 @@ async function getDiskInfo(vfs: VFS): Promise<string> {
     try {
       for (const entry of (await vfs.readdir(dir))) {
         const full = dir === '/' ? '/' + entry.name : dir + '/' + entry.name;
-        if (entry.type === 'file') {
+        if ((await direntTypeIn(vfs, dir, entry)) === 'file') {
           totalFiles++;
           totalBytes += (await statOrThrow(vfs, full)).size;
         } else {

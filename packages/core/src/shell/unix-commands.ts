@@ -45,6 +45,7 @@ import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevat
 import { isVfsError, syscallError, VFS_STRERROR } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
+import { direntTypeIn } from '../vfs/dirent-type.js';
 import { exists, isDirectory, isSymlink } from '../vfs/vfs.js';
 
 /**
@@ -881,7 +882,7 @@ function mkTree(vfs: UnixVfs): CmdFn {
           const connector = isLast ? '└── ' : '├── ';
           const childPrefix = isLast ? '    ' : '│   ';
           (await ctx.stdout.write(prefix + connector + e.name + '\n'));
-          if (e.type === 'directory') {
+          if ((await direntTypeIn(vfs, path, e)) === 'directory') {
             dirs++;
             (await walk(path + '/' + e.name, prefix + childPrefix, depth + 1));
           } else { files++; }

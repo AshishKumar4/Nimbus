@@ -2,6 +2,7 @@ import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
 const command: Command = async (ctx) => {
   let maxDepth = Infinity;
@@ -27,10 +28,13 @@ const command: Command = async (ctx) => {
     if (depth > maxDepth) return;
 
     try {
-      const entries = (await ctx.vfs.readdir(dirPath));
+      const listed = await Promise.all((await ctx.vfs.readdir(dirPath)).map(async (entry) => ({
+        name: entry.name,
+        type: await direntTypeIn(ctx.vfs, dirPath, entry),
+      })));
       const filtered = dirsOnly
-        ? entries.filter((e) => e.type === 'directory')
-        : entries;
+        ? listed.filter((e) => e.type === 'directory')
+        : listed;
       const sorted = filtered.sort((a, b) => a.name.localeCompare(b.name));
 
       for (let i = 0; i < sorted.length; i++) {

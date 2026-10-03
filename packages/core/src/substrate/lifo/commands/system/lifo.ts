@@ -30,6 +30,7 @@ import {
   createLifoCommand,
 } from '../../pkg/lifo-runtime.js';
 import { exists } from '../../../../vfs/vfs.js';
+import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 
@@ -129,6 +130,15 @@ async function lifoRemove(
 
 // ─── list ───
 
+/** The directories in a scope's directory `dir`, each named `scope/name`. */
+async function directoriesIn(vfs: ProcessView, dir: string, scope: string): Promise<string[]> {
+  const names: string[] = [];
+  for (const child of await vfs.readdir(dir)) {
+    if ((await direntTypeIn(vfs, dir, child)) === 'directory') names.push(join(scope, child.name));
+  }
+  return names;
+}
+
 async function lifoList(ctx: CommandContext): Promise<number> {
   const { vfs, stdout } = ctx;
 
@@ -137,14 +147,12 @@ async function lifoList(ctx: CommandContext): Promise<number> {
 
   if ((await vfs.exists(GLOBAL_MODULES))) {
     for (const entry of (await vfs.readdir(GLOBAL_MODULES))) {
-      if (entry.type !== 'directory') continue;
+      if ((await direntTypeIn(vfs, GLOBAL_MODULES, entry)) !== 'directory') continue;
 
       const dirs = entry.name.startsWith('@')
         ? (await (async () => {
             try {
-              return (await vfs.readdir(join(GLOBAL_MODULES, entry.name)))
-                .filter(e => e.type === 'directory')
-                .map(e => join(entry.name, e.name));
+              return await directoriesIn(vfs, join(GLOBAL_MODULES, entry.name), entry.name);
             } catch { return []; }
           })())
         : [entry.name];
@@ -466,12 +474,10 @@ export async function rehydrateGlobalPackages(vfs: ProcessView, registry: Comman
 
   // 2. Scan every package in /usr/lib/node_modules
   for (const entry of await vfs.readdir(GLOBAL_MODULES)) {
-    if (entry.type !== 'directory') continue;
+    if ((await direntTypeIn(vfs, GLOBAL_MODULES, entry)) !== 'directory') continue;
 
     const dirs = entry.name.startsWith('@')
-      ? (await vfs.readdir(join(GLOBAL_MODULES, entry.name)))
-          .filter(entry => entry.type === 'directory')
-          .map(child => join(entry.name, child.name))
+      ? await directoriesIn(vfs, join(GLOBAL_MODULES, entry.name), entry.name)
       : [entry.name];
 
     for (const dirName of dirs) {

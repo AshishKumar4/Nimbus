@@ -20,7 +20,7 @@ import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { execIdField, execIdOf } from '@nimbus-sh/core/runtime/process-table.js';
 import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
-import { handKernelArtifact, projectFs as viewFs } from '../runtime/project-fs.js';
+import { handKernelArtifact, projectEntryType, projectFs as viewFs } from '../runtime/project-fs.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
@@ -245,7 +245,7 @@ export function createViteCommand(self: ViteHost) {
             try {
               for (const e of await projectFs.readdir(dir)) {
                 const fp = dir + '/' + e.name;
-                if (e.type === 'directory') await collectCss(fp);
+                if ((await projectEntryType(projectFs, dir, e)) === 'directory') await collectCss(fp);
                 else if (e.name.endsWith('.css')) {
                   try { fallbackCss += await projectFs.readFileString(fp) + '\n'; } catch {}
                 }
@@ -283,7 +283,7 @@ export function createViteCommand(self: ViteHost) {
             for (const e of await projectFs.readdir(src)) {
               const s = src + '/' + e.name;
               const d = dst + '/' + e.name;
-              if (e.type === 'directory') { await copyTree(s, d); }
+              if ((await projectEntryType(projectFs, src, e)) === 'directory') { await copyTree(s, d); }
               else {
                 const parent = parentVfsPath(d);
                 if (parent && !await projectFs.exists(parent)) await projectFs.mkdir(parent, { recursive: true });

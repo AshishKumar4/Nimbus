@@ -1,4 +1,5 @@
 import type { ProcessView as CredentialedVfs } from './process-files.js';
+import { direntTypeIn } from '../vfs/dirent-type.js';
 import { extractTarball } from '../_shared/tarball.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
@@ -56,7 +57,7 @@ export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string
   if (!(await vfs.exists(gemsRoot))) return [];
   const out: string[] = [];
   for (const entry of (await vfs.readdir(gemsRoot))) {
-    if (entry.type !== 'directory') continue;
+    if ((await direntTypeIn(vfs, gemsRoot, entry)) !== 'directory') continue;
     const lib = `${gemsRoot}/${entry.name}/lib`;
     if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib))) out.push('/' + lib);
   }
@@ -66,10 +67,12 @@ export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string
 export async function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]> {
   const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
   if (!(await vfs.exists(binRoot)) || !(await vfs.isDirectory(binRoot))) return [];
-  return (await vfs.readdir(binRoot))
-    .filter((entry) => entry.type === 'file' && isValidGemExecutableName(entry.name))
-    .map((entry) => ({ name: entry.name, path: `${binRoot}/${entry.name}` }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const bins: InstalledRubyGemBin[] = [];
+  for (const entry of await vfs.readdir(binRoot)) {
+    if (!isValidGemExecutableName(entry.name) || (await direntTypeIn(vfs, binRoot, entry)) !== 'file') continue;
+    bins.push({ name: entry.name, path: `${binRoot}/${entry.name}` });
+  }
+  return bins.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function installRubyGems(

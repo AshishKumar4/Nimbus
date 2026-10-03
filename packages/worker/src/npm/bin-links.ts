@@ -1,4 +1,4 @@
-import type { ProjectFs } from '../runtime/project-fs.js';
+import { projectEntryType, type ProjectFs } from '../runtime/project-fs.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { npmBinMap, npmBinName } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import type { ResolvedPackage } from './resolver.js';
@@ -53,7 +53,7 @@ export interface NpmBinResolution extends NpmBinEntry {
  * caller (see runtime/project-fs.ts), each call answered at once by the
  * engine or awaited through the caller's view of the namespace.
  */
-type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
+type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat'>;
 type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'>;
 
 interface PackageJsonLike {
@@ -330,21 +330,21 @@ async function resolveFromPackageTree(vfs: VfsLike, nodeModulesPath: string, nam
 }
 
 async function* listPackagePaths(vfs: VfsLike, nodeModulesPath: string): AsyncGenerator<string> {
-  let entries: readonly { name: string; type: string }[] = [];
+  let entries: Awaited<ReturnType<VfsLike['readdir']>> = [];
   try { entries = await vfs.readdir(nodeModulesPath); } catch { return; }
 
   for (const entry of entries) {
-    if (entry.type !== 'directory' || entry.name === '.bin') continue;
+    if (entry.name === '.bin' || (await projectEntryType(vfs, nodeModulesPath, entry)) !== 'directory') continue;
     const path = `${nodeModulesPath}/${entry.name}`;
     if (!entry.name.startsWith('@')) {
       yield path;
       continue;
     }
 
-    let scopedEntries: readonly { name: string; type: string }[] = [];
+    let scopedEntries: Awaited<ReturnType<VfsLike['readdir']>> = [];
     try { scopedEntries = await vfs.readdir(path); } catch { continue; }
     for (const scoped of scopedEntries) {
-      if (scoped.type === 'directory') yield `${path}/${scoped.name}`;
+      if ((await projectEntryType(vfs, path, scoped)) === 'directory') yield `${path}/${scoped.name}`;
     }
   }
 }

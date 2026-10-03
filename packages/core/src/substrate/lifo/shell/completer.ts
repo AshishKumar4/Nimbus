@@ -1,6 +1,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
+import { direntTypeIn } from '../../../vfs/dirent-type.js';
 
 export interface CompletionResult {
   replacementStart: number;
@@ -167,7 +168,8 @@ async function listEntries(word: string, ctx: CompletionContext, dirsOnly: boole
 
   try {
     const entries = await ctx.vfs.readdir(dir);
-    let filtered = entries.filter((e) => e.name.startsWith(prefix) && (prefix.startsWith('.') || !e.name.startsWith('.')));
+    const matching = entries.filter((e) => e.name.startsWith(prefix) && (prefix.startsWith('.') || !e.name.startsWith('.')));
+    let filtered = await Promise.all(matching.map(async (e) => ({ name: e.name, type: await direntTypeIn(ctx.vfs, dir, e) })));
 
     if (dirsOnly) {
       filtered = filtered.filter((e) => e.type === 'directory');

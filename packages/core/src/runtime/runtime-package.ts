@@ -25,7 +25,7 @@
  */
 
 import { sha256Incremental } from '../_shared/crypto.js';
-import type { Awaitable } from './os-contracts.js';
+import type { Awaitable, RuntimeDirentType } from './os-contracts.js';
 
 export interface RuntimePackageFs {
   exists(path: string): Awaitable<boolean>;
@@ -38,7 +38,7 @@ export interface RuntimePackageFs {
   writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Awaitable<unknown>;
   rename(from: string, to: string): Awaitable<void>;
   mkdir(path: string, options?: { recursive?: boolean }): Awaitable<void>;
-  readdir(path: string): Awaitable<{ name: string; type: string }[]>;
+  readdir(path: string): Awaitable<{ name: string; type: RuntimeDirentType }[]>;
   unlink(path: string): Awaitable<void>;
   rmdir(path: string): Awaitable<void>;
 }

@@ -37,6 +37,7 @@ import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/c
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -2884,7 +2885,7 @@ async function nodeModulesNames(view: ProcessView, dir: string): Promise<string[
   const names: string[] = [];
   for (const entry of await view.readdir(dir)) {
     if (entry.name.startsWith(COPY_PREFIX)) continue;
-    if (entry.type !== 'directory' || !entry.name.startsWith('@')) {
+    if (!entry.name.startsWith('@') || (await direntTypeIn(view, dir, entry)) !== 'directory') {
       names.push(entry.name);
       continue;
     }

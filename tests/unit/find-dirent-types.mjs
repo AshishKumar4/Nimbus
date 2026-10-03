@@ -14,6 +14,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createFs } from '../../packages/core/src/substrate/lifo/node-compat/fs.ts';
+import { complete } from '../../packages/core/src/substrate/lifo/shell/completer.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -85,6 +86,18 @@ const isFile = (path) => /\/f\d$/.test(path);
   // The typed tree costs no file stat for the same answer.
   const typed = await ws.exec('find /typed -type f | sed s,^/typed,, | sort');
   assert.equal(typed.stdout, quick.stdout.replaceAll('/untyped', ''));
+}
+
+// ── Every other command that decides by an entry's type asks lstat of an untyped one ──
+{
+  const untyped = await ws.exec('tree -L 5 /untyped');
+  const typed = await ws.exec('tree -L 5 /typed');
+  assert.equal(untyped.stdout.split('\n').at(-2), '20 directories, 105 files', 'tree walks an untyped directory as a directory');
+  assert.equal(untyped.stdout.replace(/^untyped/, ''), typed.stdout.replace(/^typed/, ''), 'and draws the tree a typed listing gives');
+  const completion = await complete({
+    line: 'cd /untyped/', cursorPos: 'cd /untyped/'.length, cwd: '/', env: {}, vfs: view, registry: ws.registry, builtinNames: [],
+  });
+  assert.deepEqual(completion.completions, ['/untyped/d0/', '/untyped/d1/', '/untyped/d2/', '/untyped/d3/'], 'cd completes untyped directories');
 }
 
 // ── Node's Dirent says what d_type says, and stats only where it cannot ────
