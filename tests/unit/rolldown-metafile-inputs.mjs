@@ -67,4 +67,21 @@ assert.deepEqual(
   'so the workspace paths a build read are every module it inlined',
 );
 
+// A plugin may resolve an import to a path spelled as the import was; esbuild
+// still records what the importer wrote (`original`) for every internal one.
+const virtualPlugin = {
+  name: 'virtual',
+  resolve: ({ path }) => path === '/entry.js' ? { path, namespace: 'entry' } : path === 'virtual' ? { path, namespace: 'virtual' } : null,
+  load: ({ namespace }) => ({
+    contents: namespace === 'entry' ? "import v from 'virtual';\nconsole.log(v);\n" : 'export default 1;\n',
+    loader: 'js',
+  }),
+};
+const virtualImports = {};
+for (const [engine, build] of Object.entries(hosts)) {
+  const result = await build({ entryPoints: ['/entry.js'], bundle: true, format: 'esm', outdir: '/dist', metafile: true }, virtualPlugin);
+  virtualImports[engine] = Object.values(result.metafile.inputs).flatMap((input) => input.imports);
+}
+assert.deepEqual(virtualImports.rolldown, virtualImports.esbuild, `a same-path virtual import is recorded as esbuild records it: ${JSON.stringify(virtualImports)}`);
+
 console.log('ok - rolldown-metafile-inputs (rolldown\'s metafile names every module it read, as esbuild\'s does)');

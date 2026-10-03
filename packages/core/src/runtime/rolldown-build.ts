@@ -736,7 +736,9 @@ async function build(
       importedBy(importer, id, {
         path: fileOf({ namespace, path: answer!.path! }),
         kind: kind as esbuild.ImportKind,
-        ...(source === answer!.path ? {} : { original: source }),
+        // esbuild records what the importer wrote for every internal import,
+        // a path spelled as it resolves included.
+        original: source,
       });
       return id;
     },
