@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "50dcc3863afea88fac3c0b53cab13a11f67f015752e6c453395ea6388928f06e",
+  "fingerprint": "449a34e64cba7f1403d1cced36c7be18d01e11180ccb108807255b6604ddd9be",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1746,7 +1746,7 @@
     "packages/worker/dist/facets/prebundle-pool.js": "4335ff27e1915f57373a585777c72b1b46088044ed073b600589e4bcf827d45a",
     "packages/worker/dist/facets/process.d.ts": "9b9583c4db6b1188f609c47589ab75547964d0e23d6825a2036b13007dd198da",
     "packages/worker/dist/facets/process.d.ts.map": "37e9501b292ac4c23038dd81f9a6a05b2a3444027a408b4cce2f492b9c8cf0ac",
-    "packages/worker/dist/facets/process.js": "c03b95f0e99a28d144cc49565c0ec727ac64d5da8506929d6cc9f19fd53aed65",
+    "packages/worker/dist/facets/process.js": "ce6116ae00cae281ca7846bf58d121be6c149011b9074dbfa84e022c308cf417",
     "packages/worker/dist/facets/read-profile.d.ts": "b8443343e76f1feffd0a90076d5c0164bbd7b1b3368a3dfa8a9c6cbfbc760a08",
     "packages/worker/dist/facets/read-profile.d.ts.map": "cce4241b29fe8c58624049bae8b7b342b8a32a25f308d2dac36c028879621533",
     "packages/worker/dist/facets/read-profile.js": "5229b7359cd79d2c3ae3c7d18686b5a80fee1b8d8fcacc2a5496c21722374d46",
@@ -2286,7 +2286,7 @@
     "packages/worker/src/facets/opencode-staging.ts": "e5c78bd8159028f448266e0b7c94f2bb8dcfbcaa52e482a24e5dfd840b78a257",
     "packages/worker/src/facets/oxc-transform.ts": "e021aad8b0c99e2550e0dafe2ab2cce10fbf75cbfb032d2583dd35e32fca30b3",
     "packages/worker/src/facets/prebundle-pool.ts": "543fd016de8fe51e6c60eec26154a5079ce1a1a6e891e681fe2f95185faf7286",
-    "packages/worker/src/facets/process.ts": "406001dcdd1b209b4e0511317d97c2ff01a15515a632773520542eddb32c85f1",
+    "packages/worker/src/facets/process.ts": "4b614521ad33e72e5220719dc21df8849062cffecf3770e9c4956e1837762964",
     "packages/worker/src/facets/read-profile.ts": "a9e55aa4bef8c22f5e2d8185cd27b76a5de6ec6757a5b0aa5a3484db16fef67b",
     "packages/worker/src/facets/real-vite-fs-shim.ts": "62543eeea667a320a55400a4d4c4f5beb27536b864db47f321ea19b8408c007d",
     "packages/worker/src/facets/real-vite-hmr.ts": "934b0418b66ddb7064c1e89515b54a226a4cec834d85c339199deb8de76b63da",
