@@ -58,6 +58,8 @@ const one = lease1.fs.open('/moved', { read: true });
 const two = lease2.fs.open('/moved', { read: true });
 await lease1.dispose();
 assert.throws(() => lease1.fs.read(one.id, 0, 1), { code: 'EBADF' });
+// A disposed lease answers nothing, a link's destination included.
+assert.throws(() => lease1.fs.linkLeadsTo('/moved', '/elsewhere'), { code: 'EBADF' });
 assert.equal(text(lease2.fs.read(two.id, 0, 11)), 'replacement');
 await lease2.dispose();
 const listing = fs.list();

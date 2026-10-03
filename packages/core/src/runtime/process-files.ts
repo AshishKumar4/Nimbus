@@ -818,7 +818,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   readlink(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.namespace.readlink((await this.path(path, false)))));
   }
-  linkLeadsTo(path: string, link: string): string { return this.namespace.linkLeadsTo(path, link); }
+  linkLeadsTo(path: string, link: string): string { return this.bridge.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
   }
