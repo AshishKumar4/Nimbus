@@ -51,6 +51,7 @@ import { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, resolvePackageEntry, pa
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LaunchLearningStore } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
+import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
@@ -584,6 +585,9 @@ ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
 const __NimbusHostResponse = globalThis.Response;
+// The SUPERVISOR binding's filesystem calls answer a refusal as a value
+// (core vfs-supervisor.ts answeringSupervisor).
+${SUPERVISOR_ANSWERING_SRC}
 
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
@@ -620,7 +624,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // ends it early.
     const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
-    const __supervisor = workerEnv?.SUPERVISOR || null;
+    const __supervisor = workerEnv?.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
     // The same store, namespace and data plan a resident boots on, backed by
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
     // Declared inside the request, beside the shims, so a loader that reuses
@@ -916,6 +920,9 @@ ${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
+// The SUPERVISOR binding's filesystem calls answer a refusal as a value
+// (core vfs-supervisor.ts answeringSupervisor).
+${SUPERVISOR_ANSWERING_SRC}
 
 // The process's code: a module per cell, compiled when first required. The
 // only other way a string becomes code in a Worker is \`new Function\` at
@@ -1017,7 +1024,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    const __supervisor = workerEnv?.SUPERVISOR || null;
+    const __supervisor = workerEnv?.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
         await __nimbusReportLearningFailure(__supervisor, error);
