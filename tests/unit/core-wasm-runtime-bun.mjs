@@ -312,6 +312,13 @@ const ws = await open({ facets: localFacetHost() });
   assert.equal(alias.exitCode, 0, `python3 failed: ${alias.stderr}`);
   assert.equal(alias.stdout, 'alias\n');
   console.log('  ok  python3 is the same runtime');
+
+  // A program read from stdin is all of it, to its end, though its writer
+  // writes it in pieces: `python3 -` used to run only the first read.
+  const split = await ws.exec("{ printf 'x = 1\\n'; sleep 0.2; printf 'print(x)\\n'; } | python3 -");
+  assert.equal(split.exitCode, 0, `python3 - failed: ${split.stderr}`);
+  assert.equal(split.stdout, '1\n', 'python3 - runs the whole program its stdin carries');
+  console.log('  ok  python3 - reads its program to the end of stdin');
 }
 
 // ── python and the durable filesystem are the same filesystem ───────────────
