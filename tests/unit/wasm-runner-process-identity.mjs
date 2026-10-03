@@ -122,7 +122,7 @@ const unmake = (ws) => { if (made(ws)) ws.vfs.as(CRED_KERNEL).unlink('home/user/
     const job = ws.processes.getAll().find((entry) => entry.command === line);
     assert.ok(ws.processes.descendantsOf(job.pid).some((entry) => entry.pid === run.pid),
       '(1) the run is in the tree of the call that started it');
-    ws.processes.reapTree(job.pid);
+    await ws.processes.reapTree(job.pid);
     assert.equal(ws.processes.get(run.pid), undefined, '(1) and the reap of that tree takes it');
   } finally {
     close();

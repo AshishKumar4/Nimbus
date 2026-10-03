@@ -87,6 +87,8 @@ export class SessionProcessSupervisor {
   private readonly isLogOrphan = (pid: number): boolean => !this.table.get(pid);
   /** Fires once per pid on its first terminal transition; see setOnTerminal. */
   private onTerminalCb: ((pid: number) => void) | null = null;
+  /** Releases an ended process's filesystem binding; see setRelease. */
+  private release: ((pid: number) => Promise<void>) | null = null;
   /** Ends a process by a signal's default action; see setDefaultSignalAction. */
   private defaultSignalAction: ((pid: number, code: number, signal: ProcessSignalName) => void) | null = null;
 
@@ -211,14 +213,27 @@ export class SessionProcessSupervisor {
   }
 
   /**
+   * How an ended process lets go of what it bound in the filesystem (its
+   * descriptor scope, its watches): the `releaseProcess` of the filesystem
+   * this table's processes bind to. One slot, set by the workspace composed
+   * over this table, which owns that filesystem; {@link reapTree} calls it
+   * for each entry before forgetting it.
+   */
+  setRelease(release: (pid: number) => Promise<void>): void {
+    this.release = release;
+  }
+
+  /**
    * Remove `pid` and every process under it that has ended, now, as a parent
    * that waited for its children does: what a caller ran to completion has
-   * nothing left to report. Each is first handed to `release`, the
-   * filesystem's `releaseProcess`, so what the process bound (its descriptor
-   * scope, its watches) goes with its entry rather than outliving it. One
-   * still running is kept. Logs are orphaned as by {@link reap}.
+   * nothing left to report. Each is released first (see {@link setRelease}),
+   * so what it bound goes with its entry rather than outliving it, and with
+   * no release set nothing is reaped. One still running is kept. Logs are
+   * orphaned as by {@link reap}.
    */
-  async reapTree(pid: number, release: (pid: number) => Promise<void>): Promise<number> {
+  async reapTree(pid: number): Promise<number> {
+    const release = this.release;
+    if (!release) throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
     let reaped = 0;
     for (const entry of [this.table.get(pid), ...this.table.descendantsOf(pid)]) {
       if (entry === undefined || entry.state === 'running') continue;
