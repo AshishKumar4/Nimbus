@@ -170,12 +170,21 @@ export async function searchPath(name: string, from: ResolveContext): Promise<Pa
   return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
 }
 
-/** The file each command a PATH search resolved runs: what `type` and `command -v` report for it. */
-const programPaths = new WeakMap<object, string>();
+/**
+ * What a command this resolver gave stands for, as `type`, `command -v` and
+ * `which` report it: the file a search of PATH found (executable or not, as
+ * bash reports either), or a resolution that failed on what the namespace
+ * could not answer, which they report as not found.
+ */
+export type Resolution =
+  | { readonly kind: 'program'; readonly path: string }
+  | { readonly kind: 'failed' };
 
-/** The file `command` runs, when a search of PATH found it; undefined for a registered command. */
-export function programPathOf(command: object): string | undefined {
-  return programPaths.get(command);
+const resolutions = new WeakMap<object, Resolution>();
+
+/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+export function resolutionOf(command: object): Resolution | undefined {
+  return resolutions.get(command);
 }
 
 /**
@@ -184,10 +193,12 @@ export function programPathOf(command: object): string | undefined {
  */
 function failing(name: string, error: unknown): Command {
   const message = isDenied(error) ? 'Permission denied' : error instanceof Error ? error.message : String(error);
-  return async (ctx): Promise<number> => {
+  const command: Command = async (ctx): Promise<number> => {
     (await ctx.stderr.write(`${name}: ${message}\n`));
     return 126;
   };
+  resolutions.set(command, { kind: 'failed' });
+  return command;
 }
 
 /**
@@ -212,6 +223,7 @@ export function installPathExecResolver(
     // resolver (an npm bin shim is the npm program it names), and the
     // command it gives runs that file and no other.
     if (!name.includes('/')) {
+      if (!context.search) return undefined;
       let hit: PathSearchResult;
       try {
         hit = await searchPath(name, context);
@@ -231,7 +243,7 @@ export function installPathExecResolver(
         if (!command) return undefined;
         program = async (ctx) => await command(ctx);
       }
-      programPaths.set(program, path);
+      resolutions.set(program, { kind: 'program', path });
       return program;
     }
     if (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../')) return undefined;
@@ -305,11 +317,13 @@ export function installPathExecResolver(
             (await ctx.stderr.write(`${name}: too many levels of interpreters\n`));
             return 126;
           }
-          // `#!/usr/bin/env node` names node, which env finds on the script's PATH.
+          // `#!/usr/bin/env node` names node, which env finds on the script's PATH;
+          // an absolute interpreter that is no file is a registered one by its name
+          // (`#!/bin/sh`), never another found on PATH.
           const from = resolveContext(ctx.cwd, ctx.env, ctx.vfs);
           let interpCmd = await registry.resolve(interp, from);
           if (!interpCmd && interp.includes('/')) {
-            interpCmd = await registry.resolve(basename(interp), from);
+            interpCmd = await registry.resolve(basename(interp), { ...from, search: false });
           }
           if (!interpCmd) {
             (await ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`));

@@ -21,6 +21,10 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installNpmBinFallbackResolver } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
 import { materializeNpmBinShims } from '../../packages/worker/src/npm/bin-links.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { searchPath } from '../../packages/core/src/shell/exec-dispatch.ts';
+import { resolveContext } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 /** A workspace as the session builds one: shell entrypoints, then the npm bin fallback. */
@@ -34,7 +38,8 @@ async function workspace(env) {
     processes: ws.processes,
     getFacetManager() { throw new Error('unexpected staged artifact'); },
     notifyTerminalEvent() {},
-    async runtimeCommandHint() { return null; },
+    // One runtime the workspace knows how to install, and has not.
+    async runtimeCommandHint(name) { return name === 'hintedtool' ? { installSpec: 'hintedtool' } : null; },
     emitShellExecDone() {},
   });
   return ws;
@@ -106,6 +111,64 @@ assert.deepEqual(await run(main, 'PATH=/rootonly/bin tool; echo s=$?'), ['s=126\
 assert.deepEqual(await run(main, 'PATH=/noexec/bin command -v tool; PATH=/noexec/bin type tool; PATH=/noexec/bin which -as tool; echo s=$?'),
   ['/noexec/bin/tool\ntool is /noexec/bin/tool\ns=1\n', '', 0], 'what is found but cannot run is a file, not a builtin');
 assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/bin/tool\n', '', 0]);
+
+// ── An absolute #! interpreter is that file, or a registered one by its name; only env searches PATH ──
+{
+  const kernel = main.vfs.as(CRED_KERNEL);
+  kernel.writeFile('custom/bin/myinterp', '#!/bin/sh\necho "custom interpreter $*"\n');
+  kernel.chmod('custom/bin/myinterp', 0o755);
+  kernel.writeFile('tmp/missing.sh', '#!/missing/interpreter/myinterp\n');
+  kernel.writeFile('tmp/viaenv.sh', '#!/usr/bin/env myinterp\n');
+  kernel.writeFile('tmp/virtual.sh', '#!/bin/sh\necho virtual sh\n');
+  for (const script of ['missing', 'viaenv', 'virtual']) kernel.chmod(`tmp/${script}.sh`, 0o755);
+  assert.deepEqual(await run(main, 'PATH=/custom/bin /tmp/missing.sh; echo s=$?'),
+    ['s=127\n', '/tmp/missing.sh: /missing/interpreter/myinterp: bad interpreter: No such file or directory\n', 0], 'an absolute interpreter is not searched for on PATH');
+  assert.deepEqual(await run(main, 'PATH=/custom/bin /tmp/viaenv.sh'), ['custom interpreter /tmp/viaenv.sh\n', '', 0], 'env searches PATH');
+  assert.deepEqual(await run(main, 'PATH=/custom/bin /tmp/virtual.sh'), ['virtual sh\n', '', 0], 'a registered interpreter answers its absolute path');
+}
+
+// ── A PATH directory that fails (EIO) finds nothing for command -v, type and which; running is the error ──
+{
+  const failing = new Proxy(new MemoryVFS({ uid: 0, gid: 0 }), {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      if (key === 'stat') return async (path) => { throw syscallError('EIO', 'stat', path); };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    has(target, key) { return key !== 'sync' && key in target; },
+  });
+  main.filesystem.vfs.mount('/gone', failing);
+  assert.deepEqual(await run(main, 'PATH=/gone command -v never-installed; echo s=$?'), ['s=1\n', '', 0]);
+  assert.deepEqual(await run(main, 'PATH=/gone type never-installed; echo s=$?'), ['s=1\n', 'type: never-installed: not found\n', 0]);
+  assert.deepEqual(await run(main, 'PATH=/gone which never-installed; echo s=$?'), ['s=1\n', 'which: no never-installed in (/gone)\n', 0]);
+  const [, stderr] = await run(main, 'PATH=/gone never-installed; echo s=$?');
+  assert.match(stderr, /^never-installed: .*EIO/, 'running it reports the error');
+}
+
+// ── which searches PATH once ─────────────────────────────────────────────
+{
+  const backing = new MemoryVFS({ uid: 0, gid: 0 });
+  backing.writeFile('/counted-tool', new TextEncoder().encode('#!/bin/sh\necho counted\n'));
+  backing.chmod('/counted-tool', 0o755);
+  let stats = 0;
+  const counting = new Proxy(backing, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = Reflect.get(target, key);
+      if (key === 'stat') return async (path, ...rest) => { if (path === '/counted-tool') stats++; return value.call(target, path, ...rest); };
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    has(target, key) { return key !== 'sync' && key in target; },
+  });
+  main.filesystem.vfs.mount('/counted', counting);
+  const view = main.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+  assert.deepEqual(await searchPath('counted-tool', resolveContext('/', { PATH: '/counted' }, view)), { kind: 'program', path: '/counted/counted-tool' });
+  const oneSearch = stats;
+  stats = 0;
+  assert.deepEqual(await run(main, 'PATH=/counted which counted-tool'), ['/counted/counted-tool\n', '', 0]);
+  assert.equal(stats, oneSearch, 'which costs the mount what one search of PATH does');
+}
 assert.deepEqual(await run(main, 'PATH=/usr/bin hello-cli; echo s=$?'), ['s=127\n', 'hello-cli: command not found\n', 0], 'off PATH, nothing is found');
 assert.deepEqual(await run(main, 'PATH= tool; echo s=$?', '/custom/bin'), ['custom tool \ns=0\n', '', 0], 'an empty entry is the current directory');
 assert.deepEqual(await run(main, '(export PATH=/custom/bin; tool)'), ['custom tool \n', '', 0], 'an exported PATH is searched');
@@ -180,6 +243,42 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
     assert.deepEqual(await spawn('hello-cli', ['y'], env), ['hello-cli y in /tmp\n', '', 0], 'and an npm bin');
     assert.deepEqual(await spawn('tool', [], { PATH: '/custom/bin' }), ['custom tool \n', '', 0], 'by the PATH it is given');
     assert.deepEqual(await spawn('no-such-tool', [], env), ['', 'no-such-tool: command not found\n', 127]);
+    // A program found on PATH is a child process like one named by its path: its own pid, live
+    // stdin through NIMBUS_CP_CHILD_PID, and output it publishes as that pid (an interpreter that
+    // reads and reports what a Worker runtime reads, as the node runtime does).
+    {
+      main.registry.register('livenode', async (ctx) => {
+        const pid = Number(ctx.env.NIMBUS_CP_CHILD_PID);
+        let input = '';
+        if (pid > 0) {
+          for (;;) {
+            const packet = await session.facetProcessManager.cpReadStdin(pid, 2_000);
+            input += new TextDecoder().decode(packet.data);
+            if (packet.ended) break;
+          }
+        }
+        await ctx.stdout.write(`pid=${pid} caller=${ctx.__nimbusBinSpawn?.callerPid} in=${input}\n`);
+        return 0;
+      });
+      const kernel = main.vfs.as(CRED_KERNEL);
+      kernel.writeFile('custom/bin/livetool', '#!/usr/bin/env livenode\n');
+      kernel.chmod('custom/bin/livetool', 0o755);
+      // A runtime the workspace could install is not a registered command either: a file of
+      // that name on PATH is the program.
+      kernel.writeFile('custom/bin/hintedtool', '#!/usr/bin/env livenode\n');
+      kernel.chmod('custom/bin/hintedtool', 0o755);
+      for (const command of ['/custom/bin/livetool', 'livetool', 'hintedtool']) {
+        const { childPid } = await session._rpcCpSpawn({ command, args: [], env: { ...env, PATH: '/custom/bin' }, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+        // Past the time a builtin waits for its stdin.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await session._rpcCpStdinWrite(childPid, new TextEncoder().encode('hello'));
+        await session._rpcCpStdinEnd(childPid);
+        const waited = await session._rpcCpWait(childPid, 5_000);
+        const output = await session._rpcCpDrainOutput(childPid);
+        assert.deepEqual([new TextDecoder().decode(output.stdout), waited.exitCode], [`pid=${childPid} caller=${childPid} in=hello\n`, 0], `spawn ${command}`);
+      }
+    }
+    assert.deepEqual(await spawn('hintedtool', [], env), ['', 'hintedtool: command not found\nhint: install it with: nimbus install hintedtool\n', 127], 'and with none, the install hint');
     // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
     {
       const kernel = main.vfs.as(CRED_KERNEL);
@@ -220,6 +319,13 @@ await main.close();
   assert.deepEqual(await run(confined, 'PATH=/tmp tool', '/'), ['PRIVATE\n', '', 0], 'by bare name, the caller\'s own file and its own interpreter');
   assert.deepEqual(await run(confined, '/tmp/tool', '/'), ['PRIVATE\n', '', 0], 'and by path');
   assert.deepEqual(await run(confined, 'PATH=/tmp:/other plain', '/'), ['PRIVATE\n', '', 0], 'its first executable file, not the shared one');
+  // A node_modules/.bin entry runs as an npm bin; one that is not a node program runs as its file does, the caller's.
+  kernel.mkdir('tmp/project/node_modules/.bin', { recursive: true });
+  kernel.writeFile('tmp/project/node_modules/.bin/binny', '#!/usr/bin/env node\nconsole.log("PUBLIC")\n');
+  kernel.chmod('tmp/project/node_modules/.bin/binny', 0o755);
+  assert.deepEqual(await run(confined, "mkdir -p /tmp/project/node_modules/.bin && printf '#!/bin/sh\\necho PRIVATE\\n' > /tmp/project/node_modules/.bin/binny && chmod 700 /tmp/project/node_modules/.bin/binny", '/'), ['', '', 0]);
+  assert.deepEqual(await run(confined, 'PATH=/tmp/project/node_modules/.bin binny', '/'), ['PRIVATE\n', '', 0], 'by bare name');
+  assert.deepEqual(await run(confined, '/tmp/project/node_modules/.bin/binny', '/'), ['PRIVATE\n', '', 0], 'and by path');
   await confined.close();
 }
 

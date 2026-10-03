@@ -175,11 +175,19 @@ export interface FacetManagerLike {
   abort?(facetName: string, signal?: string): boolean;
 }
 
+/** Where a child runs from: its pid (whose credential it has), directory and environment. */
+export interface ChildOrigin {
+  readonly pid: number;
+  readonly cwd: string;
+  readonly env: Record<string, string>;
+}
+
 /**
  * The minimum shape we need from the command registry.
  */
 export interface CommandRegistryLike {
-  resolve(name: string): { kind: CommandKind } | null;
+  /** How `name` runs as the child `from` describes; null while nothing can run it. */
+  resolve(name: string, from: ChildOrigin): Promise<{ kind: CommandKind } | null>;
   runPureBuiltin(
     pid: number,
     name: string,
@@ -399,7 +407,9 @@ export class FacetProcessManager {
 
     // Resolve command kind. Resolution failure → exit 127 (command not
     // found), no facet at all. Same shell semantics.
-    const reg = shellPlan ? { kind: 'shell-direct' as CommandKind } : this.deps.commandRegistry.resolve(normalizedCommand);
+    const reg = shellPlan
+      ? { kind: 'shell-direct' as CommandKind }
+      : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
     const kind: CommandKind = reg ? reg.kind : 'unknown';
 
     // Dispatch after the cpSpawn RPC has had a chance to return to the
