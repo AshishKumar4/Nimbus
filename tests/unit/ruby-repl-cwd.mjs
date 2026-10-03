@@ -75,6 +75,13 @@ try {
   assert.equal(ran.stdout, `from the cwd\n${dir}`, `the prompt reads a file in its cwd: ${ran.stderr}`);
   assert.match(ran.stderr, /__NIMBUS_RUBY_EXIT_0\n$/);
 
+  // The next line on the same VM keeps the directory the program left: it
+  // names no cwd, so nothing moves it back (Dir.chdir('/tmp'), then Dir.pwd).
+  await step(dir);
+  assert.ok(!evaluated.join('\n').includes('Dir.chdir('), 'a later line on the same VM does not change directory');
+
+  // A fresh VM starts in the cwd again, and refuses one it cannot enter.
+  delete globalThis.__nimbusRubyPromptStarted;
   const refused = await step(join(dir, 'gone'));
   assert.match(refused.stderr, new RegExp(`^ruby: can't enter working directory '${join(dir, 'gone')}': \\[Errno 2\\] `),
     `a cwd it cannot enter names the command: ${refused.stderr}`);

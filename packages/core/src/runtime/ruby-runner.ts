@@ -1338,9 +1338,11 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
     'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
     // A cwd it cannot enter fails the run before the program starts (the
-    // body below), as a shell's cd fails, rather than running it in '/'.
+    // body below), as a shell's cd fails, rather than running it in '/'. A
+    // step that continues a VM (a prompt's next line) names no cwd and keeps
+    // the directory the program left.
     '$__nimbus_cwd_error = nil',
-    'begin; Dir.chdir(' + cwdRb + '); rescue SystemCallError => e; $__nimbus_cwd_error = e; end',
+    ...(args.cwd === undefined ? [] : ['begin; Dir.chdir(' + cwdRb + '); rescue SystemCallError => e; $__nimbus_cwd_error = e; end']),
     'begin; $LOAD_PATH.unshift(Dir.pwd) unless $LOAD_PATH.include?(Dir.pwd); rescue Exception; end',
     'begin; (ENV["NIMBUS_GEM_LIBS"] || "").split(":").reverse_each { |p| $LOAD_PATH.unshift(p) if p && p != "" && !$LOAD_PATH.include?(p) }; rescue Exception; end',
   ].join('; ');

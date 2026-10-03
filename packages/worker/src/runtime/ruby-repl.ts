@@ -55,7 +55,7 @@ export interface RubyReplDeps {
   binName: string;
 }
 
-/** What one prompt step hands the facet: the driver and where it runs. */
+/** What one prompt step hands the facet: the driver and where the prompt starts. */
 interface RubyReplStep {
   userCode: string;
   home: string;
@@ -261,13 +261,17 @@ export function rubyReplStepFacetFn(
     // here would be undone by __wasiInitFS.
     if (supervisor) Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
     adopt?.(supervisor);
+    // The prompt starts in the shell's cwd once per VM; a later line keeps
+    // whatever directory the program's own Dir.chdir left.
+    const started = Reflect.get(globalThis, '__nimbusRubyPromptStarted') === true;
+    Reflect.set(globalThis, '__nimbusRubyPromptStarted', true);
     const r = await fn({
       userCode: args.userCode,
       rbArgv: ['ruby', '-e', args.userCode],
       userEnv: { HOME: args.home },
       progName: 'ruby',
       binName: args.binName,
-      cwd: args.cwd,
+      cwd: started ? undefined : args.cwd,
     });
     return {
       stdout: r.stdout || '',
