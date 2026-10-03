@@ -417,7 +417,12 @@ export declare class CompositeVFS implements VFS {
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
      */
     private copyAt;
-    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
+    /**
+     * Copy an entry (a tree when it is a directory) between backends, links as
+     * links. `toAt` is the namespace path `toRel` names: each write, link and
+     * directory is guarded there (guardMutation) right before it is made,
+     * after the reads it waited on.
+     */
     private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     private rmdirAt;
