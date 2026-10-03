@@ -25,14 +25,14 @@ export const RESIDENT_STORE_BUILD_ID: string = "92386265e8b306dc";
 export const RESIDENT_STORE_SHA256: string = "92386265e8b306dcf276dc525ae9f7e025f4c0b7cad5b470ab674e836c8cb33c";
 
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-7add83dca5f7f00d.js";
-export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID: string = "7add83dca5f7f00d";
-export const JS_INTERPRETER_PRIMORDIALS_SHA256: string = "7add83dca5f7f00d980da595ecb7c1b3c289b4f352831f63864f00849fea8b41";
+export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";
+export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID: string = "e620a61b7e9800fa";
+export const JS_INTERPRETER_PRIMORDIALS_SHA256: string = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-3a60ee9e6baf9481.js";
-export const JS_INTERPRETER_BUILD_ID: string = "3a60ee9e6baf9481";
-export const JS_INTERPRETER_SHA256: string = "3a60ee9e6baf9481b83e5b85b8fa2b0b2d8c9a79e8650be86976037b12482367";
+export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-3c37c48024f0f651.js";
+export const JS_INTERPRETER_BUILD_ID: string = "3c37c48024f0f651";
+export const JS_INTERPRETER_SHA256: string = "3c37c48024f0f65132e92de3564068518eaa43b24acd270357e7e9e6a36db88d";
 
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
 export const JS_INTERPRETER_OPS_ENTRY: string = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";

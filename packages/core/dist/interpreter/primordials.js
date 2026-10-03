@@ -85,6 +85,7 @@ export const RegExpPrototypeAccessors = (() => {
 })();
 export const NumberPrototypeToString = Number.prototype.toString;
 export const BigIntPrototypeToString = BigInt.prototype.toString;
+export const ObjectPrototype = Object.prototype;
 export const ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
 export const ObjectPrototypeToString = Object.prototype.toString;
 export const objectDefineProperties = Object.defineProperties;

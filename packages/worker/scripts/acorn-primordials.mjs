@@ -30,11 +30,28 @@
  *     built-in's member acorn reads is its capture, and any other read of a
  *     built-in method's name, but a field acorn sets, stops the build.
  *
+ *   - a built-in acorn names is held only where it is called, constructed or
+ *     tested with typeof, or by a variable used the same way: nothing of it is
+ *     read, and nothing but RegExp and the errors constructed;
+ *   - `new` constructs only acorn's own constructors (variables whose value is
+ *     a function literal, made to inherit nothing), the RegExp and errors
+ *     above, or `this` once parser-realm has checked it is such a constructor;
+ *     `for (k in o)` enumerates `o` once parser-realm has checked it inherits
+ *     nothing of the realm's; `arguments` is only read for its length or,
+ *     through parser-realm's `argument`, an element it has; a caught exception
+ *     is only compared and rethrown;
+ *   - a method is called only by a name acorn sets somewhere, and nothing is
+ *     read of a function of acorn's but one made to inherit nothing; a function
+ *     is declared only at the top of a module or function;
+ *   - a method called by a constant computed key is called as by its name; by
+ *     any other key, only on a list acorn made.
+ *
  * Anything the rewrite does not know how to make safe (a global it has no
- * capture for, `instanceof`, a template literal, an iteration) stops the
- * build, so an acorn upgrade that reaches something new fails here rather
- * than at runtime. parserReaches() checks the output independently of the
- * rewrite: tests/unit/interpreter-primordials.mjs requires it to find none.
+ * capture for, `instanceof`, a template literal, an iteration, a
+ * destructuring pattern, a rest parameter) stops the build, so an acorn
+ * upgrade that reaches something new fails here rather than at runtime.
+ * parser-audit.mjs checks the output with nothing of this rewrite's:
+ * tests/unit/interpreter-primordials.mjs requires it to find nothing.
  */
 
 import { parse } from 'acorn';
@@ -60,6 +77,9 @@ const GLOBAL_MEMBERS = {
  * keeps it in (`var ref = Object.prototype; var toString = ref.toString`).
  */
 const RECORDS = { ObjectPrototypeMethods: new Set(['hasOwnProperty', 'toString']) };
+
+/** parser-realm's exports that are symbols, which may be a computed key: a key as they are. */
+const SYMBOLS = new Set(['symbolIterator']);
 
 /**
  * Globals acorn names, each parser-realm's export of the same name: called,
@@ -258,58 +278,6 @@ function isReference(id, parent) {
   }
 }
 
-/** An object literal, or the one the rewrite gave parser-realm's `own`. */
-function objectLiteral(node) {
-  if (!node) return null;
-  if (node.type === 'ObjectExpression') return node;
-  if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.object.type === 'Identifier'
-    && node.callee.object.name === REALM && node.callee.property.name === 'own') return objectLiteral(node.arguments[0]);
-  return null;
-}
-
-/**
- * Names acorn gives functions: methods it assigns (or assigns from another
- * method, `pp.raiseRecoverable = pp.raise`) or defines in a literal, fields a
- * constructor sets from a parameter it is passed a function for
- * (TokContext's `override`), and its option slots (callbacks).
- */
-function acornMethodNames(program) {
-  const names = new Set();
-  // Each module constructor's fields set from its parameters, by parameter index.
-  const fieldsFromParams = new Map();
-  for (const s of program.body) {
-    for (const d of s.type === 'VariableDeclaration' ? s.declarations : []) {
-      if (d.id.type !== 'Identifier' || !d.init || d.init.type !== 'FunctionExpression') continue;
-      const fields = new Map();
-      walk(d.init.body, (n) => {
-        if (n.type !== 'AssignmentExpression' || n.left.type !== 'MemberExpression' || n.left.object.type !== 'ThisExpression' || n.right.type !== 'Identifier') return;
-        const index = d.init.params.findIndex((param) => param.type === 'Identifier' && param.name === n.right.name);
-        if (index >= 0 && !n.left.computed) fields.set(index, n.left.property.name);
-      });
-      fieldsFromParams.set(d.id.name, fields);
-    }
-  }
-  walk(program, (node) => {
-    if (node.type !== 'NewExpression' || node.callee.type !== 'Identifier' || !fieldsFromParams.has(node.callee.name)) return;
-    const fields = fieldsFromParams.get(node.callee.name);
-    node.arguments.forEach((arg, index) => { if (isFunction(arg) && fields.has(index)) names.add(fields.get(index)); });
-  });
-  const functionValued = (n) => isFunction(n) || (n.type === 'AssignmentExpression' && functionValued(n.right))
-    || (n.type === 'MemberExpression' && !n.computed && names.has(n.property.name));
-  for (let size = -1; size !== names.size;) {
-    size = names.size;
-    walk(program, (node) => {
-      if (node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' && !node.left.computed && functionValued(node.right)) {
-        names.add(node.left.property.name);
-      }
-      if (node.type === 'Property' && !node.computed && node.key.type === 'Identifier' && isFunction(node.value)) names.add(node.key.name);
-      const options = node.type === 'VariableDeclarator' && node.id.name === 'defaultOptions' && objectLiteral(node.init);
-      if (options) for (const p of options.properties) if (p.key && p.key.type === 'Identifier') names.add(p.key.name);
-    });
-  }
-  return names;
-}
-
 // ── The rewrite ──
 
 /**
@@ -323,9 +291,12 @@ export function primordialAcorn(source, realmSpecifier) {
   for (const id of references.keys()) if (id.name === REALM) refuse(id, `acorn names ${REALM}, the parser realm's namespace`);
 
   const rewrites = new Map();
+  // Expressions parser-realm checks inherit nothing of the realm's, however they are rewritten.
+  const checkedOwned = new Set();
   const emit = (node) => {
     const rewrite = rewrites.get(node);
-    return rewrite ? rewrite() : spliced(node);
+    const text = rewrite ? rewrite() : spliced(node);
+    return checkedOwned.has(node) ? `${REALM}.owned(${text})` : text;
   };
   const spliced = (node) => {
     let out = '';
@@ -360,15 +331,89 @@ export function primordialAcorn(source, realmSpecifier) {
     const binding = n.type === 'Identifier' ? bindingOf(n) : null;
     return recordExpression(n) ?? recordExpression(binding && binding.init);
   };
+  const parents = new Map();
+  walk(program, (node, parent) => { parents.set(node, parent); });
+  const declaratorOf = (id) => { const d = parents.get(id); return d && d.type === 'VariableDeclarator' && d.id === id ? d : null; };
+  const assigned = new Set();
+  walk(program, (node) => {
+    if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier') assigned.add(references.get(node.left));
+    if (node.type === 'UpdateExpression' && node.argument.type === 'Identifier') assigned.add(references.get(node.argument));
+  });
+
+  // What holds one of the realm's built-ins: the global itself, a member of one parser-realm captures,
+  // and a variable whose value is one of those (or another such variable).
+  const isGlobalCapture = (n) => {
+    if (n.type === 'Identifier') return references.get(n) === null && GLOBALS.has(n.name);
+    return n.type === 'MemberExpression' && !n.computed && n.object.type === 'Identifier' && references.get(n.object) === null
+      && Boolean(GLOBAL_MEMBERS[n.object.name]) && !recordExpression(n);
+  };
+  const captureAliases = new Set();
+  const capturing = (init) => init && (isGlobalCapture(init) || (init.type === 'Identifier' && captureAliases.has(references.get(init)))
+    || (init.type === 'MemberExpression' && !init.computed && recordOf(init.object) !== null)
+    || (init.type === 'LogicalExpression' && init.operator === '||' && capturing(init.left)));
+  for (let size = -1; size !== captureAliases.size;) {
+    size = captureAliases.size;
+    walk(program, (node) => { if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && capturing(node.init)) captureAliases.add(node.id); });
+  }
+  for (const id of captureAliases) if (assigned.has(id)) refuse(id, `${id.name}, which holds a built-in, is assigned`);
+  /** Where a built-in, or what holds one, may be: called, constructed, tested with typeof, held by a variable, or the function `.call` calls. */
+  /** Whether `n`'s value is only tested for truth: an if, loop or conditional test, `!`'s operand, or a logical operand tested so. */
+  const isTested = (n) => {
+    const parent = parents.get(n);
+    if ((parent.type === 'IfStatement' || parent.type === 'WhileStatement' || parent.type === 'DoWhileStatement'
+      || parent.type === 'ConditionalExpression' || parent.type === 'ForStatement') && parent.test === n) return true;
+    if (parent.type === 'UnaryExpression' && parent.operator === '!') return true;
+    return parent.type === 'LogicalExpression' && isTested(parent);
+  };
+  const holdsCaptureSafely = (n) => {
+    const parent = parents.get(n);
+    if ((parent.type === 'CallExpression' || parent.type === 'NewExpression') && parent.callee === n) return true;
+    if (parent.type === 'UnaryExpression' && parent.operator === 'typeof') return true;
+    if (isTested(n)) return true;
+    if (parent.type === 'VariableDeclarator' && parent.init === n) return true;
+    if (parent.type === 'LogicalExpression' && parent.left === n && parents.get(parent).type === 'VariableDeclarator') return true;
+    if (parent.type === 'MemberExpression' && parent.object === n && !parent.computed && parent.property.name === 'call') {
+      const call = parents.get(parent);
+      return call.type === 'CallExpression' && call.callee === parent;
+    }
+    return false;
+  };
+
+  /** The declaration of the function a binding holds: its own, or (following aliases) another binding's. */
+  const functionOf = (decl, seen = new Set()) => {
+    if (!decl || decl === 'arguments' || seen.has(decl)) return null;
+    seen.add(decl);
+    const binding = moduleBindings.get(decl);
+    const declarator = binding ? null : declaratorOf(decl);
+    const init = binding ? binding.init : declarator && declarator.init;
+    if (!init) return null;
+    if (init.type === 'FunctionExpression' || init.type === 'FunctionDeclaration') return decl;
+    return init.type === 'Identifier' ? functionOf(references.get(init), seen) : null;
+  };
+  // acorn's own constructors: variables whose value is a function literal, never assigned.
+  const isConstructorBinding = (decl) => {
+    const binding = decl && moduleBindings.get(decl);
+    return Boolean(binding && binding.init && (binding.init.type === 'FunctionExpression' || binding.init.type === 'FunctionDeclaration') && !assigned.has(decl));
+  };
   const constructors = new Set();
   const realmInstances = new Set();
   walk(program, (node, parent) => {
-    if (node.type === 'NewExpression' && node.callee.type === 'Identifier' && bindingOf(node.callee)) constructors.add(references.get(node.callee));
+    if (node.type === 'NewExpression' && node.callee.type === 'Identifier' && references.get(node.callee) !== null) {
+      const decl = references.get(node.callee);
+      if (!isConstructorBinding(decl)) refuse(node, `new ${node.callee.name}, which is not a constructor of acorn's own`);
+      constructors.add(decl);
+    }
+    if (node.type === 'NewExpression' && node.callee.type !== 'Identifier' && node.callee.type !== 'ThisExpression') {
+      refuse(node, 'new of an expression, which may be any constructor');
+    }
     if (node.type === 'MemberExpression' && node.object.type === 'Identifier' && bindingOf(node.object)) {
       const binding = bindingOf(node.object);
       const isFunctionBinding = binding.init && isFunction(binding.init);
       const written = parent && parent.type === 'AssignmentExpression' && parent.left === node;
-      if (isFunctionBinding && ((!node.computed && node.property.name === 'prototype') || written)) constructors.add(references.get(node.object));
+      if (isFunctionBinding && ((!node.computed && node.property.name === 'prototype') || written)) {
+        if (!isConstructorBinding(references.get(node.object))) refuse(node, `${node.object.name}, a function given fields, is assigned`);
+        constructors.add(references.get(node.object));
+      }
     }
     // An error of the realm's: thrown at once, or held by a local only fields are set on before it is thrown.
     if (node.type === 'NewExpression' && node.callee.type === 'Identifier' && references.get(node.callee) === null
@@ -386,14 +431,53 @@ export function primordialAcorn(source, realmSpecifier) {
     if (!(parent.type === 'ThrowStatement' || fieldSets.has(node))) refuse(node, `an error of the realm's, ${node.name}, used other than to set its fields and throw it`);
   });
 
+  // A caught exception may be the realm's: only compared and rethrown.
+  const caught = new Set();
+  walk(program, (node) => { if (node.type === 'CatchClause' && node.param) for (const id of patternNames(node.param, [])) caught.add(id); });
+  /** A list acorn made: a variable whose value is a list literal, never assigned. */
+  const isOwnList = (n) => {
+    if (n.type !== 'Identifier') return false;
+    const decl = references.get(n);
+    const declarator = decl && decl !== 'arguments' ? declaratorOf(decl) : null;
+    return Boolean(declarator && declarator.init && declarator.init.type === 'ArrayExpression' && !assigned.has(decl));
+  };
+
   walk(program, (node, parent) => {
     switch (node.type) {
       case 'Identifier': {
-        if (!references.has(node) || references.get(node) !== null || FIXED.has(node.name)) return;
+        if (!references.has(node)) return;
+        const decl = references.get(node);
+        if (decl === 'arguments') {
+          // Its length, an own property; an element, through parser-realm, which reads only one it has.
+          if (parent.type === 'MemberExpression' && parent.object === node && isRead(parent, parents.get(parent))) {
+            if (!parent.computed && parent.property.name === 'length') return;
+            if (parent.computed && !(parent.property.type === 'Literal' && typeof parent.property.value !== 'number')) {
+              rewrites.set(parent, () => `${REALM}.argument(arguments, ${emit(parent.property)})`);
+              return;
+            }
+          }
+          refuse(node, 'arguments used other than for its length or an element');
+        }
+        if (decl !== null) {
+          if (captureAliases.has(decl) && !captureAliases.has(node) && !holdsCaptureSafely(node) && !(parent.type === 'MemberExpression' && recordOf(parent.object) !== null)) {
+            refuse(node, `${node.name}, which holds a built-in, used other than called or tested`);
+          }
+          if (caught.has(decl) && !caught.has(node) && parent.type !== 'ThrowStatement'
+            && !(parent.type === 'BinaryExpression' && (parent.operator === '===' || parent.operator === '!=='))) {
+            refuse(node, `the caught ${node.name}, which may be the realm's, used other than compared or rethrown`);
+          }
+          return;
+        }
+        if (FIXED.has(node.name)) return;
         const members = GLOBAL_MEMBERS[node.name];
         if (members && parent.type === 'MemberExpression' && parent.object === node && !parent.computed) {
           const capture = members[parent.property.name];
           if (!capture) refuse(node, `acorn reads ${node.name}.${parent.property.name}, which parser-realm has no capture of`);
+          const asKey = SYMBOLS.has(capture) && parents.get(parent).type === 'MemberExpression' && parents.get(parent).computed && parents.get(parent).property === parent;
+          if (!RECORDS[capture] && !asKey && !holdsCaptureSafely(parent)) refuse(node, `${node.name}.${parent.property.name}, a built-in, used other than called or tested`);
+          if (RECORDS[capture] && !(parents.get(parent).type === 'VariableDeclarator' || (parents.get(parent).type === 'MemberExpression' && !parents.get(parent).computed))) {
+            refuse(node, `${node.name}.${parent.property.name} used other than held or read`);
+          }
           rewrites.set(parent, () => `${REALM}.${capture}`);
           return;
         }
@@ -401,6 +485,10 @@ export function primordialAcorn(source, realmSpecifier) {
         if (parent.type === 'MemberExpression' && parent.object === node) refuse(node, `acorn reads ${node.name}'s members, which are the realm's`);
         if (REALM_CONSTRUCTORS.has(node.name) && !(parent.type === 'NewExpression' && parent.callee === node)) {
           refuse(node, `acorn holds ${node.name} other than to construct it`);
+        }
+        if (!holdsCaptureSafely(node)) refuse(node, `${node.name}, a built-in, used other than called or tested`);
+        if (parent.type === 'NewExpression' && parent.callee === node && node.name !== 'RegExp' && !REALM_CONSTRUCTORS.has(node.name)) {
+          refuse(node, `new ${node.name}, which makes an object of the realm's`);
         }
         rewrites.set(node, () => `${REALM}.${node.name}`);
         return;
@@ -422,13 +510,34 @@ export function primordialAcorn(source, realmSpecifier) {
       case 'CallExpression': {
         const callee = node.callee;
         if (node.optional || (callee.type === 'MemberExpression' && callee.optional)) refuse(node, 'an optional call');
-        if (callee.type !== 'MemberExpression' || callee.computed || callee.object.type === 'ThisExpression' || callee.object.type === 'Super') return;
-        const name = callee.property.name;
-        if (!ROUTED_METHODS.has(name)) return;
-        if (name === 'push' && node.arguments.length !== 1) refuse(node, 'a push of other than one item');
-        rewrites.set(node, () => `${REALM}.${name}(${[emit(callee.object), ...args(node.arguments)].join(', ')})`);
+        if (callee.type !== 'MemberExpression' || callee.object.type === 'Super') return;
+        // A global's member called is its capture (the Identifier case).
+        if (callee.object.type === 'Identifier' && references.get(callee.object) === null && !callee.computed) return;
+        // A method by a constant key is the method of that name; by any other key, only one of a list acorn made.
+        const constant = callee.computed && callee.property.type === 'Literal' && typeof callee.property.value === 'string' ? callee.property.value : null;
+        if (callee.computed && constant === null) {
+          if (!isOwnList(callee.object)) refuse(node, 'a call of a method by a computed key, of something other than a list acorn made');
+          return;
+        }
+        const name = constant ?? callee.property.name;
+        if (!ROUTED_METHODS.has(name) && !acornFields.has(name)) refuse(node, `a call of ${name}, a name acorn sets nowhere`);
+        if (callee.object.type === 'ThisExpression' && !callee.computed) return;
+        if (ROUTED_METHODS.has(name)) {
+          if (name === 'push' && node.arguments.length !== 1) refuse(node, 'a push of other than one item');
+          rewrites.set(node, () => `${REALM}.${name}(${[emit(callee.object), ...args(node.arguments)].join(', ')})`);
+          return;
+        }
+        if (BUILTIN_NAMES.has(name) && !acornFields.has(name)) refuse(node, `a call of the built-in method ${name}`);
+        if (constant !== null) {
+          if (!/^[A-Za-z_$][\w$]*$/.test(constant)) refuse(node, `a call of a method named ${JSON.stringify(constant)}`);
+          rewrites.set(node, () => `${emit(callee.object)}.${constant}(${args(node.arguments).join(', ')})`);
+        }
         return;
       }
+      case 'ForInStatement':
+        // Enumerating an object reaches every enumerable name its prototypes have.
+        checkedOwned.add(node.right);
+        return;
       case 'AssignmentExpression': {
         const left = node.left;
         if (node.operator !== '=' || left.type !== 'MemberExpression' || left.computed || left.object.type !== 'Identifier') return;
@@ -439,6 +548,18 @@ export function primordialAcorn(source, realmSpecifier) {
       case 'MemberExpression': {
         // A global's member is the global's capture (above); `this` is always one of acorn's objects.
         if (node.object.type === 'Identifier' && references.get(node.object) === null) return;
+        if (node.object.type === 'Identifier' && references.get(node.object) === 'arguments') return;
+        // A function of acorn's inherits Function.prototype unless it is one of its constructors. (A routed
+        // method called on one, `f.call(...)`, becomes parser-realm's, which reads nothing of it.)
+        const routed = !node.computed && ROUTED_METHODS.has(node.property.name) && parent.type === 'CallExpression' && parent.callee === node;
+        if (node.object.type === 'Identifier' && !routed) {
+          const fn = functionOf(references.get(node.object));
+          if (fn && !constructors.has(fn)) refuse(node, `a member of ${node.object.name}, a function that inherits Function.prototype`);
+        }
+        if (node.object.type === 'Identifier' && captureAliases.has(references.get(node.object)) && (node.computed || recordOf(node.object) === null)) {
+          if (!(node.property.name === 'call' && !node.computed && holdsCaptureSafely(node.object))) refuse(node, `a member of ${node.object.name}, which holds a built-in`);
+          return;
+        }
         if (!isRead(node, parent) || node.object.type === 'ThisExpression') return;
         // A computed read may index a string: past its end, a string would look further. Where the
         // object is a name or a chain of fields (read twice, as reading them does nothing else), a
@@ -446,6 +567,8 @@ export function primordialAcorn(source, realmSpecifier) {
         if (node.computed) {
           if (isPlainChain(node.object)) {
             rewrites.set(node, () => {
+              // An object rewritten into a call is not read twice.
+              if (rewrites.has(node.object)) return `${REALM}.index(${emit(node.object)}, ${emit(node.property)})`;
               const object = emit(node.object);
               return `(typeof ${object} === "string" ? ${REALM}.index(${object}, ${emit(node.property)}) : ${object}[${emit(node.property)}])`;
             });
@@ -467,11 +590,25 @@ export function primordialAcorn(source, realmSpecifier) {
       case 'Literal':
         if (node.regex) rewrites.set(node, () => `${REALM}.regexp(${source.slice(node.start, node.end)})`);
         return;
+      case 'ThisExpression':
+        if (parent.type === 'NewExpression' && parent.callee === node) rewrites.set(node, () => `(${REALM}.ownConstructor(this))`);
+        return;
+      case 'VariableDeclaration':
+        if (node.kind !== 'var') refuse(node, `a ${node.kind} declaration, which the rewrite does not scope`);
+        return;
+      case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+        if (node.async || node.generator || node.type === 'ArrowFunctionExpression') refuse(node, 'an arrow, async or generator function');
+        if (node.type === 'FunctionDeclaration' && parent.type !== 'Program' && !(parent.type === 'BlockStatement' && isFunction(parents.get(parent)))) {
+          refuse(node, 'a function declared in a block, which a module scopes to the block');
+        }
+        return;
       case 'BinaryExpression':
         if (node.operator === 'in' || node.operator === 'instanceof') refuse(node, `\`${node.operator}\`, which consults the realm`);
         return;
       case 'TemplateLiteral': case 'TaggedTemplateExpression': case 'SpreadElement': case 'ForOfStatement': case 'ArrayPattern':
+      case 'ObjectPattern': case 'RestElement': case 'AssignmentPattern':
       case 'ClassDeclaration': case 'ClassExpression': case 'YieldExpression': case 'AwaitExpression': case 'ChainExpression':
+      case 'MetaProperty': case 'ImportExpression': case 'WithStatement':
         refuse(node, `${node.type}, which the rewrite has no safe form for`);
         return;
       default:
@@ -497,153 +634,4 @@ export function primordialAcorn(source, realmSpecifier) {
   if (imports.length > 0) refuse(imports[0], 'an import of its own');
   const code = `import * as ${REALM} from ${JSON.stringify(realmSpecifier)};${hoisted.join('')}\n${spliced(program)}`;
   return { code, constructors: [...constructors].map((id) => id.name) };
-}
-
-// ── The check ──
-
-/**
- * What of the realm the rewritten parser `code` can still reach, one line
- * each (none, for the parser the interpreter bundles): a global other than
- * parser-realm's namespace; a built-in method called or read by name, on
- * any receiver but `this`; a method no code of acorn's defines; a computed
- * read, or a read of a name a regexp answers, not made through parser-realm;
- * a member of one of parser-realm's exports other than what a record holds;
- * a list or object literal that inherits; a constructor whose prototype
- * inherits; a field set on an error made by the realm's constructor; syntax
- * that iterates or consults the realm.
- */
-export function parserReaches(code) {
-  const program = parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
-  const references = resolveReferences(program);
-  const methods = acornMethodNames(program);
-  const reaches = [];
-  const at = (node, what) => reaches.push(`${where(code, node)}: ${what}`);
-  const isRealm = (node) => node.type === 'Identifier' && node.name === REALM && references.get(node) !== null;
-  /** `typeof o === "string" ? $$.index(o, k) : o[k]`, the rewrite's guarded computed read, for `o[k]` its alternate. */
-  const guarded = (member, conditional) => {
-    if (!conditional || conditional.type !== 'ConditionalExpression' || conditional.alternate !== member || !isPlainChain(member.object)) return false;
-    const text = (n) => code.slice(n.start, n.end);
-    const test = conditional.test, consequent = conditional.consequent;
-    return test.type === 'BinaryExpression' && test.operator === '===' && test.left.type === 'UnaryExpression' && test.left.operator === 'typeof'
-      && text(test.left.argument) === text(member.object) && test.right.type === 'Literal' && test.right.value === 'string'
-      && isRealmCall(consequent, 'index') && text(consequent.arguments[0]) === text(member.object) && text(consequent.arguments[1]) === text(member.property);
-  };
-  /** Whether every use of the local `id` holds is `$$.define(id, ...)` or `throw id`. */
-  const realmErrorUses = (id) => {
-    let ok = true;
-    walk(program, (n, p) => {
-      if (n.type !== 'Identifier' || n === id || references.get(n) !== id) return;
-      if (!(p.type === 'ThrowStatement' || (isRealmCall(p, 'define') && p.arguments[0] === n))) ok = false;
-    });
-    return ok;
-  };
-  const isRealmCall = (node, name) => node && node.type === 'CallExpression' && node.callee.type === 'MemberExpression'
-    && isRealm(node.callee.object) && !node.callee.computed && node.callee.property.name === name;
-
-  // Module bindings: constructors and their nulling, realm instances.
-  const declarations = new Map();
-  for (const s of program.body) {
-    if (s.type === 'VariableDeclaration') for (const d of s.declarations) declarations.set(d.id, { statement: s, init: d.init });
-    if (s.type === 'FunctionDeclaration') declarations.set(s.id, { statement: s, init: s });
-  }
-  const acornFields = acornFieldNames(program);
-
-  const nulled = new Set();
-  walk(program, (node) => {
-    if (isRealmCall(node, 'nullPrototypes') && node.arguments[0] && node.arguments[0].type === 'Identifier') nulled.add(node.arguments[0].name);
-  });
-  const isNulling = (statement, name) => statement && statement.type === 'ExpressionStatement' && isRealmCall(statement.expression, 'nullPrototypes')
-    && statement.expression.arguments[0].type === 'Identifier' && statement.expression.arguments[0].name === name;
-  /** Whether `id`'s constructor is nulled where it is declared: right after its statement, or (hoisted) before any statement. */
-  const nullingFollows = (id) => {
-    const decl = references.get(id);
-    const entry = decl && declarations.get(decl);
-    if (!entry) return false;
-    if (entry.statement.type === 'FunctionDeclaration') {
-      for (let i = 0; i < program.body.length; i++) {
-        const statement = program.body[i];
-        if (statement.type === 'ImportDeclaration') continue;
-        if (isNulling(statement, id.name)) return true;
-        if (!isNulling(statement, statement.expression && statement.expression.arguments && statement.expression.arguments[0] && statement.expression.arguments[0].name)) return false;
-      }
-      return false;
-    }
-    return isNulling(program.body[program.body.indexOf(entry.statement) + 1], id.name);
-  };
-
-  walk(program, (node, parent) => {
-    switch (node.type) {
-      case 'Identifier':
-        if (references.has(node) && references.get(node) === null && !FIXED.has(node.name)) at(node, `the global ${node.name}`);
-        return;
-      case 'ArrayExpression':
-        at(node, 'a list literal');
-        return;
-      case 'ObjectExpression':
-        if (!(parent && isRealmCall(parent, 'own') && parent.arguments.length === 1 && parent.arguments[0] === node)) at(node, 'an object literal that inherits');
-        return;
-      case 'Literal':
-        if (node.regex && !(isRealmCall(parent, 'regexp') && parent.arguments[0] === node)) at(node, 'a regexp that inherits RegExp.prototype');
-        return;
-      case 'NewExpression': {
-        const callee = node.callee;
-        if (callee.type === 'ThisExpression') return;
-        if (callee.type === 'MemberExpression' && isRealm(callee.object) && callee.property.name === 'RegExp') return;
-        if (callee.type === 'MemberExpression' && isRealm(callee.object) && REALM_CONSTRUCTORS.has(callee.property.name)) {
-          // An error of the realm's: thrown, or held by a local whose every other use is `define` or `throw`.
-          const held = parent.type === 'VariableDeclarator' && parent.init === node && parent.id.type === 'Identifier' ? parent.id : null;
-          if (held === null ? parent.type !== 'ThrowStatement' : !realmErrorUses(held)) at(node, `an error of the realm's ${callee.property.name} used other than thrown`);
-          return;
-        }
-        if (callee.type === 'Identifier' && nulled.has(callee.name) && nullingFollows(callee)) return;
-        at(node, `new of a constructor whose prototype may inherit (${code.slice(callee.start, callee.end)})`);
-        return;
-      }
-      case 'CallExpression': {
-        const callee = node.callee;
-        if (callee.type !== 'MemberExpression' || callee.computed) return;
-        if (isRealm(callee.object)) return;
-        const name = callee.property.name;
-        const own = callee.object.type === 'ThisExpression';
-        if (BUILTIN_NAMES.has(name) && !(own && methods.has(name))) at(node, `a call of the built-in method ${name}`);
-        else if (!methods.has(name)) at(node, `a call of ${name}, which no code of acorn's defines`);
-        return;
-      }
-      case 'MemberExpression': {
-        const object = node.object;
-        if (isRealm(object) && !node.computed && REALM_CONSTRUCTORS.has(node.property.name) && !(parent.type === 'NewExpression' && parent.callee === node)) {
-          at(node, `${node.property.name}, held other than to construct it`);
-        }
-        if (object.type === 'MemberExpression' && isRealm(object.object)) {
-          // A member of one of parser-realm's exports: only a record's, and only what it holds.
-          const record = !object.computed && RECORDS[object.property.name];
-          if (!record || node.computed || !record.has(node.property.name)) at(node, `a member of ${code.slice(object.start, object.end)}, which is the realm's`);
-        } else if (isRead(node, parent) && object.type !== 'ThisExpression' && !isRealm(object)) {
-          const name = node.computed ? null : node.property.name;
-          if (name === null) {
-            if (!guarded(node, parent)) at(node, 'a computed read, which may index a string past its end');
-          } else if (BUILTIN_NAMES.has(name) && !acornFields.has(name)) {
-            at(node, `a read of the built-in ${name}`);
-          }
-        }
-        if (!node.computed && object.type === 'Identifier' && (node.property.name === 'prototype' || (parent && parent.type === 'AssignmentExpression' && parent.left === node))) {
-          const decl = references.get(node.object);
-          const entry = decl && declarations.get(decl);
-          if (entry && entry.init && isFunction(entry.init) && !nullingFollows(node.object)) at(node, `a constructor whose prototype inherits (${node.object.name})`);
-        }
-        return;
-      }
-      case 'BinaryExpression':
-        if (node.operator === 'in' || node.operator === 'instanceof') at(node, `\`${node.operator}\``);
-        return;
-      case 'TemplateLiteral': case 'TaggedTemplateExpression': case 'SpreadElement': case 'ForOfStatement': case 'ArrayPattern':
-      case 'ClassDeclaration': case 'ClassExpression': case 'YieldExpression': case 'AwaitExpression': case 'ChainExpression':
-        if (node.type === 'SpreadElement' && parent && parent.type === 'CallExpression') { at(node, 'a spread argument'); return; }
-        at(node, node.type);
-        return;
-      default:
-        return;
-    }
-  });
-  return reaches;
 }
