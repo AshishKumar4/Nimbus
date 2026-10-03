@@ -3,7 +3,7 @@ import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
-import { errnoDescription, VfsError } from '../vfs/vfs-error.js';
+import { errnoDescription } from '../vfs/vfs-error.js';
 import type {
   RuntimeFileHandle,
   RuntimeFsPath,
@@ -1229,7 +1229,9 @@ export function fsError(
   const words = options.detail ?? errnoDescription(code);
   const message = `${code}: ${words === undefined ? '' : `${words}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
   const error = new Error(message, options.cause === undefined ? undefined : { cause: options.cause });
-  return Object.assign(error, { code, syscall, path: name, ...(second === undefined ? {} : { dest: second }) });
+  return Object.assign(error, {
+    code, syscall, path: name, ...(second === undefined ? {} : { dest: second }), ...(options.detail === undefined ? {} : { detail: options.detail }),
+  });
 }
 
 /** Node's error for `call` failing with `code`, built from the call's own arguments. */
@@ -1239,16 +1241,23 @@ function callError(code: string, call: FsCall, options?: { detail?: string; caus
 
 /**
  * The error a failed call leaves the bridge with, as Node's for `call`. The
- * engine's own errors carry a code and no call, and their message names a
- * storage key: each is named for the call's syscall and the caller's paths,
- * and is the cause (a filesystem error's own words stay). An error already
- * naming a call (the bridge's own refusals, a mount's) or carrying no code
- * leaves as it is.
+ * engine's own errors carry a code and name neither a call nor a path (their
+ * message names a storage key): each is named for the call's syscall and the
+ * caller's paths, keeps its reason (`detail`) and its own marks, and is the
+ * cause. An error naming a call or a path (the bridge's own refusals, a
+ * mount's, a pending import's) or carrying no code leaves as it is.
  */
 function failure(error: unknown, call: FsCall): unknown {
-  if (typeof error !== 'object' || error === null || 'syscall' in error || !('code' in error) || typeof error.code !== 'string') return error;
-  return callError(error.code, call, { detail: error instanceof VfsError ? error.detail : undefined, cause: error });
+  if (typeof error !== 'object' || error === null || !('code' in error) || typeof error.code !== 'string') return error;
+  const named = ('syscall' in error && typeof error.syscall === 'string') || ('path' in error && typeof error.path === 'string');
+  if (named) return error;
+  const detail = 'detail' in error && typeof error.detail === 'string' ? error.detail : undefined;
+  const marks = Object.fromEntries(Object.entries(error).filter(([key]) => !NAMING_FIELDS.has(key)));
+  return Object.assign(callError(error.code, call, { detail, cause: error }), marks);
 }
+
+/** What `failure` names afresh; any other property an engine error carries is one of its marks, and stays. */
+const NAMING_FIELDS: ReadonlySet<string> = new Set(['code', 'errno', 'syscall', 'path', 'dest', 'detail']);
 
 /** `run`, as the bridge's public call `call`: whatever it fails with leaves as `failure` names it. */
 function called<T>(call: FsCall, run: () => T): T {

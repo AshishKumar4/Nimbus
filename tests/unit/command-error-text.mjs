@@ -21,7 +21,8 @@ const cases = [
   ['cp nope y', "cp: ENOENT: no such file or directory, lstat '/home/user/w/nope'\n"],
   ['mv nope z', "mv: ENOENT: no such file or directory, rename '/home/user/w/nope' -> '/home/user/w/z'\n"],
   ['mv d2 d2', "mv: EINVAL: invalid argument, rename '/home/user/w/d2' -> '/home/user/w/d2/d2'\n"],
-  ['rm d', "rm: d: EISDIR: illegal operation on a directory, rm 'home/user/w/d'\n"],
+  // The engine's refusal, named by the runtime bridge for the call that met it, as Node names unlink's.
+  ['rm d', "rm: d: EISDIR: illegal operation on a directory, unlink 'home/user/w/d'\n"],
   ['rm nope', 'rm: nope: No such file or directory\n'],
   ['rmdir d', "rmdir: failed to remove 'd': Directory not empty\n"],
   ['mkdir d', "mkdir: cannot create directory 'd': File exists\n"],
