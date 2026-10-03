@@ -30,22 +30,31 @@ export type Outcome<T> = {
 };
 /** A position in walk order: the start point's index, then each child's index. A prefix (an ancestor) comes first. */
 type Key = readonly number[];
+/** What the scheduler sees of a task, whatever it produces. */
+interface Work {
+    readonly key: Key;
+    readonly started: boolean;
+    /** Whether, started ahead of the walk, it holds a share of the window. */
+    readonly windowed: boolean;
+    /** The entries of the window it holds until the walk takes it or passes it; 0 when none. */
+    held: number;
+    start(): void;
+}
 /** One unit of filesystem work: started when there is room ahead of the walk, or at once when the walk needs it. */
-declare class Task<T> {
+declare class Task<T> implements Work {
     readonly key: Key;
     private readonly run;
     private readonly scheduler;
     /** For a listing: how many entries its result holds in the window. */
     private readonly weigh;
     private promise;
-    /** The entries of the read-ahead window this task holds until the walk takes it or passes it; 0 when none. */
     held: number;
     constructor(key: Key, run: () => Promise<T>, scheduler: Scheduler, 
     /** For a listing: how many entries its result holds in the window. */
     weigh: ((value: T) => number) | null);
     get started(): boolean;
-    /** Whether this task, started ahead of the walk, holds a share of the window. */
     get windowed(): boolean;
+    start(): void;
     /** The outcome, starting the work now if nothing has yet. */
     result(): Promise<Outcome<T>>;
 }
@@ -72,13 +81,13 @@ declare class Scheduler {
     /** Work for the walk at `key`; a listing says how many entries its result holds in the window. */
     task<T>(key: Key, run: () => Promise<T>, weigh?: ((value: T) => number) | null): Task<T>;
     /** Queue `task` to run ahead of the walk. */
-    ahead(task: Task<unknown>): void;
+    ahead(task: Work): void;
     started(): void;
     settled(): void;
     /** A listing read ahead has arrived: its entries wait in the window, unless the walk has already taken or passed it. */
-    hold(task: Task<unknown>, entries: number): void;
+    hold(task: Work, entries: number): void;
     /** The walk has taken a listing, or passed it: its share of the window is free. */
-    release(task: Task<unknown>): void;
+    release(task: Work): void;
     /** The walk has reached `key`: everything before it is behind the walk, and let go. */
     advance(key: Key): void;
     stop(): void;

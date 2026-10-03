@@ -44,7 +44,6 @@ class Task {
     scheduler;
     weigh;
     promise = null;
-    /** The entries of the read-ahead window this task holds until the walk takes it or passes it; 0 when none. */
     held = 0;
     constructor(key, run, scheduler, 
     /** For a listing: how many entries its result holds in the window. */
@@ -57,9 +56,11 @@ class Task {
     get started() {
         return this.promise !== null;
     }
-    /** Whether this task, started ahead of the walk, holds a share of the window. */
     get windowed() {
         return this.weigh !== null;
+    }
+    start() {
+        void this.result();
     }
     /** The outcome, starting the work now if nothing has yet. */
     result() {
@@ -215,7 +216,7 @@ class Scheduler {
                 this.held += 1;
                 this.holding.push(task);
             }
-            void task.result();
+            task.start();
         }
     }
 }
