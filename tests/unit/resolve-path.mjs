@@ -278,6 +278,21 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
         assert.deepEqual([new TextDecoder().decode(output.stdout), waited.exitCode], [`pid=${childPid} caller=${childPid} in=hello\n`, 0], `spawn ${command}`);
       }
     }
+    // A registered command whose module fails to load ends the child as a failed dispatch
+    // does: the error on its stderr, exit 1, recorded so the process table can reap it.
+    {
+      main.registry.registerLazy('broken-loader', async () => { throw new Error('loader failed'); });
+      const { childPid } = await session._rpcCpSpawn({ command: 'broken-loader', args: [], env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+      const waited = await session._rpcCpWait(childPid, 5_000);
+      const output = await session._rpcCpDrainOutput(childPid);
+      assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['', 'Error: loader failed\n', 1]);
+      assert.equal(main.processes.getExit(childPid)?.code, 1, 'its exit is recorded');
+      assert.equal(main.processes.get(childPid)?.state, 'exited', 'it is not left running');
+      // reap takes what exited more than maxAge ms ago.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      main.processes.reap(0);
+      assert.equal(main.processes.get(childPid), undefined, 'and it is reaped');
+    }
     assert.deepEqual(await spawn('hintedtool', [], env), ['', 'hintedtool: command not found\nhint: install it with: nimbus install hintedtool\n', 127], 'and with none, the install hint');
     // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
     {

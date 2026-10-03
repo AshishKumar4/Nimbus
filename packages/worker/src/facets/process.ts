@@ -405,20 +405,20 @@ export class FacetProcessManager {
       ? req
       : { ...req, command: normalizedCommand };
 
-    // Resolve command kind. Resolution failure → exit 127 (command not
-    // found), no facet at all. Same shell semantics.
-    const reg = shellPlan
-      ? { kind: 'shell-direct' as CommandKind }
-      : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
-    const kind: CommandKind = reg ? reg.kind : 'unknown';
-
-    // Dispatch after the cpSpawn RPC has had a chance to return to the
-    // parent facet. That lets immediate child.stdin.write(); child.stdin.end()
-    // calls land in the stdin queue before a preseeded child runtime starts.
+    // Classify and dispatch after the cpSpawn RPC has had a chance to return
+    // to the parent facet. That lets immediate child.stdin.write();
+    // child.stdin.end() calls land in the stdin queue before a preseeded
+    // child runtime starts. Nothing found to run is exit 127 (command not
+    // found), no facet at all, as in the shell.
     setTimeout(() => {
-      void this._dispatch(child, kind, dispatchReq).catch((e) => {
-        // Last-resort: if both runners somehow throw, exit 1 with the error
-        // on stderr.
+      void (async () => {
+        const reg = shellPlan
+          ? { kind: 'shell-direct' as CommandKind }
+          : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
+        await this._dispatch(child, reg ? reg.kind : 'unknown', dispatchReq);
+      })().catch((e) => {
+        // Last resort: a classification or both runners threw (a registered
+        // command's module that fails to load). Exit 1 with the error on stderr.
         this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
         this._stampExit(child, 1, null);
       });
