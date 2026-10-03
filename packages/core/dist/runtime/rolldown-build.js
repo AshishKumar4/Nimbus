@@ -31,127 +31,161 @@ const SUPPORTED = new Set([
 const LOADER_MODULE_TYPES = {
     js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', base64: 'base64', dataurl: 'dataurl', empty: 'empty',
 };
-/** Each string literal that names an import, by where it starts: its kind and its end. */
-function importLiterals(program) {
-    const literals = new Map();
-    const literal = (kind, node) => {
-        const n = node;
-        if (n?.type === 'Literal' && typeof n.value === 'string' && typeof n.start === 'number' && typeof n.end === 'number') {
-            literals.set(n.start, { kind, value: n.value, end: n.end });
+/**
+ * The JavaScript string literal (or template without substitutions) that
+ * starts at `start`: where it ends and its value, escapes decoded. Null when
+ * no literal starts there.
+ */
+function stringLiteralAt(source, start) {
+    const quote = source[start];
+    if (quote !== '"' && quote !== "'" && quote !== '`')
+        return null;
+    let value = '';
+    for (let i = start + 1; i < source.length; i++) {
+        const c = source[i];
+        if (c === quote)
+            return { end: i + 1, value };
+        if (quote === '`' && c === '$' && source[i + 1] === '{')
+            return null;
+        if (c !== '\\') {
+            value += c;
+            continue;
         }
-    };
-    const visit = (node) => {
-        if (!node || typeof node !== 'object')
-            return;
-        if (Array.isArray(node)) {
-            for (const child of node)
-                visit(child);
-            return;
+        const e = source[++i];
+        const hex = (from, to) => String.fromCodePoint(parseInt(source.slice(from, to), 16));
+        if (e === 'u' && source[i + 1] === '{') {
+            const close = source.indexOf('}', i);
+            value += hex(i + 2, close);
+            i = close;
         }
-        const n = node;
-        switch (n.type) {
-            case 'ImportDeclaration':
-            case 'ExportNamedDeclaration':
-            case 'ExportAllDeclaration':
-                literal('import-statement', n.source);
-                break;
-            case 'ImportExpression':
-                literal('dynamic-import', n.source);
-                break;
-            case 'TSExternalModuleReference':
-                literal('require-call', n.expression);
-                break;
-            case 'CallExpression':
-                literal('require-call', n.arguments?.[0]);
-                break;
+        else if (e === 'u') {
+            value += hex(i + 1, i + 5);
+            i += 4;
         }
-        for (const [key, child] of Object.entries(n))
-            if (key !== 'parent')
-                visit(child);
-    };
-    visit(program);
-    return literals;
+        else if (e === 'x') {
+            value += hex(i + 1, i + 3);
+            i += 2;
+        }
+        else if (e === '\r') {
+            if (source[i + 1] === '\n')
+                i++;
+        }
+        else if (e !== '\n' && e !== '\u2028' && e !== '\u2029') {
+            value += { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', 0: '\0' }[e] ?? e;
+        }
+    }
+    return null;
 }
+/**
+ * Placement is a diagnostic on a build that already failed, so it is bounded
+ * to stay small beside the binding's own memory: an importer larger than
+ * this is not built again, nor any once a failed build has built this much.
+ * Their errors name the file without a line, never a guessed one. Measured
+ * in tests/unit/build-facet.mjs: a 3.2 MB importer is skipped (no growth); a
+ * 256 KiB one grows the binding by a few MiB at most.
+ */
+const PLACEMENT_IMPORTER_BYTES = 256 * 1024;
+const PLACEMENT_BUILD_BYTES = 1024 * 1024;
+/** A specifier rolldown resolves as a package name (a warning when it fails) rather than a path (an error). */
+const isBare = (specifier) => !/^(\.{1,2}(\/|$)|\/)/.test(specifier);
 /**
  * Where each unresolved import is, as rolldown's own resolver places it.
  * The build left them external to go on (esbuild reports every one), so
- * each importer is built again alone: its other imports external, these
- * left unresolved, so rolldown reports each occurrence with its place, and
- * only real ones (a call of a `require` the code binds itself is no import,
- * to rolldown as to esbuild). esbuild reports the first occurrence of each
- * specifier and kind, at its string literal, column and length in UTF-8
- * bytes; the literal's kind comes from the node at that place.
+ * each importer is built again alone, with the build's own input options
+ * (platform, target, define, JSX: what decides which imports a module has),
+ * its other imports external and these left unresolved: rolldown reports
+ * each occurrence with its place, and only real ones (a call of a `require`
+ * the code binds itself, or one in a branch a define makes dead, is no
+ * import, to rolldown as to esbuild). esbuild reports the first occurrence
+ * of each specifier and kind, at its string literal, column and length in
+ * UTF-8 bytes. Nothing is parsed here: rolldown names the place, the pass
+ * the kind, and the literal there its value and end. Runs after the build's
+ * bundle is closed, within PLACEMENT_IMPORTER_BYTES and PLACEMENT_BUILD_BYTES.
  */
-async function locateUnresolved(api, records, loaded) {
+async function locateUnresolved(api, options, records, loaded) {
     const byImporter = new Map();
     for (const record of records)
         if (record.importer)
             byImporter.set(record.importer, [...(byImporter.get(record.importer) ?? []), record]);
     const placed = new Map();
+    let spent = 0;
     for (const [importer, mine] of byImporter) {
         const module = loaded.get(importer);
-        if (!module?.lang)
+        if (!module)
             continue;
-        const wanted = new Set(mine.map((r) => `${r.kind}\0${r.source}`));
-        const places = [];
-        const record = (log) => {
-            if (log.code === 'UNRESOLVED_IMPORT' && log.loc)
-                places.push(log.loc);
-        };
-        let program = null;
-        try {
-            const bundle = await api.rolldown({
-                input: 'nimbus-locate', cwd: '/', logLevel: 'warn', tsconfig: false,
-                transform: { jsx: { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' } },
-                checks: { pluginTimings: false },
-                onLog: (_level, log) => record(log),
-                plugins: [{
-                        name: 'nimbus-locate',
-                        resolveId(source, from, extra) {
-                            if (!from)
-                                return 'nimbus-locate';
-                            return wanted.has(`${extra.kind ?? 'import-statement'}\0${source}`) ? null : { id: source, external: true };
-                        },
-                        load(id) {
-                            if (id !== 'nimbus-locate')
-                                return null;
-                            program = this.parse(module.source, { lang: module.lang });
-                            return { code: module.source, moduleType: module.lang };
-                        },
-                    }],
-            });
-            try {
-                await bundle.generate({ format: 'es' });
-            }
-            finally {
-                await bundle.close();
-            }
-        }
-        catch (error) {
-            for (const log of Reflect.get(Object(error), 'errors') ?? [])
-                record(log);
-        }
-        if (program === null)
+        const fileOnly = { file: fileOf(module), namespace: '', line: 0, column: 0, length: 0, lineText: '', suggestion: '' };
+        const bytes = utf8Length(module.source);
+        if (!module.lang || bytes > PLACEMENT_IMPORTER_BYTES || spent + bytes > PLACEMENT_BUILD_BYTES) {
+            for (const r of mine)
+                placed.set(r, fileOnly);
             continue;
-        const literals = importLiterals(program);
+        }
+        spent += bytes;
+        // One pass per kind, and paths apart from package names: a reported place
+        // belongs to the pass's kind, and rolldown stops at a path's error before
+        // it warns of a package.
+        const groups = new Map();
+        for (const r of mine) {
+            const group = `${r.kind}\0${isBare(r.source)}`;
+            groups.set(group, [...(groups.get(group) ?? []), r]);
+        }
         const lineStarts = [0];
         for (const m of module.source.matchAll(/\r\n|\r|\n/g))
             lineStarts.push(m.index + m[0].length);
         const first = new Map();
-        for (const { line, column } of places) {
-            const start = (lineStarts[line - 1] ?? 0) + column;
-            const literal = literals.get(start);
-            if (!literal)
-                continue;
-            const key = `${literal.kind}\0${literal.value}`;
-            const known = first.get(key);
-            if (!known || start < known.start)
-                first.set(key, { start, end: literal.end });
+        for (const group of groups.values()) {
+            const kind = group[0].kind;
+            const wanted = new Set(group.map((r) => r.source));
+            const places = [];
+            const record = (log) => {
+                if (log.code === 'UNRESOLVED_IMPORT' && log.loc)
+                    places.push(log.loc);
+            };
+            try {
+                const bundle = await api.rolldown({
+                    ...inputOptionsOf(options),
+                    input: 'nimbus-locate', logLevel: 'warn',
+                    onLog: (_level, log) => record(log),
+                    plugins: [{
+                            name: 'nimbus-locate',
+                            resolveId(source, from, extra) {
+                                if (!from)
+                                    return 'nimbus-locate';
+                                return (extra.kind ?? 'import-statement') === kind && wanted.has(source) ? null : { id: source, external: true };
+                            },
+                            load(id) {
+                                return id === 'nimbus-locate' ? { code: module.source, moduleType: module.lang } : null;
+                            },
+                        }],
+                });
+                try {
+                    await bundle.generate({ format: 'es' });
+                }
+                finally {
+                    await bundle.close();
+                }
+            }
+            catch (error) {
+                for (const log of Reflect.get(Object(error), 'errors') ?? [])
+                    record(log);
+            }
+            for (const { line, column } of places) {
+                const start = (lineStarts[line - 1] ?? 0) + column;
+                const literal = stringLiteralAt(module.source, start);
+                if (!literal)
+                    continue;
+                const key = `${kind}\0${literal.value}`;
+                const known = first.get(key);
+                if (!known || start < known.start)
+                    first.set(key, { start, end: literal.end });
+            }
         }
         for (const r of mine) {
             const span = first.get(`${r.kind}\0${r.source}`);
-            if (!span)
+            if (!span) {
+                placed.set(r, fileOnly);
                 continue;
+            }
             const before = module.source.slice(0, span.start);
             const line = before.split(/\r\n|\r|\n/).length;
             const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1;
@@ -186,13 +220,39 @@ function locate(file, source, line, column, length = 0) {
 }
 /** `Build failed with N errors:` and one line per error, as esbuild words its rejection. */
 export function esbuildFailureText(errors) {
+    // A place without a line (one placement could not afford) names the file alone.
     const lines = errors.map((e) => (e.location
-        ? `${e.location.file}:${e.location.line}:${e.location.column}: ERROR: ${e.text}`
+        ? e.location.line > 0 ? `${e.location.file}:${e.location.line}:${e.location.column}: ERROR: ${e.text}` : `${e.location.file}: ERROR: ${e.text}`
         : `error: ${e.text}`));
     return `Build failed with ${errors.length} error${errors.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
 }
 function refuse(text) {
     throw new BuildError([message(text)]);
+}
+/** The build failed with imports that did not resolve: they are placed once its bundle is closed. */
+class UnresolvedImports extends Error {
+}
+/**
+ * The input options a build and its placement pass give rolldown alike:
+ * everything that decides which imports a module has (platform, target,
+ * define, JSX) and how it parses.
+ */
+function inputOptionsOf(options) {
+    return {
+        cwd: '/',
+        platform: options.platform ?? 'browser',
+        tsconfig: false,
+        transform: {
+            target: typeof options.target === 'string' ? options.target : 'esnext',
+            define: options.define,
+            // esbuild's default for JSX without a tsconfig: React.createElement.
+            jsx: { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' },
+        },
+        checks: { pluginTimings: false },
+        // esbuild keeps an imported constant a reference: inlining its value
+        // changes what a cycle sees before the constant's module has run.
+        optimization: { inlineConst: false },
+    };
 }
 export async function buildWithRolldown(api, options, plugin) {
     // This build's diagnostics and modules: overlapping builds each keep their own.
@@ -201,9 +261,12 @@ export async function buildWithRolldown(api, options, plugin) {
         return await build(api, options, plugin, state);
     }
     catch (error) {
+        // Every bundle of the build is closed by now: placement adds its own, bounded.
         const errors = error instanceof BuildError
             ? error.messages
-            : sortedMessages([...await locateUnresolved(api, state.unresolved, state.loaded), ...messagesOf(error, state.raised, state.loaded)]);
+            : error instanceof UnresolvedImports
+                ? sortedMessages(await locateUnresolved(api, options, state.unresolved, state.loaded))
+                : sortedMessages([...await locateUnresolved(api, options, state.unresolved, state.loaded), ...messagesOf(error, state.raised, state.loaded)]);
         return { outputFiles: [], errors, warnings: [], failure: esbuildFailureText(errors) };
     }
 }
@@ -388,21 +451,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         },
     };
     const bundle = await api.rolldown({
+        ...inputOptionsOf(options),
         input: entryPoints,
-        cwd: '/',
-        platform: options.platform ?? 'browser',
         plugins: [vfs],
-        tsconfig: false,
-        transform: {
-            target,
-            define: options.define,
-            // esbuild's default for JSX without a tsconfig: React.createElement.
-            jsx: { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' },
-        },
-        checks: { pluginTimings: false },
-        // esbuild keeps an imported constant a reference: inlining its value
-        // changes what a cycle sees before the constant's module has run.
-        optimization: { inlineConst: false },
         onLog(level, log) {
             if (level === 'warn')
                 warnings.push(fromLog(log, loaded));
@@ -421,8 +472,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             assetFileNames: `${template(options.assetNames, '[name]-[hash]')}[extname]`,
             codeSplitting: false,
         });
+        // Placed by buildWithRolldown once this bundle is closed.
         if (unresolved.length)
-            throw new BuildError(sortedMessages(await locateUnresolved(api, unresolved, loaded)));
+            throw new UnresolvedImports();
         const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf('/')) || '/' : (options.outdir ?? '/dist');
         const at = (fileName) => `${outdir.replace(/\/+$/, '')}/${fileName}`;
         const encoder = new TextEncoder();

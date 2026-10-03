@@ -55,10 +55,16 @@ published independently in the `@nimbus-sh` npm scope.
   Durable Object's ledger, as the platform counts them, not one, so a
   fan-out no longer dispatches locally past the limit; it is aborted once.
   An unresolved import is placed where rolldown's own resolver places it:
-  each failing importer is built again alone with only those imports left
-  unresolved, so a call of a `require` the code binds itself (a parameter,
-  a declaration, a catch binding, a class static block's `var`, a named
-  function or class expression) is never taken for the import.
+  once the failed build is closed, each failing importer is built again
+  alone, with the build's own platform, target, define and JSX, its other
+  imports external and these left unresolved, so a call of a `require` the
+  code binds itself (a parameter, a declaration, a catch binding, a class
+  static block's `var`, a named function or class expression) or one a
+  define makes dead is never taken for the import. Placement is bounded: an
+  importer over 256 KiB, or past 1 MiB of importers per build, is named
+  without a line, and a 1.2 MB importer's failed build leaves the binding
+  at the size its successful build would (26.4 MiB; placing it beside the
+  build had grown it to 91.1 MiB).
 - The Worker no longer bundles esbuild-wasm: its 11.36 MiB wasm was a
   compiled module of the Worker, which workerd compiled at startup in
   every isolate, every session's Durable Object included, whether or not it

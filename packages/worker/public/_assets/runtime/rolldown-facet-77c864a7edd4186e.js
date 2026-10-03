@@ -7052,101 +7052,111 @@ var LOADER_MODULE_TYPES = {
   dataurl: "dataurl",
   empty: "empty"
 };
-function importLiterals(program) {
-  const literals = /* @__PURE__ */ new Map();
-  const literal2 = (kind, node) => {
-    const n5 = node;
-    if (n5?.type === "Literal" && typeof n5.value === "string" && typeof n5.start === "number" && typeof n5.end === "number") {
-      literals.set(n5.start, { kind, value: n5.value, end: n5.end });
+function stringLiteralAt(source, start) {
+  const quote = source[start];
+  if (quote !== '"' && quote !== "'" && quote !== "`") return null;
+  let value = "";
+  for (let i2 = start + 1; i2 < source.length; i2++) {
+    const c3 = source[i2];
+    if (c3 === quote) return { end: i2 + 1, value };
+    if (quote === "`" && c3 === "$" && source[i2 + 1] === "{") return null;
+    if (c3 !== "\\") {
+      value += c3;
+      continue;
     }
-  };
-  const visit = (node) => {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      for (const child of node) visit(child);
-      return;
+    const e3 = source[++i2];
+    const hex = (from, to) => String.fromCodePoint(parseInt(source.slice(from, to), 16));
+    if (e3 === "u" && source[i2 + 1] === "{") {
+      const close = source.indexOf("}", i2);
+      value += hex(i2 + 2, close);
+      i2 = close;
+    } else if (e3 === "u") {
+      value += hex(i2 + 1, i2 + 5);
+      i2 += 4;
+    } else if (e3 === "x") {
+      value += hex(i2 + 1, i2 + 3);
+      i2 += 2;
+    } else if (e3 === "\r") {
+      if (source[i2 + 1] === "\n") i2++;
+    } else if (e3 !== "\n" && e3 !== "\u2028" && e3 !== "\u2029") {
+      value += { n: "\n", r: "\r", t: "	", b: "\b", f: "\f", v: "\v", 0: "\0" }[e3] ?? e3;
     }
-    const n5 = node;
-    switch (n5.type) {
-      case "ImportDeclaration":
-      case "ExportNamedDeclaration":
-      case "ExportAllDeclaration":
-        literal2("import-statement", n5.source);
-        break;
-      case "ImportExpression":
-        literal2("dynamic-import", n5.source);
-        break;
-      case "TSExternalModuleReference":
-        literal2("require-call", n5.expression);
-        break;
-      case "CallExpression":
-        literal2("require-call", n5.arguments?.[0]);
-        break;
-    }
-    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child);
-  };
-  visit(program);
-  return literals;
+  }
+  return null;
 }
-async function locateUnresolved(api, records, loaded) {
+var PLACEMENT_IMPORTER_BYTES = 256 * 1024;
+var PLACEMENT_BUILD_BYTES = 1024 * 1024;
+var isBare = (specifier) => !/^(\.{1,2}(\/|$)|\/)/.test(specifier);
+async function locateUnresolved(api, options, records, loaded) {
   const byImporter = /* @__PURE__ */ new Map();
   for (const record2 of records) if (record2.importer) byImporter.set(record2.importer, [...byImporter.get(record2.importer) ?? [], record2]);
   const placed = /* @__PURE__ */ new Map();
+  let spent = 0;
   for (const [importer, mine] of byImporter) {
     const module = loaded.get(importer);
-    if (!module?.lang) continue;
-    const wanted = new Set(mine.map((r3) => `${r3.kind}\0${r3.source}`));
-    const places = [];
-    const record2 = (log) => {
-      if (log.code === "UNRESOLVED_IMPORT" && log.loc) places.push(log.loc);
-    };
-    let program = null;
-    try {
-      const bundle = await api.rolldown({
-        input: "nimbus-locate",
-        cwd: "/",
-        logLevel: "warn",
-        tsconfig: false,
-        transform: { jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" } },
-        checks: { pluginTimings: false },
-        onLog: (_level, log) => record2(log),
-        plugins: [{
-          name: "nimbus-locate",
-          resolveId(source, from, extra) {
-            if (!from) return "nimbus-locate";
-            return wanted.has(`${extra.kind ?? "import-statement"}\0${source}`) ? null : { id: source, external: true };
-          },
-          load(id2) {
-            if (id2 !== "nimbus-locate") return null;
-            program = this.parse(module.source, { lang: module.lang });
-            return { code: module.source, moduleType: module.lang };
-          }
-        }]
-      });
-      try {
-        await bundle.generate({ format: "es" });
-      } finally {
-        await bundle.close();
-      }
-    } catch (error2) {
-      for (const log of Reflect.get(Object(error2), "errors") ?? []) record2(log);
+    if (!module) continue;
+    const fileOnly = { file: fileOf(module), namespace: "", line: 0, column: 0, length: 0, lineText: "", suggestion: "" };
+    const bytes = utf8Length(module.source);
+    if (!module.lang || bytes > PLACEMENT_IMPORTER_BYTES || spent + bytes > PLACEMENT_BUILD_BYTES) {
+      for (const r3 of mine) placed.set(r3, fileOnly);
+      continue;
     }
-    if (program === null) continue;
-    const literals = importLiterals(program);
+    spent += bytes;
+    const groups = /* @__PURE__ */ new Map();
+    for (const r3 of mine) {
+      const group = `${r3.kind}\0${isBare(r3.source)}`;
+      groups.set(group, [...groups.get(group) ?? [], r3]);
+    }
     const lineStarts = [0];
     for (const m2 of module.source.matchAll(/\r\n|\r|\n/g)) lineStarts.push(m2.index + m2[0].length);
     const first = /* @__PURE__ */ new Map();
-    for (const { line, column } of places) {
-      const start = (lineStarts[line - 1] ?? 0) + column;
-      const literal2 = literals.get(start);
-      if (!literal2) continue;
-      const key = `${literal2.kind}\0${literal2.value}`;
-      const known = first.get(key);
-      if (!known || start < known.start) first.set(key, { start, end: literal2.end });
+    for (const group of groups.values()) {
+      const kind = group[0].kind;
+      const wanted = new Set(group.map((r3) => r3.source));
+      const places = [];
+      const record2 = (log) => {
+        if (log.code === "UNRESOLVED_IMPORT" && log.loc) places.push(log.loc);
+      };
+      try {
+        const bundle = await api.rolldown({
+          ...inputOptionsOf(options),
+          input: "nimbus-locate",
+          logLevel: "warn",
+          onLog: (_level, log) => record2(log),
+          plugins: [{
+            name: "nimbus-locate",
+            resolveId(source, from, extra) {
+              if (!from) return "nimbus-locate";
+              return (extra.kind ?? "import-statement") === kind && wanted.has(source) ? null : { id: source, external: true };
+            },
+            load(id2) {
+              return id2 === "nimbus-locate" ? { code: module.source, moduleType: module.lang } : null;
+            }
+          }]
+        });
+        try {
+          await bundle.generate({ format: "es" });
+        } finally {
+          await bundle.close();
+        }
+      } catch (error2) {
+        for (const log of Reflect.get(Object(error2), "errors") ?? []) record2(log);
+      }
+      for (const { line, column } of places) {
+        const start = (lineStarts[line - 1] ?? 0) + column;
+        const literal2 = stringLiteralAt(module.source, start);
+        if (!literal2) continue;
+        const key = `${kind}\0${literal2.value}`;
+        const known = first.get(key);
+        if (!known || start < known.start) first.set(key, { start, end: literal2.end });
+      }
     }
     for (const r3 of mine) {
       const span = first.get(`${r3.kind}\0${r3.source}`);
-      if (!span) continue;
+      if (!span) {
+        placed.set(r3, fileOnly);
+        continue;
+      }
       const before = module.source.slice(0, span.start);
       const line = before.split(/\r\n|\r|\n/).length;
       const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
@@ -7177,19 +7187,38 @@ function locate2(file, source, line, column, length = 0) {
   return { file, namespace: "", line, column, length, lineText, suggestion: "" };
 }
 function esbuildFailureText(errors) {
-  const lines = errors.map((e3) => e3.location ? `${e3.location.file}:${e3.location.line}:${e3.location.column}: ERROR: ${e3.text}` : `error: ${e3.text}`);
+  const lines = errors.map((e3) => e3.location ? e3.location.line > 0 ? `${e3.location.file}:${e3.location.line}:${e3.location.column}: ERROR: ${e3.text}` : `${e3.location.file}: ERROR: ${e3.text}` : `error: ${e3.text}`);
   return `Build failed with ${errors.length} error${errors.length === 1 ? "" : "s"}:
 ${lines.join("\n")}`;
 }
 function refuse(text) {
   throw new BuildError([message(text)]);
 }
+var UnresolvedImports = class extends Error {
+};
+function inputOptionsOf(options) {
+  return {
+    cwd: "/",
+    platform: options.platform ?? "browser",
+    tsconfig: false,
+    transform: {
+      target: typeof options.target === "string" ? options.target : "esnext",
+      define: options.define,
+      // esbuild's default for JSX without a tsconfig: React.createElement.
+      jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" }
+    },
+    checks: { pluginTimings: false },
+    // esbuild keeps an imported constant a reference: inlining its value
+    // changes what a cycle sees before the constant's module has run.
+    optimization: { inlineConst: false }
+  };
+}
 async function buildWithRolldown(api, options, plugin) {
   const state = { raised: [], unresolved: [], loaded: /* @__PURE__ */ new Map() };
   try {
     return await build(api, options, plugin, state);
   } catch (error2) {
-    const errors = error2 instanceof BuildError ? error2.messages : sortedMessages([...await locateUnresolved(api, state.unresolved, state.loaded), ...messagesOf(error2, state.raised, state.loaded)]);
+    const errors = error2 instanceof BuildError ? error2.messages : error2 instanceof UnresolvedImports ? sortedMessages(await locateUnresolved(api, options, state.unresolved, state.loaded)) : sortedMessages([...await locateUnresolved(api, options, state.unresolved, state.loaded), ...messagesOf(error2, state.raised, state.loaded)]);
     return { outputFiles: [], errors, warnings: [], failure: esbuildFailureText(errors) };
   }
 }
@@ -7324,21 +7353,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     }
   };
   const bundle = await api.rolldown({
+    ...inputOptionsOf(options),
     input: entryPoints,
-    cwd: "/",
-    platform: options.platform ?? "browser",
     plugins: [vfs],
-    tsconfig: false,
-    transform: {
-      target,
-      define: options.define,
-      // esbuild's default for JSX without a tsconfig: React.createElement.
-      jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" }
-    },
-    checks: { pluginTimings: false },
-    // esbuild keeps an imported constant a reference: inlining its value
-    // changes what a cycle sees before the constant's module has run.
-    optimization: { inlineConst: false },
     onLog(level, log) {
       if (level === "warn") warnings.push(fromLog(log, loaded));
     }
@@ -7356,7 +7373,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       assetFileNames: `${template(options.assetNames, "[name]-[hash]")}[extname]`,
       codeSplitting: false
     });
-    if (unresolved.length) throw new BuildError(sortedMessages(await locateUnresolved(api, unresolved, loaded)));
+    if (unresolved.length) throw new UnresolvedImports();
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf("/")) || "/" : options.outdir ?? "/dist";
     const at = (fileName) => `${outdir.replace(/\/+$/, "")}/${fileName}`;
     const encoder = new TextEncoder();

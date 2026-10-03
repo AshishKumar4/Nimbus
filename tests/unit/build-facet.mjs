@@ -121,6 +121,41 @@ try {
     console.log(`  ok  a binding grown past 64 MiB (${(memories.at(-2).buffer.byteLength / MiB).toFixed(0)} MiB) is left behind; the next build starts a fresh isolate, each generation counted as its own worker`);
   }
 
+  // ── Placing unresolved imports is bounded and runs after the build ──────────
+  // A failed build places its unresolved imports by building each importer
+  // again (rolldown-build.ts locateUnresolved): after the build's bundle is
+  // closed, never beside it, and not at all for an importer past 256 KiB,
+  // whose error names the file alone. The binding a failed build leaves is
+  // no larger than the one the same module built successfully leaves.
+  {
+    const objects = (n) => Array.from({ length: n }, (_, i) => `{x:${i},y:"s${i}"}`).join(',');
+    const peakOf = async (source) => {
+      const { BuildFacet: Fresh, cleanup: release } = await freshFacetClass();
+      try {
+        const { ctx, env } = durableObject(Fresh);
+        const before = memories.length;
+        const outcome = await new EsbuildService(memoryFs('place', { 'a.js': source }), { buildHost: rolldownBuildHost(ctx, env) })
+          .build(['/home/user/place/a.js'], WRANGLER_OPTIONS)
+          .then(() => null, (error) => error);
+        return { peak: memories.at(-1).buffer.byteLength, failure: outcome, created: memories.length - before };
+      } finally {
+        release();
+      }
+    };
+    const big = objects(60_000);
+    const built = await peakOf(`export const a = [${big}];`);
+    const failed = await peakOf(`export const a = [${big}];\nexport const b = () => require('./missing.js');`);
+    assert.equal(built.failure, null);
+    assert.ok(failed.peak <= built.peak + 2 * MiB, `a failed build's binding: ${(failed.peak / MiB).toFixed(1)} MiB, the successful build's ${(built.peak / MiB).toFixed(1)} MiB`);
+    assert.match(failed.failure.message, /^Build failed with 1 error:\n\S*\/home\/user\/place\/a\.js: ERROR: Could not resolve "\.\/missing\.js"$/, 'a large importer is named, not placed');
+    const small = objects(6_000);
+    const placedBuilt = await peakOf(`export const a = [${small}];`);
+    const placed = await peakOf(`export const a = [${small}];\nexport const b = () => require('./missing.js');`);
+    assert.match(placed.failure.message, /a\.js:2:31: ERROR: Could not resolve "\.\/missing\.js"$/, 'a small importer is placed');
+    assert.ok(placed.peak <= placedBuilt.peak + 4 * MiB, `placing grew the binding to ${(placed.peak / MiB).toFixed(1)} MiB from ${(placedBuilt.peak / MiB).toFixed(1)} MiB`);
+    console.log(`  ok  placing unresolved imports is bounded: a ${(big.length / 1e6).toFixed(1)} MB importer is named (binding ${(failed.peak / MiB).toFixed(1)} vs ${(built.peak / MiB).toFixed(1)} MiB built), a ${(small.length / 1e3).toFixed(0)} KB one placed (${(placed.peak / MiB).toFixed(1)} vs ${(placedBuilt.peak / MiB).toFixed(1)} MiB)`);
+  }
+
   // ── Pre-bundles run in the same facet, from their slices, one at a time ─────
   {
     const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet);

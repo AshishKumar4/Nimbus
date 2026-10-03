@@ -146,6 +146,18 @@ export default { fetch() { return Response.json({ cjs: cjs.value, named, esm, tw
       'src/view.tsx': "import { missing } from './nope';\nexport const View = <div title=\"t\">{missing}</div>;",
     },
   },
+  // A define that makes a require dead: esbuild and rolldown drop it, and
+  // the error is placed at the live one; a bare name and a path together.
+  'worker-unresolved-under-define': {
+    options: { ...WRANGLER_OPTIONS, define: { ...WRANGLER_OPTIONS.define, DEAD: 'false' } },
+    run: 'failure', entry: 'src/index.js',
+    files: { 'src/index.js': "if (DEAD) require('./missing.js');\nexport const live = () => require('./missing.js');\nexport const pkg = () => require('not-installed-pkg');\nexport default { fetch() { return new Response('x'); } };" },
+  },
+  // An escaped specifier is placed by its value, as esbuild places it.
+  'worker-unresolved-escaped-specifier': {
+    options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
+    files: { 'src/index.js': "export const a = () => require('./mis\\u0073ing.js');\nexport const b = () => import(`./ti\\x63k.js`);\nexport default { fetch() { return new Response('x'); } };" },
+  },
   // Every import that does not resolve is an error, in esbuild's order (file, line, column), with the other errors.
   'worker-unresolved-every-import': {
     options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.js',
