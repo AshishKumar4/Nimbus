@@ -22,7 +22,9 @@
 //   (7) under a randomised load, no admission exceeds the limit, the order
 //       holds, and every waiter that was not aborted gets in;
 //   (8) a pooled call the platform refuses at the limit is sent again the
-//       moment a hold ends, not at its next poll.
+//       moment a hold ends, not at its next poll;
+//   (9) a retry whose loader setup throws gives back the hold it was let in
+//       on.
 
 import assert from 'node:assert/strict';
 import {
@@ -327,6 +329,24 @@ function wait(ctx, key, options, log) {
   assert.ok(after >= RELEASE_AT && after < RELEASE_AT + 200, `sent again when the hold ended, at ${after} ms`);
   assert.equal(loaderLedgerStats(ctx).waiting, 0);
   for (const e of others.slice(1)) e();
+  pool.dispose();
+}
+
+// ── (9) a retry whose loader setup throws gives back the hold it was let in on ─
+{
+  const ctx = freshCtx();
+  let gets = 0;
+  const loader = {
+    get() {
+      gets++;
+      if (gets > 1) throw new Error('loader.get refused the retry');
+      return { getEntrypoint: () => ({ async execute() { throw new Error(CAP_MESSAGE); } }) };
+    },
+  };
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  await assert.rejects(pool.submit((value) => value, 'payload'), /loader.get refused the retry/);
+  assert.equal(gets, 2, 'the refused call was let in again, and its setup threw');
+  assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'and the hold it was let in on is given back');
   pool.dispose();
 }
 
