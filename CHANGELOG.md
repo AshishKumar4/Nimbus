@@ -112,6 +112,14 @@ published independently in the `@nimbus-sh` npm scope.
   [Errno 44] No such file or directory`, exit 1), instead of running the
   program in `/`. `cd /home/user/site && python3 -m http.server` served
   "Directory listing for /".
+- The `ruby` prompt (`ruby` with no arguments) runs over the session
+  filesystem, under the caller's credential, from the shell's working
+  directory: `File.read("here.txt")` reads the file the shell sees there,
+  and a file it writes is the shell's. It had no filesystem at all, so once
+  `ruby` refused a working directory it could not enter, every prompt
+  printed "undefined: can't enter working directory '/home/user': [Errno 8]
+  Bad file descriptor" and evaluated nothing; before that it evaluated in an
+  empty `/`.
 
 - An error from a mounted filesystem names the caller's path. A backend's
   own error left `CompositeVFS` naming the path the backend was handed:
