@@ -176,7 +176,8 @@ export interface MountOptions {
    * point: root links that lead into it, ENXIO with `absentReason` while the
    * source answers null, the mount point as a directory (EBUSY, EISDIR, mkdir
    * -p a no-op), EROFS under `readOnly`, EXDEV across mounts, and any mount
-   * nested inside it. Permissions inside the mount, its root's included, are
+   * nested inside it (the backend never sees a path into one, so the
+   * directories on the way are looked up and searched here). Permissions inside the mount, its root's included, are
    * the backend's: a view's credential reaches it through its `as`. A walk
    * over the namespace (a process's synchronous bridge) asks
    * `resolvedByBackend` and hands such a path over whole too.
@@ -667,14 +668,15 @@ export class CompositeVFS implements VFS {
 
   /**
    * Whether `path` lies past the point of a mount whose backend resolves its
-   * own paths (MountOptions.resolvesPaths). A walk over this namespace looks
-   * up the mount point, as any other, and no component past it: it hands the
-   * namespace the rest of the path whole.
+   * own paths (MountOptions.resolvesPaths), and is not a directory above a
+   * mount nested in it. A walk over this namespace looks up the mount point
+   * and the directories above a nested mount, as any other, and no component
+   * that is the backend's alone: it hands the namespace the rest whole.
    */
   resolvedByBackend(path: string): boolean {
     const at = normalizePath(path);
     const { mount } = this.route(at);
-    return mount.options.resolvesPaths === true && at !== mount.point;
+    return mount.options.resolvesPaths === true && at !== mount.point && !this.isStructural(at);
   }
 
   /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
@@ -934,9 +936,13 @@ export class CompositeVFS implements VFS {
             // search permission on what is there, as on Linux: the mounted
             // root, or the directory a backend holds at that path. A
             // backend that resolves its own paths checks its own, its root
-            // included, when it is handed a path.
+            // included, when the path ends in it; on the way to a mount
+            // nested in it, they are checked here, as any other backend's.
             shadowParent = false;
-            if (final || this.route(prefix).mount.options.resolvesPaths) continue;
+            if (final) continue;
+            // `..` inside such a backend is lexical, so where the path ends is too.
+            const holder = this.route(prefix).mount;
+            if (holder.options.resolvesPaths && this.route(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder) continue;
             const mount = this.table.mounts.get(prefix);
             return then(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
               if (held !== null && !this.permits(held, 1)) throw new Refusal('EACCES', input);

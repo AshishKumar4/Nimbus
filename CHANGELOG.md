@@ -21,7 +21,9 @@ published independently in the `@nimbus-sh` npm scope.
   still owns the way in: root links into the mount, ENXIO with
   `absentReason`, the mount point (EBUSY, EISDIR, `mkdir -p` has nothing to
   do), EROFS under `readOnly`, EXDEV across mounts (so `mv`, `cp` and
-  `ws.fs.move` copy), and mounts nested in it. A process's synchronous bridge
+  `ws.fs.move` copy), and mounts nested in it: the backend never sees a path
+  into one, so the directories on the way are looked up, and searched with
+  the caller's credential, here. A process's synchronous bridge
   hands such a path over whole too (`CompositeVFS.resolvedByBackend`). A node
   launch in a device's consented directory lists it, with a stat of each
   directory whose parent the device will not list, so its synchronous `fs`

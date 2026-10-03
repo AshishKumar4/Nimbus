@@ -141,7 +141,8 @@ async function only(backend, expected, label, run) {
 
   // `..` is lexical, and leaves the mount past its root.
   root.writeFile('/top', enc.encode('root'));
-  assert.equal(dec.decode(await only(pc, [], '.. out of the mount', () => vfs.readFile('/pc/home/me/../../../top'))), 'root');
+  // The path leaves the mount, so the namespace checks the mount point it passed through.
+  assert.equal(dec.decode(await only(pc, ['stat /'], '.. out of the mount', () => vfs.readFile('/pc/home/me/../../../top'))), 'root');
 
   // The way in is the namespace's: a root link into the mount is followed here.
   root.symlink('/pc/home/me', '/me');
@@ -205,12 +206,14 @@ async function only(backend, expected, label, run) {
   assert.equal(await vfs.copy('/pc/home/me/a', '/home/user/a', { recursive: true }), 3);
   assert.deepEqual(root.readdir('/home/user/a').map((e) => e.name), ['b']);
 
-  // A mount nested inside one that resolves its own paths is still crossed here.
+  // A mount nested inside one that resolves its own paths is crossed here:
+  // the outer backend never sees the path, so the namespace asks it for the
+  // directories on the way, which the device refuses above /home/me.
   const inner = new MemoryVFS();
   inner.writeFile('/i.txt', enc.encode('inner'));
   vfs.mount('/pc/home/me/inner', inner);
-  assert.equal(dec.decode(await vfs.readFile('/pc/home/me/inner/i.txt')), 'inner');
-  assert.ok((await vfs.readdir('/pc/home/me')).some((e) => e.name === 'inner'), 'and listed where it is');
+  await only(pc, ['stat /', 'stat /home'], 'the way to a nested mount is looked up', () =>
+    assert.rejects(vfs.readFile('/pc/home/me/inner/i.txt'), { code: 'EACCES', path: '/pc/home/me/inner/i.txt' }));
   await only(pc, ['mkdir /home/me/x/y'], 'mkdir -p beside a nested mount', () => vfs.mkdir('/pc/home/me/x/y', { recursive: true }));
   vfs.unmount('/pc/home/me/inner');
 
@@ -218,6 +221,29 @@ async function only(backend, expected, label, run) {
   await assert.rejects(vfs.readFile('/pc/home/me/a/b/c.txt'), (error) => error.code === 'ENXIO' && /no device connected/.test(error.message));
   assert.equal(await vfs.stat('/pc/home/me/a/b/c.txt'), null);
   connected = true;
+}
+
+// ── A nested mount is reached only through what the outer backend lets the user search ──
+{
+  const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+  for (const resolvesPaths of [false, true]) {
+    const outer = new MemoryVFS();
+    outer.mkdir('/locked', { mode: 0o700 });
+    outer.mkdir('/open', { mode: 0o755 });
+    const vfs = new CompositeVFS(new MemoryVFS());
+    vfs.mount('/pc', outer, { resolvesPaths });
+    for (const point of ['/pc/locked/inner', '/pc/open/inner']) {
+      const inner = new MemoryVFS({ uid: 1000, gid: 1000 });
+      inner.writeFile('/x', enc.encode('inner'));
+      vfs.mount(point, inner);
+    }
+    const as = vfs.as(user);
+    const label = resolvesPaths ? 'resolvesPaths' : 'plain';
+    await assert.rejects(as.readFile('/pc/locked/inner/x'), { code: 'EACCES' }, `${label}: a kernel-owned 0700 directory above the nested mount refuses uid 1000`);
+    await assert.rejects(as.readdir('/pc/locked/inner'), { code: 'EACCES' }, `${label}: readdir too`);
+    assert.equal(dec.decode(as.sync.readFile('/pc/open/inner/x')), 'inner', `${label}: a searchable one lets it through`);
+    assert.equal(dec.decode(await vfs.readFile('/pc/locked/inner/x')), 'inner', `${label}: the embedder's own view has no credential`);
+  }
 }
 
 // ── A workspace with the device mounted: the shell and ws.fs ────────────────
