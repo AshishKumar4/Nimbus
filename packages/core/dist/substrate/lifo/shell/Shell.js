@@ -1,4 +1,5 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
+import { resolveContext } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { ExitSignal, Interpreter, assignScalar, } from './interpreter.js';
@@ -1208,7 +1209,7 @@ export class Shell {
                 exitCode = 2;
                 continue;
             }
-            const command = await this.registry.resolve(arg, { cwd: this.getCwd() });
+            const command = await this.registry.resolve(arg, resolveContext(this.getCwd(), this.env, this.vfs));
             if (!command) {
                 (await stderr.write(`hash: ${arg}: not found\n`));
                 exitCode = 1;

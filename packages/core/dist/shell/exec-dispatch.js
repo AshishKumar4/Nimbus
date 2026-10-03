@@ -21,6 +21,8 @@
  * metadata was never set", and wasm-magic files with such modes stay
  * executable until touched. No migration.
  */
+import { resolveContext } from '../substrate/lifo/commands/registry.js';
+import { X_OK } from '../runtime/process-files.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { isVfsError } from '../vfs/vfs-error.js';
 /** Bytes of head to inspect: covers magic + the longest useful `#!` line. */
@@ -95,29 +97,127 @@ async function inspect(fs, path) {
         throw error;
     }
 }
+/**
+ * The directories `from.path` names, in order, as execvp reads them: an
+ * empty entry is the current directory, and a relative one is taken from it.
+ */
+function pathDirectories(from) {
+    const directories = [];
+    for (const entry of from.path.split(':')) {
+        const directory = '/' + resolveVfsPath(entry, normalizeVfsPath(from.cwd));
+        if (!directories.includes(directory))
+            directories.push(directory);
+    }
+    return directories;
+}
+/** Whether a failed call is the caller's lack of permission, which a search of PATH passes over. */
+function isDenied(error) {
+    return isVfsError(error, 'EACCES') || isVfsError(error, 'EPERM');
+}
+/**
+ * execvp's search for `name`, a name with no slash, along the caller's PATH,
+ * as the caller: each directory in turn, a directory entry of that name
+ * passed over, and a file the caller may not execute (or reach) remembered
+ * and passed over. A file is executable when the caller's access(X_OK)
+ * allows it, the check a path-shaped invocation makes before it runs.
+ */
+export async function searchPath(name, from) {
+    let notExecutable = null;
+    for (const directory of pathDirectories(from)) {
+        const candidate = directory === '/' ? `/${name}` : `${directory}/${name}`;
+        try {
+            const stat = await from.view.stat(candidate);
+            if (stat === null || stat.type === 'directory')
+                continue;
+            await from.view.access(candidate, X_OK);
+            return { kind: 'program', path: candidate };
+        }
+        catch (error) {
+            if (isDenied(error))
+                notExecutable ??= candidate;
+            else if (!isVfsError(error, 'ENOENT') && !isVfsError(error, 'ENOTDIR') && !isVfsError(error, 'ELOOP'))
+                throw error;
+        }
+    }
+    return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
+}
+const resolutions = new WeakMap();
+/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+export function resolutionOf(command) {
+    return resolutions.get(command);
+}
+/**
+ * A command whose resolution failed on what the namespace could not answer,
+ * or would not show the caller: it fails as execve's error does.
+ */
+function failing(name, error) {
+    const message = isDenied(error) ? 'Permission denied' : error instanceof Error ? error.message : String(error);
+    const command = async (ctx) => {
+        (await ctx.stderr.write(`${name}: ${message}\n`));
+        return 126;
+    };
+    resolutions.set(command, { kind: 'failed' });
+    return command;
+}
+/**
+ * Resolve path-shaped names, and bare names along PATH, to what the file is.
+ * Everything is looked at through the caller's view; `fs` is the view of a
+ * caller that resolves without a context of its own.
+ */
 export function installPathExecResolver(registry, fs, getCwd) {
     const originalResolve = registry.resolve.bind(registry);
     registry.resolve = async (name, from) => {
         const found = await originalResolve(name, from);
         if (found)
             return found;
-        if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
+        if (!name)
             return undefined;
+        const context = from ?? resolveContext(getCwd(), undefined, fs);
+        // A bare name is searched for along the caller's PATH, as execvp
+        // searches it; the file found then resolves by its path, through every
+        // resolver (an npm bin shim is the npm program it names), and the
+        // command it gives runs that file and no other.
+        if (!name.includes('/')) {
+            if (!context.search)
+                return undefined;
+            let hit;
+            try {
+                hit = await searchPath(name, context);
+            }
+            catch (error) {
+                return failing(name, error);
+            }
+            if (hit === null)
+                return undefined;
+            const path = hit.path;
+            let program;
+            if (hit.kind === 'not-executable') {
+                program = async (ctx) => {
+                    (await ctx.stderr.write(`${path}: Permission denied\n`));
+                    return 126;
+                };
+            }
+            else {
+                const command = await registry.resolve(path, context);
+                if (!command)
+                    return undefined;
+                program = async (ctx) => await command(ctx);
+            }
+            resolutions.set(program, { kind: 'program', path });
+            return program;
         }
-        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(from?.cwd ?? getCwd()));
+        if (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))
+            return undefined;
+        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(context.cwd));
         let inspected;
         try {
-            inspected = await inspect(fs, resolved);
+            inspected = await inspect(context.view, resolved);
         }
         catch (error) {
             // What the namespace cannot answer (an absent mount, a backend's I/O
             // error) fails this command, as execve's error does; the rest of the
             // line still runs.
-            const message = error instanceof Error ? error.message : String(error);
-            return async (ctx) => {
-                (await ctx.stderr.write(`${name}: ${message}\n`));
-                return 126;
-            };
+            return failing(name, error);
         }
         if (inspected === null)
             return undefined;
@@ -132,7 +232,7 @@ export function installPathExecResolver(registry, fs, getCwd) {
         const absPath = inspected.target;
         const authorize = (command) => async (ctx) => {
             try {
-                (await ctx.vfs.access(accessPath, 0o1));
+                (await ctx.vfs.access(accessPath, X_OK));
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -179,9 +279,13 @@ export function installPathExecResolver(registry, fs, getCwd) {
                         (await ctx.stderr.write(`${name}: too many levels of interpreters\n`));
                         return 126;
                     }
-                    let interpCmd = await registry.resolve(interp, { cwd: ctx.cwd });
+                    // `#!/usr/bin/env node` names node, which env finds on the script's PATH;
+                    // an absolute interpreter that is no file is a registered one by its name
+                    // (`#!/bin/sh`), never another found on PATH.
+                    const from = resolveContext(ctx.cwd, ctx.env, ctx.vfs);
+                    let interpCmd = await registry.resolve(interp, from);
                     if (!interpCmd && interp.includes('/')) {
-                        interpCmd = await registry.resolve(basename(interp), { cwd: ctx.cwd });
+                        interpCmd = await registry.resolve(basename(interp), { ...from, search: false });
                     }
                     if (!interpCmd) {
                         (await ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`));

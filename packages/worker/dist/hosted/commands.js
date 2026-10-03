@@ -11,6 +11,7 @@ import { prewarmBuildFacet } from '../facets/build-facet.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath } from '@nimbus-sh/core/runtime/runtime-registry.js';
+import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, refusedNextSubcommand, NEXT_REFUSAL_MESSAGE } from '../session/helpers.js';
@@ -1288,7 +1289,7 @@ export async function registerHostedCommands(self, workspace) {
         }
         const cmd = getNpxCommandWord(npxArgs);
         // Check if it's a built-in command (vite, esbuild, etc.)
-        const resolved = cmd ? await registry.resolve(cmd, { cwd: ctx.cwd }) : null;
+        const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
         if (resolved) {
             return await resolved({ ...ctx, args: getNpxCommandArgs(npxArgs) });
         }

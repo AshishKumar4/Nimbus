@@ -142,32 +142,26 @@ export async function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Pr
   return null;
 }
 
-export async function resolveNpmBinFromPath(
-  vfs: VfsLike,
-  cwd: string,
-  envPath: string,
-  name: string,
-): Promise<NpmBinResolution | null> {
-  for (const binDir of candidatePathDirs(cwd, envPath)) {
-    const resolved = await resolveNpmBinInBinDir(vfs, binDir, name);
-    if (resolved) return resolved;
-  }
-  return null;
-}
-
-/** A path-shaped invocation of an executable entry in a `node_modules/.bin` directory; null otherwise. */
+/**
+ * A path-shaped invocation of an npm bin shim: an executable entry of a
+ * `node_modules/.bin` directory, or one a bin directory's manifest names
+ * (where `npm i -g` links them onto PATH); null for any other file.
+ */
 export async function resolveNpmBinPath(vfs: VfsLike & Pick<ProjectFs, 'stat'>, cwd: string, path: string): Promise<NpmBinResolution | null> {
   const shimPath = resolveVfsPath(path, cwd || '/home/user');
   const slash = shimPath.lastIndexOf('/');
   if (slash < 0) return null;
   const binDir = shimPath.slice(0, slash);
-  if (!binDir.endsWith('/node_modules/.bin')) return null;
+  const name = shimPath.slice(slash + 1);
   try {
     if (((await vfs.stat(shimPath)).mode & 0o111) === 0) return null;
   } catch {
     return null;
   }
-  return await resolveNpmBinInBinDir(vfs, binDir, shimPath.slice(slash + 1));
+  const nodeModulesPath = nodeModulesPathForBinDir(binDir);
+  if (nodeModulesPath?.endsWith('/node_modules')) return await resolveNpmBinAt(vfs, nodeModulesPath, name);
+  const entry = await resolveFromBinDirManifest(vfs, binDir, name);
+  return entry ? { ...entry, shimPath } : null;
 }
 
 export async function materializeNpmBinShims(
@@ -217,31 +211,6 @@ async function resolveNpmBinAt(vfs: VfsLike, nodeModulesPath: string, name: stri
   };
 }
 
-async function resolveNpmBinInBinDir(vfs: VfsLike, binDir: string, name: string): Promise<NpmBinResolution | null> {
-  const cleanBinDir = normalizeVfsPath(binDir);
-  if (!cleanBinDir) return null;
-  const shimPath = `${cleanBinDir}/${name}`;
-  if (!await vfs.exists(shimPath) || await safeIsDirectory(vfs, shimPath)) return null;
-
-  const nodeModulesPath = nodeModulesPathForBinDir(cleanBinDir);
-  if (nodeModulesPath) {
-    const resolved = await resolveNpmBinAt(vfs, nodeModulesPath, name);
-    if (resolved) return resolved;
-  }
-
-  const manifestEntry = await resolveFromBinDirManifest(vfs, cleanBinDir, name);
-  if (manifestEntry) return { ...manifestEntry, shimPath };
-
-  return {
-    name,
-    packageName: name,
-    packageVersion: '',
-    packagePath: cleanBinDir,
-    targetPath: shimPath,
-    shimPath,
-  };
-}
-
 function candidateNodeModulesPaths(cwd: string): string[] {
   const paths: string[] = [];
   let current = normalizeVfsPath(cwd || '/home/user');
@@ -252,21 +221,6 @@ function candidateNodeModulesPaths(cwd: string): string[] {
     current = current.slice(0, slash);
   }
   return paths;
-}
-
-function candidatePathDirs(cwd: string, envPath: string): string[] {
-  const dirs: string[] = [];
-  const seen = new Set<string>();
-  for (const rawDir of (envPath || '').split(':')) {
-    if (!rawDir) continue;
-    const dir = rawDir.startsWith('/')
-      ? normalizeVfsPath(rawDir)
-      : resolveVfsPath(rawDir, cwd || '/home/user');
-    if (!dir || seen.has(dir)) continue;
-    seen.add(dir);
-    dirs.push(dir);
-  }
-  return dirs;
 }
 
 function nodeModulesPathForBinDir(binDir: string): string | null {

@@ -1,5 +1,5 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
-import type { CommandRegistry } from '../registry.js';
+import { resolveContext, type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
@@ -773,7 +773,7 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 			const parts = trimmed.split(/\s+/);
 			const cmdName = parts[0];
 			const cmdArgs = parts.slice(1);
-			const cmd = await registry.resolve(cmdName, { cwd: ctx.cwd });
+			const cmd = await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs));
 			if (cmd) {
 				return (await cmd({ ...ctx, args: cmdArgs }));
 			}

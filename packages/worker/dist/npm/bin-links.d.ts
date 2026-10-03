@@ -38,8 +38,11 @@ export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinMani
 export declare function createNpmBinShim(entry: NpmBinEntry, shimDir: string): string;
 export declare function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[];
 export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null>;
-export declare function resolveNpmBinFromPath(vfs: VfsLike, cwd: string, envPath: string, name: string): Promise<NpmBinResolution | null>;
-/** A path-shaped invocation of an executable entry in a `node_modules/.bin` directory; null otherwise. */
+/**
+ * A path-shaped invocation of an npm bin shim: an executable entry of a
+ * `node_modules/.bin` directory, or one a bin directory's manifest names
+ * (where `npm i -g` links them onto PATH); null for any other file.
+ */
 export declare function resolveNpmBinPath(vfs: VfsLike & Pick<ProjectFs, 'stat'>, cwd: string, path: string): Promise<NpmBinResolution | null>;
 export declare function materializeNpmBinShims(vfs: WritableVfsLike, nodeModulesPath: string, binDir: string): Promise<number>;
 export {};

@@ -1,5 +1,5 @@
 import type { Command, CommandOutputStream } from '../types.js';
-import type { CommandRegistry } from '../registry.js';
+import { resolveContext, type CommandRegistry } from '../registry.js';
 import { waitForAbortOrTimeout } from '../signal.js';
 
 export function createWatchCommand(registry: CommandRegistry): Command {
@@ -25,7 +25,7 @@ export function createWatchCommand(registry: CommandRegistry): Command {
     const cmdArgs = ctx.args.slice(argStart + 1);
     const fullCmd = ctx.args.slice(argStart).join(' ');
 
-    const command = await registry.resolve(cmdName, { cwd: ctx.cwd });
+    const command = await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs));
     if (!command) {
       await ctx.stderr.write(`watch: ${cmdName}: command not found\n`);
       return 1;

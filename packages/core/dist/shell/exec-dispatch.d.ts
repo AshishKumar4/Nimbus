@@ -21,8 +21,8 @@
  * metadata was never set", and wasm-magic files with such modes stay
  * executable until touched. No migration.
  */
-import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
-import type { ProcessView } from '../runtime/process-files.js';
+import { type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { type ProcessView } from '../runtime/process-files.js';
 export interface ShebangLine {
     /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
     interpreter: string;
@@ -55,5 +55,44 @@ export declare function basename(path: string): string;
 export declare function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatchDecision;
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
 export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
-export declare function installPathExecResolver(registry: CommandRegistry, fs: ExecInspectionFs, getCwd: () => string): void;
+/**
+ * What execvp's search of PATH finds for a bare name: the first executable
+ * regular file, or, when every file it finds is not executable, the first
+ * of those (which execvp fails with EACCES).
+ */
+export type PathSearchResult = {
+    readonly kind: 'program';
+    readonly path: string;
+} | {
+    readonly kind: 'not-executable';
+    readonly path: string;
+} | null;
+/**
+ * execvp's search for `name`, a name with no slash, along the caller's PATH,
+ * as the caller: each directory in turn, a directory entry of that name
+ * passed over, and a file the caller may not execute (or reach) remembered
+ * and passed over. A file is executable when the caller's access(X_OK)
+ * allows it, the check a path-shaped invocation makes before it runs.
+ */
+export declare function searchPath(name: string, from: ResolveContext): Promise<PathSearchResult>;
+/**
+ * What a command this resolver gave stands for, as `type`, `command -v` and
+ * `which` report it: the file a search of PATH found (executable or not, as
+ * bash reports either), or a resolution that failed on what the namespace
+ * could not answer, which they report as not found.
+ */
+export type Resolution = {
+    readonly kind: 'program';
+    readonly path: string;
+} | {
+    readonly kind: 'failed';
+};
+/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+export declare function resolutionOf(command: object): Resolution | undefined;
+/**
+ * Resolve path-shaped names, and bare names along PATH, to what the file is.
+ * Everything is looked at through the caller's view; `fs` is the view of a
+ * caller that resolves without a context of its own.
+ */
+export declare function installPathExecResolver(registry: CommandRegistry, fs: ProcessView, getCwd: () => string): void;
 //# sourceMappingURL=exec-dispatch.d.ts.map

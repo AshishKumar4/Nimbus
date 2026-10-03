@@ -71,10 +71,8 @@ interface ChildEntry {
     stdinChunks: Uint8Array[];
     stdinClosed: boolean;
     stdinTotalBytes: number;
-    stdinWaiters: Array<(r: {
-        data: Uint8Array;
-        ended: boolean;
-    }) => void>;
+    /** Woken when stdin gains a chunk, closes, or the child exits; each takes from `stdinChunks` itself. */
+    stdinWaiters: Array<() => void>;
     outputs: {
         1: OutputChunk[];
         2: OutputChunk[];
@@ -160,13 +158,20 @@ export interface FacetManagerLike {
     }, hooks: OutputHooks): Promise<number>;
     abort?(facetName: string, signal?: string): boolean;
 }
+/** Where a child runs from: its pid (whose credential it has), directory and environment. */
+export interface ChildOrigin {
+    readonly pid: number;
+    readonly cwd: string;
+    readonly env: Record<string, string>;
+}
 /**
  * The minimum shape we need from the command registry.
  */
 export interface CommandRegistryLike {
-    resolve(name: string): {
+    /** How `name` runs as the child `from` describes; null while nothing can run it. */
+    resolve(name: string, from: ChildOrigin): Promise<{
         kind: CommandKind;
-    } | null;
+    } | null>;
     runPureBuiltin(pid: number, name: string, args: string[], env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
 }
 export interface ShellExecutorLike {
@@ -251,6 +256,8 @@ export declare class FacetProcessManager {
         ok: boolean;
     };
     stdinEnd(childPid: number): void;
+    /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
+    private _takeStdin;
     /**
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.

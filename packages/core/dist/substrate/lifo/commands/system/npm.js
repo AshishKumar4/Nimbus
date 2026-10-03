@@ -1,3 +1,4 @@
+import { resolveContext } from '../registry.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
@@ -610,7 +611,7 @@ async function npmRun(ctx, shellExecute, registry, kernel) {
             const parts = trimmed.split(/\s+/);
             const cmdName = parts[0];
             const cmdArgs = parts.slice(1);
-            const cmd = await registry.resolve(cmdName, { cwd: ctx.cwd });
+            const cmd = await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs));
             if (cmd) {
                 return (await cmd({ ...ctx, args: cmdArgs }));
             }

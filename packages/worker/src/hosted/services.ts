@@ -1,6 +1,7 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
-import { FacetProcessManager, textBytes, type OutputHooks } from "../facets/process.js";
+import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
+import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
@@ -8,7 +9,7 @@ import type { ChildExit, Command, CommandContext, RunAsOptions } from "@nimbus-s
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
 import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 
-import type { CommandRegistry } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
+import { resolveContext, type CommandRegistry } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
 import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
@@ -164,6 +165,8 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     if (self.facetProcessManager) return self.facetProcessManager;
     self.ensureSqliteFs();
     self.ensureFacetManager();
+    /** The namespace as process `pid` sees it under `cred`. */
+    const processView = (pid: number, cred: VfsCred): ProcessView => new ProcessView(self.getFilesystemAuthority().bind({ pid, cred }));
     // FacetProcessManager is statically imported at top-of-file (W8).
     // No lazy-import: workerd doesn't ship CJS require, and the dynamic
     // import would be async — making _ensureFacetProcessManager async
@@ -202,20 +205,21 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           return 127;
         }
         const commandName = normalizeCpCommandName(payload.command);
-        const cmd = await registry.resolve(commandName, { cwd: payload.cwd || '/home/user' });
+        const cred = self.processes.cred(payload.processPid);
+        const vfs = processView(payload.processPid, cred);
+        const cmd = await registry.resolve(commandName, resolveContext(payload.cwd || '/home/user', payload.env, vfs));
         if (!cmd) {
           hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
           return 127;
         }
         // Synthesize a CommandContext for the internal shell substrate.
         const ac = new AbortController();
-        const cred = self.processes.cred(payload.processPid);
         const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
         const ctx = {
           ...io,
           cred,
           args: payload.args || [],
-          vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: payload.processPid, cred })),
+          vfs,
           signal: ac.signal,
           setUmask: (mask: number) => { self.processes.setUmask(payload.processPid, mask); },
           runAs: (targetCred: VfsCred, argv: string[], options?: RunAsOptions) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
@@ -245,22 +249,24 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     // attached to `this._cpRegistry` by the shell-init path (see
     // construction near line 2058 — registry passed as ctor arg there).
     const cmdRegistryAdapter = {
-      // Consult the live shell registry FIRST so dynamically-registered
-      // commands (registerUnixCommands / git / npm / wrangler etc.) are seen
-      // even if they're not in the static _CP_PURE_BUILTIN allow-list. Falls
-      // back to the static facet-direct table for known facet-only commands.
-      // Returns null
-      // (→ exit 127) for everything unknown.
-      resolve: (name: string) => {
+      // The static tables keep their kinds (node/npm/git/... run in a facet
+      // even though they are registry entries too). Another registered
+      // command runs inline, as a pure builtin. Any other name (a runtime
+      // that is not installed is not registered) is a program
+      // the child's PATH may find, which runs as one named by its path does
+      // (facet-direct): its own pid, live stdin, its output on its queues.
+      // That dispatch searches PATH from the child's cwd, as execvp does, and
+      // finding nothing is "command not found", 127. Null (also 127) only
+      // while no registry is attached.
+      resolve: async (name: string, from: ChildOrigin) => {
         const commandName = normalizeCpCommandName(name);
-        const registry = self._cpRegistry;
-        if (registry && typeof registry.has === 'function' && registry.has(commandName)) {
-          // Registered — classify by name. Reuse the static table so
-          // facet-direct commands (node/npm/git/...) keep their kind
-          // even when they ALSO happen to be registry entries.
-          return _classifyCommand(commandName) || { kind: 'pure-builtin' };
-        }
-        return _classifyCommand(commandName);
+        const classified = _classifyCommand(commandName);
+        if (classified) return classified;
+        const registry: CommandRegistry | null = self._cpRegistry;
+        if (!registry) return null;
+        const view = processView(from.pid, self.processes.cred(from.pid));
+        const registered = await registry.resolve(commandName, { ...resolveContext(from.cwd, from.env, view), search: false });
+        return { kind: registered && !isRuntimeInstallHint(registered) ? 'pure-builtin' as const : 'facet-direct' as const };
       },
       runPureBuiltin: async (
         pid: number,
@@ -273,7 +279,8 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       ): Promise<number> => {
         const registry: CommandRegistry | null = self._cpRegistry;
         if (!registry) { hooks.onStderr(textBytes('cp: registry unavailable\n')); return 127; }
-        const cmd = await registry.resolve(normalizeCpCommandName(name), { cwd });
+        const view = processView(pid, self.processes.cred(pid));
+        const cmd = await registry.resolve(normalizeCpCommandName(name), resolveContext(cwd, env, view));
         if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
         return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
       },
@@ -295,7 +302,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         ...io,
         cred,
         args,
-        vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: io.pid, cred })),
+        vfs: processView(io.pid, cred),
         signal: ac.signal,
         setUmask: (mask: number) => { self.processes.setUmask(io.pid, mask); },
         runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
@@ -320,7 +327,9 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       const [name, ...args] = argv;
       if (name === undefined) return { status: 0, signal: null };
       const registry: CommandRegistry | null = self._cpRegistry;
-      const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), { cwd: parent.cwd }) : undefined;
+      // Found as the child will run it: under its credential.
+      const view = processView(parent.pid, cred);
+      const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), resolveContext(parent.cwd, parent.env, view)) : undefined;
       if (!cmd) throw syscallError('ENOENT', 'execvp', name);
       const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
       let exitCode = 1;

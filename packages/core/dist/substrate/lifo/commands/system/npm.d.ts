@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from '../types.js';
-import type { CommandRegistry } from '../registry.js';
+import { type CommandRegistry } from '../registry.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmLogEmitter } from './npm-log.js';
 /** The registry an install reads from when its env names none. */

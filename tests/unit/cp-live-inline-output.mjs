@@ -11,7 +11,7 @@ let manager;
 manager=new FacetProcessManager({
  processes,
  vfsForProcess(){throw new Error('no script file is read');},
- commandRegistry:{resolve(){return {kind:'facet-direct'};}},
+ commandRegistry:{async resolve(){return {kind:'facet-direct'};}},
  facetMgr:{async execStream(payload,_options,hooks){
    const {processPid}=JSON.parse(payload);
    hooks.onStdout(encoder.encode('question> '));

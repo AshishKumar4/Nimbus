@@ -1,6 +1,6 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
-import type { CommandRegistry } from '../commands/registry.js';
+import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import type { ChildExit, CommandContext, CommandRunAsHost } from '../commands/types.js';
 import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
@@ -1372,7 +1372,7 @@ export class Shell {
         exitCode = 2;
         continue;
       }
-      const command = await this.registry.resolve(arg, { cwd: this.getCwd() });
+      const command = await this.registry.resolve(arg, resolveContext(this.getCwd(), this.env, this.vfs));
       if (!command) {
         (await stderr.write(`hash: ${arg}: not found\n`));
         exitCode = 1;

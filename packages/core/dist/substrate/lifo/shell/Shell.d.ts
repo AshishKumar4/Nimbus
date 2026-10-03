@@ -1,6 +1,6 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView } from '../../../runtime/process-files.js';
-import type { CommandRegistry } from '../commands/registry.js';
+import { type CommandRegistry } from '../commands/registry.js';
 import type { ChildExit, CommandRunAsHost } from '../commands/types.js';
 import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
