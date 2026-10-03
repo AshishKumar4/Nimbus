@@ -47,7 +47,7 @@ export interface RubyReplDeps {
     /** The command that started the prompt: what its own refusals name. */
     binName: string;
 }
-/** What one prompt step hands the facet: the driver and where it runs. */
+/** What one prompt step hands the facet: the driver and where the prompt starts. */
 interface RubyReplStep {
     userCode: string;
     home: string;
