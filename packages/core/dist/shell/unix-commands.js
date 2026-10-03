@@ -51,19 +51,23 @@ function asResolvedCommand(resolved) {
     return typeof resolved === 'function' ? resolved : null;
 }
 /**
- * stdin as text. `wrap` drains the shell's stream into `ctx.stdin` before a
- * command body runs, so a command that does not read a stream itself sees the
- * string it left there, and nothing at all when there was no stdin.
+ * stdin as text, read to its end when a command asks for it (and kept in
+ * `ctx.stdin`, for a command it dispatches); nothing at all when there was no
+ * stdin. Only a command that reads its stdin waits for its end.
  */
-function stdinText(ctx) {
-    return typeof ctx.stdin === 'string' ? ctx.stdin : undefined;
+async function stdinText(ctx) {
+    const stdin = ctx.stdin;
+    if (stdin === undefined || typeof stdin === 'string')
+        return stdin;
+    ctx.stdin = await stdin.readAll();
+    return ctx.stdin;
 }
 /**
  * A text command shared with the lifo registry: one implementation, reading
- * standard input as the byte stream it is (wrapStreaming), not a decoded string.
+ * standard input as the byte stream it is, not a decoded string.
  */
 function textCommand(sqliteVfs, command) {
-    return wrapStreaming(withInvocationVfs(sqliteVfs, () => command));
+    return wrap(withInvocationVfs(sqliteVfs, () => command));
 }
 function withInvocationVfs(_sqliteVfs, factory) {
     return async (ctx) => {
@@ -1150,8 +1154,9 @@ function mkAwk(vfs) {
             }
         }
         const program = programArgs[0] || '';
-        let input = stdinText(ctx) || '';
-        if (fileArgs.length > 0 && !input) {
+        // A file operand is the input; stdin only without one.
+        let input = '';
+        if (fileArgs.length > 0) {
             try {
                 input = (await vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0])));
             }
@@ -1159,6 +1164,9 @@ function mkAwk(vfs) {
                 (await ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`));
                 return 1;
             }
+        }
+        else {
+            input = (await stdinText(ctx)) || '';
         }
         const blocks = [];
         let cursor = 0;
@@ -1888,7 +1896,7 @@ function mkXargs(vfs, registry) {
         // NOT trimmed: `-0` exists so a name may carry the whitespace a split
         // would eat, and trimming the stream rewrites its first and last item.
         // The default split already drops the empties a trim would have removed.
-        const input = stdinText(ctx) || '';
+        const input = (await stdinText(ctx)) || '';
         if (!input)
             return 0;
         // Parse flags first
@@ -3320,7 +3328,7 @@ function mkBase64(vfs) {
             }
         }
         else {
-            bytes = enc.encode(stdinText(ctx) ?? '');
+            bytes = enc.encode((await stdinText(ctx)) ?? '');
         }
         if (flags.decode) {
             const source = dec.decode(bytes).replace(/\s+/g, '');
@@ -5357,78 +5365,25 @@ function mkXxd() {
         return src.failed || writeFailed ? 1 : 0;
     };
 }
-function wrapStreaming(fn) {
-    return async (ctx) => {
-        try {
-            if (ctx.stdin && typeof ctx.stdin !== 'string') {
-                const stdinObj = ctx.stdin;
-                const isTerminalStdin = typeof stdinObj.feed === 'function';
-                if (isTerminalStdin) {
-                    const drainable = stdinObj;
-                    ctx.stdin = typeof drainable.drainBuffered === 'function'
-                        ? drainable.drainBuffered()
-                        : '';
-                }
-                // else: leave as pipe reader for the command to handle.
-            }
-            const result = (await fn(ctx));
-            return await result;
-        }
-        catch (e) {
-            // A closed pipe is the shell's to report (SIGPIPE), not the command's.
-            if (isBrokenPipe(e))
-                throw e;
-            (await ctx.stderr.write(`${errorText(e)}\n`));
-            return 1;
-        }
-    };
-}
+/**
+ * A command's adapter onto the shell. stdin is left to the command: a pipe
+ * reader stays one, for the command to read when it does (stdinText, or the
+ * stream itself), so one that never reads its stdin never waits on its end,
+ * as a Unix command does not. It used to be read to its end before every
+ * command ran, which held `printf x > f` until a child process's parent ended
+ * its stdin. The terminal's own stream is the exception: the shell hands it
+ * to every command and closes it only after the command returns, so its
+ * already-typed text is taken in place, without awaiting its end.
+ */
 function wrap(fn) {
     return async (ctx) => {
         try {
-            // Resolve stdin: shell passes a stream object with .readAll() when piping.
-            //
-            // BUG-SWEEP fix (2026-05-11): the shell passes its
-            // `terminalStdin` (an Ls instance) as ctx.stdin for EVERY command,
-            // not just piped ones. Ls.readAll() loops until close(), which the
-            // shell only triggers in its executeLine() finally — AFTER the
-            // command returns. Pre-fix, our wrap awaited readAll() and
-            // deadlocked: command waits for stdin EOF, shell waits for command.
-            //
-            // The fix is to distinguish the two stream shapes:
-            //   - Pipe reader (Oi.reader): {read, readAll} only. Used when
-            //     upstream `echo X |` feeds bytes; upstream calls close()
-            //     after writing, so readAll() resolves quickly.
-            //   - Terminal stdin (Ls): {feed, close, rawMode, read, readAll,
-            //     isWaiting, ...}. close() runs ONLY after the command returns.
-            //
-            // We treat anything with a `feed` method (Ls signature) as the
-            // terminal stdin and drain its already-buffered bytes synchronously
-            // without awaiting EOF. Pipe readers (no `feed`) await readAll().
-            if (ctx.stdin && typeof ctx.stdin !== 'string') {
-                const stdinObj = ctx.stdin;
-                const isTerminalStdin = typeof stdinObj.feed === 'function';
-                if (isTerminalStdin) {
-                    // Drain any already-queued bytes (typically empty for the
-                    // first command on a line; non-empty if the user typed
-                    // text + Enter before the command was dispatched). DO NOT
-                    // await — that would wait for the user's next Ctrl-D.
-                    const drainable = stdinObj;
-                    ctx.stdin = typeof drainable.drainBuffered === 'function'
-                        ? drainable.drainBuffered()
-                        : '';
-                }
-                else if (typeof stdinObj.readAll === 'function') {
-                    // Pipe reader — upstream will close() after writing, so
-                    // readAll() resolves bounded.
-                    ctx.stdin = await stdinObj.readAll();
-                }
-                else if (typeof stdinObj.toString === 'function') {
-                    ctx.stdin = stdinObj.toString();
-                }
+            const stdin = ctx.stdin;
+            if (stdin && typeof stdin !== 'string' && typeof stdin.feed === 'function') {
+                const drainable = stdin;
+                ctx.stdin = typeof drainable.drainBuffered === 'function' ? drainable.drainBuffered() : '';
             }
-            const result = (await fn(ctx));
-            return await result;
+            return await fn(ctx);
         }
         catch (e) {
             // A closed pipe is the shell's to report (SIGPIPE), not the command's.
@@ -5454,9 +5409,8 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('uptime', wrap(mkUptime()));
     registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));
     registry.register('grep', textCommand(sqliteVfs, grepCommand));
-    // SHELL-R6-B2: head uses streaming wrap so a pipe reader passes
-    // through (head terminates after N lines, triggering the abort
-    // cascade for upstream producers like `yes`).
+    // SHELL-R6-B2: head reads the pipe reader itself, so it terminates after
+    // N lines, triggering the abort cascade for upstream producers like `yes`.
     registry.register('head', textCommand(sqliteVfs, headCommand));
     registry.register('tail', textCommand(sqliteVfs, tailCommand));
     registry.register('wc', textCommand(sqliteVfs, wcCommand));
@@ -5504,9 +5458,9 @@ export function registerUnixCommands(registry, sqliteVfs) {
     // od/hexdump/xxd read operands and sinks through ctx.vfs — the
     // mount-aware seam the host hands every command — so they need no
     // invocation-scoped raw view of their own.
-    registry.register('xxd', wrapStreaming(mkXxd()));
-    registry.register('od', wrapStreaming(mkOd()));
-    registry.register('hexdump', wrapStreaming(mkHexdump()));
+    registry.register('xxd', wrap(mkXxd()));
+    registry.register('od', wrap(mkOd()));
+    registry.register('hexdump', wrap(mkHexdump()));
     // ln -s makes a symbolic link; the filesystem has no hard links.
     registry.register('ln', wrap(async (ctx) => {
         const symbolic = ctx.args.some(arg => /^-[^-]*s/.test(arg));
