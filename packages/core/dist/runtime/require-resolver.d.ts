@@ -76,6 +76,14 @@ export interface PrefetchResult {
     speculative: Set<string>;
     /** Original entry reachability, before learned roots; preserves package-main discovery. */
     entryPaths?: ReadonlySet<string>;
+    /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
+    deferred?: DeferredImport[];
+}
+/** An `import()` a module defers, and how many its module defers (phase 2's order). */
+export interface DeferredImport {
+    specifier: string;
+    fromDir: string;
+    alternatives: number;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
@@ -115,5 +123,11 @@ export interface RequiredModuleRoot {
 /** Resolve the complete dependency graph starting from entry code. */
 export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<PrefetchOutcome>;
 export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<DependencyClosureOutcome>;
+/**
+ * The file a deferral a dependency closure reported (PrefetchResult.deferred)
+ * loads, or null; resolved as the walk resolves its own, staging nothing:
+ * the closure that admits the file stages the package.json files it needs.
+ */
+export declare function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null>;
 export {};
 //# sourceMappingURL=require-resolver.d.ts.map
