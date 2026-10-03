@@ -34,10 +34,13 @@ export const memories = [];
 const NativeMemory = WebAssembly.Memory;
 
 let copy = 0;
+/** Every evaluation's directory, removed by releaseBuildFacetHarness. */
+const made = [];
 /** A fresh evaluation of the facet module: its own binding, created by its first build. */
 export async function freshFacetClass() {
   const code = buildFacetWorkerCode(parts);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'build-facet-'));
+  made.push(dir);
   const loaderFile = join(dir, 'napi-wasm-loader.mjs');
   const runtimeFile = join(dir, 'rolldown-runtime.mjs');
   writeFileSync(loaderFile, code.modules['napi-wasm-loader.js']);
@@ -137,4 +140,5 @@ export function durableObject(BuildFacet, classFor = async () => BuildFacet, { d
 export function releaseBuildFacetHarness() {
   delete globalThis.__buildFacetImports;
   WebAssembly.Memory = NativeMemory;
+  for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
