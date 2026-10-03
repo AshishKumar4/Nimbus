@@ -331,4 +331,63 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
   releaseAll();
 }
 
+// ── A write still resolving when its scope is revoked does not land ────────
+// The namespace asks the bridge's scope again right before the backend is
+// called. Each case holds the mount's stat of the write's own name, revokes
+// the scope (a host lease disposed, a process killed, a process released),
+// then lets the stat answer: the write is refused (EBADF), nothing written.
+{
+  const gated = new MemoryVFS(USER);
+  let gate = null;
+  /** Asynchronous-only, its stat of the gate's path held until the gate is released. */
+  const gating = (vfs) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      if (key === 'as') return (...args) => gating(value.apply(target, args));
+      return async (...args) => {
+        if (key === 'stat' && gate !== null && args[0] === gate.path) { const open = gate; gate = null; open.reached(); await open.released; }
+        return value.apply(target, args);
+      };
+    },
+    has: (target, key) => key !== 'sync' && key in target,
+  });
+  ws.filesystem.vfs.mount('/g', gating(gated));
+  /** Run `write` until the mount is asked for `path`, `revoke` there, then let it go on. */
+  const revokedDuring = async (path, write, revoke) => {
+    let reached; let release;
+    const isReached = new Promise((resolve) => { reached = resolve; });
+    gate = { path, reached, released: new Promise((resolve) => { release = resolve; }) };
+    // An error's code, or an abort's name.
+    const outcome = Promise.resolve().then(write).then(() => 'ok', (error) => (typeof error.code === 'string' ? error.code : error.name));
+    await isReached;
+    await revoke();
+    release();
+    return outcome;
+  };
+  const files = box.files;
+  const cred = { ...USER, groups: [1000], umask: 0o022 };
+
+  const lease = files.openHost(cred);
+  assert.equal(await revokedDuring('/a.txt', () => lease.fs.writeFile('/g/a.txt', 'late'), () => lease.dispose()), 'EBADF', 'a disposed host lease');
+  const killed = files.bind({ pid: 501, cred });
+  assert.equal(await revokedDuring('/b.txt', () => killed.writeFile('/g/b.txt', 'late'), () => files.killProcess(501)), 'EBADF', 'a killed process');
+  // A rename looks up no last component (it acts on the names), so it is
+  // held at the mounted root's search.
+  await gated.writeFile('/x.txt', enc.encode('x'));
+  const released = files.bind({ pid: 502, cred });
+  assert.equal(await revokedDuring('/', () => released.rename('/g/x.txt', '/g/c.txt'), () => files.releaseProcess(502)), 'EBADF', 'a released process\'s rename');
+  const aborts = new AbortController();
+  const signalled = files.bind({ pid: 503, cred, signal: aborts.signal });
+  assert.equal(await revokedDuring('/d.txt', () => signalled.writeFile('/g/d.txt', 'late'), () => aborts.abort()), 'AbortError', 'an aborted binding');
+  assert.deepEqual((await gated.readdir('/')).map((entry) => entry.name), ['x.txt'], 'nothing was written or renamed');
+  // A live scope's write lands.
+  const live = files.bind({ pid: 504, cred });
+  await live.writeFile('/g/e.txt', 'ok');
+  assert.equal(new TextDecoder().decode(await gated.readFile('/e.txt')), 'ok');
+  await files.releaseProcess(504);
+  ws.filesystem.vfs.unmount('/g');
+}
+
 console.log(`async-mount-leases: ${mutations.length} awaited mutations are checked where they land`);

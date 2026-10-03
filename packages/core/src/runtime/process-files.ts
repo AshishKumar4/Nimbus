@@ -86,6 +86,15 @@ function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { signal: 
 }
 
 /**
+ * A scope still held: its caller's signal not aborted (that abort's reason),
+ * and the scope not closed (EBADF: released, killed, or its lease disposed).
+ */
+function assertScopeLive(scope: SqliteDescriptorScope, signal: AbortSignal | undefined): void {
+  signal?.throwIfAborted();
+  if (scope.closed) throw fsError('EBADF', 'fd', 'filesystem scope closed');
+}
+
+/**
  * A process's bridge with three checks at the door: abort first (the caller
  * revoked), then a closed scope (EBADF, the POSIX answer for an operation on
  * a released descriptor table), then the append-process identity (a bound
@@ -463,7 +472,11 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   }
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
-    const view = this.vfs.as(cred);
+    // The scope is checked again by the namespace right before each mutation
+    // reaches a backend, after the lookups it awaited: a write still
+    // resolving when the process is released or killed, or its lease is
+    // disposed, does not land.
+    const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal));
     const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, view, this.bufferedWriteBytes);
     const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
     // Every other method forwards to the guarded bridge.
@@ -570,8 +583,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
 
   /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
   private live(): void {
-    this.signal?.throwIfAborted();
-    if (this.scope.closed) throw fsError('EBADF', 'fd', 'filesystem scope closed');
+    assertScopeLive(this.scope, this.signal);
   }
 
   /**

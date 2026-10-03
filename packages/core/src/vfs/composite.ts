@@ -328,6 +328,15 @@ function reported<T>(call: Call, run: () => Awaitable<T>): Awaitable<T> {
   }
 }
 
+/** What a view over a table shares with the view it was made from (CompositeVFS constructor). */
+interface ViewShare {
+  table: Table;
+  principal: Principal;
+  views: Views;
+  viewed?: WeakMap<VFS, VFS>;
+  check?: () => void;
+}
+
 function principalKey(principal: Principal): string {
   const { cred, actor } = principal;
   const id = cred === null ? '-' : `${cred.uid}:${cred.gid}:${[...cred.groups].join(',')}:${cred.umask}`;
@@ -340,7 +349,9 @@ export class CompositeVFS implements VFS {
   private nextDev = 0;
   private readonly viewer: Principal;
   /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
-  private readonly viewed = new WeakMap<VFS, VFS>();
+  private readonly viewed: WeakMap<VFS, VFS>;
+  /** Asked right before each of this view's mutations reaches a backend (scoped). */
+  private readonly check: (() => void) | undefined;
   /**
    * Views per principal, held weakly: one per principal while someone holds
    * it, none once no one does (a table serving thousands of agents does not
@@ -351,8 +362,10 @@ export class CompositeVFS implements VFS {
 
   constructor(root: VfsSource, options?: MountOptions);
   /** @internal a view over the same table. */
-  constructor(root: VfsSource, options: MountOptions | undefined, shared: { table: Table; principal: Principal; views: Views });
-  constructor(root: VfsSource, options: MountOptions = {}, shared?: { table: Table; principal: Principal; views: Views }) {
+  constructor(root: VfsSource, options: MountOptions | undefined, shared: ViewShare);
+  constructor(root: VfsSource, options: MountOptions = {}, shared?: ViewShare) {
+    this.viewed = shared?.viewed ?? new WeakMap();
+    this.check = shared?.check;
     if (shared) {
       this.table = shared.table;
       this.viewer = shared.principal;
@@ -768,6 +781,21 @@ export class CompositeVFS implements VFS {
    */
   guardMutations(guard: MutationGuard): void {
     this.table.guard = guard;
+  }
+
+  /**
+   * This view, for one holder: `check` is asked right before each mutation
+   * reaches a backend, after every lookup and read the mutation waited on,
+   * and refuses by throwing. A process's bridge passes its scope's liveness,
+   * so a write whose lookup was still awaited when the process was released
+   * or killed (or its host lease disposed) does not land. Shares this view's
+   * table, principal and backend views; not cached, so the check is the
+   * holder's alone.
+   */
+  scoped(check: () => void): CompositeVFS {
+    return new CompositeVFS(this.table.mounts.get(ROOT_POINT)!.source, undefined, {
+      table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check,
+    });
   }
 
   as(cred: VfsCred, actor?: string): CompositeVFS {
@@ -1368,6 +1396,7 @@ export class CompositeVFS implements VFS {
    * backend is, on the path this namespace resolved.
    */
   private guardMutation(paths: readonly string[]): void {
+    this.check?.();
     const guard = this.table.guard;
     const cred = this.viewer.cred;
     if (guard === undefined || cred === null) return;
