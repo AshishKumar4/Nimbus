@@ -11,7 +11,7 @@
  * Algorithm:
  *   1. Parse `require('xxx')` / `require("xxx")` / ``require(`xxx`)``
  *      and `require.resolve('xxx')` calls from entry code via regex.
- *   2. Resolve each via the SHARED `resolvePackageEntry` helper from
+ *   2. Resolve each with require-resolution.ts, over the SHARED `resolvePackageEntry` helper from
  *      src/_shared/exports-resolver.ts — same impl that node-shims
  *      and npm-resolver use, so prefetch and runtime always agree on
  *      which file `require('xyz')` means (W2.6a D6: no dual impls).
@@ -26,36 +26,8 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
-/**
- * The filesystem questions resolution needs; held-cell reuse can additionally
- * check current read authority without rereading bytes. A missing path is
- * false, false, a throw, and null.
- */
-export interface RequireFs {
-    exists(path: string): Awaitable<boolean>;
-    isDirectory(path: string): Awaitable<boolean>;
-    readFileString(path: string): Awaitable<string>;
-    stat(path: string): Awaitable<{
-        size: number;
-    } | null>;
-    /** Revalidate held content through the same principal without rereading its bytes. */
-    assertReadable?(path: string): Awaitable<void>;
-}
-/**
- * The resolver's filesystem over a bound process bridge (supervisor RPC or
- * in-process), plus the two reads a launch builder needs. Every probe answers
- * a missing path (ENOENT, however the bridge reports it) with null or false;
- * other errors are the bridge's.
- */
-export interface BridgeRequireFs extends RequireFs {
-    stat(path: string): Promise<RuntimeVfsStat | null>;
-    /** The entry itself, a final link not followed. */
-    lstat(path: string): Promise<RuntimeVfsStat | null>;
-    readBytes(path: string): Promise<Uint8Array | null>;
-}
-export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
-type WalkProgress = (work: number) => Promise<void>;
+import { type RequireFs, type WalkProgress } from './require-resolution.js';
+export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -142,5 +114,4 @@ export declare function resolveDeferredImport(vfs: RequireFs, deferral: Deferred
  * acorn cannot parse (TypeScript) names none.
  */
 export declare function configPackageNames(source: string): string[];
-export {};
 //# sourceMappingURL=require-resolver.d.ts.map
