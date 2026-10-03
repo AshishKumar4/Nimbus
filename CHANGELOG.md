@@ -54,9 +54,11 @@ published independently in the `@nimbus-sh` npm scope.
   64 MiB) and its successor's are now counted as two Dynamic Workers on the
   Durable Object's ledger, as the platform counts them, not one, so a
   fan-out no longer dispatches locally past the limit; it is aborted once.
-  An unresolved `require()` is placed at a real require, not at a call of a
-  `require` the code binds itself (a parameter, a declaration, a catch
-  binding).
+  An unresolved import is placed where rolldown's own resolver places it:
+  each failing importer is built again alone with only those imports left
+  unresolved, so a call of a `require` the code binds itself (a parameter,
+  a declaration, a catch binding, a class static block's `var`, a named
+  function or class expression) is never taken for the import.
 - The Worker no longer bundles esbuild-wasm: its 11.36 MiB wasm was a
   compiled module of the Worker, which workerd compiled at startup in
   every isolate, every session's Durable Object included, whether or not it

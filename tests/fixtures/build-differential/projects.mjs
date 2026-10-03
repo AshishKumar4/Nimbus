@@ -132,9 +132,19 @@ export default { fetch() { return Response.json({ cjs: cjs.value, named, esm, tw
       "{ const require = String; require('./missing.js'); }",
       "try { fake(); } catch (require) { require('./missing.js'); }",
       "const named = function require() { return require('./missing.js'); };",
+      "class Static { static { var require = (x) => x; require('./missing.js'); } }",
+      "const Named = class require { m() { return require('./missing.js'); } };",
       "export const real = () => require('./missing.js');",
-      "export default { fetch() { return new Response(String(fake && arrow && hoisted && named)); } };",
+      "export default { fetch() { return new Response(String(fake && arrow && hoisted && named && Static && Named)); } };",
     ].join('\n') },
+  },
+  // Unresolved imports in TypeScript and TSX, an import-equals among them.
+  'worker-unresolved-typescript': {
+    options: WRANGLER_OPTIONS, run: 'failure', entry: 'src/index.ts',
+    files: {
+      'src/index.ts': "import x = require('./gone');\nimport { View } from './view';\nconst n: number = 1;\nexport default { fetch() { return new Response(String(x) + View + n); } };",
+      'src/view.tsx': "import { missing } from './nope';\nexport const View = <div title=\"t\">{missing}</div>;",
+    },
   },
   // Every import that does not resolve is an error, in esbuild's order (file, line, column), with the other errors.
   'worker-unresolved-every-import': {

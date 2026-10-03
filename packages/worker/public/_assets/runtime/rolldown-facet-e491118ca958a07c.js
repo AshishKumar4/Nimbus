@@ -7052,29 +7052,21 @@ var LOADER_MODULE_TYPES = {
   dataurl: "dataurl",
   empty: "empty"
 };
-function importSpans(module, parse2) {
-  const spans = /* @__PURE__ */ new Map();
-  let program;
-  try {
-    program = parse2(module.source, { lang: module.lang });
-  } catch {
-    return spans;
-  }
+function importLiterals(program) {
+  const literals = /* @__PURE__ */ new Map();
   const literal2 = (kind, node) => {
     const n5 = node;
-    if (n5?.type !== "Literal" || typeof n5.value !== "string" || typeof n5.start !== "number" || typeof n5.end !== "number") return;
-    const key = `${kind}\0${n5.value}`;
-    const known = spans.get(key);
-    if (!known || n5.start < known[0]) spans.set(key, [n5.start, n5.end]);
+    if (n5?.type === "Literal" && typeof n5.value === "string" && typeof n5.start === "number" && typeof n5.end === "number") {
+      literals.set(n5.start, { kind, value: n5.value, end: n5.end });
+    }
   };
-  const visit = (node, shadowed) => {
+  const visit = (node) => {
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node)) {
-      for (const child of node) visit(child, shadowed);
+      for (const child of node) visit(child);
       return;
     }
     const n5 = node;
-    shadowed ||= bindsRequire(n5);
     switch (n5.type) {
       case "ImportDeclaration":
       case "ExportNamedDeclaration":
@@ -7087,85 +7079,81 @@ function importSpans(module, parse2) {
       case "TSExternalModuleReference":
         literal2("require-call", n5.expression);
         break;
-      case "CallExpression": {
-        const callee = n5.callee;
-        if (!shadowed && callee?.type === "Identifier" && callee.name === "require") literal2("require-call", n5.arguments?.[0]);
+      case "CallExpression":
+        literal2("require-call", n5.arguments?.[0]);
         break;
+    }
+    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child);
+  };
+  visit(program);
+  return literals;
+}
+async function locateUnresolved(api, records, loaded) {
+  const byImporter = /* @__PURE__ */ new Map();
+  for (const record2 of records) if (record2.importer) byImporter.set(record2.importer, [...byImporter.get(record2.importer) ?? [], record2]);
+  const placed = /* @__PURE__ */ new Map();
+  for (const [importer, mine] of byImporter) {
+    const module = loaded.get(importer);
+    if (!module?.lang) continue;
+    const wanted = new Set(mine.map((r3) => `${r3.kind}\0${r3.source}`));
+    const places = [];
+    const record2 = (log) => {
+      if (log.code === "UNRESOLVED_IMPORT" && log.loc) places.push(log.loc);
+    };
+    let program = null;
+    try {
+      const bundle = await api.rolldown({
+        input: "nimbus-locate",
+        cwd: "/",
+        logLevel: "warn",
+        tsconfig: false,
+        transform: { jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" } },
+        checks: { pluginTimings: false },
+        onLog: (_level, log) => record2(log),
+        plugins: [{
+          name: "nimbus-locate",
+          resolveId(source, from, extra) {
+            if (!from) return "nimbus-locate";
+            return wanted.has(`${extra.kind ?? "import-statement"}\0${source}`) ? null : { id: source, external: true };
+          },
+          load(id2) {
+            if (id2 !== "nimbus-locate") return null;
+            program = this.parse(module.source, { lang: module.lang });
+            return { code: module.source, moduleType: module.lang };
+          }
+        }]
+      });
+      try {
+        await bundle.generate({ format: "es" });
+      } finally {
+        await bundle.close();
       }
+    } catch (error2) {
+      for (const log of Reflect.get(Object(error2), "errors") ?? []) record2(log);
     }
-    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visit(child, shadowed);
-  };
-  visit(program, false);
-  return spans;
-}
-function patternBindsRequire(pattern) {
-  const p = pattern;
-  if (!p || typeof p !== "object") return false;
-  switch (p.type) {
-    case "Identifier":
-      return p.name === "require";
-    case "AssignmentPattern":
-      return patternBindsRequire(p.left);
-    case "RestElement":
-      return patternBindsRequire(p.argument);
-    case "ArrayPattern":
-      return p.elements.some(patternBindsRequire);
-    case "ObjectPattern":
-      return p.properties.some((q2) => patternBindsRequire(q2.type === "RestElement" ? q2.argument : q2.value));
-    default:
-      return false;
+    if (program === null) continue;
+    const literals = importLiterals(program);
+    const lineStarts = [0];
+    for (const m2 of module.source.matchAll(/\r\n|\r|\n/g)) lineStarts.push(m2.index + m2[0].length);
+    const first = /* @__PURE__ */ new Map();
+    for (const { line, column } of places) {
+      const start = (lineStarts[line - 1] ?? 0) + column;
+      const literal2 = literals.get(start);
+      if (!literal2) continue;
+      const key = `${literal2.kind}\0${literal2.value}`;
+      const known = first.get(key);
+      if (!known || start < known.start) first.set(key, { start, end: literal2.end });
+    }
+    for (const r3 of mine) {
+      const span = first.get(`${r3.kind}\0${r3.source}`);
+      if (!span) continue;
+      const before = module.source.slice(0, span.start);
+      const line = before.split(/\r\n|\r|\n/).length;
+      const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
+      placed.set(r3, locate2(fileOf(module), module.source, line, utf8Length(before.slice(lineStart)), utf8Length(module.source.slice(span.start, span.end))));
+    }
   }
-}
-function bindsRequire(node) {
-  switch (node.type) {
-    case "FunctionDeclaration":
-    case "FunctionExpression":
-    case "ArrowFunctionExpression":
-      return node.type === "FunctionExpression" && patternBindsRequire(node.id) || node.params.some(patternBindsRequire) || hoistsRequire(node.body, true);
-    case "Program":
-      return hoistsRequire(node.body, true) || node.body.some((s2) => s2.type === "ImportDeclaration" && s2.specifiers.some((spec) => patternBindsRequire(spec.local)));
-    case "BlockStatement":
-    case "StaticBlock":
-    case "SwitchCase":
-      return hoistsRequire(node.type === "SwitchCase" ? node.consequent : node.body, false);
-    case "CatchClause":
-      return patternBindsRequire(node.param);
-    case "ForStatement":
-    case "ForInStatement":
-    case "ForOfStatement": {
-      const head = node.type === "ForStatement" ? node.init : node.left;
-      return head?.type === "VariableDeclaration" && head.declarations.some((d2) => patternBindsRequire(d2.id));
-    }
-    default:
-      return false;
-  }
-}
-function hoistsRequire(body, varScope) {
-  const statements = Array.isArray(body) ? body : body?.type === "BlockStatement" ? body.body : [];
-  for (const statement of statements) {
-    const declared = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? statement.declaration : statement;
-    if (!declared) continue;
-    if ((declared.type === "FunctionDeclaration" || declared.type === "ClassDeclaration") && patternBindsRequire(declared.id)) return true;
-    if (declared.type === "VariableDeclaration" && declared.kind !== "var" && declared.declarations.some((d2) => patternBindsRequire(d2.id))) return true;
-  }
-  if (!varScope) return false;
-  let found = false;
-  const visitVars = (node) => {
-    if (found || !node || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      for (const child of node) visitVars(child);
-      return;
-    }
-    const n5 = node;
-    if (n5.type === "FunctionDeclaration" || n5.type === "FunctionExpression" || n5.type === "ArrowFunctionExpression") return;
-    if (n5.type === "VariableDeclaration" && n5.kind === "var" && n5.declarations.some((d2) => patternBindsRequire(d2.id))) {
-      found = true;
-      return;
-    }
-    for (const [key, child] of Object.entries(n5)) if (key !== "parent") visitVars(child);
-  };
-  visitVars(statements);
-  return found;
+  return records.map((r3) => message(r3.text, placed.get(r3) ?? null, r3.pluginName));
 }
 var utf8Length = (text) => new TextEncoder().encode(text).length;
 function base64Of(bytes) {
@@ -7201,7 +7189,7 @@ async function buildWithRolldown(api, options, plugin) {
   try {
     return await build(api, options, plugin, state);
   } catch (error2) {
-    const errors = error2 instanceof BuildError ? error2.messages : sortedMessages([...state.unresolved, ...messagesOf(error2, state.raised, state.loaded)]);
+    const errors = error2 instanceof BuildError ? error2.messages : sortedMessages([...await locateUnresolved(api, state.unresolved, state.loaded), ...messagesOf(error2, state.raised, state.loaded)]);
     return { outputFiles: [], errors, warnings: [], failure: esbuildFailureText(errors) };
   }
 }
@@ -7272,26 +7260,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     raised.push(message(text, null, pluginName));
     throw new Error(text);
   };
-  const spansOf = /* @__PURE__ */ new Map();
-  const unresolvedImport = (text, importer, source, kind, pluginName, parse2) => {
-    const from = importer ? loaded.get(importer) : void 0;
-    let location = null;
-    let spans = importer ? spansOf.get(importer) : void 0;
-    if (!spans && importer && from?.lang) spansOf.set(importer, spans = importSpans(from, parse2));
-    const span = spans?.get(`${kind}\0${source}`);
-    if (from && span) {
-      const before = from.source.slice(0, span[0]);
-      const line = before.split(/\r\n|\r|\n/).length;
-      const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
-      location = locate2(fileOf(from), from.source, line, utf8Length(before.slice(lineStart)), utf8Length(from.source.slice(span[0], span[1])));
-    }
-    unresolved.push(message(text, location, pluginName));
+  const unresolvedImport = (text, importer, source, kind, pluginName) => {
+    unresolved.push({ importer, source, kind, text, pluginName });
     return { id: source, external: true };
   };
   const vfs = {
     name: plugin.name,
     async resolveId(source, importer, extra) {
-      const parse2 = this.parse.bind(this);
       if (source.startsWith("\0")) return null;
       const from = importer ? decode(importer) : null;
       const kind = extra.isEntry && !importer ? "entry-point" : extra.kind ?? "import-statement";
@@ -7304,9 +7279,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         kind,
         with: extra.attributes ?? {}
       });
-      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? "error", importer, source, kind, plugin.name, parse2);
+      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? "error", importer, source, kind, plugin.name);
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
-      if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, "", parse2);
+      if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, "");
       if (answer.external) return { id: answer.path ?? path3, external: true };
       const namespace = answer.namespace ?? "file";
       if (mainNamespace === null) mainNamespace = namespace;
@@ -7381,7 +7356,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       assetFileNames: `${template(options.assetNames, "[name]-[hash]")}[extname]`,
       codeSplitting: false
     });
-    if (unresolved.length) throw new BuildError(sortedMessages(unresolved));
+    if (unresolved.length) throw new BuildError(sortedMessages(await locateUnresolved(api, unresolved, loaded)));
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf("/")) || "/" : options.outdir ?? "/dist";
     const at = (fileName) => `${outdir.replace(/\/+$/, "")}/${fileName}`;
     const encoder = new TextEncoder();

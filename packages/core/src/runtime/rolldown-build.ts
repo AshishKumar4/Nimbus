@@ -74,42 +74,31 @@ interface Loaded {
 /** The plugin context's parser: rolldown's own, ESTree with UTF-16 offsets. */
 type Parse = (input: string, options?: { lang?: string }) => unknown;
 
-/** An import's kind, as esbuild and rolldown name it, and the literals of that kind. */
-type ImportKind = 'import-statement' | 'dynamic-import' | 'require-call';
+/** An import that did not resolve: who imports what, how, and what the plugin said. */
+interface Unresolved {
+  importer: string | undefined;
+  source: string;
+  kind: string;
+  text: string;
+  pluginName: string;
+}
 
-/**
- * Where `module` names each specifier, by kind: the span of the first string
- * literal of each kind (static import or re-export, dynamic import, require),
- * by the parser, so a same-text string elsewhere in the file, or an import of
- * another kind, does not stand in for it. esbuild reports an unresolved
- * import once per specifier and kind, at its first occurrence, and so does
- * this. Keyed `<kind>\0<specifier>`. A call of a `require` the code binds
- * itself (a parameter, a declaration, a catch binding, a function's own
- * name) is not an import, to esbuild or to rolldown, and is skipped.
- */
-function importSpans(module: Loaded, parse: Parse): Map<string, [number, number]> {
-  const spans = new Map<string, [number, number]>();
-  let program: unknown;
-  try {
-    program = parse(module.source, { lang: module.lang });
-  } catch {
-    return spans;
-  }
-  const literal = (kind: ImportKind, node: unknown) => {
+/** Each string literal that names an import, by where it starts: its kind and its end. */
+function importLiterals(program: unknown): Map<number, { kind: string; value: string; end: number }> {
+  const literals = new Map<number, { kind: string; value: string; end: number }>();
+  const literal = (kind: string, node: unknown) => {
     const n = node as { type?: string; value?: unknown; start?: number; end?: number } | null;
-    if (n?.type !== 'Literal' || typeof n.value !== 'string' || typeof n.start !== 'number' || typeof n.end !== 'number') return;
-    const key = `${kind}\0${n.value}`;
-    const known = spans.get(key);
-    if (!known || n.start < known[0]) spans.set(key, [n.start, n.end]);
+    if (n?.type === 'Literal' && typeof n.value === 'string' && typeof n.start === 'number' && typeof n.end === 'number') {
+      literals.set(n.start, { kind, value: n.value, end: n.end });
+    }
   };
-  const visit = (node: unknown, shadowed: boolean): void => {
+  const visit = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
-      for (const child of node) visit(child, shadowed);
+      for (const child of node) visit(child);
       return;
     }
     const n = node as Record<string, unknown>;
-    shadowed ||= bindsRequire(n);
     switch (n.type) {
       case 'ImportDeclaration': case 'ExportNamedDeclaration': case 'ExportAllDeclaration':
         literal('import-statement', n.source);
@@ -120,88 +109,89 @@ function importSpans(module: Loaded, parse: Parse): Map<string, [number, number]
       case 'TSExternalModuleReference':
         literal('require-call', n.expression);
         break;
-      case 'CallExpression': {
-        const callee = n.callee as { type?: string; name?: string } | undefined;
-        if (!shadowed && callee?.type === 'Identifier' && callee.name === 'require') literal('require-call', (n.arguments as unknown[] | undefined)?.[0]);
+      case 'CallExpression':
+        literal('require-call', (n.arguments as unknown[] | undefined)?.[0]);
         break;
-      }
     }
-    for (const [key, child] of Object.entries(n)) if (key !== 'parent') visit(child, shadowed);
+    for (const [key, child] of Object.entries(n)) if (key !== 'parent') visit(child);
   };
-  visit(program, false);
-  return spans;
-}
-
-type AstNode = Record<string, unknown> & { type?: string };
-
-/** Whether a binding pattern (`require`, `{ require }`, `[require]`, `...require`, `require = x`) binds `require`. */
-function patternBindsRequire(pattern: unknown): boolean {
-  const p = pattern as AstNode | null;
-  if (!p || typeof p !== 'object') return false;
-  switch (p.type) {
-    case 'Identifier': return p.name === 'require';
-    case 'AssignmentPattern': return patternBindsRequire(p.left);
-    case 'RestElement': return patternBindsRequire(p.argument);
-    case 'ArrayPattern': return (p.elements as unknown[]).some(patternBindsRequire);
-    case 'ObjectPattern': return (p.properties as AstNode[]).some((q) => patternBindsRequire(q.type === 'RestElement' ? q.argument : q.value));
-    default: return false;
-  }
-}
-
-/** Whether `node`'s scope binds `require` for everything inside it. */
-function bindsRequire(node: AstNode): boolean {
-  switch (node.type) {
-    case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
-      return (node.type === 'FunctionExpression' && patternBindsRequire(node.id))
-        || (node.params as unknown[]).some(patternBindsRequire)
-        || hoistsRequire(node.body, true);
-    case 'Program':
-      return hoistsRequire(node.body, true) || (node.body as AstNode[]).some((s) => s.type === 'ImportDeclaration'
-        && (s.specifiers as AstNode[]).some((spec) => patternBindsRequire(spec.local)));
-    case 'BlockStatement': case 'StaticBlock': case 'SwitchCase':
-      return hoistsRequire(node.type === 'SwitchCase' ? node.consequent : node.body, false);
-    case 'CatchClause':
-      return patternBindsRequire(node.param);
-    case 'ForStatement': case 'ForInStatement': case 'ForOfStatement': {
-      const head = (node.type === 'ForStatement' ? node.init : node.left) as AstNode | null;
-      return head?.type === 'VariableDeclaration' && (head.declarations as AstNode[]).some((d) => patternBindsRequire(d.id));
-    }
-    default:
-      return false;
-  }
+  visit(program);
+  return literals;
 }
 
 /**
- * Whether statements declare `require`: by let, const, class or function
- * among them, and, for a function's or the program's body (`varScope`), by a
- * `var` anywhere in it outside nested functions.
+ * Where each unresolved import is, as rolldown's own resolver places it.
+ * The build left them external to go on (esbuild reports every one), so
+ * each importer is built again alone: its other imports external, these
+ * left unresolved, so rolldown reports each occurrence with its place, and
+ * only real ones (a call of a `require` the code binds itself is no import,
+ * to rolldown as to esbuild). esbuild reports the first occurrence of each
+ * specifier and kind, at its string literal, column and length in UTF-8
+ * bytes; the literal's kind comes from the node at that place.
  */
-function hoistsRequire(body: unknown, varScope: boolean): boolean {
-  const statements = (Array.isArray(body) ? body : (body as AstNode | null)?.type === 'BlockStatement' ? (body as AstNode).body : []) as AstNode[];
-  for (const statement of statements) {
-    const declared = statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportDefaultDeclaration' ? (statement.declaration as AstNode | null) : statement;
-    if (!declared) continue;
-    if ((declared.type === 'FunctionDeclaration' || declared.type === 'ClassDeclaration') && patternBindsRequire(declared.id)) return true;
-    if (declared.type === 'VariableDeclaration' && declared.kind !== 'var' && (declared.declarations as AstNode[]).some((d) => patternBindsRequire(d.id))) return true;
+async function locateUnresolved(api: RolldownApi, records: readonly Unresolved[], loaded: ReadonlyMap<string, Loaded>): Promise<esbuild.Message[]> {
+  const byImporter = new Map<string, Unresolved[]>();
+  for (const record of records) if (record.importer) byImporter.set(record.importer, [...(byImporter.get(record.importer) ?? []), record]);
+  const placed = new Map<Unresolved, esbuild.Location>();
+  for (const [importer, mine] of byImporter) {
+    const module = loaded.get(importer);
+    if (!module?.lang) continue;
+    const wanted = new Set(mine.map((r) => `${r.kind}\0${r.source}`));
+    const places: { line: number; column: number }[] = [];
+    const record = (log: RolldownLog) => {
+      if (log.code === 'UNRESOLVED_IMPORT' && log.loc) places.push(log.loc);
+    };
+    let program: unknown = null;
+    try {
+      const bundle = await api.rolldown({
+        input: 'nimbus-locate', cwd: '/', logLevel: 'warn', tsconfig: false,
+        transform: { jsx: { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' } },
+        checks: { pluginTimings: false },
+        onLog: (_level: string, log: RolldownLog) => record(log),
+        plugins: [{
+          name: 'nimbus-locate',
+          resolveId(source: string, from: string | undefined, extra: { kind?: string }) {
+            if (!from) return 'nimbus-locate';
+            return wanted.has(`${extra.kind ?? 'import-statement'}\0${source}`) ? null : { id: source, external: true };
+          },
+          load(this: { parse: Parse }, id: string) {
+            if (id !== 'nimbus-locate') return null;
+            program = this.parse(module.source, { lang: module.lang });
+            return { code: module.source, moduleType: module.lang };
+          },
+        }],
+      });
+      try {
+        await bundle.generate({ format: 'es' });
+      } finally {
+        await bundle.close();
+      }
+    } catch (error) {
+      for (const log of Reflect.get(Object(error), 'errors') ?? []) record(log as RolldownLog);
+    }
+    if (program === null) continue;
+    const literals = importLiterals(program);
+    const lineStarts = [0];
+    for (const m of module.source.matchAll(/\r\n|\r|\n/g)) lineStarts.push(m.index! + m[0].length);
+    const first = new Map<string, { start: number; end: number }>();
+    for (const { line, column } of places) {
+      const start = (lineStarts[line - 1] ?? 0) + column;
+      const literal = literals.get(start);
+      if (!literal) continue;
+      const key = `${literal.kind}\0${literal.value}`;
+      const known = first.get(key);
+      if (!known || start < known.start) first.set(key, { start, end: literal.end });
+    }
+    for (const r of mine) {
+      const span = first.get(`${r.kind}\0${r.source}`);
+      if (!span) continue;
+      const before = module.source.slice(0, span.start);
+      const line = before.split(/\r\n|\r|\n/).length;
+      const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1;
+      placed.set(r, locate(fileOf(module), module.source, line, utf8Length(before.slice(lineStart)), utf8Length(module.source.slice(span.start, span.end))));
+    }
   }
-  if (!varScope) return false;
-  let found = false;
-  const visitVars = (node: unknown): void => {
-    if (found || !node || typeof node !== 'object') return;
-    if (Array.isArray(node)) {
-      for (const child of node) visitVars(child);
-      return;
-    }
-    const n = node as AstNode;
-    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
-    if (n.type === 'VariableDeclaration' && n.kind === 'var' && (n.declarations as AstNode[]).some((d) => patternBindsRequire(d.id))) {
-      found = true;
-      return;
-    }
-    for (const [key, child] of Object.entries(n)) if (key !== 'parent') visitVars(child);
-  };
-  visitVars(statements);
-  return found;
+  return records.map((r) => message(r.text, placed.get(r) ?? null, r.pluginName));
 }
 
 const utf8Length = (text: string) => new TextEncoder().encode(text).length;
@@ -252,7 +242,9 @@ export async function buildWithRolldown(
   try {
     return await build(api, options, plugin, state);
   } catch (error) {
-    const errors = error instanceof BuildError ? error.messages : sortedMessages([...state.unresolved, ...messagesOf(error, state.raised, state.loaded)]);
+    const errors = error instanceof BuildError
+      ? error.messages
+      : sortedMessages([...await locateUnresolved(api, state.unresolved, state.loaded), ...messagesOf(error, state.raised, state.loaded)]);
     return { outputFiles: [], errors, warnings: [], failure: esbuildFailureText(errors) };
   }
 }
@@ -262,7 +254,7 @@ interface BuildState {
   /** Errors a hook threw: rolldown's own failure carries their text. */
   raised: esbuild.Message[];
   /** Imports that did not resolve: the build goes on, as esbuild's does, and fails with every one. */
-  unresolved: esbuild.Message[];
+  unresolved: Unresolved[];
   /** The modules the plugin loaded, by id. */
   loaded: Map<string, Loaded>;
 }
@@ -363,31 +355,16 @@ async function build(
     raised.push(message(text, null, pluginName));
     throw new Error(text);
   };
-  // An import that did not resolve, placed at its string literal of its kind
-  // as esbuild places it (column and length in UTF-8 bytes). The import stays
-  // external so the build goes on to report every other error with it.
-  // Each importer is parsed once per build, on its first unresolved import.
-  const spansOf = new Map<string, Map<string, [number, number]>>();
-  const unresolvedImport = (text: string, importer: string | undefined, source: string, kind: string, pluginName: string, parse: Parse) => {
-    const from = importer ? loaded.get(importer) : undefined;
-    let location: esbuild.Location | null = null;
-    let spans = importer ? spansOf.get(importer) : undefined;
-    if (!spans && importer && from?.lang) spansOf.set(importer, (spans = importSpans(from, parse)));
-    const span = spans?.get(`${kind}\0${source}`);
-    if (from && span) {
-      const before = from.source.slice(0, span[0]);
-      const line = before.split(/\r\n|\r|\n/).length;
-      const lineStart = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r')) + 1;
-      location = locate(fileOf(from), from.source, line, utf8Length(before.slice(lineStart)), utf8Length(from.source.slice(span[0], span[1])));
-    }
-    unresolved.push(message(text, location, pluginName));
+  // An import that did not resolve stays external so the build goes on to
+  // report every other error with it; locateUnresolved places them all.
+  const unresolvedImport = (text: string, importer: string | undefined, source: string, kind: string, pluginName: string) => {
+    unresolved.push({ importer, source, kind, text, pluginName });
     return { id: source, external: true };
   };
 
   const vfs = {
     name: plugin.name,
-    async resolveId(this: { parse: Parse }, source: string, importer: string | undefined, extra: { kind?: string; isEntry?: boolean; attributes?: Record<string, string> }) {
-      const parse = this.parse.bind(this);
+    async resolveId(source: string, importer: string | undefined, extra: { kind?: string; isEntry?: boolean; attributes?: Record<string, string> }) {
       if (source.startsWith('\0')) return null;
       const from = importer ? decode(importer) : null;
       const kind = extra.isEntry && !importer ? 'entry-point' : (extra.kind ?? 'import-statement');
@@ -400,9 +377,9 @@ async function build(
         kind: kind as esbuild.ImportKind,
         with: extra.attributes ?? {},
       });
-      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, kind, plugin.name, parse);
+      if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? 'error', importer, source, kind, plugin.name);
       if (answer?.warnings?.length) for (const w of answer.warnings) warnings.push(message(w.text ?? ''));
-      if (!answer || (!answer.path && !answer.external)) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '', parse);
+      if (!answer || (!answer.path && !answer.external)) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '');
       if (answer!.external) return { id: answer!.path ?? path, external: true };
       const namespace = answer!.namespace ?? 'file';
       if (mainNamespace === null) mainNamespace = namespace;
@@ -482,7 +459,7 @@ async function build(
       assetFileNames: `${template(options.assetNames, '[name]-[hash]')}[extname]`,
       codeSplitting: false,
     });
-    if (unresolved.length) throw new BuildError(sortedMessages(unresolved));
+    if (unresolved.length) throw new BuildError(sortedMessages(await locateUnresolved(api, unresolved, loaded)));
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf('/')) || '/' : (options.outdir ?? '/dist');
     const at = (fileName: string) => `${outdir.replace(/\/+$/, '')}/${fileName}`;
     const encoder = new TextEncoder();
