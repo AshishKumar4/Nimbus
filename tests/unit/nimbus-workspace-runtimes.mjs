@@ -188,13 +188,18 @@ for (const runtimeInstall of ['eager', 'on-demand']) {
   assert.equal(whoami.exitCode, 0, whoami.stderr);
   assert.equal(whoami.stdout.trim(), 'root');
 
-  // setUmask lands on the shell's own process-table entry — a second exec
-  // (fresh snapshot) reads it back, and the table itself shows the write.
-  const set = await ws.exec('umask 027');
+  // setUmask lands on the shell's own process-table entry, where the table
+  // itself shows the write and an exec, whose process takes the shell's
+  // credential, reads it back.
+  const set = await ws.shell.execute('umask 027');
   assert.equal(set.exitCode, 0, set.stderr);
   assert.equal(ws.processes.cred(ws.shellProcessPid).umask, 0o027);
   const umask = await ws.exec('umask');
   assert.equal(umask.stdout, '0027\n');
+  // An exec's umask is its own process's: it lands there and ends with it.
+  assert.equal((await ws.exec('umask 077')).exitCode, 0);
+  assert.equal(ws.processes.cred(ws.shellProcessPid).umask, 0o027);
+  assert.equal((await ws.exec('umask')).stdout, '0027\n');
 }
 
 console.log('nimbus-workspace-runtimes: all assertions passed');

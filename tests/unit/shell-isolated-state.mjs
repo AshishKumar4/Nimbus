@@ -37,9 +37,12 @@ const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
 registerShellEntrypointCommands(ws.registry, { execute: (command, options) => ws.shell.execute(command, options) });
 
+// The cases run in the workspace shell itself, the shell the entrypoint above
+// runs a script on: `ws.exec` would give each its own shell, and a leak from
+// the script into it could not be seen.
 const failures = [];
 for (const [line, stdout, stderr] of CASES) {
-  const result = await ws.exec(line);
+  const result = await ws.shell.execute(line);
   if (result.stdout !== stdout || result.stderr !== stderr) {
     failures.push(`${line}\n    want ${JSON.stringify([stdout, stderr])}\n    got  ${JSON.stringify([result.stdout, result.stderr])}`);
   }
@@ -47,8 +50,8 @@ for (const [line, stdout, stderr] of CASES) {
 
 // An alias a script defines is gone after it, too; the alias takes effect on
 // the line after its definition, so this one is three lines.
-await ws.exec("sh -c \"alias zz='echo leaked'\"");
-const alias = await ws.exec('zz; echo s=$?');
+await ws.shell.execute("sh -c \"alias zz='echo leaked'\"");
+const alias = await ws.shell.execute('zz; echo s=$?');
 if (alias.stdout !== 's=127\n' || alias.stderr !== 'zz: command not found\n') {
   failures.push(`an alias from sh -c\n    got  ${JSON.stringify([alias.stdout, alias.stderr])}`);
 }
