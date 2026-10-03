@@ -23,7 +23,8 @@ published independently in the `@nimbus-sh` npm scope.
   back when it exits. A command that does not read its stdin no longer
   waits on it: the shell's builtins (`printf`, `true`, `echo`, `test` and
   others) used to read their stdin to its end before running, so `sleep 5 |
-  true` took 5 seconds.
+  true` took 5 seconds. `head -n 0` and `head -c 0` read nothing, as GNU
+  head does, where they waited on their stdin.
 - Fixed: bytes a parent wrote to a long-running child's stdin (a server it
   started with `child_process.spawn`) were decoded as UTF-8 on the way, so
   a byte that is not UTF-8 arrived as U+FFFD. They arrive as written.
