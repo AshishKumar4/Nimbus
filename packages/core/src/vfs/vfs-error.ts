@@ -39,12 +39,21 @@ export interface VfsErrorOptions extends ErrorOptions {
   syscall?: string;
   /** The second path of a call that names two (rename, copyfile, symlink). */
   dest?: string;
+  /** The reason in the filesystem's own words, where it says more than the code's description. */
+  detail?: string;
 }
 
 export class VfsError extends Error {
   readonly errno: number;
   declare readonly syscall?: string;
   declare readonly dest?: string;
+  /**
+   * The reason in the filesystem's own words: `detail` where one was given,
+   * else the message of an error naming no call, which is all reason.
+   * Undefined where the code's description says it; a layer that reports
+   * the error for its own call keeps these words.
+   */
+  declare readonly detail?: string;
 
   /**
    * `message` is what Node's message says before the path: the description
@@ -59,6 +68,8 @@ export class VfsError extends Error {
     this.errno = VFS_ERRNO[code];
     if (options?.syscall !== undefined) this.syscall = options.syscall;
     if (options?.dest !== undefined) this.dest = options.dest;
+    const detail = options?.detail ?? (options?.syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
+    if (detail !== undefined) this.detail = detail;
   }
 }
 
@@ -72,10 +83,9 @@ export function syscallError(
   code: VfsErrorCode,
   syscall: string,
   path?: string,
-  options: VfsErrorOptions & { detail?: string } = {},
+  options: VfsErrorOptions = {},
 ): VfsError {
-  const { detail, ...rest } = options;
-  return new VfsError(code, `${detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...rest, syscall });
+  return new VfsError(code, `${options.detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...options, syscall });
 }
 
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
@@ -99,7 +109,7 @@ export function isVfsErrorCode(code: unknown): code is VfsErrorCode {
 export function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown {
   if (error instanceof VfsError) {
     if (error.syscall !== undefined || error.path !== undefined) return error;
-    return syscallError(error.code, syscall, path, { detail: error.message.slice(error.code.length + 2), dest, cause: error });
+    return syscallError(error.code, syscall, path, { detail: error.detail, dest, cause: error });
   }
   if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return error;
   const code = 'code' in error ? error.code : undefined;

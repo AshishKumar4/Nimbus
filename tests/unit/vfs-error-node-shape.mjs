@@ -91,10 +91,10 @@ function failureSync(run) {
     assert.equal(error.message, message, label);
     assert.equal(error.errno, { ENOENT: -2, ENOTDIR: -20, EISDIR: -21, EROFS: -30, EXDEV: -18, EBUSY: -16 }[error.code], label);
   }
-  // A backend's own error passes through, in the same shape: the mounted
-  // MemoryVFS names its call and the paths it was given.
+  // A backend's own error is reported for the caller's call: the mounted
+  // MemoryVFS was given '/nope' and '/g', and the caller named the mount's.
   const missing = await failure(() => vfs.rename('/m/nope', '/m/g'));
-  assert.equal(missing.message, "ENOENT: no such file or directory, rename '/nope' -> '/g'");
+  assert.equal(missing.message, "ENOENT: no such file or directory, rename '/m/nope' -> '/m/g'");
 
   // The synchronous face says the same, and an async mount's refusal is still one.
   assert.equal(failureSync(() => vfs.sync.readFile('/d/nope')).message, "ENOENT: no such file or directory, open '/d/nope'");

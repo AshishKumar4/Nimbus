@@ -60,6 +60,17 @@ published independently in the `@nimbus-sh` npm scope.
   program in `/`. `cd /home/user/site && python3 -m http.server` served
   "Directory listing for /".
 
+- An error from a mounted filesystem names the caller's path. A backend's
+  own error left `CompositeVFS` naming the path the backend was handed:
+  `readFile('/m/nope')` failed with "ENOENT: no such file or directory,
+  open '/nope'", a rename on a mount named both paths without the mount
+  point, and a call through a root link named the link's target. Now every
+  filesystem error a backend throws is reported as Node's error for the
+  caller's call: its syscall and the paths the caller gave, the reason in
+  the backend's own words (`VfsError.detail`, which a layer re-naming an
+  error keeps), the backend's error as the cause, and an asynchronous
+  mount's refusal still marked as one. An error that is not a filesystem
+  error is passed on as the backend threw it.
 ## 2026-10-02
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

@@ -286,7 +286,7 @@ function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): A
  * where the namespace knows more than the code says.
  */
 class Refusal extends VfsError {
-  constructor(code: VfsErrorCode, path: string, readonly detail?: string) {
+  constructor(code: VfsErrorCode, path: string, detail?: string) {
     super(code, detail ?? VFS_DESCRIPTION[code], path);
   }
 }
@@ -298,10 +298,16 @@ interface Call {
   dest?: string;
 }
 
-/** `run`, a refusal it meets reported as Node's error for `call`: `ENOENT: no such file or directory, open '/x'`. */
+/**
+ * `run`, a refusal it meets, or a backend's own filesystem error, reported as
+ * Node's error for `call`: `ENOENT: no such file or directory, open '/x'`.
+ * The call's syscall and the caller's paths, whatever path the backend was
+ * handed (a mount-relative one, a link's target), and the reason in the
+ * refusal's or the backend's own words; the error met is the cause.
+ */
 function reported<T>(call: Call, run: () => Awaitable<T>): Awaitable<T> {
   const report = (error: unknown): never => {
-    if (!(error instanceof Refusal)) throw error;
+    if (!isVfsError(error)) throw error;
     const out = syscallError(error.code, call.syscall, call.path, { detail: error.detail, dest: call.dest, cause: error });
     throw isAsyncMountRefusal(error) ? Object.assign(out, { asyncMount: true as const }) : out;
   };
@@ -1449,7 +1455,15 @@ export class CompositeVFS implements VFS {
       if (typeof backend.removeRecursive === 'function') {
         const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
         return then(backend.removeRecursive(rel), (report) => (report
-          ? { removed: report.removed.map(at), kept: report.kept.map(at), failures: report.failures.map((f) => ({ ...f, path: at(f.path) })) }
+          ? {
+            removed: report.removed.map(at),
+            kept: report.kept.map(at),
+            // Each failure named as Node names the call that met it, on the namespace's path.
+            failures: report.failures.map((f) => ({
+              path: at(f.path),
+              error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
+            })),
+          }
           : { removed: [path], kept: [], failures: [] }));
       }
       return this.walkRemove(backend, rel, path);
@@ -1489,7 +1503,9 @@ export class CompositeVFS implements VFS {
           keepWithAncestors(entry.rel);
           failures.push({
             path: at(entry.rel),
-            error: isVfsError(cause) ? cause : syscallError('EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), { detail: String(cause) }),
+            error: syscallError(isVfsError(cause) ? cause.code : 'EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), {
+              detail: isVfsError(cause) ? cause.detail : String(cause), cause,
+            }),
           });
         };
         try {

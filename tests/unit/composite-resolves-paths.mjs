@@ -132,7 +132,7 @@ async function only(backend, expected, label, run) {
   assert.equal(await only(pc, ['stat /home/me/ln'], 'realpath names what the namespace sees', () => vfs.realpathAsync('/pc/home/me/ln')), '/pc/home/me/ln');
 
   // Ancestors the device will not show stay refused, by the device.
-  await only(pc, ['stat /home'], 'stat of an ancestor', () => assert.rejects(vfs.stat('/pc/home'), { code: 'EACCES', path: '/home' }));
+  await only(pc, ['stat /home'], 'stat of an ancestor', () => assert.rejects(vfs.stat('/pc/home'), { code: 'EACCES', path: '/pc/home' }));
   await only(pc, ['readdir /'], 'readdir of the mounted root', () => assert.rejects(vfs.readdir('/pc'), { code: 'EACCES' }));
   // Its missing names are the device's own answer.
   await only(pc, ['readFile /home/me/a/nope/c.txt'], 'a missing component', () =>
@@ -172,7 +172,7 @@ async function only(backend, expected, label, run) {
   vfs.mount('/plane', plane.vfs);
   await only(open, ['stat /', 'lstat /home', 'lstat /home/me', 'lstat /home/me/a', 'lstat /home/me/a/b', 'lstat /home/me/a/b/c.txt', 'readFile /home/me/a/b/c.txt'],
     'unflagged: a stat per component, then the read', () => vfs.readFile('/open/home/me/a/b/c.txt'));
-  await assert.rejects(vfs.readFile('/pc/home/me/a/b/c.txt'), { code: 'EACCES', path: '/home' }, 'the walk stops at the device\'s refusal');
+  await assert.rejects(vfs.readFile('/pc/home/me/a/b/c.txt'), { code: 'EACCES', path: '/pc/home/me/a/b/c.txt' }, 'the walk stops at the device\'s refusal');
   await assert.rejects(vfs.writeFile('/plane/new/deep/x.txt', enc.encode('x')), { code: 'ENOENT' }, 'and at the missing parent');
 }
 
