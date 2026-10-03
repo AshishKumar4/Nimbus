@@ -1,10 +1,26 @@
 #!/usr/bin/env bun
-// A read or write through a SQLite link that leads into a mount below its
-// point reaches the mount. The synchronous bridge resolved a SQLite link's
-// target inside SQLite, so a link to /s/top (a directory on the mount /s)
-// answered ENOENT for every read and write through it, on a synchronous
-// mount as on an asynchronous one. It walks the target component by
-// component now.
+// A mutation on an asynchronous-only mount is checked against exclusive-
+// mutation leases where it lands, as one on a synchronous mount is
+// (8e8fa977, locateMutation): at the name the caller gave and at the name the
+// lookup reaches, links on the way followed and the last one only when the
+// call follows it.
+//
+// The synchronous walk refuses a path on an asynchronous mount, and the
+// awaiting face then mutated through the namespace with no lease check at
+// the name reached: a lease on m/leased did not stop a rename, an unlink or
+// a write through /home/user/alias -> /m. A path relative to a descriptor
+// open on the mount skipped the synchronous walk altogether.
+//
+// Every awaited mutation, through a process's view and its bridge (string
+// paths, a descriptor-relative path, a preopen), and the edge: a dangling
+// last link leads into the lease for a call that follows it (a write), and is
+// the link itself for one that does not (unlink).
+//
+// That edge exposed a walk bug on both faces: the synchronous bridge
+// resolved a SQLite link's target inside SQLite, so a link leading into a
+// mount below its point (/home/user/dir -> /s/top) answered ENOENT for every
+// read and write through it, on a synchronous mount as on an asynchronous
+// one. It walks the target component by component now.
 
 import assert from 'node:assert/strict';
 import { testBox } from './lib/test-box.mjs';
@@ -34,8 +50,80 @@ const view = ws.shell.getVfs();
 const enc = new TextEncoder();
 const source = async function* () { yield enc.encode('x'); };
 
-await m.mkdir('/top/free', { recursive: true });
+// The tree each case starts from: the lease's directory under /m/top, a free
+// sibling, the link /home/user/alias -> /m, and dangling links into the lease.
+const seed = async () => {
+  if (await m.stat('/top')) await m.removeRecursive('/top');
+  await m.mkdir('/top/leased/sub', { recursive: true });
+  await m.writeFile('/top/leased/f.txt', enc.encode('f'));
+  await m.mkdir('/top/free');
+  await m.writeFile('/top/free/h.txt', enc.encode('h'));
+  for (const [link, target] of [['alias', '/m'], ['dangle', '/m/top/leased/new.txt'], ['deep', '/m/top/leased/gone/x.txt']]) {
+    if ((await view.stat(`/home/user/${link}`, { follow: false })) === null) await view.symlink(target, `/home/user/${link}`);
+  }
+};
+await seed();
+
 const bridge = ws.filesystem.bind({ pid: 71, cred: { ...USER, groups: [1000], umask: 0o022 } });
+// A descriptor open on the mount, through the link: the awaiting face's own.
+const dir = await bridge.open('/home/user/alias', { read: true, directory: true });
+const under = (path) => ({ directory: dir.id, path });
+
+const A = '/home/user/alias/top/leased';
+const F = '/home/user/alias/top/free';
+const mutations = [
+  ['writeFile', () => bridge.writeFile(`${A}/f.txt`, 'y')],
+  ['writeFile, making parents', () => bridge.writeFile(`${A}/p/q.txt`, 'y', { createParents: true })],
+  ['writeRange', () => bridge.writeRange(`${A}/f.txt`, 0, enc.encode('y'))],
+  ['writeFileFrom', () => bridge.writeFileFrom(`${A}/f.txt`, 1, source())],
+  ['truncate', () => bridge.truncate(`${A}/f.txt`, 0)],
+  ['utimes', () => bridge.utimes(`${A}/f.txt`, 1, 1)],
+  ['chmod', () => bridge.chmod(`${A}/f.txt`, 0o600)],
+  ['chown', () => bridge.chown(`${A}/f.txt`, 1000, 1000)],
+  ['mkdir', () => bridge.mkdir(`${A}/d`)],
+  ['mkdir -p', () => bridge.mkdir(`${A}/d/e`, { recursive: true })],
+  ['unlink', () => bridge.unlink(`${A}/f.txt`)],
+  ['rmdir', () => bridge.rmdir(`${A}/sub`)],
+  ['rename out of the lease', () => bridge.rename(`${A}/f.txt`, `${F}/f.txt`)],
+  ['rename into the lease', () => bridge.rename(`${F}/h.txt`, `${A}/h.txt`)],
+  ['symlink', () => bridge.symlink('/x', `${A}/l`)],
+  ['remove', () => bridge.remove(`${A}/f.txt`)],
+  ['remove -r of a directory holding the lease', () => bridge.remove('/home/user/alias/top', { recursive: true })],
+  ['copyFile onto it', () => bridge.copyFile(`${F}/h.txt`, `${A}/g.txt`)],
+  ['copyTree onto it', () => bridge.copyTree(F, `${A}/t`)],
+  ['open for writing', () => bridge.open(`${A}/f.txt`, { write: true })],
+  ['open, creating', () => bridge.open(`${A}/n.txt`, { write: true, create: true })],
+  ['a path relative to a descriptor on the mount', () => bridge.unlink(under('top/leased/f.txt'))],
+  ['a path beneath a preopen on the mount', () => bridge.writeFile({ root: 'm/top', path: 'leased/f.txt', beneath: true }, 'y')],
+  ['a write through a dangling link into it', () => bridge.writeFile('/home/user/dangle', 'y')],
+  ['a write making parents through a dangling link into it', () => bridge.writeFile('/home/user/deep', 'y', { createParents: true })],
+  ['a view\'s rename through the link', () => view.rename(`${A}/f.txt`, `${A}/g.txt`)],
+  ['a view\'s unlink through the link', () => view.unlink(`${A}/f.txt`)],
+  ['a view\'s write through the link', () => view.writeFile(`${A}/f.txt`, 'y')],
+];
+
+const lease = engine.acquireExclusiveMutation('m/top/leased');
+const outcomes = [];
+for (const [what, run] of mutations) {
+  outcomes.push([what, await code(run)]);
+  await seed();
+}
+assert.deepEqual(outcomes.filter(([, outcome]) => outcome !== 'EBUSY'), [], 'each refused where it lands (EBUSY)');
+// What does not land in the lease goes through: a dangling link's own unlink,
+// and a sibling of the lease.
+assert.equal(await code(() => bridge.unlink('/home/user/dangle')), 'ok', 'unlinking a dangling link takes the link, not what it names');
+assert.equal(await code(() => bridge.writeFile(`${F}/ok.txt`, 'ok')), 'ok', 'beside the lease');
+assert.equal(new TextDecoder().decode(await m.readFile('/top/leased/f.txt')), 'f', 'nothing in the lease changed');
+assert.equal(await m.stat('/top/leased/new.txt'), null);
+engine.releaseExclusiveMutation(lease.owner);
+
+// Released, the same calls go through.
+await seed();
+await bridge.rename(`${A}/f.txt`, `${A}/g.txt`);
+assert.equal((await m.stat('/top/leased/g.txt'))?.type, 'file', 'released, a rename through the link renames');
+await bridge.writeFile('/home/user/dangle', 'made');
+assert.equal(new TextDecoder().decode(await m.readFile('/top/leased/new.txt')), 'made', 'and a write through a dangling link makes its target');
+await bridge.close(dir.id);
 
 // ── A SQLite link into a mount below its point, followed by the walk ─────
 await s.mkdir('/top', { recursive: true });
@@ -52,4 +140,4 @@ assert.equal(new TextDecoder().decode(await m.readFile('/top/free/b.txt')), 'asy
 const cat = await ws.exec('cat /home/user/sdir/a.txt /home/user/mdir/b.txt');
 assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a directory linkasync', ''], 'the shell reads through both');
 
-console.log('async-mount-leases: a SQLite link into a mount reaches it');
+console.log(`async-mount-leases: ${mutations.length} awaited mutations are checked where they land`);

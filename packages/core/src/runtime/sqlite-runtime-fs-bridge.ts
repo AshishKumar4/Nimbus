@@ -879,14 +879,31 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
-    // Leases are held on storage keys: a confined caller's /tmp/x is its
-    // private file, not the shared tmp/x.
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(this.pathArgument(path))));
+    this.leaseAllows(this.pathArgument(path));
     const located = this.locate(path, followSymlinks);
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     // And the name it reaches, on a mount as on SQLite.
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.mount ? normalizeVfsPath(located.path) : located.path));
+    this.leaseAllows(located.path);
     return located;
+  }
+
+  /**
+   * Refuses a mutation at the namespace path `path` that another owner's
+   * exclusive-mutation lease covers (EBUSY), or that lies outside the
+   * caller's own lease root (EPERM). Leases are held on storage keys: a
+   * confined caller's /tmp/x is its private file, not the shared tmp/x.
+   */
+  private leaseAllows(path: string): void {
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
+  }
+
+  /**
+   * leaseAllows, for a face that resolves a mutation's path itself (the
+   * awaiting face over an asynchronous mount): each of `paths`, the names
+   * it was given and reaches, refused as Node's error for `call`.
+   */
+  assertMayMutate(paths: readonly string[], call: FsCall): void {
+    called(call, () => { for (const path of paths) this.leaseAllows(path); });
   }
 
   /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
@@ -1212,7 +1229,7 @@ function normalizeOpenFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags']
 }
 
 /** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
-interface FsCall {
+export interface FsCall {
   syscall: string;
   path: RuntimeFsPath;
   dest?: RuntimeFsPath;

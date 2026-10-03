@@ -13,6 +13,19 @@ published independently in the `@nimbus-sh` npm scope.
   bridge now walks the target component by component, as it walks the rest
   of the path, naming a relative target from the link's directory as the
   engine names it.
+- An exclusive-mutation lease holds on an asynchronous-only mount where a
+  mutation lands, as on a synchronous one. A process's mutation there is
+  awaited through the namespace once the synchronous walk refuses it, and
+  that path checked no lease at the name its lookup reaches: with a lease
+  on `m/leased`, a write, rename, unlink, mkdir, chmod, truncate, symlink,
+  remove, copy or open for writing through `/home/user/alias -> /m`, or
+  relative to a descriptor open on the mount, went through. Every awaited
+  mutation now goes through one check, at the name given and at the name
+  the namespace's lookup reaches (`CompositeVFS.resolveAsync`), the last
+  link followed only when the mutation follows it: a write through a
+  dangling link into the lease is refused, and unlinking that link is not.
+  An awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
+  synchronous bridge does.
 
 ## 2026-10-03
 
