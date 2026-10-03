@@ -26,6 +26,12 @@ published independently in the `@nimbus-sh` npm scope.
   dangling link into the lease is refused, and unlinking that link is not.
   An awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
   synchronous bridge does.
+- The `python3` prompt starts in the shell's working directory, as the
+  `ruby` prompt does: once per interpreter, keeping the directory the
+  program's own `os.chdir` left on later lines, and refusing one it cannot
+  enter (`python3: can't enter working directory '/x': [Errno 44] No such
+  file or directory`). It started in `/`, so `open("hello.txt")` at the
+  prompt looked in the root.
 
 ## 2026-10-03
 

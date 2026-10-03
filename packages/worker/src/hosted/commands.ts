@@ -176,6 +176,7 @@ workspace.runtimes.registerRunner(
         // The supervisor derives the write credential from this; without
         // it the prompt cannot write to the session filesystem.
         pid: ctx.pid,
+        start: { cwd: ctx.cwd || shell.getCwd(), binName },
       });
     }
     // Args present (one-shot mode: -c, script, -m, -). Fall through
