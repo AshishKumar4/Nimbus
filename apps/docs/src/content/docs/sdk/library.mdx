@@ -108,6 +108,13 @@ a write past that fails with `EFBIG`) and writes the whole file back on
 wrote reads and stats its own writes at once. Another process sees the
 mount's content, and so the writes only after that write-back.
 
+A mounted VFS without `readRange` answers a ranged read through the
+namespace with ENOTSUP, rather than read the whole file in its place. A
+process's readers (`cat`, `head`, `tail`, a descriptor's `read`) then read
+the whole file and cut it; `readRangeOrWhole` from
+`@nimbus-sh/core/vfs/vfs.js` does the same for a reader of your own that can
+bear it.
+
 By default the namespace resolves a mounted path one component at a time,
 asking the backend for a stat of each directory on the way. A backend that
 resolves a whole path itself, as a network filesystem's server does (a

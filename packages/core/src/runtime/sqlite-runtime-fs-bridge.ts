@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import { readDeclaredSource, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
+import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
@@ -274,8 +274,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const mount = located.mount;
       const viewed = this.processView(mount, located.path);
       if (viewed) return viewed.slice(offset, offset + length);
-      if (mount.readRange) return mount.readRange(located.path, offset, length);
-      return mount.readFile(located.path).slice(offset, offset + length);
+      return readRangeOrWhole(mount, located.path, offset, length);
     }
     const p = located.path;
     if (options.expectedEpoch !== undefined && (options.expectedEpoch !== this.rawVfs.epoch
@@ -856,7 +855,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (flags.truncate) mountOp(mount.truncate, 'open', path)(name, 0);
     const node: VfsOpenDescription = {
       ino: stat.ino, path: () => name, stat: () => this.virtualStat(mount, name),
-      read: (offset, length) => (mount.readRange ? mount.readRange(name, offset, length) : mount.readFile(name).slice(offset, offset + length)),
+      read: (offset, length) => readRangeOrWhole(mount, name, offset, length),
       write: (offset, bytes) => { mountOp(mount.writeRange, 'write', path)(name, offset, bytes); return bytes.length; },
       truncate: size => mountOp(mount.truncate, 'ftruncate', path)(name, size),
       readdir: () => mount.readdir(name).map((entry) => ({ name: entry.name, type: entry.type })),

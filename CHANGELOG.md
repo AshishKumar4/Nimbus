@@ -28,6 +28,18 @@ published independently in the `@nimbus-sh` npm scope.
   and `require` work there; and a denied package.json probe above that
   directory no longer fails the launch, since Node's module lookup reads
   EACCES as absent. A mount without the option resolves as before.
+- `cat`, `head`, `tail` and a process's descriptor read a mount whose backend
+  has no `readRange`. They failed with "ENOTSUP: this filesystem does not
+  support readRange": a process's reader read the whole file only when the
+  namespace had no `readRange`, and a `CompositeVFS` always has one. It now
+  reads the whole file when the ranged read answers ENOTSUP, through
+  `readRangeOrWhole` (`@nimbus-sh/core/vfs/vfs.js`), which an embedder's
+  reader can use too. `CompositeVFS.readRange` itself still answers ENOTSUP
+  for such a mount, on purpose: a ranged read done as a whole read is not a
+  ranged read (a 4 GB file read to serve 64 KiB), and a caller that must not
+  read whole, such as Kinu's bounded preview, refuses on that answer. The
+  fallback reads the whole file for each range, as the old one did; neither
+  has a size bound.
 
 ## 2026-10-02
 

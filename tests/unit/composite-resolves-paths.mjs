@@ -20,6 +20,9 @@
 //   - copy across mounts, both ways, with no parent check on the target.
 // Then a NimbusWorkspace with the device mounted: cd, ls, find, cat, head,
 // tail, cp, mv across mounts, and ws.fs (move, copy, realpath) work on it.
+// And a mount whose backend has no readRange (Kinu's ask 14): the namespace
+// answers ENOTSUP rather than read the whole file for a ranged read, and a
+// process's reader (cat, head, tail, a descriptor) reads it whole instead.
 
 import assert from 'node:assert/strict';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
@@ -41,9 +44,10 @@ function described(key, args) {
 /**
  * A remote backend over `backing`, async only unless `sync`. `consented`:
  * every path outside it, the ones above it included, is EACCES, as a device
- * answers. `makesParents`: a write makes its missing parents.
+ * answers. `makesParents`: a write makes its missing parents. `ranged:
+ * false`: no readRange.
  */
-function remote(backing, { consented = '/', makesParents = false, sync = false } = {}) {
+function remote(backing, { consented = '/', makesParents = false, sync = false, ranged = true } = {}) {
   const calls = [];
   const inside = (path) => consented === '/' || path === consented || path.startsWith(`${consented}/`);
   const serve = (target, key) => (...args) => {
@@ -60,12 +64,13 @@ function remote(backing, { consented = '/', makesParents = false, sync = false }
   const face = (target, awaited) => new Proxy(target, {
     get(_, key) {
       if (key === 'sync') return sync && awaited ? face(target, false) : undefined;
+      if (key === 'readRange' && !ranged) return undefined;
       const value = target[key];
       if (typeof value !== 'function') return value;
       const run = serve(target, key);
       return awaited ? async (...args) => run(...args) : run;
     },
-    has(_, key) { return key === 'sync' ? sync && awaited : key in target; },
+    has(_, key) { return key === 'sync' ? sync && awaited : key === 'readRange' ? ranged : key in target; },
   });
   return { vfs: face(backing, true), calls };
 }
@@ -267,6 +272,36 @@ async function only(backend, expected, label, run) {
   await ws.fs.move('/home/user/moved.txt', '/pc/home/me/fs/back.txt');
   assert.equal(dec.decode(backing.readFile('/home/me/fs/back.txt')), 'from ws.fs');
   assert.equal(await ws.fs.realpath('/pc/home/me/a/../a/b'), '/pc/home/me/a/b');
+}
+
+// ── A backend without readRange: cat, head, tail and a descriptor read it ────
+{
+  const harness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+  for (const [point, sync] of [['/nr', false], ['/nrs', true]]) {
+    const backing = new MemoryVFS();
+    backing.writeFile('/f.txt', enc.encode('one\ntwo\nthree\n'));
+    ws.filesystem.vfs.mount(point, remote(backing, { sync, ranged: false }).vfs);
+    await assert.rejects(ws.filesystem.vfs.readRange(`${point}/f.txt`, 0, 3), { code: 'ENOTSUP' }, 'the namespace emulates no ranged read');
+    await assert.rejects(ws.filesystem.vfs.readRange(`${point}/nope`, 0, 3), { code: 'ENOENT' }, 'a missing file is ENOENT first');
+    const run = async (command) => {
+      const result = await ws.exec(command);
+      assert.equal(result.exitCode, 0, `${command}: ${result.stderr}`);
+      return result.stdout;
+    };
+    assert.equal(await run(`cat ${point}/f.txt`), 'one\ntwo\nthree\n', `cat on ${point}`);
+    assert.equal(await run(`head -c 6 ${point}/f.txt`), 'one\ntw', `head on ${point}`);
+    assert.equal(await run(`tail -n 1 ${point}/f.txt`), 'three\n', `tail on ${point}`);
+    assert.equal(await ws.fs.readRange(`${point}/f.txt`, 4, 3).then((bytes) => dec.decode(bytes)), 'two', `ws.fs.readRange on ${point}`);
+    const { pid } = ws.processes.spawn('reader', [], '/home/user');
+    const fs = ws.filesystem.bind({ pid, cred: ws.processes.cred(pid) });
+    const handle = await fs.open(`${point}/f.txt`, { read: true });
+    assert.equal(dec.decode(await fs.read(handle.id, 8, 5)), 'three', `a descriptor reads ${point} at an offset`);
+    assert.equal(dec.decode(await fs.read(handle.id, null, 3)), 'one', 'and from its position');
+    await fs.close(handle.id);
+    await ws.filesystem.releaseProcess(pid);
+  }
+  await ws.close();
 }
 
 console.log('composite-resolves-paths: ok');
