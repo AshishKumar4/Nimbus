@@ -402,6 +402,13 @@ export declare function _rpcTransform(self: RpcHost, code: string, loader: strin
 export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
     childPid: number;
 }>;
+/**
+ * A child's stdin is bytes: esbuild's service protocol is binary packets,
+ * and so is any pipe carrying an image or an archive. The facet queue, this
+ * contract and a long-running child's input store all carry them as bytes;
+ * the store used to take text, decoded here, which turned a byte that is not
+ * UTF-8 into U+FFFD.
+ */
 export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
     ok: boolean;
 }>;
