@@ -20,6 +20,9 @@
 //   - copy across mounts, both ways, with no parent check on the target.
 // Then a NimbusWorkspace with the device mounted: cd, ls, find, cat, head,
 // tail, cp, mv across mounts, and ws.fs (move, copy, realpath) work on it.
+// find on a network mount (Kinu's ask 8): a directory the backend denies is
+// reported and skipped, as GNU find does; a transport failure stops the walk;
+// `find | head -1` stops reading the mount once head has gone.
 // And a mount whose backend has no readRange (Kinu's ask 14): the namespace
 // answers ENOTSUP rather than read the whole file for a ranged read, and a
 // process's reader (cat, head, tail, a descriptor) reads it whole instead.
@@ -29,6 +32,7 @@ import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { READ_AHEAD_CALLS } from '../../packages/core/src/substrate/lifo/commands/fs/find/walk.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -272,6 +276,56 @@ async function only(backend, expected, label, run) {
   await ws.fs.move('/home/user/moved.txt', '/pc/home/me/fs/back.txt');
   assert.equal(dec.decode(backing.readFile('/home/me/fs/back.txt')), 'from ws.fs');
   assert.equal(await ws.fs.realpath('/pc/home/me/a/../a/b'), '/pc/home/me/a/b');
+}
+
+// ── find on a network mount ─────────────────────────────────────────────────
+{
+  const harness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+  const backing = new MemoryVFS();
+  for (const dir of ['/a', '/locked', '/z', '/broken/deep']) backing.mkdir(dir, { recursive: true });
+  for (let i = 0; i < 60; i++) backing.mkdir(`/many/d${i}`, { recursive: true });
+  backing.writeFile('/z/after', enc.encode('x'));
+  const listed = [];
+  let tunnelDown = false;
+  // Each listing is a round trip, so a walk that does not stop keeps reading.
+  const network = new Proxy(backing, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      return async (...args) => {
+        if (key === 'readdir') {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          listed.push(args[0]);
+          if (args[0] === '/locked') throw Object.assign(new Error('the device denies it'), { code: 'EACCES' });
+          if (tunnelDown && args[0] === '/broken') throw Object.assign(new Error('the tunnel is down'), { code: 'unavailable' });
+        }
+        return value.apply(target, args);
+      };
+    },
+    has(target, key) { return key !== 'sync' && key in target; },
+  });
+  ws.filesystem.vfs.mount('/m', network, { resolvesPaths: true });
+
+  let found = await ws.exec('find /m');
+  assert.equal(found.stderr, "find: '/m/locked': Permission denied\n", 'a denied directory is reported as GNU find reports it');
+  assert.equal(found.exitCode, 1, 'and find exits 1');
+  assert.ok(found.stdout.includes('/m/z/after\n') && found.stdout.includes('/m/many/d59\n'), 'after walking the rest');
+
+  tunnelDown = true;
+  listed.length = 0;
+  found = await ws.exec('find /m');
+  assert.notEqual(found.exitCode, 0, 'a transport failure fails find');
+  assert.match(found.stderr, /the tunnel is down/, 'naming it');
+  assert.ok(!listed.includes('/broken/deep') && !found.stdout.includes('/m/many'), `and nothing past it is walked: ${listed.join(' ')}`);
+  tunnelDown = false;
+
+  listed.length = 0;
+  found = await ws.exec('find /m | head -1');
+  assert.equal(found.stdout, '/m\n');
+  assert.ok(listed.length <= READ_AHEAD_CALLS + 1, `find stops reading the mount once head has gone (${listed.length} of 66 listings)`);
+  await ws.close();
 }
 
 // ── A backend without readRange: cat, head, tail and a descriptor read it ────
