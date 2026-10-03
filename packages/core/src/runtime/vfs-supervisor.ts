@@ -147,12 +147,16 @@ export function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAns
  * A refusal as it crosses the hop: what workerd's enhanced_error_serialization
  * carries of a thrown error, as data. `properties` are the error's own ones
  * but `message` and `stack`: `code`, `errno`, `syscall`, `path`, `dest`,
- * `detail`, `cause`, whatever the host set (`name` too, when it is its own).
+ * `detail`, whatever the host set (`name` too, when it is its own). An error
+ * among them (a `cause`) is in `errors`, as data of the same shape: inside
+ * a returned value it would cross as a structured clone, which keeps only
+ * its message.
  */
 export interface SupervisorRefusal {
   readonly name: string;
   readonly message: string;
   readonly properties: Readonly<Record<string, unknown>>;
+  readonly errors: Readonly<Record<string, SupervisorRefusal>>;
 }
 
 /** What `answer` resolves with: the call's own value, or the refusal it was. */
@@ -161,11 +165,19 @@ export type SupervisorAnswer = { readonly value: unknown } | { readonly refusal:
 /** The refusal `error` is, or undefined when it is not one (no string `code`) and must still throw. */
 export function supervisorRefusal(error: unknown): SupervisorRefusal | undefined {
   if (!(error instanceof Error) || typeof Reflect.get(error, 'code') !== 'string') return undefined;
+  return errorData(error);
+}
+
+function errorData(error: Error): SupervisorRefusal {
   const properties: Record<string, unknown> = {};
+  const errors: Record<string, SupervisorRefusal> = {};
   for (const key of Object.getOwnPropertyNames(error)) {
-    if (key !== 'message' && key !== 'stack') properties[key] = Reflect.get(error, key);
+    if (key === 'message' || key === 'stack') continue;
+    const value: unknown = Reflect.get(error, key);
+    if (value instanceof Error) errors[key] = errorData(value);
+    else properties[key] = value;
   }
-  return { name: error.name, message: error.message, properties };
+  return { name: error.name, message: error.message, properties, errors };
 }
 
 /**
@@ -202,6 +214,9 @@ export function supervisorRefusalError(refusal: SupervisorRefusal): Error {
   }
   for (const [key, value] of Object.entries(refusal.properties)) {
     Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
+  }
+  for (const [key, value] of Object.entries(refusal.errors)) {
+    Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
   }
   return error;
 }
