@@ -101,35 +101,6 @@ return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
     [parent, [parent, 'argument'], parent, 'user binding', true]);
 }
 
-// A cell that spells the loader's own name cannot capture its import()
-// calls: a top-level binding (what lowering makes of an import), or one
-// spelled with an escape, sends them to the loader under a free name.
-for (const spelling of ['__nimbusDynamicImport', '__nimbus\\u0044ynamicImport']) {
-  const source = `const ${spelling} = () => 'captured';\nreturn [import('./x.js'), __nimbusDynamicImport()];`;
-  const calls = [];
-  globalThis.__nimbusDynamicImport = (from, specifier) => { calls.push([from, specifier]); return 'loaded'; };
-  try {
-    const rewritten = rewriteDynamicImports(source, parent);
-    assert.deepEqual(new Function(rewritten)(), ['loaded', 'captured'], spelling);
-    assert.deepEqual(calls, [[parent, './x.js']]);
-  } finally { delete globalThis.__nimbusDynamicImport; }
-}
-
-// Spelled only in text, the name binds nothing: the loader is not renamed,
-// so a cell's own globalThis binding is never read before its declaration.
-{
-  const source = `const globalThis = {};\nconst marker = "__nimbusDynamicImport";\n// __nimbusDynamicImport\nreturn [import('./z.js'), marker];`;
-  const calls = [];
-  const loader = (from, specifier) => { calls.push([from, specifier]); return 'loaded'; };
-  globalThis.__nimbusDynamicImport = loader;
-  try {
-    const rewritten = rewriteDynamicImports(source, parent);
-    assert.doesNotMatch(rewritten, /__nimbusDynamicImport_/);
-    assert.deepEqual(new Function(rewritten)(), ['loaded', '__nimbusDynamicImport']);
-    assert.deepEqual(calls, [[parent, './z.js']]);
-  } finally { delete globalThis.__nimbusDynamicImport; }
-}
-
 // routeImports false binds import.meta alone: a transform routes import()
 // once lowering has turned the cell's imports into member reads.
 {

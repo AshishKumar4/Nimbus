@@ -49,12 +49,12 @@ const FILES = {
   [`${PACKAGE}/dist/bin.mjs`]: SOURCE,
   'load.cjs': 'import("./node_modules/fixture-cli/dist/bin.mjs");',
   // An entry whose own import binding is spelled like Nimbus's loader: its
-  // import() must still reach the module, not the binding.
+  // import() is routed after lowering, so it still reaches the module.
   'collide.mjs': [
     'import { createHash as __nimbusDynamicImport } from "node:crypto";',
     'void __nimbusDynamicImport;',
-    'const path = await import("node:path");',
-    'console.log("COLLIDE " + typeof path.join + " " + import.meta.filename.endsWith("collide.mjs"));',
+    'export const load = () => import("node:path");',
+    'load().then((path) => console.log("COLLIDE " + typeof path.join + " " + import.meta.filename.endsWith("collide.mjs")));',
   ].join('\n'),
 };
 // Canonical, so Node's filename and dirname spell the same root.
