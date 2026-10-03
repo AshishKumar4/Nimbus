@@ -5,6 +5,21 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-03
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
+file, so a mount that cannot tell must answer `unknown`; and
+`NimbusWorkspace.exec` without a `shellId` is one-shot, so a caller that
+relies on `cd` or `export` persisting passes a `shellId`; as described
+below.
+
 - Fixed: a filesystem refusal kept its reason only in its `cause`. A
   confined principal's widening `chmod` reached the caller as "EPERM:
   operation not permitted, chmod" and lost "use u+x". Every SqliteVFS
@@ -238,19 +253,6 @@ published independently in the `@nimbus-sh` npm scope.
   supervisor entrypoint written from scratch (composeFabric's
   `supervisorEntrypoint`) must implement `answer`; one that extends
   `SupervisorRPC` inherits it.
-
-## 2026-10-02
-
-Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
-0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
-unchanged. The carets are minor-strict, so every range on core, worker,
-fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
-`WorkspaceFs`, no longer a `ProcessView`; and core's
-`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
-`defaultGemHome` give way to `pythonSitePackages(home)` and
-`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
-file, so a mount that cannot tell must answer `unknown`, as described
-below.
 
 - `node:http2` exports exactly Node 22's names. `Http2ServerRequest` and
   `Http2ServerResponse` are real classes, so `res instanceof
