@@ -560,6 +560,17 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         return m ? { namespace: m[1], path: m[2] } : { namespace: mainNamespace ?? 'file', path: id };
     };
     const pending = new Map();
+    // The metafile's inputs, as esbuild's: every module the build loaded, keyed
+    // as a diagnostic names it, with its byte count and the imports it made.
+    const inputBytes = new Map();
+    const importsOf = new Map();
+    const importedBy = (importer, record) => {
+        if (importer === undefined)
+            return;
+        const list = importsOf.get(importer) ?? [];
+        list.push(record);
+        importsOf.set(importer, list);
+    };
     const css = new Map();
     const warnings = [];
     const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
@@ -655,13 +666,20 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                     warnings.push(message(w.text ?? ''));
             if (!answer || (!answer.path && !answer.external))
                 return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, '');
-            if (answer.external)
+            if (answer.external) {
+                importedBy(importer, { path: answer.path ?? path, kind: kind, external: true });
                 return { id: answer.path ?? path, external: true };
+            }
             const namespace = answer.namespace ?? 'file';
             if (mainNamespace === null)
                 mainNamespace = namespace;
             const id = idOf(namespace, answer.path);
             pending.set(id, { namespace, path: answer.path });
+            importedBy(importer, {
+                path: fileOf({ namespace, path: answer.path }),
+                kind: kind,
+                ...(source === answer.path ? {} : { original: source }),
+            });
             return id;
         },
         async load(id) {
@@ -676,6 +694,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 raise(`No loader produced ${fileOf({ namespace, path })}`);
             const loader = answer.loader ?? 'js';
             const contents = answer.contents;
+            inputBytes.set(id, typeof contents === 'string' ? new TextEncoder().encode(contents).length : contents.length);
             const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
             const lastSlash = path.lastIndexOf('/');
             loaded.set(id, {
@@ -803,7 +822,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             outputFiles.push({ path, contents });
             outputs[relative(path)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
         }
-        return { outputFiles, errors: [], warnings, metafile: { inputs: {}, outputs } };
+        const inputs = {};
+        for (const [id, bytes] of inputBytes)
+            inputs[fileOf(decode(id))] = { bytes, imports: importsOf.get(id) ?? [] };
+        return { outputFiles, errors: [], warnings, metafile: { inputs, outputs } };
     }
     finally {
         await bundle.close();

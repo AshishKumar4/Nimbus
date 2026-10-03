@@ -14686,6 +14686,14 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     return m2 ? { namespace: m2[1], path: m2[2] } : { namespace: mainNamespace ?? "file", path: id2 };
   };
   const pending = /* @__PURE__ */ new Map();
+  const inputBytes = /* @__PURE__ */ new Map();
+  const importsOf = /* @__PURE__ */ new Map();
+  const importedBy = (importer, record2) => {
+    if (importer === void 0) return;
+    const list = importsOf.get(importer) ?? [];
+    list.push(record2);
+    importsOf.set(importer, list);
+  };
   const css = /* @__PURE__ */ new Map();
   const warnings = [];
   const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, "[extname]");
@@ -14758,11 +14766,19 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (answer?.errors?.length) return unresolvedImport(answer.errors[0].text ?? "error", importer, source, kind, plugin.name);
       if (answer?.warnings?.length) for (const w2 of answer.warnings) warnings.push(message(w2.text ?? ""));
       if (!answer || !answer.path && !answer.external) return unresolvedImport(`Could not resolve ${JSON.stringify(source)}`, importer, source, kind, "");
-      if (answer.external) return { id: answer.path ?? path3, external: true };
+      if (answer.external) {
+        importedBy(importer, { path: answer.path ?? path3, kind, external: true });
+        return { id: answer.path ?? path3, external: true };
+      }
       const namespace = answer.namespace ?? "file";
       if (mainNamespace === null) mainNamespace = namespace;
       const id2 = idOf(namespace, answer.path);
       pending.set(id2, { namespace, path: answer.path });
+      importedBy(importer, {
+        path: fileOf2({ namespace, path: answer.path }),
+        kind,
+        ...source === answer.path ? {} : { original: source }
+      });
       return id2;
     },
     async load(id2) {
@@ -14773,6 +14789,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (!answer || answer.contents === void 0) raise(`No loader produced ${fileOf2({ namespace, path: path3 })}`);
       const loader = answer.loader ?? "js";
       const contents = answer.contents;
+      inputBytes.set(id2, typeof contents === "string" ? new TextEncoder().encode(contents).length : contents.length);
       const text = typeof contents === "string" ? contents : loader === "binary" || loader === "base64" || loader === "dataurl" || loader === "file" ? "" : new TextDecoder().decode(contents);
       const lastSlash = path3.lastIndexOf("/");
       loaded.set(id2, {
@@ -14882,7 +14899,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       outputFiles.push({ path: path3, contents });
       outputs[relative(path3)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };
     }
-    return { outputFiles, errors: [], warnings, metafile: { inputs: {}, outputs } };
+    const inputs = {};
+    for (const [id2, bytes] of inputBytes) inputs[fileOf2(decode4(id2))] = { bytes, imports: importsOf.get(id2) ?? [] };
+    return { outputFiles, errors: [], warnings, metafile: { inputs, outputs } };
   } finally {
     await bundle.close();
   }
