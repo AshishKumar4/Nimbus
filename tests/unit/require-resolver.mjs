@@ -302,4 +302,146 @@ console.log('require-resolver: createRequire ok');
   assert.equal(r.bundle['home/user/cli/lib/binding.node'], undefined, 'native binary not staged');
   assert.equal(r.bundle['home/user/cli/lib/feature.js'], 'export const f = 1;', 'the lazy subtree after it is staged');
 }
+
+// Phase 2 takes the fewest alternatives first. Astro's dev server loads
+// vitefu's ESM through the one `import('./index.js')` in vitefu's CommonJS
+// proxy; Shiki's language table, discovered before it, defers one import per
+// grammar and loads the few a page names. Walked in discovery order the
+// grammars spent the bound and the first launch missed vitefu/src/index.js.
+{
+  const grammar = 'export default ' + JSON.stringify('x'.repeat(400)) + ';';
+  const files = {
+    'home/user/cli/bin.mjs': "import './lib/langs.js'; import './lib/proxy.cjs';",
+    'home/user/cli/lib/langs.js': "export const langs = { a: () => import('./g/a.js'), b: () => import('./g/b.js'), c: () => import('./g/c.js') };",
+    'home/user/cli/lib/proxy.cjs': "module.exports.crawl = () => import('./index.js').then((m) => m.crawl());",
+    'home/user/cli/lib/index.js': 'export const crawl = () => 1;',
+    'home/user/cli/lib/g/a.js': grammar,
+    'home/user/cli/lib/g/b.js': grammar,
+    'home/user/cli/lib/g/c.js': grammar,
+  };
+  const vfs = new FakeVfs(files);
+  const required = ['home/user/cli/bin.mjs', 'home/user/cli/lib/langs.js', 'home/user/cli/lib/proxy.cjs']
+    .reduce((n, path) => n + files[path].length, 0);
+  // Room for one grammar, or the proxy's target: not both.
+  const bound = required + grammar.length + 10;
+  const r = await prefetchForRequire(vfs, files['home/user/cli/bin.mjs'], '/home/user/cli', '/home/user/cli/bin.mjs', bound);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  assert.equal(r.bundle['home/user/cli/lib/index.js'], files['home/user/cli/lib/index.js'], "a module's only deferral is staged before a table's");
+  assert.deepEqual([...r.speculative], ['home/user/cli/lib/index.js'], 'and the table waits for what room is left');
+}
+
+// A package the code locates by its manifest has its bins staged, after every
+// deferral the code names. vinext finds the project's Vite with
+// `require.resolve("vite/package.json")`, reads its `bin`, and imports
+// vite/bin/vite.js by a computed URL; the first launch missed it.
+{
+  const files = {
+    'home/user/app/node_modules/vinext/bin.js': "import './dist/cli.js';",
+    'home/user/app/node_modules/vinext/dist/cli.js': [
+      'import { createRequire } from "node:module";',
+      'const require = createRequire(import.meta.url);',
+      'const manifest = require.resolve("vite/package.json");',
+      'const own = require.resolve("./package.json");',
+      'export const start = () => import("./server.js");',
+      'export const run = (bin) => import(bin);',
+    ].join('\n'),
+    'home/user/app/node_modules/vinext/dist/server.js': 'export const server = 1;',
+    'home/user/app/node_modules/vinext/dist/package.json': JSON.stringify({ bin: { own: 'own.js' } }),
+    'home/user/app/node_modules/vinext/dist/own.js': 'export {};',
+    'home/user/app/node_modules/vite/package.json': JSON.stringify({ name: 'vite', bin: { vite: 'bin/vite.js', up: '../outside.js' } }),
+    'home/user/app/node_modules/vite/bin/vite.js': "import '../dist/cli.js';",
+    'home/user/app/node_modules/vite/dist/cli.js': 'export const cli = 1;',
+    'home/user/app/node_modules/outside.js': 'export {};',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/vinext/bin.js';
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  assert.deepEqual([...r.speculative], [
+    'home/user/app/node_modules/vinext/dist/server.js',
+    'home/user/app/node_modules/vite/bin/vite.js',
+    'home/user/app/node_modules/vite/dist/cli.js',
+  ], "the located package's bin and its imports, after the code's own deferral");
+  assert.equal(r.bundle['home/user/app/node_modules/outside.js'], undefined, 'no bin outside its package');
+  assert.equal(r.bundle['home/user/app/node_modules/vinext/dist/own.js'], undefined, 'a relative manifest locates no package');
+}
+// A package an ES module imports is staged as an ES import loads it, too.
+// The process runs the module lowered to CommonJS, whose require takes the
+// "require" branch; a module runner that evaluates the same source itself
+// (Vite's, under Astro) imports its externals with import(), which takes the
+// "import" branch. Astro's dev server missed clsx/dist/clsx.mjs, zod/v4,
+// tinyglobby and common-ancestor-path, one per launch, that way. The import
+// branch waits in phase 2, ahead of a deferral table.
+{
+  const files = {
+    'home/user/app/node_modules/fw/bin.mjs': "import './lib/render.js';",
+    'home/user/app/node_modules/fw/lib/render.js': "import clsx from 'clsx'; export * from 'same'; import './local.js'; export const r = clsx;",
+    'home/user/app/node_modules/fw/lib/local.js': 'export const l = 1;',
+    'home/user/app/node_modules/fw/node_modules/clsx/package.json': JSON.stringify({ name: 'clsx', exports: { '.': { import: './dist/clsx.mjs', default: './dist/clsx.js' } } }),
+    'home/user/app/node_modules/fw/node_modules/clsx/dist/clsx.mjs': 'export default 1;',
+    'home/user/app/node_modules/fw/node_modules/clsx/dist/clsx.js': 'module.exports = 1;',
+    'home/user/app/node_modules/same/package.json': JSON.stringify({ name: 'same', main: 'index.js' }),
+    'home/user/app/node_modules/same/index.js': 'module.exports = {};',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/fw/bin.mjs';
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  const clsx = 'home/user/app/node_modules/fw/node_modules/clsx/dist/';
+  assert.equal(r.bundle[clsx + 'clsx.js'], files[clsx + 'clsx.js'], "the require branch, which the process's require loads");
+  assert.equal(r.bundle[clsx + 'clsx.mjs'], files[clsx + 'clsx.mjs'], 'and the import branch');
+  assert.deepEqual([...r.speculative], [clsx + 'clsx.mjs'], 'the import branch is phase 2; a package with one entry adds nothing');
+}
+// The import branch is optional, and so is the metadata only it reads. A dual
+// package whose import branch sits under its own package scope
+// (esm/package.json) reads that manifest to resolve it: past the bound, it is
+// left out, and the required closure (the require branch) still launches.
+// Metadata the required graph reads stays required.
+{
+  const huge = JSON.stringify({ type: 'module', padding: 'x'.repeat(4096) });
+  const files = {
+    'home/user/app/node_modules/fw/bin.mjs': "import dual from 'dual'; export default dual;",
+    'home/user/app/node_modules/dual/package.json': JSON.stringify({ name: 'dual', exports: { '.': { import: './esm/index.js', default: './cjs/index.js' } } }),
+    'home/user/app/node_modules/dual/cjs/index.js': 'module.exports = 1;',
+    'home/user/app/node_modules/dual/esm/package.json': huge,
+    'home/user/app/node_modules/dual/esm/index.js': 'export default 1;',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/fw/bin.mjs';
+  const required = [entry, 'home/user/app/node_modules/dual/cjs/index.js'].reduce((n, path) => n + files[path].length, 0);
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry, required + 64);
+  assert.ok(!('kind' in r), `the optional branch's metadata is no refusal: ${JSON.stringify(r)}`);
+  assert.equal(r.bundle['home/user/app/node_modules/dual/cjs/index.js'], files['home/user/app/node_modules/dual/cjs/index.js']);
+  assert.equal(r.bundle['home/user/app/node_modules/dual/esm/package.json'], undefined, 'metadata past the bound is left out');
+  assert.ok(!r.speculative.has('home/user/app/node_modules/dual/package.json'), "the required graph's metadata stays required");
+  const roomy = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
+  assert.equal(roomy.bundle['home/user/app/node_modules/dual/esm/index.js'], files['home/user/app/node_modules/dual/esm/index.js'], 'with room, the import branch is staged');
+  assert.ok(roomy.speculative.has('home/user/app/node_modules/dual/esm/package.json'), 'with the metadata only it read, as optional');
+}
+// The import branch is the weakest evidence phase 2 has (a module runner may
+// load it; the process's own require does not): it waits behind every
+// deferral the code names, tables included. Ahead of them it shed Astro's
+// Shiki grammars (jsx.mjs, markdown.mjs among 118), which a page's code block
+// loads with import().
+{
+  const grammar = 'export default ' + JSON.stringify('x'.repeat(400)) + ';';
+  const files = {
+    'home/user/app/node_modules/fw/bin.mjs': "import clsx from 'clsx'; import './langs.js'; export default clsx;",
+    'home/user/app/node_modules/fw/langs.js': "export const langs = { a: () => import('./g/a.js'), b: () => import('./g/b.js') };",
+    'home/user/app/node_modules/fw/g/a.js': grammar,
+    'home/user/app/node_modules/fw/g/b.js': grammar,
+    'home/user/app/node_modules/clsx/package.json': JSON.stringify({ name: 'clsx', exports: { '.': { import: './clsx.mjs', default: './clsx.js' } } }),
+    'home/user/app/node_modules/clsx/clsx.js': 'module.exports = 1;',
+    'home/user/app/node_modules/clsx/clsx.mjs': 'export default ' + JSON.stringify('y'.repeat(400)) + ';',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = 'home/user/app/node_modules/fw/bin.mjs';
+  const required = [entry, 'home/user/app/node_modules/fw/langs.js', 'home/user/app/node_modules/clsx/clsx.js']
+    .reduce((n, path) => n + files[path].length, 0);
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry, required + 2 * grammar.length + 10);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  assert.deepEqual([...r.speculative].filter((p) => p.endsWith('.js') || p.endsWith('.mjs')),
+    ['home/user/app/node_modules/fw/g/a.js', 'home/user/app/node_modules/fw/g/b.js'], "the code's own table first");
+  assert.equal(r.bundle['home/user/app/node_modules/clsx/clsx.mjs'], undefined, 'the import branch takes only the room left');
+}
 console.log('require-resolver: speculative dynamic imports ok');

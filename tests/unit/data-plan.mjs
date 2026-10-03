@@ -249,4 +249,59 @@ assert.equal(noTs.rules.typescript.files, 0);
     'a matched directory adds its own data-sized files, one level');
 }
 
+// The working dir's own dependencies: the entries their package.json names,
+// under every condition. A dev server reads them synchronously to pre-bundle
+// what the app imports. Not code the process loads, not large files, not
+// what a subpath pattern could name, not a package the project does not name.
+{
+  const ns = namespace({
+    'home/user/app/package.json': JSON.stringify({ dependencies: { 'react-dom': '1', legacy: '1' }, devDependencies: { tool: '1' } }),
+    'home/user/app/node_modules/react-dom/package.json': JSON.stringify({
+      name: 'react-dom',
+      exports: { '.': { 'react-server': './server.js', default: './index.js' }, './client': { default: './client.js' }, './*': './*.js', './package.json': './package.json' },
+    }),
+    'home/user/app/node_modules/react-dom/index.js': 'x',
+    'home/user/app/node_modules/react-dom/server.js': 'x',
+    'home/user/app/node_modules/react-dom/client.js': 'x',
+    'home/user/app/node_modules/react-dom/cjs/react-dom.js': 'x',
+    'home/user/app/node_modules/legacy/package.json': JSON.stringify({ name: 'legacy', main: 'lib/main', module: 'esm/index.mjs' }),
+    'home/user/app/node_modules/legacy/lib/main.js': 'x',
+    'home/user/app/node_modules/legacy/esm/index.mjs': 'x',
+    'home/user/app/node_modules/tool/package.json': JSON.stringify({ name: 'tool', main: 'dist/tool.js' }),
+    'home/user/app/node_modules/tool/dist/tool.js': big(PACKAGE_DATA_MAX_BYTES),
+    'home/user/app/node_modules/transitive/package.json': JSON.stringify({ name: 'transitive' }),
+    'home/user/app/node_modules/transitive/index.js': 'x',
+  });
+  const entries = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: ['home/user/app/node_modules/react-dom/server.js'], refs: [],
+  });
+  const planned = new Set(entries.paths);
+  for (const path of ['react-dom/index.js', 'react-dom/client.js', 'legacy/lib/main.js', 'legacy/esm/index.mjs']) {
+    assert.ok(planned.has(`home/user/app/node_modules/${path}`), `entry held: ${path}`);
+  }
+  for (const path of ['react-dom/server.js', 'react-dom/cjs/react-dom.js', 'tool/dist/tool.js', 'transitive/index.js']) {
+    assert.ok(!planned.has(`home/user/app/node_modules/${path}`), `left out: ${path}`);
+  }
+  assert.equal(entries.rules.entries.files, 4);
+}
+
+// An entry is the file Node's resolver loads for it, as the module-map walk
+// resolves it (require-resolution.ts): a `main` naming a directory goes
+// through that directory's own package.json `main`, and an extensionless
+// one through every extension Node tries.
+{
+  const ns = namespace({
+    'home/user/app/package.json': JSON.stringify({ dependencies: { nested: '1', cjs: '1' } }),
+    'home/user/app/node_modules/nested/package.json': JSON.stringify({ name: 'nested', main: 'lib' }),
+    'home/user/app/node_modules/nested/lib/package.json': JSON.stringify({ main: 'actual.cjs' }),
+    'home/user/app/node_modules/nested/lib/actual.cjs': 'x',
+    'home/user/app/node_modules/cjs/package.json': JSON.stringify({ name: 'cjs', main: 'dist/entry' }),
+    'home/user/app/node_modules/cjs/dist/entry.cjs': 'x',
+  });
+  const plan = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
+  const planned = new Set(plan.paths);
+  assert.ok(planned.has('home/user/app/node_modules/nested/lib/actual.cjs'), "a directory main through its own package.json's main");
+  assert.ok(planned.has('home/user/app/node_modules/cjs/dist/entry.cjs'), 'an extensionless main as Node probes it');
+}
+
 console.log('data-plan: ok');

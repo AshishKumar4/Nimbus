@@ -677,6 +677,19 @@ export interface PrefetchBundleOptions {
     transformStore?: BundleCellResultStore;
 }
 /**
+ * The working dir's config files of the tool a launch runs. The tool
+ * executes them (Vite bundles vite.config.ts and imports the result), so
+ * what they import is code that nothing in the program's own graph names,
+ * and a first run would miss it. They are optional roots: a command may
+ * never read its config (`vite --version`), so a config graph past the
+ * map's bound is cut, never a refusal. A config is the tool's when it is
+ * named for the launched package or a package that one depends on (Astro
+ * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
+ * (eslint.config.js beside Vite) is not. What a config names by a string
+ * (PostCSS's plugins) the tool loads by name: those join the walk's phase 2.
+ */
+export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]>;
+/**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
  * The static walker supplies the complete known require closure. Separate
@@ -1220,6 +1233,18 @@ export declare class FacetManager {
      * one honest miss.
      */
     private _planResidentData;
+    /**
+     * A one-shot's data plan: what its closure reads synchronously by a path its
+     * code spells out (static-fs-refs.ts; readFileSync, or a read-only openSync),
+     * any size, through any links on it, that the module map does not hold. It
+     * is data-plan.ts's `static` rule for synchronous reads, which needs the
+     * closure and a stat per path but no listing. The store fetches it at boot,
+     * so it is held beside the module map rather than carried in it: `vite
+     * build` reads lightningcss's 15.8 MB image with readFileSync(new
+     * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
+     * left the closure no room under the map's bound.
+     */
+    private _staticReadPlan;
     /**
      * Paths earlier launches of the same build missed in this session. Other
      * sessions' misses (the shared read profile) join the module map instead,

@@ -45,7 +45,7 @@ import {
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
@@ -62,7 +62,10 @@ import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
-import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, type BridgeRequireFs, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
+import {
+  prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError,
+  type BridgeRequireFs, type DeferredImport, type RequiredModuleRoot,
+} from '@nimbus-sh/core/runtime/require-resolver.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
 import {
@@ -2512,6 +2515,8 @@ export async function greedyAddMainEntries(
   if (!((await filesOf(vfs).exists(nmDir)) && (await filesOf(vfs).isDirectory(nmDir)))) return { added, groups };
 
   const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
+  // What the admitted groups defer with `import()`; a group does not walk them.
+  const deferred: DeferredImport[] = [];
 
   async function addOne(path: string): Promise<boolean> {
     const stripped = path.replace(/^\/+/, '');
@@ -2525,6 +2530,7 @@ export async function greedyAddMainEntries(
           maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
         });
       if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
+      for (const deferral of closure.deferred ?? []) if (deferral.alternatives === 1) deferred.push(deferral);
       for (const [member, cell] of Object.entries(closure.bundle)) {
         if (bundle[member] !== undefined) continue;
         bundle[member] = cell;
@@ -2694,6 +2700,27 @@ export async function greedyAddMainEntries(
   }
 
   for (const pkgDir of (await speculativePackageDirs(vfs, cwdStripped, bundle))) (await addPkgEntry(pkgDir));
+
+  // Then the one `import()` a guessed module defers, when it defers only one
+  // and it is a file of its own package, as a guess of its own with its static
+  // closure; what that defers joins the queue. That is how a package proxies
+  // or splits its own code, and it loads whenever the deferring code runs:
+  // vinext imports @vitejs/plugin-rsc by a computed URL (a guess here, as a
+  // project dependency); plugin-rsc imports vitefu, whose CommonJS entry loads
+  // its ESM build with `import('./index.js')`. A module that defers several
+  // chooses among them, and a deferral of another package is an optional
+  // dependency (@vercel/og's `import("sharp")`, caught when absent, whose
+  // 9.2 MB wasm image the launch would compile): a guess does not guess those.
+  const followed = new Set<string>();
+  for (let i = 0; i < deferred.length; i++) {
+    if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
+    const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer));
+    // Its own package: where the deferral lands, not how it is spelled.
+    const own = packageRootOf(deferred[i]!.fromDir.replace(/^\/+/, '') + '/_');
+    if (target === null || own === null || packageRootOf(target) !== own || followed.has(target)) continue;
+    followed.add(target);
+    await addOne(target);
+  }
   return { added, groups };
 }
 
@@ -3758,6 +3785,44 @@ export interface PrefetchBundleOptions {
   transformStore?: BundleCellResultStore;
 }
 
+/** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
+const TOOL_CONFIG = /^(.+)\.config\.(?:c|m)?(?:j|t)s$/;
+
+/**
+ * The working dir's config files of the tool a launch runs. The tool
+ * executes them (Vite bundles vite.config.ts and imports the result), so
+ * what they import is code that nothing in the program's own graph names,
+ * and a first run would miss it. They are optional roots: a command may
+ * never read its config (`vite --version`), so a config graph past the
+ * map's bound is cut, never a refusal. A config is the tool's when it is
+ * named for the launched package or a package that one depends on (Astro
+ * runs Vite, Vite runs PostCSS); a config of a tool the launch does not run
+ * (eslint.config.js beside Vite) is not. What a config names by a string
+ * (PostCSS's plugins) the tool loads by name: those join the walk's phase 2.
+ */
+export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: string | undefined): Promise<RequiredModuleRoot[]> {
+  if (scriptPath === undefined) return [];
+  // A bin is usually launched by its node_modules/.bin link.
+  let script: string;
+  try { script = await vfs.realpath(scriptPath); } catch { return []; }
+  const root = packageRootOf(script.replace(/^\/+/, ''));
+  if (root === null) return [];
+  let manifest: Record<string, unknown>;
+  try { manifest = JSON.parse(await filesOf(vfs).readFileString(root + '/package.json')) as Record<string, unknown>; } catch { return []; }
+  const tools = new Set<string>(typeof manifest.name === 'string' ? [manifest.name] : []);
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies'] as const) {
+    const named = manifest[field];
+    if (named && typeof named === 'object') for (const name of Object.keys(named)) tools.add(name);
+  }
+  let entries: RuntimeVfsDirEntry[];
+  try { entries = await vfs.readdir(cwd); } catch { return []; }
+  const dir = cwd.replace(/^\/+/, '').replace(/\/+$/, '');
+  return entries.flatMap((entry) => {
+    const tool = entry.type === 'file' ? TOOL_CONFIG.exec(entry.name)?.[1] : undefined;
+    return tool !== undefined && tools.has(tool) ? [{ path: (dir ? dir + '/' : '') + entry.name, config: true }] : [];
+  });
+}
+
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
@@ -3818,9 +3883,11 @@ async function _buildPrefetchBundle(
   // executable map. A module that arrives with its text (Vite unlinks its
   // temporary config after loading it) is walked from that text. Files runs
   // only READ are observed reads below: data, never roots, whatever their
-  // extension (Tailwind scans .js/.ts content files as text).
+  // extension (Tailwind scans .js/.ts content files as text). The tool's
+  // configs ride along, as optional roots (RequiredModuleRoot.config).
+  const requiredRoots = [...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer), undefined, executedModules && executedModules.length > 0 ? executedModules : undefined));
+    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -5098,6 +5165,38 @@ export class FacetManager {
   }
 
   /**
+   * A one-shot's data plan: what its closure reads synchronously by a path its
+   * code spells out (static-fs-refs.ts; readFileSync, or a read-only openSync),
+   * any size, through any links on it, that the module map does not hold. It
+   * is data-plan.ts's `static` rule for synchronous reads, which needs the
+   * closure and a stat per path but no listing. The store fetches it at boot,
+   * so it is held beside the module map rather than carried in it: `vite
+   * build` reads lightningcss's 15.8 MB image with readFileSync(new
+   * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
+   * left the closure no room under the map's bound.
+   */
+  private async _staticReadPlan(entry: ProcessEntry, vfsState: FacetVfsState, cwd: string, pacer: TurnBudget): Promise<string[]> {
+    if (!this.filesystem) return [];
+    const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
+    const held = new Set(vfsState.bundlePaths ?? []);
+    const dir = stripLeadingSlashes(cwd).replace(/\/+$/, '');
+    const reads = new Set<string>();
+    for (const refs of await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer)) {
+      for (const ref of refs.exact) if (ref.sync) reads.add(stripLeadingSlashes(ref.path));
+      for (const ref of refs.cwdRelative) if (ref.sync) reads.add(normalizeVfsPath((dir ? dir + '/' : '') + ref.path));
+    }
+    const plan = new Set<string>();
+    for (const path of reads) {
+      let target: string;
+      try { target = stripLeadingSlashes(await vfs.realpath('/' + path)); } catch { continue; }
+      if (held.has(target)) continue;
+      const stat = await filesOf(vfs).stat(target).catch(() => null);
+      if (stat?.type === 'file') plan.add(target);
+    }
+    return [...plan];
+  }
+
+  /**
    * Paths earlier launches of the same build missed in this session. Other
    * sessions' misses (the shared read profile) join the module map instead,
    * in _buildProcessBundle, where a learned module brings its imports.
@@ -5736,10 +5835,12 @@ export class FacetManager {
     opts.signal?.addEventListener('abort', onShellAbort, { once: true });
     try {
       // A one-shot holds its module map and what it was seen to read (both in
-      // the bundle), and plans nothing beyond them: a data plan is chosen from
-      // a listing of the namespace, and a one-shot takes no listing of its own
-      // (§2.8: the principal's image is where that comes from).
-      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, pacer, diagSink);
+      // the bundle), and plans no listing of the namespace (§2.8: the
+      // principal's image is where that comes from). What its closure reads
+      // synchronously by a path its code spells out needs no listing, and is
+      // its data plan.
+      const dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+      const result = await this._execViaLoader(code, opts, entry, vfsState, dataPlan, abortController.signal, pacer, diagSink);
       await this._recordLaunchLearning(vfsState.bundleKey, {
         code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
       }).catch((error) => this._learningLost(entry.pid, error));

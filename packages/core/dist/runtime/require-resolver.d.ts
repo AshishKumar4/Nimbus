@@ -11,7 +11,7 @@
  * Algorithm:
  *   1. Parse `require('xxx')` / `require("xxx")` / ``require(`xxx`)``
  *      and `require.resolve('xxx')` calls from entry code via regex.
- *   2. Resolve each via the SHARED `resolvePackageEntry` helper from
+ *   2. Resolve each with require-resolution.ts, over the SHARED `resolvePackageEntry` helper from
  *      src/_shared/exports-resolver.ts — same impl that node-shims
  *      and npm-resolver use, so prefetch and runtime always agree on
  *      which file `require('xyz')` means (W2.6a D6: no dual impls).
@@ -26,36 +26,8 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
-/**
- * The filesystem questions resolution needs; held-cell reuse can additionally
- * check current read authority without rereading bytes. A missing path is
- * false, false, a throw, and null.
- */
-export interface RequireFs {
-    exists(path: string): Awaitable<boolean>;
-    isDirectory(path: string): Awaitable<boolean>;
-    readFileString(path: string): Awaitable<string>;
-    stat(path: string): Awaitable<{
-        size: number;
-    } | null>;
-    /** Revalidate held content through the same principal without rereading its bytes. */
-    assertReadable?(path: string): Awaitable<void>;
-}
-/**
- * The resolver's filesystem over a bound process bridge (supervisor RPC or
- * in-process), plus the two reads a launch builder needs. Every probe answers
- * a missing path (ENOENT, however the bridge reports it) with null or false;
- * other errors are the bridge's.
- */
-export interface BridgeRequireFs extends RequireFs {
-    stat(path: string): Promise<RuntimeVfsStat | null>;
-    /** The entry itself, a final link not followed. */
-    lstat(path: string): Promise<RuntimeVfsStat | null>;
-    readBytes(path: string): Promise<Uint8Array | null>;
-}
-export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
-type WalkProgress = (work: number) => Promise<void>;
+import { type RequireFs, type WalkProgress } from './require-resolution.js';
+export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -76,6 +48,16 @@ export interface PrefetchResult {
     speculative: Set<string>;
     /** Original entry reachability, before learned roots; preserves package-main discovery. */
     entryPaths?: ReadonlySet<string>;
+    /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
+    deferred?: DeferredImport[];
+}
+/** An `import()` a module defers, and how many its module defers (phase 2's order). */
+export interface DeferredImport {
+    specifier: string;
+    fromDir: string;
+    alternatives: number;
+    /** The file, when the walk resolved it already (a tool config and what it names). */
+    path?: string;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
@@ -111,9 +93,30 @@ export declare class ClosureBoundExceededError extends Error {
 export interface RequiredModuleRoot {
     path: string;
     text?: string;
+    /**
+     * A tool's config file the launch found (toolConfigRoots). The tool runs
+     * it unless the command needs no config (`vite --version`), so it is no
+     * required root: it is phase 2's first tier, staged within the bound and
+     * evictable. The installed packages it names by a string
+     * (postcss.config.js's `plugins: { tailwindcss: {} }`), which the tool
+     * loads by name, follow it.
+     */
+    config?: boolean;
 }
 /** Resolve the complete dependency graph starting from entry code. */
 export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<PrefetchOutcome>;
 export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<DependencyClosureOutcome>;
-export {};
+/**
+ * The file a deferral a dependency closure reported (PrefetchResult.deferred)
+ * loads, or null; resolved as the walk resolves its own, staging nothing:
+ * the closure that admits the file stages the package.json files it needs.
+ */
+export declare function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null>;
+/**
+ * The package names a config spells as a string or a property key
+ * (`plugins: { tailwindcss: {} }`, `plugins: ['prettier-plugin-x']`), less
+ * its import and export sources, which the walk follows already. A config
+ * acorn cannot parse (TypeScript) names none.
+ */
+export declare function configPackageNames(source: string): string[];
 //# sourceMappingURL=require-resolver.d.ts.map

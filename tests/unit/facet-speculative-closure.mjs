@@ -173,4 +173,60 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
     assert.ok(Object.values(state.bundle).reduce((n,s)=>n+(typeof s==='string'?bytes(s):s.byteLength),0)+emitted<=bound);
   }
 }
+// A guessed module's one deferral of its own package's file is a guess too:
+// that is how a package proxies or splits its own code, and it loads whenever
+// the deferring code runs. vinext imports @vitejs/plugin-rsc by a computed URL
+// (a guess, as a project dependency); plugin-rsc imports vitefu, whose
+// CommonJS entry loads its ESM build with import('./index.js'), which the
+// second launch missed. A deferral of another package (an optional
+// dependency: @vercel/og's import("sharp")) and one of several stay lazy.
+{
+  const nm=APP+'/node_modules';
+  const files={
+    [APP+'/package.json']:JSON.stringify({dependencies:{rsc:'1',og:'1',table:'1'}}),
+    [nm+'/rsc/package.json']:JSON.stringify({name:'rsc',main:'index.js'}),
+    [nm+'/rsc/index.js']:'module.exports=()=>require("fu").crawl();',
+    [nm+'/rsc/node_modules/fu/package.json']:JSON.stringify({name:'fu',exports:{'.':{import:'./src/index.js',require:'./src/index.cjs'}}}),
+    [nm+'/rsc/node_modules/fu/src/index.cjs']:'module.exports.crawl=()=>import("./index.js").then((m)=>m.crawl());',
+    [nm+'/rsc/node_modules/fu/src/index.js']:'import "./walk.js"; export const crawl=()=>1;',
+    [nm+'/rsc/node_modules/fu/src/walk.js']:'export const walk=1;',
+    [nm+'/og/package.json']:JSON.stringify({name:'og',main:'index.js'}),
+    [nm+'/og/index.js']:'module.exports=async()=>{try{return (await import("sharp")).default}catch{}};',
+    [nm+'/sharp/package.json']:JSON.stringify({name:'sharp',main:'index.js'}),
+    [nm+'/sharp/index.js']:'module.exports=1;',
+    [nm+'/table/package.json']:JSON.stringify({name:'table',main:'index.js'}),
+    [nm+'/table/index.js']:'module.exports={a:()=>import("./a.js"),b:()=>import("./b.js")};',
+    [nm+'/table/a.js']:'module.exports=1;',
+    [nm+'/table/b.js']:'module.exports=2;',
+  };
+  const world=launchFs(files);
+  const bundle={};
+  const result=await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0,fileCount:0});
+  assert.equal(bundle[nm+'/rsc/node_modules/fu/src/index.cjs'],files[nm+'/rsc/node_modules/fu/src/index.cjs'],'the guess reaches the proxy');
+  assert.equal(bundle[nm+'/rsc/node_modules/fu/src/index.js'],files[nm+'/rsc/node_modules/fu/src/index.js'],"and the proxy's one deferral of its own package");
+  assert.equal(bundle[nm+'/rsc/node_modules/fu/src/walk.js'],files[nm+'/rsc/node_modules/fu/src/walk.js'],'with its static closure');
+  assert.ok(result.groups.some((group)=>group.root===nm+'/rsc/node_modules/fu/src/index.js'),'as a group of its own, evicted as one');
+  assert.equal(bundle[nm+'/sharp/index.js'],undefined,"a deferral of another package is the guess's optional dependency");
+  assert.equal(bundle[nm+'/table/a.js'],undefined,'a module that defers several chooses among them');
+  assert.equal(world.reads.includes(nm+'/sharp/index.js'),false);
+}
+
+// Own package means the deferral resolves inside the deferring module's
+// package, not that its specifier is relative: `import('../bar/index.cjs')`
+// from node_modules/foo reaches another package, an optional dependency.
+{
+  const nm=APP+'/node_modules';
+  const files={
+    [APP+'/package.json']:JSON.stringify({dependencies:{foo:'1'}}),
+    [nm+'/foo/package.json']:JSON.stringify({name:'foo',main:'index.js'}),
+    [nm+'/foo/index.js']:'module.exports=()=>import("../bar/index.cjs");',
+    [nm+'/bar/package.json']:JSON.stringify({name:'bar',main:'index.cjs'}),
+    [nm+'/bar/index.cjs']:'module.exports=1;',
+  };
+  const world=launchFs(files);
+  const bundle={};
+  await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0,fileCount:0});
+  assert.equal(bundle[nm+'/foo/index.js'],files[nm+'/foo/index.js']);
+  assert.equal(bundle[nm+'/bar/index.cjs'],undefined,'a relative import() into another package is not the guess\'s own');
+}
 console.log('facet-speculative-closure: atomic admission, shared ownership, real transform growth and control failures');

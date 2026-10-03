@@ -11,7 +11,7 @@
  * Algorithm:
  *   1. Parse `require('xxx')` / `require("xxx")` / ``require(`xxx`)``
  *      and `require.resolve('xxx')` calls from entry code via regex.
- *   2. Resolve each via the SHARED `resolvePackageEntry` helper from
+ *   2. Resolve each with require-resolution.ts, over the SHARED `resolvePackageEntry` helper from
  *      src/_shared/exports-resolver.ts — same impl that node-shims
  *      and npm-resolver use, so prefetch and runtime always agree on
  *      which file `require('xyz')` means (W2.6a D6: no dual impls).
@@ -27,79 +27,24 @@
  * de-quarantines it as the primary content-bundle source.
  */
 
-import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
-
-/**
- * The filesystem questions resolution needs; held-cell reuse can additionally
- * check current read authority without rereading bytes. A missing path is
- * false, false, a throw, and null.
- */
-export interface RequireFs {
-  exists(path: string): Awaitable<boolean>;
-  isDirectory(path: string): Awaitable<boolean>;
-  readFileString(path: string): Awaitable<string>;
-  stat(path: string): Awaitable<{ size: number } | null>;
-  /** Revalidate held content through the same principal without rereading its bytes. */
-  assertReadable?(path: string): Awaitable<void>;
-}
-
-/**
- * The resolver's filesystem over a bound process bridge (supervisor RPC or
- * in-process), plus the two reads a launch builder needs. Every probe answers
- * a missing path (ENOENT, however the bridge reports it) with null or false;
- * other errors are the bridge's.
- */
-export interface BridgeRequireFs extends RequireFs {
-  stat(path: string): Promise<RuntimeVfsStat | null>;
-  /** The entry itself, a final link not followed. */
-  lstat(path: string): Promise<RuntimeVfsStat | null>;
-  readBytes(path: string): Promise<Uint8Array | null>;
-}
-
-export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
-  const decoder = new TextDecoder();
-  const absent = <T>(read: () => Awaitable<T | null>): Promise<T | null> => (async () => {
-    try {
-      return await read();
-    } catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
-      throw error;
-    }
-  })();
-  const stat = (path: string) => absent(() => bridge.stat(path));
-  const readBytes = (path: string) => absent(() => bridge.readFile(path));
-  return {
-    exists: async (path) => (await stat(path)) !== null,
-    isDirectory: async (path) => (await stat(path))?.type === 'directory',
-    readFileString: async (path) => {
-      const bytes = await readBytes(path);
-      if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return decoder.decode(bytes);
-    },
-    stat,
-    assertReadable: path => bridge.access(path, 4),
-    lstat: (path) => absent(() => bridge.stat(path, { followSymlinks: false })),
-    readBytes,
-  };
-}
 import {
-  resolvePackageEntry as sharedResolvePackageEntry,
-  resolveExports as sharedResolveExports,
-  packageSelfReferenceSubpath,
-  DEFAULT_CJS_CONDITIONS,
-  DEFAULT_ESM_CONDITIONS,
-  type ResolvablePackageJson,
-  type SelfReferencingPackageJson,
-} from '../_shared/exports-resolver.js';
-import {
-  TYPESCRIPT_INDEX_CANDIDATES,
-  typescriptFallbackCandidates,
-} from '../_shared/typescript-specifiers.js';
+  METADATA_CANDIDATE_WORK,
+  resolveRequireEx,
+  strip,
+  type PkgJsonSink,
+  type RequireFs,
+  type ResolveSubpathResult,
+  type WalkProgress,
+} from './require-resolution.js';
+
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
-import { normalizeVfsPath } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
+import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+
+// The CommonJS resolver this walk stages from (require-resolution.ts).
+export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
 
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
@@ -179,348 +124,9 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
 
-function strip(p: string): string { return p.replace(/^\/+/, ''); }
-
-const normalizePath = normalizeVfsPath;
-
-/**
- * Sink for package.json files consulted during LOAD_AS_DIRECTORY
- * resolution. The runtime resolver (`__resolveFile` in node-shims.ts)
- * re-derives a directory require's target by reading that directory's
- * package.json#main; if prefetch resolves a subpath through a nested
- * package.json (e.g. web-streams-polyfill's `ponyfill/package.json`
- * declaring `main: "../dist/ponyfill"`), only the FINAL file gets
- * added to the bundle — the runtime then can't repeat the resolution
- * because the intermediate package.json's content was never shipped
- * (and, for npx-cache trees outside cwd, isn't in the manifest either).
- * Recording every consulted package.json lets the prefetch walker add
- * its content so prefetch and runtime agree.
- */
-type PkgJsonSink = (pkgJsonPath: string) => Awaitable<string | null>;
-type WalkProgress = (work: number) => Promise<void>;
-
-// Work weight, not a storage or transfer size: even a missing candidate costs
-// path resolution and metadata queries. A fixed charge bounds metadata-only
-// walks; path length also accounts for traversal of long ancestor chains.
-const METADATA_CANDIDATE_WORK = 256;
-
 // Only the speculative ESM resolution boundary catches traversal failures.
 // Keep scheduling errors distinct there, then return the original cause.
 class WalkControlFailure extends Error {}
-
-async function packageText(vfs: RequireFs, path: string, progress?: WalkProgress): Promise<string | null> {
-  if (progress) await progress(METADATA_CANDIDATE_WORK + path.length);
-  let text: string;
-  try { text = await vfs.readFileString(path); } catch { return null; }
-  if (progress) await progress(text.length);
-  return text;
-}
-
-/**
- * Extension-list probe; mirrors node-shims.ts:__resolveFile so prefetch
- * picks the same on-disk file the runtime require will pick.
- *
- * Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):
- *   1. LOAD_AS_FILE: base, base.js, base.mjs, base.cjs, base.json.
- *   2. LOAD_AS_DIRECTORY (if base resolves to a directory):
- *      a. <base>/package.json#main → recurse.
- *      b. <base>/index.{js,cjs,mjs,json}.
- *
- * Bug class C (audit 2026-05-11): step 2a was missing, so prefetch
- * silently dropped any file reachable only via package.json#main from
- * a directory-style require (e.g. `require('./mod')` where mod has
- * main='entry.js' and no index.js).
- */
-async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<string | null> {
-  const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
-  for (const ext of fileExts) {
-    const p = normalizePath(base + ext);
-    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
-    if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
-  }
-  // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
-  const baseTrim = base.replace(/\/+$/, '');
-  const pkgJsonPath = normalizePath(baseTrim + '/package.json');
-  if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
-  if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
-    let pkg: ResolvablePackageJson | null = null;
-    const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
-    try { pkg = JSON.parse(text ?? ''); } catch { /* fall through */ }
-    if (pkg && typeof pkg.main === 'string' && pkg.main.length > 0) {
-      // Record this package.json so the bundle carries the content the
-      // runtime resolver needs to repeat this directory resolution.
-      const mainStripped = pkg.main.replace(/^\.\/+/, '').replace(/^\/+/, '');
-      const mainBase = baseTrim + '/' + mainStripped;
-      // Guard against pkg.main === '.' or empty → would re-enter same base.
-      if (mainBase !== base && mainBase !== baseTrim) {
-        const resolved = (await resolveFile(vfs, mainBase, sink, progress));
-        if (resolved) return resolved;
-      }
-    }
-  }
-  const indexExts = ['/index.js', '/index.cjs', '/index.mjs', '/index.json'];
-  for (const ext of indexExts) {
-    const p = normalizePath(base + ext);
-    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
-    if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
-  }
-  // TypeScript sources, probed only once every candidate above has missed —
-  // so the specifiers whose resolution changes are exactly those that resolve
-  // to nothing today. See _shared/typescript-specifiers.ts for the scope.
-  for (const candidate of typescriptFallbackCandidates(baseTrim)) {
-    const p = normalizePath(candidate);
-    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
-    if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
-  }
-  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
-    const p = normalizePath(baseTrim + ext);
-    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
-    if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
-  }
-  return null;
-}
-
-/**
- * Result shape for `resolvePkgSubpathEx`. A legacy subpath directory with
- * its own package.json (`react-remove-scroll-bar/constants/package.json`
- * with `main: "../dist/constants.js"`) is Node's LOAD_AS_DIRECTORY, which
- * `resolveFile` and the runtime resolver both perform through `main`.
- */
-interface ResolveSubpathResult {
-  /** Canonical resolved path to the real file. */
-  resolved: string;
-}
-
-/**
- * Resolve a package's entry-point file via the SHARED resolver. The
- * pre-W2.6a implementation here had a hand-rolled `pkg.exports['.']`
- * lookup that ignored conditions, wildcards, and nested condition maps
- * — diverging from runtime semantics. Now both use the same impl.
- *
- * Returns null when no resolution is possible.
- */
-
-/**
- * Resolution order:
- *   1. `package.json#exports[<subpath>]` via shared resolver, condition=require.
- *   2. For root subpath ('.'): `pkg.main` then `<pkgDir>/index.{js,…}`.
- *   3. For non-root subpath: `<pkgDir>/<subpath>` as a file, then as a
- *      directory (its package.json `main`, then its index).
- */
-async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
-  const pkgJsonPath = pkgDir + '/package.json';
-  if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
-  if (!(await vfs.exists(pkgJsonPath))) {
-    // No package.json — direct probe (matches node-shims fallback).
-    if (subpath === '.') {
-      const r = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
-      return r ? { resolved: r } : null;
-    }
-    const r = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink, progress));
-    return r ? { resolved: r } : null;
-  }
-  let pkg: ResolvablePackageJson;
-  const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
-  try { pkg = JSON.parse(text ?? ''); }
-  catch {
-    const r = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
-    return r ? { resolved: r } : null;
-  }
-  // The runtime resolver reads this package.json unconditionally to walk
-  // exports/main; record it so its content ships in the bundle.
-  let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
-  if (entry == null && pkg.exports != null) {
-    entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
-  }
-  if (entry != null) {
-    const resolved = (await resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''), sink, progress));
-    if (resolved) return { resolved };
-    // W2.6a D2 (mirror of node-shims:__resolvePkgSubpath): exports/main
-    // yielded a path that doesn't exist on disk. Fall through to the
-    // direct-probe path so prefetch and runtime stay in lockstep on
-    // packages whose declared entry is unfindable.
-  }
-  if (subpath === '.') {
-    if (typeof pkg.main === 'string') {
-      const r = (await resolveFile(vfs, pkgDir + '/' + pkg.main.replace(/^\.\//, ''), sink, progress));
-      if (r) return { resolved: r };
-    }
-    const idx = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
-    return idx ? { resolved: idx } : null;
-  }
-  // Non-root subpath: the file, or the directory (resolveFile reads its main).
-  const direct = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink, progress));
-  return direct ? { resolved: direct } : null;
-}
-
-/** Bare-spec resolver: the node_modules walk from `fromDir`. */
-async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
-  let pkgName: string;
-  let subpath: string;
-  if (name.startsWith('@')) {
-    const parts = name.split('/');
-    if (parts.length < 2) return null;
-    pkgName = parts.slice(0, 2).join('/');
-    subpath = parts.length > 2 ? './' + parts.slice(2).join('/') : '.';
-  } else {
-    const slashIdx = name.indexOf('/');
-    if (slashIdx > 0) {
-      pkgName = name.substring(0, slashIdx);
-      subpath = './' + name.substring(slashIdx + 1);
-    } else {
-      pkgName = name;
-      subpath = '.';
-    }
-  }
-
-  let dir = strip(fromDir);
-  const visited = new Set<string>();
-  while (true) {
-    if (visited.has(dir)) break;
-    visited.add(dir);
-    const nmDir = (dir ? dir + '/' : '') + 'node_modules/' + pkgName;
-    if (progress) await progress(METADATA_CANDIDATE_WORK + nmDir.length);
-    if ((await vfs.exists(nmDir))) {
-      const r = (await resolvePkgSubpathEx(vfs, nmDir, subpath, sink, progress));
-      if (r) return r;
-    }
-    if (!dir) break;
-    const lastSlash = dir.lastIndexOf('/');
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
-  }
-  return null;
-}
-
-/** The require resolver `prefetchForRequire` walks with. */
-async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
-  if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
-    const base = id.startsWith('/')
-      ? strip(id)
-      : normalizePath(strip(fromDir) + '/' + id);
-    const r = (await resolveFile(vfs, base, sink, progress));
-    return r ? { resolved: r } : null;
-  }
-  // package.json#imports field — `#name` specifiers resolved against
-  // the nearest enclosing package.json's `imports` map. Mirrors the
-  // runtime __resolveImportsField at node-shims.ts:2635. Without this
-  // branch, prefetch would fall through to resolveNodeModuleEx (which
-  // treats `#name` as a node_module name → never finds the file),
-  // and the imports-field target would never be shipped into the
-  // bundle. At runtime, __resolveImportsField would correctly compute
-  // the target path, but __resolveFile would then return null because
-  // the file wasn't bundled — surfacing as a misleading
-  // "Cannot find module '#name' (from ...)" error.
-  //
-  if (id.startsWith('#')) {
-    const r = (await resolveImportsField(vfs, id, fromDir, sink, progress));
-    return r ? { resolved: r } : null;
-  }
-  // The enclosing package's own name resolves through its exports map
-  // (Node's LOAD_PACKAGE_SELF), before the node_modules walk. Once the
-  // enclosing package claims the name, its map is the whole answer: a
-  // subpath it does not expose is not found, never a node_modules copy's.
-  // Mirrors node-shims.ts:__resolvePackageSelf.
-  const self = await resolvePackageSelf(vfs, id, fromDir, sink, progress);
-  if (self) return self.resolved ? { resolved: self.resolved } : null;
-  return (await resolveNodeModuleEx(vfs, id, fromDir, sink, progress));
-}
-
-/**
- * Node's "package scope" of a directory (`readPackageScope`): the nearest
- * enclosing package.json walking up from `fromDir`. The FIRST one found is
- * the scope, even when it lacks the field the caller wants — the imports
- * field and the self-reference rule both belong to the importing module's
- * own package, never to an ancestor past it. The walk never crosses a
- * `node_modules` directory: a file that sits directly under one belongs to
- * no package, not to the project above it. Mirrors
- * node-shims.ts:__nearestPackageScope. The package.json is recorded with
- * `sink` so the runtime can repeat the same lookup from the bundle.
- */
-async function nearestPackageScope(
-  vfs: RequireFs,
-  fromDir: string,
-  sink?: PkgJsonSink,
-  progress?: WalkProgress,
-): Promise<{ dir: string; pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null } | null> {
-  let dir = strip(fromDir);
-  while (true) {
-    if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
-    const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
-    if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
-    if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
-      let pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null = null;
-      const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
-      try { pkg = JSON.parse(text ?? ''); } catch { /* malformed */ }
-      return { dir, pkg };
-    }
-    if (!dir) return null;
-    const lastSlash = dir.lastIndexOf('/');
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
-  }
-}
-
-/**
- * Resolve an imports-field specifier `#name` against the nearest
- * enclosing package.json. Returns the resolved file path (or null
- * if not found). Mirrors node-shims.ts:__resolveImportsField.
- */
-async function resolveImportsField(
-  vfs: RequireFs,
-  name: string,
-  fromDir: string,
-  sink?: PkgJsonSink,
-  progress?: WalkProgress,
-): Promise<string | null> {
-  // First package.json wins (Node spec), even if no imports field.
-  const scope = await nearestPackageScope(vfs, fromDir, sink, progress);
-  if (!scope || !scope.pkg || !scope.pkg.imports) return null;
-  const dir = scope.dir;
-  const target = sharedResolveExports(scope.pkg.imports, name, DEFAULT_CJS_CONDITIONS);
-  if (!target || typeof target !== 'string') return null;
-  // imports targets are relative to the package root (`dir`).
-  if (target.startsWith('./')) {
-    const base = (dir ? dir + '/' : '') + target.slice(2);
-    return (await resolveFile(vfs, normalizePath(base), sink, progress));
-  }
-  if (target.startsWith('/')) {
-    return (await resolveFile(vfs, strip(target), sink, progress));
-  }
-  // Bare specifier — re-resolve as a node_module from `dir`.
-  const r = (await resolveNodeModuleEx(vfs, target, dir, sink, progress));
-  return r ? r.resolved : null;
-}
-
-/**
- * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
- * itself resolves through that package's own `exports` map — only when the
- * nearest package.json has `exports` AND its `name` matches, and only
- * through `exports` (no main/index probing). Same condition order as the
- * node_modules walk: CJS first, ESM when the map exposes the subpath only
- * under `import`. Mirrors node-shims.ts:__resolvePackageSelf.
- *
- * Tri-state, as in Node: `null` when the rule does not apply (the caller
- * walks node_modules); `{ resolved: null }` when the enclosing package
- * claims the name but its map does not expose the subpath or the target
- * is missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
- * there and never consults node_modules, so neither does the caller.
- */
-async function resolvePackageSelf(
-  vfs: RequireFs,
-  name: string,
-  fromDir: string,
-  sink?: PkgJsonSink,
-  progress?: WalkProgress,
-): Promise<{ resolved: string | null } | null> {
-  const scope = await nearestPackageScope(vfs, fromDir, sink, progress);
-  if (!scope || !scope.pkg) return null;
-  const subpath = packageSelfReferenceSubpath(scope.pkg, name);
-  if (subpath === null) return null;
-  let entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_CJS_CONDITIONS);
-  if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
-  if (entry == null) return { resolved: null };
-  const resolved = await resolveFile(vfs, normalizePath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink, progress);
-  return { resolved };
-}
 
 /**
  * Result of a prefetch walk: path → content for every reachable file.
@@ -542,6 +148,17 @@ export interface PrefetchResult {
   speculative: Set<string>;
   /** Original entry reachability, before learned roots; preserves package-main discovery. */
   entryPaths?: ReadonlySet<string>;
+  /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
+  deferred?: DeferredImport[];
+}
+
+/** An `import()` a module defers, and how many its module defers (phase 2's order). */
+export interface DeferredImport {
+  specifier: string;
+  fromDir: string;
+  alternatives: number;
+  /** The file, when the walk resolved it already (a tool config and what it names). */
+  path?: string;
 }
 
 /**
@@ -586,7 +203,19 @@ export class ClosureBoundExceededError extends Error {
 }
 
 /** An executable module already observed, including a deleted generated file. */
-export interface RequiredModuleRoot { path: string; text?: string }
+export interface RequiredModuleRoot {
+  path: string;
+  text?: string;
+  /**
+   * A tool's config file the launch found (toolConfigRoots). The tool runs
+   * it unless the command needs no config (`vite --version`), so it is no
+   * required root: it is phase 2's first tier, staged within the bound and
+   * evictable. The installed packages it names by a string
+   * (postcss.config.js's `plugins: { tailwindcss: {} }`), which the tool
+   * loads by name, follow it.
+   */
+  config?: boolean;
+}
 
 /** Resolve the complete dependency graph starting from entry code. */
 export function prefetchForRequire(
@@ -630,7 +259,9 @@ export async function prefetchForRequire(
     return declined === null;
   }
 
-  // Metadata spends the same delta allowance as source.
+  // Metadata spends the same delta allowance as source. In phase 2 (lazy),
+  // metadata the required graph did not already read is as optional as the
+  // module it resolves: bounded, and evictable.
   async function stageCell(path: string, kind: 'module' | 'metadata' = 'module'): Promise<string | null> {
     if (declined || closureExceeded) return null;
     if (bundle[path] !== undefined) return bundle[path];
@@ -643,10 +274,11 @@ export async function prefetchForRequire(
       catch { declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' }; return null; }
     }
     let size = 0;
-    if (!reuseHeld && (policy || kind === 'module')) {
+    const counted = !policy && (kind === 'module' || lazy);
+    if (!reuseHeld && (policy || counted)) {
       try { size = (await vfs.stat(path))?.size ?? 0; } catch { /* the read decides */ }
       if (!fits(path, size)) return null;
-      if (!policy && kind === 'module' && bytesSeen + size > maxBundleBytes) {
+      if (counted && bytesSeen + size > maxBundleBytes) {
         if (!lazy) closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
         return null;
       }
@@ -667,14 +299,64 @@ export async function prefetchForRequire(
       additionalBytes += actual;
       additionalFiles++;
     }
-    if (!policy && kind === 'module') bytesSeen += size;
+    if (counted) bytesSeen += size;
     bundle[path] = content;
-    if (lazy && kind === 'module') speculative.add(path);
+    if (lazy) speculative.add(path);
     if (progress) await progress(content.length);
     return content;
   }
-  // Followed after the static closure so a lazy subtree never spends its bound.
-  const deferredDynamic: Array<{ specifier: string; fromDir: string }> = [];
+  // Followed after the static closure so a lazy subtree never spends its
+  // bound: fewest alternatives first, then in discovery order.
+  // A module that defers one import (vitefu's CommonJS proxy, `import('./index.js')`
+  // inside each async function) loads it whenever that code runs; a module
+  // that defers hundreds (Shiki's grammar table, one `import()` per language)
+  // loads the few its input names. Walking a table first spent the bound on
+  // grammars the program never loads, and cut the deferral it does.
+  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string }>>();
+  function defer({ specifier, fromDir, alternatives, path }: DeferredImport): void {
+    let queue = deferredDynamic.get(alternatives);
+    if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
+    queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
+  }
+  function nextDeferred(): DeferredImport | undefined {
+    let fewest = Infinity;
+    for (const [alternatives, queue] of deferredDynamic) if (queue.length > 0 && alternatives < fewest) fewest = alternatives;
+    if (fewest === Infinity) return undefined;
+    return { ...deferredDynamic.get(fewest)!.shift()!, alternatives: fewest };
+  }
+  // A package the code locates by its manifest (`require.resolve('vite/package.json')`)
+  // is one it uses from where it is installed: vinext reads that manifest's
+  // `bin` and imports Vite's CLI from the path it names. Those bins are a
+  // guess at what the code does with the package, so they wait behind every
+  // deferral the code names itself.
+  function deferBins(manifestPath: string): void {
+    let manifest: unknown;
+    try { manifest = JSON.parse(String(bundle[manifestPath])); } catch { return; }
+    const bin = manifest !== null && typeof manifest === 'object' && 'bin' in manifest ? manifest.bin : undefined;
+    const targets = typeof bin === 'string' ? [bin] : bin !== null && typeof bin === 'object' ? Object.values(bin) : [];
+    const fromDir = manifestPath.slice(0, manifestPath.lastIndexOf('/'));
+    for (const target of targets) {
+      // npm links no bin outside its package.
+      if (typeof target !== 'string' || target.split('/').includes('..')) continue;
+      defer({ specifier: './' + target.replace(/^\.\//, ''), fromDir, alternatives: LOCATED_PACKAGE_BINS });
+    }
+  }
+  // A tool loads what its config names as the config's own require would
+  // resolve it (postcss-load-config: createRequire(config).resolve(name)),
+  // so each is resolved that way and deferred by its path.
+  async function deferConfigNames(configPath: string): Promise<void> {
+    const fromDir = configPath.slice(0, configPath.lastIndexOf('/'));
+    const names = configPackageNames(bundle[configPath]!).filter((name) => !isFacetProvided(name));
+    const resolved: string[] = [];
+    for (const name of names) {
+      // The package.json files this reads are staged: the process repeats it from them.
+      const r = await resolveRequireEx(vfs, name, fromDir, addPkgJson, progress);
+      if (r) resolved.push(r.resolved);
+    }
+    for (const target of resolved) defer({ specifier: target, fromDir, alternatives: resolved.length, path: target });
+  }
+  /** Tool configs found for the launch; phase 2 stages them first. */
+  const configRoots = new Set<string>();
   let lazy = false;
 
   // `entry`: the entry file itself, whose own `import()` is a deferral of its
@@ -780,6 +462,7 @@ export async function prefetchForRequire(
       if (closureExceeded || declined) break;
       const r = await resolveStaticDependency(specifier, fromDir);
       if (r) (await addFile(r.resolved));
+      if (r && !policy && namesManifest(specifier)) deferBins(r.resolved);
     }
     // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
     // require of './x' from this file's directory (pi-coding-agent's bin).
@@ -796,45 +479,42 @@ export async function prefetchForRequire(
     // bundle but none of the relative `import './x'` siblings — at
     // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
     // fails because `x` was never added.
+    //
+    // The process runs such a module lowered to CommonJS, and its require
+    // takes a package's "require" branch. A module runner that evaluates the
+    // same source itself (Vite's, under Astro) imports a package with
+    // import(), which takes the "import" branch: phase 2 resolves it (the
+    // same file as the require branch adds nothing), behind every deferral
+    // the code names, tables included (IMPORT_BRANCHES).
     for (const match of stripped.matchAll(IMPORT_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded || declined) break;
       const r = await resolveStaticDependency(specifier, fromDir);
       if (r) (await addFile(r.resolved));
+      // Resolved in phase 2, where what it reads is optional too.
+      if (!policy && !/^[./#]|^file:/.test(specifier)) defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES });
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
+    const deferrals = new Set<string>();
     for (const match of stripped.matchAll(DYNIMPORT_RE)) {
-      if (policy || declined) break;
+      if (declined) break;
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
-      if (!entry) { deferredDynamic.push({ specifier, fromDir }); continue; }
+      // A dependency closure is never an entry: its deferrals are reported, not walked.
+      if (!entry) { deferrals.add(specifier); continue; }
       const resolved = (await resolveDynamicImport(specifier, fromDir));
       if (closureExceeded) break;
       if (resolved) (await addFile(resolved));
     }
+    for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
   // loader resolves it the same way, core/_shared/esm-resolver.ts): the
   // "import" conditions, no extension probing. The package.json files it
   // reads are staged too, since the loader reads the same ones.
-  const esm = createEsmResolver({
-    async kind(path) {
-      const key = strip(path);
-      if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
-      if (!(await vfs.exists(key))) return null;
-      return (await vfs.isDirectory(key)) ? 'directory' : 'file';
-    },
-    // The walk sees paths as the module map holds them.
-    realpath: (path) => path,
-    async readText(path) {
-      const key = strip(path);
-      return await addPkgJson(key);
-    },
-    isBuiltin: (specifier) => isFacetProvided(specifier),
-    cjsResolve: () => null,
-  });
+  const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(strip(path)));
   async function resolveStaticDependency(specifier: string, fromDir: string): Promise<ResolveSubpathResult | null> {
     // Vite's generated config names dependencies by absolute file URL.
     if (specifier.startsWith('file:')) {
@@ -846,14 +526,7 @@ export async function prefetchForRequire(
 
   /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
   async function resolveDynamicImport(specifier: string, fromDir: string): Promise<string | null> {
-    const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
-    try {
-      const resolution = await esm.resolve(specifier, parentUrl);
-      return resolution.path === undefined ? null : strip(resolution.path);
-    } catch (error) {
-      if (error instanceof WalkControlFailure) throw error;
-      return null;
-    }
+    return await resolveImportWith(esm, specifier, fromDir);
   }
 
   /**
@@ -897,8 +570,14 @@ export async function prefetchForRequire(
     // Modules a previous launch actually tried to execute are required roots,
     // not speculative dynamic-import subtrees. Walk their static imports in
     // this same visited set and byte budget before any optional enrichment.
+    // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
     for (const root of requiredRoots ?? []) {
       const path = strip(root.path);
+      if (root.config && root.text === undefined) {
+        configRoots.add(path);
+        defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
+        continue;
+      }
       if (root.text === undefined) await addFile(path);
       else await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
       if (closureExceeded || declined) break;
@@ -913,14 +592,19 @@ export async function prefetchForRequire(
 
     if (declined) return declined;
     if (closureExceeded) return closureExceeded;
-    if (policy) return { bundle, speculative, entryPaths };
+    if (policy) {
+      const deferred: DeferredImport[] = [];
+      for (let next = nextDeferred(); next !== undefined; next = nextDeferred()) deferred.push(next);
+      return { bundle, speculative, entryPaths, deferred };
+    }
 
-    // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
+    // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
-    for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
-      const { specifier, fromDir } = deferredDynamic[i];
-      const resolved = await resolveDynamicImport(specifier, fromDir);
-      if (resolved) await addFile(resolved);
+    for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
+      const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+      if (!resolved) continue;
+      await addFile(resolved);
+      if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
     return { bundle, speculative, entryPaths };
@@ -950,6 +634,103 @@ const BUILTINS = new Set([
 function isFacetProvided(id: string): boolean {
   if (id.startsWith('node:')) return true;
   return BUILTINS.has(id) || FACET_PROVIDED_PACKAGES.includes(id);
+}
+
+/**
+ * Node's ESM resolver over the walk's filesystem (the process's loader
+ * resolves the same way, core/_shared/esm-resolver.ts): the "import"
+ * conditions, no extension probing. The walk sees paths as the module map
+ * holds them; `readText` answers the package.json files it reads.
+ */
+function walkEsmResolver(vfs: RequireFs, progress: WalkProgress | undefined, readText: (path: string) => Promise<string | null>) {
+  return createEsmResolver({
+    async kind(path) {
+      const key = strip(path);
+      if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
+      if (!(await vfs.exists(key))) return null;
+      return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+    },
+    realpath: (path) => path,
+    readText,
+    isBuiltin: (specifier) => isFacetProvided(specifier),
+    cjsResolve: () => null,
+  });
+}
+
+async function resolveImportWith(esm: ReturnType<typeof walkEsmResolver>, specifier: string, fromDir: string): Promise<string | null> {
+  const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
+  try {
+    const resolution = await esm.resolve(specifier, parentUrl);
+    return resolution.path === undefined ? null : strip(resolution.path);
+  } catch (error) {
+    if (error instanceof WalkControlFailure) throw error;
+    return null;
+  }
+}
+
+/**
+ * The file a deferral a dependency closure reported (PrefetchResult.deferred)
+ * loads, or null; resolved as the walk resolves its own, staging nothing:
+ * the closure that admits the file stages the package.json files it needs.
+ */
+export async function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null> {
+  // A failed turn is the caller's failure, never an unresolved specifier.
+  const paced = progress && (async (work: number) => {
+    try { await progress(work); } catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
+  });
+  const esm = walkEsmResolver(vfs, paced, async (path) => {
+    try { return await vfs.readFileString(strip(path)); } catch { return null; }
+  });
+  try { return await resolveImportWith(esm, deferral.specifier, deferral.fromDir); }
+  catch (error) {
+    if (error instanceof WalkControlFailure) throw error.cause;
+    throw error;
+  }
+}
+
+/** An npm package name: `name` or `@scope/name` (lowercase, URL-safe). */
+const PACKAGE_NAME = /^(?:@[a-z0-9][\w.~-]*\/)?[a-z0-9][\w.~-]*$/;
+
+/**
+ * The package names a config spells as a string or a property key
+ * (`plugins: { tailwindcss: {} }`, `plugins: ['prettier-plugin-x']`), less
+ * its import and export sources, which the walk follows already. A config
+ * acorn cannot parse (TypeScript) names none.
+ */
+export function configPackageNames(source: string): string[] {
+  const program = parseJavaScriptProgram(source);
+  if (program === null) return [];
+  const sources = new Set<unknown>();
+  const names = new Set<string>();
+  forEachNode(program, (node) => {
+    if ((node.type === 'ImportDeclaration' || node.type === 'ExportAllDeclaration' || node.type === 'ExportNamedDeclaration') && node.source) {
+      sources.add(node.source);
+    }
+    let text: unknown;
+    if (node.type === 'Literal' && !sources.has(node)) text = node.value;
+    else if (node.type === 'Property' && !node.computed && node.key.type === 'Identifier') text = node.key.name;
+    if (typeof text === 'string' && PACKAGE_NAME.test(text)) names.add(text);
+  });
+  return [...names];
+}
+
+/**
+ * Phase 2's tier for a package's "import" branch beside the "require" branch
+ * the process loads: a module runner may import it, the code's own import()
+ * calls certainly run. Ahead of a deferral table it shed 118 of Astro's Shiki
+ * grammars (jsx.mjs and markdown.mjs among them), which a page's code block
+ * loads with import().
+ */
+const IMPORT_BRANCHES = Number.MAX_SAFE_INTEGER - 1;
+
+/** Phase 2's last tier: the bins of a package the code located by its manifest. */
+const LOCATED_PACKAGE_BINS = Number.MAX_SAFE_INTEGER;
+
+/** `pkg/package.json` or `@scope/pkg/package.json`: an installed package's manifest, by name. */
+function namesManifest(specifier: string): boolean {
+  const parts = specifier.split('/');
+  return parts.length === (specifier.startsWith('@') ? 3 : 2) && parts[parts.length - 1] === 'package.json'
+    && !parts[0]!.startsWith('.') && parts[0] !== '';
 }
 
 // Note: the shared resolver helpers are imported directly from

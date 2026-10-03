@@ -1,3 +1,36 @@
+/**
+ * Which file contents a resident node process holds from its first
+ * instruction, besides its module map.
+ *
+ * A synchronous read cannot wait for bytes, so whatever a process reads
+ * synchronously has to be in its facet before it runs; the namespace (every
+ * name and stat) is always there, content is not. This decides content by
+ * rule, from the namespace and the module closure, without reading file
+ * contents except a few package.json files:
+ *
+ *   package-json   every package.json
+ *   project        the working tree, minus dependency, VCS and build-cache dirs
+ *   convention     config and lockfile names in the working dir and above it
+ *   package-data   non-code files under 256 KiB in every package the closure uses
+ *   home           $HOME's dot entries (tool config, skills), minus caches
+ *   typescript     when the closure has typescript: its lib .d.ts, @types/**,
+ *                  and the declaration files of the packages @types depends on
+ *   static         what the closure's own code names by a foldable path
+ *                  (static-fs-refs.ts), resolved against the namespace:
+ *                  under 256 KiB, or any size when the code reads it with
+ *                  readFileSync (or a read-only openSync) by that path,
+ *                  through any symlinks on it
+ *   entries        the entry files the working dir's own dependencies name
+ *                  (exports under every condition, module, main, browser),
+ *                  under 256 KiB: a dev server reads them synchronously to
+ *                  pre-bundle what the app imports (Vite's optimizer reads
+ *                  each with readFileSync), and the process never loads them
+ *   learned        paths earlier launches of the same package versions missed
+ *
+ * Code the closure loads is in the module map already; the store adopts it,
+ * so it is readable as data too.
+ */
+import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
 const CODE_FILE = /\.(?:c|m)?(?:j|t)sx?$|\.map$|\.d\.(?:c|m)?ts$|\.node$|\.wasm$/;
@@ -74,6 +107,39 @@ function exportTarget(value) {
     }
     return null;
 }
+/**
+ * Every file a package.json names as an entry, relative to its package:
+ * each subpath's `exports` targets under every condition (a dev server
+ * resolves for the browser, the process for node), and `module`, `main` and
+ * a string `browser`. Subpath patterns name no file until a specifier fills
+ * them, so they name none here.
+ */
+function entryTargets(manifest) {
+    const out = new Set();
+    const leaves = (value) => {
+        if (typeof value === 'string') {
+            if (!value.includes('*'))
+                out.add(value);
+            return;
+        }
+        if (Array.isArray(value)) {
+            for (const v of value)
+                leaves(v);
+            return;
+        }
+        if (value && typeof value === 'object')
+            for (const v of Object.values(value))
+                leaves(v);
+    };
+    leaves(manifest.exports);
+    for (const field of ['module', 'main', 'browser']) {
+        if (typeof manifest[field] === 'string')
+            out.add(manifest[field]);
+    }
+    if (manifest.exports === undefined && manifest.main === undefined)
+        out.add('index.js');
+    return [...out];
+}
 /** Map `./sub` through a package.json `exports` field; null when it does not export it. */
 function mapExports(exportsField, sub) {
     if (typeof exportsField !== 'object' || exportsField === null || Array.isArray(exportsField)) {
@@ -103,6 +169,21 @@ function mapExports(exportsField, sub) {
         return null;
     return t.replaceAll('*', sub.slice(best.prefix.length, sub.length - best.suffix.length));
 }
+/** A directory's package.json, parsed once per plan; null when absent or not JSON. */
+async function readManifest(source, dir, manifests) {
+    let manifest = manifests.get(dir);
+    if (manifest === undefined) {
+        const text = await source.readText(joinKey(dir, 'package.json'));
+        try {
+            manifest = text === null ? null : JSON.parse(text);
+        }
+        catch {
+            manifest = null;
+        }
+        manifests.set(dir, manifest);
+    }
+    return manifest;
+}
 async function resolveSpecifier(source, fromDir, spec, manifests) {
     const parts = spec.split('/');
     const nameLen = spec.startsWith('@') ? 2 : 1;
@@ -113,17 +194,7 @@ async function resolveSpecifier(source, fromDir, spec, manifests) {
     for (let dir = fromDir;; dir = parentOf(dir)) {
         if (baseOf(dir) !== 'node_modules') {
             const pkgDir = joinKey(dir, 'node_modules/' + name);
-            let manifest = manifests.get(pkgDir);
-            if (manifest === undefined) {
-                const text = await source.readText(pkgDir + '/package.json');
-                try {
-                    manifest = text === null ? null : JSON.parse(text);
-                }
-                catch {
-                    manifest = null;
-                }
-                manifests.set(pkgDir, manifest);
-            }
+            const manifest = await readManifest(source, pkgDir, manifests);
             if (manifest) {
                 const mapped = manifest.exports !== undefined ? mapExports(manifest.exports, sub ? './' + sub : '.') : null;
                 if (mapped)
@@ -134,6 +205,23 @@ async function resolveSpecifier(source, fromDir, spec, manifests) {
         if (dir === '')
             return null;
     }
+}
+/** The resolver's filesystem (require-resolution.ts) over the plan's source. */
+function resolutionFs(source) {
+    return {
+        exists: async (path) => (await source.stat(path)) !== null,
+        isDirectory: async (path) => (await source.stat(path))?.kind === 'directory',
+        readFileString: async (path) => {
+            const text = await source.readText(path);
+            if (text === null)
+                throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+            return text;
+        },
+        stat: async (path) => {
+            const found = await source.stat(path);
+            return found === null ? null : { size: found.size };
+        },
+    };
 }
 /** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
@@ -209,7 +297,7 @@ export async function planFacetData(source, input) {
     const learned = new Set();
     for (const p of input.learned ?? [])
         learned.add(key(p));
-    const rules = Object.fromEntries(['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'learned']
+    const rules = Object.fromEntries(['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned']
         .map((r) => [r, { files: 0, bytes: 0 }]));
     const paths = [];
     const planned = new Set();
@@ -446,6 +534,44 @@ export async function planFacetData(source, input) {
             const entry = { path: resolved, kind: 'file', size: found.size };
             if (staticWorthy(entry))
                 take(entry, 'static');
+        }
+    }
+    // The working dir's dependencies' entries, each the file Node's resolver
+    // loads for it (require-resolution.ts, as the module-map walk resolves): a
+    // `main` without its extension, or naming a directory with a package.json
+    // of its own.
+    const files = resolutionFs(source);
+    const projectManifest = await readManifest(source, cwd, manifests);
+    const dependencies = new Set();
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+        const named = projectManifest?.[field];
+        if (named && typeof named === 'object')
+            for (const name of Object.keys(named))
+                dependencies.add(name);
+    }
+    for (const name of dependencies) {
+        let pkgDir = null;
+        for (let d = cwd; pkgDir === null; d = parentOf(d)) {
+            if (packageRoots.has(joinKey(d, 'node_modules/' + name)))
+                pkgDir = joinKey(d, 'node_modules/' + name);
+            if (d === '')
+                break;
+        }
+        if (pkgDir === null)
+            continue;
+        const manifest = await readManifest(source, pkgDir, manifests);
+        if (manifest === null)
+            continue;
+        for (const rel of entryTargets(manifest)) {
+            const resolved = await resolveFile(files, joinKey(pkgDir, rel));
+            const k = resolved === null ? null : await throughLinks(source, resolved);
+            if (k === null)
+                continue;
+            const found = await source.stat(k);
+            if (found === null || found.kind !== 'file')
+                continue;
+            if (found.size < PACKAGE_DATA_MAX_BYTES && !closure.has(k))
+                take({ path: k, kind: 'file', size: found.size }, 'entries');
         }
     }
     // The files behind symlinked directories the project or home rule reached.
