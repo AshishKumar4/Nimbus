@@ -23,6 +23,7 @@ import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 import { assertEqualHolds } from './loose-equality.js';
+import { createHttp2Module } from '../../../_shared/http2-module.js';
 
 export interface NodeContext {
   filesystem: () => NodeFilesystem;
@@ -237,40 +238,15 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       },
       threadId: 0,
     }),
-    // http2 — stub (vite imports it for HTTP/2 server but falls back to HTTP/1.1)
-    http2: () => ({
-      createServer: () => {
-        const s = new EventEmitter() as unknown as Record<string, unknown>;
-        s.listen = (_port: unknown, _host: unknown, cb?: () => void) => { cb?.(); return s; };
-        s.close = (cb?: () => void) => { cb?.(); return s; };
-        s.setTimeout = () => s;
-        return s;
-      },
-      createSecureServer: () => {
-        const s = new EventEmitter() as unknown as Record<string, unknown>;
-        s.listen = (_port: unknown, _host: unknown, cb?: () => void) => { cb?.(); return s; };
-        s.close = (cb?: () => void) => { cb?.(); return s; };
-        s.setTimeout = () => s;
-        return s;
-      },
-      connect: () => {
-        const s = new EventEmitter() as unknown as Record<string, unknown>;
-        s.close = () => {};
-        s.destroy = () => {};
-        return s;
-      },
-      constants: {
-        HTTP2_HEADER_PATH: ':path',
-        HTTP2_HEADER_METHOD: ':method',
-        HTTP2_HEADER_STATUS: ':status',
-        HTTP2_HEADER_CONTENT_TYPE: 'content-type',
-        HTTP_STATUS_OK: 200,
-        HTTP_STATUS_INTERNAL_SERVER_ERROR: 500,
-      },
-      sensitiveHeaders: Symbol('nodejs.http2.sensitiveHeaders'),
-      getDefaultSettings: () => ({}),
-      getPackedSettings: () => Buffer.alloc(0),
-      getUnpackedSettings: () => ({}),
+    // http2 — Node's exports; opening HTTP/2 refuses (core/_shared/http2-module.ts,
+    // which the node shims embed too)
+    http2: () => createHttp2Module({
+      EventEmitter,
+      Readable: streamModule.Readable,
+      // This stream module has no legacy Stream base; its streams are EventEmitters.
+      Stream: EventEmitter,
+      Buffer,
+      emitWarning: (message) => { ctx.stderr.write(`Warning: ${message}\n`); },
     }),
     // inspector — stub (vite only uses it in --profile mode)
     inspector: () => ({

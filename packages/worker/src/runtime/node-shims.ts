@@ -44,7 +44,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE } from '../loaders/generated-workers.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -6468,45 +6468,27 @@ const __vmMod = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  http2 module (W3: stub — non-throwing load, honest connect err) ─
+// ──  http2 module: Node's exports, no HTTP/2 transport ──────────────
 // ═══════════════════════════════════════════════════════════════════════
 //
 // axios's dist/node code does \`var http2 = require('http2')\` at top
-// level, unconditionally. Without this stub the require fails →
-// axios fails to load. The actual HTTP/2 transport is only invoked
-// when user opts in (\`httpVersion: 2\`); otherwise this shim is dormant.
-const __http2Mod = (() => {
-  function _err(op) {
-    const e = new Error('http2.' + op + ': not implemented in Nimbus. Use fetch() or HTTP/1.1.');
-    e.code = 'ERR_HTTP2_NOT_SUPPORTED';
-    return e;
-  }
-  class Http2Session extends __eventsMod {
-    constructor() { super(); this.destroyed = false; }
-    request() { throw _err('request'); }
-    close() { this.destroyed = true; this.emit('close'); }
-    destroy(err) { this.destroyed = true; if (err) this.emit('error', err); this.emit('close'); }
-    settings() {}
-  }
-  function connect(/* authority, opts, listener */) {
-    const session = new Http2Session();
-    queueMicrotask(() => session.emit('error', _err('connect')));
-    return session;
-  }
-  function createServer() { throw _err('createServer'); }
-  return {
-    connect, createServer,
-    createSecureServer: createServer,
-    Http2Session,
-    constants: {
-      NGHTTP2_NO_ERROR: 0, NGHTTP2_PROTOCOL_ERROR: 1,
-      HTTP2_HEADER_PATH: ':path', HTTP2_HEADER_METHOD: ':method',
-      HTTP2_HEADER_STATUS: ':status', HTTP2_HEADER_AUTHORITY: ':authority',
-      HTTP2_HEADER_SCHEME: ':scheme',
-    },
-    sensitiveHeaders: Symbol('nodejs.http2.sensitiveHeaders'),
-  };
-})();
+// level, unconditionally, and Astro's dev server asks
+// \`res instanceof Http2ServerResponse\` of every response: the module
+// loads with every name Node's has, and only opening HTTP/2 refuses.
+// core/_shared/http2-module.ts, compiled once by
+// scripts/bundle-facet-workers.mjs, declares createHttp2Module; the
+// substrate's node-compat imports the same function.
+${HTTP2_MODULE_PREAMBLE}
+const __http2Mod = createHttp2Module({
+  EventEmitter: __eventsMod,
+  Readable: __streamMod.Readable,
+  Stream: __streamMod,
+  Buffer: __BufferMod,
+  emitWarning: (message) => {
+    const proc = globalThis.process;
+    if (proc && typeof proc.emitWarning === "function") proc.emitWarning(message);
+  },
+});
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  repl module (W3: forward to workerd) ───────────────────────────
