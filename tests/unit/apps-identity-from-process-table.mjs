@@ -341,18 +341,19 @@ async function serve(t, { command, argv, cwd, port, tag }) {
 {
   const t = setup();
   const { self, processes, portRegistry, ctx } = t;
-  // The shell the SDK drives is a real session shell, where `npx` stands in
-  // for the builtin: it adopts the wrapper pid the job allocated (the
-  // bin-spawn contract) and registers the dev server's port under it, then
-  // the shell line returns 0.
+  // The shell the SDK drives is a real session shell over the session's
+  // process table, where `npx` stands in for the builtin: it adopts the
+  // wrapper pid the job allocated (the bin-spawn contract) and registers the
+  // dev server's port under it, then the shell line returns 0.
   const harness = createSqliteVfsTestHarness();
-  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, processes });
   ws.registry.register('npx', async (cmd) => {
     const adopted = cmd.__nimbusBinSpawn.callerPid;
     portRegistry.bindFacetStub(adopted, stub('vite'));
     await t.fm.registerPort(adopted, 5173);
     return 0;
   });
+  self.runtimeWorkspace = ws;
   self.shell = ws.shell;
   self._w1SessionDestroyed = false;
   self.shellProcessPid = null;

@@ -210,6 +210,21 @@ export class SessionProcessSupervisor {
     return reaped;
   }
 
+  /**
+   * Remove `pid` and every process under it that has ended, now, as a parent
+   * that waited for its children does: what a caller ran to completion has
+   * nothing left to report. One still running is kept. Logs are orphaned as
+   * by {@link reap}.
+   */
+  reapTree(pid: number): number {
+    let reaped = 0;
+    for (const each of [pid, ...this.table.descendantsOf(pid).map((entry) => entry.pid)]) {
+      if (this.table.forget(each)) reaped++;
+    }
+    if (reaped > 0) this.logRetention?.();
+    return reaped;
+  }
+
   get stats(): ProcessTable['stats'] {
     return this.table.stats;
   }

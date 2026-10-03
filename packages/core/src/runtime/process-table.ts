@@ -259,6 +259,13 @@ export class ProcessTable {
     return found;
   }
 
+  /** Remove `pid` if it has ended. A running process is kept. */
+  forget(pid: number): boolean {
+    const entry = this.processes.get(pid);
+    if (!entry || entry.state === 'running') return false;
+    return this.processes.delete(pid);
+  }
+
   /** Clean up exited processes older than maxAge ms. */
   reap(maxAge = 60_000): number {
     const now = Date.now();

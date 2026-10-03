@@ -34,7 +34,7 @@ import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentit
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
-import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { parseShellState, type NamedShell, type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
@@ -43,30 +43,6 @@ import { _acquireForRoutedRequest } from './rpc.js';
 export interface ProgrammaticShell {
   env?: Record<string, string>;
   getEnv(): Record<string, string>;
-  getCwd(): string;
-  execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{ exitCode: number }>;
-  closeDescriptors(): Promise<void>;
-}
-
-/**
- * What a named shell has to be built from: the session shell's own kernel
- * filesystem, command registry and process registry, so a second Shell is a
- * second cwd and environment and nothing else.
- */
-type ProgrammaticShellParent = ProgrammaticShell & Pick<
-  Shell,
-  'getVfs' | 'getRegistry' | 'getProcessRegistry' | 'getHostProcessSignals' | 'getRunAsHost' | 'filesystem'
->;
-
-interface ProgrammaticShellExecuteOptions {
-  cwd?: string;
-  env?: Record<string, string>;
-  /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. A returned promise is backpressure. */
-  onStdout?: (data: Uint8Array) => void | Promise<void>;
-  onStderr?: (data: Uint8Array) => void | Promise<void>;
-  signal?: AbortSignal;
-  stdin?: string;
-  commandContext?: Record<string, unknown>;
 }
 
 type ProgrammaticContext = DurableObjectState;
@@ -103,6 +79,11 @@ export interface ProgrammaticHost extends TimerHost {
   _w1JanitorAt: number | null;
   env: RuntimeCatalogEnv;
   ctx: ProgrammaticContext;
+  /**
+   * Whose shells every call runs in, one of its own or a named one (see
+   * `withShellState`). Composed over this host's `processes`.
+   */
+  readonly runtimeWorkspace: NimbusWorkspace | null;
   shell: ProgrammaticShell | null;
   shellProcessPid: number | null;
   sqliteFs: SqliteVFS | null;
@@ -113,8 +94,8 @@ export interface ProgrammaticHost extends TimerHost {
   viteDevServer: ProgrammaticViteServer | null;
   cirrusReal: ProgrammaticCirrusServer | null;
   _cpRegistry: MinShellRegistry | null;
-  /** One serialization queue per named durable shell. See `withShellState`. */
-  _programmaticShellQueues?: Map<string, Promise<void>>;
+  /** Named shells this object's storage held before they were the workspace's, once adopted. See `withShellState`. */
+  _storedShellsAdopted?: Promise<void>;
   _viteShimPid: number | null;
   _viteShimPort: number | null;
   _cirrusHmrWsClients?: { clear(): void } | null;
@@ -158,9 +139,8 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
   cred?: VfsCred;
   /**
    * Run in a NAMED shell whose cwd and environment persist between calls, the
-   * way an interactive terminal does. Omitted, the call runs on the session's
-   * one shell and nothing is remembered — the behaviour every programmatic
-   * exec has always had.
+   * way an interactive terminal does; it is the workspace's shell of that name.
+   * Omitted, the call runs in a shell of its own and nothing is remembered.
    */
   shellId?: string;
   /** @internal Initial cwd for a shellId with no durable state yet. */
@@ -182,108 +162,45 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
   restart?: ResidentRestartPolicy;
 }
 
-const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const ShellStateSchema = z.object({
-  cwd: z.string().startsWith('/'),
-  env: z.record(z.string(), z.string()),
-}).strict();
-
 /**
- * A second Shell over the session's own kernel, filesystem and command
- * registry — the same objects the interactive shell uses, so a named shell is
- * not a second filesystem or a second process table. Only cwd and environment
- * are its own, which is exactly what makes `cd` stick between calls.
- */
-export function createProgrammaticShell(
-  self: ProgrammaticHost,
-  pid: number,
-  state: { cwd: string; env: Record<string, string> },
-): ProgrammaticShell {
-  const parent = self.shell as ProgrammaticShellParent | null;
-  if (!parent) throw new Error('Nimbus shell did not initialize');
-  const shell = new Shell(
-    new HeadlessTerminal(),
-    parent.filesystem,
-    parent.getRegistry(),
-    { ...parent.getEnv(), ...state.env, $: String(pid) },
-    parent.getProcessRegistry(),
-    {
-      pid,
-      get cred() { return self.processes.cred(pid); },
-      setUmask: (mask: number) => self.processes.setUmask(pid, mask),
-      runAs: parent.getRunAsHost(),
-    },
-  );
-  const hostSignals = parent.getHostProcessSignals();
-  if (hostSignals) shell.setHostProcessSignals(hostSignals);
-  shell.setCwd(state.cwd);
-  return shell as unknown as ProgrammaticShell;
-}
-
-/**
- * Run `body` against a named shell's durable state, or against nothing when no
- * `shellId` was given.
- *
- * Serialized per id: two concurrent calls naming one shell would otherwise
- * read the same cwd and race to write it back, and the loser's `cd` would
- * vanish. A background job reads the state but does not write it back — its
- * shell outlives the call, so what it would persist is a snapshot of a moment
+ * Run `body` in the named shell `options.shellId`, or with none when no
+ * `shellId` was given. The named shells are the workspace's
+ * (`NimbusWorkspace.withNamedShell`), so a name means the same shell here and
+ * to the workspace's own `exec`, and calls on it run one at a time. A
+ * background job reads the state but does not write it back: its shell
+ * outlives the call, so what it would persist is a snapshot of a moment
  * nobody asked about.
  */
 async function withShellState<T>(
   self: ProgrammaticHost,
   options: ProgrammaticExecOptions,
   background: boolean,
-  run: (scoped: ScopedShell | null) => Promise<T>,
+  run: (named: NamedShell | null) => Promise<T>,
 ): Promise<T> {
   if (options.shellId === undefined) return run(null);
-  const id = ShellIdSchema.parse(options.shellId);
-  self._programmaticShellQueues ??= new Map();
-  const queues = self._programmaticShellQueues;
-  const previous = queues.get(id) ?? Promise.resolve();
-  let release = () => {};
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  const tail = previous.catch(() => undefined).then(() => gate);
-  queues.set(id, tail);
-  await previous.catch(() => undefined);
-  try {
-    const key = `${SHELL_STATE_KEY_PREFIX}${id}`;
-    const stored = await self.ctx.storage.get(key);
-    const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
-      ? options.shellRoot
-      : getHome(self);
-    const state = stored === undefined
-      ? { cwd: root, env: {} as Record<string, string> }
-      : ShellStateSchema.parse(stored);
-    let shell: ProgrammaticShell | null = null;
-    try {
-      return await run({
-        cwd: state.cwd,
-        create: (pid: number) => {
-          shell = createProgrammaticShell(self, pid, state);
-          return shell;
-        },
-      });
-    } finally {
-      const captured = background || shell === null ? state : capturedShellState(shell);
-      await self.ctx.storage.put(key, captured);
-    }
-  } finally {
-    release();
-    if (queues.get(id) === tail) queues.delete(id);
+  const workspace = self.runtimeWorkspace;
+  if (!workspace) throw new Error('Nimbus shell did not initialize');
+  self._storedShellsAdopted ??= adoptStoredShells(self, workspace);
+  await self._storedShellsAdopted;
+  const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
+    ? options.shellRoot
+    : getHome(self);
+  return workspace.withNamedShell(options.shellId, { start: { cwd: root }, persist: !background }, run);
+}
+
+/**
+ * The named shells this object's storage holds from before they were the
+ * workspace's (worker 0.13 and earlier kept each under
+ * `SHELL_STATE_KEY_PREFIX`). Each becomes the workspace's shell of that name,
+ * unless the workspace already has one, and leaves storage.
+ */
+async function adoptStoredShells(self: ProgrammaticHost, workspace: NimbusWorkspace): Promise<void> {
+  const stored = await self.ctx.storage.list({ prefix: SHELL_STATE_KEY_PREFIX });
+  if (stored.size === 0) return;
+  for (const [key, state] of stored) {
+    await workspace.withNamedShell(key.slice(SHELL_STATE_KEY_PREFIX.length), { start: parseShellState(state) }, async () => {});
   }
-}
-
-interface ScopedShell {
-  cwd: string;
-  create(pid: number): ProgrammaticShell;
-}
-
-function capturedShellState(shell: ProgrammaticShell): { cwd: string; env: Record<string, string> } {
-  const env = { ...shell.getEnv() };
-  // `$` is the pid of the call that just ended, not state of the shell.
-  delete env.$;
-  return { cwd: shell.getCwd(), env };
+  await self.ctx.storage.delete([...stored.keys()]);
 }
 
 export interface ProgrammaticDestroyOptions {
@@ -419,13 +336,13 @@ function startShellJob(
     onStdout?: (data: Uint8Array) => void | Promise<void>;
     onStderr?: (data: Uint8Array) => void | Promise<void>;
   },
-  scoped: ScopedShell | null,
+  named: NamedShell | null,
 ): ShellJob {
-  const parentShell = self.shell;
-  if (!parentShell) throw new Error('Nimbus shell did not initialize');
+  const workspace = self.runtimeWorkspace;
+  if (!workspace) throw new Error('Nimbus shell did not initialize');
 
   const line = String(command);
-  const cwd = options.cwd ?? scoped?.cwd ?? parentShell.getCwd?.() ?? '/home/user';
+  const cwd = options.cwd ?? named?.cwd ?? workspace.shell.getCwd();
   const entry = self.processes.spawn(line, [line], cwd, {
     longRunning: job.background,
     cred: options.cred,
@@ -438,8 +355,7 @@ function startShellJob(
   // is shared by every unnamed call (and the terminal), and two calls running
   // on it at once would read and overwrite each other's variables mid-run.
   // The shell ends with the call, closing the descriptors an `exec` left open.
-  const shell = scoped?.create(entry.pid)
-    ?? createProgrammaticShell(self, entry.pid, { cwd, env: options.env ?? {} });
+  const shell = named?.open(entry.pid) ?? workspace.shellFor(entry.pid, { cwd, env: options.env });
   const pid = entry.pid;
   if (job.background) self.processes.openInput(pid);
 
@@ -459,8 +375,8 @@ function startShellJob(
     // The shell already starts from this call's cwd and env. Passing them to
     // a named shell again would pin it to the values the call started with,
     // and its `cd` would not survive the call.
-    cwd: scoped ? options.cwd : undefined,
-    env: scoped ? options.env : undefined,
+    cwd: named ? options.cwd : undefined,
+    env: named ? options.env : undefined,
     onStdout: emit('stdout', job.onStdout),
     onStderr: emit('stderr', job.onStderr),
     signal: controller.signal,
@@ -529,7 +445,7 @@ export async function rpcExecStream(
   return new Promise<ExecStream>((resolve, reject) => {
     // The exit lands after a named shell's state is saved, so a caller that
     // has read `exit` sees its `cd` on the next call.
-    withShellState(self, options, false, (scoped) => streamOnShell(self, command, options, scoped, (started) => {
+    withShellState(self, options, false, (named) => streamOnShell(self, command, options, named, (started) => {
       writer = started;
       resolve(started.stream);
     })).then(
@@ -543,7 +459,7 @@ async function streamOnShell(
   self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions,
-  scoped: ScopedShell | null,
+  named: NamedShell | null,
   started: (writer: ExecStreamWriter) => void,
 ): Promise<ExecExit> {
   const began = Date.now();
@@ -558,7 +474,7 @@ async function streamOnShell(
     background: false,
     onStdout: sink('stdout'),
     onStderr: sink('stderr'),
-  }, scoped);
+  }, named);
   abort = job.abort;
   started(writer);
 
@@ -659,16 +575,16 @@ export async function rpcStartProcess(
   const withPolicy: ProgrammaticExecOptions = options.restart === 'on-failure'
     ? { ...options, env: { ...(options.env ?? {}), [RESTART_POLICY_ENV]: 'on-failure' } }
     : options;
-  return withShellState(self, withPolicy, true, (scoped) => startOnShell(self, command, withPolicy, scoped));
+  return withShellState(self, withPolicy, true, (named) => startOnShell(self, command, withPolicy, named));
 }
 
 async function startOnShell(
   self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions,
-  scoped: ScopedShell | null,
+  named: NamedShell | null,
 ): Promise<ProgrammaticStartResult> {
-  const job = startShellJob(self, command, options, { background: true }, scoped);
+  const job = startShellJob(self, command, options, { background: true }, named);
   const line = String(command);
 
   notifyTerminalEvent(self.terminal ?? null, {

@@ -30,7 +30,7 @@ import type { Command, CommandRunAsHost } from '../substrate/lifo/commands/types
 import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
 import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
-import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
+import { runCommand } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
@@ -62,6 +62,62 @@ import { formatProcMounts, registerMountCommands } from '../shell/mount-commands
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler, type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
+import { z } from 'zod/v4';
+
+/** Where a shell is: its working directory and its environment. */
+export interface ShellState {
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+}
+
+/** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
+export interface WorkspaceExecOptions extends RunOptions {
+  /**
+   * Run in this named shell, whose cwd and environment persist between calls
+   * the way a terminal tab's do; calls on one name run one at a time. 1 to
+   * 160 characters from `A-Z a-z 0-9 . _ : -`, starting with a letter or
+   * digit. Omitted, the call runs in a shell of its own.
+   */
+  readonly shellId?: string;
+}
+
+/** A named shell, held by one call: see {@link NimbusWorkspace.withNamedShell}. */
+export interface NamedShell {
+  /** Its working directory, where the process the call runs as starts. */
+  readonly cwd: string;
+  /** The shell, built for `pid`, the process the call runs as. */
+  open(pid: number): Shell;
+}
+
+export interface NamedShellOptions {
+  /**
+   * Where a name with no saved state starts: absent, in the directory the
+   * workspace started in (`fs.cwd`), with nothing beyond the workspace shell's
+   * environment.
+   */
+  readonly start?: { readonly cwd: string; readonly env?: Readonly<Record<string, string>> };
+  /**
+   * Save what the shell holds when the call settles; the default. False for a
+   * call whose shell outlives it, such as a background job: what it would
+   * save is a moment nobody asked about.
+   */
+  readonly persist?: boolean;
+}
+
+/** A shell's name, the rule an `execId` follows. */
+const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+const ShellStateSchema = z.object({
+  cwd: z.string().startsWith('/'),
+  env: z.record(z.string(), z.string()),
+}).strict();
+
+/** A saved shell state, or an error naming what is wrong with it. */
+export function parseShellState(value: unknown): ShellState {
+  return ShellStateSchema.parse(value);
+}
+
+/** Where named shells are saved, one row each; made by the first call that names one. */
+const SHELLS_TABLE = 'vfs_shells';
 
 export interface NimbusWorkspaceOptions {
   /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
@@ -225,7 +281,9 @@ export class NimbusWorkspace {
    *  supplied one, else the `sh` this workspace spawned. */
   readonly shellProcessPid: number;
 
-  private readonly commands: SandboxCommandsImpl;
+  /** One queue per named shell; see {@link withNamedShell}. */
+  private readonly shellQueues = new Map<string, Promise<void>>();
+  private shellTableMade = false;
 
   private constructor(
     vfs: SqliteVFS,
@@ -240,6 +298,8 @@ export class NimbusWorkspace {
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
     readonly filesystem: ProcessFiles,
     private readonly runtimeLease: import('../runtime/os-contracts.js').NimbusHostFilesystemLease,
+    /** Who the workspace shell acts as, and so every call's process. */
+    private readonly identity: ShellCommandIdentity,
   ) {
     this.vfs = vfs;
     this.kernel = kernel;
@@ -249,7 +309,6 @@ export class NimbusWorkspace {
     this.processes = processes;
     this.runtimes = runtimes;
     this.shellProcessPid = shellProcessPid;
-    this.commands = new SandboxCommandsImpl(shell, registry);
     // The shell's own process view: a host calling `.fs` acts as the
     // session user, never as the kernel. Its working directory is the
     // shell's before anything has run: create's `cwd`, else HOME.
@@ -438,7 +497,7 @@ export class NimbusWorkspace {
       return new NimbusWorkspace(
         vfs, kernel, shell, registry, env, options.sql,
         processes, runtimes, shellProcessPid,
-        supervisorOps, filesystem, runtimeLease,
+        supervisorOps, filesystem, runtimeLease, identity,
       );
     } catch (error) {
       await runtimeLease.dispose();
@@ -450,8 +509,133 @@ export class NimbusWorkspace {
     await this.runtimeLease.dispose();
   }
 
-  exec(command: string, options?: RunOptions): Promise<CommandResult> {
-    return this.commands.run(command, options);
+  /**
+   * Run `command` as a process of its own and collect what it printed.
+   *
+   * Without a `shellId` the call runs in a shell built for it alone (see
+   * {@link shellFor}), from the workspace shell's cwd and environment with the
+   * call's `cwd` and `env` on top, under a new process with the workspace
+   * shell's credential and umask. What it changes (its cwd, variables,
+   * functions, aliases, options, umask, descriptors) ends with it: none of it
+   * reaches the next call or the workspace shell, and calls run at once
+   * without seeing each other's. With a `shellId` it runs in that named shell
+   * instead (see {@link withNamedShell}), and `cwd` and `env` hold for this
+   * call only. Either way the process, and whatever it started that has
+   * ended, leaves the process table when the result is returned.
+   */
+  exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
+    const { shellId, ...call } = options;
+    if (shellId === undefined) return this.runProcess(command, call, null);
+    return this.withNamedShell(shellId, {}, (named) => this.runProcess(command, call, named));
+  }
+
+  private async runProcess(command: string, options: RunOptions, named: NamedShell | null): Promise<CommandResult> {
+    const cwd = options.cwd ?? named?.cwd ?? this.shell.getCwd();
+    const { pid } = this.processes.spawn(command, [command], cwd, { cred: this.identity.cred });
+    // A shell of the call's own already starts from its cwd and env. A named
+    // shell takes them for the call only: passed as its state they would pin
+    // it there, and its `cd` would not survive the call.
+    const shell = named?.open(pid) ?? this.shellFor(pid, { cwd, env: options.env });
+    let exitCode = 1;
+    try {
+      const result = await runCommand(shell, command, named ? options : { ...options, cwd: undefined, env: undefined });
+      exitCode = result.exitCode;
+      return result;
+    } finally {
+      this.processes.exit(pid, exitCode);
+      // Its descriptors close as it exits; its entry goes even if one fails to.
+      try {
+        await shell.closeDescriptors();
+      } finally {
+        this.processes.reapTree(pid);
+      }
+    }
+  }
+
+  /**
+   * A shell of its own for process `pid`, a second cwd and environment over
+   * the workspace shell's filesystem, commands and kernel. It starts in
+   * `state.cwd` with the workspace shell's environment and `state.env` on
+   * top. Its commands act as `pid` (`$$`, and the credential and umask
+   * {@link processes} holds for it); `sudo` and `su` go through the workspace
+   * shell's identity, and `kill` reaches what the workspace shell's does.
+   *
+   * For a host that runs a command under a process of its own. When that
+   * process ends, {@link Shell.closeDescriptors} closes what an `exec` in it
+   * left open.
+   */
+  shellFor(pid: number, state: { readonly cwd: string; readonly env?: Readonly<Record<string, string>> }): Shell {
+    const processes = this.processes;
+    const shell = new Shell(
+      new HeadlessTerminal(),
+      this.filesystem,
+      this.registry,
+      { ...this.shell.getEnv(), ...state.env, $: String(pid) },
+      this.kernel.processRegistry,
+      {
+        pid,
+        get cred() { return processes.cred(pid); },
+        setUmask: (mask: number) => processes.setUmask(pid, mask),
+        runAs: this.shell.getRunAsHost(),
+      },
+    );
+    const hostSignals = this.shell.getHostProcessSignals();
+    if (hostSignals) shell.setHostProcessSignals(hostSignals);
+    shell.setCwd(state.cwd);
+    return shell;
+  }
+
+  /**
+   * Run `body` in the named shell `id`: in the cwd and environment the last
+   * call on that name left it with, else `options.start`. What the shell
+   * holds when `body` settles is saved in this workspace's database, so a
+   * name outlives this object and its host's restarts.
+   *
+   * Calls on one name run one at a time, in the order they were made: two at
+   * once would read one state and race to write it back, and the loser's
+   * `cd` would vanish. Calls on different names run at once. A call's
+   * functions, aliases, options, umask and descriptors are its process's and
+   * end with it; only cwd and environment persist.
+   *
+   * {@link exec} with a `shellId` is this around one command. A host that
+   * runs its own process around the shell (a session's exec and background
+   * jobs) calls it directly, and builds the shell with `open(pid)`.
+   */
+  async withNamedShell<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T> {
+    const name = ShellIdSchema.parse(id);
+    const previous = this.shellQueues.get(name) ?? Promise.resolve();
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => gate);
+    this.shellQueues.set(name, tail);
+    await previous;
+    try {
+      if (!this.shellTableMade) {
+        this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
+        this.shellTableMade = true;
+      }
+      const [saved] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
+      const state = saved === undefined
+        ? { cwd: options.start?.cwd ?? this.fs.cwd, env: options.start?.env ?? {} }
+        : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
+      const call: { shell?: Shell } = {};
+      try {
+        return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
+      } finally {
+        if (options.persist !== false) {
+          const env = { ...(call.shell?.getEnv() ?? state.env) };
+          // `$` is the pid of the call that just ended, not state of the shell.
+          delete env.$;
+          this.sql.exec(
+            `INSERT INTO ${SHELLS_TABLE} (id, cwd, env) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET cwd = excluded.cwd, env = excluded.env`,
+            name, call.shell?.getCwd() ?? state.cwd, JSON.stringify(env),
+          );
+        }
+      }
+    } finally {
+      release();
+      if (this.shellQueues.get(name) === tail) this.shellQueues.delete(name);
+    }
   }
 
   /** The hosting object forwards its supervisorOp RPC to this method. */
@@ -500,6 +684,7 @@ export class NimbusWorkspace {
     for (const table of WORKSPACE_TABLES) {
       this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
+    this.shellTableMade = false;
   }
 }
 
@@ -699,7 +884,7 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
 }
 
 /**
- * Every table the filesystem creates.
+ * Every table the workspace creates: the filesystem's, and its named shells.
  *
  * Listed rather than discovered because the namespace is the contract an
  * embedder is owed: these names, and nothing else in their database, belong
@@ -729,6 +914,7 @@ const WORKSPACE_TABLES = [
   'vfs_append_module_state',
   'vfs_append_pid_revocations',
   'vfs_append_acked_gaps',
+  SHELLS_TABLE,
 ] as const;
 
 /**

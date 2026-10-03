@@ -65,7 +65,7 @@ const InputFrame = z.discriminatedUnion('type', [
 class RuntimeOwner {
   readonly terminal: WebSocketTerminal;
   readonly _cpRegistry: CommandRegistry;
-  readonly _programmaticShellQueues = new Map<string, Promise<void>>();
+  _storedShellsAdopted?: Promise<void>;
   readonly _hostedProcesses = new Map<string, rpc.HostedProcessRecord>();
   readonly _hostedProcessWaiters = new Map<string, Set<(record: rpc.HostedProcessRecord) => void>>();
   readonly _cirrusHmrWsClients = new Map<WebSocket, string>();
@@ -134,6 +134,7 @@ class RuntimeOwner {
   get ctx() { return this.options.ctx; }
   get _w1SessionDestroyed() { return this.closing !== null; }
   get env() { return this.options.env; }
+  get runtimeWorkspace() { return this.options.workspace; }
   get sqliteFs() { return this.options.workspace.vfs; }
   get kernel() { return this.options.workspace.kernel; }
   get shell() { return this.options.workspace.shell; }
