@@ -108,7 +108,11 @@ export function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R
   return value instanceof Promise ? value.then(next) : next(value);
 }
 function fail(code: string): never { throw Object.assign(new Error(code), { code }); }
-const ft = (type: string) => type === 'directory' ? 3 : type === 'symlink' ? 7 : 4;
+/** WASI's filetype for a stat's or a dirent's type; WASI has no FIFO, which wasmtime also calls unknown. */
+const FILETYPES: Readonly<Record<string, number>> = {
+  unknown: 0, block: 1, character: 2, directory: 3, file: 4, socket: 6, symlink: 7, fifo: 0,
+};
+const ft = (type: string) => FILETYPES[type] ?? 0;
 const num = (value: number | bigint): number => {
   const n = Number(value);
   if (!Number.isSafeInteger(n)) fail('EINVAL');

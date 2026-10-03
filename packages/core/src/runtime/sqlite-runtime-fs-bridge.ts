@@ -494,14 +494,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (p === '' && this.namespace) {
       for (const entry of this.namespace.mountedNames('/')) entries.set(entry.name, { name: entry.name, type: entry.type });
     }
-    for (const entry of this.vfs.readdir(p)) {
-      const type = entry.type === 'directory'
-        ? 'directory'
-        : entry.type === 'symlink'
-          ? 'symlink'
-          : 'file';
-      entries.set(entry.name, { name: entry.name, type });
-    }
+    for (const entry of this.vfs.readdir(p)) entries.set(entry.name, { name: entry.name, type: entry.type });
     const key = this.legacyKey(p);
     const prefix = key ? `${key}/` : '';
     for (const link of this.legacySymlinks.list()) {

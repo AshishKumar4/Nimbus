@@ -66,7 +66,7 @@ import {
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
-import { readDeclaredSource } from './vfs.js';
+import { readDeclaredSource, type VfsDirentType } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import {
   CDC_MIN,
@@ -192,7 +192,8 @@ export interface VfsOpenDescription {
   read(offset: number, length: number): Uint8Array;
   write(offset: number, bytes: Uint8Array): number;
   truncate(size: number): void;
-  readdir(): { name: string; type: VfsInodeKind }[];
+  /** The directory's entries; a mounted backend's may name a device or say its type is unknown. */
+  readdir(): { name: string; type: VfsDirentType }[];
   chmod(mode: number): void;
   chown(uid: number, gid: number): void;
   utimes(atime: number, mtime: number): void;

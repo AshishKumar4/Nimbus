@@ -17,7 +17,7 @@ import { findUnixGroupName, findUnixUserName } from '../../../../shell/unix-acco
 import { globMatch } from '../../utils/glob.js';
 import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand, type Expression, type FindPlan, type Primary, type TypeLetter } from './find/expression.js';
-import { fileTypeLetter, renderFormat, type FileTypeLetter } from './find/format.js';
+import { direntTypeLetter, fileTypeLetter, renderFormat, type FileTypeLetter } from './find/format.js';
 import { FindEntry, READ_AHEAD_CALLS, Walker, type VisitResult } from './find/walk.js';
 
 const decoder = new TextDecoder();
@@ -54,12 +54,8 @@ function readsStatsFirst(expression: Expression): boolean {
         case 'true': case 'false': case 'name': case 'path': case 'print': case 'prune': case 'quit':
         case 'delete': case 'exec': case 'access':
           return false;
-        // A regular file and a device are told apart by a stat; a test that wants both, or neither, needs none.
-        case 'type': {
-          if (primary.target) return true;
-          const others = [primary.types.f, primary.types.b, primary.types.c, primary.types.p, primary.types.s];
-          return others.some((wanted) => wanted === true) && others.some((wanted) => wanted !== true);
-        }
+        // -type reads d_type; -xtype reads the other stat.
+        case 'type': return primary.target;
         case 'printf': return primary.format.needs === 'stat';
         default: return true;
       }
@@ -255,7 +251,7 @@ class FindRun {
       case 'printf': {
         const needs = primary.format.needs;
         const stat = needs === 'stat' ? await entry.statForTest() : null;
-        const type = needs === 'path' ? null : stat !== null ? fileTypeLetter(stat) : await this.typeLetter(entry, null);
+        const type = needs === 'path' ? null : stat !== null ? fileTypeLetter(stat) : await this.typeLetter(entry);
         if ((needs === 'stat' && stat === null) || (needs === 'type' && type === null)) return false;
         const chunks = await renderFormat(primary.format, {
           path: entry.path,
@@ -287,29 +283,19 @@ class FindRun {
   }
 
   /**
-   * The file's type letter as fts knows it: the walk's stat, for what the
-   * walk stats; otherwise readdir's type, where a 'file' (a regular file, or
-   * a device readdir cannot tell apart) is asked of a stat when `types` needs
-   * the difference and that stat can be had, d_type being what GNU trusts.
-   * Null when the walk's stat failed (reported when the walk reached it).
+   * The file's type letter as fts knows it: readdir's d_type, as GNU trusts
+   * it, and the walk's stat for what the walk stats (a start point, a
+   * directory, a followed link, an entry readdir cannot type). Null when
+   * that stat failed (reported when the walk reached it).
    */
-  private async typeLetter(entry: FindEntry, types: Readonly<Partial<Record<TypeLetter, true>>> | null): Promise<FileTypeLetter | null> {
-    if (entry.statedByWalk) {
-      const stat = await entry.xstat();
-      return stat.ok ? fileTypeLetter(stat.value) : null;
-    }
-    if (entry.direntType === 'symlink') return 'l';
-    if (entry.direntType === 'directory') return 'd';
-    if (types !== null) {
-      const others = [types.f, types.b, types.c, types.p, types.s];
-      if (others.every((wanted) => wanted === true) || others.every((wanted) => wanted !== true)) return 'f';
-    }
+  private async typeLetter(entry: FindEntry): Promise<FileTypeLetter | null> {
+    if (entry.direntType !== null && !entry.statedByWalk) return direntTypeLetter(entry.direntType);
     const stat = await entry.xstat();
-    return stat.ok ? fileTypeLetter(stat.value) : 'f';
+    return stat.ok ? fileTypeLetter(stat.value) : null;
   }
 
   private async testType(entry: FindEntry, types: Readonly<Partial<Record<TypeLetter, true>>>): Promise<boolean> {
-    const letter = await this.typeLetter(entry, types);
+    const letter = await this.typeLetter(entry);
     return letter !== null && types[letter] === true;
   }
 
@@ -362,11 +348,8 @@ class FindRun {
   private async delete(entry: FindEntry): Promise<boolean> {
     if (entry.parent === null && entry.start === '.') return true;
     const vfs = this.ctx.vfs;
-    let isDirectory = entry.direntType === 'directory';
-    if (entry.direntType === null || (entry.direntType === 'symlink' && entry.following)) {
-      const stat = await entry.xstat();
-      isDirectory = stat.ok && stat.value.type === 'directory';
-    }
+    const type = await entry.walkType();
+    const isDirectory = type.ok && type.value === 'directory';
     try {
       try {
         await (isDirectory ? vfs.rmdir(entry.absolute) : vfs.unlink(entry.absolute));

@@ -134,9 +134,17 @@ export interface RuntimeVfsStat {
   revision: number;
 }
 
+/**
+ * A directory entry's type, as readdir(3)'s d_type gives it: exact, so a
+ * device, FIFO or socket is not called a regular file, and 'unknown' only
+ * where the backend cannot tell without a stat (DT_UNKNOWN), which a caller
+ * that needs the type then asks of stat for that entry alone.
+ */
+export type RuntimeDirentType = RuntimeFileType | 'character' | 'block' | 'fifo' | 'socket' | 'unknown';
+
 export interface RuntimeVfsDirEntry {
   name: string;
-  type: RuntimeFileType;
+  type: RuntimeDirentType;
 }
 
 export interface RuntimeOpenFlags {

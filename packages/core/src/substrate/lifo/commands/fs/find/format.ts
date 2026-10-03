@@ -7,6 +7,7 @@
  */
 
 import type { ProcessStat } from '../../../../../runtime/process-files.js';
+import type { VfsDirentType } from '../../../../../vfs/vfs.js';
 import { FindUsageError } from './errors.js';
 
 const encoder = new TextEncoder();
@@ -253,6 +254,15 @@ const FILE_TYPE_LETTERS: ReadonlyMap<number, FileTypeLetter> = new Map<number, F
   [0o100000, 'f'], [0o040000, 'd'], [0o120000, 'l'], [0o140000, 's'],
   [0o060000, 'b'], [0o020000, 'c'], [0o010000, 'p'],
 ]);
+
+const DIRENT_TYPE_LETTERS: Readonly<Record<Exclude<VfsDirentType, 'unknown'>, FileTypeLetter>> = {
+  file: 'f', directory: 'd', symlink: 'l', character: 'c', block: 'b', fifo: 'p', socket: 's',
+};
+
+/** The -type letter readdir's d_type gives an entry, or null where it cannot tell. */
+export function direntTypeLetter(type: VfsDirentType): FileTypeLetter | null {
+  return type === 'unknown' ? null : DIRENT_TYPE_LETTERS[type];
+}
 
 /**
  * findutils' mode_to_filetype: the -type letter for a file. A stat's mode

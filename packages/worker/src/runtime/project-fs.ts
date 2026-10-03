@@ -10,10 +10,11 @@
 import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
 import { syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
-type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'readdir'
+type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString'
   | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
 
 /**
@@ -24,6 +25,9 @@ type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'rea
  */
 export type ProjectFs = {
   [K in ProjectFsOp]: (...args: Parameters<CredentialedVfs[K]>) => ReturnType<CredentialedVfs[K]> | Promise<ReturnType<CredentialedVfs[K]>>;
+} & {
+  /** A directory's entries, typed as the namespace types them: a mount's may name a device, or say it cannot tell. */
+  readdir(key: string): Awaitable<Array<Pick<VfsDirent, 'name' | 'type'>>>;
 };
 
 /** The principal's `view` in the engine's call shape. */

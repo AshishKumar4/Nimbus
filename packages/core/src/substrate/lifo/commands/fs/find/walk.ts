@@ -18,7 +18,7 @@
  */
 
 import type { ProcessStat, ProcessView } from '../../../../../runtime/process-files.js';
-import type { VfsDirent, VfsFileType } from '../../../../../vfs/vfs.js';
+import type { VfsDirent, VfsDirentType } from '../../../../../vfs/vfs.js';
 import { isVfsError, syscallError, VFS_STRERROR, type VfsError } from '../../../../../vfs/vfs-error.js';
 import { resolve } from '../../../utils/path.js';
 import { quote } from './errors.js';
@@ -298,7 +298,7 @@ export class FindEntry {
     readonly depth: number,
     readonly start: string,
     /** The type readdir gave (links not followed); null for a start point, whose type comes from its stat. */
-    readonly direntType: VfsFileType | null,
+    readonly direntType: VfsDirentType | null,
     readonly parent: FindEntry | null,
   ) {}
 
@@ -429,15 +429,17 @@ export class FindEntry {
 
   /**
    * Whether the walk stats this file itself, as fts does: a start point, a
-   * directory (to know it can be entered, and where it is), and a link it
-   * follows. Every other file's type is what readdir said.
+   * directory (to know it can be entered, and where it is), a link it
+   * follows, and an entry readdir cannot type (DT_UNKNOWN). Every other
+   * file's type is what readdir said.
    */
   get statedByWalk(): boolean {
-    return this.direntType === null || this.direntType === 'directory' || (this.direntType === 'symlink' && this.following);
+    return this.direntType === null || this.direntType === 'directory' || this.direntType === 'unknown'
+      || (this.direntType === 'symlink' && this.following);
   }
 
   /** The type the walk sees: a stat's, for what the walk stats; readdir's otherwise. A failed stat leaves it unknown. */
-  async walkType(): Promise<Outcome<VfsFileType>> {
+  async walkType(): Promise<Outcome<VfsDirentType>> {
     if (this.direntType !== null && !this.statedByWalk) return { ok: true, value: this.direntType };
     const outcome = await this.xstat();
     return outcome.ok ? { ok: true, value: outcome.value.type } : outcome;
@@ -632,9 +634,10 @@ export class Walker {
    * (and the expression's, when it reads them), and the listings of the
    * directories it will descend into. Under -xdev only the stat says whether
    * a directory is on this device, and when links are followed only the
-   * stats of its ancestors say whether it is one of them; then a probe queued
-   * in its place reads those first, and never lists a directory on another
-   * device or one the walk will refuse as a loop.
+   * stats of its ancestors say whether it is one of them; then, as for an
+   * entry readdir cannot type, a probe queued in its place reads those first,
+   * and never lists a directory on another device, one the walk will refuse
+   * as a loop, or what is not a directory at all.
    */
   private readAhead(parent: FindEntry, children: readonly FindEntry[]): void {
     if (this.readAheadDone.has(parent)) return;
@@ -644,8 +647,10 @@ export class Walker {
     for (const child of children) {
       if (options.prefetchStats || child.statedByWalk) child.prefetchStat();
       if (child.depth >= options.maxDepth) continue;
-      if (child.direntType !== 'directory' && !(child.direntType === 'symlink' && child.following)) continue;
-      if (!decidedByStats) {
+      const mayBeDirectory = child.direntType === 'directory' || child.direntType === 'unknown'
+        || (child.direntType === 'symlink' && child.following);
+      if (!mayBeDirectory) continue;
+      if (!decidedByStats && child.direntType === 'directory') {
         child.prefetchListing();
         continue;
       }

@@ -104,7 +104,7 @@ export class DevVFS implements VFS {
       this.node(path, 'scandir');
       throw syscallError('ENOTDIR', 'scandir', path);
     }
-    return [...DEVICES.keys()].map((device) => ({ name: device, type: 'file' as const }));
+    return [...DEVICES.keys()].map((device) => ({ name: device, type: 'character' as const }));
   }
 
   mkdir(path: string): void {
