@@ -852,15 +852,21 @@ export class SqliteRuntimeFsBridge {
                 pending.unshift(...legacyTarget.split('/').filter(Boolean));
                 continue;
             }
-            const target = this.vfs.resolveSymlink(candidate);
-            if (target === null)
-                return null;
+            // The link's own target, walked here component by component as the
+            // rest of the path is: it may lead onto a mount, which SQLite cannot
+            // resolve inside itself (a link to /m/dir/x answered ENOENT at m).
             // Hops are counted, as Linux does (40): a link met again on a longer
             // path is one more hop, not a cycle.
             if (++hops > MAX_LINK_HOPS)
                 return null;
-            pending.unshift(...target.split('/').filter(Boolean));
+            const target = this.vfs.readlink(candidate);
+            // A relative target is taken from the link's directory under the
+            // name the engine gives it: a confined caller may spell its own /tmp
+            // by its storage name, and the engine names it /tmp.
+            const from = target.startsWith('/') ? '' : this.vfs.resolveName(resolved.join('/'), false)?.name ?? resolved.join('/');
             resolved.length = 0;
+            resolved.push(...from.split('/').filter(Boolean));
+            pending.unshift(...target.split('/').filter(Boolean));
         }
         return resolved.join('/');
     }
@@ -888,15 +894,31 @@ export class SqliteRuntimeFsBridge {
     locateMutation(path, followSymlinks, call) {
         // A lease on a directory also covers names inside it that resolve
         // elsewhere through a symlink, so the literal path is checked as well.
-        // Leases are held on storage keys: a confined caller's /tmp/x is its
-        // private file, not the shared tmp/x.
-        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(this.pathArgument(path))));
+        this.leaseAllows(this.pathArgument(path));
         const located = this.locate(path, followSymlinks);
         if (located === null)
             throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
         // And the name it reaches, on a mount as on SQLite.
-        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.mount ? normalizeVfsPath(located.path) : located.path));
+        this.leaseAllows(located.path);
         return located;
+    }
+    /**
+     * Refuses a mutation at the namespace path `path` that another owner's
+     * exclusive-mutation lease covers (EBUSY), or that lies outside the
+     * caller's own lease root (EPERM). Leases are held on storage keys: a
+     * confined caller's /tmp/x is its private file, not the shared tmp/x.
+     */
+    leaseAllows(path) {
+        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
+    }
+    /**
+     * leaseAllows, for a face that resolves a mutation's path itself (the
+     * awaiting face over an asynchronous mount): each of `paths`, the names
+     * it was given and reaches, refused as Node's error for `call`.
+     */
+    assertMayMutate(paths, call) {
+        called(call, () => { for (const path of paths)
+            this.leaseAllows(path); });
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     sqlitePath(path, followSymlinks, call) {

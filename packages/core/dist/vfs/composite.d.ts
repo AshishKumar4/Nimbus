@@ -252,11 +252,19 @@ export declare class CompositeVFS implements VFS {
     /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
     realpathAsync(path: string): Promise<string>;
     /**
-     * `input` with every link the namespace follows resolved. Inside a mount
-     * whose backend resolves its own paths the links are the backend's: the
-     * rest is spelled as given (normalized), and the one stat that proves it
-     * is there follows them.
+     * Where a call on `path` lands: the lookup every call here takes, as the
+     * caller's credential walks it. Every link on the way is followed, the
+     * last one only when `follow` (a call that acts on a link itself does not),
+     * and a missing last component is named rather than refused, as a call
+     * that creates it names it; `creating` lets missing directories on the way
+     * through as well, as mkdir -p makes them. Refused as the lookup refuses
+     * (ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO), reported for `syscall`.
      */
+    resolveAsync(path: string, options: {
+        follow: boolean;
+        creating?: boolean;
+        syscall: string;
+    }): Promise<string>;
     /**
      * Where the link at `path`, reading `link` (readlink's text), leads in
      * this namespace: the one link-root rule, for a walk over the namespace
@@ -268,6 +276,12 @@ export declare class CompositeVFS implements VFS {
      * same link.
      */
     linkLeadsTo(path: string, link: string): string;
+    /**
+     * `input` with every link the namespace follows resolved. Inside a mount
+     * whose backend resolves its own paths the links are the backend's: the
+     * rest is spelled as given (normalized), and the one stat that proves it
+     * is there follows them.
+     */
     private realpathAt;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred: VfsCred, actor?: string): CompositeVFS;

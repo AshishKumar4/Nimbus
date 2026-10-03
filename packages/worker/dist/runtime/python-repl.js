@@ -3,7 +3,7 @@ import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
-import { buildCPythonPreamble } from '@nimbus-sh/core/runtime/cpython-runner.js';
+import { buildCPythonPreamble, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** Written by the driver when the source so far cannot yet be run. */
@@ -218,14 +218,7 @@ class PythonReplAdapter {
             throw new Error('Python REPL is not initialized');
         const response = await pool.submitRequest(pythonReplStepRequestFn, new Request('https://facet.internal/python-repl-step', {
             method: 'POST',
-            body: JSON.stringify({
-                userCode,
-                pythonHome: this.pythonHome,
-                pyArgv: ['python'],
-                userEnv: { HOME: this.deps.home, PYTHONUNBUFFERED: '1' },
-                progName: 'python',
-                cwd: '/home/user',
-            }),
+            body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
             signal,
         }), { timeoutMs: 60_000 });
         if (!response.ok) {
@@ -234,6 +227,21 @@ class PythonReplAdapter {
         }
         return PythonFacetResult.parse(await response.json());
     }
+}
+/**
+ * What one prompt line hands the facet (__cpythonReplRun): the driver, the
+ * interpreter's setup, and `enter`, the source that starts the prompt in the
+ * shell's working directory, which the facet runs once per interpreter.
+ */
+export function pythonReplStep(deps, pythonHome, userCode) {
+    return {
+        userCode,
+        pythonHome,
+        pyArgv: ['python'],
+        userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },
+        progName: 'python',
+        ...(deps.start ? { enter: enterWorkingDirectory(deps.start.binName, deps.start.cwd) } : {}),
+    };
 }
 /**
  * Facet-side, request-shaped: serialized with fn.toString() into the
@@ -245,7 +253,7 @@ class PythonReplAdapter {
  * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
  * interpreter at its suspension point.
  */
-async function pythonReplStepRequestFn(request, facetEnv) {
+export async function pythonReplStepRequestFn(request, facetEnv) {
     const args = await request.json();
     if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
         throw new Error('Python REPL request must contain userCode');
