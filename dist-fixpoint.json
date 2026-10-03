@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "be2dac24413dea48545b55d7335a97edbdbd33213991ed9947a0b6f89bcb81f9",
+  "fingerprint": "a106d61876b0a3eb586f7025a5f9ecbdaceb0155300fb5e381b8ea1b7ab1ed20",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -356,7 +356,7 @@
     "packages/core/dist/runtime/python-server-adapter.js": "48bb1597d57c98ae8b5abd429cd5561c15fdf4907e1710264ebdf6a7085a6ce4",
     "packages/core/dist/runtime/require-resolver.d.ts": "c4847d7a7c28348d7997f02786304d4ca70bb6969c0063501e4dd5eeac5d6f18",
     "packages/core/dist/runtime/require-resolver.d.ts.map": "fcde29acc7af7cb7e1a6ff65d4f8a6e0120246f1b0f134762d5fd23e7f3d7bc9",
-    "packages/core/dist/runtime/require-resolver.js": "855047f6d6b12a229178686a0c28ee58bf2d02992645b0a38b29c907feef70fc",
+    "packages/core/dist/runtime/require-resolver.js": "3dbe8454448f3698bf080c135242caa86a1688acb7a389e60d913f1451812a03",
     "packages/core/dist/runtime/rolldown-build.d.ts": "a8c1f1e75e3ee20b03a3f1c0e61b6b4332ffbeba4b41c5cc7a564b137b10b8e8",
     "packages/core/dist/runtime/rolldown-build.d.ts.map": "d2a4dfeb54303e88463801e03b7b01b34008b12c9102ee32d0bdde7411eaf6e3",
     "packages/core/dist/runtime/rolldown-build.js": "dfd0d1d69d9ad795fa6d3e393cedc1c47f97026d31dcc39564cd23e7985a53df",
@@ -1142,7 +1142,7 @@
     "packages/core/src/runtime/project-detect.ts": "96f64e8736668f738c08b0e61b24726e2a41ccf02049a476a7c4090e460063df",
     "packages/core/src/runtime/python-pip.ts": "a7fb34d735348e72aab961cd0b3870863bfc5194120ea5c902cab4318d0ae974",
     "packages/core/src/runtime/python-server-adapter.ts": "166dd887cefb0e5e2b31a22a4ae34682124547a0779da70b4e76b338a9364dd6",
-    "packages/core/src/runtime/require-resolver.ts": "cfe36f97d4bcf4a7e1dc661b27f1cbb30bfa02c483de296b8ec2dec2595ac92c",
+    "packages/core/src/runtime/require-resolver.ts": "9d3695489799adf10b1d94b24d80f8cf5b4de6f45473d48eff74248de65ca2a2",
     "packages/core/src/runtime/rolldown-build.ts": "d482170298403815b66734e6eb35e5c984c4dd31854ca54113479b76741d0d45",
     "packages/core/src/runtime/router-basename.ts": "64cd3f6058823f0f0d3c98491b4fc83c080007d63b0c63e78be202c9f76a0989",
     "packages/core/src/runtime/ruby-gems.ts": "df2d3b361c56fdbc357c368a355dfa8d60a39d5df2560569dd25c7273a2e13c5",
