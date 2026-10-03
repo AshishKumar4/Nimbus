@@ -50,6 +50,7 @@ import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { resolveOnePackumentInFacet, parseRegistryRequest, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
+import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
@@ -2197,6 +2198,9 @@ export class NpmInstaller {
                         errorsByModule[next.specifier] = msg;
                         continue;
                     }
+                    // What the bundle can have read, recorded with it: the cache is
+                    // shared, and a server serves it only to a principal who may read it all.
+                    const sources = sliceSources(slice.slice);
                     let spec = {
                         specifier: next.specifier,
                         entryPath: next.entryPath,
@@ -2256,6 +2260,7 @@ export class NpmInstaller {
                             esmCode: result.esmCode,
                             builtAt: Date.now(),
                             inputHash: next.inputHash ?? '',
+                            sources,
                         });
                         okCount++;
                     }

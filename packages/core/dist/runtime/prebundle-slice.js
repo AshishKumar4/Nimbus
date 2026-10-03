@@ -18,6 +18,10 @@
  * bundles it (scripts/rolldown-facet/entry.mjs).
  */
 import { resolveExports, resolvePackageEntry } from '../_shared/exports-resolver.js';
+/** The files a slice holds: everything a bundle built from it can have read. */
+export function sliceSources(slice) {
+    return slice.flatMap((entry) => (entry.isDir ? [] : [entry.path]));
+}
 const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
 const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
 // Bundler-style swap: import './x.js' → ./x.ts on disk.

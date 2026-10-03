@@ -257,6 +257,8 @@ export declare class ViteDevServer {
     private baseUrlValue;
     /** esbuild define set for a request served under `base`. */
     private defineFor;
+    /** Whether this server's principal may read `path`. */
+    private mayRead;
     /**
      * Module-cache key for `key` under mount base `base`. The transformed text
      * embeds the base (module URLs, <base href>, BASE_URL, router basename), so
