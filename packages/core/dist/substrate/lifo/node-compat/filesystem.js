@@ -52,6 +52,12 @@ function bridgeFilesystem(bridge) {
                 throw syscallError('ENOENT', 'stat', path);
             return stat;
         },
+        lstat(path) {
+            const stat = fs.stat(path, { followSymlinks: false });
+            if (!stat)
+                throw syscallError('ENOENT', 'lstat', path);
+            return stat;
+        },
         mkdir: (path, options) => fs.mkdir(path, options),
         readdir: path => fs.readdir(path),
         unlink: path => fs.unlink(path),

@@ -9,6 +9,8 @@ export interface NodeFilesystem {
     isFile(path: string): boolean;
     isDirectory(path: string): boolean;
     stat(path: string): RuntimeVfsStat;
+    /** stat(2) of `path` itself where it names a link (lstat); ENOENT when nothing is there. */
+    lstat(path: string): RuntimeVfsStat;
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;

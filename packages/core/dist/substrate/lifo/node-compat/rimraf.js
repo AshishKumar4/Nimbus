@@ -6,12 +6,20 @@
  * fs shim's recursive rmdir.
  */
 import { resolve } from './path.js';
+import { isVfsError } from '../../../vfs/vfs-error.js';
 export function createRimraf(vfs, cwd) {
     function removeSync(p) {
         const abs = resolve(cwd, p);
-        if (!vfs.exists(abs))
-            return;
-        const stat = vfs.stat(abs);
+        // The path itself, as rimraf lstats it: a link is unlinked, never followed, and a dangling one is still there to remove.
+        let stat;
+        try {
+            stat = vfs.lstat(abs);
+        }
+        catch (error) {
+            if (isVfsError(error, 'ENOENT'))
+                return;
+            throw error;
+        }
         if (stat.type === 'directory') {
             vfs.rmdirRecursive(abs);
         }
