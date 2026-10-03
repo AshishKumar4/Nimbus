@@ -8379,32 +8379,34 @@ error: the Oxc transform crashed (${reason})`);
   function isLexerError(error) {
     return error instanceof Error && typeof Reflect.get(error, "idx") === "number";
   }
-  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
+  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true) {
     const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
-    if (!mayHaveDynamicImport(code) && !metadata) return code;
+    const imports = routeImports && mayHaveDynamicImport(code);
+    if (!imports && !metadata) return code;
     let lexed;
     try {
-      lexed = rewriteFromLexer(code, parentUrl, metadata);
+      lexed = rewriteFromLexer(code, parentUrl, metadata, imports);
     } catch (error) {
       if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
       lexed = null;
     }
-    return lexed ?? rewriteWithGrammar(code, parentUrl, metadata);
+    return lexed ?? rewriteWithGrammar(code, parentUrl, metadata, imports);
   }
-  function rewriteFromLexer(code, parentUrl, metadata) {
+  function rewriteFromLexer(code, parentUrl, metadata, imports) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
-    const imports = lexImports(source);
+    const lexed = lexImports(source);
     const lines = new Lines(source);
-    const passed = passedOver(source, imports, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
+    const passed = passedOver(source, lexed, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
     if (passed === null) return null;
     const calls = [];
     const metas = [];
-    for (const entry of imports) {
+    for (const entry of lexed) {
       if (entry.t === DYNAMIC_IMPORT) calls.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
       else if (metadata && entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
     }
-    for (const at2 of passed) {
+    if (!imports) calls.length = 0;
+    for (const at2 of imports ? passed : []) {
       const open = skipTrivia(source, at2 + "import".length).at;
       const end = source[open] === "(" ? parenthesisEnd(source, open) : null;
       if (end === null) return null;
@@ -8615,7 +8617,7 @@ error: the Oxc transform crashed (${reason})`);
       return node;
     }
   };
-  function rewriteWithGrammar(code, parentUrl, metadata) {
+  function rewriteWithGrammar(code, parentUrl, metadata, imports) {
     const collected = {
       call: DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ",
       edits: [],
@@ -8639,6 +8641,7 @@ error: the Oxc transform crashed (${reason})`);
       } catch {
         continue;
       }
+      if (!imports) collected.edits.length = 0;
       if (!collected.edits.length && !collected.metas.length) return code;
       let insertion = program.body[0]?.start ?? code.length;
       for (const statement of program.body) {
