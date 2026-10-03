@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7afce43d4dcfc01d20435f238942cddcf33b056e28c70de5071487aed7975e9c",
+  "fingerprint": "fe95a1467db8d20479d08ef736cf61b2cb93cfbb99077006b467174741e27e7d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -478,8 +478,8 @@
     "packages/core/dist/shell/unix-accounts.d.ts.map": "e3b4f806e31e92d3c2957212164c697bb5576cc77e010c5d6e6f5aaff97f007d",
     "packages/core/dist/shell/unix-accounts.js": "54ee9b1284443a858a0ea4285e6b8b6c41062a5ab64877d1a92c03d75721092a",
     "packages/core/dist/shell/unix-commands.d.ts": "62aa5e6d10f7339a8cd92db8cce7881b402c52d3aed4a111913194394cb289ad",
-    "packages/core/dist/shell/unix-commands.d.ts.map": "746a5f774cdaaae1a05ff1054d01b71d2bdd96e663dc202dcc4b0d901f7bd82b",
-    "packages/core/dist/shell/unix-commands.js": "0d5bb1961281af96de29dfacdd091e797293378f30189d245633de8cc0e3eeb6",
+    "packages/core/dist/shell/unix-commands.d.ts.map": "660bc47eaf1f2d4f9e0b855f92eae3f7e77f9f807706445e45a39c450f979cdd",
+    "packages/core/dist/shell/unix-commands.js": "c5e684d6534857dcf984c975f32d196901b6a915511e27af621bc3edf7ae62d6",
     "packages/core/dist/substrate/lifo/commands/archive/gunzip.d.ts": "48f721eb35a8a995c6898a1200d91b86f29c8038fdb3aed11792f6234b2d680a",
     "packages/core/dist/substrate/lifo/commands/archive/gunzip.d.ts.map": "a2a8985891a4d05c695123823fb3b0ca2d7fe20fe999dc690ead0f826a92c500",
     "packages/core/dist/substrate/lifo/commands/archive/gunzip.js": "7d0139eb1274e2cc41a7d82461f7a409d2f8fbb22c603119a797cdbb6785facc",
@@ -1189,7 +1189,7 @@
     "packages/core/src/shell/shell-invocation.ts": "2b029e833cb8dc991383c5711130f04300f72a6e09be8535ef6756c50974bf1e",
     "packages/core/src/shell/stdin-adapter.ts": "18d3403e1de0d331684c3e686076fe15d146fddd7052e7e5293ef13895a77da3",
     "packages/core/src/shell/unix-accounts.ts": "f2532d768b8afac0a3ce5baaeca2b2f53ad794f4bb10b68280d1b0b1fa060488",
-    "packages/core/src/shell/unix-commands.ts": "50d49e78d781687e429202e27e9efa1e86e250dc0148e11203abae39f63cf755",
+    "packages/core/src/shell/unix-commands.ts": "6076bd3c320e805372a01644f2aed9a282b6c84e8d61acfb14280f243dcf8f2b",
     "packages/core/src/substrate/lifo/UPSTREAM.md": "c1765ad486e361898ef47867dc15219425a28551efd83bd3531b1363200702bf",
     "packages/core/src/substrate/lifo/commands/archive/gunzip.ts": "9463f5197b4718ca755c8dc9a6a84d4701d6be48546eef7fd43658fd8505b4a0",
     "packages/core/src/substrate/lifo/commands/archive/gzip.ts": "8df9103bb87c6b261b7c4df591566a7ad7f25f1aac4fc478005b7b85b0798b32",
