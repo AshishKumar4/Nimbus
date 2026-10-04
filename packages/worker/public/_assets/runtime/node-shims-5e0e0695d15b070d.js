@@ -279,10 +279,11 @@ function __nimbusWasmDigest(bytes) {
   if (typeof globalThis.fetch !== "function" || globalThis.__nimbusFetchUaInstalled) return;
   globalThis.__nimbusFetchUaInstalled = true;
   const __origFetch = globalThis.fetch.bind(globalThis);
-  const __networkResponses = new WeakMap();
-  const __networkBodies = new WeakMap();
+  const __recordingNetwork = !!(__nimbusReplay && __nimbusReplay.outbound);
+  const __networkResponses = __recordingNetwork ? new WeakMap() : null;
+  const __networkBodies = __recordingNetwork ? new WeakMap() : null;
   const __observeBody = (body) => {
-    const record = body && __networkBodies.get(body);
+    const record = body && __networkBodies && __networkBodies.get(body);
     if (record && !record.done) {
       record.done = true;
       if (__nimbusReplay) { __nimbusReplay.observed("fetchBody"); __nimbusReplay.bodyFinished(record.id); }
@@ -421,8 +422,10 @@ function __nimbusWasmDigest(bytes) {
     }
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
+    const pending = __resumeCoherent(__dispatch(input, init));
+    if (!__recordingNetwork) return pending;
     let response;
-    try { response = await __resumeCoherent(__dispatch(input, init)); }
+    try { response = await pending; }
     catch (error) { if (__nimbusReplay && __nimbusReplay.outbound) __nimbusReplay.observed("fetchHeader"); throw error; }
     if (__nimbusReplay && __nimbusReplay.outbound) {
       __nimbusReplay.observed("fetchHeader");
@@ -448,12 +451,15 @@ function __nimbusWasmDigest(bytes) {
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
         return __nimbusTrackOp(__resumeCoherent(pending));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
+  // No stdin/outbound journal: keep native stream readers and cloning intact.
+  if (!__recordingNetwork) return;
   const __getReader = ReadableStream.prototype.getReader;
   const __cloneResponse = Response.prototype.clone;
   Response.prototype.clone = function(...args) {
