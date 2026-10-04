@@ -301,6 +301,7 @@ export class ReplayJournal {
         }
         let value;
         let failure;
+        let failed = false;
         let digest;
         try {
             value = await produce(expected);
@@ -315,8 +316,9 @@ export class ReplayJournal {
             }
         }
         catch (error) {
+            failed = true;
             failure = error;
-            digest = 'error:' + answerDigest(error instanceof Error ? error : String(error));
+            digest = 'error:' + answerDigest(error);
         }
         if (this.run !== asking)
             throw new Error('this run of the process has stopped');
@@ -333,7 +335,7 @@ export class ReplayJournal {
         if (entry !== null && this.entries !== null && this.entries === entries) {
             entry.digest = digest;
             entry.completion = this.completions++;
-            if (record && failure === undefined) {
+            if (record && !failed) {
                 const response = record(value);
                 if (response) {
                     this.recordedBytes += response.body.byteLength;
@@ -346,7 +348,7 @@ export class ReplayJournal {
                 }
             }
         }
-        if (failure !== undefined)
+        if (failed)
             throw failure;
         return value;
     }
