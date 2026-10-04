@@ -24,18 +24,23 @@ published independently in the `@nimbus-sh` npm scope.
   `https.get`) is recorded with its status, headers and bytes, and the
   second run is handed the same response however it reads it; a request
   still on its way at the stop is answered only past the read; and
-  `tls.connect`'s TLS session is made by the session (an option that needs
-  the program's own certificate or CA, or a socket it opened, fails by
-  name). Only Nimbus can stop a run this way: a program that forges a stop
-  is not believed. A program that never makes such a read, or finds its
-  input there when it does, runs once and is never held: the guess about
-  which programs read stdin, made from their code before they ran, is
-  gone, and with it the read ahead of their pipe. So `sleep 30 | node -e
-  "function u(){fs.readFileSync(0)} console.log(1)"` prints at once, and a
-  child whose code merely mentions such a read no longer waits for a stdin
-  its parent leaves open. A program that changed something outside itself
-  before the read (a file write that reached the session, a spawn, a
-  request other than GET) cannot be run again, and the read fails with
+  `tls.connect`'s TLS session is made by the session, which sends the
+  server name the program gives (workerd's own node:tls sends the host). A
+  client certificate (`cert`, `key`, `pfx`) or a TLS session over a socket
+  the program opened (a STARTTLS) fails by name; a CA the program names
+  (`ca`) is not used, as workerd's own node:tls does not use it, and a
+  session that fails says so. Once such a program has done something
+  outside itself, nothing more it reads is recorded and its network goes
+  straight out. Only Nimbus can stop a run this way: a program that forges
+  a stop is not believed. A program that never makes such a read, or finds
+  its input there when it does, runs once and is never held: the guess
+  about which programs read stdin, made from their code before they ran,
+  is gone, and with it the read ahead of their pipe. So `sleep 30 | node
+  -e "function u(){fs.readFileSync(0)} console.log(1)"` prints at once,
+  and a child whose code merely mentions such a read no longer waits for a
+  stdin its parent leaves open. A program that changed something outside
+  itself before the read (a file write that reached the session, a spawn,
+  a request other than GET) cannot be run again, and the read fails with
   `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one that read
   `process.stdin` as it arrived first; opening a connection counts as such
   a change, however it was opened (node:net, node:tls, or workerd's own

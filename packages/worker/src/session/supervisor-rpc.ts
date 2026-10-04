@@ -156,6 +156,25 @@ function _estimateWriteBatchBytes(payload: any): number {
 // was wrong.
 export const SUPERVISOR_READ_HEDGE_AFTER_MS = 5_000;
 
+
+/**
+ * Runs whose network the session no longer records: each did something
+ * outside itself, so it cannot be run again and nothing it reads is checked
+ * (worker runtime/stop-replay.ts ReplayJournal.disqualify). Its requests and
+ * connections go straight out, without asking the session first. A run's
+ * identity is never reused; the oldest are forgotten past the bound (a
+ * forgotten run only asks again).
+ */
+const UNRECORDED_RUNS = new Set<string>();
+const UNRECORDED_RUNS_MAX = 4096;
+function unrecorded(run: string): void {
+  if (UNRECORDED_RUNS.size >= UNRECORDED_RUNS_MAX) {
+    const oldest = UNRECORDED_RUNS.values().next().value;
+    if (oldest !== undefined) UNRECORDED_RUNS.delete(oldest);
+  }
+  UNRECORDED_RUNS.add(run);
+}
+
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
    * A fresh stub for the host, by the route the binding carries, per call.
@@ -314,6 +333,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
       throw new Error('SupervisorRPC: missing or invalid process pid in props');
     }
     return pid;
+  }
+
+  /** The run of the process this binding was minted for, when it has one. */
+  private _runId(): string | undefined {
+    const run = (this.ctx.props as { writerId?: unknown } | undefined)?.writerId;
+    return typeof run === 'string' && run.length > 0 ? run : undefined;
   }
 
   private _writerId(): string {
@@ -982,17 +1007,26 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async fetch(request: Request): Promise<Response> {
     const method = request.method.toUpperCase();
+    // A run the session no longer records (it did something outside itself
+    // and cannot be run again): its network goes straight out.
+    const run = this._runId();
+    if (run !== undefined && UNRECORDED_RUNS.has(run)) return fetch(request);
     const outbound = (action: string, payload: Record<string, unknown>) =>
       this._call(this._op<unknown>('outbound', [action, payload], { pid: this._pid() }));
     if ((method !== 'GET' && method !== 'HEAD') || request.headers.has('upgrade')) {
-      await outbound('effect', { what: `${method} ${request.url}` });
+      const answer = await outbound('effect', { what: `${method} ${request.url}` }) as { unrecorded?: boolean } | true;
+      if (run !== undefined && typeof answer === 'object' && answer.unrecorded) unrecorded(run);
       return fetch(request);
     }
     const headers = [...request.headers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const key = `${method} ${request.url} ${JSON.stringify(headers)}`;
     const plan = await outbound('fetch', { key, what: `${method} ${request.url}` }) as
-      { replay: RecordedResponseShape } | { live: string } | { error: string };
+      { replay: RecordedResponseShape } | { live: string } | { error: string } | { unrecorded: true };
     if ('error' in plan) throw new Error(plan.error);
+    if ('unrecorded' in plan) {
+      if (run !== undefined) unrecorded(run);
+      return fetch(request);
+    }
     if ('replay' in plan) {
       const r = plan.replay;
       return new Response(method === 'HEAD' ? null : r.body, { status: r.status, statusText: r.statusText, headers: r.headers });
@@ -1062,7 +1096,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     const address = info.localAddress ?? '';
     const named = /^([0-9a-f]{32})\.nimbus-net\.invalid:\d+$/.exec(address);
     if (!named) {
-      await outbound('connect', { token: address });
+      const answer = await outbound('connect', { token: address }) as { unrecorded?: boolean };
+      const run = this._runId();
+      if (run !== undefined && answer && answer.unrecorded) unrecorded(run);
       const upstream = connectSocket(address, { allowHalfOpen: true });
       await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => {});
       return;

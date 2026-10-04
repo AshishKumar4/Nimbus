@@ -224,14 +224,17 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
   await e.handle('writeFile', ['/out', 'x'], 'a', async () => { dispatched++; return 1; });
   assert.equal(e.replayable, false);
   assert.match(e.unreplayable, /writeFile \/out/);
+  assert.equal(e.recording, false, 'nothing more is journaled: the outbound goes straight out');
   await ask(e, 'readFile', ['/after'], 'A', 'a');
   e.stopped();
   e.start('b');
   await e.handle('readFile', ['/whatever'], 'b', async () => 'Q').then(() => assert.fail('a replay of an unrecorded run asked for something it never asked for'), () => {});
   const f = make();
   f.start('a');
+  assert.equal(f.recording, true);
   f.stopped();
   f.start('b');
+  assert.equal(f.recording, true, 'a run after a stop is checked up to its boundary');
   await assert.rejects(f.handle('writeFile', ['/out', 'x'], 'b', async () => { dispatched++; return 1; }), /did something outside itself before the read/);
   assert.equal(dispatched, 1, 'an effect before the boundary is not performed');
   // A read-only open is a read; a writing one is not.
