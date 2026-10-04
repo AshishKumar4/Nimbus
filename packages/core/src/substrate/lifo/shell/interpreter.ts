@@ -43,13 +43,12 @@ import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
+import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
-import { fileSink } from './file-sink.js';
-
 
 // ─── Signal classes for control flow ───
 
@@ -170,6 +169,8 @@ type FdState = {
  */
 type OpenFile = {
   stream: CommandInputStream | CommandOutputStream;
+  /** An output file's: write what the VFS still holds for it (fsync), throwing what that failed with. */
+  flush?: () => Promise<void>;
   close: () => Promise<void>;
   refs: number;
 };
@@ -1027,6 +1028,7 @@ export class Interpreter {
     }
 
     let exitCode: number;
+    let writeFailed = false;
 
     try {
       // Check for break/continue/return builtins
@@ -1118,10 +1120,11 @@ export class Interpreter {
         }
       }
     } finally {
-      await this.flushFds(fds);
+      writeFailed = await this.flushFds(fds, name);
       // Restore env from per-command assignments
       for (const [name, value] of saved) this.restoreVariable(name, value);
     }
+    if (writeFailed && exitCode === 0) exitCode = 1;
 
     const fatalSpecialBuiltin = io.scriptMode === true
       && exitCode !== 0
@@ -1822,21 +1825,21 @@ export class Interpreter {
     try {
       const bridge = vfs.process;
       const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
-      // Written in blocks (file-sink.ts): the shell flushes it as each command
-      // that wrote it ends (flushFds), and it closes with its last reference.
-      const stream = fileSink(async (bytes) => {
+      const push = async (bytes: Uint8Array) => {
         let offset = 0;
         while (offset < bytes.length) {
           const written = await bridge.write(handle.id, null, bytes.subarray(offset));
           if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
           offset += written;
         }
-      });
+      };
+      const stream: CommandOutputStream = { write: text => push(encode(text)), writeBytes: push };
       fds.opened.set(stream, {
         stream,
-        close: async () => {
-          try { await stream.flush(); } finally { await bridge.close(handle.id); }
-        },
+        // What the VFS still holds for the file is written as the command
+        // whose redirection opened it ends (flushFds), and a failure is its.
+        flush: async () => { await bridge.fsync(handle.id); },
+        close: async () => { await bridge.close(handle.id); },
         refs: 1,
       });
       return { stream, terminal: false };
@@ -1878,26 +1881,51 @@ export class Interpreter {
   }
 
   /**
-   * Run `body` and commit every file-backed descriptor it wrote through,
-   * whether it returned or threw. This is the close(2) side of the buffering
-   * in file-sink.ts: buffered bytes must reach the store before the next
-   * command can read the file.
+   * Run `body`, whose answer is an exit status, and end its descriptors
+   * (flushFds) whether it returned or threw. A file it wrote that could not
+   * be written fails it: status 1 where it would have been 0.
    */
-  private async withFdFlush<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
+  private async withFdFlush(fds: FdState, body: () => Promise<number>): Promise<number> {
+    let status: number;
     try {
-      return await body();
-    } finally {
+      status = await body();
+    } catch (error) {
       await this.flushFds(fds);
+      throw error;
     }
+    if (!(await this.flushFds(fds)) || status !== 0) return status;
+    this.lastExitCode = 1;
+    return 1;
   }
 
-  private async flushFds(fds: FdState): Promise<void> {
-    const results = await Promise.allSettled([...new Set(fds.outputFds.values())].map(async (stream) => (await stream.flush?.())));
+  /**
+   * End a command's descriptors: flush its output streams, and write what
+   * each file its redirections opened still holds (the VFS may hold a
+   * file's last appends until fsync), then let go of those files. A write
+   * that fails there is the command's failure, not the shell's: it is
+   * reported on the command's stderr, as `name`'s, and the answer is true,
+   * for the command's status. A close that fails still throws.
+   */
+  private async flushFds(fds: FdState, name?: string): Promise<boolean> {
     const opened = [...fds.opened.values()];
     fds.opened.clear();
-    try { await this.release(opened); } catch (reason) { results.push({ status: 'rejected', reason }); }
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (failure) throw failure.reason;
+    const flushed = await Promise.allSettled([
+      ...[...new Set(fds.outputFds.values())].map(async (stream) => (await stream.flush?.())),
+      ...opened.map(async (file) => (await file.flush?.())),
+    ]);
+    let failed = false;
+    for (const result of flushed) {
+      if (result.status === 'fulfilled') continue;
+      failed = true;
+      const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      try {
+        await fds.outputFds.get(2)?.write(`${name === undefined ? '' : `${name}: `}${message}\n`);
+      } catch {
+        // Its stderr may be the file that failed; the status still says so.
+      }
+    }
+    await this.release(opened);
+    return failed;
   }
 
   /**

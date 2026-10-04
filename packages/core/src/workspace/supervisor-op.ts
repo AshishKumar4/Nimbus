@@ -353,7 +353,10 @@ const NATIVE_OPS = {
     const bytes = await readWholeFile(e, t, stringArg(e, 0));
     return bytes === null ? null : new TextDecoder().decode(bytes);
   },
-  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), OpenOptions.parse(e.args?.[1])),
+  // A process's descriptors are O_SYNC here: each write is answered with what
+  // the store did (SqliteVFS holds none of its appends), so a refusal is that
+  // write's, and a delivered write's receipt records its outcome.
+  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
     return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));

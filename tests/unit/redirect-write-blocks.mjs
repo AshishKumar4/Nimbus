@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
-// A redirection writes its file in blocks, not one storage write per piece.
+// A redirection's file is stored in blocks, not one storage write per piece.
 //
 // `yes | head -c 48M > big.txt` took over 120 s on a local workerd (the
 // node-runtime-code-workerd gate's prompt timeout). Each 8 KiB `head` wrote
 // was its own file write, and each rewrote the file's still-growing last chunk
 // (content-defined chunks average 32 KiB), so the database stored several
 // bytes for each byte of the file; in a Durable Object every turn that wrote
-// also waits for its commit. What has to hold, through ws.exec:
+// also waits for its commit. SqliteVFS now holds a descriptor's appends and
+// stores them a block at a time (appendThrough; vfs-held-appends tests that
+// nothing can tell). What has to hold, through ws.exec:
 //
 //   (1) the bytes the database is handed for a piped redirect are about the
 //       file's own (no rewrite of a growing tail per piece), and the file is

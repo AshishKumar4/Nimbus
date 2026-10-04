@@ -199,12 +199,23 @@ export interface VfsOpenDescription {
   utimes(atime: number, mtime: number): void;
   close(): void;
   /**
+   * Where an O_APPEND write lands: the end of the file as written so far,
+   * appends SqliteVFS holds for it included (appendThrough), without
+   * writing them. Absent: `stat().size`.
+   */
+  end?(): number;
+  /**
    * A description whose backend cannot write in place buffers its writes
    * (VFS-PF-001): an append goes at the end as it stands at the flush,
    * `flush` applies what is pending, and `pendingBytes` is what a process
-   * killed now would lose. Absent: every write is in place and durable.
+   * killed now would lose. Absent: every write is in place.
    */
   writeAppend?(bytes: Uint8Array): number;
+  /**
+   * Write what is held for the file (fsync): a buffered mount handle's
+   * pending writes, the appends SqliteVFS holds; throws what writing them
+   * failed with. Absent: nothing is held.
+   */
   flush?(): void;
   pendingBytes?(): number;
   /** `file` with this description's pending writes applied, as flush applies them. */
@@ -1095,6 +1106,50 @@ interface OpenedNode {
 }
 
 /**
+ * Bytes appended to one file through its open descriptions and not yet
+ * written: what `AppendRun` holds, at the file's end (`base` is the size
+ * stored when the run began).
+ */
+interface AppendRun {
+  readonly ino: number;
+  readonly path: string;
+  readonly base: number;
+  readonly parts: Uint8Array[];
+  bytes: number;
+  /** What the storage ledger admitted for it so far, a block at a time. */
+  admitted: number;
+  /** Whether it was written by uid 0's call (it may use the kernel reserve). */
+  readonly privileged: boolean;
+  /** The descriptions that wrote it: a failure to store it is theirs. */
+  readonly writers: Set<OpenedNode>;
+  timer: Timer | null;
+}
+
+/** A pending timer, as the host's setTimeout returns it (a number in workerd, an object in Bun and Node). */
+type Timer = Parameters<typeof clearTimeout>[0];
+
+/**
+ * A file's held appends are written when they reach this: the block a
+ * program's stdio buffer would write, large enough that the file's growing
+ * last chunk is rewritten once per block rather than once per write.
+ */
+const APPEND_RUN_BYTES = 1 << 20;
+/** The most every file's held appends may hold together; past it, the file written to writes its own. */
+const APPEND_RUNS_MAX_BYTES = 4 << 20;
+/** The longest an append is held: past it the run is written, so the bytes are as durable as any write's. */
+const APPEND_RUN_LATENCY_MS = 100;
+/**
+ * The calls of a credentialed view that look at no file but the one their
+ * path resolves to (resolvePath writes its held appends): every other call
+ * writes them all first (settlingView).
+ */
+const LEAF_READS: ReadonlySet<string> = new Set([
+  'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
+  'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat',
+  'getDefaultAcl', 'readdir', 'contentKey', 'storageKey',
+]);
+
+/**
  * A directory change a delta reports as structural, which a reader answers by
  * evicting everything at or under it: the directory went ('removed': deleted,
  * or renamed away), or who may enter it changed ('changed': its mode, owner
@@ -1254,6 +1309,18 @@ class InodeTable {
 
 export class SqliteVFS {
   private readonly openNodes = new Set<OpenedNode>();
+  /**
+   * Appends held in memory, one run per file by inode number (appendThrough).
+   * Invisible: anything that looks at the store first writes them
+   * (settleAppends), and none is begun inside a transaction.
+   */
+  private readonly appendRuns = new Map<number, AppendRun>();
+  /** What every run holds together. */
+  private appendRunBytes = 0;
+  /** What storing a run failed with, for each description that wrote to it: its next write, fsync or close throws it. */
+  private readonly appendFailures = new Map<OpenedNode, unknown>();
+  /** Transactions this VFS has open (transactionSync); no append is held from inside one. */
+  private transactionDepth = 0;
   private sql: SqlDatabase;
   /** N18: the session's storage ledger, over this database (the session DO's). */
   readonly ledger: StorageLedger;
@@ -1987,7 +2054,7 @@ export class SqliteVFS {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
-  openDescription(path: string, cred: VfsCred, rights: { read: boolean; write: boolean }): VfsOpenDescription {
+  openDescription(path: string, cred: VfsCred, rights: { read: boolean; write: boolean; sync?: boolean }): VfsOpenDescription {
     const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
     if (!resolved.inode) throw vfsKeyError('ENOENT', path);
     // Descriptions share the canonical inode object: a second descriptor
@@ -1995,9 +2062,22 @@ export class SqliteVFS {
     // pointing at the same retired inode rather than diverging copies.
     const opened: OpenedNode = { inode: resolved.inode, path: resolved.path, closed: false };
     this.openNodes.add(opened);
-    const current = (): INode => {
+    const live = (): INode => {
       if (opened.closed) throw vfsKeyError('EBADF', path);
       return opened.inode;
+    };
+    // The file as it stands, with every append held for it written first:
+    // the description's own and any other's (appendThrough).
+    const current = (): INode => {
+      this.settleAppend(live().ino);
+      return opened.inode;
+    };
+    // The same, for a write, truncate, fsync or close: it reports what
+    // writing this description's held appends failed with.
+    const writable = (): INode => {
+      const node = current();
+      this.raiseAppendFailure(opened);
+      return node;
     };
     const stat = (): VfsStat => {
       const node = current();
@@ -2012,28 +2092,38 @@ export class SqliteVFS {
       return this.readContent(node, start, end, false);
     };
     return {
-      get ino(): number { return current().ino; },
+      get ino(): number { return live().ino; },
       // The opener's name for the file, which descriptor-relative lookups
       // resolve beneath: the key would put them in a different view.
       path: () => {
-        current();
+        live();
         const name = opened.path === null ? null : this.logicalPath(opened.path, cred);
         if (name === null) throw vfsKeyError('ENOENT', path);
         return name;
       },
       stat, read,
+      end: () => {
+        const node = live();
+        const run = this.appendRuns.get(node.ino);
+        return run === undefined ? node.size : run.base + run.bytes;
+      },
       write: (offset, bytes) => {
-        const node = current();
         if (!rights.write) throw vfsKeyError('EBADF', path);
-        if (node.isDir) throw vfsKeyError('EISDIR', path);
+        if (live().isDir) throw vfsKeyError('EISDIR', path);
         const start = clampNonNegativeInt(offset);
+        // O_SYNC: stored before the write returns.
+        if (rights.sync !== true && this.appendThrough(opened, start, bytes)) return bytes.length;
+        const node = writable();
         if (opened.path !== null) this.writeRange(opened.path, start, bytes, CRED_KERNEL);
         else if (bytes.length) this.rewriteFile(node, null, Math.max(node.size, start + bytes.length), { start, bytes });
         return bytes.length;
       },
+      flush: () => {
+        if (rights.write) writable();
+      },
       truncate: size => {
-        const node = current();
         if (!rights.write) throw vfsKeyError('EBADF', path);
+        const node = writable();
         if (node.isDir) throw vfsKeyError('EISDIR', path);
         if (!Number.isSafeInteger(size) || size < 0) throw vfsKeyError('EINVAL', path);
         if (opened.path !== null) this.truncate(opened.path, size, CRED_KERNEL);
@@ -2056,13 +2146,129 @@ export class SqliteVFS {
         else { current().atime = atime; current().mtime = mtime; current().ctime = this.now(); }
       },
       close: () => {
-        opened.closed = true;
-        this.openNodes.delete(opened);
-        // A detached description's content was queued when it was unlinked
-        // and stepped over while pinned; it is collectable now.
-        if (opened.path === null) this.maintenancePending = true;
+        try {
+          // The last of what it appended is written as it closes, and a failure is close's.
+          if (rights.write && !opened.closed) writable();
+        } finally {
+          opened.closed = true;
+          this.openNodes.delete(opened);
+          this.appendFailures.delete(opened);
+          // A detached description's content was queued when it was unlinked
+          // and stepped over while pinned; it is collectable now.
+          if (opened.path === null) this.maintenancePending = true;
+        }
       },
     };
+  }
+
+  /**
+   * Hold `bytes`, written through `opened` at `offset`, in its file's
+   * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
+   * redirection or a log written a piece at a time is then stored a block at
+   * a time. Each write to the store rewrites the file's growing last chunk
+   * (rewriteFile) and costs a commit at the end of its turn, so 8 KiB writes
+   * stored 3.5 bytes for each byte of the file, and `yes | head -c 48M > f`
+   * took 43 s on a local workerd.
+   *
+   * Nothing else can tell: every look at the store writes the runs first
+   * (settleAppends: every call of a view but a leaf read, which path
+   * resolution covers, a description's other calls, the public calls that
+   * read the live store, an embedder's transaction and the start of work
+   * spanning turns), and none is begun inside a transaction or while such
+   * work runs, where a rollback or a later turn could not tell it was
+   * there. A run held while another file's transaction runs is not in it,
+   * so a rollback cannot take it along. A run is written when it holds
+   * APPEND_RUN_BYTES, after APPEND_RUN_LATENCY_MS, and when a description
+   * of its file is flushed or closed. A write that fails is thrown by the
+   * next write, fsync or close of each description that wrote to the file.
+   * Near the storage limit, and for any write that is not such an append,
+   * this answers false and the caller writes through, where the write is
+   * refused if it must be.
+   */
+  private appendThrough(opened: OpenedNode, offset: number, bytes: Uint8Array): boolean {
+    const path = opened.path;
+    const node = opened.inode;
+    if (path === null || node.kind !== 'file' || bytes.byteLength === 0 || this.appendFailures.has(opened)) return false;
+    if (this.transactionDepth > 0 || this.transactionPublication !== null || this.activeMutationOwner !== null || this.activeWork.size > 0) return false;
+    let run = this.appendRuns.get(node.ino);
+    if (run !== undefined && run.privileged !== this.privileged) return false;
+    if (offset !== (run === undefined ? node.size : run.base + run.bytes)) return false;
+    if (run === undefined) {
+      if (this.refusalAt(path) !== null) return false;
+      run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, writers: new Set(), timer: null };
+    }
+    if (run.bytes + bytes.byteLength > run.admitted) {
+      try {
+        this.ledger.admit(APPEND_RUN_BYTES, run.privileged);
+      } catch {
+        return false;
+      }
+      run.admitted += APPEND_RUN_BYTES;
+    }
+    // A copy: a writer may reuse its buffer once the write returns.
+    run.parts.push(bytes.slice());
+    run.bytes += bytes.byteLength;
+    run.writers.add(opened);
+    this.appendRunBytes += bytes.byteLength;
+    this.appendRuns.set(node.ino, run);
+    if (run.bytes >= APPEND_RUN_BYTES || this.appendRunBytes >= APPEND_RUNS_MAX_BYTES) {
+      this.writeAppendRun(run);
+      this.raiseAppendFailure(opened);
+    } else {
+      const held = run;
+      run.timer ??= setTimeout(() => this.writeAppendRun(held), APPEND_RUN_LATENCY_MS);
+    }
+    return true;
+  }
+
+  /**
+   * Write `run` to its file, as the descriptions that wrote it would have,
+   * whatever call is running. Never throws: a failure is kept for each of
+   * them (appendFailures).
+   */
+  private writeAppendRun(run: AppendRun): void {
+    if (this.appendRuns.get(run.ino) !== run) return;
+    this.appendRuns.delete(run.ino);
+    if (run.timer !== null) clearTimeout(run.timer);
+    this.appendRunBytes -= run.bytes;
+    const block = run.parts.length === 1 ? run.parts[0]! : new Uint8Array(run.bytes);
+    if (run.parts.length > 1) {
+      let at = 0;
+      for (const part of run.parts) { block.set(part, at); at += part.byteLength; }
+    }
+    const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation };
+    this.privileged = run.privileged;
+    this.activeMutationOwner = null;
+    this.activeReservation = null;
+    try {
+      this.writeRange(run.path, run.base, block, CRED_KERNEL);
+    } catch (error) {
+      for (const writer of run.writers) if (!writer.closed) this.appendFailures.set(writer, error);
+    } finally {
+      this.privileged = caller.privileged;
+      this.activeMutationOwner = caller.owner;
+      this.activeReservation = caller.reservation;
+    }
+  }
+
+  /** Write the appends held for inode `ino`, if any. */
+  private settleAppend(ino: number): void {
+    const run = this.appendRuns.get(ino);
+    if (run !== undefined) this.writeAppendRun(run);
+  }
+
+  /** Write every held append: what any look at the store must do first (appendThrough). */
+  private settleAppends(): void {
+    if (this.appendRuns.size === 0) return;
+    for (const run of [...this.appendRuns.values()]) this.writeAppendRun(run);
+  }
+
+  /** Throw what writing `opened`'s held appends failed with, once. */
+  private raiseAppendFailure(opened: OpenedNode): void {
+    if (!this.appendFailures.has(opened)) return;
+    const failure = this.appendFailures.get(opened);
+    this.appendFailures.delete(opened);
+    throw failure;
   }
 
   private now(): number { return Date.now(); }
@@ -2468,7 +2674,28 @@ export class SqliteVFS {
       };
       Object.assign(view, mutations);
     }
-    return bound.uid === 0 ? this.privilegedView(view) : view;
+    const settling = this.settlingView(view);
+    return bound.uid === 0 ? this.privilegedView(settling) : settling;
+  }
+
+  /**
+   * `view`, each of its calls but LEAF_READS first writing every append
+   * this VFS holds (appendThrough): a view is how a caller changes the
+   * store or reads more of it than one file, and none may do either
+   * without them. A leaf read looks at the one file it names, which path
+   * resolution writes the appends of, so a program reading one file while
+   * appending to another is not made to store each append as it comes.
+   */
+  private settlingView(view: CredentialedVfs): CredentialedVfs {
+    for (const key of Object.keys(view)) {
+      const method: unknown = Reflect.get(view, key);
+      if (typeof method !== 'function' || LEAF_READS.has(key)) continue;
+      Reflect.set(view, key, (...args: unknown[]) => {
+        this.settleAppends();
+        return Reflect.apply(method, view, args);
+      });
+    }
+    return view;
   }
 
   private accessInode(inode: INode, want: number, cred: VfsCred): boolean {
@@ -2507,6 +2734,8 @@ export class SqliteVFS {
    *
    * `path` is the storage key the walk ends at, `name` the caller's name for it.
    * `tree` looks inodes up by key: the live tree, or a snapshot's (SnapshotVfs).
+   * A live file it reaches is reached with what has been appended to it
+   * (appendThrough): every call that names a path comes through here.
    */
   private resolvePath(
     path: string,
@@ -2514,6 +2743,20 @@ export class SqliteVFS {
     followLeaf: boolean,
     allowMissing: boolean,
     tree: InodeLookup = this.inodes,
+  ): { path: string; inode: INode | undefined; name: string } {
+    const resolved = this.walkPath(path, cred, followLeaf, allowMissing, tree);
+    if (tree !== this.inodes || resolved.inode === undefined || !this.appendRuns.has(resolved.inode.ino)) return resolved;
+    this.settleAppend(resolved.inode.ino);
+    return this.walkPath(path, cred, followLeaf, allowMissing, tree);
+  }
+
+  /** resolvePath's walk. */
+  private walkPath(
+    path: string,
+    cred: VfsCred,
+    followLeaf: boolean,
+    allowMissing: boolean,
+    tree: InodeLookup,
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
     let current = this.nameOf(path, cred);
@@ -2725,6 +2968,7 @@ export class SqliteVFS {
    * `revision('')` equals the global clock.
    */
   revision(path?: string, cred?: VfsCred): number {
+    this.settleAppends();
     if (path === undefined) return this._revision;
     // A credentialed caller asks about its own view; a confined one asking
     // after /tmp/x means its own file, so the counter must be that file's.
@@ -2887,6 +3131,7 @@ export class SqliteVFS {
    * `rm -rf` costs one entry.
    */
   invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult {
+    this.settleAppends();
     const rev = this._revision;
     if (epoch !== this._epoch || cursor > rev) {
       return { epoch: this._epoch, rev, paths: [], poison: true };
@@ -3079,6 +3324,8 @@ export class SqliteVFS {
   }
 
   private acquireExclusiveMutationAt(key: string, options: ExclusiveMutationOptions = {}): ExclusiveMutationLease {
+    // No append held from before the lease is written under it.
+    this.settleAppends();
     let root = key;
     if (!root) throw vfsError('EINVAL', 'exclusive mutation root cannot be empty');
     if (options.includeMissingAncestors) {
@@ -3104,6 +3351,7 @@ export class SqliteVFS {
   }
 
   acquireGlobalExclusiveMutation(): ExclusiveMutationLease {
+    this.settleAppends();
     if (this.exclusiveMutationLeases.size > 0) {
       throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
     }
@@ -5742,6 +5990,7 @@ export class SqliteVFS {
   snapshot(name: string, options: { quiesce: true }): Promise<SnapshotInfo>;
   snapshot(name: string, options: { quiesce?: boolean } = {}): SnapshotInfo | Promise<SnapshotInfo> {
     if (typeof name !== 'string' || name === '' || name.length > 256) throw vfsError('EINVAL', 'invalid snapshot name');
+    this.settleAppends();
     if (!options.quiesce) return this.pinSnapshot(name);
     return this.quiesced(() => this.pinSnapshot(name));
   }
@@ -5784,6 +6033,9 @@ export class SqliteVFS {
     // Tracked once started: the snapshot waits for running work, never for
     // work it is itself holding back.
     const begin = (): Promise<T> => {
+      // Nothing is appended while work spanning turns runs (appendThrough):
+      // it reads the store in one turn and writes it in another.
+      this.settleAppends();
       const run = start();
       this.activeWork.add(run);
       const settled = (): void => { this.activeWork.delete(run); };
@@ -6079,6 +6331,7 @@ export class SqliteVFS {
    * mid-restore finishes at the next open. Returns the paths it changed.
    */
   restore(name: string, options: { subtree?: string } = {}): { restored: number } {
+    this.settleAppends();
     const { id, job, startGen } = this.restoreJob(name, options);
     return { restored: this.runRestore(id, job, startGen).restored };
   }
@@ -6358,6 +6611,7 @@ export class SqliteVFS {
     to: string | null,
     options: { after?: string; limit?: number } = {},
   ): { entries: VfsDiffEntry[]; next: string | null } {
+    this.settleAppends();
     const ga = from === null ? this._gen : this.requireSnapshot(from);
     const gb = to === null ? this._gen : this.requireSnapshot(to);
     const lo = Math.min(ga, gb);
@@ -6420,6 +6674,7 @@ export class SqliteVFS {
     /** The session's storage ledger (N18): used, the limit, and its parts. */
     ledger: StorageLedgerView;
   } {
+    this.settleAppends();
     const one = (query: string): number => Number([...this.sql.exec(query)][0]!.n);
     return {
       chunks: one('SELECT COUNT(*) AS n FROM vfs_chunks'),
@@ -6599,6 +6854,7 @@ export class SqliteVFS {
    * after a reset.
    */
   importCursor(dst: string): string | null {
+    this.settleAppends();
     const target = normalizeVfsPath(dst);
     const job = this.importJob(target);
     if (job !== undefined) {
@@ -6637,6 +6893,7 @@ export class SqliteVFS {
     chunks: Iterable<VfsExportChunk> = [],
     options: { lazy?: boolean } = {},
   ): { imported: number; want: string[]; done: boolean; pending: string[] } {
+    this.settleAppends();
     // N18: the page's rows and the bytes it brings are admitted and reserved
     // before its first transaction, which then draw from the reservation.
     // Collected under the frame bound as it is pulled: bytes against the frame,
@@ -7058,6 +7315,7 @@ export class SqliteVFS {
    * hash once per file), as hex; none for a path with none, or no file.
    */
   pendingChunksOf(path: string): string[] {
+    this.settleAppends();
     const inode = this.inodes.get(normalizeVfsPath(path));
     if (inode === undefined || inode.kind !== 'file') return [];
     const rows = inode.contentId !== null && inode.contentId !== undefined
@@ -8312,6 +8570,7 @@ export class SqliteVFS {
     if (this.transactionPublication !== null) {
       throw new Error('[sqlite-vfs] nested embedder transactions are not supported');
     }
+    this.settleAppends();
     const storage = this.ctx?.storage;
     if (!storage) throw new Error('[sqlite-vfs] atomic storage operation requires transactionSync');
     const publication = {
@@ -8413,7 +8672,12 @@ export class SqliteVFS {
     if (!this.ctx?.storage?.transactionSync) {
       throw new Error('[sqlite-vfs] atomic storage operation requires transactionSync');
     }
-    this.ctx.storage.transactionSync(callback);
+    this.transactionDepth++;
+    try {
+      this.ctx.storage.transactionSync(callback);
+    } finally {
+      this.transactionDepth--;
+    }
   }
 
   /**
@@ -8930,6 +9194,7 @@ export class SqliteVFS {
 
   /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
   databaseBytes(): number {
+    this.settleAppends();
     return databaseBytesOf(this.sql);
   }
 
@@ -9301,6 +9566,7 @@ export class SqliteVFS {
    * and diagnostics only.
    */
   _auditContentStore(): { chunks: number; contents: number } {
+    this.settleAppends();
     let chunks = 0;
     let contents = 0;
     const pinned = this.stagingPins();
@@ -9753,6 +10019,7 @@ export class SqliteVFS {
    * are loaded from the same aggregate, so they cannot drift.
    */
   _verifyCounters(): null | { expected: { files: number; dirs: number; bytes: number }; actual: { files: number; dirs: number; bytes: number } } {
+    this.settleAppends();
     this.ensureCounters();
     const durable = this.aggregateCounters();
     if (durable.files === this._totalFiles && durable.dirs === this._totalDirs && durable.bytes === this._usedBytes) return null;
@@ -9776,11 +10043,13 @@ export class SqliteVFS {
    * left out, as ext4's df leaves out root's reserved blocks.
    */
   storageUsage(): { size: number; used: number; available: number } {
+    this.settleAppends();
     const view = this.ledger.view();
     return { size: view.limit, used: view.used, available: Math.max(0, view.limit - this.ledger.kernelReserve - view.used) };
   }
 
   getStats() {
+    this.settleAppends();
     // B3: O(1) — read the running counters. Previously three passes
     // over every inode (two filter + one for-of); at 50K inodes that
     // was 150K iterations per poll, every 5 s, serialising on the
