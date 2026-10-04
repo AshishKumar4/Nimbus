@@ -703,10 +703,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // `at` and `run`: where the chunk falls in what the run printed, and which
     // run of the process printed it (runtime/stop-replay.ts, ReplayOutputGate).
     async stdout(data, at, run) {
-        return this._call(this._op('stdout', [data, at, run], { pid: this._reportingPid() }));
+        return this._call(this._op('stdout', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this._reportingPid() }));
     }
     async stderr(data, at, run) {
-        return this._call(this._op('stderr', [data, at, run], { pid: this._reportingPid() }));
+        return this._call(this._op('stderr', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this._reportingPid() }));
     }
     /**
      * Report process exit to the supervisor. Called from the facet's own

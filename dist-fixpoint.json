@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a82ff2409528316e0c648d052ec1d7bc676e0c5f3de703afc5fe253ab54253f8",
+  "fingerprint": "e8f217ecf01661662c2aac611665314dcc2003d1f411301bf245e471bc743329",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2095,7 +2095,7 @@
     "packages/worker/dist/session/supervisor-op.js": "0dc36d5ace6efa90df98f6cb811a5bb719a45bca6a73e1babe312949fe9a9647",
     "packages/worker/dist/session/supervisor-rpc.d.ts": "ccbe061618bc319d3aa51b1ce4db8c6cb23a04c5a031c21acf878f662309a428",
     "packages/worker/dist/session/supervisor-rpc.d.ts.map": "b528a419e0f8fbd713535f86ebc30e475400b89ef85de95ea9f8dc479a7bcc81",
-    "packages/worker/dist/session/supervisor-rpc.js": "11fa09407afc1c620be5a2b191e3194855efcd1cdaf920071f7ebe026957f825",
+    "packages/worker/dist/session/supervisor-rpc.js": "3b63e8936fe31b3fd5d3dd2d48457bf67cb4a3d09f118f4c391a635a858b3e40",
     "packages/worker/dist/session/vite-command.d.ts": "8ab65c3321df100969bb85c3c8653cccad4b2b68c34faebe2b7cb3864225c56d",
     "packages/worker/dist/session/vite-command.d.ts.map": "c168817727f511a32e9c7558dd11511c74c91dd2ea503bc0217fd77b84727e1b",
     "packages/worker/dist/session/vite-command.js": "db93d6153e8edca49c26ca1dd48fed2ba1f0f21566b23356e863cc0d4cf8d89b",
@@ -2419,7 +2419,7 @@
     "packages/worker/src/session/start-real-vite.ts": "cff0e4ae6ac123ae208d0de20a440a8e8fc1af32e40c031029e7e208f7226116",
     "packages/worker/src/session/state-store.ts": "bd51787fe3eabefb7f5caab9b0418d22232b5271f6f56325b61497efdb939ca2",
     "packages/worker/src/session/supervisor-op.ts": "d359cc69443a039ade4b8bab3a1fbc1dff9f9d4d9cd384d9c3218fc260e4f3c4",
-    "packages/worker/src/session/supervisor-rpc.ts": "710a8d69483bd7a1bc707093dcafe2ed3c86d3b2297a7f97427f5cc4a17128f3",
+    "packages/worker/src/session/supervisor-rpc.ts": "c24f4c3bbb39185ea308a9c917f4996994bcee7b6b6d4d3fa397ad3a00027ea3",
     "packages/worker/src/session/vite-command.ts": "fdfdd1718d615a2b4eff35b26eba8190832bfa8623792f00beeaa9354d394e17",
     "packages/worker/src/session/ws-relay.ts": "b6c94d0d32217c38c7028a59f737862fd7e55f94e08ed5fa8bb16369a0a35da2",
     "packages/worker/src/session/ws.ts": "292ae44895abb0257d7a94e6e9c16676286dcf01806d9a4b1c25f68117c7c6e4",
