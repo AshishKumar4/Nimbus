@@ -7,6 +7,53 @@ import { errnoDescription } from '../vfs/vfs-error.js';
 export function createSqliteDescriptorScope() {
     return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
 }
+/**
+ * A description's last close: a buffered mount handle's flush. A flush that
+ * fails loses the writes it held, and says so: close's error for the file,
+ * the failure as its cause (EIO where it carries no code: an abort, a dropped
+ * call). Node's close reports a deferred write's failure the same way.
+ */
+function lastClose(node) {
+    try {
+        node.close();
+    }
+    catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'EIO';
+        const reason = error instanceof Error ? error.message : String(error);
+        throw fsError(code, 'close', node.path(), undefined, { detail: `its buffered writes are lost (${reason})`, cause: error });
+    }
+}
+/**
+ * Closes every description `scope` holds, each whatever another's flush
+ * answers, and empties it. The flushes that failed (lastClose's errors) are
+ * returned, for the caller to report once the rest of its teardown is done
+ * (reportLost): a teardown that stopped at the first one would keep the
+ * scope, and everything it revokes, open.
+ */
+export function closeDescriptions(scope) {
+    const lost = [];
+    for (const opened of scope.handles.values()) {
+        if (--opened.refs !== 0)
+            continue;
+        opened.handle.closed = true;
+        try {
+            lastClose(opened.node);
+        }
+        catch (error) {
+            lost.push(error);
+        }
+    }
+    scope.handles.clear();
+    return lost;
+}
+/** Reports closeDescriptions' failures: the one, or EIO over them all. */
+export function reportLost(lost) {
+    if (lost.length === 1)
+        throw lost[0];
+    if (lost.length > 1) {
+        throw Object.assign(new AggregateError(lost, `EIO: the buffered writes of ${lost.length} descriptors are lost`), { code: 'EIO' });
+    }
+}
 export class SqliteRuntimeFsBridge {
     rawVfs;
     scope;
@@ -38,10 +85,10 @@ export class SqliteRuntimeFsBridge {
         return this.vfs.storageKey(path);
     }
     dispose() {
-        for (const id of this.scope.handles.keys())
-            this.close(id);
+        const lost = closeDescriptions(this.scope);
         this.scope.closed = true;
         this.scope.abort.abort();
+        reportLost(lost);
     }
     /**
      * Where a path lives, decided only after confinement: the namespace is
@@ -483,7 +530,7 @@ export class SqliteRuntimeFsBridge {
         this.scope.handles.delete(handleId);
         if (--opened.refs === 0) {
             opened.handle.closed = true;
-            opened.node.close();
+            lastClose(opened.node);
         }
     }
     readdir(path, options = {}) {

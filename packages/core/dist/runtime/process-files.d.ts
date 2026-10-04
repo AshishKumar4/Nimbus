@@ -113,6 +113,12 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     revokeAppendWritersThrough(maxPid: number): Promise<void>;
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
     mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
+    /**
+     * Closes `scope` for good: every descriptor (each last close flushing),
+     * its subscriptions, and the scope itself (EBADF from then on, for every
+     * bridge on it). A flush that fails (an aborted binding's, a mount's
+     * refusal) loses its bytes and is reported after the scope is closed.
+     */
     private closeScope;
     private bridgeFor;
 }

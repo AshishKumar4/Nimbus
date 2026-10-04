@@ -15,6 +15,16 @@ export interface SqliteDescriptorScope {
     subscriptions: Set<() => void>;
 }
 export declare function createSqliteDescriptorScope(): SqliteDescriptorScope;
+/**
+ * Closes every description `scope` holds, each whatever another's flush
+ * answers, and empties it. The flushes that failed (lastClose's errors) are
+ * returned, for the caller to report once the rest of its teardown is done
+ * (reportLost): a teardown that stopped at the first one would keep the
+ * scope, and everything it revokes, open.
+ */
+export declare function closeDescriptions(scope: SqliteDescriptorScope): unknown[];
+/** Reports closeDescriptions' failures: the one, or EIO over them all. */
+export declare function reportLost(lost: readonly unknown[]): void;
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;
