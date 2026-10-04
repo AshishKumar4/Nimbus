@@ -559,7 +559,10 @@ function __nimbusWasmDigest(bytes) {
     if (!Reader) continue;
     const read = Reader.prototype.read;
     Reader.prototype.read = function(...args) {
-      return read.apply(this, args).then((value) => { if (value.done) __observeBody(__readerBodies.get(this)); return value; }, (error) => { __observeBody(__readerBodies.get(this)); throw error; });
+      const body = __readerBodies.get(this);
+      const pending = read.apply(this, args);
+      if (!body) return pending;
+      return __nimbusTrackOp(pending.then((value) => { if (value.done) __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; }));
     };
   }
 })();

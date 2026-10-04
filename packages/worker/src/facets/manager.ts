@@ -6380,7 +6380,7 @@ export class FacetManager {
     if (action === 'open') {
       const host = String(payload?.host ?? ''), port = Number(payload?.port);
       if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('netTls: bad target');
-      const refused = journal.effect(`tls.connect ${host}:${port}`);
+      const refused = await journal.beforeEffect(`tls.connect ${host}:${port}`);
       if (refused) throw refused;
       this._netTarget(token, pid).host = host;
       this._netTarget(token, pid).port = port;
@@ -6412,7 +6412,7 @@ export class FacetManager {
     if (!journal || !journal.admits(run)) throw new Error('outbound: this run of the process has stopped');
     switch (action) {
       case 'effect': {
-        const refused = journal.effect(String(payload?.what ?? 'a request'));
+        const refused = await journal.beforeEffect(String(payload?.what ?? 'a request'));
         if (refused) throw refused;
         // The run cannot be replayed now: the outbound need not ask again.
         return { unrecorded: true };
@@ -6479,7 +6479,7 @@ export class FacetManager {
         if (!/^[0-9a-f]{32}$/.test(token)) {
           // A plain connection (not one the TLS shim opened): proxied, and
           // something a second run would do again.
-          const refused = journal.effect(`connect ${token}`);
+          const refused = await journal.beforeEffect(`connect ${token}`);
           if (refused) throw refused;
           return { plain: true, unrecorded: true };
         }

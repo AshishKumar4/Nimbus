@@ -50,6 +50,18 @@ cases.boundary = async () => {
   finish({ size: 1 }); await replay; await boundary;
   assert.equal(passed, true);
   j.close();
+  const ordered = journal();
+  await ask(ordered, 'stat', { size: 1 }); ordered.stopped(); ordered.start('b');
+  let deliver;
+  const observation = ordered.handle('stat', [], 'b', () => new Promise((r) => { deliver = r; }));
+  let changed = false;
+  const effect = ordered.handle('registerPort', [8080], 'b', async () => { changed = true; });
+  const notice = ordered.boundary('b');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(changed, false, 'a post-read effect never overtakes its boundary/observations');
+  deliver({ size: 1 }); await observation; await notice; await effect;
+  assert.equal(changed, true);
+  ordered.close();
 };
 cases.redirect = async () => {
   const j = journal();
