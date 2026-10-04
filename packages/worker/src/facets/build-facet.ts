@@ -5,7 +5,7 @@ import type {
   EsbuildHostBuildOptions,
   EsbuildRemotePlugin,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
@@ -255,11 +255,14 @@ function abortFacet(ctx: DurableObjectState, facet: SharedFacet): void {
  * A call on `facet` began: it is counted until it is answered, on the
  * Durable Object's Dynamic Worker ledger under its generation's own worker
  * id, since a retired generation's call and the next one's can be in flight
- * at once as two workers.
+ * at once as two workers. It is admitted as a helper's call is
+ * (beginHelperFetch): a launch's build or prebundle is the launch's own
+ * worker, anything else waits its turn. Counted on the facet from the start,
+ * so a retirement while it waits does not abort the facet under it.
  */
-function beginCall(ctx: DurableObjectState, facet: SharedFacet): () => void {
-  const endFetch = beginLoaderFetch(ctx, generationId(facet.generation));
+async function beginCall(ctx: DurableObjectState, facet: SharedFacet): Promise<() => void> {
   facet.calls++;
+  const endFetch = await beginHelperFetch(ctx, generationId(facet.generation));
   return () => {
     endFetch();
     facet.calls--;
@@ -295,7 +298,7 @@ export function prewarmBuildFacet(ctx: DurableObjectState, env: unknown): void {
 export function rolldownBuildHost(ctx: DurableObjectState, env: unknown, fallback?: EsbuildBuildHost): EsbuildBuildHost {
   return async (options, plugin) => {
     const facet = sharedBuildFacet(ctx, env);
-    const endCall = beginCall(ctx, facet);
+    const endCall = await beginCall(ctx, facet);
     let outcome: EsbuildBuildOutcome & Crashed;
     try {
       outcome = await (await facet.stub).build(options, plugin);
@@ -347,7 +350,7 @@ function retireGeneration(ctx: DurableObjectState, facet: SharedFacet): void {
 export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult> {
   return async (spec) => {
     const facet = sharedBuildFacet(ctx, env);
-    const endCall = beginCall(ctx, facet);
+    const endCall = await beginCall(ctx, facet);
     let result: PrebundleResult & Crashed;
     try {
       result = await (await facet.stub).prebundle(spec);
@@ -377,7 +380,7 @@ export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (sp
  */
 export async function loadBuildFacet(ctx: DurableObjectState, env: unknown): Promise<void> {
   const facet = sharedBuildFacet(ctx, env);
-  const endCall = beginCall(ctx, facet);
+  const endCall = await beginCall(ctx, facet);
   try {
     await (await facet.stub).warm();
   } catch (error) {

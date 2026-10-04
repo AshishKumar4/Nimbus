@@ -108,16 +108,17 @@ try {
   session.esbuildService = null;
   session._setCpRegistry(registry);
   const shellVfs = new ProcessFiles(rawVfs);
+  const terminal = {
+    write() {},
+    writeln() {},
+    onData() {},
+    cols: 80,
+    rows: 24,
+    focus() {},
+    clear() {},
+  };
   session.shell = new Shell(
-    {
-      write() {},
-      writeln() {},
-      onData() {},
-      cols: 80,
-      rows: 24,
-      focus() {},
-      clear() {},
-    },
+    terminal,
     shellVfs,
     registry,
     { HOME: '/home/user', PATH: '/bin:/usr/bin' },
@@ -128,6 +129,16 @@ try {
       setUmask: (mask) => { processes.setUmask(userParent.pid, mask); },
     },
   );
+  // A child's `sh` runs on a shell of its own, as NimbusWorkspace.shellFor builds one.
+  session.runtimeWorkspace = {
+    shellFor(pid, state) {
+      const shell = new Shell(terminal, shellVfs, registry, { ...session.shell.getEnv(), ...state.env, $: String(pid) }, new ProcessRegistry(), {
+        pid, get cred() { return processes.cred(pid); }, setUmask: (mask) => processes.setUmask(pid, mask),
+      });
+      shell.setCwd(state.cwd);
+      return shell;
+    },
+  };
 
   let supervisorSpawnRequest;
   // supervisorOp is the session's own dispatch — the stub re-expresses the

@@ -32,9 +32,10 @@
  * Lifecycle invariants:
  *   - exitCode is stamped exactly once (first writer wins). kill() and
  *     reportExit() race-free.
- *   - kill() ends the work behind the pid (its launch's terminator) before
- *     it stamps the exit, which wakes every pending waiter, so
- *     cpWait/cpReadOutput don't hang and nothing the child held outlives it.
+ *   - kill() runs the session's kill of the pid (its launch's terminator,
+ *     and the release of what it held) before it stamps the exit, which
+ *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
+ *     nothing the child held outlives it.
  */
 
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -42,6 +43,8 @@ import { parseShellInvocation, type ShellName } from '@nimbus-sh/core/shell/shel
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -93,11 +96,27 @@ interface ChildEntry {
   outputSeq: { 1: number; 2: number };
   outputWaiters: Array<{ fd: 1 | 2; sinceSeq: number; resolve: (r: ReadOutputResult) => void; expiresAt: number }>;
 
-  // Exit slot (first-writer-wins)
+  // Exit slot (first-writer-wins). A child a signal ended keeps the
+  // shell's status (128+signo) here, for the process table; its parent is
+  // told what Node tells, the signal with no status (ChildExitStatus).
   exitCode: number | null;
   signal: string | null;
   killed: boolean;
-  exitWaiters: Array<(r: { done: boolean; exitCode: number | null; signal: string | null }) => void>;
+  /** The errno code of a spawn that failed: the child never ran (EAGAIN: no room to start it). */
+  spawnError: string | null;
+  exitWaiters: Array<(r: ChildExitStatus) => void>;
+}
+
+/**
+ * How a child ended, as Node's ChildProcess reports it: an exit status and
+ * no signal, or the signal that ended it and no status. A spawn that failed
+ * has `spawnError` (its errno code) and the negative errno as its status.
+ */
+export interface ChildExitStatus {
+  done: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  spawnError?: string;
 }
 
 export interface SpawnReq {
@@ -167,6 +186,13 @@ export interface FacetManagerLike {
     opts: { cwd?: string; env?: Record<string, string>; argv?: string[] },
     hooks: OutputHooks,
   ): Promise<number>;
+  /**
+   * The session's kill of `pid` by `signal` (a name without SIG): the work
+   * behind it ends (its launch's terminator), and what it held is released
+   * and its exit reported (ports, RPC resources, relayed sockets). False when
+   * it is not running.
+   */
+  kill(pid: number, signal: string): boolean;
 }
 
 /** Where a child runs from: its pid (whose credential it has), directory and environment. */
@@ -373,6 +399,7 @@ export class FacetProcessManager {
       exitCode: null,
       signal: null,
       killed: false,
+      spawnError: null,
       exitWaiters: [],
     };
     this.children.set(pid, child);
@@ -478,6 +505,14 @@ export class FacetProcessManager {
       const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args }, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
+      // Refused a Dynamic Worker for good (every one held by a process
+      // waiting on a descendant that waits for one): the program never ran,
+      // and its spawn fails as one at a process limit does.
+      if (isDynamicWorkerDeadlock(e)) {
+        child.spawnError = e.code;
+        this._stampExit(child, e.errno, null);
+        return;
+      }
       this._appendText(child, 2, `facet error: ${e?.message || String(e)}\n`);
       this._stampExit(child, 1, null);
     }
@@ -638,6 +673,9 @@ export class FacetProcessManager {
   /** Whether this pid's descriptors belong to a child managed by this broker. */
   isChild(pid: number): boolean { return this.children.has(pid); }
 
+  /** Whether this pid is a child of this broker that has not ended. */
+  isRunning(pid: number): boolean { return this.children.get(pid)?.exitCode === null; }
+
   /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
   routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): boolean {
     const child = this.children.get(pid);
@@ -750,20 +788,26 @@ export class FacetProcessManager {
 
   /**
    * Synchronous kill. First-writer-wins on exit slot. The work behind the
-   * pid ends first: the session's process kill runs the terminator its launch
-   * registered, which aborts a facet program's run, so the Dynamic Worker
-   * it held goes back to the ledger now rather than when the program would
-   * have ended on its own. (`exit()`, which the stamp below calls, drops that
-   * terminator without running it.) Then the stamp wakes every waiter.
+   * pid ends first, through the session's own kill (FacetManagerLike.kill):
+   * the terminator its launch registered aborts a facet program's run, so
+   * the Dynamic Worker it held goes back to the ledger now rather than when
+   * the program would have ended on its own, and its ports, RPC resources
+   * and relayed sockets go with it. (`exit()`, which the stamp below calls,
+   * drops that terminator without running it.) Then the stamp wakes every
+   * waiter.
    */
-  kill(childPid: number, signal: string = 'SIGTERM'): boolean {
+  kill(childPid: number, signal: string | number = 'SIGTERM'): boolean {
     const child = this.children.get(childPid);
     if (!child || child.exitCode !== null) return false;
+    // A name with or without SIG, or a number. One whose default action
+    // does not end a process (SIGCHLD, SIGSTOP), the probe 0, or a name no
+    // signal has ends nothing here.
+    const name = parseSignalName(String(signal));
+    if (name === null || name === '0' || signalDisposition(name) !== 'terminate') return false;
 
-    const exitCode = signal === 'SIGKILL' ? 137 : 143; // POSIX 128+9 / 128+15
     child.killed = true;
-    this.deps.processes.kill(child.pid, exitCode);
-    this._stampExit(child, exitCode, signal);
+    this.deps.facetMgr.kill(child.pid, name);
+    this._stampExit(child, exitCodeForSignal(name), `SIG${name}`); // 128+signo, as the shell reports it
     return true;
   }
 
@@ -782,9 +826,8 @@ export class FacetProcessManager {
     try { this.deps.processes.markExit(child.pid, exitCode); } catch {}
 
     // Wake exit waiters.
-    for (const w of child.exitWaiters.splice(0)) {
-      w({ done: true, exitCode, signal });
-    }
+    const status = this._exitStatus(child);
+    for (const w of child.exitWaiters.splice(0)) w(status);
     // Wake output waiters with closed=true so polling parents stop.
     for (const w of child.outputWaiters.splice(0)) {
       const fresh = child.outputs[w.fd].filter((c) => c.seq > w.sinceSeq);
@@ -792,6 +835,12 @@ export class FacetProcessManager {
     }
     // A child blocked on cpReadStdin is told stdin ended, and exits cleanly.
     for (const w of child.stdinWaiters.splice(0)) w();
+  }
+
+  /** A stamped child's end, as Node reports it (ChildExitStatus). */
+  private _exitStatus(child: ChildEntry): ChildExitStatus {
+    if (child.spawnError !== null) return { done: true, exitCode: child.exitCode, signal: null, spawnError: child.spawnError };
+    return { done: true, exitCode: child.signal === null ? child.exitCode : null, signal: child.signal };
   }
 
   /**
@@ -808,21 +857,19 @@ export class FacetProcessManager {
    * Long-poll wait. Returns immediately if already exited; otherwise
    * registers a waiter that resolves on the next exit-slot stamp.
    */
-  async wait(childPid: number, waitMs: number = WAIT_MAX_MS): Promise<{ done: boolean; exitCode: number | null; signal: string | null }> {
+  async wait(childPid: number, waitMs: number = WAIT_MAX_MS): Promise<ChildExitStatus> {
     const child = this.children.get(childPid);
     if (!child) {
       return { done: true, exitCode: 1, signal: null };
     }
-    if (child.exitCode !== null) {
-      return { done: true, exitCode: child.exitCode, signal: child.signal };
-    }
+    if (child.exitCode !== null) return this._exitStatus(child);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         const idx = child.exitWaiters.indexOf(wrapped);
         if (idx >= 0) child.exitWaiters.splice(idx, 1);
         resolve({ done: false, exitCode: null, signal: null });
       }, Math.min(waitMs, WAIT_MAX_MS));
-      const wrapped = (r: { done: boolean; exitCode: number | null; signal: string | null }) => {
+      const wrapped = (r: ChildExitStatus) => {
         clearTimeout(timer);
         resolve(r);
       };

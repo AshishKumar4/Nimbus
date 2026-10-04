@@ -30,9 +30,49 @@ published independently in the `@nimbus-sh` npm scope.
   Dynamic Workers in flight, the program waits for a release to make room,
   before its module map is assembled, where it used to start anyway and be
   refused by the platform. A burst of 14 children runs 10 wide and
-  completes. Only a kill or Ctrl-C ends the wait, so more children than
-  the limit has room for, each waiting on a grandchild of its own, still
-  wait for good (before, any child waiting on a grandchild did).
+  completes. Only a kill, Ctrl-C, or the ledger's refusal of a wait nothing
+  can satisfy (below) ends the wait.
+- A wait for a Dynamic Worker that no release can satisfy is refused rather
+  than left to wait for good. When every worker in flight is held by a
+  process with a descendant waiting for one (nine children of a parent, each
+  waiting on a grandchild of its own, fill the limit), the newest such wait
+  is refused, and that child's spawn fails as Node's does at a process
+  limit: an 'error' event (`spawn node EAGAIN`, errno -11), no 'exit', no
+  pid, and 'close' with -11. Its program never runs; its parent can end and
+  make room, and the other grandchildren run. A wait that any holder could
+  still end for keeps waiting. The ledger tells the two apart from who holds
+  its workers and whom each waiter descends from, not by a timeout.
+- Fixed: a `child_process` child ended by a signal reported the shell's
+  status to its parent. 'exit' and 'close' gave (143, 'SIGTERM') for every
+  signal but SIGKILL (137), SIGINT included, and `exitCode` was 143. They
+  now give Node's (null, signal) for `kill()`, `kill('SIGKILL')`,
+  `kill('SIGINT')` and any other terminating signal, by name or number;
+  `exitCode` is null and `signalCode` names the signal. The process table
+  keeps the status, 128+signo. `kill()` on a child that has exited returns
+  false, as Node's does. spawn, spawnSync, exec and execFile take `timeout`
+  and `killSignal`: spawnSync's result is then `status: null` with the
+  signal and an ETIMEDOUT `error`. execFile's and exec's error carries
+  `code: null`, `signal`, `killed` and `cmd`, with Node's message
+  (`Command failed: <cmd>` and the child's stderr), and a spawn's own error
+  reaches their callback. The parent's view is compared with host node's.
+- Fixed: a `sh` child (`spawn('sh', ...)`, `exec`) ran on the session's own
+  shell, which saved and restored its cwd and variables around the line.
+  With children running at once, two of them read and restored each
+  other's state (one's `$TAG` and `pwd` were the other's), and the eleventh
+  at once was refused as recursion. Each now runs on a shell of its own
+  (`NimbusWorkspace.shellFor`), from its own cwd and environment, whose
+  descriptors close as it ends.
+- A child's launch is admitted once on the Dynamic Worker ledger, before
+  its preparation: its transform, its prebundle and its program are that
+  one worker in turn, so its preparation never waits on room its own
+  admission holds. A transform, build or esbuild call outside a launch
+  waits its turn. Before, the transform facet of `node child.ts`, spawned
+  with the limit full, was an eleventh worker the platform refused, and the
+  child exited 1.
+- Killing a child runs the session's own kill of its pid before the broker
+  stamps the exit: its ports, RPC resources and relayed sockets are
+  released, and its exit reported to its parent rather than the terminal.
+  A child killed before its program started never starts it.
 - Fixed: a process whose release failed (a descriptor's buffered bytes lost
   to an abort) stopped the prune of a session's or workspace's ended
   processes: that pid and every one after it stayed bound to the

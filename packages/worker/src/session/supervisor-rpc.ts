@@ -980,7 +980,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     childPid: number,
     waitMs: number,
     acquire?: FsAcquireArgs,
-  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; acquired?: VfsDeliveredAcquire }> {
+  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; spawnError?: string; acquired?: VfsDeliveredAcquire }> {
     return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
   }
 }

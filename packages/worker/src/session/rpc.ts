@@ -1338,10 +1338,14 @@ export function _reportExternalExit(self: RpcHost, pid: number, code: number, re
       self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
     self.processes.markExit(pid, code, reason);
-    const cmdFromTable = self.processes.get(pid)?.command;
-    notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
-    if (self.terminal && self.processes.logSize(pid) > 0) {
-      self._emitExitDump(pid, code);
+    // A child_process child's end is its parent's to report, as its output
+    // is (routeOutput): the terminal hears nothing of it.
+    if (!self.facetProcessManager?.isChild(pid)) {
+      const cmdFromTable = self.processes.get(pid)?.command;
+      notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
+      if (self.terminal && self.processes.logSize(pid) > 0) {
+        self._emitExitDump(pid, code);
+      }
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero
     // code. The FacetManager already records its own exits inline via

@@ -80,6 +80,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
 import {
   FencedWork,
   FENCED_WORK_KEY_PREFIX,
@@ -5903,6 +5904,14 @@ export class FacetManager {
         this.processes.kill(entry.pid);
         return { exitCode: 130, stdout: '', stderr: '' };
       }
+      // The ledger refused to start it (EAGAIN): it never ran. That is its
+      // spawn failing, for whoever spawned it to report: a child_process
+      // parent as an 'error' event. A pid the caller allocated is the
+      // caller's to mark; one spawned here ends with status 1.
+      if (isDynamicWorkerDeadlock(err)) {
+        if (!opts.skipSpawn) this.processes.exit(entry.pid, 1);
+        throw err;
+      }
       const exitCode = 1;
       const reason = `runtime worker error: ${errorMessage(err)}`;
       this.processes.exit(entry.pid, exitCode);
@@ -6094,6 +6103,7 @@ export class FacetManager {
             body,
             signal,
           }),
+          ancestors: this.processes.ancestorsOf(entry.pid),
           onWriterActivated: (id) => {
             this._activateProcessVfsWriter(entry.pid, id);
             writerActivated = true;
