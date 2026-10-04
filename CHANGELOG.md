@@ -19,6 +19,27 @@ file, so a mount that cannot tell must answer `unknown`; and
 `NimbusWorkspace.exec` without a `shellId` is one-shot, so a caller that
 relies on `cd` or `export` persisting passes a `shellId`; as described
 below.
+- `@nimbus-sh/core`: the library host's `node` runs each program in a realm
+  of its own, a worker thread, where it ran in the host's realm through
+  `new Function` (Kinu ask 17). A program that rebound `globalThis.Array`,
+  installed fake timers or patched `Object.prototype` changed them for the
+  embedder too: in Kinu's CLI, `Array.isArray = () => true` broke the host's
+  SQLite filesystem. Now its globals and built-ins are its own. With it: an ES
+  module is strict, as in Node (a write to a frozen property throws where it
+  was silent); an aborted call (kill, Ctrl-C, `signal`) terminates the
+  program even in a loop that never yields, where it held the host for good;
+  `readFileSync(0)` waits for stdin to end, also when it arrives in pieces,
+  where it threw; and timers the program leaves run before the command ends,
+  where they were dropped (`process.exit()` in one exits with its code, and
+  a rejection nothing handles exits 1, as in Node, a server listening or
+  not; an ES module whose top-level await never settles exits 13). A
+  program lives as long as its event loop has work: its timers, a server it
+  listens with (a server a timer starts included), a request it is waiting
+  on; a trivial ES module no longer waits 150 ms, nor one that loads `http`
+  without serving up to 10 s. The host answers only the realm's own calls,
+  so a program cannot end it. It needs `node:worker_threads` (Bun and Node).
+  Each run takes about 16 ms more to start, and each synchronous filesystem
+  call about 0.1 ms more.
 
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),

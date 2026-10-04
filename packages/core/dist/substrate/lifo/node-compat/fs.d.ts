@@ -46,8 +46,13 @@ interface NodeError extends Error {
     path: string;
 }
 type Callback<T> = (err: NodeError | null, result?: T) => void;
-export declare function createFs(vfs: VFS, cwd: string): {
-    readFileSync: (path: string | URL, options?: string | {
+/**
+ * `stdin` reads fd 0 to its end, blocking until it ends, as a synchronous
+ * read of it does in Node; what it returned is all fd 0 holds, so a second
+ * read finds it at its end.
+ */
+export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array): {
+    readFileSync: (path: string | URL | number, options?: string | {
         encoding?: string;
         flag?: string;
     }) => string | Uint8Array;

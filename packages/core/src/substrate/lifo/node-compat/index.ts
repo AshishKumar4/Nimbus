@@ -36,14 +36,16 @@ export interface NodeContext {
   dirname: string;
   signal: AbortSignal;
   executeCapture?: (input: string) => Promise<string>;
+  /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
+  stdin?: () => Uint8Array;
   portRegistry?: Map<number, VirtualRequestHandler>;
   routeLoopback?: LoopbackRouter;
 }
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
   const map: Record<string, () => unknown> = {
-    fs: () => createFs(ctx.filesystem(), ctx.cwd),
-    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd).promises,
+    fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
+    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
     path: () => pathModule,
     os: () => createOs(ctx.env),
     process: () => createProcess({
@@ -95,7 +97,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     readline: () => readlineModule,
     'readline/promises': () => readlineModule.promises,
     constants: () => {
-      const fs = createFs(ctx.filesystem(), ctx.cwd);
+      const fs = createFs(ctx.filesystem(), ctx.cwd, ctx.stdin);
       const os = createOs(ctx.env);
       return { ...os.constants, ...fs.constants };
     },

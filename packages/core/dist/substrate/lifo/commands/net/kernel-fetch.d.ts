@@ -30,5 +30,5 @@ export declare function statusText(status: number): string;
  * traffic alike. `request.signal` is the only cancellation channel — a
  * parked local handler and the loopback router both observe it.
  */
-export declare function dispatchWorkspaceRequest(kernel: Kernel, port: number, request: Request): Promise<WorkspaceRequestResult>;
+export declare function dispatchWorkspaceRequest(kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback'>, port: number, request: Request): Promise<WorkspaceRequestResult>;
 //# sourceMappingURL=kernel-fetch.d.ts.map

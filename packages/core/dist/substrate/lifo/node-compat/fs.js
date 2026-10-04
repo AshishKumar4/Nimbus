@@ -86,7 +86,21 @@ function parseFlags(flags) {
         default: return O_RDONLY;
     }
 }
-export function createFs(vfs, cwd) {
+/** The paths that name fd 0. */
+const STDIN_PATHS = { '/dev/stdin': true, '/dev/fd/0': true, '/proc/self/fd/0': true };
+/**
+ * `stdin` reads fd 0 to its end, blocking until it ends, as a synchronous
+ * read of it does in Node; what it returned is all fd 0 holds, so a second
+ * read finds it at its end.
+ */
+export function createFs(vfs, cwd, stdin) {
+    let stdinRead = false;
+    const readStdin = () => {
+        if (stdinRead)
+            return new Uint8Array(0);
+        stdinRead = true;
+        return stdin ? stdin() : new Uint8Array(0);
+    };
     // ─── File descriptor table ───
     const fdTable = new Map();
     let nextFd = 10; // start above stdin/stdout/stderr
@@ -99,6 +113,12 @@ export function createFs(vfs, cwd) {
     // ─── Sync API ───
     function readFileSync(path, options) {
         const encoding = typeof options === 'string' ? options : options?.encoding;
+        if (path === 0 || (typeof path === 'string' && Object.hasOwn(STDIN_PATHS, path))) {
+            const bytes = readStdin();
+            return encoding ? new TextDecoder().decode(bytes) : Buffer.from(bytes);
+        }
+        if (typeof path === 'number')
+            return readFileSync(getFd(path).path, options);
         const abs = resolvePath(cwd, path);
         if (encoding) {
             return vfs.readFileString(abs);

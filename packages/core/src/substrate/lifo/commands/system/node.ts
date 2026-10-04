@@ -1,4 +1,4 @@
-import { synchronousFilesystem, type NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
@@ -7,8 +7,9 @@ import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
-import { ACTIVE_SERVERS } from '../../node-compat/http.js';
-import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
+import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
+import type { CommandOutputStream } from '../types.js';
+import { runNodeInRealm } from './node-realm.js';
 import { exists } from '../../../../vfs/vfs.js';
 
 const NODE_VERSION = 'v20.0.0';
@@ -71,7 +72,7 @@ function isEsmSource(source: string): boolean {
 }
 
 /** Determine if source should be treated as ESM based on filename, content, and package.json type */
-type PackageType = 'module' | 'commonjs' | null;
+export type PackageType = 'module' | 'commonjs' | null;
 
 function declaredPackageType(packageJson: string): PackageType {
 	try {
@@ -574,13 +575,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			await ctx.stdout.write('  -v, --version       print version\n\n');
 			await ctx.stdout.write('Limitations:\n');
 			await ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
-			await ctx.stdout.write('  - No event loop (top-level async does not settle)\n');
 			await ctx.stdout.write('  - No native modules\n');
 			await ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
 			return 0;
 		}
-
-		const filesystem = synchronousFilesystem(ctx.vfs);
 
 		let source: string;
 		let filename: string;
@@ -616,27 +614,72 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			return 1;
 		}
 
-		const dir = filename === '[eval]' ? ctx.cwd : dirname(filename);
+		const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
+		const kernel = kernelOrPortRegistry instanceof Map ? { portRegistry: kernelOrPortRegistry } : kernelOrPortRegistry;
+		// The program runs in a realm of its own (a worker per run), never the
+		// host's: its globals and intrinsics are its own (node-realm.ts).
+		return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType }, ctx, kernel);
+	};
+}
 
-		// Extract portRegistry from either Kernel or direct Map
-		const portRegistry = kernelOrPortRegistry instanceof Map
-			? kernelOrPortRegistry
-			: kernelOrPortRegistry?.portRegistry;
+/** A program the inline node runs, and where it runs from. */
+export interface NodeProgram {
+	readonly source: string;
+	/** Its absolute path, or `[eval]` for `-e`. */
+	readonly filename: string;
+	readonly scriptArgs: readonly string[];
+	readonly cwd: string;
+	readonly env: Record<string, string>;
+	/** The main script's package type, from its package.json (a `.js` entry), decided before it runs. */
+	readonly mainType: PackageType;
+}
 
+/** What a run reaches outside its realm: the filesystem, its stdio, the session's ports. */
+export interface NodeProgramHost {
+	readonly filesystem: () => NodeFilesystem;
+	readonly stdout: CommandOutputStream;
+	readonly stderr: CommandOutputStream;
+	/** fd 0, read to its end: blocks until stdin ends, as a synchronous read of it does in Node. */
+	readonly stdin: () => Uint8Array;
+	readonly portRegistry?: Map<number, VirtualRequestHandler>;
+	readonly routeLoopback?: LoopbackRouter;
+}
+
+/**
+ * How a program's main script ended: its exit code, and whether its process
+ * ended with it (process.exit(), or an error nothing caught), so that nothing
+ * it left behind may run.
+ */
+export interface NodeProgramEnd {
+	readonly code: number;
+	readonly ended: boolean;
+}
+
+/**
+ * Run `program` in the current realm, which is the program's own: its globals
+ * (process, Buffer, console, the bundlers' interop helpers) are installed on
+ * globalThis for good. Resolves once the main script has run (an ES module's
+ * top-level await included). What it left (timers, servers, requests) runs on
+ * in the realm's own event loop, which owns how long the process lives.
+ */
+export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost): Promise<NodeProgramEnd> {
+		const { source, filename, scriptArgs, mainType } = program;
+		const filesystem = host.filesystem;
+		const ctx = { stdout: host.stdout, stderr: host.stderr };
+		const dir = filename === '[eval]' ? program.cwd : dirname(filename);
 		const nodeCtx: NodeContext = {
 			filesystem,
-			cwd: ctx.cwd,
-			env: ctx.env,
-			stdout: ctx.stdout,
-			stderr: ctx.stderr,
+			cwd: program.cwd,
+			env: program.env,
+			stdout: host.stdout,
+			stderr: host.stderr,
 			argv: [filename, ...scriptArgs],
 			filename,
 			dirname: dir,
-			signal: ctx.signal,
-			portRegistry,
-			routeLoopback: kernelOrPortRegistry instanceof Map
-				? undefined
-				: kernelOrPortRegistry?.routeLoopback,
+			signal: new AbortController().signal,
+			portRegistry: host.portRegistry,
+			routeLoopback: host.routeLoopback,
+			stdin: host.stdin,
 		};
 
 		const moduleMap = createModuleMap(nodeCtx);
@@ -1060,10 +1103,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			};
 
 			let cleanSource = stripShebang(modSource);
+			// An ES module is strict code, as Node runs one.
+			let strict = '';
 			if (treatAsEsm(cleanSource, modFilename, () => packageType(modFilename, filesystem()))) {
 				cleanSource = transformEsmToCjs(cleanSource);
+				strict = '"use strict";';
 			}
-			const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanSource}\n})`;
+			const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {${strict}\n${cleanSource}\n})`;
 
 			let fn: (...args: unknown[]) => void;
 			try {
@@ -1091,21 +1137,6 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				throw err;
 			}
 			const global = { process: modProcess, Buffer, console: modConsole };
-			// Many npm bundles access globalThis.process directly (not the wrapper param).
-			// Only override in browser-like envs; skip in real Node.js (test runner).
-			const ga = globalThis as Record<string, unknown>;
-			const isRealNode = typeof (ga.process as Record<string, unknown>)?.pid === 'number';
-			const savedProcess = ga.process;
-			const savedBuffer = ga.Buffer;
-			const savedConsole = ga.console;
-			if (!isRealNode) {
-				ga.process = modProcess;
-				ga.Buffer = Buffer;
-				ga.console = modConsole;
-			}
-			// Inject Rollup/esbuild interop helpers so bundled npm packages can find them
-			const savedHelpers: Record<string, unknown> = {};
-			for (const k of Object.keys(_rollupHelpers)) { savedHelpers[k] = ga[k]; ga[k] = _rollupHelpers[k]; }
 			const importMetaUrl = 'file://' + modFilename;
 			const importMeta = { url: importMetaUrl, dirname: modDir, filename: modFilename };
 			const importMetaResolve = (specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
@@ -1125,13 +1156,6 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					err.message = `[${modFilename}] ${err.message}`;
 				}
 				throw err;
-			} finally {
-				for (const k of Object.keys(savedHelpers)) ga[k] = savedHelpers[k];
-				if (!isRealNode) {
-					ga.process = savedProcess;
-					ga.Buffer = savedBuffer;
-					ga.console = savedConsole;
-				}
 			}
 
 			// Update cache if module.exports was reassigned (not just mutated)
@@ -1157,42 +1181,25 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const global = { process, Buffer, console: nodeConsole };
 
 		let cleanMainSource = stripShebang(source);
-		const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
 		const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
 		if (isEsm) {
 			cleanMainSource = transformEsmToCjs(cleanMainSource);
 		}
 
-		// Use async IIFE for ESM (supports top-level await)
+		// Use async IIFE for ESM (supports top-level await); an ES module is strict code.
 		const wrapped = isEsm
-			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`
+			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {"use strict";\n${cleanMainSource}\n})`
 			: `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`;
 
-		// Many npm bundles access globalThis.process directly (not the wrapper param).
-		// Only override in browser-like envs; skip in real Node.js (test runner).
+		// The realm is the program's: npm bundles that reach globalThis.process
+		// (not the wrapper param) find the program's, and the bundlers' interop
+		// helpers are its globals too.
 		const ga = globalThis as Record<string, unknown>;
-		const isRealNode = typeof (ga.process as Record<string, unknown>)?.pid === 'number';
-		const savedProcess = ga.process;
-		const savedBuffer = ga.Buffer;
-		const savedConsole = ga.console;
-		if (!isRealNode) {
-			ga.process = process;
-			ga.Buffer = Buffer;
-			ga.console = nodeConsole;
-		}
-		// Inject Rollup/esbuild interop helpers so bundled npm packages can find them
-		const savedHelpers: Record<string, unknown> = {};
-		for (const k of Object.keys(_rollupHelpers)) { savedHelpers[k] = ga[k]; ga[k] = _rollupHelpers[k]; }
-		// Capture unhandled promise rejections from fire-and-forget async actions
-		let pendingRejection: unknown = null;
-		const rejectionHandler = (event: PromiseRejectionEvent) => {
-			pendingRejection = event.reason;
-			event.preventDefault(); // prevent browser default logging
-			ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
-		};
-		if (typeof globalThis.addEventListener === 'function') {
-			globalThis.addEventListener('unhandledrejection', rejectionHandler as EventListener);
-		}
+		ga.process = process;
+		ga.Buffer = Buffer;
+		ga.console = nodeConsole;
+		ga.global = globalThis;
+		for (const k of Object.keys(_rollupHelpers)) ga[k] = _rollupHelpers[k];
 
 		const mainImportMetaUrl = 'file://' + filename;
 		const mainImportMeta = { url: mainImportMetaUrl, dirname: dir, filename };
@@ -1213,113 +1220,18 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				await result;
 			}
 
-			// Check if any servers were started (long-running process).
-			// Many CLI tools (e.g. vite) fire async actions from cli.parse() whose
-			// promises are discarded. We poll briefly to let those async chains
-			// progress and create servers before deciding the process is done.
-			// Only poll if http was actually loaded (indicating server intent).
-			const getActiveServers = () => {
-				const httpMod = moduleCache.get('http') as { [key: symbol]: unknown[] } | undefined;
-				return httpMod?.[ACTIVE_SERVERS] as Array<{ getPromise(): Promise<void> | null; close(): void }> | undefined;
-			};
-			let activeServers = getActiveServers();
-			if ((!activeServers || activeServers.length === 0) && isEsm) {
-				// ESM scripts may have fire-and-forget async actions (e.g. vite's
-				// cli.parse() triggers an async action whose promise is discarded).
-				// Yield briefly to let those chains start, then poll for servers.
-				// Phase 1: Quick yield — watch for new modules being loaded, which
-				// indicates async work is in progress. Stop early if nothing changes.
-				let prevCacheSize = moduleCache.size;
-				let staleCount = 0;
-				const quickDeadline = Date.now() + 2000;
-				while (Date.now() < quickDeadline) {
-					await new Promise<void>((r) => setTimeout(r, 30));
-					activeServers = getActiveServers();
-					if (activeServers && activeServers.length > 0) break;
-					if (ctx.signal.aborted || pendingRejection) break;
-					// If new modules are loading, async work is progressing
-					const newSize = moduleCache.size;
-					if (newSize > prevCacheSize) {
-						staleCount = 0;
-						prevCacheSize = newSize;
-					} else {
-						staleCount++;
-						// No new modules for 5 ticks (150ms) — async chain likely done
-						if (staleCount >= 5) break;
-					}
-				}
-				// Phase 2: If http was loaded during Phase 1 (indicating server intent)
-				// but no servers yet, keep polling up to 10s for the full server startup.
-				if ((!activeServers || activeServers.length === 0) && moduleCache.has('http')) {
-					const longDeadline = Date.now() + 10000;
-					while (Date.now() < longDeadline) {
-						await new Promise<void>((r) => setTimeout(r, 50));
-						activeServers = getActiveServers();
-						if (activeServers && activeServers.length > 0) break;
-						if (ctx.signal.aborted || pendingRejection) break;
-					}
-				}
-			}
-
-			if (activeServers && activeServers.length > 0) {
-				// Collect all server promises
-				const serverPromises = activeServers
-					.map((s) => s.getPromise())
-					.filter((p): p is Promise<void> => p !== null);
-
-				if (serverPromises.length > 0) {
-					// Wait for all servers to close OR for abort signal
-					const abortPromise = new Promise<void>((resolve) => {
-						if (ctx.signal.aborted) {
-							resolve();
-							return;
-						}
-						ctx.signal.addEventListener('abort', () => resolve(), { once: true });
-					});
-
-					await Promise.race([
-						Promise.all(serverPromises),
-						abortPromise,
-					]);
-
-					// On abort, close all active servers
-					if (ctx.signal.aborted) {
-						for (const server of [...activeServers]) {
-							server.close();
-						}
-					}
-				}
-			}
-
-			// If an async action failed (e.g. unhandled rejection from ProcessExitError)
-			if (pendingRejection) {
-				if (pendingRejection instanceof ProcessExitError) return pendingRejection.exitCode;
-				return 1;
-			}
-			return 0;
+			return { code: 0, ended: false };
 		} catch (e) {
 			if (e instanceof ProcessExitError) {
-				return e.exitCode;
+				return { code: e.exitCode, ended: true };
 			}
 			if (e instanceof Error) {
 				await ctx.stderr.write(`${e.stack || e.message}\n`);
 			} else {
 				await ctx.stderr.write(`${String(e)}\n`);
 			}
-			return 1;
-		} finally {
-			for (const k of Object.keys(savedHelpers)) ga[k] = savedHelpers[k];
-			if (!isRealNode) {
-				ga.process = savedProcess;
-				ga.Buffer = savedBuffer;
-				ga.console = savedConsole;
-			}
-			// Remove unhandled rejection listener
-			if (typeof globalThis.removeEventListener === 'function') {
-				globalThis.removeEventListener('unhandledrejection', rejectionHandler as EventListener);
-			}
+			return { code: 1, ended: true };
 		}
-	};
 }
 
 export function createNodeCommand(kernel: Kernel): Command {

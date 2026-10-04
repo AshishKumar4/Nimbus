@@ -54,7 +54,7 @@ export function statusText(status: number): string {
  * parked local handler and the loopback router both observe it.
  */
 export async function dispatchWorkspaceRequest(
-  kernel: Kernel,
+  kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback'>,
   port: number,
   request: Request,
 ): Promise<WorkspaceRequestResult> {

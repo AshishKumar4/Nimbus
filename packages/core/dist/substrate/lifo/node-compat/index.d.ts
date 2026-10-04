@@ -12,6 +12,8 @@ export interface NodeContext {
     dirname: string;
     signal: AbortSignal;
     executeCapture?: (input: string) => Promise<string>;
+    /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
+    stdin?: () => Uint8Array;
     portRegistry?: Map<number, VirtualRequestHandler>;
     routeLoopback?: LoopbackRouter;
 }
