@@ -23,10 +23,12 @@
  * is not. Arguments and answers cross natively, stubs, functions and streams
  * included.
  *
- * It differs from a Durable Object stub in one way the runtime fixes: `typeof`
- * is 'function'. Its own `dup` and `Symbol.dispose` are shadowed, so `dup` is
- * the object's (which refuses it, as Cloudflare does) and it is not
- * disposable. And it is not persistent, so a Worker Loader env cannot carry
+ * Its prototype is not RpcStub's but one shaped as a Durable Object stub's:
+ * its constructor is a class `DurableObject` that cannot be constructed, its
+ * tag is 'DurableObject', and it has no `dup` or Symbol.dispose of its own,
+ * so `dup` is a member, which the runtime refuses as on Cloudflare. It
+ * differs from a Durable Object stub in two ways the runtime fixes. `typeof`
+ * is 'function'. And it is not persistent, so a Worker Loader env cannot carry
  * it ("RpcStub cannot be serialized in this context because it is not a
  * persistent stub"): the loader shim (NimbusLoaderRPC) keeps a child's code
  * and loads it again in each later request, so the child's env can carry
@@ -50,8 +52,8 @@ export function innerDoIdFromName(name) {
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return 'name:' + (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
 }
-/** The entrypoint a build asks which Durable Object classes are missing. */
-export const CLASSES_ENTRYPOINT = 'NimbusDurableObjectClasses';
+/** The entrypoint a build asks which Durable Object classes are missing, unless the bundle spells it. */
+const CLASSES_ENTRYPOINT = 'NimbusDurableObjectClasses';
 /**
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
@@ -99,6 +101,18 @@ export function innerDoAdapter(idFromName, names, main, runtime) {
                 : Reflect.getOwnPropertyDescriptor(target, name)),
         });
     }
+    /**
+     * A stub's prototype, as a Durable Object stub's shows: its constructor
+     * cannot be called or constructed, and it is tagged 'DurableObject'.
+     */
+    const stubPrototype = Object.create(Object.prototype, {
+        constructor: {
+            value: function DurableObject() { throw new TypeError('Illegal constructor'); },
+            writable: true,
+            configurable: true,
+        },
+        [Symbol.toStringTag]: { value: 'DurableObject', configurable: true },
+    });
     /** Asked once by a build: which classes the main module does not export. */
     class NimbusDurableObjectClasses extends runtime.WorkerEntrypoint {
         missing(classNames) {
@@ -114,13 +128,11 @@ export function innerDoAdapter(idFromName, names, main, runtime) {
         idFromString(id) { return new DurableObjectId(String(id)); }
         get(id) {
             const at = id instanceof DurableObjectId ? id : new DurableObjectId(String(id));
-            return Object.defineProperties(new runtime.RpcStub(member(this.#remote, String(at), [])), {
-                // As a Durable Object stub has them: its own, enumerable, in this order.
+            const stub = Object.setPrototypeOf(new runtime.RpcStub(member(this.#remote, String(at), [])), stubPrototype);
+            // As a Durable Object stub has them: its own, enumerable, in this order.
+            return Object.defineProperties(stub, {
                 name: { value: at.name, enumerable: true },
                 id: { value: at, enumerable: true },
-                // A Durable Object stub has neither: `dup` is the object's, and it is not disposable.
-                dup: { value: member(this.#remote, String(at), ['dup']) },
-                [Symbol.dispose]: { value: undefined },
             });
         }
         getByName(name) { return this.get(this.idFromName(name)); }
@@ -140,14 +152,20 @@ const ADAPTER_MODULE = 'nimbus-do-env.js';
  * The modules an inner Worker runs with Durable Object bindings `names`: its
  * bundle as the main module, whose first import is the adapter (so the
  * adapter has run before any of the Worker's code) and which exports the
- * class check, and the adapter. The import shares the bundle's first line,
- * so line numbers stay the bundle's. A Worker with no such binding runs its
- * bundle as it is.
+ * class check as `classesEntrypoint`, and the adapter. The import shares the
+ * bundle's first line, so line numbers stay the bundle's. A Worker with no
+ * such binding runs its bundle as it is, and has no class check (null).
+ *
+ * `classesEntrypoint` is a name the bundle never spells, so it exports no
+ * such name itself (a bundler prints an ASCII name as it is).
  */
 export function innerWorkerModules(bundle, names) {
     if (names.length === 0)
-        return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: bundle } };
-    const head = `export { ${CLASSES_ENTRYPOINT} } from './${ADAPTER_MODULE}';`;
+        return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: bundle }, classesEntrypoint: null };
+    let classesEntrypoint = CLASSES_ENTRYPOINT;
+    for (let n = 2; bundle.includes(classesEntrypoint); n++)
+        classesEntrypoint = `${CLASSES_ENTRYPOINT}_${n}`;
+    const head = `export { ${CLASSES_ENTRYPOINT} as ${classesEntrypoint} } from './${ADAPTER_MODULE}';`;
     // A hashbang must stay first.
     const at = bundle.startsWith('#!') ? bundle.indexOf('\n') + 1 : 0;
     const main = bundle.slice(0, at) + head + bundle.slice(at);
@@ -159,5 +177,5 @@ export function innerWorkerModules(bundle, names) {
         `const { ${CLASSES_ENTRYPOINT} } = (${innerDoAdapter.toString()})(${innerDoIdFromName.toString()}, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
         `export { ${CLASSES_ENTRYPOINT} };`,
     ].join('\n');
-    return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter } };
+    return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter }, classesEntrypoint };
 }

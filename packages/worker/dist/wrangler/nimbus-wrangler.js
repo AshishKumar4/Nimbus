@@ -16,7 +16,7 @@
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
-import { CLASSES_ENTRYPOINT, innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
+import { innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
@@ -392,6 +392,7 @@ export class NimbusWrangler {
             if (this.supervisorCtx) {
                 abortInnerDoFacets(this.supervisorCtx, this.doClassMap.keys(), new Error('nimbus-wrangler rebuilding'));
             }
+            this.doClassMap.clear();
             const wrangCompatDate = this.config.compatibility_date || CF_COMPAT_DATE;
             // Filter flags that workerd refuses on dynamic-worker LOADER.load().
             // `experimental` gates behind the parent process's --experimental
@@ -421,13 +422,15 @@ export class NimbusWrangler {
             // namespace in the inner isolate, over the binding the loader passes
             // (inner-do-env.ts): the bundle's first import replaces it in the env
             // every handler, entrypoint and object of the isolate sees.
+            const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, doBindings.map((b) => b.name));
             const worker = this.loaderEnv.LOADER.load({
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
-                ...innerWorkerModules(bundledCode, doBindings.map((b) => b.name)),
+                mainModule,
+                modules,
                 env: this.buildInnerEnv(),
             });
-            if (!(await this.registerDoClasses(worker, doBindings)))
+            if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings)))
                 return false;
             this.workerStub = worker.getEntrypoint();
             for (const w of result.warnings || []) {
@@ -458,15 +461,13 @@ export class NimbusWrangler {
     // to LOADER.load() at all, plus forwarding plain string vars.
     /**
      * Checks that `worker` (the inner Worker, loaded) exports each binding's
-     * class, asking its own isolate once (which also runs its module code, so
-     * an error there is the build's), then registers each class for the
-     * session's facets to run. False, logged, when one is missing.
+     * class, asking its own isolate once through its `classesEntrypoint`
+     * (which also runs its module code, so an error there is the build's),
+     * then registers each class for the session's facets to run. False,
+     * logged, when one is missing.
      */
-    async registerDoClasses(worker, bindings) {
-        this.doClassMap.clear();
-        if (bindings.length === 0)
-            return true;
-        const missing = new Set(await worker.getEntrypoint(CLASSES_ENTRYPOINT).missing(bindings.map((b) => b.class_name)));
+    async registerDoClasses(worker, classesEntrypoint, bindings) {
+        const missing = new Set(await worker.getEntrypoint(classesEntrypoint).missing(bindings.map((b) => b.class_name)));
         for (const b of bindings) {
             if (missing.has(b.class_name)) {
                 this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' is not exported by the Worker\x1b[0m\n`);

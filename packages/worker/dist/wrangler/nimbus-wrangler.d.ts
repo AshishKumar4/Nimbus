@@ -102,9 +102,10 @@ export declare class NimbusWrangler {
     private buildAndLoad;
     /**
      * Checks that `worker` (the inner Worker, loaded) exports each binding's
-     * class, asking its own isolate once (which also runs its module code, so
-     * an error there is the build's), then registers each class for the
-     * session's facets to run. False, logged, when one is missing.
+     * class, asking its own isolate once through its `classesEntrypoint`
+     * (which also runs its module code, so an error there is the build's),
+     * then registers each class for the session's facets to run. False,
+     * logged, when one is missing.
      */
     private registerDoClasses;
     private buildInnerEnv;

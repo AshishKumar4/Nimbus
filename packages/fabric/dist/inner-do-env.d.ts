@@ -23,10 +23,12 @@
  * is not. Arguments and answers cross natively, stubs, functions and streams
  * included.
  *
- * It differs from a Durable Object stub in one way the runtime fixes: `typeof`
- * is 'function'. Its own `dup` and `Symbol.dispose` are shadowed, so `dup` is
- * the object's (which refuses it, as Cloudflare does) and it is not
- * disposable. And it is not persistent, so a Worker Loader env cannot carry
+ * Its prototype is not RpcStub's but one shaped as a Durable Object stub's:
+ * its constructor is a class `DurableObject` that cannot be constructed, its
+ * tag is 'DurableObject', and it has no `dup` or Symbol.dispose of its own,
+ * so `dup` is a member, which the runtime refuses as on Cloudflare. It
+ * differs from a Durable Object stub in two ways the runtime fixes. `typeof`
+ * is 'function'. And it is not persistent, so a Worker Loader env cannot carry
  * it ("RpcStub cannot be serialized in this context because it is not a
  * persistent stub"): the loader shim (NimbusLoaderRPC) keeps a child's code
  * and loads it again in each later request, so the child's env can carry
@@ -52,8 +54,6 @@ export interface InnerDoRuntime {
     WorkerEntrypoint: typeof WorkerEntrypoint;
     RpcStub: typeof RpcStub;
 }
-/** The entrypoint a build asks which Durable Object classes are missing. */
-export declare const CLASSES_ENTRYPOINT = "NimbusDurableObjectClasses";
 /**
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
@@ -68,12 +68,16 @@ export declare function innerDoAdapter(idFromName: (name: string) => string, nam
  * The modules an inner Worker runs with Durable Object bindings `names`: its
  * bundle as the main module, whose first import is the adapter (so the
  * adapter has run before any of the Worker's code) and which exports the
- * class check, and the adapter. The import shares the bundle's first line,
- * so line numbers stay the bundle's. A Worker with no such binding runs its
- * bundle as it is.
+ * class check as `classesEntrypoint`, and the adapter. The import shares the
+ * bundle's first line, so line numbers stay the bundle's. A Worker with no
+ * such binding runs its bundle as it is, and has no class check (null).
+ *
+ * `classesEntrypoint` is a name the bundle never spells, so it exports no
+ * such name itself (a bundler prints an ASCII name as it is).
  */
 export declare function innerWorkerModules(bundle: string, names: readonly string[]): {
     mainModule: string;
     modules: Record<string, string>;
+    classesEntrypoint: string | null;
 };
 //# sourceMappingURL=inner-do-env.d.ts.map
