@@ -69,17 +69,18 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     body: ArrayBuffer | null;
 }): Promise<InnerDoFetchAnswer>;
 /**
- * An RPC method of the inner Worker's Durable Object, as `stub.method(...args)`
- * calls it on Cloudflare (NimbusDurableObjectNamespace.callOn): on the
- * object's facet, answering what it answers, or rejecting with what it
- * throws (the error's type and message travel back). `fetch` is the
- * object's fetch, reached by innerDoFetch.
+ * A member of the inner Worker's Durable Object, as a stub's caller reaches
+ * it on Cloudflare (NimbusDurableObjectNamespace.callOn and getOn): the names
+ * of `path`, from the object down, walked on the object's facet, then called
+ * with `args`, or read when `args` is null. It answers what the object
+ * answers, or rejects with what it throws (the error's type and message
+ * travel back).
  */
 export declare function _rpcInnerDoCall(self: RpcHost, req: {
     bindingName: string;
     id: string;
-    method: string;
-    args: unknown[];
+    path: string[];
+    args: unknown[] | null;
 }): Promise<unknown>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
 /**

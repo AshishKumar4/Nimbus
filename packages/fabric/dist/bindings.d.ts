@@ -229,9 +229,10 @@ interface NimbusDoNamespaceProps {
  * The binding the loader passes for `env.MY_DO` (a WorkerEntrypoint of the
  * session's isolate). The inner Worker does not use it as its namespace: a
  * DurableObjectNamespace's API is synchronous, and this one's answers are
- * RpcPromises, which cannot travel as arguments. The inner Worker wraps it
- * in a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
- * and stubs itself and calls `fetchOn` and `callOn` for each stub call.
+ * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
+ * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * and stubs itself, and relays each member a stub's caller reaches, its
+ * fetch included, to `callOn` or `getOn`.
  *
  * `idFromName`, `newUniqueId`, `idFromString` and `get` answer as before, for
  * a caller that awaits them. idFromName produces prefix `name:` (a
@@ -247,13 +248,13 @@ export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<objec
     idFromString(s: string): string;
     /** Return a stub bound to the given id. */
     get(id: string): unknown;
-    /** The object `id`'s fetch. */
-    fetchOn(id: string, request: Request): Promise<Response>;
     /**
-     * The object `id`'s RPC method `method`, called with `args`: its answer, or
-     * what it throws, as the object gave it.
+     * The member of object `id` at `path` (names from the object down), called
+     * with `args`: its answer, or what it throws, as the object gave it.
      */
-    callOn(id: string, method: string, args: unknown[]): Promise<unknown>;
+    callOn(id: string, path: string[], args: unknown[]): Promise<unknown>;
+    /** The member of object `id` at `path`, read. */
+    getOn(id: string, path: string[]): Promise<unknown>;
 }
 /** Props the DO stub carries: which binding, which supervisor, which id. */
 interface NimbusDoStubProps extends NimbusDoNamespaceProps {

@@ -235,22 +235,31 @@ function innerDoFacet(self, bindingName, id) {
     }));
 }
 /**
- * An RPC method of the inner Worker's Durable Object, as `stub.method(...args)`
- * calls it on Cloudflare (NimbusDurableObjectNamespace.callOn): on the
- * object's facet, answering what it answers, or rejecting with what it
- * throws (the error's type and message travel back). `fetch` is the
- * object's fetch, reached by innerDoFetch.
+ * A member of the inner Worker's Durable Object, as a stub's caller reaches
+ * it on Cloudflare (NimbusDurableObjectNamespace.callOn and getOn): the names
+ * of `path`, from the object down, walked on the object's facet, then called
+ * with `args`, or read when `args` is null. It answers what the object
+ * answers, or rejects with what it throws (the error's type and message
+ * travel back).
  */
 export async function _rpcInnerDoCall(self, req) {
     const facet = innerDoFacet(self, req.bindingName, req.id);
     if (!facet) {
         throw new Error(`Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`);
     }
-    // A method is a wildcard property of the stub: called on it, never through call().
-    const call = Reflect.get(facet, req.method);
-    if (typeof call !== 'function')
-        throw new TypeError(`Nimbus: inner DO method '${req.method}' is not callable`);
-    return await Reflect.apply(call, facet, req.args);
+    const names = [...req.path];
+    const last = names.pop();
+    if (last === undefined)
+        throw new TypeError('Nimbus: an inner DO member needs a name');
+    // Each name is a wildcard property of the stub, pipelined: walked on it, and
+    // a method called on its holder, never through call().
+    const holder = names.reduce((at, name) => Reflect.get(at, name), facet);
+    const member = Reflect.get(holder, last);
+    if (req.args === null)
+        return await member;
+    if (typeof member !== 'function')
+        throw new TypeError(`Nimbus: inner DO member '${req.path.join('.')}' is not callable`);
+    return await Reflect.apply(member, holder, req.args);
 }
 export async function _rpcWriteFile(self, path, content, pid, cred) {
     // binary-fs wave: the bridge's writeFile already accepts

@@ -101,9 +101,10 @@ export declare class NimbusWrangler {
     private resolveEntryPath;
     private buildAndLoad;
     /**
-     * Registers each Durable Object binding's class from `classOf` (a loaded
-     * inner Worker's), for the session's facets to run; buildInnerEnv
-     * registered the class-extraction load's, which has no env.
+     * Checks that `worker` (the inner Worker, loaded) exports each binding's
+     * class, asking its own isolate once (which also runs its module code, so
+     * an error there is the build's), then registers each class for the
+     * session's facets to run. False, logged, when one is missing.
      */
     private registerDoClasses;
     private buildInnerEnv;
