@@ -55,6 +55,16 @@ published independently in the `@nimbus-sh` npm scope.
   `code: null`, `signal`, `killed` and `cmd`, with Node's message
   (`Command failed: <cmd>` and the child's stderr), and a spawn's own error
   reaches their callback. The parent's view is compared with host node's.
+- Fixed: after `npm install` in a session, every later `child_process`
+  child hung, even `console.log('x')`, while terminal one-shots ran. A
+  launch too large for one Durable Object turn (the installed tree made
+  every launch in it one) is paced across turns, and the turn that granted
+  its last chunk was held until the program ended: the session's launch
+  alarm was held for the parent's whole run, and the child, whose launch
+  needed a turn of its own, never got one. The turn is released once the
+  program is loaded and entered, as a resident launch's is once it has
+  booted. On a local workerd the child printed in 1.75 s after
+  `npm install ioredis`, where it was still waiting at 90 s.
 - Fixed: a `sh` child (`spawn('sh', ...)`, `exec`) ran on the session's own
   shell, which saved and restored its cwd and variables around the line.
   With children running at once, two of them read and restored each
