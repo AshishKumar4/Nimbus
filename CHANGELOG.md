@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: every outbound WebSocket a process opened (`ws://` or `wss://`)
+  failed with "Fetch API cannot load: wss://...": the session fetched the
+  socket's own URL for the upgrade, and workerd's fetch takes http(s) only.
+  The upgrade is now fetched from the same address over http: or https:.
+
 - Fixed: a process whose release failed (a descriptor's buffered bytes lost
   to an abort) stopped the prune of a session's or workspace's ended
   processes: that pid and every one after it stayed bound to the

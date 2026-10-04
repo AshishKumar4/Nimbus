@@ -25,12 +25,27 @@ function fakeSocket() {
   };
 }
 
+/**
+ * fetch as workerd answers it: an upgrade goes to an http(s) URL, and any
+ * other scheme is refused with workerd's own words (a ws: or wss: URL the
+ * relay passed through unchanged failed every outbound socket this way).
+ */
+const fetched = [];
+function workerdFetch(answer) {
+  return async (input) => {
+    const url = String(input);
+    if (!/^https?:/.test(url)) throw new TypeError(`Fetch API cannot load: ${url}`);
+    fetched.push(url);
+    return answer();
+  };
+}
+
 function stubUpgrade(socket, { status = 101, protocol = '' } = {}) {
-  globalThis.fetch = async () => ({
+  globalThis.fetch = workerdFetch(() => ({
     status,
     webSocket: socket,
     headers: { get: (name) => (name === 'sec-websocket-protocol' ? protocol : null) },
-  });
+  }));
 }
 
 const PID = 1000002;
@@ -39,12 +54,23 @@ const OTHER_PID = 1000003;
 // ── the upgrade, and what the facet is told when it does not happen ──
 {
   const relay = new WebSocketRelay();
-  globalThis.fetch = async () => ({ status: 404, webSocket: null, headers: { get: () => null } });
+  globalThis.fetch = workerdFetch(() => ({ status: 404, webSocket: null, headers: { get: () => null } }));
   await assert.rejects(
     () => relay.open(PID, 'wss://example.invalid/s', []),
     /did not upgrade \(HTTP 404\)/,
     'a destination that refuses the upgrade names itself and the status',
   );
+}
+
+// ── the upgrade goes to the socket's own address over http(s) ──
+{
+  const relay = new WebSocketRelay();
+  stubUpgrade(fakeSocket());
+  fetched.length = 0;
+  await relay.open(PID, 'wss://example.invalid:8443/s?x=1#f', []);
+  await relay.open(PID, 'ws://example.invalid/plain', []);
+  assert.deepEqual(fetched, ['https://example.invalid:8443/s?x=1', 'http://example.invalid/plain'],
+    'wss: is fetched as https:, ws: as http:, with host, port, path and query kept (no fragment)');
 }
 
 // ── frames queued before the first poll are not lost ──

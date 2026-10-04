@@ -66,6 +66,19 @@ function eventBytes(event: WsRelayEvent): number {
   return event.text ? event.text.length * 2 : 0;
 }
 
+/**
+ * The URL a socket's upgrade is fetched from: workerd's fetch takes http(s)
+ * only ("Fetch API cannot load: wss://..."), so ws: is http: and wss: is
+ * https:, the rest of the address as given. A fragment never reaches a
+ * server, in a WebSocket handshake or an HTTP request.
+ */
+function upgradeUrl(url: string): string {
+  const target = new URL(url);
+  target.protocol = target.protocol === 'wss:' ? 'https:' : 'http:';
+  target.hash = '';
+  return target.href;
+}
+
 export class WebSocketRelay {
   private entries = new Map<number, RelayEntry>();
   private nextId = 1;
@@ -82,7 +95,7 @@ export class WebSocketRelay {
   async open(pid: number, url: string, protocols: string[]): Promise<{ id: number; protocol: string }> {
     const headers: Record<string, string> = { Upgrade: 'websocket' };
     if (protocols.length > 0) headers['Sec-WebSocket-Protocol'] = protocols.join(', ');
-    const response = await fetch(url, { headers });
+    const response = await fetch(upgradeUrl(url), { headers });
     const socket = response.webSocket;
     if (!socket) {
       throw new Error(
