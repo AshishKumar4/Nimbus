@@ -119,6 +119,19 @@ shell for one call and saves it afterwards. A hosted runtime's
 programmatic exec is built on them, so a `shellId` names the same shell
 whether the command arrives through `@nimbus-sh/sdk` or through `ws.exec`.
 
+### `node`
+
+The workspace's `node` runs each program in a worker thread of its own, so
+the program's globals and built-ins are its own: a program that rebinds
+`Array`, installs fake timers or patches `Object.prototype` changes them
+for itself, not for your process. ES modules are strict, as in Node. A
+program ends when its event loop is empty, so a timer it leaves still runs.
+`readFileSync(0)` waits for stdin to end, as in Node, and an aborted call
+(`signal`, a kill, Ctrl-C) terminates the program even in a loop that never
+yields. It needs `node:worker_threads`, which Bun and Node have; each run
+costs about 16 ms to start, and each synchronous filesystem call about
+0.1 ms, against the host's. A hosted session runs its own `node`.
+
 ## Files
 
 Files written through `.fs` are owned by the session user (uid 1000), not

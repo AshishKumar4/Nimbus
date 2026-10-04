@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `@nimbus-sh/core`: the library host's `node` runs each program in a realm
+  of its own, a worker thread, where it ran in the host's realm through
+  `new Function` (Kinu ask 17). A program that rebound `globalThis.Array`,
+  installed fake timers or patched `Object.prototype` changed them for the
+  embedder too: in Kinu's CLI, `Array.isArray = () => true` broke the host's
+  SQLite filesystem. Now its globals and built-ins are its own. With it: an ES
+  module is strict, as in Node (a write to a frozen property throws where it
+  was silent); an aborted call (kill, Ctrl-C, `signal`) terminates the
+  program even in a loop that never yields, where it held the host for good;
+  `readFileSync(0)` waits for stdin to end, also when it arrives in pieces,
+  where it threw; and timers the program leaves run before the command ends,
+  where they were dropped (`process.exit()` in one exits with its code, and
+  a rejection nothing handles after the main script exits 1, as in Node).
+  It needs `node:worker_threads` (Bun and Node). Each run takes about 16 ms
+  more to start, and each synchronous filesystem call about 0.1 ms more.
+
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
   and `vite`'s "Root:" and "Config:" lines did too. They print the path
