@@ -10,32 +10,41 @@
  * for it in place.
  *
  * So the run stops there and the program runs again once the input is there.
- * The stop is `ctx.abort()`, which terminates the isolate's JavaScript at
- * once (V8 TerminateExecution): no catch, finally, microtask or timer of the
- * program runs after it, so the program cannot observe it. The abort's reason
- * reaches the caller whole and carries the stop record: the output the
- * session has not acknowledged, and a tape of what the run drew from outside
- * itself — its random seed, clock readings and random bytes, how much each
- * synchronous read of stdin took, and a hash of everything it observed (each
- * file read, stat, listing and response body), in the order it asked. The
+ * The stop is `ctx.abort(string)`, which terminates the isolate's JavaScript
+ * at once (V8 TerminateExecution): no catch, finally, microtask or timer of
+ * the program runs after it. Its reason is a primitive string the guest
+ * builds with functions it captured before the program ran (no Error object,
+ * no JSON or base64 the program could have replaced), and reaches the caller
+ * whole: the output the session has not acknowledged, and a tape of the
+ * draws the run made inside its isolate (its random seed, clock readings,
+ * random bytes, how much each synchronous read of stdin took). The
  * supervisor waits for the input (FacetManager.exec), then launches the same
  * program on the same pid from fresh module state with the stdin the stopped
- * run took, the new input after it, and the tape. That run replays the tape
- * up to the read the stopped run stopped at (the boundary): the same draws,
- * the same reads, the same observations, the same output on both streams,
- * which the session already showed and which is checked and dropped. At the
- * boundary both streams must have printed exactly what the stopped run had;
- * from there the program goes on with its input. A replay that observes,
- * prints or does anything else before the boundary is ended loudly
- * (`diverged`); nothing it did differently reaches anyone.
+ * run took, the input after it, and the tape.
+ *
+ * Everything else the run saw crossed from the session, and is checked there,
+ * where the program cannot reach (ReplayJournal): every answer a supervisor
+ * call got is journaled as a digest of what it carried, in the order the run
+ * was answered, and a run after a stop must ask for the same things and be
+ * answered the same, in that order, up to the read the run before stopped at
+ * (the boundary). A request still unanswered at the stop is not answered
+ * before the boundary. Its network goes through the session too (the
+ * supervisor binding is also its outbound, SupervisorRPC.fetch/connect): a
+ * response is recorded with its bytes and served again, and a connection is
+ * something done outside the process. Output is checked at both ends: the
+ * session keeps what it showed (ReplayOutputGate), and the guest drops what
+ * it prints again only where it matches. Anything a run after a stop does
+ * differently before the boundary ends it loudly (`diverged`), and nothing it
+ * did differently reaches anyone.
  *
  * A run can be replayed only while it has done nothing outside itself: a
- * second run would do it again. The guest counts every call that could (the
- * SUPERVISOR binding by default-deny, fetch, sockets, http clients), and a
- * read that finds its input missing in a run that made one fails with
- * ERR_NIMBUS_SYNC_STDIN naming it. A program that never reads stdin
- * synchronously, or finds its input there when it does, runs once and is
- * never held: no static guess about the code is made.
+ * second run would do it again. The session counts every call that could
+ * (any supervisor call not known to be a read or the process's own output,
+ * any request but a read, any connection), and so does the guest, to fail
+ * the read where the program can catch it: ERR_NIMBUS_SYNC_STDIN, naming the
+ * first. A program that never reads stdin synchronously, or finds its input
+ * there when it does, runs once and is never held: no static guess about the
+ * code is made.
  *
  * The guest half is private to the runner module (`const __nimbusStopReplay`,
  * never on globalThis), and a stop record counts only when it carries the
@@ -51,9 +60,19 @@ export const STOP_LIMIT = 64;
  * the next run is checked against all of it, so the session keeps it.
  */
 export const REPLAY_PREFIX_MAX_BYTES = 1024 * 1024;
-/** The most clock readings, observations and random bytes a replayable run may draw. */
+/** The most clock readings, stdin reads and random bytes a replayable run may draw. */
 export const REPLAY_TAPE_MAX_READINGS = 65_536;
 export const REPLAY_TAPE_MAX_RANDOM_BYTES = 1024 * 1024;
+/** The most answers the session journals for one run; past it the run cannot be replayed. */
+export const REPLAY_JOURNAL_MAX_ENTRIES = 65_536;
+/** The most response bytes the session records for one process's runs; past it, unreplayable. */
+export const REPLAY_FETCH_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * How long a run after a stop may go without asking for the next thing the
+ * run before it was answered, while something it asked for waits behind it,
+ * before it is taken to have strayed.
+ */
+export const REPLAY_STALL_MS = 15_000;
 /** The longest stop record the session reads; a longer one is not a stop. */
 const STOP_RECORD_MAX_CHARS = 16 * 1024 * 1024;
 /**
@@ -71,7 +90,7 @@ export const SUPERVISOR_CALLS_WITHOUT_EFFECTS = [
     'fsRead', 'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsFstat', 'fsRealpath',
     'fsLinkLeadsTo', 'fsSeek', 'fsDup', 'fsClose', 'fsReaddirHandle', 'fsSync', 'setUmask',
     'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'wsPoll',
-    'getPackument', 'getCachedTarball', 'prefetch', 'transform',
+    'getPackument', 'getCachedTarball', 'prefetch', 'transform', 'replayBoundary',
     // Object protocol, not calls.
     'then', 'constructor', 'toString', 'valueOf', 'toJSON',
 ];
@@ -102,8 +121,7 @@ function isTape(value) {
     return Array.isArray(tape.seed) && tape.seed.length === 4 && tape.seed.every((word) => isCount(word, 0xffffffff))
         && isReadings(tape.now) && isReadings(tape.perf)
         && isBase64Within(tape.random, REPLAY_TAPE_MAX_RANDOM_BYTES)
-        && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER))
-        && Array.isArray(tape.obs) && tape.obs.length <= REPLAY_TAPE_MAX_READINGS && tape.obs.every((h) => h === null || isCount(h, 0xffffffff));
+        && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER));
 }
 function isOutput(value) {
     if (!Array.isArray(value) || value.length > 4096)
@@ -125,7 +143,9 @@ function isOutput(value) {
  * The stop record `error` carries for run `run` of a launch whose nonce is
  * `nonce`, or null when it carries none: any other error, a record of another
  * run or launch, or one that does not hold to the record's shape and bounds.
- * Nothing in a record is used before all of it is checked.
+ * The guest stops with a string (`ctx.abort(reason)`), which reaches the
+ * caller as an Error with that message. Nothing in a record is used before
+ * all of it is checked.
  */
 export function stopRecordOf(error, nonce, run) {
     const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
@@ -143,12 +163,13 @@ export function stopRecordOf(error, nonce, run) {
     if (typeof record !== 'object' || record === null)
         return null;
     const r = record;
-    if (r.v !== 2 || r.run !== run || !isOutput(r.out))
+    if (r.v !== 3 || r.run !== run || !isOutput(r.out))
         return null;
     if (r.captured !== undefined) {
         const captured = r.captured;
         if (typeof captured !== 'object' || captured === null
-            || !isBase64Within(captured.stdout, REPLAY_PREFIX_MAX_BYTES) || !isBase64Within(captured.stderr, REPLAY_PREFIX_MAX_BYTES))
+            || typeof captured.stdout !== 'string' || typeof captured.stderr !== 'string'
+            || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES)
             return null;
     }
     if (r.kind === 'stdin') {
@@ -189,6 +210,10 @@ export class ReplayOutputGate {
     shown = { stdout: [], stderr: [] };
     /** More than REPLAY_PREFIX_MAX_BYTES was shown on a stream: no run after a stop can be checked. */
     over = false;
+    /** A run strayed: nothing more it prints is delivered. */
+    close() {
+        this.run = -1;
+    }
     /** The part of a chunk not yet delivered. */
     take(stream, data, at, run) {
         if (run !== this.run)
@@ -219,7 +244,8 @@ export class ReplayOutputGate {
             if (bytes.byteLength > 0)
                 fresh.push({ stream: chunk.s, bytes });
         }
-        this.run = record.run + 1;
+        if (this.run !== -1)
+            this.run = record.run + 1;
         if (this.over)
             return { fresh, prefix: null };
         const prefix = {
@@ -324,95 +350,514 @@ export class StdinTaken {
     }
 }
 /**
+ * Supervisor calls whose answers carry what the program sees of a path: the
+ * session journals them for a process that can stop. Not journaled: the
+ * coherence calls (fsAcquire and its kin) and the namespace listing (fsList),
+ * which describe the whole filesystem, so that any change anywhere would end
+ * every replay; and descriptor bookkeeping. They say where to look and when;
+ * what is there is read by one of these.
+ */
+export const JOURNALED_CALLS = new Set([
+    'readFile', 'readFileBytes', 'stat', 'lstat', 'exists', 'readdir', 'readlink', 'access',
+    'hasLegacySymlinkUnder', 'fsOpen', 'fsRead', 'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch',
+    'fsFstat', 'fsRealpath', 'fsLinkLeadsTo', 'fsReaddirHandle', 'getPackument', 'getCachedTarball',
+]);
+const QUIET_CALLS = new Set(SUPERVISOR_CALLS_WITHOUT_EFFECTS);
+/** What an op does outside the process, or null when it does nothing a second run would repeat. */
+export function supervisorCallEffect(op, args) {
+    const path = args?.find((a) => typeof a === 'string');
+    if (op === 'fsOpen') {
+        const flags = args?.[1];
+        const writes = !!(flags && (flags.write || flags.append || flags.create || flags.truncate));
+        return writes ? `fsOpen ${path ?? ''} for writing`.trim() : null;
+    }
+    if (QUIET_CALLS.has(op))
+        return null;
+    return path ? `${op} ${path}` : op;
+}
+/**
+ * Keys whose values change with nothing the program reads: coherence tokens,
+ * the namespace's whole-filesystem revision and epoch (a listing's own
+ * entries carry their paths' revisions), and access times (a read is not a
+ * change). Left out of an answer's digest.
+ */
+const VOLATILE_KEYS = new Set(['acquired', 'atime', 'atimeMs', 'atimeNs', 'lease', 'rev', 'epoch']);
+/**
+ * A digest of what a value carries, the same for the same contents however it
+ * was built: bytes as bytes, strings by UTF-16 unit, objects by sorted key.
+ * Two independent FNV-1a lanes, 64 bits: it is to notice a file that changed
+ * while a process waited, not to resist a chosen collision.
+ */
+export function answerDigest(value) {
+    let a = 0x811c9dc5, b = 0x050c5d1f;
+    const mix = (code) => {
+        a = Math.imul(a ^ code, 16777619) >>> 0;
+        b = Math.imul(b ^ (code + 0x9e), 2246822519) >>> 0;
+    };
+    const text = (s) => { for (let i = 0; i < s.length; i++)
+        mix(s.charCodeAt(i)); mix(0xffff); };
+    const seen = new Set();
+    const walk = (v, depth) => {
+        if (depth > 64) {
+            text('…');
+            return;
+        }
+        if (v === null) {
+            mix(1);
+            return;
+        }
+        if (v === undefined) {
+            mix(2);
+            return;
+        }
+        switch (typeof v) {
+            case 'string':
+                mix(3);
+                text(v);
+                return;
+            case 'number':
+                mix(4);
+                text(Object.is(v, -0) ? '-0' : String(v));
+                return;
+            case 'boolean':
+                mix(v ? 5 : 6);
+                return;
+            case 'bigint':
+                mix(7);
+                text(String(v));
+                return;
+            case 'object': break;
+            default:
+                mix(8);
+                return;
+        }
+        if (v instanceof Uint8Array || ArrayBuffer.isView(v) || v instanceof ArrayBuffer) {
+            const bytes = v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v)
+                : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+            mix(9);
+            for (let i = 0; i < bytes.byteLength; i++)
+                mix(bytes[i]);
+            mix(0x1ff);
+            return;
+        }
+        if (seen.has(v)) {
+            mix(10);
+            return;
+        }
+        seen.add(v);
+        if (Array.isArray(v)) {
+            mix(11);
+            for (const item of v)
+                walk(item, depth + 1);
+            mix(12);
+        }
+        else if (v instanceof Error) {
+            mix(13);
+            text(String(v.code ?? v.name));
+            text(v.message);
+        }
+        else {
+            mix(14);
+            for (const key of Object.keys(v).sort()) {
+                if (VOLATILE_KEYS.has(key))
+                    continue;
+                text(key);
+                walk(v[key], depth + 1);
+            }
+            mix(15);
+        }
+        seen.delete(v);
+    };
+    walk(value, 0);
+    return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');
+}
+/**
+ * The session's journal of one process that can stop, across its runs: what
+ * each run was answered, and for a run after a stop, what it must be answered
+ * again and in which order, up to the boundary (see the header). One per
+ * process, created when it launches and closed when it ends.
+ */
+export class ReplayJournal {
+    onDiverge;
+    stallMs;
+    /** The run being answered (its writer identity); another run's calls take nothing. */
+    run = null;
+    /** This run's answers, or null once it cannot be replayed (nothing more is recorded). */
+    entries = [];
+    occurrences = new Map();
+    completions = 0;
+    /** Why the current run cannot be replayed: the first thing it did outside itself, or a bound. */
+    unreplayable = null;
+    diverged = null;
+    expected = null;
+    expectedCompleted = 0;
+    /** How many of those the run after the stop has asked for again. */
+    expectedAsked = 0;
+    boundaryPassed = true;
+    delivered = 0;
+    waiting = new Map();
+    atBoundary = [];
+    stall = null;
+    recordedBytes = 0;
+    constructor(onDiverge, stallMs = REPLAY_STALL_MS) {
+        this.onDiverge = onDiverge;
+        this.stallMs = stallMs;
+    }
+    /** A run begins: the writer identity its calls carry. */
+    start(run) {
+        this.run = run;
+    }
+    /** Whether a call made by `run` belongs to the run being answered. */
+    admits(run) {
+        return run === undefined || (this.run !== null && run === this.run);
+    }
+    /** Whether the run being answered may still be stopped and replayed. */
+    get replayable() {
+        return this.unreplayable === null && this.diverged === null;
+    }
+    /**
+     * The current run stopped: what it was answered becomes what the next run
+     * must be answered again, and what it was still waiting for is answered to
+     * the next only past the boundary. Nothing it asked for is answered now.
+     */
+    stopped() {
+        const expected = new Map();
+        let completed = 0;
+        for (const entry of this.entries ?? []) {
+            const list = expected.get(entry.key) ?? [];
+            list[entry.occurrence] = {
+                digest: entry.digest,
+                completion: entry.completion ?? null,
+                ...(entry.response ? { response: entry.response } : {}),
+            };
+            expected.set(entry.key, list);
+            if (entry.completion !== undefined)
+                completed++;
+        }
+        this.failHeld(new Error('this run of the process has stopped'));
+        this.run = null;
+        this.expected = expected;
+        this.expectedCompleted = completed;
+        this.expectedAsked = 0;
+        this.boundaryPassed = false;
+        this.delivered = 0;
+        this.entries = [];
+        this.occurrences = new Map();
+        this.completions = 0;
+        this.unreplayable = null;
+    }
+    /** The process ended: nothing more is answered or held. */
+    close() {
+        this.failHeld(new Error('the process has ended'));
+        this.run = null;
+        this.entries = null;
+        this.expected = null;
+    }
+    /** The current run did something outside itself (or `what` makes it unreplayable): see the class. */
+    effect(what) {
+        if (!this.boundaryPassed) {
+            return this.diverge(`it did something outside itself before the read, which the run before it did not (${what})`);
+        }
+        this.disqualify(what);
+        return null;
+    }
+    /** The current run cannot be replayed (D1: nothing more is recorded for it). */
+    disqualify(why) {
+        if (this.unreplayable === null)
+            this.unreplayable = why;
+        this.entries = null;
+    }
+    /** A supervisor call from the process: answered through `dispatch`, journaled, ordered. */
+    handle(op, args, run, dispatch) {
+        if (!this.admits(run))
+            return Promise.reject(new Error('this run of the process has stopped'));
+        if (this.diverged !== null)
+            return Promise.reject(new Error(this.diverged));
+        const effect = supervisorCallEffect(op, args);
+        if (effect !== null) {
+            const refused = this.effect(effect);
+            return refused ? Promise.reject(refused) : dispatch();
+        }
+        if (!JOURNALED_CALLS.has(op))
+            return dispatch();
+        if (this.boundaryPassed && this.entries === null)
+            return dispatch();
+        const key = callKey(op, args);
+        return this.answer(key, describeCall(op, args), dispatch, undefined);
+    }
+    /**
+     * One journaled answer: `produce` yields it (and a recording to keep, for a
+     * response); a run after a stop is answered as the run before it was, or it
+     * strays. Resolves when the program may have it.
+     */
+    async answer(key, what, produce, record) {
+        // The run asking: if it stops before its answer comes, the answer is not its.
+        const asking = this.run;
+        const entries = this.entries;
+        const occurrence = this.occurrences.get(key) ?? 0;
+        this.occurrences.set(key, occurrence + 1);
+        let entry = null;
+        if (this.entries !== null) {
+            if (this.entries.length >= REPLAY_JOURNAL_MAX_ENTRIES) {
+                this.disqualify(`asked for more than ${REPLAY_JOURNAL_MAX_ENTRIES} things first, more than a second run is checked against`);
+            }
+            else {
+                entry = { key, occurrence };
+                this.entries.push(entry);
+            }
+        }
+        let expected;
+        if (!this.boundaryPassed) {
+            expected = this.expected?.get(key)?.[occurrence];
+            if (expected === undefined)
+                throw this.diverge(`it asked for ${what}, which the run before it did not ask for there`);
+            if (expected.completion !== null)
+                this.expectedAsked++;
+        }
+        let value;
+        let failure;
+        let digest;
+        try {
+            value = await produce(expected);
+            digest = answerDigest(value);
+        }
+        catch (error) {
+            failure = error;
+            digest = 'error:' + answerDigest(error instanceof Error ? error : String(error));
+        }
+        if (this.run !== asking)
+            throw new Error('this run of the process has stopped');
+        if (expected !== undefined && expected.digest !== undefined && expected.digest !== digest) {
+            throw this.diverge(`${what} was answered differently from the run before it (it changed while the process waited)`);
+        }
+        if (expected !== undefined)
+            await this.hold(expected.completion);
+        if (this.run !== asking)
+            throw new Error('this run of the process has stopped');
+        // The next answer in the run before's order goes once this one has.
+        if (expected !== undefined && expected.completion !== null)
+            setTimeout(() => this.advance(), 0);
+        if (entry !== null && this.entries !== null && this.entries === entries) {
+            entry.digest = digest;
+            entry.completion = this.completions++;
+            if (record && failure === undefined) {
+                const response = record(value);
+                if (response) {
+                    this.recordedBytes += response.body.byteLength;
+                    if (this.recordedBytes > REPLAY_FETCH_MAX_BYTES) {
+                        this.disqualify(`received more than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB over the network first, more than a second run is handed back`);
+                    }
+                    else {
+                        entry.response = response;
+                    }
+                }
+            }
+        }
+        if (failure !== undefined)
+            throw failure;
+        return value;
+    }
+    /**
+     * The run after a stop reached the read the run before stopped at. It must
+     * have asked again for everything the run before was answered by then; an
+     * answer still on its way (the run got to the read sooner) is checked when
+     * it comes, and given in the run before's order. The program reaches the
+     * read synchronously, so it cannot wait here for it: getting to the read
+     * before an answer is an order Node can give too.
+     */
+    boundary(run) {
+        if (!this.admits(run) || this.boundaryPassed || this.diverged !== null)
+            return;
+        if (this.expectedAsked < this.expectedCompleted) {
+            this.diverge(`it reached the read without asking for everything the run before it was answered before it (${this.expectedAsked} of ${this.expectedCompleted})`);
+            return;
+        }
+        this.boundaryPassed = true;
+        this.expected = null;
+        for (const held of this.atBoundary.splice(0))
+            held.release();
+    }
+    /** Whether a run after a stop is still retracing the run before it. */
+    get replaying() {
+        return !this.boundaryPassed;
+    }
+    hold(completion) {
+        if (completion === null) {
+            return new Promise((release, fail) => { this.atBoundary.push({ release, fail }); });
+        }
+        if (completion === this.delivered)
+            return Promise.resolve();
+        return new Promise((release, fail) => {
+            this.waiting.set(completion, { release, fail });
+            this.watch();
+        });
+    }
+    /** The answer in turn was given: the next in the run before's order may go. */
+    advance() {
+        this.delivered++;
+        const next = this.waiting.get(this.delivered);
+        if (next) {
+            this.waiting.delete(this.delivered);
+            next.release();
+        }
+        this.watch();
+    }
+    watch() {
+        if (this.stall !== null)
+            clearTimeout(this.stall);
+        this.stall = null;
+        if (this.waiting.size === 0)
+            return;
+        this.stall = setTimeout(() => {
+            this.stall = null;
+            if (this.waiting.size > 0) {
+                this.diverge(`it did not ask again for what the run before it was answered next (answer ${this.delivered + 1} of ${this.expectedCompleted})`);
+            }
+        }, this.stallMs);
+    }
+    diverge(why) {
+        const error = new Error('node: this program did not retrace its run before when Nimbus ran it again to wait for stdin: ' + why);
+        if (this.diverged === null) {
+            this.diverged = why;
+            this.failHeld(error);
+            this.onDiverge(why);
+        }
+        return error;
+    }
+    failHeld(error) {
+        if (this.stall !== null)
+            clearTimeout(this.stall);
+        this.stall = null;
+        for (const held of this.waiting.values())
+            held.fail(error);
+        this.waiting.clear();
+        for (const held of this.atBoundary.splice(0))
+            held.fail(error);
+    }
+}
+/** A call's identity across runs: its op and arguments, digested. */
+export function callKey(op, args) {
+    return op + ' ' + answerDigest(args ?? []);
+}
+/** A call, for a person: its op and the first path it names. */
+export function describeCall(op, args) {
+    const path = args?.find((a) => typeof a === 'string');
+    return path ? `${op} ${path}` : op;
+}
+/**
  * The guest half, spliced at module level into a facet runner before the
  * node shims: `const __nimbusStopReplay`, private to the runner module.
  *
  *   ledger(supervisor)   the SUPERVISOR binding, counting calls that do
- *                        something outside the process (default-deny).
- *   begin(launch)        per run: { replay, abort, captured, capturedText, nonce }.
- *   arm(canStop, whyNot) before the entry: records what the run draws when it
- *                        can stop, replays what the stopped run drew.
+ *                        something outside the process (default-deny), so the
+ *                        read fails where the program can catch it. The
+ *                        session counts them too, and is what decides.
+ *   begin(launch)        per run: { replay, abort, captured, capturedText,
+ *                        nonce, boundary, outbound }.
+ *   arm(canStop, whyNot) before the entry: records the run's draws when it can
+ *                        stop, replays the stopped run's.
  *   write / acked        each streamed chunk of output on its way out.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
- *   observe / observeLater / observeStream  what the program saw of a file,
- *                        a listing or a response.
  *   effect(what) / unreplayable(why)  why a stop could not be replayed.
  *   finish() / booted()  at exit, or when a resident is up: a replay that
  *                        never reached the read it stopped at.
+ *
+ * What it does with the run's nonce in hand uses only what it captured
+ * before the program ran: the stop record is serialized here by hand (no
+ * JSON, btoa, Error or prototype method the program could have replaced) and
+ * handed to ctx.abort as a primitive string.
  */
 export const STOP_REPLAY_SOURCE = `
 const __nimbusStopReplay = (() => {
+  // Captured before any program runs.
+  const ReflectApply = Reflect.apply;
+  const StringCharCodeAt = String.prototype.charCodeAt;
+  const StringFromCharCode = String.fromCharCode;
+  const TypedArrayLength = Reflect.getOwnPropertyDescriptor(Reflect.getPrototypeOf(Uint8Array.prototype), "length").get;
+  const NumberIsFinite = Number.isFinite;
+  const U8 = Uint8Array;
   const QUIET = ${JSON.stringify(Object.fromEntries(SUPERVISOR_CALLS_WITHOUT_EFFECTS.map((name) => [name, true])))};
+  const ObjectHasOwn = Object.hasOwn;
   const PREFIX = ${JSON.stringify(STOP_RECORD_PREFIX)};
   const PREFIX_MAX = ${REPLAY_PREFIX_MAX_BYTES};
   const READINGS_MAX = ${REPLAY_TAPE_MAX_READINGS};
   const RANDOM_MAX = ${REPLAY_TAPE_MAX_RANDOM_BYTES};
-  const toBase64 = (bytes) => {
-    let s = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    return btoa(s);
-  };
-  const fromBase64 = (text) => {
-    const s = atob(text || "");
-    const bytes = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
-    return bytes;
-  };
-  const concat = (chunks) => {
-    let size = 0;
-    for (const c of chunks) size += c.byteLength;
-    const out = new Uint8Array(size);
-    let at = 0;
-    for (const c of chunks) { out.set(c, at); at += c.byteLength; }
-    return out;
-  };
-  // FNV-1a, 32 bits, over what an observation returned: bytes as bytes, text
-  // as UTF-16 units, anything else as its JSON. Not a defence against a
-  // chosen collision; an accident of content, a changed file, is what it is for.
-  const fnv = (h, code) => Math.imul(h ^ code, 16777619) >>> 0;
-  function hashStart(kind) {
-    let h = 2166136261;
-    for (let i = 0; i < kind.length; i++) h = fnv(h, kind.charCodeAt(i));
-    return fnv(h, 0);
-  }
-  function hashMore(h, value) {
-    if (value instanceof Uint8Array || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      const bytes = value instanceof Uint8Array ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-      for (let i = 0; i < bytes.length; i++) h = fnv(h, bytes[i]);
-      return h;
+  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const lengthOf = (bytes) => ReflectApply(TypedArrayLength, bytes, []);
+
+  // ── The record's serializer: primitives and our own arrays only. ──
+  function str(s) {
+    let out = "\\"";
+    const n = s.length;
+    for (let i = 0; i < n; i++) {
+      const c = ReflectApply(StringCharCodeAt, s, [i]);
+      if (c === 34) out += "\\\\\\"";
+      else if (c === 92) out += "\\\\\\\\";
+      else if (c < 32 || (c >= 0xd800 && c <= 0xdfff)) {
+        const h = "0123456789abcdef";
+        out += "\\\\u" + h[(c >> 12) & 15] + h[(c >> 8) & 15] + h[(c >> 4) & 15] + h[c & 15];
+      } else out += s[i];
     }
-    const text = typeof value === "string" ? value : (() => { try { return JSON.stringify(value) ?? String(value); } catch { return String(value); } })();
-    for (let i = 0; i < text.length; i++) h = fnv(h, text.charCodeAt(i));
-    return h;
+    return out + "\\"";
   }
-  const realRandomValues = globalThis.crypto && globalThis.crypto.getRandomValues
-    ? globalThis.crypto.getRandomValues.bind(globalThis.crypto) : null;
+  function num(n) { return NumberIsFinite(n) ? "" + n : "0"; }
+  // base64 over a list of byte chunks, as one stream.
+  function b64(chunks) {
+    let out = "", carry = 0, have = 0;
+    for (let k = 0; k < chunks.length; k++) {
+      const bytes = chunks[k];
+      const n = lengthOf(bytes);
+      for (let i = 0; i < n; i++) {
+        carry = (carry << 8) | bytes[i];
+        have++;
+        if (have === 3) {
+          out += B64[(carry >> 18) & 63] + B64[(carry >> 12) & 63] + B64[(carry >> 6) & 63] + B64[carry & 63];
+          carry = 0; have = 0;
+        }
+      }
+    }
+    if (have === 1) out += B64[(carry >> 2) & 63] + B64[(carry << 4) & 63] + "==";
+    else if (have === 2) out += B64[(carry >> 10) & 63] + B64[(carry >> 4) & 63] + B64[(carry << 2) & 63] + "=";
+    return out;
+  }
+  function list(items, each) {
+    let out = "[";
+    for (let i = 0; i < items.length; i++) out += (i > 0 ? "," : "") + each(items[i]);
+    return out + "]";
+  }
+  function pairs(items) { return list(items, (p) => "[" + num(p[0]) + "," + num(p[1]) + "]"); }
+  function pendingOut() {
+    if (run.captured) return "[]";
+    return list(run.pending, (c) => "{\\"s\\":" + str(c.s) + ",\\"at\\":" + num(c.at) + ",\\"b\\":" + str(b64([c.b])) + "}");
+  }
+  function capturedOut() {
+    if (!run.captured || !run.canStop || run.capturedText === null) return "";
+    const text = run.capturedText();
+    return ",\\"captured\\":{\\"stdout\\":" + str("" + text.stdout) + ",\\"stderr\\":" + str("" + text.stderr) + "}";
+  }
+  function capturedLength() {
+    if (!run.captured || run.capturedText === null) return 0;
+    const text = run.capturedText();
+    return ("" + text.stdout).length + ("" + text.stderr).length;
+  }
+  // The stop: never returns when it stops.
+  function stop(body) {
+    run.abort(PREFIX + run.nonce + " " + "{\\"v\\":3,\\"run\\":" + num(run.number) + ",\\"out\\":" + pendingOut() + capturedOut() + body + "}");
+  }
+
   let run = null;
 
-  function pendingOut() {
-    return run.captured ? [] : run.pending.map((c) => ({ s: c.s, at: c.at, b: toBase64(c.b) }));
-  }
-  // What a captured run has printed, as the runner holds it.
-  function capturedOut() {
-    if (!run.captured || !run.canStop || typeof run.capturedText !== "function") return undefined;
-    const text = run.capturedText();
-    const encoder = new TextEncoder();
-    return { stdout: toBase64(encoder.encode(text.stdout || "")), stderr: toBase64(encoder.encode(text.stderr || "")) };
-  }
-  function capturedBytes() {
-    if (!run.captured || typeof run.capturedText !== "function") return 0;
-    const text = run.capturedText();
-    return (text.stdout || "").length + (text.stderr || "").length;
-  }
   // A replay that does not retrace the run before it is ended before what it
   // does differently reaches anyone.
   function diverge(why) {
-    const record = { v: 2, kind: "diverged", run: run.number, why: String(why).slice(0, 900), out: pendingOut(), captured: capturedOut() };
-    if (run.abort) run.abort(new Error(PREFIX + run.nonce + " " + JSON.stringify(record)));
-    throw new Error("node: this program did not retrace its run before when Nimbus ran it again to wait for stdin: " + why);
+    const text = "" + why;
+    if (run.abort) stop(",\\"kind\\":\\"diverged\\",\\"why\\":" + str(text.length > 900 ? text.slice(0, 900) : text));
+    throw new Error("node: this program did not retrace its run before when Nimbus ran it again to wait for stdin: " + text);
   }
   const replaying = () => run !== null && run.replay !== null && !run.boundaryPassed;
+  // D1: once a run cannot be replayed it records nothing more.
+  const recording = () => run !== null && run.recordTape && run.why === null;
   function unreplayable(why) {
     if (run && run.armed && run.why === null) run.why = why;
   }
@@ -426,7 +871,7 @@ const __nimbusStopReplay = (() => {
     return new Proxy(supervisor, {
       get(target, name) {
         const value = Reflect.get(target, name);
-        if (typeof value !== "function" || typeof name !== "string" || Object.hasOwn(QUIET, name)) return value;
+        if (typeof value !== "function" || typeof name !== "string" || ObjectHasOwn(QUIET, name)) return value;
         return (...args) => {
           const flags = name === "fsOpen" ? args[1] : null;
           const writes = name !== "fsOpen" || !!(flags && (flags.write || flags.append || flags.create || flags.truncate));
@@ -440,17 +885,17 @@ const __nimbusStopReplay = (() => {
 
   // A reading of a clock: the stopped run's, in order, then live ones, kept
   // for the next stop as [value, times] runs.
-  function readings(entries, record) {
+  function readings(entries) {
     let i = 0, used = 0;
     return (live) => {
       while (i < entries.length && used >= entries[i][1]) { i++; used = 0; }
       if (i < entries.length) { used++; return entries[i][0]; }
       const value = live();
-      if (!record) return value;
+      if (!recording()) return value;
       const last = entries[entries.length - 1];
       if (last && last[0] === value) last[1]++;
       else if (entries.length >= READINGS_MAX) unreplayable("read the clock more than " + READINGS_MAX + " times first, more than a second run is handed back");
-      else entries.push([value, 1]);
+      else entries[entries.length] = [value, 1];
       i = entries.length - 1;
       used = entries.length > 0 ? entries[i][1] : 0;
       return value;
@@ -473,15 +918,24 @@ const __nimbusStopReplay = (() => {
     return function random() { return ((next() >>> 6) * 134217728 + (next() >>> 5)) / 9007199254740992; };
   }
 
+  const realRandomValues = globalThis.crypto && globalThis.crypto.getRandomValues
+    ? globalThis.crypto.getRandomValues.bind(globalThis.crypto) : null;
+  const fromBase64 = (text) => {
+    const s = atob(text || "");
+    const bytes = new U8(s.length);
+    for (let i = 0; i < s.length; i++) bytes[i] = ReflectApply(StringCharCodeAt, s, [i]);
+    return bytes;
+  };
+
   function installTape(tape, record) {
     const seed = tape ? tape.seed : Array.from(realRandomValues ? realRandomValues(new Uint32Array(4)) : [Date.now() >>> 0, 1, 2, 3]);
     const now = tape ? tape.now.map((e) => e.slice()) : [];
     const perf = tape ? tape.perf.map((e) => e.slice()) : [];
-    const given = tape ? fromBase64(tape.random) : new Uint8Array(0);
+    const given = tape ? fromBase64(tape.random) : new U8(0);
     const drawn = given.byteLength > 0 ? [given] : [];
     let drawnBytes = given.byteLength;
     let givenAt = 0;
-    run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [], obs: tape ? tape.obs.slice() : [] };
+    run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [] };
     run.replayedReads = tape ? tape.reads.length : 0;
     run.recordTape = record;
 
@@ -491,7 +945,7 @@ const __nimbusStopReplay = (() => {
     // and Date.now(). Same prototype and statics, so instanceof and
     // subclasses are unchanged.
     const RealDate = globalThis.Date;
-    const nowReading = readings(now, record);
+    const nowReading = readings(now);
     const tapedNow = () => nowReading(() => RealDate.now());
     const TapedDate = function Date(...args) {
       if (!new.target) return new RealDate(tapedNow()).toString();
@@ -506,14 +960,14 @@ const __nimbusStopReplay = (() => {
     const performance = globalThis.performance;
     if (performance && typeof performance.now === "function") {
       const realPerfNow = performance.now.bind(performance);
-      const perfReading = readings(perf, record);
+      const perfReading = readings(perf);
       try { performance.now = () => perfReading(realPerfNow); } catch {}
     }
 
     const crypto = globalThis.crypto;
     if (crypto && realRandomValues) {
       const getRandomValues = function getRandomValues(view) {
-        const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+        const bytes = new U8(view.buffer, view.byteOffset, view.byteLength);
         if (bytes.byteLength <= 65536 && givenAt + bytes.byteLength <= given.byteLength) {
           bytes.set(given.subarray(givenAt, givenAt + bytes.byteLength));
           givenAt += bytes.byteLength;
@@ -521,18 +975,18 @@ const __nimbusStopReplay = (() => {
         }
         givenAt = given.byteLength;
         realRandomValues(view);
-        if (record) {
+        if (recording()) {
           if (drawnBytes + bytes.byteLength > RANDOM_MAX) unreplayable("drew more than " + RANDOM_MAX + " random bytes first, more than a second run is handed back");
-          else { drawn.push(bytes.slice()); drawnBytes += bytes.byteLength; }
+          else { drawn[drawn.length] = bytes.slice(); drawnBytes += bytes.byteLength; }
         }
         return view;
       };
       const randomUUID = function randomUUID() {
-        const b = getRandomValues(new Uint8Array(16));
+        const b = getRandomValues(new U8(16));
         b[6] = (b[6] & 0x0f) | 0x40;
         b[8] = (b[8] & 0x3f) | 0x80;
         let h = "";
-        for (const x of b) h += (x < 16 ? "0" : "") + x.toString(16);
+        for (let i = 0; i < 16; i++) h += (b[i] < 16 ? "0" : "") + b[i].toString(16);
         return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
       };
       try { crypto.getRandomValues = getRandomValues; crypto.randomUUID = randomUUID; } catch {}
@@ -541,28 +995,19 @@ const __nimbusStopReplay = (() => {
 
   // The replay reached the read the run before it stopped at: by now it has
   // printed exactly what that run had, on both streams, and from here on its
-  // output and what it does are its own.
+  // output and what it does are its own. The session is told, so what it
+  // holds for past the boundary is answered.
   function boundary() {
     if (run.prefix) {
       for (const stream of ["stdout", "stderr"]) {
-        if (run.sent[stream] !== run.prefix[stream].byteLength) {
-          diverge("by the read it stopped at, the run before it had printed " + run.prefix[stream].byteLength
+        if (run.sent[stream] !== lengthOf(run.prefix[stream])) {
+          diverge("by the read it stopped at, the run before it had printed " + lengthOf(run.prefix[stream])
             + " bytes to " + stream + " and this one " + run.sent[stream]);
         }
       }
     }
     run.boundaryPassed = true;
-  }
-  function check(seq, kind, h) {
-    if (!run || !run.tape) return;
-    const was = run.tape.obs[seq];
-    if (run.replay !== null && was !== undefined && was !== null) {
-      if (was !== h) diverge(kind + " is not what the run before it saw there (a file or a response changed while it waited)");
-      return;
-    }
-    if (!run.recordTape) return;
-    if (seq >= READINGS_MAX) { unreplayable("looked at more than " + READINGS_MAX + " files and responses first, more than a second run is checked against"); return; }
-    run.tape.obs[seq] = h;
+    if (run.onBoundary) run.onBoundary();
   }
 
   return {
@@ -571,13 +1016,15 @@ const __nimbusStopReplay = (() => {
     effect,
     begin(launch) {
       const replay = launch.replay || null;
+      const ctxAbort = launch.abort || null;
       run = {
         number: replay ? replay.run : 1,
-        abort: typeof launch.abort === "function" ? launch.abort : null,
-        nonce: String(launch.nonce || ""),
+        abort: ctxAbort,
+        nonce: "" + (launch.nonce || ""),
         captured: !!launch.captured,
-        // The runner's accumulated output when it is captured, not streamed.
         capturedText: typeof launch.capturedText === "function" ? launch.capturedText : null,
+        onBoundary: typeof launch.boundary === "function" ? launch.boundary : null,
+        outbound: !!launch.outbound,
         replay,
         armed: false,
         canStop: false,
@@ -590,7 +1037,6 @@ const __nimbusStopReplay = (() => {
         pending: [],
         tape: null,
         readAt: 0,
-        obsAt: 0,
         recordTape: false,
         replayedReads: 0,
       };
@@ -605,32 +1051,42 @@ const __nimbusStopReplay = (() => {
       if (run.canStop || run.replay) installTape(run.replay ? run.replay.tape : null, run.canStop);
     },
     get armed() { return !!(run && run.armed); },
-    get observing() { return !!(run && run.tape); },
+    // Whether this run's network goes through the session (which records what
+    // it answers); without it any request makes the run unreplayable.
+    get outbound() { return !!(run && run.outbound); },
     // A chunk of streamed output: the part to send, with its offset, or null.
     write(stream, bytes) {
       if (!run) return { b: bytes, at: undefined, run: undefined };
+      const n = lengthOf(bytes);
       const off = run.sent[stream];
-      run.sent[stream] = off + bytes.byteLength;
+      run.sent[stream] = off + n;
       if (run.canStop && run.sent[stream] > PREFIX_MAX) unreplayable("printed more than " + PREFIX_MAX + " bytes to " + stream + " first, more than a second run is checked against");
       if (replaying() && run.prefix) {
         const prefix = run.prefix[stream];
-        if (off + bytes.byteLength > prefix.byteLength) {
-          diverge("before the read it stopped at, it printed more to " + stream + " than the run before it had (" + (off + bytes.byteLength) + " of " + prefix.byteLength + " bytes)");
+        const have = lengthOf(prefix);
+        if (off + n > have) {
+          diverge("before the read it stopped at, it printed more to " + stream + " than the run before it had (" + (off + n) + " of " + have + " bytes)");
         }
-        for (let i = 0; i < bytes.byteLength; i++) {
+        for (let i = 0; i < n; i++) {
           if (bytes[i] !== prefix[off + i]) diverge("it printed something else to " + stream + " (byte " + (off + i) + ")");
         }
         return null;
       }
-      if (bytes.byteLength === 0) return null;
+      if (n === 0) return null;
       const chunk = { s: stream, b: bytes, at: off, run: run.number };
-      run.pending.push(chunk);
+      run.pending[run.pending.length] = chunk;
       return chunk;
     },
     acked(chunk) {
       if (!run) return;
-      const i = run.pending.indexOf(chunk);
-      if (i >= 0) run.pending.splice(i, 1);
+      const pending = run.pending;
+      for (let i = 0; i < pending.length; i++) {
+        if (pending[i] === chunk) {
+          for (let j = i; j < pending.length - 1; j++) pending[j] = pending[j + 1];
+          pending.length = pending.length - 1;
+          return;
+        }
+      }
     },
     // A synchronous read of stdin that wants bytes and finds \\\`available\\\`
     // (\\\`ended\\\`: no more will come): how many it returns, or -1 when it has
@@ -647,9 +1103,9 @@ const __nimbusStopReplay = (() => {
       }
       if (available === 0 && !ended) return -1;
       run.readAt++;
-      if (run.recordTape) {
+      if (recording()) {
         if (run.tape.reads.length >= READINGS_MAX) unreplayable("read stdin more than " + READINGS_MAX + " times first");
-        else run.tape.reads.push(available);
+        else run.tape.reads[run.tape.reads.length] = available;
       }
       return available;
     },
@@ -662,7 +1118,7 @@ const __nimbusStopReplay = (() => {
         diverge("its read of stdin found " + length + " bytes where the run before it read " + run.tape.reads[idx]);
       }
       run.readAt++;
-      if (run.recordTape && run.tape.reads.length < run.readAt) run.tape.reads.push(length);
+      if (recording() && run.tape.reads.length < run.readAt) run.tape.reads[run.tape.reads.length] = length;
     },
     // A read that needs input not there yet: the run stops (and never comes
     // back here), or this says why it cannot.
@@ -673,39 +1129,12 @@ const __nimbusStopReplay = (() => {
       if (run.why !== null) return run.why;
       // Captured output rides the stop, so a stop that cannot go on still
       // hands it back: bounded.
-      if (capturedBytes() > PREFIX_MAX) return "printed more than " + PREFIX_MAX + " bytes first, more than a stop can keep";
-      const record = {
-        v: 2, kind: "stdin", run: run.number, until, stopAt: run.readAt,
-        out: pendingOut(), captured: capturedOut(),
-        tape: {
-          seed: run.tape.seed, now: run.tape.now, perf: run.tape.perf,
-          random: toBase64(concat(run.tape.drawn)), reads: run.tape.reads, obs: Array.from(run.tape.obs, (h) => h ?? null),
-        },
-      };
-      run.abort(new Error(PREFIX + run.nonce + " " + JSON.stringify(record)));
+      if (capturedLength() > PREFIX_MAX) return "printed more than " + PREFIX_MAX + " bytes first, more than a stop can keep";
+      const t = run.tape;
+      stop(",\\"kind\\":\\"stdin\\",\\"until\\":" + str("" + until) + ",\\"stopAt\\":" + num(run.readAt)
+        + ",\\"tape\\":{\\"seed\\":" + list(t.seed, num) + ",\\"now\\":" + pairs(t.now) + ",\\"perf\\":" + pairs(t.perf)
+        + ",\\"random\\":" + str(b64(t.drawn)) + ",\\"reads\\":" + list(t.reads, num) + "}");
       return "could not be stopped";
-    },
-    // What the program saw: \\\`observe\\\` now; \\\`observeLater\\\` returns the
-    // function that takes what an asynchronous one saw, in the order it was
-    // asked for.
-    observe(kind, value) {
-      if (!run || !run.tape) return;
-      check(run.obsAt++, kind, hashMore(hashStart(kind), value));
-    },
-    observeLater(kind) {
-      if (!run || !run.tape) return null;
-      const seq = run.obsAt++;
-      return (value) => check(seq, kind, hashMore(hashStart(kind), value));
-    },
-    // What a stream handed over, piece by piece, as one observation.
-    observeStream(kind) {
-      if (!run || !run.tape) return null;
-      const seq = run.obsAt++;
-      let h = hashStart(kind), done = false;
-      return {
-        add(piece) { if (!done) h = hashMore(h, piece); },
-        end(outcome) { if (done) return; done = true; check(seq, kind, outcome === undefined ? h : hashMore(h, outcome)); },
-      };
     },
     finish() {
       if (!run || run.replay === null || run.boundaryPassed) return "";

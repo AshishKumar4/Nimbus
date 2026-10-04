@@ -459,6 +459,24 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
      * asking. The caller's pid names whose credential answers it.
      */
+    replayBoundary(): Promise<void>;
+    netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
+    /**
+     * The program's network, when this binding is its globalOutbound (a run
+     * that can stop): a read is recorded with its bytes and answered again to a
+     * run after a stop; anything else is something done outside the process.
+     */
+    fetch(request: Request): Promise<Response>;
+    /**
+     * A connection the program opens. One its TLS shim opened is named
+     * `<token>.nimbus-net.invalid`: the session says where it goes, and this
+     * side makes the TLS session with the server when the program asks for it
+     * (netTls 'upgrade'), then carries the plaintext both ways. workerd's
+     * outbound connect cannot carry TLS itself ("Incoming CONNECT with TLS not
+     * supported", worker-entrypoint.c++), which is why TLS ends here. Any
+     * other connection is proxied as it is.
+     */
+    connect(socket: Socket): Promise<void>;
     cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
         data: Uint8Array;
         ended: boolean;

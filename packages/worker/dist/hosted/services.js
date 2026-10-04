@@ -85,6 +85,7 @@ export function ensureFacetManager(self, runtimeContext) {
             hooks: {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
                 deliverOutput: (pid, stream, bytes) => (stream === 'stdout' ? self._rpcStdout(pid, bytes) : self._rpcStderr(pid, bytes)),
+                rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
                 // Where cpReadStdin reads a pid's stdin (session/rpc.ts): the input
                 // store when it has a channel there, else the broker's child queue.
                 stdinChannel: (pid) => {

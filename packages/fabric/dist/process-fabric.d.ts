@@ -446,6 +446,14 @@ export interface OneShotParams {
      * can see where one ends and the other begins.
      */
     onLoaded?(): void;
+    /**
+     * The program's network goes through its supervisor binding: the binding
+     * is also its globalOutbound, so its fetch and connect reach the session,
+     * which answers them (a program that can stop at a read of stdin, whose
+     * reads of the network are recorded to be answered again). A host without
+     * a supervisor binding leaves the network as it is.
+     */
+    outbound?: boolean;
 }
 export interface ProcessHost {
     /** What this substrate can and cannot deliver, for operators and callers. */

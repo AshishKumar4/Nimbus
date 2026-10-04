@@ -442,6 +442,8 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             mainModule: spec.mainModule,
             modules: spec.modules,
             ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+            // The same binding answers its network (SupervisorRPC.fetch/connect).
+            ...(supervisorBinding && params.outbound ? { globalOutbound: supervisorBinding } : {}),
         });
         // The loader has taken the map; holding it here would keep a second full
         // copy of the program alive for as long as the program runs.

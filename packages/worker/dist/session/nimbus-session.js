@@ -48,7 +48,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
 import { buildSessionSupervisorOps } from './supervisor-op.js';
-import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { openSupervisorDeliveries, SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
@@ -673,9 +673,19 @@ export class NimbusSession extends CloudflareDurableObject {
     supervisorForgetBridge(pid) {
         this._supervisorOps?.forget(pid);
     }
+    /** Close a live pid's descriptors: a run of it that stopped goes, another starts (stop-replay.ts). */
+    supervisorRewindBridge(pid) {
+        return this._supervisorOps?.rewind(pid) ?? Promise.resolve();
+    }
     // Supervisor RPC (file/log/HMR/batch)
     supervisorOp(envelope) {
-        const answer = this.supervisorOps().dispatch(envelope);
+        // A process that can stop at a read of stdin is answered through its
+        // journal, which is where what it does and sees is counted and checked
+        // (worker runtime/stop-replay.ts ReplayJournal).
+        const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
+        const answer = this.facetManager
+            ? this.facetManager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope))
+            : this.supervisorOps().dispatch(envelope);
         if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number')
             return answer;
         // What this session served a process is the read profile's only evidence (read-profile.ts).
@@ -747,6 +757,9 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcHmrNextEvent(timeoutMs) { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
+    async _rpcReplayBoundary(pid, run) { return _rpc._rpcReplayBoundary(this, pid, run); }
+    async _rpcNetTls(action, token, payload, pid, run) { return _rpc._rpcNetTls(this, action, token, payload, pid, run); }
+    async _rpcOutbound(action, payload, pid, run) { return _rpc._rpcOutbound(this, action, payload, pid, run); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }

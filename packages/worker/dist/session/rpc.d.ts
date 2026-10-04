@@ -281,6 +281,9 @@ export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleI
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
 /** Poll the HMR queue in the same DO that owns its browser connections. */
 export declare function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, timeoutMs?: number): Promise<HmrEvent[]>;
+export declare function _rpcReplayBoundary(self: RpcHost, pid?: number, run?: string): Promise<void>;
+export declare function _rpcNetTls(self: RpcHost, action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
+export declare function _rpcOutbound(self: RpcHost, action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,

@@ -82,5 +82,5 @@ export function buildSessionSupervisorOps(host, store, methods) {
         host.supervisorDeliveries?.forget(pid);
         return store.forget(pid);
     };
-    return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
+    return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => { await store.rewind?.(pid); }, dispose: store.dispose };
 }

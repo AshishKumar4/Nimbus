@@ -9,7 +9,7 @@ import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
     ASSETS?: Fetcher;
 }
-export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_ensureFacetProcessManager' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'shell' | 'sqliteFs' | 'terminal'> & {
+export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_ensureFacetProcessManager' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'shell' | 'sqliteFs' | 'terminal'> & {
     webSocketRelay: WebSocketRelay | null;
 };
 export interface RuntimeServiceContext {

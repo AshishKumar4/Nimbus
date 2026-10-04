@@ -61,6 +61,7 @@ export interface FacetManagerHostHooks {
      */
     deliverOutput?: FacetManagerHooks['deliverOutput'];
     stdinChannel?: FacetManagerHooks['stdinChannel'];
+    rewindProcessFiles?: FacetManagerHooks['rewindProcessFiles'];
     onSpawn?: FacetManagerHooks['onSpawn'];
     resolveWorkerLaunch?: FacetManagerHooks['resolveWorkerLaunch'];
 }

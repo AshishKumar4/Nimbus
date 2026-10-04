@@ -646,6 +646,23 @@ export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
         return [];
     return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
 }
+// A process that can stop at a read of stdin (worker runtime/stop-replay.ts):
+// its run after a stop reached the read the run before stopped at; a TLS
+// connection it opens through the session; and its outbound's calls.
+export async function _rpcReplayBoundary(self, pid, run) {
+    if (typeof pid === 'number')
+        self.facetManager?.replayBoundary(pid, run);
+}
+export async function _rpcNetTls(self, action, token, payload, pid, run) {
+    if (typeof pid !== 'number' || !self.facetManager)
+        throw new Error('netTls: no such process');
+    return self.facetManager.netTls(pid, run, String(action), String(token), payload);
+}
+export async function _rpcOutbound(self, action, payload, pid, run) {
+    if (typeof pid !== 'number' || !self.facetManager)
+        throw new Error('outbound: no such process');
+    return self.facetManager.outboundCall(pid, run, String(action), payload);
+}
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,

@@ -329,6 +329,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     supervisorBridge(pid?: number): RuntimeFsBridge;
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
+    /** Close a live pid's descriptors: a run of it that stopped goes, another starts (stop-replay.ts). */
+    supervisorRewindBridge(pid: number): Promise<void>;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /** Async reads served per process, for the shared read profile. */
     readonly servedReads: ServedReads;
@@ -365,6 +367,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
+    _rpcReplayBoundary(pid?: number, run?: string): Promise<void>;
+    _rpcNetTls(action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
+    _rpcOutbound(action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{
         inodes: number;
         chunks: number;
