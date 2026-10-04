@@ -24,8 +24,6 @@ export interface NodeProgramHost {
     readonly stdin: () => Uint8Array;
     readonly portRegistry?: Map<number, VirtualRequestHandler>;
     readonly routeLoopback?: LoopbackRouter;
-    /** Subscribes to the program's unhandled rejections; returns the unsubscribe. */
-    readonly onUnhandledRejection: (listener: (reason: unknown) => void) => () => void;
 }
 /**
  * How a program's main script ended: its exit code, and whether its process
@@ -39,9 +37,9 @@ export interface NodeProgramEnd {
 /**
  * Run `program` in the current realm, which is the program's own: its globals
  * (process, Buffer, console, the bundlers' interop helpers) are installed on
- * globalThis for good. Resolves once the main script has run and any servers
- * it started have closed; timers it leaves run on after, in the realm's own
- * event loop, unless its process ended.
+ * globalThis for good. Resolves once the main script has run (an ES module's
+ * top-level await included). What it left (timers, servers, requests) runs on
+ * in the realm's own event loop, which owns how long the process lives.
  */
 export declare function runNodeProgram(program: NodeProgram, host: NodeProgramHost): Promise<NodeProgramEnd>;
 export declare function createNodeCommand(kernel: Kernel): Command;

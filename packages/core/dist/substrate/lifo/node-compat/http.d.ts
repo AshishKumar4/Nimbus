@@ -92,14 +92,15 @@ declare class ServerResponse extends EventEmitter {
     cork(): void;
     uncork(): void;
 }
-export declare const ACTIVE_SERVERS: unique symbol;
+/**
+ * A server listens by holding its port in the registry; that is all that
+ * keeps it, and the process it runs in, alive (the realm's event loop counts
+ * listening ports: commands/system/node-guest.ts).
+ */
 declare class Server extends EventEmitter {
     private portRegistry;
     private _port;
-    private _closeResolve;
-    private _promise;
-    private _activeServers;
-    constructor(portRegistry: Map<number, VirtualRequestHandler>, activeServers: Server[], requestHandler?: (req: unknown, res: unknown) => void);
+    constructor(portRegistry: Map<number, VirtualRequestHandler>, requestHandler?: (req: unknown, res: unknown) => void);
     listen(port: number, ...rest: unknown[]): this;
     close(callback?: () => void): this;
     address(): {
@@ -107,7 +108,6 @@ declare class Server extends EventEmitter {
         address: string;
         family: string;
     } | null;
-    getPromise(): Promise<void> | null;
 }
 export declare function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol?: 'http:' | 'https:', routeLoopback?: LoopbackRouter): {
     request: (urlOrOptions: string | RequestOptions, optionsOrCb?: RequestOptions | ((res: IncomingMessage) => void), cb?: (res: IncomingMessage) => void) => ClientRequest;
@@ -117,7 +117,6 @@ export declare function createHttp(portRegistry?: Map<number, VirtualRequestHand
     ClientRequest: typeof ClientRequest;
     Server: typeof Server;
     ServerResponse: typeof ServerResponse;
-    [ACTIVE_SERVERS]: Server[];
 };
 export declare function request(urlOrOptions: string | RequestOptions, optionsOrCb?: RequestOptions | ((res: IncomingMessage) => void), cb?: (res: IncomingMessage) => void): ClientRequest;
 export declare function get(urlOrOptions: string | RequestOptions, optionsOrCb?: RequestOptions | ((res: IncomingMessage) => void), cb?: (res: IncomingMessage) => void): ClientRequest;

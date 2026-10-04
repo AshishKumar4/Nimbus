@@ -3,7 +3,6 @@ import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
-import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 import { runNodeInRealm } from './node-realm.js';
 const NODE_VERSION = 'v20.0.0';
 // ── Rollup / esbuild CJS-ESM interop helpers ──
@@ -577,9 +576,9 @@ function createNodeImpl(kernelOrPortRegistry) {
 /**
  * Run `program` in the current realm, which is the program's own: its globals
  * (process, Buffer, console, the bundlers' interop helpers) are installed on
- * globalThis for good. Resolves once the main script has run and any servers
- * it started have closed; timers it leaves run on after, in the realm's own
- * event loop, unless its process ended.
+ * globalThis for good. Resolves once the main script has run (an ES module's
+ * top-level await included). What it left (timers, servers, requests) runs on
+ * in the realm's own event loop, which owns how long the process lives.
  */
 export async function runNodeProgram(program, host) {
     const { source, filename, scriptArgs, mainType } = program;
@@ -1102,12 +1101,6 @@ export async function runNodeProgram(program, host) {
     ga.global = globalThis;
     for (const k of Object.keys(_rollupHelpers))
         ga[k] = _rollupHelpers[k];
-    // Capture unhandled promise rejections from fire-and-forget async actions
-    let pendingRejection = null;
-    const stopRejections = host.onUnhandledRejection((reason) => {
-        pendingRejection = reason;
-        ctx.stderr.write(`Unhandled promise rejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}\n`);
-    });
     const mainImportMetaUrl = 'file://' + filename;
     const mainImportMeta = { url: mainImportMetaUrl, dirname: dir, filename };
     const mainImportMetaResolve = (specifier) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
@@ -1117,74 +1110,6 @@ export async function runNodeProgram(program, host) {
         // Await if ESM (async IIFE returns a promise)
         if (isEsm && result && typeof result.then === 'function') {
             await result;
-        }
-        // Check if any servers were started (long-running process).
-        // Many CLI tools (e.g. vite) fire async actions from cli.parse() whose
-        // promises are discarded. We poll briefly to let those async chains
-        // progress and create servers before deciding the process is done.
-        // Only poll if http was actually loaded (indicating server intent).
-        const getActiveServers = () => {
-            const httpMod = moduleCache.get('http');
-            return httpMod?.[ACTIVE_SERVERS];
-        };
-        let activeServers = getActiveServers();
-        if ((!activeServers || activeServers.length === 0) && isEsm) {
-            // ESM scripts may have fire-and-forget async actions (e.g. vite's
-            // cli.parse() triggers an async action whose promise is discarded).
-            // Yield briefly to let those chains start, then poll for servers.
-            // Phase 1: Quick yield — watch for new modules being loaded, which
-            // indicates async work is in progress. Stop early if nothing changes.
-            let prevCacheSize = moduleCache.size;
-            let staleCount = 0;
-            const quickDeadline = Date.now() + 2000;
-            while (Date.now() < quickDeadline) {
-                await new Promise((r) => setTimeout(r, 30));
-                activeServers = getActiveServers();
-                if (activeServers && activeServers.length > 0)
-                    break;
-                if (pendingRejection)
-                    break;
-                // If new modules are loading, async work is progressing
-                const newSize = moduleCache.size;
-                if (newSize > prevCacheSize) {
-                    staleCount = 0;
-                    prevCacheSize = newSize;
-                }
-                else {
-                    staleCount++;
-                    // No new modules for 5 ticks (150ms) — async chain likely done
-                    if (staleCount >= 5)
-                        break;
-                }
-            }
-            // Phase 2: If http was loaded during Phase 1 (indicating server intent)
-            // but no servers yet, keep polling up to 10s for the full server startup.
-            if ((!activeServers || activeServers.length === 0) && moduleCache.has('http')) {
-                const longDeadline = Date.now() + 10000;
-                while (Date.now() < longDeadline) {
-                    await new Promise((r) => setTimeout(r, 50));
-                    activeServers = getActiveServers();
-                    if (activeServers && activeServers.length > 0)
-                        break;
-                    if (pendingRejection)
-                        break;
-                }
-            }
-        }
-        if (activeServers && activeServers.length > 0) {
-            // Collect all server promises
-            const serverPromises = activeServers
-                .map((s) => s.getPromise())
-                .filter((p) => p !== null);
-            // Until they close. A kill or Ctrl-C ends the realm, servers and all.
-            if (serverPromises.length > 0)
-                await Promise.all(serverPromises);
-        }
-        // If an async action failed (e.g. unhandled rejection from ProcessExitError)
-        if (pendingRejection) {
-            if (pendingRejection instanceof ProcessExitError)
-                return { code: pendingRejection.exitCode, ended: true };
-            return { code: 1, ended: true };
         }
         return { code: 0, ended: false };
     }
@@ -1199,9 +1124,6 @@ export async function runNodeProgram(program, host) {
             await ctx.stderr.write(`${String(e)}\n`);
         }
         return { code: 1, ended: true };
-    }
-    finally {
-        stopRejections();
     }
 }
 export function createNodeCommand(kernel) {

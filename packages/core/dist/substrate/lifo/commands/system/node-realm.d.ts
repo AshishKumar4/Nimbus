@@ -24,6 +24,12 @@
  *   - asynchronous traffic, on `events`: its output, the requests its loopback
  *     clients make, the requests this side forwards to its servers, its exit.
  *
+ * The program shares its realm with the guest, so everything it sends is
+ * untrusted: the ports reach the guest by its first message, never through
+ * `workerData` a program can import, and this side answers only the calls it
+ * names below, with arguments of their kind, and never lets a message, an
+ * answer that cannot cross, or a failed request end the host.
+ *
  * Bun and Node both carry node:worker_threads, SharedArrayBuffer and
  * Atomics.wait in workers; workerd does not, and its sessions run their own
  * `node` (worker hosted/commands.ts).
@@ -36,11 +42,13 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
+/** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
+export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A synchronous call the guest makes. */
 export type RealmCall = {
     readonly op: 'fs';
     readonly method: FsMethod;
-    readonly args: unknown[];
+    readonly args: readonly unknown[];
 } | {
     readonly op: 'stdin';
 } | {
@@ -53,8 +61,6 @@ export type RealmCall = {
     readonly op: 'watch';
     readonly on: boolean;
 };
-/** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
-export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A call's answer: its value, or the error it threw, as data. */
 export type RealmAnswer = {
     readonly value: unknown;
@@ -64,7 +70,7 @@ export type RealmAnswer = {
 export interface RealmError {
     readonly name: string;
     readonly message: string;
-    readonly properties: Record<string, unknown>;
+    readonly properties: Readonly<Record<string, string | number | boolean | null>>;
 }
 /** A response, as data, either way across. */
 export interface RealmResponse {
@@ -106,7 +112,7 @@ export type HostEvent = {
 } | {
     readonly type: 'changed';
 };
-/** What the guest is started with. */
+/** The guest's first message: its program and its ports. */
 export interface RealmStart {
     readonly program: NodeProgram;
     readonly calls: MessagePort;
@@ -114,15 +120,36 @@ export interface RealmStart {
     /** One Int32: set to 1 and notified when an answer is on `calls`. */
     readonly wake: SharedArrayBuffer;
 }
-export declare function isRealmCall(value: unknown): value is RealmCall;
 export declare function isRealmAnswer(value: unknown): value is RealmAnswer;
 export declare function isGuestEvent(value: unknown): value is GuestEvent;
 export declare function isHostEvent(value: unknown): value is HostEvent;
 export declare function isRealmStart(value: unknown): value is RealmStart;
 export declare function isStat(value: unknown): value is RuntimeVfsStat;
 export declare function isDirEntries(value: unknown): value is RuntimeVfsDirEntry[];
-/** An error as data: its class name, message and own properties (code, syscall, path, errno). */
+/** An error as data: its class name, message and own primitive properties (code, syscall, path, errno, dest, detail). */
 export declare function realmError(error: unknown): RealmError;
+/**
+ * The error `error` was: a VfsError as a VfsError (node-compat's fs tells a
+ * filesystem refusal by its class, as `rm(..., { force: true })` of a missing
+ * path does), a standard class as itself, else an Error bearing its name; with
+ * its message and own properties.
+ */
+export declare function fromRealmError(error: RealmError): Error;
+/** What a run's calls are answered from. */
+export interface RealmServices {
+    filesystem(): NodeFilesystem;
+    /** fd 0, read to its end, once; empty after. */
+    stdin(): Promise<Uint8Array>;
+    listen(port: number): void;
+    unlisten(port: number): void;
+    watch(on: boolean): void;
+}
+/**
+ * The answer to `call`, whatever the guest sent: the value of one of the calls
+ * above, or the error it raised; an error, too, for a call none answers and
+ * for a value that cannot cross to the guest. Never rejects.
+ */
+export declare function serveRealmCall(call: unknown, services: RealmServices): Promise<RealmAnswer>;
 /**
  * Run `program` in a worker of its own, serving what it reaches from `ctx` and
  * `kernel`. Resolves with its exit code once its realm has ended: its event
