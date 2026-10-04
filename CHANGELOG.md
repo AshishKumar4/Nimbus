@@ -5,6 +5,21 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Under `wrangler dev`, a Worker calls RPC methods on a classic Durable
+  Object binding as on Cloudflare. `env.P.get(env.P.idFromName('x')).hello()`
+  threw "Could not serialize object of type "RpcPromise"": `env.P` was a
+  WorkerEntrypoint, so `idFromName` answered an RpcPromise that `get()` could
+  not take, and its stub had no method but `fetch`. Now `env.P` is a local
+  namespace in the Worker's isolate: `idFromName`, `idFromString`,
+  `newUniqueId`, `get` and `getByName` answer at once, and each stub call is
+  one RPC that the session runs on the object's facet. Arguments and return
+  values, a thrown error's type and message, pipelining
+  (`stub.info().nested.deeper`), the object's KV and SQL storage, and its
+  `env` vars all behave as on Cloudflare. Code that awaited `idFromName`
+  still works. `stub.fetch()` works again: it answered 502 "innerDoFetch
+  returned an invalid result", because the session answers the response as
+  fields, which the stub now rebuilds.
+
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
   and `vite`'s "Root:" and "Config:" lines did too. They print the path

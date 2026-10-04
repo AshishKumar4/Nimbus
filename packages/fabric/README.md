@@ -390,6 +390,17 @@ and never `method.call(ep, request)`, which workerd refuses.
 
 Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.
 
+A classic Durable Object binding is a local namespace inside the inner
+Worker (`inner-do-env.ts`), because a namespace's API is synchronous and an
+RpcPromise cannot travel as an argument. `innerWorkerModules` runs the bundle
+under a main module that hands the default export and each Durable Object
+class an env where `env.MY_DO` makes ids and stubs locally:
+`env.MY_DO.get(env.MY_DO.idFromName('x'))` needs no `await`. Only a stub's
+calls cross, one RPC each to `NimbusDurableObjectNamespace.fetchOn` or
+`callOn`. The session runs the method on the object's facet, so arguments,
+return values, a thrown error's type and message, pipelining
+(`stub.info().field`) and the object's storage behave as on Cloudflare.
+
 ## Measured platform limits
 
 Figures below come from production workerd, June to August 2026. The code
