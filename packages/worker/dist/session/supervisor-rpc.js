@@ -44,7 +44,6 @@
  * sent once and a drop surfaces.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { connect as connectSocket } from 'cloudflare:sockets';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
@@ -927,6 +926,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * other connection is proxied as it is.
      */
     async connect(socket) {
+        // Loaded here, not at the module's top: only a connection the program
+        // opens needs it, and hosts without it (unit tests under Bun) load this
+        // module all the same.
+        const { connect: connectSocket } = await import('cloudflare:sockets');
         const outbound = (action, payload) => this._call(this._op('outbound', [action, payload], { pid: this._pid() }));
         // A program can close its side before anything below is answered (it
         // destroyed the socket at once): then nothing is waited for.
