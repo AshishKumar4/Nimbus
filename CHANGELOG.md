@@ -5,20 +5,31 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Under `wrangler dev`, a Worker calls RPC methods on a classic Durable
-  Object binding as on Cloudflare. `env.P.get(env.P.idFromName('x')).hello()`
-  threw "Could not serialize object of type "RpcPromise"": `env.P` was a
-  WorkerEntrypoint, so `idFromName` answered an RpcPromise that `get()` could
-  not take, and its stub had no method but `fetch`. Now `env.P` is a local
-  namespace in the Worker's isolate: `idFromName`, `idFromString`,
-  `newUniqueId`, `get` and `getByName` answer at once, and each stub call is
-  one RPC that the session runs on the object's facet. Arguments and return
-  values, a thrown error's type and message, pipelining
-  (`stub.info().nested.deeper`), the object's KV and SQL storage, and its
-  `env` vars all behave as on Cloudflare. Code that awaited `idFromName`
-  still works. `stub.fetch()` works again: it answered 502 "innerDoFetch
-  returned an invalid result", because the session answers the response as
-  fields, which the stub now rebuilds.
+- Under `wrangler dev`, a Worker calls a classic Durable Object binding as on
+  Cloudflare. `env.P.get(env.P.idFromName('x')).hello()` threw "Could not
+  serialize object of type "RpcPromise"": `env.P` was a WorkerEntrypoint, so
+  `idFromName` answered an RpcPromise that `get()` could not take, and its
+  stub had no method but `fetch`. Now the bundle's first import replaces
+  `env.P`, in the env every handler, entrypoint and object of the Worker's
+  isolate sees, with a local namespace: ids and stubs are made at once, and
+  a stub is an RPC stub of a local target that relays each member its caller
+  reaches (a call, a read, a path through both, fetch included) to the
+  session, which reaches it on the object's facet. Checked against plain
+  workerd with a real namespace, Nimbus answers the same for calls,
+  arguments and answers, a thrown error, pipelining, KV and SQL storage, the
+  object's env, getters (`await stub.value`, `stub.obj.nested.y`,
+  `stub.obj.f()`), `Object.keys` of a namespace, id and stub, RpcTargets,
+  stubs (an object's own included) and functions passed and returned,
+  streams and responses returned, dup, dispose, `using`, a namespace refused
+  in a Worker Loader env, and default exports whose fetch is on the
+  prototype or not enumerable. Two differences remain: `typeof stub` is
+  'function', and a Worker Loader env cannot carry a stub ("RpcStub cannot
+  be serialized in this context because it is not a persistent stub"), since
+  Nimbus's loader loads a child again in each later request. The Worker is
+  loaded once, with its full env, and a binding whose class it does not
+  export fails the build (the check runs the Worker's module code, so an
+  error there is the build's too); before, a probe load without env came
+  first, and a missing class failed only the object's first call.
 
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),

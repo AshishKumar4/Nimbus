@@ -2,23 +2,38 @@
  * inner-do-env.ts — a classic Durable Object binding inside an inner Worker.
  *
  * `nimbus wrangler dev` loads the user's Worker as a dynamic worker, and its
- * Durable Object bindings run as facets of the session Durable Object. A
- * binding cannot be handed to the inner Worker as an RPC stub: a
- * DurableObjectNamespace's API is synchronous (`env.P.get(env.P.idFromName(
- * 'x'))` takes no await), and an RpcPromise cannot travel as an argument
- * ("Could not serialize object of type RpcPromise"). So the binding the
- * loader passes (`NimbusDurableObjectNamespace`, an entrypoint of the session's
- * isolate) is wrapped, inside the inner isolate, by a local namespace: ids
- * are made locally, `get` answers a local stub at once, and only the stub's
- * calls cross, each one RPC (`fetchOn`, `callOn`), so a call answers an
- * RpcPromise as on Cloudflare: awaited for its value, or pipelined
- * (`stub.info().field`).
+ * Durable Object bindings run as facets of the session Durable Object. The
+ * binding the loader passes (`NimbusDurableObjectNamespace`, an entrypoint of
+ * the session's isolate) answers RPC, so it cannot be the inner Worker's
+ * namespace: a DurableObjectNamespace's API is synchronous (`env.P.get(
+ * env.P.idFromName('x'))` takes no await), and an RpcPromise cannot travel as
+ * an argument ("Could not serialize object of type RpcPromise").
  *
- * The wrap is module code the inner Worker runs: `innerWorkerModules` adds it
- * and a main module that hands the wrapped env to the default export (each
- * handler, or its class) and to each Durable Object class.
+ * So a module the inner Worker runs before any of its own code (its main
+ * module's first import, `innerWorkerModules`) replaces each such binding in
+ * the isolate's env, which every handler, entrypoint and Durable Object of the
+ * isolate sees, with a local namespace. Ids are made locally, and `get`
+ * answers at once an RPC stub (`new RpcStub(target)`) of a local target that
+ * relays each member the stub's caller reaches (a call, a read, or a path
+ * through members, fetch included) to the binding's `callOn` or `getOn`,
+ * which the session runs on the object's facet. An RPC stub is what a
+ * Durable Object stub is to the runtime: callable by any method name, read by
+ * any property name, pipelined, bound to its request, and transferable, as an
+ * argument or an answer, where an entrypoint of a dynamically-loaded Worker
+ * is not. Arguments and answers cross natively, stubs, functions and streams
+ * included.
+ *
+ * It differs from a Durable Object stub in one way the runtime fixes: `typeof`
+ * is 'function'. Its own `dup` and `Symbol.dispose` are shadowed, so `dup` is
+ * the object's (which refuses it, as Cloudflare does) and it is not
+ * disposable. And it is not persistent, so a Worker Loader env cannot carry
+ * it ("RpcStub cannot be serialized in this context because it is not a
+ * persistent stub"): the loader shim (NimbusLoaderRPC) keeps a child's code
+ * and loads it again in each later request, so the child's env can carry
+ * nothing made in one request, the session's own stubs included.
  */
 
+import type { RpcStub, WorkerEntrypoint } from 'cloudflare:workers';
 import { ESBUILD_NAME_MODULE_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 
 /**
@@ -39,21 +54,36 @@ export function innerDoIdFromName(name: string): string {
   return 'name:' + (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
 }
 
-/** What the binding the loader passes answers: one call on one object. */
+/** What the binding the loader passes answers: one access to one object. */
 export interface InnerDoRemote {
-  fetchOn(id: string, request: Request): Promise<Response>;
-  callOn(id: string, method: string, args: unknown[]): Promise<unknown>;
+  /** The member of object `id` at `path` (names from the object down), called with `args`. */
+  callOn(id: string, path: string[], args: unknown[]): Promise<unknown>;
+  /** The member of object `id` at `path`, read. */
+  getOn(id: string, path: string[]): Promise<unknown>;
 }
 
+/** What the adapter runs over: the inner isolate's `cloudflare:workers`. */
+export interface InnerDoRuntime {
+  env: object;
+  WorkerEntrypoint: typeof WorkerEntrypoint;
+  RpcStub: typeof RpcStub;
+}
+
+/** The entrypoint a build asks which Durable Object classes are missing. */
+export const CLASSES_ENTRYPOINT = 'NimbusDurableObjectClasses';
 /**
- * The adapter, as it runs in the inner isolate: `wrapEnv(env, names)` answers
- * `env` with each of `names` a local DurableObjectNamespace over the binding
- * it holds. Self-contained (serialized with toString): it reaches nothing
- * outside itself but `idFromName`, its argument.
+ * The adapter, as it runs in the inner isolate: it replaces each of `names`
+ * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
+ * and answers the class check the main module exports. `main` is the main
+ * module's namespace. Self-contained (serialized with toString): it reaches
+ * nothing outside itself but its arguments.
  */
-export function innerDoAdapter(idFromName: (name: string) => string): {
-  wrapEnv(env: object, names: readonly string[]): object;
-} {
+export function innerDoAdapter(
+  idFromName: (name: string) => string,
+  names: readonly string[],
+  main: object,
+  runtime: InnerDoRuntime,
+): { NimbusDurableObjectClasses: unknown } {
   /** A Durable Object id: its string, and the name it was made from. */
   class DurableObjectId {
     readonly name?: string;
@@ -66,38 +96,43 @@ export function innerDoAdapter(idFromName: (name: string) => string): {
     equals(other: unknown): boolean { return other instanceof DurableObjectId && String(other) === this.#id; }
   }
 
+  /** Whether `value` is the binding the loader passes (an RPC stub's methods are its properties). */
+  function isRemote(value: unknown): value is InnerDoRemote {
+    return value !== null && (typeof value === 'object' || typeof value === 'function')
+      && typeof Reflect.get(value, 'callOn') === 'function' && typeof Reflect.get(value, 'getOn') === 'function';
+  }
+
   /**
-   * The stub for one object. `fetch` is the object's fetch; any other name is
-   * its RPC method, called with the arguments given and answering the
-   * binding's RpcPromise. Not thenable, as a stub is not.
+   * The member of object `id` at `path`, as the runtime reaches it in an RPC
+   * to the stub: called, read (it is thenable, and the runtime awaits what a
+   * read answers), or walked through to one of its own members (the runtime
+   * walks a path through own properties only, so every name is reported as
+   * one). At the empty path it is the stub's target.
    */
-  function stubFor(remote: InnerDoRemote, id: DurableObjectId): object {
-    const key = String(id);
-    const objectFetch = (input: RequestInfo | URL, init?: RequestInit) => remote.fetchOn(key, new Request(input, init));
-    const calls = new Map<string, (...args: unknown[]) => unknown>();
-    return new Proxy(Object.freeze({}), {
-      get(_target, prop) {
-        if (prop === 'id') return id;
-        if (prop === 'name') return id.name;
-        if (prop === 'fetch') return objectFetch;
-        if (typeof prop !== 'string' || prop === 'then') return undefined;
-        const known = calls.get(prop);
-        if (known !== undefined) return known;
-        // The binding's method is a wildcard property: called on it, never through call().
-        const call = (...args: unknown[]) => remote.callOn(key, prop, args);
-        calls.set(prop, call);
-        return call;
+  function member(remote: InnerDoRemote, id: string, path: readonly string[]): (...args: unknown[]) => unknown {
+    const next = (name: string) => member(remote, id, [...path, name]);
+    return new Proxy((..._args: unknown[]): unknown => undefined, {
+      apply: (_target, _self, args: unknown[]) => remote.callOn(id, [...path], args),
+      get: (target, name) => {
+        if (name === 'then') {
+          return (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => remote.getOn(id, [...path]).then(resolve, reject);
+        }
+        return typeof name === 'string' ? next(name) : Reflect.get(target, name);
       },
+      getOwnPropertyDescriptor: (target, name) => (typeof name === 'string' && name !== 'then'
+        ? { value: next(name), writable: true, enumerable: true, configurable: true }
+        : Reflect.getOwnPropertyDescriptor(target, name)),
     });
   }
 
-  /** Whether `value` is a binding the loader passed (an RPC stub's methods are its properties). */
-  function isRemote(value: unknown): value is InnerDoRemote {
-    return value !== null && (typeof value === 'object' || typeof value === 'function')
-      && typeof Reflect.get(value, 'fetchOn') === 'function' && typeof Reflect.get(value, 'callOn') === 'function';
+  /** Asked once by a build: which classes the main module does not export. */
+  class NimbusDurableObjectClasses extends runtime.WorkerEntrypoint {
+    missing(classNames: string[]): string[] {
+      return classNames.filter((name) => typeof Reflect.get(main, name) !== 'function');
+    }
   }
 
-  /** env.MY_DO: the namespace, made locally; only its stubs' calls cross. */
+  /** env.MY_DO: the namespace, made locally; its stubs relay to `remote`. */
   class DurableObjectNamespace {
     readonly #remote: InnerDoRemote;
     constructor(remote: InnerDoRemote) { this.#remote = remote; }
@@ -105,77 +140,52 @@ export function innerDoAdapter(idFromName: (name: string) => string): {
     newUniqueId(): DurableObjectId { return new DurableObjectId('uniq:' + crypto.randomUUID().replaceAll('-', '')); }
     idFromString(id: string): DurableObjectId { return new DurableObjectId(String(id)); }
     get(id: DurableObjectId | string): object {
-      return stubFor(this.#remote, id instanceof DurableObjectId ? id : new DurableObjectId(String(id)));
+      const at = id instanceof DurableObjectId ? id : new DurableObjectId(String(id));
+      return Object.defineProperties(new runtime.RpcStub(member(this.#remote, String(at), [])), {
+        // As a Durable Object stub has them: its own, enumerable, in this order.
+        name: { value: at.name, enumerable: true },
+        id: { value: at, enumerable: true },
+        // A Durable Object stub has neither: `dup` is the object's, and it is not disposable.
+        dup: { value: member(this.#remote, String(at), ['dup']) },
+        [Symbol.dispose]: { value: undefined },
+      });
     }
     getByName(name: string): object { return this.get(this.idFromName(name)); }
     jurisdiction(): DurableObjectNamespace { return this; }
   }
 
-  const wrapped = new WeakMap<object, object>();
-  return {
-    wrapEnv(env, names) {
-      if (env === null || typeof env !== 'object' || names.length === 0) return env;
-      let out = wrapped.get(env);
-      if (out === undefined) {
-        const namespaces = new Map<PropertyKey, DurableObjectNamespace>();
-        for (const name of names) {
-          const remote: unknown = Reflect.get(env, name);
-          if (isRemote(remote)) namespaces.set(name, new DurableObjectNamespace(remote));
-        }
-        // Every other binding as the loader passed it.
-        out = new Proxy(env, {
-          get: (target, prop, receiver) => (namespaces.has(prop) ? namespaces.get(prop) : Reflect.get(target, prop, receiver)),
-        });
-        wrapped.set(env, out);
-      }
-      return out;
-    },
-  };
+  for (const name of names) {
+    const remote: unknown = Reflect.get(runtime.env, name);
+    if (isRemote(remote)) Reflect.set(runtime.env, name, new DurableObjectNamespace(remote));
+  }
+  return { NimbusDurableObjectClasses };
 }
 
-/** The inner Worker's own module, as bundled. */
-const USER_MODULE = 'worker.js';
+/** The inner Worker's own module, as bundled, and the adapter's. */
+const MAIN_MODULE = 'worker.js';
 const ADAPTER_MODULE = 'nimbus-do-env.js';
-const MAIN_MODULE = 'nimbus-main.js';
 
 /**
- * The modules an inner Worker runs with Durable Object bindings `bindings`
- * (binding name, class name): its bundle, the adapter, and a main module
- * that re-exports the bundle with each handler of the default export, the
- * default export's class, and each Durable Object class handed the wrapped
- * env. A Worker with no such binding runs its bundle as it is.
+ * The modules an inner Worker runs with Durable Object bindings `names`: its
+ * bundle as the main module, whose first import is the adapter (so the
+ * adapter has run before any of the Worker's code) and which exports the
+ * class check, and the adapter. The import shares the bundle's first line,
+ * so line numbers stay the bundle's. A Worker with no such binding runs its
+ * bundle as it is.
  */
-export function innerWorkerModules(
-  bundle: string,
-  bindings: readonly { name: string; class_name: string }[],
-): { mainModule: string; modules: Record<string, string> } {
-  if (bindings.length === 0) return { mainModule: USER_MODULE, modules: { [USER_MODULE]: bundle } };
-  const names = JSON.stringify(bindings.map((b) => b.name));
-  const classes = [...new Set(bindings.map((b) => b.class_name))];
-  const main = [
-    `import * as user from './${USER_MODULE}';`,
-    `import { wrapEnv } from './${ADAPTER_MODULE}';`,
-    `export * from './${USER_MODULE}';`,
-    `const wrap = (env) => wrapEnv(env, ${names});`,
-    ...classes.map((name, i) => {
-      const local = `NimbusDurableObject${i}`;
-      return `const ${local} = class extends user[${JSON.stringify(name)}] { constructor(ctx, env) { super(ctx, wrap(env)); } };\nexport { ${local} as ${JSON.stringify(name)} };`;
-    }),
-    // A handler takes env second: fetch, scheduled, queue, email, tail, trace.
-    'const base = user.default;',
-    'export default typeof base === "function"',
-    '  ? class extends base { constructor(ctx, env) { super(ctx, wrap(env)); } }',
-    '  : base !== null && typeof base === "object"',
-    '    ? Object.fromEntries(Object.entries(base).map(([key, value]) => [key, typeof value === "function"',
-    '      ? function (event, env, ...rest) { return value.call(base, event, wrap(env), ...rest); }',
-    '      : value]))',
-    '    : base;',
-  ].join('\n');
+export function innerWorkerModules(bundle: string, names: readonly string[]): { mainModule: string; modules: Record<string, string> } {
+  if (names.length === 0) return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: bundle } };
+  const head = `export { ${CLASSES_ENTRYPOINT} } from './${ADAPTER_MODULE}';`;
+  // A hashbang must stay first.
+  const at = bundle.startsWith('#!') ? bundle.indexOf('\n') + 1 : 0;
+  const main = bundle.slice(0, at) + head + bundle.slice(at);
   const adapter = [
+    "import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';",
+    `import * as main from './${MAIN_MODULE}';`,
     // The functions below are serialized from the bundled worker, which wraps them in __name.
     ESBUILD_NAME_MODULE_SHIM,
-    `const { wrapEnv } = (${innerDoAdapter.toString()})(${innerDoIdFromName.toString()});`,
-    'export { wrapEnv };',
+    `const { ${CLASSES_ENTRYPOINT} } = (${innerDoAdapter.toString()})(${innerDoIdFromName.toString()}, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
+    `export { ${CLASSES_ENTRYPOINT} };`,
   ].join('\n');
-  return { mainModule: MAIN_MODULE, modules: { [USER_MODULE]: bundle, [ADAPTER_MODULE]: adapter, [MAIN_MODULE]: main } };
+  return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter } };
 }

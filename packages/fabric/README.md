@@ -392,14 +392,17 @@ Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.
 
 A classic Durable Object binding is a local namespace inside the inner
 Worker (`inner-do-env.ts`), because a namespace's API is synchronous and an
-RpcPromise cannot travel as an argument. `innerWorkerModules` runs the bundle
-under a main module that hands the default export and each Durable Object
-class an env where `env.MY_DO` makes ids and stubs locally:
-`env.MY_DO.get(env.MY_DO.idFromName('x'))` needs no `await`. Only a stub's
-calls cross, one RPC each to `NimbusDurableObjectNamespace.fetchOn` or
-`callOn`. The session runs the method on the object's facet, so arguments,
-return values, a thrown error's type and message, pipelining
-(`stub.info().field`) and the object's storage behave as on Cloudflare.
+RpcPromise cannot travel as an argument. `innerWorkerModules` makes an adapter
+the bundle's first import; it replaces `env.MY_DO` in the env every handler,
+entrypoint and object of the isolate sees, so
+`env.MY_DO.get(env.MY_DO.idFromName('x'))` needs no `await`. A stub is
+`new RpcStub(target)`: an entrypoint of a dynamically-loaded Worker is not
+transferable, an RPC stub is. The target relays each member the caller
+reaches (a call, a read, or a path through both) to
+`NimbusDurableObjectNamespace.callOn` or `getOn`, and the session reaches it
+on the object's facet. tests/unit/wrangler-dev-do-rpc-workerd.mjs checks the
+whole stub surface against plain workerd; `typeof stub` is 'function', and a
+Worker Loader env cannot carry a stub, since it is not persistent.
 
 ## Measured platform limits
 

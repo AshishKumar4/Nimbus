@@ -34,7 +34,9 @@ function platformFacets() {
   };
 }
 
-// The Worker Loader: the class it hands back serves the VERSION its bundle declares.
+// The Worker Loader: the class it hands back serves the VERSION its bundle
+// declares, and the bundle exports every class (the class check finds none
+// missing).
 const loader = {
   load({ modules }) {
     const version = /VERSION = "(\w+)"/.exec(modules['worker.js'])[1];
@@ -51,7 +53,7 @@ const loader = {
           return new Response(`${version} served=${this.served} seen=${seen}`);
         }
       },
-      getEntrypoint: () => ({}),
+      getEntrypoint: (name) => (name === 'NimbusDurableObjectClasses' ? { missing: async () => [] } : {}),
     };
   },
 };

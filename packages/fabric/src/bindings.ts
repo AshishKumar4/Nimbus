@@ -712,9 +712,10 @@ interface NimbusDoNamespaceProps {
  * The binding the loader passes for `env.MY_DO` (a WorkerEntrypoint of the
  * session's isolate). The inner Worker does not use it as its namespace: a
  * DurableObjectNamespace's API is synchronous, and this one's answers are
- * RpcPromises, which cannot travel as arguments. The inner Worker wraps it
- * in a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
- * and stubs itself and calls `fetchOn` and `callOn` for each stub call.
+ * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
+ * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * and stubs itself, and relays each member a stub's caller reaches, its
+ * fetch included, to `callOn` or `getOn`.
  *
  * `idFromName`, `newUniqueId`, `idFromString` and `get` answer as before, for
  * a caller that awaits them. idFromName produces prefix `name:` (a
@@ -752,17 +753,17 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint<object, Nimbu
     });
   }
 
-  /** The object `id`'s fetch. */
-  fetchOn(id: string, request: Request): Promise<Response> {
-    return innerDoFetch(this.env, { ...(this.ctx.props || {}), id: String(id) }, request);
+  /**
+   * The member of object `id` at `path` (names from the object down), called
+   * with `args`: its answer, or what it throws, as the object gave it.
+   */
+  callOn(id: string, path: string[], args: unknown[]): Promise<unknown> {
+    return innerDoMember(this.env, { ...(this.ctx.props || {}), id: String(id) }, path, args);
   }
 
-  /**
-   * The object `id`'s RPC method `method`, called with `args`: its answer, or
-   * what it throws, as the object gave it.
-   */
-  callOn(id: string, method: string, args: unknown[]): Promise<unknown> {
-    return innerDoCall(this.env, { ...(this.ctx.props || {}), id: String(id) }, String(method), args);
+  /** The member of object `id` at `path`, read. */
+  getOn(id: string, path: string[]): Promise<unknown> {
+    return innerDoMember(this.env, { ...(this.ctx.props || {}), id: String(id) }, path, null);
   }
 }
 
@@ -842,16 +843,17 @@ async function innerDoFetch(env: object | undefined, props: NimbusDoStubProps, r
 }
 
 /**
- * The inner object's RPC method: the session calls it on the object's facet
- * and answers what the method answered (a stub it returns travels as a
- * stub) or rejects with what it threw, type and message kept.
+ * A member of the inner object, called with `args` or read (`args` null): the
+ * session reaches it on the object's facet and answers what it answered (a
+ * stub, function or stream travels as one) or rejects with what it threw,
+ * type and message kept.
  */
-async function innerDoCall(env: object | undefined, props: NimbusDoStubProps, method: string, args: unknown[]): Promise<unknown> {
+async function innerDoMember(env: object | undefined, props: NimbusDoStubProps, path: string[], args: unknown[] | null): Promise<unknown> {
   const supervisor = supervisorOf(env, props);
   try {
     return await supervisor.dispatch({
       op: 'innerDoCall',
-      args: [{ bindingName: String(props.bindingName || ''), id: String(props.id || ''), method, args }],
+      args: [{ bindingName: String(props.bindingName || ''), id: String(props.id || ''), path, args }],
     });
   } finally {
     supervisor.release();

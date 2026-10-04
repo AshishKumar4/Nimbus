@@ -20,7 +20,7 @@ import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
-import { innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
+import { CLASSES_ENTRYPOINT, innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
@@ -454,17 +454,6 @@ export class NimbusWrangler {
         abortInnerDoFacets(this.supervisorCtx, this.doClassMap.keys(), new Error('nimbus-wrangler rebuilding'));
       }
 
-      // Two-pass load to break the chicken-and-egg:
-      //   Pass 1: load with NO env to extract any durable_objects classes.
-      //           buildInnerEnv needs this.doClassMap to synthesize DO
-      //           namespace bindings, but getDurableObjectClass() needs a
-      //           worker stub, which we get only by loading.
-      //   Pass 2: re-load with FULL env (including DO namespace shims)
-      //           that the inner Worker actually uses.
-      //
-      // workerd caches by content hash, so the second load is cheap —
-      // it reuses the same compiled isolate and just swaps env.
-
       const wrangCompatDate = this.config.compatibility_date || CF_COMPAT_DATE;
       // Filter flags that workerd refuses on dynamic-worker LOADER.load().
       // `experimental` gates behind the parent process's --experimental
@@ -484,51 +473,25 @@ export class NimbusWrangler {
         this.onLog(`  \x1b[2mnote: stripped 'experimental' from inner compat_flags (not propagatable via LOADER.load)\x1b[0m\n`);
       }
       const doBindings = this.config.durable_objects?.bindings || [];
-      // A Durable Object binding is a local namespace in the inner isolate,
-      // over the binding the loader passes (inner-do-env.ts): its bundle runs
-      // under a main module that hands every handler and class that env.
-      const baseWorkerCode = {
-        compatibilityDate: wrangCompatDate,
-        compatibilityFlags: wrangCompatFlags,
-        ...innerWorkerModules(bundledCode, doBindings),
-      } as any;
-
-      // Pass 1: class extraction (no env, no DO shims).
-      this.doClassMap.clear();
-      if (doBindings.length > 0) {
-        let probeWorker: any;
-        try {
-          probeWorker = this.loaderEnv.LOADER.load(baseWorkerCode);
-        } catch (e: any) {
-          this.onLog(`  \x1b[31mBuild error (probe load): ${e?.message || e}\x1b[0m\n`);
+      for (const b of doBindings) {
+        if (b.script_name && b.script_name !== this.config.name) {
+          this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' references external script '${b.script_name}'. nimbus-wrangler cannot load external Workers by name.\x1b[0m\n`);
           return false;
-        }
-        for (const b of doBindings) {
-          if (b.script_name && b.script_name !== this.config.name) {
-            this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' references external script '${b.script_name}'. nimbus-wrangler cannot load external Workers by name.\x1b[0m\n`);
-            return false;
-          }
-          try {
-            const cls = probeWorker.getDurableObjectClass(b.class_name);
-            this.doClassMap.set(b.name, cls);
-          } catch (e: any) {
-            this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' not found in bundle: ${e?.message || e}\x1b[0m\n`);
-            return false;
-          }
         }
       }
 
-      // Pass 2: real load with the full synthesized env. buildInnerEnv
-      // reads this.doClassMap populated above.
-      const innerEnv = this.buildInnerEnv();
+      // One load, with the full env. A Durable Object binding is a local
+      // namespace in the inner isolate, over the binding the loader passes
+      // (inner-do-env.ts): the bundle's first import replaces it in the env
+      // every handler, entrypoint and object of the isolate sees.
       const worker = this.loaderEnv.LOADER.load({
-        ...baseWorkerCode,
-        env: innerEnv,
+        compatibilityDate: wrangCompatDate,
+        compatibilityFlags: wrangCompatFlags,
+        ...innerWorkerModules(bundledCode, doBindings.map((b) => b.name)),
+        env: this.buildInnerEnv(),
       });
+      if (!(await this.registerDoClasses(worker, doBindings))) return false;
       this.workerStub = worker.getEntrypoint();
-      // The objects run the classes of this load, which has the full env: a
-      // Durable Object sees its vars and bindings as on Cloudflare.
-      this.registerDoClasses((name) => worker.getDurableObjectClass(name));
 
       for (const w of result.warnings || []) {
         this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
@@ -559,19 +522,35 @@ export class NimbusWrangler {
   // to LOADER.load() at all, plus forwarding plain string vars.
 
   /**
-   * Registers each Durable Object binding's class from `classOf` (a loaded
-   * inner Worker's), for the session's facets to run; buildInnerEnv
-   * registered the class-extraction load's, which has no env.
+   * Checks that `worker` (the inner Worker, loaded) exports each binding's
+   * class, asking its own isolate once (which also runs its module code, so
+   * an error there is the build's), then registers each class for the
+   * session's facets to run. False, logged, when one is missing.
    */
-  private registerDoClasses(classOf: (className: string) => DurableObjectClass): void {
-    const doId = this.supervisorCtx?.id?.toString?.() || '';
-    if (!doId || !this.supervisorCtx?.exports?.NimbusDurableObjectNamespace) return;
-    for (const b of this.config?.durable_objects?.bindings || []) {
-      if (!this.doClassMap.has(b.name)) continue;
-      const cls = classOf(b.class_name);
-      this.doClassMap.set(b.name, cls);
-      registerInnerDoClass(doId, b.name, cls);
+  private async registerDoClasses(
+    worker: {
+      getEntrypoint(name: typeof CLASSES_ENTRYPOINT): { missing(classNames: string[]): Promise<string[]> };
+      getDurableObjectClass(name: string): DurableObjectClass;
+    },
+    bindings: readonly { name: string; class_name: string }[],
+  ): Promise<boolean> {
+    this.doClassMap.clear();
+    if (bindings.length === 0) return true;
+    const missing = new Set(await worker.getEntrypoint(CLASSES_ENTRYPOINT).missing(bindings.map((b) => b.class_name)));
+    for (const b of bindings) {
+      if (missing.has(b.class_name)) {
+        this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' is not exported by the Worker\x1b[0m\n`);
+      }
     }
+    if (missing.size > 0) return false;
+    const doId = this.supervisorCtx?.id?.toString?.() || '';
+    if (doId) clearInnerDoClasses(doId);
+    for (const b of bindings) {
+      const cls = worker.getDurableObjectClass(b.class_name);
+      this.doClassMap.set(b.name, cls);
+      if (doId) registerInnerDoClass(doId, b.name, cls);
+    }
+    return true;
   }
 
   private buildInnerEnv(): Record<string, any> {
@@ -673,27 +652,23 @@ export class NimbusWrangler {
 
     // ── durable_objects ──
     // Inner worker: env[binding] is a local namespace (inner-do-env.ts) over
-    // the binding made here, whose fetchOn and callOn each stub call reaches.
-    // The class list was resolved and stored in this.doClassMap during
-    // buildAndLoad(); register each class into the module-level
-    // registry consulted by _rpcInnerDoFetch and _rpcInnerDoCall, then
-    // synthesize the binding via ctx.exports.NimbusDurableObjectNamespace(...).
-    if (this.doClassMap.size > 0) {
+    // the binding made here, whose fetchOn, callOn and getOn each stub
+    // relays to. buildAndLoad registers the classes, from the load this env
+    // goes into, in the registry _rpcInnerDoFetch and _rpcInnerDoCall read.
+    const doBindingNames = (this.config?.durable_objects?.bindings || []).map((b: { name: string }) => b.name);
+    if (doBindingNames.length > 0) {
       const ctxExports = this.supervisorCtx?.exports;
       const doId = this.supervisorCtx?.id?.toString?.() || '';
       if (!ctxExports?.NimbusDurableObjectNamespace) {
-        for (const [bindingName] of this.doClassMap) {
+        for (const bindingName of doBindingNames) {
           this.onLog(`  \x1b[33mwarning: ctx.exports.NimbusDurableObjectNamespace unavailable; env.${bindingName} will not work\x1b[0m\n`);
         }
       } else if (!doId) {
-        for (const [bindingName] of this.doClassMap) {
+        for (const bindingName of doBindingNames) {
           this.onLog(`  \x1b[33mwarning: supervisor DO id unavailable; env.${bindingName} will not work\x1b[0m\n`);
         }
       } else {
-        // Clear + repopulate the registry for this supervisor DO id.
-        clearInnerDoClasses(doId);
-        for (const [bindingName, cls] of this.doClassMap) {
-          registerInnerDoClass(doId, bindingName, cls);
+        for (const bindingName of doBindingNames) {
           if (bindingName in env) {
             this.onLog(`  \x1b[33mwarning: durable_objects binding '${bindingName}' overwrites a previous key\x1b[0m\n`);
           }

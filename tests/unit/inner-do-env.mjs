@@ -1,117 +1,109 @@
 #!/usr/bin/env bun
 // inner-do-env: a classic Durable Object binding inside a `wrangler dev`
-// inner Worker is a local namespace, as on Cloudflare (packages/fabric/src/
-// inner-do-env.ts). The modules innerWorkerModules builds are imported here as
-// the loader would run them, over a fake of the binding the loader passes.
+// inner Worker is a local namespace (packages/fabric/src/inner-do-env.ts).
+// The adapter runs here from its source, as the generated module runs it,
+// over a fake of what it needs of `cloudflare:workers` (the isolate's env,
+// RpcStub, WorkerEntrypoint) and a fake of the binding the loader passes.
+// tests/unit/wrangler-dev-do-rpc-workerd.mjs runs it on the real workerd,
+// against plain workerd's answers.
 //
-//   - env.P.idFromName / idFromString / newUniqueId answer at once; get and
-//     getByName answer a stub at once (it used to be RPC: an RpcPromise that
-//     get() could not take, "Could not serialize object of type RpcPromise").
-//   - a stub's method is one call on the binding (callOn: id, name, args),
-//     its fetch one fetchOn; the stub is not thenable.
-//   - the default export's handlers, a default entrypoint class and each
-//     Durable Object class get the wrapped env; the bundle's other exports
-//     and every other binding are as they were.
-//   - a Worker with no Durable Object binding runs its bundle unchanged.
+//   - each named binding in the env is replaced by a local namespace whose
+//     ids and stubs answer at once; other env values stay;
+//   - a stub is an RPC stub of a local target, with the object's `name` and
+//     `id` as its own enumerable properties, and `dup` and Symbol.dispose
+//     shadowed;
+//   - the target relays what the runtime asks of it: a call to callOn, a
+//     read (a thenable) to getOn, a path walked through own properties;
+//   - the class check names the classes the main module does not export;
+//   - innerWorkerModules makes the adapter the main module's first import on
+//     the bundle's first line (after a hashbang), and leaves a Worker with no
+//     binding as it is.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { innerDoIdFromName, innerWorkerModules } from '../../packages/fabric/src/inner-do-env.ts';
-
-const BUNDLE = `
-export class P {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
-}
-export class Entrypoint {
-  constructor(ctx, env) { this.env = env; }
-}
-export const helper = 'kept';
-export default {
-  label: 'default object',
-  async fetch(request, env, ctx) {
-    const id = env.P.idFromName('x');
-    const stub = env.P.get(id);
-    return {
-      self: this.label,
-      ctx,
-      greeting: env.GREETING,
-      id: id.toString(),
-      name: id.name,
-      roundTrip: env.P.idFromString(id.toString()).equals(id),
-      uniq: env.P.newUniqueId().toString(),
-      hello: await stub.hello(1, 'two'),
-      byName: await env.P.getByName('y').who(),
-      fetched: await (await stub.fetch('https://do.example/p', { method: 'POST', body: 'b' })).text(),
-      thenable: typeof stub.then,
-      stubId: stub.id === id,
-    };
-  },
-};
-`;
+import { innerDoAdapter, innerDoIdFromName, innerWorkerModules } from '../../packages/fabric/src/inner-do-env.ts';
 
 const calls = [];
-/** The binding the loader passes: one call on one object. */
+/** The binding the loader passes: one access to one object. */
 const remote = {
-  async callOn(id, method, args) { calls.push(['callOn', id, method, args]); return method === 'who' ? id : `${method}:${args.join(',')}`; },
-  async fetchOn(id, request) { calls.push(['fetchOn', id, request.method, request.url]); return new Response(`fetched ${await request.text()}`); },
+  async callOn(id, path, args) { calls.push(['callOn', id, path, args]); return `called ${path.join('.')}(${args.join(',')})`; },
+  async getOn(id, path) { calls.push(['getOn', id, path]); return `read ${path.join('.')}`; },
 };
 
-const dir = mkdtempSync(join(tmpdir(), 'inner-do-env-'));
-try {
-  const load = async (bundle, bindings, tag) => {
-    const { mainModule, modules } = innerWorkerModules(bundle, bindings);
-    for (const [name, source] of Object.entries(modules)) writeFileSync(join(dir, `${tag}-${name}`), source.replaceAll("'./", `'./${tag}-`));
-    return { mainModule, modules, main: await import(pathToFileURL(join(dir, `${tag}-${mainModule}`)).href) };
-  };
-
-  const { main, mainModule } = await load(BUNDLE, [{ name: 'P', class_name: 'P' }], 'one');
-  assert.equal(mainModule, 'nimbus-main.js');
-  const env = { P: remote, GREETING: 'hi' };
-  const answered = await main.default.fetch(new Request('https://w.example/'), env, 'the-ctx');
-  const idX = innerDoIdFromName('x');
-  assert.deepEqual(answered, {
-    self: 'default object',
-    ctx: 'the-ctx',
-    greeting: 'hi',
-    id: idX,
-    name: 'x',
-    roundTrip: true,
-    uniq: answered.uniq,
-    hello: 'hello:1,two',
-    byName: innerDoIdFromName('y'),
-    fetched: 'fetched b',
-    thenable: 'undefined',
-    stubId: true,
-  });
-  assert.match(answered.uniq, /^uniq:[0-9a-f]{32}$/);
-  assert.deepEqual(calls, [
-    ['callOn', idX, 'hello', [1, 'two']],
-    ['callOn', innerDoIdFromName('y'), 'who', []],
-    ['fetchOn', idX, 'POST', 'https://do.example/p'],
-  ], 'each stub call is one call on the binding, nothing else');
-
-  // A Durable Object class gets the wrapped env; its other bindings as they were.
-  const object = new main.P('object-ctx', env);
-  assert.equal(object.ctx, 'object-ctx');
-  assert.equal(typeof object.env.P.idFromName('z').toString(), 'string', 'the object sees the local namespace');
-  assert.equal(object.env.GREETING, 'hi');
-  assert.equal(main.helper, 'kept', 'other exports are re-exported');
-  assert.equal(new main.Entrypoint(null, env).env, env, 'a class no binding names is the bundle\'s own');
-
-  // A default entrypoint class gets the wrapped env too.
-  const { main: classMain } = await load(
-    'export class P {}\nexport default class { constructor(ctx, env) { this.env = env; } }',
-    [{ name: 'P', class_name: 'P' }], 'two');
-  assert.equal(typeof new classMain.default(null, env).env.P.get, 'function');
-  assert.notEqual(new classMain.default(null, env).env.P, remote);
-
-  // No Durable Object binding: the bundle as it is.
-  assert.deepEqual(innerWorkerModules('export default {}', []), { mainModule: 'worker.js', modules: { 'worker.js': 'export default {}' } });
-} finally {
-  rmSync(dir, { recursive: true, force: true });
+class WorkerEntrypoint {
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
 }
+/** An RPC stub: here, its target, kept. */
+class RpcStub {
+  constructor(target) { this.target = target; }
+  dup() { return 'the platform dup'; }
+  [Symbol.dispose]() {}
+}
+const other = { kept: true };
+const env = { P: remote, GREETING: 'hi', OTHER: other };
+const main = { P: class {}, notAClass: 1 };
+// As the generated module runs them: from their source, so nothing outside them is reachable.
+const fromSource = (fn) => (0, eval)(`(${fn.toString()})`);
+const { NimbusDurableObjectClasses } = fromSource(innerDoAdapter)(
+  fromSource(innerDoIdFromName), ['P', 'ABSENT'], main, { env, RpcStub, WorkerEntrypoint },
+);
 
-console.log('inner-do-env: a Durable Object binding is a local namespace whose stub calls cross as RPC');
+// The env: P is a local namespace; the rest as it was.
+assert.notEqual(env.P, remote);
+assert.equal(env.GREETING, 'hi');
+assert.equal(env.OTHER, other);
+assert.equal('ABSENT' in env, false, 'a name the env has no binding for is left alone');
+assert.deepEqual(Object.keys(env.P), [], 'a namespace has no own enumerable properties');
+
+// Ids and stubs answer at once.
+const id = env.P.idFromName('x');
+assert.equal(id.toString(), innerDoIdFromName('x'));
+assert.equal(id.name, 'x');
+assert.ok(env.P.idFromString(id.toString()).equals(id));
+assert.match(env.P.newUniqueId().toString(), /^uniq:[0-9a-f]{32}$/);
+const stub = env.P.get(id);
+assert.ok(stub instanceof RpcStub);
+assert.deepEqual(Object.keys(stub), ['target', 'name', 'id']);
+assert.equal(stub.name, 'x');
+assert.equal(stub.id, id);
+assert.equal(stub[Symbol.dispose], undefined, 'a stub is not disposable');
+assert.equal(env.P.getByName('y').id.name, 'y');
+const unique = env.P.get(env.P.newUniqueId());
+assert.equal(unique.name, undefined);
+assert.equal(unique.id.name, undefined);
+
+// The target relays what the runtime asks of it.
+const { target } = stub;
+const objectId = innerDoIdFromName('x');
+assert.equal(await target.hello(1, 2), 'called hello(1,2)');
+assert.equal(await target.value, 'read value');
+const walk = (holder, names) => names.reduce((at, name) => Object.getOwnPropertyDescriptor(at, name).value, holder);
+assert.equal(await walk(target, ['obj', 'nested', 'y']), 'read obj.nested.y', 'a path is walked through own properties');
+assert.equal(await walk(target, ['obj', 'f'])(), 'called obj.f()');
+assert.equal(typeof target.value, 'function', 'a member is callable as well as thenable');
+assert.equal(await stub.dup(), 'called dup()', 'dup is the object\'s');
+assert.deepEqual(calls, [
+  ['callOn', objectId, ['hello'], [1, 2]],
+  ['getOn', objectId, ['value']],
+  ['getOn', objectId, ['obj', 'nested', 'y']],
+  ['callOn', objectId, ['obj', 'f'], []],
+  ['callOn', objectId, ['dup'], []],
+], 'each access is one call on the binding, nothing else');
+
+// The class check.
+assert.deepEqual(new NimbusDurableObjectClasses({}, env).missing(['P', 'notAClass', 'Absent']), ['notAClass', 'Absent']);
+
+// The modules.
+const bundle = '// src/index.js\nexport class P {}\nexport default {};\n';
+const { mainModule, modules } = innerWorkerModules(bundle, ['P']);
+assert.equal(mainModule, 'worker.js');
+assert.deepEqual(Object.keys(modules), ['worker.js', 'nimbus-do-env.js']);
+assert.equal(modules['worker.js'], "export { NimbusDurableObjectClasses } from './nimbus-do-env.js';" + bundle,
+  'the adapter is the first import, on the first line');
+assert.match(modules['nimbus-do-env.js'], /^import \{ env, RpcStub, WorkerEntrypoint \} from 'cloudflare:workers';\nimport \* as main from '\.\/worker\.js';/);
+assert.match(modules['nimbus-do-env.js'], /, \["P"\], main, \{ env, RpcStub, WorkerEntrypoint \}\);\nexport \{ NimbusDurableObjectClasses \};$/);
+assert.equal(innerWorkerModules('#!/usr/bin/env node\nexport default {};', ['P']).modules['worker.js'],
+  "#!/usr/bin/env node\nexport { NimbusDurableObjectClasses } from './nimbus-do-env.js';export default {};",
+  'a hashbang stays first');
+assert.deepEqual(innerWorkerModules(bundle, []), { mainModule: 'worker.js', modules: { 'worker.js': bundle } });
+
+console.log('inner-do-env: a Durable Object binding is a local namespace whose stubs relay to the binding');
