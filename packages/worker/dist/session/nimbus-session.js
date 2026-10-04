@@ -806,7 +806,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
     async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }
     async _rpcCpWait(childPid, waitMs, acquire, pid, knownStarted) { return _rpc._rpcCpWait(this, childPid, waitMs, acquire, pid, knownStarted); }
-    async _rpcCpBlocked(pid, blocked) { return _rpc._rpcCpBlocked(this, pid, blocked); }
+    async _rpcCpBlocked(pid, report) { return _rpc._rpcCpBlocked(this, pid, report); }
     // Programmatic sandbox SDK RPC
     async _rpcReady(options) { return _programmatic.ensureProgrammaticReady(this, options); }
     /** perf(boot): cold placement + constructor probe. First access runs the

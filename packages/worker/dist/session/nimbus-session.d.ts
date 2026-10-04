@@ -423,6 +423,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     }>;
     _rpcCpSpawn(req: any): Promise<{
         childPid: number;
+        news: number;
     }>;
     _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
@@ -444,7 +445,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcCpDrainOutput(childPid: number): Promise<any>;
     _rpcCpKill(childPid: number, signal: string): Promise<boolean>;
     _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
-    _rpcCpBlocked(pid: number, blocked: boolean): Promise<void>;
+    _rpcCpBlocked(pid: number, report: unknown): Promise<void>;
     _rpcReady(options?: _programmatic.ProgrammaticReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];

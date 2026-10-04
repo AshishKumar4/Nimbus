@@ -484,17 +484,27 @@ function __nimbusEmitExit(code) {
 }
 // Said to the session as it changes (facets/manager.ts
 // __nimbusReportBlockedState): whether this process's only remaining work is
-// waiting on its children. Unref'd, in order: saying it is not work, and
-// must not make the program look busy.
-let __nimbusBlockedSaid = false;
+// waiting on its children, on which ones (__nimbusWaitsOn), and the highest
+// news reply it has seen (__nimbusNewsSeen, child_process _noteNews). A
+// blocked program runs again only on news of a child (it has no timer,
+// socket or read of its own), and every reply that brings news is numbered
+// before it is sent, so a report the session holds is stale exactly when
+// its number is behind (fabric budgets.ts setProcessBlocked). Unref'd, in
+// order: saying it is not work, and must not make the program look busy.
+let __nimbusBlockedSaid = "";
 let __nimbusBlockedChain = Promise.resolve();
-globalThis.__nimbusBlockedNews = () => { __nimbusBlockedSaid = false; };
+globalThis.__nimbusBlockedNews = () => { __nimbusBlockedSaid = ""; };
 globalThis.__nimbusReportBlocked = (blocked) => {
-  if (blocked === __nimbusBlockedSaid || __nimbusProgramStopped) return;
+  if (__nimbusProgramStopped) return;
   if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
-  __nimbusBlockedSaid = blocked;
+  const report = blocked
+    ? { blocked: true, seen: globalThis.__nimbusNewsSeen || 0, waitsOn: globalThis.__nimbusWaitsOn ? globalThis.__nimbusWaitsOn() : [] }
+    : { blocked: false, seen: 0, waitsOn: [] };
+  const key = JSON.stringify(report);
+  if (key === __nimbusBlockedSaid || (!blocked && __nimbusBlockedSaid === "")) return;
+  __nimbusBlockedSaid = key;
   __nimbusBlockedChain = __nimbusBlockedChain
-    .then(() => __nimbusUseRpcResultUnref(__supervisor.cpBlocked(blocked), () => undefined))
+    .then(() => __nimbusUseRpcResultUnref(__supervisor.cpBlocked(report), () => undefined))
     .catch(() => {});
 };
 let __nimbusProcessExitResolve = null;
@@ -7006,9 +7016,30 @@ const __childProcessMod = (() => {
    */
   async function _childPoll(promise, use) {
     globalThis.__nimbusChildOps = (globalThis.__nimbusChildOps || 0) + 1;
-    try { return await __nimbusUseRpcResult(promise, use); }
-    finally { globalThis.__nimbusChildOps--; }
+    try {
+      const r = await __nimbusUseRpcResult(promise, use);
+      _noteNews(r);
+      return r;
+    } finally { globalThis.__nimbusChildOps--; }
   }
+
+  /**
+   * A reply that delivered news of a child (output, its start, its exit, a
+   * new child) carries its number among the news replies made for this
+   * process; the blocked report says the highest it has seen
+   * (__nimbusReportBlocked), and is taken as current only if that is all of
+   * them (fabric budgets.ts setProcessBlocked).
+   */
+  function _noteNews(r) {
+    if (r && typeof r.news === "number" && r.news > (globalThis.__nimbusNewsSeen || 0)) globalThis.__nimbusNewsSeen = r.news;
+  }
+
+  /** The children this process still waits on: spawned, and not yet closed. */
+  globalThis.__nimbusWaitsOn = () => {
+    const pids = [];
+    for (const [pid, child] of __cpChildren) if (!child._closeFired) pids.push(pid);
+    return pids;
+  };
 
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
@@ -7028,6 +7059,9 @@ const __childProcessMod = (() => {
         if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier(r.acquired);
         if (chunks.length > 0) {
           backoff = 100;  // reset — child is producing
+          // A child that has output has started: 'spawn' and its pid come
+          // before its first byte, as in Node.
+          _markSpawned(child);
           for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
@@ -7074,6 +7108,9 @@ const __childProcessMod = (() => {
    * refusal is reported one way, whichever sees it.
    */
   function _applyWait(child, r) {
+    // Settled already (both the wait loop and the exit-time drain can hear
+    // of the same exit or refusal): nothing more to emit.
+    if (child._exitFired) return true;
     if (!r) return false;
     if (r.done && r.spawnError) {
       _failSpawn(child, r.spawnError, r.exitCode);
@@ -7201,6 +7238,7 @@ const __childProcessMod = (() => {
         );
         // The broker has the child; it starts once it is admitted, and its
         // wait loop says so (_markSpawned), or that it was refused.
+        _noteNews(r);
         child._brokerPid = r.childPid;
         __cpChildren.set(child._brokerPid, child);
 
@@ -7507,6 +7545,8 @@ const __childProcessMod = (() => {
             __supervisor.cpDrainOutput(pid),
             (result) => result,
           );
+          // Output means it started: 'spawn' before its first byte.
+          if (r && ((r.stdout && r.stdout.byteLength > 0) || (r.stderr && r.stderr.byteLength > 0))) _markSpawned(child);
           if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout) {
             try { child.stdout.write(__BufferMod.from(r.stdout)); } catch {}
           }

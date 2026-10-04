@@ -18,8 +18,8 @@
  * network op, another fan-out — keeps its slots. Work that would rather wait
  * than be refused waits on the ledger ({@link beginLoaderFetchWhenFree}) and
  * is let in, in the order it asked, by whichever release makes room. A wait
- * no release can ever satisfy (every worker held by a process blocked on
- * its own children, which wait here) is refused instead:
+ * no release can ever satisfy (every worker held by a process stuck on its
+ * own children, which wait here or are stuck too) is refused instead:
  * {@link DynamicWorkerDeadlockError}.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
@@ -62,11 +62,12 @@ export interface LedgerProcess {
 /**
  * The refusal of a wait for a Dynamic Worker that no release can ever
  * satisfy: every worker this Durable Object has in flight is held by a
- * process blocked on its own children (setProcessBlocked), so none will end
- * to make room (nine children of a parent, each doing nothing but wait on a
- * grandchild of its own, fill the limit). The newest wait that descends from
- * a holder is refused, as a spawn at a process limit is (EAGAIN): its
- * program never runs, and the ancestor told so can end and give its worker
+ * process stuck on its own children (setProcessBlocked: it waits on nothing
+ * else, and each of them is queued here or stuck too), so none will end to
+ * make room (nine children of a parent, each doing nothing but wait on a
+ * grandchild of its own, fill the limit). The newest queued process a stuck
+ * holder waits on is refused, as a spawn at a process limit is (EAGAIN): its
+ * program never runs, and the holder told so can end and give its worker
  * back.
  */
 export declare class DynamicWorkerDeadlockError extends Error {
@@ -78,13 +79,38 @@ export declare class DynamicWorkerDeadlockError extends Error {
 }
 /** Whether `error` is the ledger's refusal of a wait nothing can satisfy. */
 export declare function isDynamicWorkerDeadlock(error: unknown): error is DynamicWorkerDeadlockError;
+/** What a process says of itself (setProcessBlocked). */
+export interface ProcessBlockedReport {
+    /** Its only remaining work is waiting on its children. */
+    blocked: boolean;
+    /** The news replies made for it it has seen, every one (processNewsReply). */
+    seen: number;
+    /** The children it waits on. */
+    waitsOn: readonly number[];
+}
 /**
  * Process `pid` says whether its only remaining work is waiting on its own
- * children (a runtime's own liveness, as Node's ref-counted event loop knows
- * it: no timer, socket, server, stdin read or fetch of its own is pending).
- * A wait no release can satisfy is told apart by it (deadlocked).
+ * children, and on which (a runtime's own liveness, as Node's ref-counted
+ * event loop knows it: no timer, socket, server, stdin read or fetch of its
+ * own is pending). Taken only from a process that holds a worker, and only
+ * as current when it has seen every news reply made for it; news produced
+ * for it later withdraws it (noteProcessNews). A wait no release can satisfy
+ * is told apart by these reports (deadlocked).
  */
-export declare function setProcessBlocked(ctx: object, pid: number, blocked: boolean): void;
+export declare function setProcessBlocked(ctx: object, pid: number, report: ProcessBlockedReport): void;
+/**
+ * News of process `pid`'s children was produced for it (a child's output it
+ * reads, its start, its exit): its report is no longer current, since the
+ * news may make it runnable, until it has heard the news and says so again.
+ */
+export declare function noteProcessNews(ctx: object, pid: number): void;
+/**
+ * A reply that delivers news to process `pid` (of its children) is made:
+ * its number, which the reply carries, so the process can say it has seen
+ * every one (ProcessBlockedReport.seen). 0, and nothing counted, for a
+ * process that holds no worker.
+ */
+export declare function processNewsReply(ctx: object, pid: number): number;
 /**
  * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
  * returned function ends the hold (idempotently), from the caller's own
@@ -130,9 +156,9 @@ export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?:
  *
  * `process` is the process the wait is for, and the ones it descends from;
  * the hold it is let in on is that process's. When every worker of a full
- * ledger is held by a process blocked on its children (setProcessBlocked),
- * no wait can be let in, and the newest that descends from a holder is
- * refused with {@link DynamicWorkerDeadlockError} (EAGAIN), holding nothing.
+ * ledger is held by a process stuck on its children (deadlocked), no wait
+ * can be let in, and the newest a stuck holder waits on is refused with
+ * {@link DynamicWorkerDeadlockError} (EAGAIN), holding nothing.
  *
  *   const end = await beginLoaderFetchWhenFree(ctx, key, { signal });
  *   try { return await worker.getEntrypoint().run(); }
@@ -214,6 +240,8 @@ export declare function loaderLedgerStats(ctx: object): {
         pid?: number;
         ancestors?: readonly number[];
     }>;
+    /** Process → the children it waits on, for each current report that it is blocked on them. */
+    blockedOn: Record<number, readonly number[]>;
 };
 /**
  * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"

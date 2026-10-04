@@ -64,6 +64,10 @@ interface OutputChunk {
  */
 interface ChildEntry {
     pid: number;
+    /** The process that spawned it: whom its output, start and exit are news for. */
+    parentPid: number;
+    /** The descriptors its parent reads: output to an ignored one reaches nobody. */
+    stdio: Array<'pipe' | 'ignore' | 'inherit'>;
     command: string;
     args: string[];
     cwd: string;
@@ -212,6 +216,12 @@ export interface FacetProcessManagerDeps {
     vfsForProcess: (pid: number) => Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>;
     commandRegistry: CommandRegistryLike;
     shellExecutor?: ShellExecutorLike;
+    /**
+     * News of a child was produced for its parent `parentPid`: output the
+     * parent reads, the child's start, its exit. The parent's report that it
+     * is blocked on its children stops being current (fabric noteProcessNews).
+     */
+    onNews?: (parentPid: number) => void;
 }
 /** Cap recursion depth to defend against runaway spawn loops. */
 export declare const CHILD_PROCESS_MAX_DEPTH = 8;
@@ -317,6 +327,8 @@ export declare class FacetProcessManager {
     wait(childPid: number, waitMs?: number, knownStarted?: boolean): Promise<ChildExitStatus>;
     /** The child has started (ChildEntry.started): wake whoever waits to hear of it. */
     private _markStarted;
+    /** News of `child` for its parent (FacetProcessManagerDeps.onNews). */
+    private _news;
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */
     reap(maxAgeMs?: number): number;
     get stats(): {

@@ -29,7 +29,7 @@ import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, processNewsReply, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -1209,7 +1209,9 @@ export async function _rpcTransform(self, code, loader) {
 // (e.g., immediately after DO hibernation wake-up).
 export async function _rpcCpSpawn(self, req) {
     const fpm = self._ensureFacetProcessManager();
-    return fpm.spawn(req);
+    const spawned = await fpm.spawn(req);
+    // A new child is news for its parent: its blocked report must name it.
+    return { ...spawned, news: processNewsReply(self.ctx, req.parentPid) };
 }
 /**
  * A child's stdin is bytes: esbuild's service protocol is binary packets,
@@ -1278,7 +1280,9 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid) {
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
     const fpm = self._ensureFacetProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
-    return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
+    const delivers = output.chunks.length > 0 || output.closed;
+    const reply = delivers && typeof pid === 'number' ? { ...output, news: processNewsReply(self.ctx, pid) } : output;
+    return withDeliveredAcquire(self, reply, delivers, acquire, pid);
 }
 export async function _rpcCpDrainOutput(self, childPid) {
     const fpm = self._ensureFacetProcessManager();
@@ -1289,15 +1293,22 @@ export async function _rpcCpKill(self, childPid, signal) {
     return fpm.kill(childPid, signal);
 }
 /** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
-export async function _rpcCpBlocked(self, pid, blocked) {
+export async function _rpcCpBlocked(self, pid, report) {
     if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running')
         return;
-    setProcessBlocked(self.ctx, pid, blocked === true);
+    const said = (report ?? {});
+    setProcessBlocked(self.ctx, pid, {
+        blocked: said.blocked === true,
+        seen: Number.isInteger(said.seen) ? said.seen : -1,
+        waitsOn: Array.isArray(said.waitsOn) ? said.waitsOn.filter((child) => Number.isInteger(child)) : [],
+    });
 }
 export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
     const fpm = self._ensureFacetProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
-    return withDeliveredAcquire(self, status, status.done, acquire, pid);
+    const delivers = status.done || status.started === true;
+    const reply = delivers && typeof pid === 'number' ? { ...status, news: processNewsReply(self.ctx, pid) } : status;
+    return withDeliveredAcquire(self, reply, status.done, acquire, pid);
 }
 // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
 // Kept for backward compatibility with direct DO stub callers.

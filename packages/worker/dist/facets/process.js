@@ -79,6 +79,15 @@ const READ_OUTPUT_DEFAULT_WAIT_MS = 250;
  * polls by the caller.
  */
 const WAIT_MAX_MS = 30_000;
+/** A spawn's stdio as the parent's ChildProcess reads it (node-shims _normalizeStdio): a mode per descriptor. */
+function normalizeStdio(stdio) {
+    const mode = (v) => (v === 'ignore' || v === 'inherit' ? v : 'pipe');
+    if (typeof stdio === 'string')
+        return [mode(stdio), mode(stdio), mode(stdio)];
+    if (!Array.isArray(stdio))
+        return ['pipe', 'pipe', 'pipe'];
+    return [mode(stdio[0]), mode(stdio[1]), mode(stdio[2])];
+}
 function basenameOfCommand(command) {
     const text = String(command || '').trim();
     if (!text)
@@ -177,6 +186,8 @@ export class FacetProcessManager {
         const pid = processEntry.pid;
         const child = {
             pid,
+            parentPid: req.parentPid,
+            stdio: normalizeStdio(req.stdio),
             command: req.command,
             args: req.args || [],
             cwd: req.cwd,
@@ -470,6 +481,8 @@ export class FacetProcessManager {
     _appendOutput(child, fd, data) {
         if (data.byteLength === 0)
             return;
+        if (child.stdio[fd] !== 'ignore')
+            this._news(child);
         child.outputSeq[fd]++;
         const chunk = { seq: child.outputSeq[fd], data };
         child.outputs[fd].push(chunk);
@@ -598,6 +611,7 @@ export class FacetProcessManager {
         child.exitCode = exitCode;
         child.signal = signal;
         child.endedAt = Date.now();
+        this._news(child);
         // Tell the process supervisor so `ps` and `logs <pid>` line up.
         try {
             this.deps.processes.exit(child.pid, exitCode);
@@ -677,8 +691,16 @@ export class FacetProcessManager {
         if (child.started)
             return;
         child.started = true;
+        this._news(child);
         for (const w of child.startWaiters.splice(0))
             w();
+    }
+    /** News of `child` for its parent (FacetProcessManagerDeps.onNews). */
+    _news(child) {
+        try {
+            this.deps.onNews?.(child.parentPid);
+        }
+        catch { /* the news still reaches it */ }
     }
     // ── housekeeping ────────────────────────────────────────────────────────
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */

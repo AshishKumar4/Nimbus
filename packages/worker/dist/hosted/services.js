@@ -2,7 +2,7 @@ import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
-import { isDynamicWorkerDeadlock, withLaunchAdmission } from "@nimbus-sh/fabric/budgets.js";
+import { isDynamicWorkerDeadlock, noteProcessNews, withLaunchAdmission } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
@@ -327,6 +327,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         processes: self.processes,
         vfsForProcess: (pid) => new ProcessView(self.getFilesystemAuthority().bind({ pid, cred: self.processes.cred(pid) })),
         commandRegistry: cmdRegistryAdapter,
+        onNews: (parentPid) => noteProcessNews(runtimeContext.ctx, parentPid),
         shellExecutor: {
             execute: async (pid, commandLine, env, cwd, stdin, hooks) => {
                 const workspace = self.runtimeWorkspace;
