@@ -763,9 +763,9 @@ export class NimbusSession extends CloudflareDurableObject {
         const stat = await bridge.stat(path);
         if (!stat)
             throw Object.assign(new Error(`ENOENT: no such stdin file '${path}'`), { code: 'ENOENT' });
-        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 16 * 1024 * 1024)
+        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536)
             throw new RangeError('invalid stdin preparation range');
-        const data = await bridge.readRange(path, offset, Math.min(length, Math.max(0, stat.size - offset)));
+        const data = await this._rpcFsReadRange(path, offset, Math.min(length, Math.max(0, stat.size - offset)), pid);
         if (data === null)
             throw Object.assign(new Error(`ENOENT: stdin file disappeared '${path}'`), { code: 'ENOENT' });
         return { data, size: stat.size };

@@ -279,13 +279,13 @@ function __nimbusWasmDigest(bytes) {
   if (typeof globalThis.fetch !== "function" || globalThis.__nimbusFetchUaInstalled) return;
   globalThis.__nimbusFetchUaInstalled = true;
   const __origFetch = globalThis.fetch.bind(globalThis);
-  const __networkResponses = new WeakSet();
-  const __networkBodies = new WeakSet();
-  const __bodyObserved = new WeakSet();
+  const __networkResponses = new WeakMap();
+  const __networkBodies = new WeakMap();
   const __observeBody = (body) => {
-    if (body && __networkBodies.has(body) && !__bodyObserved.has(body)) {
-      __bodyObserved.add(body);
-      if (__nimbusReplay) __nimbusReplay.observed("fetchBody");
+    const record = body && __networkBodies.get(body);
+    if (record && !record.done) {
+      record.done = true;
+      if (__nimbusReplay) { __nimbusReplay.observed("fetchBody"); __nimbusReplay.bodyFinished(record.id); }
     }
   };
   const __hasUa = (h) => {
@@ -421,11 +421,16 @@ function __nimbusWasmDigest(bytes) {
     }
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const response = await __resumeCoherent(__dispatch(input, init));
+    let response;
+    try { response = await __resumeCoherent(__dispatch(input, init)); }
+    catch (error) { if (__nimbusReplay && __nimbusReplay.outbound) __nimbusReplay.observed("fetchHeader"); throw error; }
     if (__nimbusReplay && __nimbusReplay.outbound) {
       __nimbusReplay.observed("fetchHeader");
-      __networkResponses.add(response);
-      if (response.body) __networkBodies.add(response.body);
+      if (response.body) {
+        const record = { id: __nimbusReplay.bodyStarted(String(__fetchUrl(input))), done: false };
+        __networkResponses.set(response, record);
+        __networkBodies.set(response.body, record);
+      }
     }
     return response;
   };
@@ -450,6 +455,13 @@ function __nimbusWasmDigest(bytes) {
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
   const __getReader = ReadableStream.prototype.getReader;
+  const __cloneResponse = Response.prototype.clone;
+  Response.prototype.clone = function(...args) {
+    const clone = __cloneResponse.apply(this, args);
+    const record = __networkResponses.get(this);
+    if (record && clone.body) { __networkResponses.set(clone, record); __networkBodies.set(clone.body, record); }
+    return clone;
+  };
   const __readerBodies = new WeakMap();
   ReadableStream.prototype.getReader = function(...args) {
     const reader = __getReader.apply(this, args);
@@ -9977,9 +9989,18 @@ async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) return;
-    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 16777216), (r) => r);
-    const bytes = __BufferMod.from(prepared.data);
-    __nimbusQueuedStdin = { bytes, ended: file.offset + bytes.length >= prepared.size, from: file.offset + bytes.length };
+    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 65536), (r) => r);
+    const want = Math.max(0, Math.min(prepared.size - file.offset, 16777216));
+    const bytes = __BufferMod.allocUnsafe(want);
+    let got = 0, packet = prepared;
+    while (got < want) {
+      const n = Math.min(packet.data.byteLength, want - got);
+      if (!n) break;
+      bytes.set(packet.data.subarray(0, n), got);
+      got += n;
+      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(65536, want - got)), (r) => r);
+    }
+    __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= prepared.size, from: file.offset + got };
     return;
   }
   const pid = __nimbusLiveInputChannel();

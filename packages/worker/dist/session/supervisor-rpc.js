@@ -153,7 +153,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     /** Every path (including resent reads/mutations) uses the bound caller. */
     _caller(envelope) {
-        return { ...envelope, pid: this._pid(), run: this._runId() };
+        const pid = this.ctx.props?.pid;
+        // The spawn/build helper has the explicitly bound pid 0. It is not a
+        // process and cannot use filesystem credentials (_pid still refuses it).
+        if (typeof pid !== 'number' || !Number.isInteger(pid) || pid < 0)
+            throw new Error('SupervisorRPC: missing or invalid caller pid in props');
+        return { ...envelope, pid, run: this._runId() };
     }
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     _fsOp(op, args = []) {
