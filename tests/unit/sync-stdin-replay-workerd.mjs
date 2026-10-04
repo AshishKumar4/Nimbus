@@ -266,11 +266,23 @@ const certs = lan ? makeCerts(lan) : null;
 if (certs) process.env.NODE_EXTRA_CA_CERTS = certs.ca;
 let cfg = 'ABCD';
 const slowSeen = new Set();
-const fixtureStats = { tcp: 0 };
+const fixtureStats = { tcp: 0, bodyErrors: 0 };
 const route = (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/cfg') { res.setHeader('etag', `"${cfg}"`); res.end(cfg); return; }
   if (url.pathname === '/set') { cfg = url.searchParams.get('cfg') ?? cfg; res.end('ok'); return; }
+  if (url.pathname === '/sse') {
+    res.setHeader('content-type', 'text/event-stream');
+    res.write('data: hello\n\n');
+    return;
+  }
+  if (url.pathname === '/body-error') {
+    fixtureStats.bodyErrors++;
+    res.setHeader('content-length', '99');
+    res.write('first');
+    setTimeout(() => res.destroy(), 100);
+    return;
+  }
   // Slow the first time a key is asked for, at once after.
   if (url.pathname === '/slow-once') {
     const key = url.searchParams.get('k');
@@ -313,6 +325,23 @@ if (lan) {
     "  console.log('child: READY');",
     "  const input = fs.readFileSync(0, 'utf8');",
     "  console.log(etag + ' ' + viaBlob + ' ' + viaStream + ' ' + input);",
+    '})();',
+  ].join('\n');
+  NET.sse = [
+    '(async () => {',
+    '  const at = performance.now();',
+    `  const r = await fetch('${httpBase}/sse');`,
+    "  console.log('child: READY ' + (performance.now() - at < 1000));",
+    "  try { console.log('got ' + require('fs').readFileSync(0, 'utf8')); } catch (e) { console.log('caught ' + e.code + ' ' + /unfinished/.test(e.message)); }",
+    '  await r.body.cancel();',
+    '})();',
+  ].join('\n');
+  NET.bodyError = [
+    '(async () => {',
+    `  const r = await fetch('${httpBase}/body-error');`,
+    "  try { await r.text(); } catch (e) { console.log('BODY ERROR'); }",
+    "  console.log('child: READY');",
+    "  console.log('got ' + require('fs').readFileSync(0, 'utf8'));",
     '})();',
   ].join('\n');
   NET.pending = [
@@ -382,6 +411,8 @@ const NET_PARENT = [
   '  });',
   '}',
   'const cases = {',
+  "  sse: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
+  "  bodyError: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
   "  headers: async (c, until) => { await until('READY'); await fetch(BASE + '/set?cfg=WXYZ'); await sleep(150); c.stdin.end('x'); },",
   "  pending: async (c, until) => { await until('READY'); await sleep(1000); c.stdin.end('x'); },",
   "  nativeSocket: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
@@ -412,6 +443,8 @@ if (lan) {
   netExpected = netLines(host.out);
   assert.deepEqual(netExpected.headers, { code: 0, out: 'child: READY\n"ABCD" ABCD ABCD x\n' });
   assert.deepEqual(netExpected.pending, { code: 0, out: 'child: READY\nat read unset x\nlater slow:ABCD\n' });
+  assert.deepEqual(netExpected.sse, { code: 0, out: 'child: READY true\ngot x\n' });
+  assert.deepEqual(netExpected.bodyError, { code: 0, out: 'BODY ERROR\nchild: READY\ngot x\n' });
   assert.deepEqual(netExpected.nativeSocket, { code: 0, out: 'child: READY\ngot x\n' });
   if (certs) {
     assert.deepEqual(netExpected.https, { code: 0, out: 'child: READY 200 ABCD\ngot x\n' });
@@ -487,10 +520,19 @@ try {
       config: [
         "const fs = require('fs');",
         '(async () => {',
-        `  const cfg = await fs.promises.readFile('${W}/cfg.txt', 'utf8');`,
+        "  const cfg = await fs.promises.readFile(['', 'tmp', 'sync-stdin-external-config'].join('/'), 'utf8');",
         "  console.log('child: READY');",
         "  const input = fs.readFileSync(0, 'utf8');",
         "  console.log('cfg ' + cfg.trim() + ' input ' + input);",
+        '})();',
+      ].join('\n'),
+      spawn: [
+        '(async () => {',
+        "  const c = require('child_process').spawn('node', ['-e', \"console.log('grandchild')\"]);",
+        "  c.stdout.on('data', (d) => process.stdout.write(d));",
+        "  await new Promise((r) => c.on('close', r));",
+        "  console.log('child: READY');",
+        "  try { require('fs').readFileSync(0); } catch (e) { console.log('caught ' + e.code + ' ' + /cpSpawn/.test(e.message)); }",
         '})();',
       ].join('\n'),
       // Four bytes read into the middle of a buffer through a FileHandle;
@@ -528,11 +570,12 @@ try {
       'const cases = {',
       "  forged: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
       "  tls: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
-      `  config: async (c, until) => { await until('READY'); await fs.promises.writeFile('${W}/cfg.txt', 'v2'); await sleep(150); c.stdin.end('x'); },`,
+      "  config: async (c, until) => { await until('READY'); await fs.promises.writeFile('/tmp/sync-stdin-external-config', 'v2'); await sleep(150); c.stdin.end('x'); },",
+      "  spawn: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
       `  fileHandle: async (c, until) => { await until('READY'); await fs.promises.writeFile('${W}/fh.txt', 'WXYZ'); await sleep(150); c.stdin.end('x'); },`,
       '};',
       '(async () => {',
-      `  fs.writeFileSync('${W}/cfg.txt', 'v1');`,
+      "  fs.writeFileSync('/tmp/sync-stdin-external-config', 'v1');",
       `  fs.writeFileSync('${W}/fh.txt', 'ABCD');`,
       "  for (const [name, drive] of Object.entries(cases)) console.log('REVIEW ' + name + ' ' + JSON.stringify(await run(name, drive)));",
       '  process.exit(0);',
@@ -546,6 +589,8 @@ try {
       `a stop record the program forges is no stop\n${JSON.stringify(review.forged)}`);
     check(review.tls?.out === 'child: READY\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
       `a TLS connection before the read: the read names it\n${JSON.stringify(review.tls)}`);
+    check(review.spawn?.out === 'grandchild\nchild: READY\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
+      `a bound cpSpawn is an effect, performed once and named by the later read\n${JSON.stringify(review.spawn)}`);
     check(review.config && !/cfg v2/.test(review.config.out) && /did not retrace/.test(review.config.out),
       `a file read before the read changed while it waited: the run after the stop is ended, loudly\n${JSON.stringify(review.config)}`);
     // Node: "child: READY ....ABCD" then "after ....ABCD x". The bytes
@@ -559,11 +604,16 @@ try {
     if (lan) {
       await write(`${W}/net.js`, NET_PARENT);
       fixtureStats.tcp = 0;
+      fixtureStats.bodyErrors = 0;
       const net = netLines((await run(`cd ${W} && node net.js`, 400_000)).stdout);
       check(JSON.stringify(net.headers) === JSON.stringify(netExpected.headers),
         `a response's headers and bytes, through blob() and a body reader, are the run before's\n  node:   ${JSON.stringify(netExpected.headers)}\n  nimbus: ${JSON.stringify(net.headers)}`);
       check(JSON.stringify(net.pending) === JSON.stringify(netExpected.pending),
         `a request still on its way at the stop is answered past the read\n  node:   ${JSON.stringify(netExpected.pending)}\n  nimbus: ${JSON.stringify(net.pending)}`);
+      check(net.sse?.out === 'child: READY true\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
+        `an endless SSE returns headers within 1 s; an unfinished body forbids replay\n${JSON.stringify(net.sse)}`);
+      check(JSON.stringify(net.bodyError) === JSON.stringify(netExpected.bodyError) && fixtureStats.bodyErrors === 1,
+        `a post-headers body error completes its ticket and is replayed, not fetched twice (${fixtureStats.bodyErrors})\n${JSON.stringify(net.bodyError)}`);
       check(net.nativeSocket?.code === 0 && net.nativeSocket.out === 'child: READY\ncaught ERR_NIMBUS_SYNC_STDIN\n' && fixtureStats.tcp === 1,
         `a connection through workerd's own socket class: the read names it, and the server saw it once (${fixtureStats.tcp})\n${JSON.stringify(net.nativeSocket)}`);
       if (certs) {

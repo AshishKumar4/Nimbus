@@ -366,6 +366,15 @@ function __nimbusWasmDigest(bytes) {
   if (typeof globalThis.fetch !== "function" || globalThis.__nimbusFetchUaInstalled) return;
   globalThis.__nimbusFetchUaInstalled = true;
   const __origFetch = globalThis.fetch.bind(globalThis);
+  const __networkResponses = new WeakSet();
+  const __networkBodies = new WeakSet();
+  const __bodyObserved = new WeakSet();
+  const __observeBody = (body) => {
+    if (body && __networkBodies.has(body) && !__bodyObserved.has(body)) {
+      __bodyObserved.add(body);
+      if (__nimbusReplay) __nimbusReplay.observed("fetchBody");
+    }
+  };
   const __hasUa = (h) => {
     if (!h) return false;
     if (typeof h.get === "function") return h.get("user-agent") != null;
@@ -499,7 +508,13 @@ function __nimbusWasmDigest(bytes) {
     }
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    return __resumeCoherent(__dispatch(input, init));
+    const response = await __resumeCoherent(__dispatch(input, init));
+    if (__nimbusReplay && __nimbusReplay.outbound) {
+      __nimbusReplay.observed("fetchHeader");
+      __networkResponses.add(response);
+      if (response.body) __networkBodies.add(response.body);
+    }
+    return response;
   };
   globalThis.fetch = function fetch(input, init) {
     return __nimbusTrackOp(__barriered(input, init));
@@ -515,9 +530,25 @@ function __nimbusWasmDigest(bytes) {
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
+        const body = this.body;
+        const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
+        return __nimbusTrackOp(__resumeCoherent(pending));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
+  }
+  const __getReader = ReadableStream.prototype.getReader;
+  const __readerBodies = new WeakMap();
+  ReadableStream.prototype.getReader = function(...args) {
+    const reader = __getReader.apply(this, args);
+    if (__networkBodies.has(this)) __readerBodies.set(reader, this);
+    return reader;
+  };
+  for (const Reader of [ReadableStreamDefaultReader, typeof ReadableStreamBYOBReader === "function" ? ReadableStreamBYOBReader : null]) {
+    if (!Reader) continue;
+    const read = Reader.prototype.read;
+    Reader.prototype.read = function(...args) {
+      return read.apply(this, args).then((value) => { if (value.done) __observeBody(__readerBodies.get(this)); return value; }, (error) => { __observeBody(__readerBodies.get(this)); throw error; });
+    };
   }
 })();
 
@@ -7902,7 +7933,7 @@ async function __nimbusTakeQueuedStdin(whole, atLeast) {
     let packet;
     try {
       packet = await __nimbusUseRpcResult(
-        __supervisor.cpReadStdin(pid, waits ? 1000 : 0, __nimbusVfsAcquireArgs()),
+        __supervisor.cpReadStdin(pid, waits ? 1000 : 0),
         (result) => result,
       );
       failures = 0;
@@ -7915,7 +7946,6 @@ async function __nimbusTakeQueuedStdin(whole, atLeast) {
     }
     if (!packet) break;
     const hasData = !!(packet.data && packet.data.byteLength > 0);
-    if (hasData || packet.ended || packet.signal) await __nimbusInboundBarrier(packet.acquired);
     __nimbusStdinPacket(packet, buffer, true);
     if (buffer.ended) break;
     if (!waits && !hasData && !packet.signal) break;
@@ -7950,7 +7980,7 @@ function __nimbusFollowStdin(pid) {
       try {
         // Unref'd, as process.stdin's pump is: the program is not held open
         // for a stdin it may never read.
-        packet = await __nimbusUseRpcResultUnref(__supervisor.cpReadStdin(pid, 1000, __nimbusVfsAcquireArgs()), (result) => result);
+        packet = await __nimbusUseRpcResultUnref(__supervisor.cpReadStdin(pid, 1000), (result) => result);
         failures = 0;
       } catch {
         if (++failures > 10) return;
@@ -7959,7 +7989,6 @@ function __nimbusFollowStdin(pid) {
       }
       if (!packet) return;
       const delivers = !!(packet.data && packet.data.byteLength > 0) || packet.ended || packet.signal;
-      if (delivers) await __nimbusInboundBarrier(packet.acquired);
       if (handedOver) { if (delivers) late.push(packet); return; }
       try { __nimbusStdinPacket(packet, buffer, false); }
       catch (err) { if (err instanceof __ProcessExit) return; throw err; }
@@ -7996,23 +8025,9 @@ async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) return;
-    const size = (await __fsMod.promises.stat(file.path)).size;
-    const want = Math.max(0, Math.min(size - file.offset, ${STDIN_SYNC_READ_BYTES}));
-    const bytes = __BufferMod.allocUnsafe(want);
-    let got = 0;
-    if (want > 0) {
-      await new Promise((resolve, reject) => {
-        const source = __fsMod.createReadStream(file.path, { start: file.offset, end: file.offset + want - 1 });
-        source.on("data", (chunk) => {
-          const n = Math.min(chunk.byteLength, want - got);
-          bytes.set(chunk.subarray(0, n), got);
-          got += n;
-        });
-        source.on("end", resolve);
-        source.on("error", reject);
-      });
-    }
-    __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= size, from: file.offset + got };
+    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, ${STDIN_SYNC_READ_BYTES}), (r) => r);
+    const bytes = __BufferMod.from(prepared.data);
+    __nimbusQueuedStdin = { bytes, ended: file.offset + bytes.length >= prepared.size, from: file.offset + bytes.length };
     return;
   }
   const pid = __nimbusLiveInputChannel();

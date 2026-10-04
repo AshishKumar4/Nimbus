@@ -242,7 +242,7 @@ export const SUPERVISOR_OPS = [
   'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
   'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
   'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
-  'replayBoundary', 'netTls', 'outbound',
+  'replayBoundary', 'netTls', 'outbound', 'stdinFileRead',
 ] as const;
 
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
@@ -311,6 +311,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0,1] },
   cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
   cpReadStdin: { method: '_rpcCpReadStdin', args: [0,1,2,'pid','writerId'] },
+  stdinFileRead: { method: '_rpcStdinFileRead', args: [0,1,2,'pid'] },
   cpReadOutput: { method: '_rpcCpReadOutput', args: [0,1,2,3,4,'pid'] },
   cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0] },
   cpKill: { method: '_rpcCpKill', args: [0,1] },

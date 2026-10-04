@@ -897,7 +897,7 @@ export async function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, 
 // its run after a stop reached the read the run before stopped at; a TLS
 // connection it opens through the session; and its outbound's calls.
 export async function _rpcReplayBoundary(self: RpcHost, pid?: number, run?: string): Promise<void> {
-  if (typeof pid === 'number') self.facetManager?.replayBoundary(pid, run);
+  if (typeof pid === 'number') await self.facetManager?.replayBoundary(pid, run);
 }
 
 export async function _rpcNetTls(self: RpcHost, action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> {

@@ -185,6 +185,7 @@ const INPUTS = {
   cpStdinWrite: [childPid, data],
   cpStdinEnd: [childPid],
   cpReadStdin: [childPid, waitMs, { epoch, cursor }],
+  stdinFileRead: [path, offset, length],
   cpReadOutput: [childPid, fd, sinceSeq, waitMs, { epoch, cursor }],
   cpDrainOutput: [childPid],
   cpKill: [childPid, signal],

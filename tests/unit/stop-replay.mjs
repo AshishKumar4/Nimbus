@@ -11,16 +11,15 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 import {
-  answerDigest,
-  callKey,
   OwnedPieces,
-  ReplayJournal,
   ReplayOutputGate,
   StdinTaken,
-  STOP_RECORD_PREFIX,
-  STOP_REPLAY_SOURCE,
   stopRecordOf,
-} from '../../packages/worker/src/runtime/stop-replay.ts';
+} from '../../packages/worker/src/runtime/stop-replay-host.ts';
+import { answerDigest, callKey, ReplayJournal } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
+import { STOP_REPLAY_SOURCE } from '../../packages/worker/src/runtime/stop-replay.ts';
+import { STOP_RECORD_PREFIX } from '../../packages/worker/src/runtime/stop-replay-contracts.ts';
+import { operationPolicy } from '../../packages/worker/src/runtime/stop-replay-policy.ts';
 import { ProcessInputStore } from '../../packages/core/src/runtime/process-input.ts';
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -164,7 +163,7 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
   const slowAgain = ask(k, 'readFile', ['/slow'], 'S', 'b').then((v) => { early = true; return v; });
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(early, false, 'the request pending at the stop waits for the boundary');
-  k.boundary('b');
+  await k.boundary('b');
   assert.equal(await slowAgain, 'S');
 
   // A replay that gets to the read before an answer the run before had by
@@ -179,33 +178,29 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
   let late;
   const prefetch = q.handle('fsReadBatch', [['/.rc']], 'b', () => new Promise((r) => { late = r; }));
   const seen = diverged.length;
-  q.boundary('b');
+  const reached = q.boundary('b');
   assert.equal(diverged.length, seen, 'an answer on its way at the boundary is not a stray');
   late('RC');
   assert.equal(await prefetch, 'RC');
+  await reached;
   const n = make();
   n.start('a');
   await ask(n, 'fsReadBatch', [['/.rc']], 'RC', 'a');
   n.stopped();
   n.start('b');
-  n.boundary('b');
+  await assert.rejects(n.boundary('b'), /without asking for everything/);
   assert.match(diverged.at(-1), /without asking for everything .* \(0 of 1\)/);
 
-  // A `< file` stdin: reading that file is reading input (the run after a
-  // stop reads ahead what the run before stopped short of), never journaled;
-  // a call naming anything else is.
+  // Only fd-0 preparation is input; ordinary reads of that path are observations.
   const i = make();
-  i.input('/home/user/w/lock.json');
   i.start('a');
   i.stopped();
   i.start('b');
   const seenBefore = diverged.length;
-  assert.deepEqual(await ask(i, 'stat', ['/home/user/w/lock.json'], { size: 9 }, 'b'), { size: 9 });
-  await ask(i, 'fsReadBatch', [[{ path: 'home/user/w/lock.json', offset: 0, length: 9 }]], 'LOCK', 'b');
-  i.boundary('b');
-  assert.equal(diverged.length, seenBefore, 'reads of the stdin file are input');
+  await ask(i, 'stdinFileRead', ['/home/user/w/lock.json', 0, 9], { data: enc('LOCK'), size: 4 }, 'b');
+  await i.boundary('b');
+  assert.equal(diverged.length, seenBefore, 'fd-0 preparation is input');
   const mixed = make();
-  mixed.input('/home/user/w/lock.json');
   mixed.start('a');
   mixed.stopped();
   mixed.start('b');
@@ -264,8 +259,10 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
   assert.equal(g.replayable, true);
   await g.handle('fsOpen', ['/w', { write: true, create: true }], 'a', async () => ({ fd: 4 }));
   assert.match(g.unreplayable, /fsOpen \/w for writing/);
-  // Volatile fields do not count; contents do.
-  assert.equal(answerDigest({ size: 4, mtime: 1, atime: 1, acquired: { a: 1 } }), answerDigest({ size: 4, mtime: 1, atime: 9, acquired: { b: 2 } }));
+  // Operation-local coherence tokens do not count; timestamps do.
+  const project = operationPolicy('fsAcquire').answer;
+  assert.equal(answerDigest(project({ rev: 1, epoch: 'a', paths: [] })), answerDigest(project({ rev: 9, epoch: 'b', paths: [] })));
+  assert.notEqual(answerDigest({ atime: 1 }), answerDigest({ atime: 9 }));
   assert.notEqual(answerDigest(new Uint8Array([65, 66, 67, 68])), answerDigest(new Uint8Array([87, 88, 89, 90])));
   assert.notEqual(callKey('fsRead', [3, 0, 4]), callKey('fsRead', [3, 4, 4]), 'a read at another offset is another call');
 }
@@ -393,6 +390,20 @@ assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.s
 const unfinished = replayed(`console.log(JSON.stringify({ finish: sr.finish(), booted: sr.booted() }));`);
 assert.match(unfinished.finish, /ended before the read of stdin it stopped at/);
 assert.match(unfinished.booted, /finished starting before the read of stdin it stopped at/);
+
+// A deterministic floating-read race: merely reissuing the read is not a
+// delivery. fd 0 must expose none of its new bytes while its answer is held.
+const floatingRace = guest(`
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null, observations: { stat: 1 } }, abort, nonce: NONCE });
+  sr.arm(false);
+  const supervisor = sr.ledger({ stat: () => new Promise(() => {}) });
+  supervisor.stat('/floating-config');
+  let consumed = false;
+  aborts(() => { sr.readAll(4); consumed = true; });
+  console.log(JSON.stringify({ consumed, stopped }));
+`);
+assert.equal(floatingRace.consumed, false);
+assert.match(floatingRace.stopped.why, /before the recorded answer to stat was delivered/);
 
 // A run that did something outside itself cannot stop; reads, a read-only
 // open and its own output do not count, nor does anything before it started.

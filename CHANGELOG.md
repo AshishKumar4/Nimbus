@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: synchronous-stdin replay is fail-closed at the session boundary.
+  Every supervisor operation has an explicit observation, effect, or
+  input/output-protocol classification; unknown operations forbid a later
+  replay. Caller pids are stamped from their bindings, acquired filesystem
+  bytes and namespace metadata are checked, and fd-0 preparation no longer
+  exempts ordinary reads of the same file. Reaching fd 0 before a previously
+  completed observation is delivered fails loudly without consuming new
+  input. Recorded GETs deliver headers immediately and record their streamed
+  bodies and errors; a still-unfinished body forbids a later replay.
+
 - Fixed: a synchronous read of stdin waits for its input, as Node's does,
   and only a read that runs waits. `fs.readFileSync(0)` (and `/dev/stdin`)
   waits for the end of stdin and `fs.readSync(0, …)` for any of it, so a
