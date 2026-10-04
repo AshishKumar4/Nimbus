@@ -13,16 +13,18 @@ published independently in the `@nimbus-sh` npm scope.
   up to 1 MiB and 100 ms, and stores them then, at fsync and close (the
   shell fsyncs each command's redirections as it ends), and before anything
   else looks at the store: a read, stat, listing, revision, the change feed,
-  a snapshot or another write sees them, in the order they were made (`node
-  -e "write A; appendFileSync B; write C" >> log` is ABC). A held append the
-  store refuses is the next write's, fsync's or close's error, of the
-  descriptions that wrote it; refused as a command ends, it fails that
-  command (status 1, its message on its stderr). A host whose isolate dies
-  holding appends loses them, as a machine loses its page cache. A
-  descriptor opened `sync` (O_SYNC; a facet process's, through the
-  supervisor) holds none, so each of its writes is answered with what the
-  store did. `yes` yields once per 512 KiB, not per 8 KiB, so a pipeline's
-  turns are not each a commit.
+  a snapshot or another write sees them, in the order they were made, with
+  the mtime of the write that made them (`node -e "write A; appendFileSync
+  B; write C" >> log` is ABC). A held append the store refuses is the next
+  write's, fsync's or close's error, of the descriptions that wrote it;
+  refused as a command ends, it fails that command (status 1, its message on
+  its stderr). A host whose isolate dies holding appends loses them, as a
+  machine loses its page cache: fsync (on any descriptor of the file) and
+  close are the durable boundary. A descriptor opened `sync` (O_SYNC; a
+  facet process's, through the supervisor) holds none, on SQLite or on a
+  mount that cannot write in place, so each of its writes is answered with
+  what the store did. `yes` yields once per 512 KiB, not per 8 KiB, so a
+  pipeline's turns are not each a commit.
 - Fixed: a shell builtin whose write the store or a device refuses fails,
   with status 1 and its message on its own stderr. `echo x > /dev/full
   2>/dev/null; echo rc=$?` ended the script with status 2 and the message

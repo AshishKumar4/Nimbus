@@ -191,15 +191,21 @@ Appends through an open file (a redirection, a program writing its file
 descriptor) are held by the SQLite filesystem and stored a block at a time:
 once 1 MiB is held, after 100 ms, at fsync and close, and before anything
 else looks at the store. A read, stat, listing, revision, the change feed,
-a snapshot or another write sees them, in the order they were made, so
-nothing can tell they were held; the shell fsyncs each command's
-redirections as the command ends. A held append the store refuses (the
-storage limit) is thrown by the next write, fsync or close of each
-description that wrote it, never to a reader. A host whose isolate dies
-while appends are held loses them, as a machine loses its page cache. A
-descriptor opened with `sync` (O_SYNC) holds nothing: the supervisor opens
-a facet process's that way, so each of its writes is answered with what
-the store did.
+a snapshot or another write sees them, in the order they were made, with
+the mtime and ctime of the write that made them, so nothing can tell they
+were held; the shell fsyncs each command's redirections as the command
+ends. A held append the store refuses (the storage limit) is thrown by the
+next write, fsync or close of each description that wrote it, never to a
+reader.
+
+The durable boundary is fsync, as on any filesystem with a page cache: a
+returned fsync (on any descriptor of the file, a read-only one included)
+or close means what was written is in the store. A descriptor opened
+`sync` (O_SYNC) holds nothing: each write is in the store when it returns,
+on SQLite and on a mount that cannot write in place. The supervisor opens
+a facet process's descriptors that way, so each of its writes is answered
+with what the store did. A host whose isolate dies while appends are held
+loses them, as a machine loses what it had not synced.
 
 ## The user's home
 
