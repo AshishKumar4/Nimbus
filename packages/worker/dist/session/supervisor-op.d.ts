@@ -42,6 +42,12 @@ export interface SessionSupervisorHost {
     readonly supervisorDeliveries?: SupervisorDeliveries;
     _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+    /**
+     * `envelope` served, not counted: a call the session makes to itself inside
+     * another answer (session/rpc.ts _rpcFsAcquired's read). The host's
+     * external `supervisorOp` answers through answerSupervisorOp, which counts.
+     */
+    serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
 }
 export interface SessionSupervisorOps {
     readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
@@ -51,4 +57,12 @@ export interface SessionSupervisorOps {
     readonly dispose: () => Promise<void>;
 }
 export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore, methods?: SupervisorOpHost): SessionSupervisorOps;
+/**
+ * Answer `envelope` to a caller outside the session (NimbusSession's
+ * `supervisorOp`, which host stubs call): `serve` answers it, and the file
+ * contents and stdin the answer hands a process are counted (diag counters'
+ * supervisorAnsweredBytes). Only here: a call the session makes to itself
+ * (fsAcquired's read) is part of the answer it is in.
+ */
+export declare function answerSupervisorOp(serve: (envelope: SupervisorOpEnvelope) => Promise<unknown>, envelope: SupervisorOpEnvelope): Promise<unknown>;
 //# sourceMappingURL=supervisor-op.d.ts.map

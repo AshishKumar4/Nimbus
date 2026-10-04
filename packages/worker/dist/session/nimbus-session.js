@@ -47,7 +47,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
-import { buildSessionSupervisorOps } from './supervisor-op.js';
+import { answerSupervisorOp, buildSessionSupervisorOps } from './supervisor-op.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
@@ -673,8 +673,13 @@ export class NimbusSession extends CloudflareDurableObject {
     supervisorForgetBridge(pid) {
         this._supervisorOps?.forget(pid);
     }
-    // Supervisor RPC (file/log/HMR/batch)
+    // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
+    // leaves the session here and is counted (answerSupervisorOp).
     supervisorOp(envelope) {
+        return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope);
+    }
+    /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
+    serveSupervisorOp(envelope) {
         const answer = this.supervisorOps().dispatch(envelope);
         if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number')
             return answer;

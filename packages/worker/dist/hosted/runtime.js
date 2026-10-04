@@ -3,7 +3,7 @@ import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
+import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
@@ -187,7 +187,11 @@ class RuntimeOwner {
         })));
         return this.supervisor;
     }
+    /** What host stubs call: an answer leaving the runtime, counted (answerSupervisorOp). */
     supervisorOp(envelope) {
+        return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope);
+    }
+    serveSupervisorOp(envelope) {
         this.assertOpen();
         return this.supervisorOps().dispatch(envelope);
     }

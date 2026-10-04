@@ -7,28 +7,14 @@ import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './e
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
-import { isBrokenPipe } from '../utils/bytes-io.js';
+import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
-/**
- * Bytes a file-backed descriptor holds before committing. Matches the stream
- * chunk size used elsewhere and keeps a line-at-a-time producer from paying a
- * store write per line.
- */
-const FILE_WRITE_BLOCK_BYTES = 64 * 1024;
-function concatBytes(parts, total) {
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
-    return out;
-}
+import { yieldToEventLoop } from '../utils/event-loop.js';
 // ─── Signal classes for control flow ───
 export class BreakSignal {
     levels;
@@ -100,20 +86,6 @@ export function assignScalar(env, arrays, name, value) {
     else
         array[0] = value;
 }
-/**
- * One turn of the event loop, unclamped: setImmediate where the host has it
- * (Bun, Node, workerd with nodejs_compat), else a MessageChannel post. A
- * timer would do, but hosts clamp it to about a millisecond.
- */
-const eventLoopHost = globalThis;
-const yieldToEventLoop = typeof eventLoopHost.setImmediate === 'function'
-    ? () => new Promise((resolve) => eventLoopHost.setImmediate(resolve))
-    : (() => {
-        const channel = new eventLoopHost.MessageChannel();
-        const waiting = [];
-        channel.port1.onmessage = () => waiting.shift()?.();
-        return () => new Promise((resolve) => { waiting.push(resolve); channel.port2.postMessage(0); });
-    })();
 export class Interpreter {
     config;
     lastExitCode = 0;
@@ -762,6 +734,7 @@ export class Interpreter {
             stdin = io.terminalStdin;
         }
         let exitCode;
+        let writeFailed = false;
         try {
             // Check for break/continue/return builtins
             if (name === 'break') {
@@ -791,29 +764,45 @@ export class Interpreter {
                     const builtin = this.config.builtins.get(name);
                     if (builtin) {
                         const builtinIo = this.createIoFromFds(io, fds);
-                        exitCode = await builtin(args, stdout, stderr, stdin, {
-                            vfs: builtinIo.vfs ?? this.config.vfs,
-                            cwd: this.config.getCwd(),
-                            stdin,
-                            stdout,
-                            stderr,
-                            terminalStdin: io.terminalStdin,
-                            terminalFds: {
-                                stdin: fds.terminalInputFds.has(0),
-                                stdout: fds.terminalOutputFds.has(1),
-                                stderr: fds.terminalOutputFds.has(2),
-                            },
-                            scriptMode: io.scriptMode,
-                            isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
-                            getPositionals: () => this.readPositionals(builtinIo),
-                            setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-                            executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
-                            declareLocal: (name) => this.declareLocal(name),
-                            unsetFunction: (name) => this.functions.delete(name),
-                            shell: this.config,
-                            interactive: io.interactive,
-                            getLastExitCode: () => this.lastExitCode,
-                        });
+                        try {
+                            exitCode = await builtin(args, stdout, stderr, stdin, {
+                                vfs: builtinIo.vfs ?? this.config.vfs,
+                                cwd: this.config.getCwd(),
+                                stdin,
+                                stdout,
+                                stderr,
+                                terminalStdin: io.terminalStdin,
+                                terminalFds: {
+                                    stdin: fds.terminalInputFds.has(0),
+                                    stdout: fds.terminalOutputFds.has(1),
+                                    stderr: fds.terminalOutputFds.has(2),
+                                },
+                                scriptMode: io.scriptMode,
+                                isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                                getPositionals: () => this.readPositionals(builtinIo),
+                                setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
+                                executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
+                                declareLocal: (name) => this.declareLocal(name),
+                                unsetFunction: (name) => this.functions.delete(name),
+                                shell: this.config,
+                                interactive: io.interactive,
+                                getLastExitCode: () => this.lastExitCode,
+                            });
+                        }
+                        catch (error) {
+                            // A write the store or a device refused fails the builtin, as it
+                            // fails a registered command (runCommand): its message on its
+                            // stderr, status 1. A broken pipe and the shell's signals pass.
+                            if (!isRefusedWrite(error))
+                                throw error;
+                            try {
+                                await stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+                            }
+                            catch {
+                                // Its stderr may be what refused; the status still says so.
+                            }
+                            exitCode = 1;
+                        }
                     }
                     else {
                         // Check registry; a bare name not registered is searched for on the
@@ -858,11 +847,13 @@ export class Interpreter {
             }
         }
         finally {
-            await this.flushFds(fds);
+            writeFailed = await this.flushFds(fds, name);
             // Restore env from per-command assignments
             for (const [name, value] of saved)
                 this.restoreVariable(name, value);
         }
+        if (writeFailed && exitCode === 0)
+            exitCode = 1;
         const fatalSpecialBuiltin = io.scriptMode === true
             && exitCode !== 0
             && isFatalSpecialBuiltin(name);
@@ -1541,7 +1532,14 @@ export class Interpreter {
                 }
             };
             const stream = { write: text => push(encode(text)), writeBytes: push };
-            fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
+            fds.opened.set(stream, {
+                stream,
+                // What the VFS still holds for the file is written as the command
+                // whose redirection opened it ends (flushFds), and a failure is its.
+                flush: async () => { await bridge.fsync(handle.id); },
+                close: async () => { await bridge.close(handle.id); },
+                refs: 1,
+            });
             return { stream, terminal: false };
         }
         catch (error) {
@@ -1579,76 +1577,54 @@ export class Interpreter {
         }
     }
     /**
-     * A file-backed descriptor: an open file plus a write offset.
-     *
-     * Each write lands at the offset and advances it, the way write(2) does.
-     * Restating the whole file per write — which is what this used to do —
-     * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
-     * line-at-a-time filter) persist only its final write and silently drop
-     * everything before it.
-     *
-     * Writes buffer to a block, as stdio does, so a line-at-a-time producer
-     * costs one store write per block rather than one per line. `mode`
-     * distinguishes `>` (a plain offset from the truncation point) from `>>`,
-     * which is O_APPEND: every block lands at whatever the current end is, so
-     * two descriptors appending to one file cannot overwrite each other.
-     */
-    createFileWriter(vfs, path, mode) {
-        let offset = 0;
-        let pending = [];
-        let pendingBytes = 0;
-        const endOfFile = async () => ((await vfs.exists(path)) ? (await statOrThrow(vfs, path)).size : 0);
-        const flush = async () => {
-            if (pendingBytes === 0)
-                return;
-            const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
-            pending = [];
-            pendingBytes = 0;
-            const at = mode === 'append' ? (await endOfFile()) : offset;
-            (await vfs.writeRange(path, at, block));
-            offset = at + block.length;
-        };
-        const push = async (bytes) => {
-            if (bytes.length === 0)
-                return;
-            pending.push(bytes);
-            pendingBytes += bytes.length;
-            if (pendingBytes >= FILE_WRITE_BLOCK_BYTES)
-                (await flush());
-        };
-        return {
-            write: async (text) => (await push(encode(text))),
-            writeBytes: async (bytes) => (await push(bytes)),
-            flush,
-        };
-    }
-    /**
-     * Run `body` and commit every file-backed descriptor it wrote through,
-     * whether it returned or threw. This is the close(2) side of the buffering
-     * in createFileWriter: buffered bytes must reach the store before the next
-     * command can read the file.
+     * Run `body`, whose answer is an exit status, and end its descriptors
+     * (flushFds) whether it returned or threw. A file it wrote that could not
+     * be written fails it: status 1 where it would have been 0.
      */
     async withFdFlush(fds, body) {
+        let status;
         try {
-            return await body();
+            status = await body();
         }
-        finally {
+        catch (error) {
             await this.flushFds(fds);
+            throw error;
         }
+        if (!(await this.flushFds(fds)) || status !== 0)
+            return status;
+        this.lastExitCode = 1;
+        return 1;
     }
-    async flushFds(fds) {
-        const results = await Promise.allSettled([...new Set(fds.outputFds.values())].map(async (stream) => (await stream.flush?.())));
+    /**
+     * End a command's descriptors: flush its output streams, and write what
+     * each file its redirections opened still holds (the VFS may hold a
+     * file's last appends until fsync), then let go of those files. A write
+     * that fails there is the command's failure, not the shell's: it is
+     * reported on the command's stderr, as `name`'s, and the answer is true,
+     * for the command's status. A close that fails still throws.
+     */
+    async flushFds(fds, name) {
         const opened = [...fds.opened.values()];
         fds.opened.clear();
-        try {
-            await this.release(opened);
+        const flushed = await Promise.allSettled([
+            ...[...new Set(fds.outputFds.values())].map(async (stream) => (await stream.flush?.())),
+            ...opened.map(async (file) => (await file.flush?.())),
+        ]);
+        let failed = false;
+        for (const result of flushed) {
+            if (result.status === 'fulfilled')
+                continue;
+            failed = true;
+            const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+            try {
+                await fds.outputFds.get(2)?.write(`${name === undefined ? '' : `${name}: `}${message}\n`);
+            }
+            catch {
+                // Its stderr may be the file that failed; the status still says so.
+            }
         }
-        catch (reason) {
-            results.push({ status: 'rejected', reason });
-        }
-        const failure = results.find((result) => result.status === 'rejected');
-        if (failure)
-            throw failure.reason;
+        await this.release(opened);
+        return failed;
     }
     /**
      * Byte-faithful redirected input: bounded range reads keep >64 KiB

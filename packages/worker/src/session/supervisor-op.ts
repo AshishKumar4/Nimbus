@@ -29,6 +29,7 @@ import type { RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core
 import type { SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { recordSupervisorAnswer } from '@nimbus-sh/platform/diag-counters.js';
 import { withReadAllocation } from './rpc.js';
 
 /**
@@ -51,6 +52,12 @@ export interface SessionSupervisorHost {
   readonly supervisorDeliveries?: SupervisorDeliveries;
   _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+  /**
+   * `envelope` served, not counted: a call the session makes to itself inside
+   * another answer (session/rpc.ts _rpcFsAcquired's read). The host's
+   * external `supervisorOp` answers through answerSupervisorOp, which counts.
+   */
+  serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
 }
 export interface SessionSupervisorOps {
   readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
@@ -121,4 +128,56 @@ export function buildSessionSupervisorOps(
     return store.forget(pid);
   };
   return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
+}
+
+/**
+ * Answer `envelope` to a caller outside the session (NimbusSession's
+ * `supervisorOp`, which host stubs call): `serve` answers it, and the file
+ * contents and stdin the answer hands a process are counted (diag counters'
+ * supervisorAnsweredBytes). Only here: a call the session makes to itself
+ * (fsAcquired's read) is part of the answer it is in.
+ */
+export async function answerSupervisorOp(
+  serve: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
+  envelope: SupervisorOpEnvelope,
+): Promise<unknown> {
+  const answer = await serve(envelope);
+  recordSupervisorAnswer(handedBytes(envelope.op, envelope.args, answer));
+  return answer;
+}
+
+/**
+ * The file contents and stdin in `answer` to `op`: read where each read op's
+ * answer carries them, never by walking it (a stat or a listing hands a
+ * process no file's contents).
+ */
+function handedBytes(op: string, args: SupervisorOpEnvelope['args'], answer: unknown): number {
+  switch (op) {
+    case 'readFile':
+      return typeof answer === 'string' ? answer.length : 0;
+    case 'readFileBytes':
+    case 'fsRead':
+    case 'fsReadRange':
+    case 'fsReadRangeUncached':
+      return answer instanceof Uint8Array ? answer.byteLength : 0;
+    case 'fsReadBatch':
+      return Array.isArray(answer) ? answer.reduce((total: number, entry: unknown) => total + bytesAt(entry, 'bytes'), 0) : 0;
+    case 'cpReadStdin':
+      return bytesAt(answer, 'data');
+    case 'fsAcquired': {
+      // The read it carries, whose op is its second argument.
+      const read = args?.[1];
+      if (typeof read !== 'string' || typeof answer !== 'object' || answer === null) return 0;
+      return handedBytes(read, undefined, Reflect.get(answer, 'value'));
+    }
+    default:
+      return 0;
+  }
+}
+
+/** The length of `value`'s `field`, when that is bytes. */
+function bytesAt(value: unknown, field: string): number {
+  if (typeof value !== 'object' || value === null) return 0;
+  const bytes: unknown = Reflect.get(value, field);
+  return bytes instanceof Uint8Array ? bytes.byteLength : 0;
 }

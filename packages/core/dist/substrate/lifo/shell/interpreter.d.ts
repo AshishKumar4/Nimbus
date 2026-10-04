@@ -74,6 +74,8 @@ export type BuiltinFn = (args: string[], stdout: CommandOutputStream, stderr: Co
  */
 type OpenFile = {
     stream: CommandInputStream | CommandOutputStream;
+    /** An output file's: write what the VFS still holds for it (fsync), throwing what that failed with. */
+    flush?: () => Promise<void>;
     close: () => Promise<void>;
     refs: number;
 };
@@ -324,28 +326,19 @@ export declare class Interpreter {
     private openOutputTarget;
     private openInputTarget;
     /**
-     * A file-backed descriptor: an open file plus a write offset.
-     *
-     * Each write lands at the offset and advances it, the way write(2) does.
-     * Restating the whole file per write — which is what this used to do —
-     * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
-     * line-at-a-time filter) persist only its final write and silently drop
-     * everything before it.
-     *
-     * Writes buffer to a block, as stdio does, so a line-at-a-time producer
-     * costs one store write per block rather than one per line. `mode`
-     * distinguishes `>` (a plain offset from the truncation point) from `>>`,
-     * which is O_APPEND: every block lands at whatever the current end is, so
-     * two descriptors appending to one file cannot overwrite each other.
-     */
-    private createFileWriter;
-    /**
-     * Run `body` and commit every file-backed descriptor it wrote through,
-     * whether it returned or threw. This is the close(2) side of the buffering
-     * in createFileWriter: buffered bytes must reach the store before the next
-     * command can read the file.
+     * Run `body`, whose answer is an exit status, and end its descriptors
+     * (flushFds) whether it returned or threw. A file it wrote that could not
+     * be written fails it: status 1 where it would have been 0.
      */
     private withFdFlush;
+    /**
+     * End a command's descriptors: flush its output streams, and write what
+     * each file its redirections opened still holds (the VFS may hold a
+     * file's last appends until fsync), then let go of those files. A write
+     * that fails there is the command's failure, not the shell's: it is
+     * reported on the command's stderr, as `name`'s, and the answer is true,
+     * for the command's status. A close that fails still throws.
+     */
     private flushFds;
     /**
      * Byte-faithful redirected input: bounded range reads keep >64 KiB

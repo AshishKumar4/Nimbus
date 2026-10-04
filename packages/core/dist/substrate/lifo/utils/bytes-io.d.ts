@@ -48,6 +48,8 @@ export declare function utf8SequenceLength(bytes: Uint8Array, i: number): number
 export declare function encodeLossless(text: string): Uint8Array;
 /** A write to a pipe whose reader has gone: the writer ends there, silently, as SIGPIPE ends it. */
 export declare function isBrokenPipe(error: unknown): boolean;
+/** Whether `error` is a write the store or a device refused (not a broken pipe: that is SIGPIPE's). */
+export declare function isRefusedWrite(error: unknown): boolean;
 /** Records split on `delim`: each without its delimiter; `terminated` says whether the last had one. */
 export declare function splitRecords(bytes: Uint8Array, delim: number): {
     records: Uint8Array[];

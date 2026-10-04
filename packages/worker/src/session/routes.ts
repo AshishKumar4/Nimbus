@@ -790,6 +790,12 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // larger than what is free waits in the FIFO with no error, no
         // alarm and no CPU, which reads exactly like a launch that stopped.
         alloc: readSupervisorAllocationBudget(),
+        // The pipe read ahead launches hold here for their synchronous reads
+        // of fd 0 (stdin-read.ts): what is held now, the most ever held at
+        // once, and the bound neither passes.
+        stdinReadAhead: self.facetManager
+          ? { heldBytes: self.facetManager.stdinReadAhead.held, peakBytes: self.facetManager.stdinReadAhead.peak, capacityBytes: self.facetManager.stdinReadAhead.capacity }
+          : null,
         evictionLabels: WORKERD_EVICTION_LABELS,
         recoveryEvents: getRecoveryEvents(),
 

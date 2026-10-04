@@ -106,11 +106,17 @@ export interface RuntimeOpenFlags {
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
     expectedRevision?: number;
+    /**
+     * O_SYNC: each write is in the store before it returns. Without it an
+     * append through the descriptor may be held a moment (SqliteVFS
+     * appendThrough), unseen by anyone, and stored at fsync and close.
+     */
+    sync?: boolean;
 }
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync'>> & {
         expectedRevision?: number;
     };
     position: number;

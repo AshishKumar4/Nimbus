@@ -180,7 +180,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * A mount that cannot write in place (no writeRange): the handle buffers
      * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
      * buffered), and a flush (fsync, the last close, the process's release)
-     * reads the file, applies them in order and writes it back.
+     * reads the file, applies them in order and writes it back. Opened `sync`
+     * (O_SYNC), each write is flushed before it returns, so its answer is what
+     * the mount did.
      */
     private buffer;
     private ensureParent;

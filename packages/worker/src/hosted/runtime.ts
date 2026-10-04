@@ -18,7 +18,7 @@ import type { ViteDevServer } from '../facets/vite-dev-server.js';
 import type { ServiceStub } from '@nimbus-sh/fabric/vendor/types.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
+import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
@@ -232,7 +232,11 @@ class RuntimeOwner {
     return this.supervisor;
   }
 
-  supervisorOp(envelope: SupervisorOpEnvelope) {
+  /** What host stubs call: an answer leaving the runtime, counted (answerSupervisorOp). */
+  supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
+    return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope);
+  }
+  serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
     this.assertOpen();
     return this.supervisorOps().dispatch(envelope);
   }

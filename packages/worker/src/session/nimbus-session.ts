@@ -115,7 +115,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
-import { buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
+import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
@@ -779,8 +779,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     this._supervisorOps?.forget(pid);
   }
 
-  // Supervisor RPC (file/log/HMR/batch)
+  // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
+  // leaves the session here and is counted (answerSupervisorOp).
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
+    return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope);
+  }
+
+  /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
+  serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
     const answer = this.supervisorOps().dispatch(envelope);
     if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number') return answer;
     // What this session served a process is the read profile's only evidence (read-profile.ts).

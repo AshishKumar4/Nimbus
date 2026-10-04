@@ -330,6 +330,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
+    /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
+    serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /** Async reads served per process, for the shared read profile. */
     readonly servedReads: ServedReads;
     _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;

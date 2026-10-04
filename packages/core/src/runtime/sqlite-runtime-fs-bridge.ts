@@ -490,7 +490,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open')
         : this.locate(path, normalizedFlags.followSymlinks);
       if (located === null) throw fsError('ELOOP', 'open', path);
-      if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode);
+      if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode, flags.sync === true);
       const p = located.path;
       if (p === '') return this.openRoot(path, normalizedFlags);
       // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
@@ -516,7 +516,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
 
       const stat = this.vfs.stat(p);
-      const node = this.rawVfs.openDescription(p, this.vfs.cred, normalizedFlags);
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true });
       const handle: RuntimeFileHandle = {
         id: this.scope.nextId++,
         path: p,
@@ -548,7 +548,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       return bytes.byteLength;
     }
     const start = handle.flags.append
-      ? node.stat().size
+      ? node.end?.() ?? node.stat().size
       : offset == null ? handle.position : Math.max(0, offset);
     node.write(start, bytes);
     const end = start + bytes.byteLength;
@@ -701,8 +701,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   fsync(handleId?: number): void {
-    // SqliteVFS writes are synchronously durable before their calls return; a
-    // buffered mount handle flushes.
+    // Writes what the description's file has held: a buffered mount handle's
+    // writes, the appends SqliteVFS holds (appendThrough). Any other write was
+    // in the store before its call returned.
     if (handleId !== undefined) this.description(handleId).node.flush?.();
   }
 
@@ -971,7 +972,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
-  private openMount(mount: SyncVFS, name: string, path: RuntimeFsPath, flags: RuntimeFileHandle['flags'], mode?: number): RuntimeFileHandle {
+  private openMount(mount: SyncVFS, name: string, path: RuntimeFsPath, flags: RuntimeFileHandle['flags'], mode?: number, sync = false): RuntimeFileHandle {
     const exists = mount.stat(name) !== null;
     if (flags.exclusive && flags.create && exists) throw fsError('EEXIST', 'open', path);
     if (!exists && !flags.create) throw fsError('ENOENT', 'open', path);
@@ -993,7 +994,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       chown: (uid, gid) => mountOp(mount.chown, 'fchown', path)(name, uid, gid),
       utimes: (atime, mtime) => mountOp(mount.utimes, 'futimes', path)(name, atime, mtime), close: () => {},
     };
-    if (stat.type === 'file' && !this.namespace!.writesInPlace(name)) this.buffer(node, mount, name, path);
+    if (stat.type === 'file' && !this.namespace!.writesInPlace(name)) this.buffer(node, mount, name, path, sync);
     const handle: RuntimeFileHandle = {
       id: this.scope.nextId++, path: name, flags: Object.freeze(flags),
       position: flags.append ? stat.size : 0, closed: false,
@@ -1006,9 +1007,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * A mount that cannot write in place (no writeRange): the handle buffers
    * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
    * buffered), and a flush (fsync, the last close, the process's release)
-   * reads the file, applies them in order and writes it back.
+   * reads the file, applies them in order and writes it back. Opened `sync`
+   * (O_SYNC), each write is flushed before it returns, so its answer is what
+   * the mount did.
    */
-  private buffer(node: VfsOpenDescription, mount: SyncVFS, name: string, path: RuntimeFsPath): void {
+  private buffer(node: VfsOpenDescription, mount: SyncVFS, name: string, path: RuntimeFsPath, sync: boolean): void {
     const pending: { offset: number | null; bytes: Uint8Array }[] = [];
     let held = 0;
     const take = (offset: number | null, bytes: Uint8Array): number => {
@@ -1051,9 +1054,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const viewed = this.processView(mount, name);
       return viewed ? { ...mountedStat(), size: viewed.byteLength } : mountedStat();
     };
+    // O_SYNC: flushed as it is written, so a refusal is the write's own.
+    const write = (offset: number | null, bytes: Uint8Array): number => {
+      const written = take(offset, bytes);
+      if (sync) flush();
+      return written;
+    };
     node.applyPending = applyPending;
-    node.write = take;
-    node.writeAppend = (bytes) => take(null, bytes);
+    node.write = write;
+    node.writeAppend = (bytes) => write(null, bytes);
     node.flush = flush;
     node.pendingBytes = () => held;
     node.close = flush;

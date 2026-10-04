@@ -12,6 +12,35 @@ published independently in the `@nimbus-sh` npm scope.
   other process's error. Every ended entry is now released and forgotten.
   A prune by age writes a failure to the failed process's own stderr log; a
   workspace exec reports its own tree's failures after all of it is gone.
+- A file written a piece at a time through an open descriptor is stored a
+  block at a time. `yes | head -c 48M > f` took 43 s on a local workerd:
+  each 8 KiB write rewrote the file's growing last chunk (3.5 bytes stored
+  per byte written) and paid its own commit; it takes 2 to 5 s on the same
+  machine under load. SQLite's filesystem now holds a descriptor's appends,
+  up to 1 MiB and 100 ms, and stores them then, at fsync and close (the
+  shell fsyncs each command's redirections as it ends), and before anything
+  else looks at the store: a read, stat, listing, revision, the change feed,
+  a snapshot or another write sees them, in the order they were made, with
+  the mtime of the write that made them (`node -e "write A; appendFileSync
+  B; write C" >> log` is ABC). A held append the store refuses is the next
+  write's, fsync's or close's error, of the descriptions that wrote it;
+  refused as a command ends, it fails that command (status 1, its message on
+  its stderr). A host whose isolate dies holding appends loses them, as a
+  machine loses its page cache: fsync (on any descriptor of the file) and
+  close are the durable boundary. A descriptor opened `sync` (O_SYNC; a
+  facet process's, through the supervisor) holds none, on SQLite or on a
+  mount that cannot write in place, so each of its writes is answered with
+  what the store did. `yes` yields once per 512 KiB, not per 8 KiB, so a
+  pipeline's turns are not each a commit.
+- Fixed: a shell builtin whose write the store or a device refuses fails,
+  with status 1 and its message on its own stderr. `echo x > /dev/full
+  2>/dev/null; echo rc=$?` ended the script with status 2 and the message
+  on the shell's stderr: the refused write was the shell's error.
+- `/api/_diag/memory` reports `counters.supervisorAnsweredBytes`, the file
+  contents and stdin the session has handed its processes (counted once,
+  where a supervisor envelope's answer leaves the session), and
+  `stdinReadAhead` (`heldBytes`, `peakBytes`, `capacityBytes`), the pipe
+  read ahead launches hold for their synchronous reads of fd 0.
 
 ## 2026-10-03
 

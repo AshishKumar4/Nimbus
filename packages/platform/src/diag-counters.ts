@@ -120,6 +120,15 @@ export interface DiagCounters {
      *  Empty when the most recent batch had zero errors. */
     errorsByModule: Record<string, string>;
   };
+  /**
+   * File contents and stdin the session has handed its processes, cumulative
+   * since isolate start: the bytes of each supervisor envelope's answer as it
+   * leaves the session (worker session/supervisor-op.ts answerSupervisorOp)
+   * from readFile, readFileBytes, fsRead, fsReadRange, fsReadBatch, the read
+   * an fsAcquired carries, and cpReadStdin (a pipe's read ahead). A run's
+   * delta is what it was handed, which bounds what it can hold.
+   */
+  supervisorAnsweredBytes: number;
   /** Pipelined R2 race outcomes. All counts are cumulative since
    *  DO-isolate start. Per-tier cache statistics live in cache-stats. */
   r2: {
@@ -141,6 +150,7 @@ const _counters: DiagCounters = {
   inFlightRpcPayloadBytes: 0,
   prefetchBundleBytes: 0,
   prefetchCacheBytes: 0,
+  supervisorAnsweredBytes: 0,
   installFacet: {
     tarballsCompleted: 0,
     cumulativeBytesDecoded: 0,
@@ -165,6 +175,11 @@ const _counters: DiagCounters = {
 /** Read a snapshot — caller-side mutations don't affect the singleton. */
 export function readDiagCounters(): DiagCounters {
   return { ..._counters };
+}
+
+/** Count `bytes` the session answered a process's supervisor call with. */
+export function recordSupervisorAnswer(bytes: number): void {
+  _counters.supervisorAnsweredBytes += bytes;
 }
 
 /** Set the install phase. */
