@@ -1,17 +1,21 @@
+/** An argument as util.format writes it outside a specifier: a string as itself, anything else inspected. */
+const formatArg = (arg) => (typeof arg === 'string' ? arg : inspect(arg));
 export function format(fmt, ...args) {
     if (typeof fmt !== 'string') {
-        return [fmt, ...args].map((a) => inspect(a)).join(' ');
+        return [fmt, ...args].map(formatArg).join(' ');
     }
     let i = 0;
-    let result = fmt.replace(/%([sdjoO%])/g, (match, type) => {
+    let result = fmt.replace(/%([sdifjoOc%])/g, (match, type) => {
         if (type === '%')
             return '%';
         if (i >= args.length)
             return match;
         const arg = args[i++];
         switch (type) {
-            case 's': return String(arg);
+            case 's': return typeof arg === 'string' ? arg : String(arg);
             case 'd': return String(Number(arg));
+            case 'i': return String(parseInt(String(arg), 10));
+            case 'f': return String(parseFloat(String(arg)));
             case 'j':
                 try {
                     return JSON.stringify(arg);
@@ -21,12 +25,14 @@ export function format(fmt, ...args) {
                 }
             case 'o':
             case 'O': return inspect(arg);
+            // CSS for a browser console: consumed, written as nothing.
+            case 'c': return '';
             default: return match;
         }
     });
-    // Append remaining args
+    // The arguments no specifier took, each as util.format writes it.
     while (i < args.length) {
-        result += ' ' + inspect(args[i++]);
+        result += ' ' + formatArg(args[i++]);
     }
     return result;
 }
