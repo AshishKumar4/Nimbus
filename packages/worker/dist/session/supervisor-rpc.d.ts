@@ -444,10 +444,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         code: string;
         map: string;
     } | null>;
-    /** `news`: this reply's number among the news replies made for the caller (fabric processNewsReply). */
     cpSpawn(req: any): Promise<{
         childPid: number;
-        news?: number;
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
@@ -477,7 +475,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         }[];
         closed: boolean;
         maxSeq: number;
-        news?: number;
+        news?: number[];
         acquired?: VfsDeliveredAcquire;
     }>;
     cpDrainOutput(childPid: number): Promise<{
@@ -497,19 +495,19 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         signal: string | null;
         spawnError?: string;
         started?: boolean;
-        news?: number;
+        news?: number[];
         acquired?: VfsDeliveredAcquire;
     }>;
     /**
      * This process says whether its only remaining work is waiting on its own
-     * children, on which, and how many of the news replies made for it it has
-     * seen, every one (the session's Dynamic Worker ledger tells a wait no
-     * release can satisfy by it: fabric budgets.ts setProcessBlocked).
+     * children, and the contiguous run of news numbers it has applied (the
+     * session's Dynamic Worker ledger tells a wait no release can satisfy by
+     * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
      */
     cpBlocked(report: {
         blocked: boolean;
-        seen: number;
-        waitsOn: number[];
+        frontier: number;
+        seq: number;
     }): Promise<void>;
 }
 //# sourceMappingURL=supervisor-rpc.d.ts.map

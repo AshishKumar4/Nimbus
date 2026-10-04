@@ -411,7 +411,6 @@ export declare function _rpcTransform(self: RpcHost, code: string, loader: strin
 } | null>;
 export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
     childPid: number;
-    news: number;
 }>;
 export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
     ok: boolean;
@@ -432,7 +431,11 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
-/** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
+/**
+ * Process `pid` says whether its only remaining work is waiting on its
+ * children, and how far it has applied its news (fabric setProcessBlocked).
+ * Who its children are is the session's to know, not its.
+ */
 export declare function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void>;
 export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
 /** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */

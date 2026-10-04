@@ -397,13 +397,19 @@ export class Shell {
         const pid = overrides?.['pid'];
         const cred = overrides?.['cred'];
         const setUmask = overrides?.['setUmask'];
+        const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
         return {
-            pid: typeof pid === 'number' ? pid : this.commandIdentity.pid,
+            pid: resolvedPid,
             cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
             setUmask: typeof setUmask === 'function'
                 ? (mask) => setUmask(mask)
                 : this.commandIdentity.setUmask,
             runAs: this.commandIdentity.runAs,
+            // The work counted is the shell's own process's: a command run as
+            // another pid is not.
+            ...(resolvedPid === this.commandIdentity.pid && this.commandIdentity.beginWork
+                ? { beginWork: this.commandIdentity.beginWork }
+                : {}),
         };
     }
     /**

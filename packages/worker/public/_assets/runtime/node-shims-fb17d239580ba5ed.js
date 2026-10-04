@@ -409,27 +409,37 @@ function __nimbusEmitExit(code) {
   __nimbusExitEmitted = true;
   try { __processEvents.emit("exit", code); } catch {}
 }
+// The news of this process's children (a child's start, its output, the
+// end of a stream, its exit) is numbered by the session as it is produced,
+// and the reply that delivers a piece carries its number. Once a reply's
+// effect is applied (the bytes written, 'exit' emitted), its numbers are
+// applied too (__nimbusApplyNews); the frontier is the contiguous run of
+// numbers applied from 1, whatever order the replies came in.
+let __nimbusNewsFrontier = 0;
+const __nimbusNewsAhead = new Set();
+globalThis.__nimbusApplyNews = (numbers) => {
+  if (!Array.isArray(numbers)) return;
+  for (const n of numbers) if (typeof n === "number" && n > __nimbusNewsFrontier) __nimbusNewsAhead.add(n);
+  while (__nimbusNewsAhead.delete(__nimbusNewsFrontier + 1)) __nimbusNewsFrontier++;
+};
 // Said to the session as it changes (facets/manager.ts
 // __nimbusReportBlockedState): whether this process's only remaining work is
-// waiting on its children, on which ones (__nimbusWaitsOn), and the highest
-// news reply it has seen (__nimbusNewsSeen, child_process _noteNews). A
-// blocked program runs again only on news of a child (it has no timer,
-// socket or read of its own), and every reply that brings news is numbered
-// before it is sent, so a report the session holds is stale exactly when
-// its number is behind (fabric budgets.ts setProcessBlocked). Unref'd, in
-// order: saying it is not work, and must not make the program look busy.
+// waiting on its children, and its frontier. A blocked program runs again
+// only on news of a child (it has no timer, socket or read of its own), so
+// the session takes the report only while the frontier is all the news it
+// issued (fabric budgets.ts setProcessBlocked). Numbered, so a late one is
+// dropped. Unref'd, in order: saying it is not work, and must not make the
+// program look busy.
 let __nimbusBlockedSaid = "";
+let __nimbusReportSeq = 0;
 let __nimbusBlockedChain = Promise.resolve();
-globalThis.__nimbusBlockedNews = () => { __nimbusBlockedSaid = ""; };
 globalThis.__nimbusReportBlocked = (blocked) => {
   if (__nimbusProgramStopped) return;
   if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
-  const report = blocked
-    ? { blocked: true, seen: globalThis.__nimbusNewsSeen || 0, waitsOn: globalThis.__nimbusWaitsOn ? globalThis.__nimbusWaitsOn() : [] }
-    : { blocked: false, seen: 0, waitsOn: [] };
-  const key = JSON.stringify(report);
+  const key = blocked ? "blocked@" + __nimbusNewsFrontier : "running";
   if (key === __nimbusBlockedSaid || (!blocked && __nimbusBlockedSaid === "")) return;
   __nimbusBlockedSaid = key;
+  const report = { blocked, frontier: __nimbusNewsFrontier, seq: ++__nimbusReportSeq };
   __nimbusBlockedChain = __nimbusBlockedChain
     .then(() => __nimbusUseRpcResultUnref(__supervisor.cpBlocked(report), () => undefined))
     .catch(() => {});
@@ -5845,6 +5855,10 @@ const __streamMod = (() => {
         emitClose: opts?.emitClose !== false,
         destroyed: false,
         readableLength: 0,
+        // A consumer reads it in readable mode: a 'readable' listener, or an
+        // async iterator, which owns it for its life. Node's flushStdio
+        // leaves such a stream to its consumer.
+        readableListening: false,
       };
       this.readable = true;
       if (opts?.read) this._read = opts.read.bind(this);
@@ -5962,6 +5976,7 @@ const __streamMod = (() => {
     on(event, listener) {
       const result = super.on(event, listener);
       if (event === 'data' && this._readableState.flowing !== false) this.resume();
+      else if (event === 'readable') this._readableState.readableListening = true;
       return result;
     }
     addListener(event, listener) { return this.on(event, listener); }
@@ -6018,6 +6033,7 @@ const __streamMod = (() => {
     [Symbol.asyncIterator]() {
       const self = this;
       const state = self._readableState;
+      state.readableListening = true;
       const iterator = {
         next() {
           return new Promise((resolve, reject) => {
@@ -8999,30 +9015,14 @@ const __childProcessMod = (() => {
    */
   async function _childPoll(promise, use) {
     globalThis.__nimbusChildOps = (globalThis.__nimbusChildOps || 0) + 1;
-    try {
-      const r = await __nimbusUseRpcResult(promise, use);
-      _noteNews(r);
-      return r;
-    } finally { globalThis.__nimbusChildOps--; }
+    try { return await __nimbusUseRpcResult(promise, use); }
+    finally { globalThis.__nimbusChildOps--; }
   }
 
-  /**
-   * A reply that delivered news of a child (output, its start, its exit, a
-   * new child) carries its number among the news replies made for this
-   * process; the blocked report says the highest it has seen
-   * (__nimbusReportBlocked), and is taken as current only if that is all of
-   * them (fabric budgets.ts setProcessBlocked).
-   */
-  function _noteNews(r) {
-    if (r && typeof r.news === "number" && r.news > (globalThis.__nimbusNewsSeen || 0)) globalThis.__nimbusNewsSeen = r.news;
+  /** A reply's news numbers, applied once its effect has been (__nimbusApplyNews). */
+  function _applyNews(r) {
+    if (r && Array.isArray(r.news)) globalThis.__nimbusApplyNews(r.news);
   }
-
-  /** The children this process still waits on: spawned, and not yet closed. */
-  globalThis.__nimbusWaitsOn = () => {
-    const pids = [];
-    for (const [pid, child] of __cpChildren) if (!child._closeFired) pids.push(pid);
-    return pids;
-  };
 
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
@@ -9056,8 +9056,9 @@ const __childProcessMod = (() => {
         } else {
           backoff = Math.min(backoff * 2, BACKOFF_MAX);
         }
+        if (r && r.closed) stream.end();
+        _applyNews(r);
         if (r && r.closed) {
-          stream.end();
           // _stdoutEnded / _stderrEnded flag is set in the stream's
           // 'end' listener (see _makeChild) so 'close' fires AFTER
           // actual data flushes.
@@ -9101,8 +9102,11 @@ const __childProcessMod = (() => {
   function _flushStdio(child) {
     queueMicrotask(() => {
       for (const stream of [child.stdout, child.stderr]) {
-        if (!stream || stream.readableFlowing === true) continue;
-        if (typeof stream.listenerCount === "function" && stream.listenerCount("readable") > 0) continue;
+        // A stream a consumer owns in readable mode (a 'readable' listener,
+        // an async iterator) is left to it, as Node's flushStdio leaves one
+        // whose readableListening is set: resuming it would hand its next
+        // chunks to no one.
+        if (!stream || stream._readableState?.readableListening) continue;
         try { stream.resume(); } catch {}
       }
     });
@@ -9143,7 +9147,9 @@ const __childProcessMod = (() => {
           (result) => result,
         );
         if (r && (r.done || r.started)) await __nimbusInboundBarrier(r.acquired);
-        if (_applyWait(child, r)) break;
+        const settled = _applyWait(child, r);
+        _applyNews(r);
+        if (settled) break;
       } catch (e) {
         // Couldn't wait — synthesize an error exit.
         child.exitCode = 1;
@@ -9164,9 +9170,6 @@ const __childProcessMod = (() => {
    * the streams have ended.
    */
   function _failSpawn(child, code, errno) {
-    // The session took this process to be unblocked when it refused the
-    // spawn (fabric budgets.ts): say again what it is, once it has handled it.
-    globalThis.__nimbusBlockedNews?.();
     const err = new Error("spawn " + child.spawnfile + " " + code);
     err.errno = errno;
     err.code = code;
@@ -9242,7 +9245,6 @@ const __childProcessMod = (() => {
         );
         // The broker has the child; it starts once it is admitted, and its
         // wait loop says so (_markSpawned), or that it was refused.
-        _noteNews(r);
         child._brokerPid = r.childPid;
         __cpChildren.set(child._brokerPid, child);
 
@@ -9573,6 +9575,7 @@ const __childProcessMod = (() => {
                 (result) => result,
               );
               settled = _applyWait(child, w);
+              _applyNews(w);
             } catch { /* synthesized below */ }
             if (!settled) {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
@@ -9637,18 +9640,21 @@ class __NimbusConsole {
     this.Console = __NimbusConsole;
   }
 }
+// The captured form (a program whose output is a pipe, a file, a shell
+// line's result): nothing after process.exit(), as the live form and the
+// process streams (stopped programs write nothing).
 const __consoleMod = {
-  log: (...a) => { stdout += __utilMod.format(...a) + "\n"; },
-  error: (...a) => { stderr += __utilMod.format(...a) + "\n"; },
-  warn: (...a) => { stderr += __utilMod.format(...a) + "\n"; },
-  info: (...a) => { stdout += __utilMod.format(...a) + "\n"; },
-  debug: (...a) => { stdout += __utilMod.format(...a) + "\n"; },
-  dir: (o, opts) => { stdout += __utilMod.inspect(o, opts) + "\n"; },
-  trace: (...a) => { stderr += "Trace: " + __utilMod.format(...a) + "\n"; },
-  assert: (c, ...a) => { if (!c) stderr += "Assertion failed: " + __utilMod.format(...a) + "\n"; },
+  log: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\n"; },
+  error: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\n"; },
+  warn: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\n"; },
+  info: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\n"; },
+  debug: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\n"; },
+  dir: (o, opts) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(o, opts) + "\n"; },
+  trace: (...a) => { if (!__nimbusProgramStopped) stderr += "Trace: " + __utilMod.format(...a) + "\n"; },
+  assert: (c, ...a) => { if (!c && !__nimbusProgramStopped) stderr += "Assertion failed: " + __utilMod.format(...a) + "\n"; },
   time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
   count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
-  table: (d) => { stdout += __utilMod.inspect(d) + "\n"; },
+  table: (d) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(d) + "\n"; },
   Console: __NimbusConsole,
 };
 

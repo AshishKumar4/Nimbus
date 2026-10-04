@@ -50,25 +50,22 @@ export interface DynamicWorkerClaim {
     release(): void;
 }
 /**
- * A process on the ledger: the one a hold or a wait is for, and, for a wait,
- * the processes it descends from: which holder a refusal of it would let go
- * on (see {@link DynamicWorkerDeadlockError}).
+ * A process on the ledger: the one a hold or a wait is for, as the session's
+ * process table knows it (ProcessWaitGraph).
  */
 export interface LedgerProcess {
     pid: number;
-    /** The pids it descends from, nearest first. */
-    ancestors?: readonly number[];
 }
 /**
  * The refusal of a wait for a Dynamic Worker that no release can ever
  * satisfy: every worker this Durable Object has in flight is held by a
- * process stuck on its own children (setProcessBlocked: it waits on nothing
- * else, and each of them is queued here or stuck too), so none will end to
- * make room (nine children of a parent, each doing nothing but wait on a
- * grandchild of its own, fill the limit). The newest queued process a stuck
- * holder waits on is refused, as a spawn at a process limit is (EAGAIN): its
- * program never runs, and the holder told so can end and give its worker
- * back.
+ * process stuck on its own children (deadlocked: it has said it waits on
+ * nothing else and has heard all the news of them, and each of them is
+ * queued here or stuck too), so none will end to make room (nine children
+ * of a parent, each doing nothing but wait on a grandchild of its own, fill
+ * the limit). The newest queued process a stuck process waits on is refused,
+ * as a spawn at a process limit is (EAGAIN): its program never runs, and
+ * whoever waits on it hears so and can go on.
  */
 export declare class DynamicWorkerDeadlockError extends Error {
     readonly pid: number;
@@ -79,38 +76,52 @@ export declare class DynamicWorkerDeadlockError extends Error {
 }
 /** Whether `error` is the ledger's refusal of a wait nothing can satisfy. */
 export declare function isDynamicWorkerDeadlock(error: unknown): error is DynamicWorkerDeadlockError;
-/** What a process says of itself (setProcessBlocked). */
+/**
+ * The session's account of its processes, which the ledger's wait-for edges
+ * are built from (deadlocked). Answers about processes as the session's own
+ * process table records them, never as a guest names them: a parent's child
+ * may be a shell whose program runs under a pid of its own.
+ */
+export interface ProcessWaitGraph {
+    /** `pid`'s running children. */
+    children(pid: number): readonly number[];
+    /**
+     * The children `pid` awaits, when awaiting them is every unit of its own
+     * in-flight work (a shell line whose every command awaits a program it
+     * started); null when it has other work, or none.
+     */
+    awaits(pid: number): readonly number[] | null;
+}
+/** The session's process account for `ctx`'s ledger (ProcessWaitGraph). Without one, nothing is refused. */
+export declare function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGraph): void;
+/**
+ * What the graph answers has changed (a process's work began or ended, a
+ * child ended): a wait nothing could satisfy before may be told now.
+ */
+export declare function processWaitGraphChanged(ctx: object): void;
+/** What a guest says of itself (setProcessBlocked). */
 export interface ProcessBlockedReport {
     /** Its only remaining work is waiting on its children. */
     blocked: boolean;
-    /** The news replies made for it it has seen, every one (processNewsReply). */
-    seen: number;
-    /** The children it waits on. */
-    waitsOn: readonly number[];
+    /** Its frontier: it has applied every piece of news numbered up to here (ProcessNews). */
+    frontier: number;
+    /** The report's own number, increasing. */
+    seq: number;
 }
 /**
  * Process `pid` says whether its only remaining work is waiting on its own
- * children, and on which (a runtime's own liveness, as Node's ref-counted
- * event loop knows it: no timer, socket, server, stdin read or fetch of its
- * own is pending). Taken only from a process that holds a worker, and only
- * as current when it has seen every news reply made for it; news produced
- * for it later withdraws it (noteProcessNews). A wait no release can satisfy
- * is told apart by these reports (deadlocked).
+ * children (a runtime's own liveness, as Node's ref-counted event loop knows
+ * it: no timer, socket, server, stdin read or fetch of its own is pending),
+ * and how far it has applied its news. Taken only from a process holding a
+ * worker, and only if newer than the last taken (ProcessNews).
  */
 export declare function setProcessBlocked(ctx: object, pid: number, report: ProcessBlockedReport): void;
 /**
- * News of process `pid`'s children was produced for it (a child's output it
- * reads, its start, its exit): its report is no longer current, since the
- * news may make it runnable, until it has heard the news and says so again.
+ * Number a piece of news for process `pid` as it is produced (ProcessNews):
+ * the reply that delivers it carries this number. 0, and nothing counted,
+ * for a process holding no worker, whose reports are not taken.
  */
-export declare function noteProcessNews(ctx: object, pid: number): void;
-/**
- * A reply that delivers news to process `pid` (of its children) is made:
- * its number, which the reply carries, so the process can say it has seen
- * every one (ProcessBlockedReport.seen). 0, and nothing counted, for a
- * process that holds no worker.
- */
-export declare function processNewsReply(ctx: object, pid: number): number;
+export declare function issueProcessNews(ctx: object, pid: number): number;
 /**
  * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
  * returned function ends the hold (idempotently), from the caller's own
@@ -238,10 +249,13 @@ export declare function loaderLedgerStats(ctx: object): {
     waiters: Array<{
         key: string;
         pid?: number;
-        ancestors?: readonly number[];
     }>;
-    /** Process → the children it waits on, for each current report that it is blocked on them. */
-    blockedOn: Record<number, readonly number[]>;
+    /** Process → its news (ProcessNews): issued, the last report's number, and the frontier it said it is blocked at. */
+    news: Record<number, {
+        issued: number;
+        reportSeq: number;
+        blockedAt: number | null;
+    }>;
 };
 /**
  * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"

@@ -56,6 +56,8 @@ export interface ExecStreamResult {
 interface OutputChunk {
     seq: number;
     data: Uint8Array;
+    /** Its number among the parent's news (FacetProcessManagerDeps.issueNews); 0 for none. */
+    news: number;
 }
 /**
  * Per-child mutable state. Created on spawn, torn down only when the
@@ -108,6 +110,12 @@ interface ChildEntry {
     /** Woken when the child starts, or ends, whichever is first. */
     startWaiters: Array<() => void>;
     exitWaiters: Array<(r: ChildExitStatus) => void>;
+    startNews: number;
+    exitNews: number;
+    closedNews: {
+        1: number;
+        2: number;
+    };
 }
 /**
  * How a child ended, as Node's ChildProcess reports it: an exit status and
@@ -121,6 +129,8 @@ export interface ChildExitStatus {
     spawnError?: string;
     /** Not done, but started: what a wait that asked to hear of the start answers. */
     started?: boolean;
+    /** The parent's news this answer delivers (FacetProcessManagerDeps.issueNews). */
+    news?: number[];
 }
 export interface SpawnReq {
     command: string;
@@ -141,6 +151,8 @@ export interface ReadOutputResult {
     }[];
     closed: boolean;
     maxSeq: number;
+    /** The parent's news this answer delivers (FacetProcessManagerDeps.issueNews). */
+    news?: number[];
 }
 export interface DrainResult {
     stdout: Uint8Array;
@@ -217,11 +229,13 @@ export interface FacetProcessManagerDeps {
     commandRegistry: CommandRegistryLike;
     shellExecutor?: ShellExecutorLike;
     /**
-     * News of a child was produced for its parent `parentPid`: output the
-     * parent reads, the child's start, its exit. The parent's report that it
-     * is blocked on its children stops being current (fabric noteProcessNews).
+     * Number a piece of news of a child as it is produced, for its parent
+     * `parentPid`: output the parent reads, the child's start, the end of a
+     * stream, its exit (fabric issueProcessNews). The reply that delivers it
+     * carries the number, and the parent's report that it is blocked counts
+     * only once it has applied every number issued. 0: not numbered.
      */
-    onNews?: (parentPid: number) => void;
+    issueNews?: (parentPid: number) => number;
 }
 /** Cap recursion depth to defend against runaway spawn loops. */
 export declare const CHILD_PROCESS_MAX_DEPTH = 8;
@@ -287,6 +301,12 @@ export declare class FacetProcessManager {
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     private _appendOutput;
     /**
+     * A read's answer: the chunks past `sinceSeq`, whether the stream has
+     * ended, and the parent's news it delivers: each chunk's, the child's
+     * start (its output says it started), and the stream's end.
+     */
+    private _readResult;
+    /**
      * Long-poll read for fd 1 or 2.  Returns immediately if there are
      * chunks > sinceSeq OR if the child has already exited.
      */
@@ -313,7 +333,7 @@ export declare class FacetProcessManager {
      * Wakes all waiters (exit, output, stdin) so callers don't hang.
      */
     private _stampExit;
-    /** A stamped child's end, as Node reports it (ChildExitStatus). */
+    /** A stamped child's end, as Node reports it (ChildExitStatus), with the news it delivers. */
     private _exitStatus;
     /**
      * Late-arriving reportExit from the facet. Idempotent; if kill() or
@@ -327,7 +347,7 @@ export declare class FacetProcessManager {
     wait(childPid: number, waitMs?: number, knownStarted?: boolean): Promise<ChildExitStatus>;
     /** The child has started (ChildEntry.started): wake whoever waits to hear of it. */
     private _markStarted;
-    /** News of `child` for its parent (FacetProcessManagerDeps.onNews). */
+    /** A piece of news of `child` for its parent, numbered (FacetProcessManagerDeps.issueNews). */
     private _news;
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */
     reap(maxAgeMs?: number): number;

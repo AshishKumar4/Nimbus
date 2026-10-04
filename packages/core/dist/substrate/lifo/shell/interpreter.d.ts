@@ -114,6 +114,12 @@ export interface CommandIdentity {
     readonly pid: number;
     readonly cred: VfsCred;
     setUmask(mask: number): void;
+    /**
+     * The process has a unit of in-flight work while a command of its runs,
+     * until the returned function is called: how its session tells a shell
+     * doing nothing but await its children (SessionProcessSupervisor.beginWork).
+     */
+    beginWork?(): () => void;
 }
 /** What a program started by runProgram runs with: its identity, directory, environment and inherited streams. */
 export interface ProgramSpec {

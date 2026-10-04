@@ -40,13 +40,13 @@ export const DO_DYNAMIC_WORKER_LIMIT = 10;
 /**
  * The refusal of a wait for a Dynamic Worker that no release can ever
  * satisfy: every worker this Durable Object has in flight is held by a
- * process stuck on its own children (setProcessBlocked: it waits on nothing
- * else, and each of them is queued here or stuck too), so none will end to
- * make room (nine children of a parent, each doing nothing but wait on a
- * grandchild of its own, fill the limit). The newest queued process a stuck
- * holder waits on is refused, as a spawn at a process limit is (EAGAIN): its
- * program never runs, and the holder told so can end and give its worker
- * back.
+ * process stuck on its own children (deadlocked: it has said it waits on
+ * nothing else and has heard all the news of them, and each of them is
+ * queued here or stuck too), so none will end to make room (nine children
+ * of a parent, each doing nothing but wait on a grandchild of its own, fill
+ * the limit). The newest queued process a stuck process waits on is refused,
+ * as a spawn at a process limit is (EAGAIN): its program never runs, and
+ * whoever waits on it hears so and can go on.
  */
 export class DynamicWorkerDeadlockError extends Error {
     pid;
@@ -79,7 +79,7 @@ function ledger(ctx) {
     let entry = ledgers.get(ctx);
     if (!entry) {
         entry = {
-            inFlight: new Map(), holders: new Map(), processHolds: new Map(), reports: new Map(), newsReplies: new Map(),
+            inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
             claims: new Set(), peak: 0,
             waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
         };
@@ -150,8 +150,7 @@ function hold(entry, workerKey, claim, holder) {
                 entry.processHolds.set(holder, open);
             else {
                 entry.processHolds.delete(holder);
-                entry.reports.delete(holder);
-                entry.newsReplies.delete(holder);
+                entry.news.delete(holder);
             }
         }
         if (classifyError(failure) === 'dynamic_worker_cap')
@@ -215,34 +214,41 @@ function admitWaiters(entry) {
     }
     const stuck = deadlocked(entry);
     if (stuck !== undefined) {
+        // Refused, it is no longer queued: whoever waits on it is no longer
+        // stuck (its wait will end, with this error), so one refusal answers one
+        // deadlock.
         entry.waiters.splice(entry.waiters.indexOf(stuck.waiter), 1);
-        // The refusal is news for the holder that waits on it: its report is
-        // not current until it has heard it and says so again. One refusal per
-        // such news.
-        entry.reports.delete(stuck.holder);
         stuck.waiter.refuse(new DynamicWorkerDeadlockError(stuck.waiter.process.pid, stuck.holders));
     }
 }
 /**
  * The wait no release can ever let in, with the processes holding the
  * limit, or undefined while room may still come. Room comes when a hold
- * ends or a fan-out's claim is released. A worker is given back when its
- * holder ends, and a holder ends on its own unless it is stuck: it has a
- * current report that its only remaining work is waiting on its children
- * (setProcessBlocked), and every child it waits on is itself queued here
- * or stuck. That is a fixpoint over the wait-for edges the reports give:
- * start from every holder with a current report, and drop any that waits
- * on a child that is neither queued nor still in the set (a builtin that
- * will finish, a child that runs, one that has exited and is not yet heard
- * of), until nothing changes. A hold no process owns (a pool's call, a
- * facet's), and a process that never reports (a resident, a runtime that
- * does not), is taken to end on its own. So at the limit, with no claim,
- * and every worker in flight held by a stuck process, nothing will make
- * room. The newest queued process a stuck holder waits on is refused, so
- * that holder hears its spawn failed and can go on.
+ * ends or a fan-out's claim is released, and a hold ends when the process
+ * holding it ends, unless it is stuck. Whether a process is stuck is told
+ * from the session's own account of its processes (the ProcessWaitGraph,
+ * never pids a guest names) and from what each guest has said of itself:
+ *
+ *   - a guest holding a worker is stuck when its report is current (it said
+ *     it is blocked, waiting on nothing but its children, having applied
+ *     every piece of news the session issued it: ProcessNews) and each of
+ *     its running children is queued here or stuck;
+ *   - a process holding no worker (a shell line running in the session) is
+ *     stuck when every unit of its own work is awaiting a child it started
+ *     (the graph's `awaits`), and each of those is queued or stuck;
+ *   - anything else (a builtin running, a process that never reports, a
+ *     hold no process owns) is taken to end on its own.
+ *
+ * Computed as the greatest fixpoint over those wait-for edges: start from
+ * every candidate, and drop any that waits on a process neither queued nor
+ * still in the set, until nothing changes (a closed cycle stays stuck). At
+ * the limit, with no claim, and every worker in flight held by a stuck
+ * process, nothing will make room: the newest queued process a stuck process
+ * waits on is refused.
  */
 function deadlocked(entry) {
-    if (entry.waiters.length === 0 || entry.claims.size > 0)
+    const graph = entry.graph;
+    if (!graph || entry.waiters.length === 0 || entry.claims.size > 0)
         return undefined;
     if (inUse(entry) < DO_DYNAMIC_WORKER_LIMIT)
         return undefined;
@@ -250,14 +256,29 @@ function deadlocked(entry) {
     for (const waiter of entry.waiters)
         if (waiter.process)
             queued.add(waiter.process.pid);
-    const stuck = new Set();
-    for (const [pid, report] of entry.reports)
-        if (entry.processHolds.has(pid) && report.waitsOn.length > 0)
-            stuck.add(pid);
+    // What each candidate waits on, from the holders outward.
+    const waitsOn = new Map();
+    const visit = (pid) => {
+        if (waitsOn.has(pid) || queued.has(pid))
+            return;
+        let on;
+        if (entry.processHolds.has(pid))
+            on = currentNews(entry, pid) ? graph.children(pid) : null;
+        else
+            on = graph.awaits(pid);
+        if (!on || on.length === 0)
+            return;
+        waitsOn.set(pid, on);
+        for (const child of on)
+            visit(child);
+    };
+    for (const pid of entry.processHolds.keys())
+        visit(pid);
+    const stuck = new Set(waitsOn.keys());
     for (let changed = true; changed;) {
         changed = false;
         for (const pid of stuck) {
-            if (entry.reports.get(pid).waitsOn.some((child) => !queued.has(child) && !stuck.has(child))) {
+            if (waitsOn.get(pid).some((child) => !queued.has(child) && !stuck.has(child))) {
                 stuck.delete(pid);
                 changed = true;
             }
@@ -274,53 +295,63 @@ function deadlocked(entry) {
         if (pid === undefined)
             continue;
         for (const holder of stuck) {
-            if (entry.reports.get(holder).waitsOn.includes(pid))
-                return { waiter, holder, holders: [...stuck] };
+            if (waitsOn.get(holder).includes(pid)) {
+                return { waiter, holders: [...stuck].filter((p) => entry.processHolds.has(p)) };
+            }
         }
     }
     return undefined;
 }
+/** The session's process account for `ctx`'s ledger (ProcessWaitGraph). Without one, nothing is refused. */
+export function bindProcessWaitGraph(ctx, graph) {
+    ledger(ctx).graph = graph;
+}
+/**
+ * What the graph answers has changed (a process's work began or ended, a
+ * child ended): a wait nothing could satisfy before may be told now.
+ */
+export function processWaitGraphChanged(ctx) {
+    admitWaiters(ledger(ctx));
+}
+function newsOf(entry, pid) {
+    let news = entry.news.get(pid);
+    if (!news)
+        entry.news.set(pid, news = { issued: 0, reportSeq: 0, blockedAt: null });
+    return news;
+}
+/** Whether `pid` has said it is blocked, having applied all the news it was issued. */
+function currentNews(entry, pid) {
+    const news = entry.news.get(pid);
+    return news !== undefined && news.blockedAt !== null && news.blockedAt === news.issued;
+}
 /**
  * Process `pid` says whether its only remaining work is waiting on its own
- * children, and on which (a runtime's own liveness, as Node's ref-counted
- * event loop knows it: no timer, socket, server, stdin read or fetch of its
- * own is pending). Taken only from a process that holds a worker, and only
- * as current when it has seen every news reply made for it; news produced
- * for it later withdraws it (noteProcessNews). A wait no release can satisfy
- * is told apart by these reports (deadlocked).
+ * children (a runtime's own liveness, as Node's ref-counted event loop knows
+ * it: no timer, socket, server, stdin read or fetch of its own is pending),
+ * and how far it has applied its news. Taken only from a process holding a
+ * worker, and only if newer than the last taken (ProcessNews).
  */
 export function setProcessBlocked(ctx, pid, report) {
     const entry = ledger(ctx);
-    const current = report.blocked && entry.processHolds.has(pid)
-        && report.seen === (entry.newsReplies.get(pid) ?? 0);
-    if (current)
-        entry.reports.set(pid, { waitsOn: [...report.waitsOn] });
-    else
-        entry.reports.delete(pid);
+    if (!entry.processHolds.has(pid))
+        return;
+    const news = newsOf(entry, pid);
+    if (!(report.seq > news.reportSeq))
+        return;
+    news.reportSeq = report.seq;
+    news.blockedAt = report.blocked && report.frontier === news.issued ? report.frontier : null;
     admitWaiters(entry);
 }
 /**
- * News of process `pid`'s children was produced for it (a child's output it
- * reads, its start, its exit): its report is no longer current, since the
- * news may make it runnable, until it has heard the news and says so again.
+ * Number a piece of news for process `pid` as it is produced (ProcessNews):
+ * the reply that delivers it carries this number. 0, and nothing counted,
+ * for a process holding no worker, whose reports are not taken.
  */
-export function noteProcessNews(ctx, pid) {
-    ledger(ctx).reports.delete(pid);
-}
-/**
- * A reply that delivers news to process `pid` (of its children) is made:
- * its number, which the reply carries, so the process can say it has seen
- * every one (ProcessBlockedReport.seen). 0, and nothing counted, for a
- * process that holds no worker.
- */
-export function processNewsReply(ctx, pid) {
+export function issueProcessNews(ctx, pid) {
     const entry = ledger(ctx);
     if (!entry.processHolds.has(pid))
         return 0;
-    const n = (entry.newsReplies.get(pid) ?? 0) + 1;
-    entry.newsReplies.set(pid, n);
-    entry.reports.delete(pid);
-    return n;
+    return ++newsOf(entry, pid).issued;
 }
 /**
  * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
@@ -526,8 +557,8 @@ export function loaderLedgerStats(ctx) {
         limit: DO_DYNAMIC_WORKER_LIMIT,
         inFlightWorkers: [...entry.inFlight.keys()],
         holders: Object.fromEntries([...entry.holders].map(([key, owners]) => [key, [...owners]])),
-        waiters: entry.waiters.map((w) => ({ key: w.key, pid: w.process?.pid, ancestors: w.process?.ancestors })),
-        blockedOn: Object.fromEntries([...entry.reports].map(([pid, report]) => [pid, [...report.waitsOn]])),
+        waiters: entry.waiters.map((w) => ({ key: w.key, pid: w.process?.pid })),
+        news: Object.fromEntries([...entry.news].map(([pid, news]) => [pid, { ...news }])),
         claimed: claimedWidth(entry),
         headroom: headroom(entry),
         peak: entry.peak,

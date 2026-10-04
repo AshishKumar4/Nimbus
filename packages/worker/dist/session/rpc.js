@@ -29,7 +29,7 @@ import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom, processNewsReply, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -1212,21 +1212,9 @@ export async function _rpcTransform(self, code, loader) {
 // ensureFacetProcessManager() handles cold-start cases where a child
 // facet calls cp* before the supervisor has initialized the broker
 // (e.g., immediately after DO hibernation wake-up).
-/**
- * This reply's number among the news replies made for `pid` (fabric
- * processNewsReply), on the session's Dynamic Worker ledger; 0 for a host
- * with no Durable Object state, which has no ledger to keep reports on.
- */
-function newsReply(self, pid) {
-    if (!self.ctx || typeof self.ctx !== 'object' || !Number.isInteger(pid))
-        return 0;
-    return processNewsReply(self.ctx, pid);
-}
 export async function _rpcCpSpawn(self, req) {
     const fpm = self._ensureFacetProcessManager();
-    const spawned = await fpm.spawn(req);
-    // A new child is news for its parent: its blocked report must name it.
-    return { ...spawned, news: newsReply(self, req.parentPid) };
+    return fpm.spawn(req);
 }
 /**
  * A child's stdin is bytes: esbuild's service protocol is binary packets,
@@ -1295,9 +1283,7 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid) {
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
     const fpm = self._ensureFacetProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
-    const delivers = output.chunks.length > 0 || output.closed;
-    const reply = delivers && typeof pid === 'number' ? { ...output, news: newsReply(self, pid) } : output;
-    return withDeliveredAcquire(self, reply, delivers, acquire, pid);
+    return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 export async function _rpcCpDrainOutput(self, childPid) {
     const fpm = self._ensureFacetProcessManager();
@@ -1307,25 +1293,29 @@ export async function _rpcCpKill(self, childPid, signal) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.kill(childPid, signal);
 }
-/** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
+/**
+ * Process `pid` says whether its only remaining work is waiting on its
+ * children, and how far it has applied its news (fabric setProcessBlocked).
+ * Who its children are is the session's to know, not its.
+ */
 export async function _rpcCpBlocked(self, pid, report) {
     if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running')
         return;
-    const said = (report ?? {});
     if (!self.ctx || typeof self.ctx !== 'object')
+        return;
+    const said = (report ?? {});
+    if (!Number.isInteger(said.frontier) || !Number.isInteger(said.seq))
         return;
     setProcessBlocked(self.ctx, pid, {
         blocked: said.blocked === true,
-        seen: Number.isInteger(said.seen) ? said.seen : -1,
-        waitsOn: Array.isArray(said.waitsOn) ? said.waitsOn.filter((child) => Number.isInteger(child)) : [],
+        frontier: said.frontier,
+        seq: said.seq,
     });
 }
 export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
     const fpm = self._ensureFacetProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
-    const delivers = status.done || status.started === true;
-    const reply = delivers && typeof pid === 'number' ? { ...status, news: newsReply(self, pid) } : status;
-    return withDeliveredAcquire(self, reply, status.done, acquire, pid);
+    return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
 // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
 // Kept for backward compatibility with direct DO stub callers.

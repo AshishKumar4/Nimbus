@@ -85,8 +85,30 @@ export declare class SessionProcessSupervisor {
     getAll(): ProcessEntry[];
     /** Every process spawned under `pid`, transitively, oldest first. */
     descendantsOf(pid: number): ProcessEntry[];
-    /** The pids `pid` descends from, nearest first, as each spawn recorded its parent. */
-    ancestorsOf(pid: number): number[];
+    /** `pid`'s running children, oldest first. */
+    childrenOf(pid: number): number[];
+    /** `pid` → its units of in-flight work. */
+    private readonly works;
+    /** `pid` → the children it awaits, with how many awaits on each. */
+    private readonly awaiting;
+    /** Fires when what a process waits on may have changed; see setOnWaitChange. */
+    private onWaitChange;
+    /** Told when what a process waits on may have changed (a work or an await ended, a process ended). */
+    setOnWaitChange(cb: (() => void) | null): void;
+    /** `pid` has a unit of in-flight work of its own until the returned function is called. */
+    beginWork(pid: number): () => void;
+    /**
+     * `pid` awaits its child `child`'s end, as one unit of its work, until
+     * the returned function is called or either process ends.
+     */
+    beginAwait(pid: number, child: number): () => void;
+    /**
+     * The children `pid` awaits, when awaiting them is every unit of its own
+     * in-flight work; null when it has other work, or none.
+     */
+    awaitsOnly(pid: number): number[] | null;
+    /** An ended process awaits nothing, and nothing awaits it any more. */
+    private forgetWaits;
     /**
      * Register how to stop the work behind `pid`. Background jobs started
      * through the programmatic API run as a promise held by this session, so

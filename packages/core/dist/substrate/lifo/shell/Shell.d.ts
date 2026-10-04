@@ -45,6 +45,8 @@ export interface ShellCommandIdentity {
     cred: VfsCred;
     setUmask(mask: number): void;
     runAs?: CommandRunAsHost;
+    /** A unit of the process's own work, while a command runs (interpreter CommandIdentity.beginWork). */
+    beginWork?(): () => void;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;

@@ -764,6 +764,9 @@ export class Interpreter {
                     const builtin = this.config.builtins.get(name);
                     if (builtin) {
                         const builtinIo = this.createIoFromFds(io, fds);
+                        // A builtin is work of the shell's own (a `sleep`, a `read`, a
+                        // `wait`), never an await of a child.
+                        const endWork = io.commandIdentity?.beginWork?.();
                         try {
                             exitCode = await builtin(args, stdout, stderr, stdin, {
                                 vfs: builtinIo.vfs ?? this.config.vfs,
@@ -803,6 +806,9 @@ export class Interpreter {
                             }
                             exitCode = 1;
                         }
+                        finally {
+                            endWork?.();
+                        }
                     }
                     else {
                         // Check registry; a bare name not registered is searched for on the
@@ -816,23 +822,32 @@ export class Interpreter {
                             const identity = io.commandIdentity;
                             if (!identity)
                                 throw new Error('shell command identity is unavailable');
-                            const ended = await this.runCommand(command, name, args, {
-                                commandContext: io.commandContext,
-                                identity,
-                                cwd: this.config.getCwd(),
-                                env: { ...this.config.env },
-                                vfs: io.vfs ?? this.config.vfs,
-                                stdout,
-                                stderr,
-                                stdin,
-                                terminalStdin: io.terminalStdin,
-                                isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
-                                isFdPipe: (fd) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
-                                signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
-                                runAs: io.runAs,
-                                register: io.registerProcess !== false,
-                                shellBuiltin: BASH_BUILTINS.has(name),
-                            });
+                            // A command is a unit of the process's work; one that runs a
+                            // program as a child of its own counts that as its await.
+                            const endWork = identity.beginWork?.();
+                            let ended;
+                            try {
+                                ended = await this.runCommand(command, name, args, {
+                                    commandContext: io.commandContext,
+                                    identity,
+                                    cwd: this.config.getCwd(),
+                                    env: { ...this.config.env },
+                                    vfs: io.vfs ?? this.config.vfs,
+                                    stdout,
+                                    stderr,
+                                    stdin,
+                                    terminalStdin: io.terminalStdin,
+                                    isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                                    isFdPipe: (fd) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
+                                    signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+                                    runAs: io.runAs,
+                                    register: io.registerProcess !== false,
+                                    shellBuiltin: BASH_BUILTINS.has(name),
+                                });
+                            }
+                            finally {
+                                endWork?.();
+                            }
                             exitCode = ended.status;
                             // A signalled command reports the SIGNAL's status, not whatever
                             // code it returned on its way out: `sleep` observes only that

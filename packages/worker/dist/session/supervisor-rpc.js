@@ -768,7 +768,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // these methods. They delegate to NimbusSession._rpcCp* methods which
     // route through the shared FacetProcessManager.
     //
-    /** `news`: this reply's number among the news replies made for the caller (fabric processNewsReply). */
     async cpSpawn(req) {
         return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
     }
@@ -806,9 +805,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     /**
      * This process says whether its only remaining work is waiting on its own
-     * children, on which, and how many of the news replies made for it it has
-     * seen, every one (the session's Dynamic Worker ledger tells a wait no
-     * release can satisfy by it: fabric budgets.ts setProcessBlocked).
+     * children, and the contiguous run of news numbers it has applied (the
+     * session's Dynamic Worker ledger tells a wait no release can satisfy by
+     * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
      */
     async cpBlocked(report) {
         return this._call(this._op('cpBlocked', [report], { pid: this._pid() }));
