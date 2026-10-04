@@ -591,7 +591,8 @@ export async function _rpcFsAcquired(
   // A refused read is answered as data, so the process still applies the
   // barrier before it throws, as it did when the barrier was its own call.
   try {
-    return { acquired, value: await self.supervisorOp({ op: read, args: readArgs, pid }) };
+    // Served, not answered: the read is part of this answer, which is the one counted.
+    return { acquired, value: await self.serveSupervisorOp({ op: read, args: readArgs, pid }) };
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
     return { acquired, failure: { code, message: error instanceof Error ? error.message : String(error) } };

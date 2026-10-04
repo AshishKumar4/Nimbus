@@ -1,7 +1,6 @@
 import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
-import { recordSupervisorAnswer } from '@nimbus-sh/platform/diag-counters.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsStat } from '../runtime/os-contracts.js';
@@ -480,19 +479,6 @@ export function createSupervisorBridgeStore(
 /** One envelope in, its result out: what a host forwards `supervisorOp` to. */
 export type SupervisorOpDispatch = (envelope: SupervisorOpEnvelope) => Promise<unknown>;
 
-/**
- * The bytes in an answer: byte arrays and text, through the arrays and plain
- * objects that carry them (a batch of reads, a stdin packet), to a few levels.
- */
-function answerBytes(value: unknown, depth: number): number {
-  if (typeof value === 'string') return value.length;
-  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return value.byteLength;
-  if (depth >= 4 || typeof value !== 'object' || value === null) return 0;
-  let total = 0;
-  for (const entry of Array.isArray(value) ? value : Object.values(value)) total += answerBytes(entry, depth + 1);
-  return total;
-}
-
 export function createSupervisorOpHandler(
   deps: SupervisorOpDeps,
 ): SupervisorOpDispatch {
@@ -601,7 +587,7 @@ export function createSupervisorOpHandler(
    * id, and what its receipt or join made of this attempt. A refusal is
    * recorded on the span as the exception the sender receives.
    */
-  const dispatch: SupervisorOpDispatch = async (envelope) => {
+  return async (envelope) => {
     if (!envelope || typeof envelope.op !== 'string') {
       throw new Error('supervisor op: envelope names no operation');
     }
@@ -611,12 +597,5 @@ export function createSupervisorOpHandler(
     if (envelope.delivery !== undefined) throw new Error(`supervisor op: '${op}' cannot carry a delivery`);
     if (envelope.readId !== undefined) return traced('nimbus.session.read', {}, (span) => read(op, envelope, span));
     return serve(op, envelope);
-  };
-  // Every answer leaves the session here, whichever op made it: its bytes are
-  // counted (diag counters' supervisorAnsweredBytes).
-  return async (envelope) => {
-    const answer = await dispatch(envelope);
-    recordSupervisorAnswer(answerBytes(answer, 0));
-    return answer;
   };
 }
