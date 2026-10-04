@@ -9,28 +9,12 @@ import { isPipeEnd, PipeChannel } from './pipe.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
-import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { fileSink } from './file-sink.js';
-/**
- * Bytes a file-backed descriptor holds before committing. Matches the stream
- * chunk size used elsewhere and keeps a line-at-a-time producer from paying a
- * store write per line.
- */
-const FILE_WRITE_BLOCK_BYTES = 64 * 1024;
-function concatBytes(parts, total) {
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
-    return out;
-}
 // ─── Signal classes for control flow ───
 export class BreakSignal {
     levels;
@@ -1579,53 +1563,9 @@ export class Interpreter {
         }
     }
     /**
-     * A file-backed descriptor: an open file plus a write offset.
-     *
-     * Each write lands at the offset and advances it, the way write(2) does.
-     * Restating the whole file per write — which is what this used to do —
-     * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
-     * line-at-a-time filter) persist only its final write and silently drop
-     * everything before it.
-     *
-     * Writes buffer to a block, as stdio does, so a line-at-a-time producer
-     * costs one store write per block rather than one per line. `mode`
-     * distinguishes `>` (a plain offset from the truncation point) from `>>`,
-     * which is O_APPEND: every block lands at whatever the current end is, so
-     * two descriptors appending to one file cannot overwrite each other.
-     */
-    createFileWriter(vfs, path, mode) {
-        let offset = 0;
-        let pending = [];
-        let pendingBytes = 0;
-        const endOfFile = async () => ((await vfs.exists(path)) ? (await statOrThrow(vfs, path)).size : 0);
-        const flush = async () => {
-            if (pendingBytes === 0)
-                return;
-            const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
-            pending = [];
-            pendingBytes = 0;
-            const at = mode === 'append' ? (await endOfFile()) : offset;
-            (await vfs.writeRange(path, at, block));
-            offset = at + block.length;
-        };
-        const push = async (bytes) => {
-            if (bytes.length === 0)
-                return;
-            pending.push(bytes);
-            pendingBytes += bytes.length;
-            if (pendingBytes >= FILE_WRITE_BLOCK_BYTES)
-                (await flush());
-        };
-        return {
-            write: async (text) => (await push(encode(text))),
-            writeBytes: async (bytes) => (await push(bytes)),
-            flush,
-        };
-    }
-    /**
      * Run `body` and commit every file-backed descriptor it wrote through,
      * whether it returned or threw. This is the close(2) side of the buffering
-     * in createFileWriter: buffered bytes must reach the store before the next
+     * in file-sink.ts: buffered bytes must reach the store before the next
      * command can read the file.
      */
     async withFdFlush(fds, body) {
