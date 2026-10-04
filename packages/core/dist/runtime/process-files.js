@@ -26,7 +26,7 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
-import { createSqliteDescriptorScope, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
+import { closeDescriptions, createSqliteDescriptorScope, fsError, modeAllows, reportLost, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -375,10 +375,16 @@ export class ProcessFiles {
         this.retired.add(pid);
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
-        if (scope)
-            this.closeScope(scope);
-        this.processes.delete(pid);
-        this.engine.revokeAppendWriters(pid);
+        try {
+            // Its descriptors' last closes flush; one whose flush fails is reported
+            // once the process is released all the same.
+            if (scope)
+                this.closeScope(scope);
+        }
+        finally {
+            this.processes.delete(pid);
+            this.engine.revokeAppendWriters(pid);
+        }
     }
     /**
      * The process died without closing its descriptors: nothing is flushed,
@@ -434,20 +440,23 @@ export class ProcessFiles {
             };
         });
     }
+    /**
+     * Closes `scope` for good: every descriptor (each last close flushing),
+     * its subscriptions, and the scope itself (EBADF from then on, for every
+     * bridge on it). A flush that fails (an aborted binding's, a mount's
+     * refusal) loses its bytes and is reported after the scope is closed.
+     */
     closeScope(scope) {
         if (scope.closed)
             return;
-        for (const opened of scope.handles.values()) {
-            if (--opened.refs === 0)
-                opened.node.close();
-        }
-        scope.handles.clear();
+        const lost = closeDescriptions(scope);
         this.awaitedDescriptors.get(scope)?.opened.clear();
         for (const dispose of scope.subscriptions)
             dispose();
         scope.subscriptions.clear();
         scope.closed = true;
         scope.abort.abort();
+        reportLost(lost);
     }
     bridgeFor(scope, cred, signal, pid) {
         // The scope is checked again by the namespace right before each mutation

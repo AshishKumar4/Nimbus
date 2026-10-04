@@ -54,9 +54,11 @@ import {
   type VfsMutationReceipt,
 } from './os-contracts.js';
 import {
+  closeDescriptions,
   createSqliteDescriptorScope,
   fsError,
   modeAllows,
+  reportLost,
   SqliteRuntimeFsBridge,
   type SqliteDescriptorScope,
   walkBeneath,
@@ -400,9 +402,14 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.retired.add(pid);
     this.listings.delete(pid);
     const scope = this.processes.get(pid);
-    if (scope) this.closeScope(scope);
-    this.processes.delete(pid);
-    this.engine.revokeAppendWriters(pid);
+    try {
+      // Its descriptors' last closes flush; one whose flush fails is reported
+      // once the process is released all the same.
+      if (scope) this.closeScope(scope);
+    } finally {
+      this.processes.delete(pid);
+      this.engine.revokeAppendWriters(pid);
+    }
   }
 
   /**
@@ -458,17 +465,21 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     });
   }
 
+  /**
+   * Closes `scope` for good: every descriptor (each last close flushing),
+   * its subscriptions, and the scope itself (EBADF from then on, for every
+   * bridge on it). A flush that fails (an aborted binding's, a mount's
+   * refusal) loses its bytes and is reported after the scope is closed.
+   */
   private closeScope(scope: SqliteDescriptorScope): void {
     if (scope.closed) return;
-    for (const opened of scope.handles.values()) {
-      if (--opened.refs === 0) opened.node.close();
-    }
-    scope.handles.clear();
+    const lost = closeDescriptions(scope);
     this.awaitedDescriptors.get(scope)?.opened.clear();
     for (const dispose of scope.subscriptions) dispose();
     scope.subscriptions.clear();
     scope.closed = true;
     scope.abort.abort();
+    reportLost(lost);
   }
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {

@@ -44,7 +44,12 @@ published independently in the `@nimbus-sh` npm scope.
   synchronous bridge does, and a descriptor opened on an asynchronous mount
   keeps the file it opened: it re-resolved its path on every call, so a
   link on the way repointed after the open moved its writes to another
-  file. A node program's write-back refused with EROFS or
+  file. A process's release and a host lease's disposal finish their
+  teardown (every descriptor, the scope, the process's binding and its
+  append writers) before they report a descriptor whose last flush failed,
+  as `EIO: its buffered writes are lost (...), close '<path>'`; they stopped
+  at that flush, which an aborted binding's own view refuses, and left the
+  scope open to every other bridge on it. A node program's write-back refused with EROFS or
   EBUSY is the authority's verdict (nothing landed), no longer a durability
   failure reported at exit.
 - A link on a `resolvesPaths` mount whose target a mount nested in it
