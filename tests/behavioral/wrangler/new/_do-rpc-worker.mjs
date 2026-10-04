@@ -26,6 +26,8 @@ class Counter extends RpcTarget {
 }
 export class P extends DurableObject {
   disposed = 0;
+  #secret = 'private';
+  revealSecret() { return this.#secret; }
   async hello() { return 'hello'; }
   async add(a, b) { return a + b; }
   async echo(value) { return value; }
@@ -41,6 +43,7 @@ export class P extends DurableObject {
   async greeting() { return this.env.GREETING; }
   get value() { return 42; }
   get obj() { return { x: 1, nested: { y: 2 }, f: () => 'from obj' }; }
+  get thenful() { return { then: 'not a function', x: 1 }; }
   async callTarget(target) { return await target.increment(5); }
   async callFunction(fn, x) { return await fn(x); }
   makeAdder(a) { return (b) => a + b; }
@@ -98,6 +101,26 @@ export default {
     await step(out, 'getterByName', () => env.P.getByName('x').value);
     await step(out, 'getterPath', () => stub.obj.nested.y);
     await step(out, 'getterPathCall', () => stub.obj.f());
+    // Members RPC does not reach, or reaches otherwise.
+    await step(out, 'symbolKeys', () => [typeof stub[Symbol.iterator], typeof stub[Symbol.for('k')], typeof stub.obj[Symbol.iterator], typeof stub.info()[Symbol.iterator]]);
+    await step(out, 'constructorLocal', () => [typeof stub.constructor, stub.constructor === Object.getPrototypeOf(stub).constructor]);
+    await step(out, 'constructorRead', async () => typeof (await stub.obj.constructor));
+    await step(out, 'constructorCall', () => stub.obj.constructor());
+    await step(out, 'constructorTopCall', () => stub.constructor());
+    await step(out, 'protoRead', () => stub.obj.__proto__);
+    await step(out, 'protoCall', () => stub.obj.__proto__.toString());
+    await step(out, 'protoLocal', () => stub.__proto__ === Object.getPrototypeOf(stub));
+    await step(out, 'privateRead', () => stub['#secret']);
+    await step(out, 'privateCall', () => stub['#secret']());
+    await step(out, 'privateByMethod', () => stub.revealSecret());
+    await step(out, 'prototypeMethodRead', async () => typeof (await stub.obj.toString));
+    await step(out, 'prototypeMethodCall', () => stub.obj.toString());
+    await step(out, 'thenTypes', () => [typeof stub.then, typeof stub.obj.then, typeof stub.info().then]);
+    await step(out, 'thenOnMember', () => stub.obj.then((value) => value.x));
+    await step(out, 'thenPathRead', async () => typeof (await stub.obj.then));
+    await step(out, 'stubTag', () => [Object.prototype.toString.call(stub), String(stub)]);
+    await step(out, 'thenfulRead', () => stub.thenful);
+    await step(out, 'thenfulPath', () => stub.thenful.x);
     // The namespace, ids and stubs as objects.
     await step(out, 'idRoundTrip', () => env.P.idFromString(id.toString()).equals(id) && id.name === 'x');
     await step(out, 'namespaceKeys', () => Object.keys(env.P));
@@ -186,6 +209,25 @@ export function expectedAnswers(rowsBefore) {
     getterByName: 42,
     getterPath: 2,
     getterPathCall: 'from obj',
+    symbolKeys: ['undefined', 'undefined', 'undefined', 'undefined'],
+    constructorLocal: ['function', true],
+    constructorRead: 'function',
+    constructorCall: { threw: 'TypeError', message: 'Illegal constructor' },
+    constructorTopCall: { threw: 'TypeError', message: 'Illegal constructor' },
+    protoRead: { threw: 'TypeError', message: 'Illegal invocation: function called with incorrect `this` reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.' },
+    protoCall: '[object JsRpcProperty]',
+    protoLocal: true,
+    privateRead: { threw: 'TypeError', message: 'The RPC receiver does not implement the method "#secret".' },
+    privateCall: { threw: 'TypeError', message: 'The RPC receiver does not implement the method "#secret".' },
+    privateByMethod: 'private',
+    prototypeMethodRead: 'function',
+    prototypeMethodCall: '[object JsRpcProperty]',
+    thenTypes: ['undefined', 'function', 'function'],
+    thenOnMember: 1,
+    thenPathRead: 'function',
+    stubTag: ['[object DurableObject]', '[object DurableObject]'],
+    thenfulRead: { then: 'not a function', x: 1 },
+    thenfulPath: 1,
     idRoundTrip: true,
     namespaceKeys: [],
     stubKeys: ['name', 'id'],
@@ -234,6 +276,14 @@ export const NIMBUS_DIFFERS = {
  * `{ shape, hello, getter }`.
  */
 export const SHAPED_WORKERS = {
+  // The Worker exports the name Nimbus's class check would take.
+  collision: `${COMMON}
+import { exports } from 'cloudflare:workers';
+export class NimbusDurableObjectClasses extends WorkerEntrypoint { shape() { return 'collision'; } }
+export default {
+  async fetch(request, env) { return Response.json({ shape: await exports.NimbusDurableObjectClasses({}).shape(), hello: await env.P.getByName('x').hello(), getter: await env.P.getByName('x').value }); },
+};
+`,
   // The handler's fetch is on its prototype.
   prototype: `${COMMON}
 class Handler {

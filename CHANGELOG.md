@@ -21,15 +21,19 @@ published independently in the `@nimbus-sh` npm scope.
   `stub.obj.f()`), `Object.keys` of a namespace, id and stub, RpcTargets,
   stubs (an object's own included) and functions passed and returned,
   streams and responses returned, dup, dispose, `using`, a namespace refused
-  in a Worker Loader env, and default exports whose fetch is on the
-  prototype or not enumerable. Two differences remain: `typeof stub` is
-  'function', and a Worker Loader env cannot carry a stub ("RpcStub cannot
-  be serialized in this context because it is not a persistent stub"), since
-  Nimbus's loader loads a child again in each later request. The Worker is
-  loaded once, with its full env, and a binding whose class it does not
-  export fails the build (the check runs the Worker's module code, so an
-  error there is the build's too); before, a probe load without env came
-  first, and a missing class failed only the object's first call.
+  in a Worker Loader env, default exports whose fetch is on the prototype or
+  not enumerable, a Worker that exports `NimbusDurableObjectClasses` itself,
+  and what RPC does not reach: Symbol keys, `constructor`, `__proto__`, a
+  private field, `then` on a member, and the stub's tag ("[object
+  DurableObject]"). Two differences remain, documented as limits in the
+  fabric README: `typeof stub` is 'function', and a Worker Loader env cannot
+  carry a stub ("RpcStub cannot be serialized in this context because it is
+  not a persistent stub"), since Nimbus's loader loads a child again in each
+  later request. The Worker is loaded once, with its full env, and a binding
+  whose class it does not export fails the build (the check runs the
+  Worker's module code, so an error there is the build's too); before, a
+  probe load without env came first, and a missing class failed only the
+  object's first call.
 
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),

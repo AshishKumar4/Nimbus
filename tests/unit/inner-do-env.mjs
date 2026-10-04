@@ -10,13 +10,15 @@
 //   - each named binding in the env is replaced by a local namespace whose
 //     ids and stubs answer at once; other env values stay;
 //   - a stub is an RPC stub of a local target, with the object's `name` and
-//     `id` as its own enumerable properties, and `dup` and Symbol.dispose
-//     shadowed;
+//     `id` as its own enumerable properties, and a prototype shaped as a
+//     Durable Object stub's (no `dup` or Symbol.dispose; a constructor that
+//     cannot be called; the tag 'DurableObject');
 //   - the target relays what the runtime asks of it: a call to callOn, a
 //     read (a thenable) to getOn, a path walked through own properties;
 //   - the class check names the classes the main module does not export;
 //   - innerWorkerModules makes the adapter the main module's first import on
-//     the bundle's first line (after a hashbang), and leaves a Worker with no
+//     the bundle's first line (after a hashbang), exporting the class check
+//     under a name the bundle never spells, and leaves a Worker with no
 //     binding as it is.
 
 import assert from 'node:assert/strict';
@@ -61,11 +63,18 @@ assert.equal(id.name, 'x');
 assert.ok(env.P.idFromString(id.toString()).equals(id));
 assert.match(env.P.newUniqueId().toString(), /^uniq:[0-9a-f]{32}$/);
 const stub = env.P.get(id);
-assert.ok(stub instanceof RpcStub);
+assert.ok(!(stub instanceof RpcStub), 'its prototype is a Durable Object stub\'s shape, not RpcStub\'s');
 assert.deepEqual(Object.keys(stub), ['target', 'name', 'id']);
 assert.equal(stub.name, 'x');
 assert.equal(stub.id, id);
 assert.equal(stub[Symbol.dispose], undefined, 'a stub is not disposable');
+assert.equal(stub.dup, undefined, 'nor dup');
+assert.equal(Object.prototype.toString.call(stub), '[object DurableObject]');
+assert.equal(stub.constructor.name, 'DurableObject');
+assert.equal(stub.constructor, Object.getPrototypeOf(stub).constructor);
+assert.throws(() => stub.constructor(), { name: 'TypeError', message: 'Illegal constructor' });
+assert.throws(() => new stub.constructor(), { name: 'TypeError', message: 'Illegal constructor' });
+assert.equal(Object.getPrototypeOf(env.P.get(id)), Object.getPrototypeOf(stub), 'one prototype for every stub');
 assert.equal(env.P.getByName('y').id.name, 'y');
 const unique = env.P.get(env.P.newUniqueId());
 assert.equal(unique.name, undefined);
@@ -80,13 +89,11 @@ const walk = (holder, names) => names.reduce((at, name) => Object.getOwnProperty
 assert.equal(await walk(target, ['obj', 'nested', 'y']), 'read obj.nested.y', 'a path is walked through own properties');
 assert.equal(await walk(target, ['obj', 'f'])(), 'called obj.f()');
 assert.equal(typeof target.value, 'function', 'a member is callable as well as thenable');
-assert.equal(await stub.dup(), 'called dup()', 'dup is the object\'s');
 assert.deepEqual(calls, [
   ['callOn', objectId, ['hello'], [1, 2]],
   ['getOn', objectId, ['value']],
   ['getOn', objectId, ['obj', 'nested', 'y']],
   ['callOn', objectId, ['obj', 'f'], []],
-  ['callOn', objectId, ['dup'], []],
 ], 'each access is one call on the binding, nothing else');
 
 // The class check.
@@ -94,16 +101,23 @@ assert.deepEqual(new NimbusDurableObjectClasses({}, env).missing(['P', 'notAClas
 
 // The modules.
 const bundle = '// src/index.js\nexport class P {}\nexport default {};\n';
-const { mainModule, modules } = innerWorkerModules(bundle, ['P']);
+const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundle, ['P']);
 assert.equal(mainModule, 'worker.js');
+assert.equal(classesEntrypoint, 'NimbusDurableObjectClasses');
 assert.deepEqual(Object.keys(modules), ['worker.js', 'nimbus-do-env.js']);
-assert.equal(modules['worker.js'], "export { NimbusDurableObjectClasses } from './nimbus-do-env.js';" + bundle,
+assert.equal(modules['worker.js'], "export { NimbusDurableObjectClasses as NimbusDurableObjectClasses } from './nimbus-do-env.js';" + bundle,
   'the adapter is the first import, on the first line');
 assert.match(modules['nimbus-do-env.js'], /^import \{ env, RpcStub, WorkerEntrypoint \} from 'cloudflare:workers';\nimport \* as main from '\.\/worker\.js';/);
 assert.match(modules['nimbus-do-env.js'], /, \["P"\], main, \{ env, RpcStub, WorkerEntrypoint \}\);\nexport \{ NimbusDurableObjectClasses \};$/);
 assert.equal(innerWorkerModules('#!/usr/bin/env node\nexport default {};', ['P']).modules['worker.js'],
-  "#!/usr/bin/env node\nexport { NimbusDurableObjectClasses } from './nimbus-do-env.js';export default {};",
+  "#!/usr/bin/env node\nexport { NimbusDurableObjectClasses as NimbusDurableObjectClasses } from './nimbus-do-env.js';export default {};",
   'a hashbang stays first');
-assert.deepEqual(innerWorkerModules(bundle, []), { mainModule: 'worker.js', modules: { 'worker.js': bundle } });
+assert.deepEqual(innerWorkerModules(bundle, []), { mainModule: 'worker.js', modules: { 'worker.js': bundle }, classesEntrypoint: null });
+
+// A bundle that spells the class check's name (it exports it, say) gets one it never spells.
+const exporting = 'class NimbusDurableObjectClasses {}\nconst NimbusDurableObjectClasses_2 = 1;\nexport { NimbusDurableObjectClasses, NimbusDurableObjectClasses_2 };\n';
+const renamed = innerWorkerModules(exporting, ['P']);
+assert.equal(renamed.classesEntrypoint, 'NimbusDurableObjectClasses_3');
+assert.equal(renamed.modules['worker.js'], "export { NimbusDurableObjectClasses as NimbusDurableObjectClasses_3 } from './nimbus-do-env.js';" + exporting);
 
 console.log('inner-do-env: a Durable Object binding is a local namespace whose stubs relay to the binding');
