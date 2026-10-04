@@ -253,7 +253,7 @@ export function makeRubyRunnerFactory(deps: {
         });
       } else {
         result = await dispatchRubyFacet(
-          deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
+          deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid, ctx.signal);
       }
 
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -657,6 +657,7 @@ async function dispatchRubyFacet(
   args: RubyFacetArgs,
   image: ArrayBuffer,
   pid: number,
+  signal: AbortSignal,
 ): Promise<RubyFacetResult> {
   // The Ruby preamble runs the entire bootstrap in the facet's own scope,
   // before any function is submitted: the wasm Module is instantiated where
@@ -707,6 +708,8 @@ async function dispatchRubyFacet(
         'ruby+stdlib.wasm': image,
       },
       timeoutMs: 300_000,
+      // A kill or Ctrl-C ends the facet too, where the host can.
+      signal,
     });
     return normalizeRubyFacetResult(rawResult) || {
       exitCode: 1,
@@ -715,6 +718,8 @@ async function dispatchRubyFacet(
       error: 'ruby-runner dispatch returned an invalid payload',
     };
   } catch (e: unknown) {
+    // Killed: the program ends as an interrupted one does.
+    if (signal.aborted) return { exitCode: 130, stdout: '', stderr: '' };
     return {
       exitCode: 1,
       stdout: '',

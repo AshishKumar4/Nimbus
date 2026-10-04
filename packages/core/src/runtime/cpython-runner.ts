@@ -440,8 +440,12 @@ export function makeCPythonRunnerFactory(deps: {
       try {
         result = await facet.submit(cpythonRunFacetFn, facetArgs, {
           timeoutMs: 120_000,
+          // A kill or Ctrl-C ends the facet too, where the host can.
+          signal: ctx.signal,
         });
       } catch (e: unknown) {
+        // Killed: the program ends as an interrupted one does.
+        if (ctx.signal.aborted) return 130;
         ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
         return 1;
       } finally {

@@ -5,6 +5,31 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `@nimbus-sh/core`: each facet of `localFacetHost()` runs in a realm of its
+  own, a worker thread, as the inline `node`'s programs do (Kinu ask 17,
+  local-facet-host.ts:183). The facet's scope was built in the host's realm,
+  so what a program reached of JavaScript was the embedder's: a Ruby
+  program's `JS.eval("globalThis.Promise = null")` broke the host's shell
+  ("null is not an object (evaluating 'Promise.allSettled')"), and
+  `Array.isArray`, timers and `Object.prototype` were the host's to rebind.
+  The other runtimes (bash, CPython, clang, `wasm-runner`) reach no
+  JavaScript, but a guest of any of them that spun without a syscall held the
+  host's only thread, so nothing could end it, and `timeoutMs` was ignored.
+  Now a facet's globals are its own, its session capability crosses as calls
+  (the supervisor's, answered by promise where the engine parks and at once
+  where it cannot, and its synchronous view's), and a call's `timeoutMs` or
+  new `signal` ends the facet. `python3`, `ruby` and `wasm-runner` pass the
+  command's signal, so a kill or Ctrl-C answers 130 and the host runs on. An
+  idle facet no longer keeps the process alive. Under Bun 1.4 a worker
+  spinning inside WebAssembly cannot be terminated: the command answers and
+  the host runs on, but the guest's thread spins until the process exits.
+  Node ends it. The mechanism is the inline `node`'s, now shared
+  (runtime/realm.ts, realm-guest.ts). It costs each wasm program run about
+  60 ms more to start under Bun and 90 ms under Node, and each filesystem
+  syscall about 20 µs. The `bash` command does not pass its signal yet.
+  Unchanged before and after: under Bun, each Ruby run keeps about 1 GB of
+  the process's memory. Node returns it.
+
 ## 2026-10-03
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
