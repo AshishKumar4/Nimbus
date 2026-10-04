@@ -149,8 +149,21 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
         'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
-      child.stdout.on('data', (d) => { log += d; });
-      child.stderr.on('data', (d) => { log += d; });
+      // wrangler dev rebuilds and reloads the worker when a file it bundles
+      // changes, which resets every session it serves: a test running then
+      // fails on a socket closed with 1006 and nothing else to say why
+      // (measured: touching one file under packages/worker/dist mid-test).
+      // So the reload is named where the failing test prints.
+      const watchReload = (d) => {
+        log += d;
+        if (base !== null && /Reloading local server/.test(String(d))) {
+          console.error('workerd-probe: wrangler dev reloaded the worker because a file it bundles changed '
+            + '(this tree was rebuilt while the probe ran); every session it served was reset, so a '
+            + 'command running now fails with a 1006 close');
+        }
+      };
+      child.stdout.on('data', watchReload);
+      child.stderr.on('data', watchReload);
       for (;;) {
         if (child.exitCode !== null) {
           if (attempt < 3 && /Address already in use/.test(log)) break;

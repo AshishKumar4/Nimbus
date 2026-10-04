@@ -31,7 +31,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -99,12 +99,16 @@ const PARENT = [
   "    const c = spawn('node', ['-e', CHILDREN[name]]);",
   "    let out = '', err = '';",
   '    const t0 = Date.now();',
-  '    const stuck = setTimeout(() => { c.kill(); resolve({ stuck: true, out }); }, 30000);',
-  "    c.stdout.on('data', (d) => { out += d; });",
+  // Stuck at 30 s, which Node never is; the close is still awaited to 120 s,
+  // so a late exit tells itself apart from a lost one (TIMING).
+  '    let late = false, outAt = null;',
+  '    const lateTimer = setTimeout(() => { late = true; }, 30000);',
+  '    const lostTimer = setTimeout(() => { c.kill(); resolve({ stuck: true, lost: true, out, outAt }); }, 120000);',
+  "    c.stdout.on('data', (d) => { out += d; outAt = Date.now() - t0; });",
   "    c.stderr.on('data', (d) => { err += d; });",
   '    const until = (text) => new Promise((ok) => { const iv = setInterval(() => { if (out.includes(text)) { clearInterval(iv); ok(); } }, 10); });',
   '    drive(c, until).catch(() => {});',
-  "    c.on('close', (code) => { clearTimeout(stuck); resolve({ code, out, err, ms: Date.now() - t0 }); });",
+  "    c.on('close', (code) => { clearTimeout(lateTimer); clearTimeout(lostTimer); resolve({ code, out, err, ms: Date.now() - t0, outAt, stuck: late }); });",
   '  });',
   '}',
   'const cases = {',
@@ -132,6 +136,7 @@ const PARENT = [
   "      shown = { code: r.code, lines: lines.length, before: before.length, after: after.length, fresh: before.length === 1 && after.length === 1 && draws(before[0]).every((d, i) => i === 1 || i === 2 || d !== draws(after[0])[i]), input: after[0] && after[0].endsWith(' \"in\"') };",
   '    }',
   "    console.log('CASE ' + name + ' ' + JSON.stringify(shown));",
+  "    console.log('TIMING ' + name + ' ' + JSON.stringify({ lastOutputMs: r.outAt, closeMs: r.lost ? null : r.ms }));",
   '  }',
   // A child killed while stuck may hold the parent open; the cases are done.
   '  process.exit(0);',
@@ -169,6 +174,7 @@ process.env.NIMBUS_PROBE_TOKEN = probe.token;
 const { mintSession, deleteSession, Terminal } = await import('../behavioral/_driver.mjs');
 const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
 const failures = [];
+let workerLog = '';
 const check = (ok, what) => { if (!ok) failures.push(what); console.log(`${ok ? 'ok  ' : 'FAIL'} ${ok ? what.split('\n')[0] : what}`); };
 try {
   const sid = await mintSession();
@@ -195,6 +201,7 @@ try {
     await write(`${W}/parent.js`, PARENT);
     const cases = await run(`cd ${W} && node parent.js`, 400_000);
     const got = caseLines(cases.stdout);
+    for (const line of cases.stdout.split('\n')) if (line.startsWith('TIMING ')) console.log(line.replace(/\r$/, ''));
     for (let i = 0; i < expected.length; i++) {
       check(got[i] === expected[i], `broker ${expected[i].split(' ')[1]}: as under node\n  node:   ${expected[i]}\n  nimbus: ${got[i]}`);
     }
@@ -288,12 +295,18 @@ try {
   }
 } catch (error) {
   // What the worker said, for a failure the driver only sees as a closed socket.
-  console.error(probe.log().split('\n').filter((line) => /error|exceeded|reset|abort|uncaught/i.test(line)).slice(-30).join('\n'));
+  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
+  writeFileSync(logPath, probe.log());
+  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
   throw error;
 } finally {
+  workerLog = probe.log();
   await probe.stop();
 }
 if (failures.length > 0) {
+  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
+  writeFileSync(logPath, workerLog);
+  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
   console.error(`sync-stdin-replay-workerd: ${failures.length} failure(s):\n${failures.join('\n\n')}`);
   process.exit(1);
 }
