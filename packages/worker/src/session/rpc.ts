@@ -735,6 +735,16 @@ export async function _rpcFsReadRange(
   return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred }) as Promise<Uint8Array | null>;
 }
 
+/** A bounded range used only to prepare fd 0, never an ordinary file read. */
+export async function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{ data: Uint8Array; size: number }> {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536) throw new RangeError('invalid stdin preparation range');
+  const stat = await self.supervisorBridge(pid).stat(path);
+  if (!stat) throw Object.assign(new Error(`ENOENT: no such stdin file '${path}'`), { code: 'ENOENT' });
+  const data = await _rpcFsReadRange(self, path, offset, Math.min(length, Math.max(0, stat.size - offset)), pid);
+  if (data === null) throw Object.assign(new Error(`ENOENT: stdin file disappeared '${path}'`), { code: 'ENOENT' });
+  return { data, size: stat.size };
+}
+
 /**
  * Read many ranges, and lstat many paths, in ONE round trip.
  *
