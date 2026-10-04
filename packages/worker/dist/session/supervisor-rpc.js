@@ -787,7 +787,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * asking. The caller's pid names whose credential answers it.
      */
     async cpReadStdin(childPid, waitMs, acquire) {
-        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+        // The run reading: a run of the process that has stopped takes nothing
+        // (worker runtime/stop-replay.ts StdinTaken).
+        const writerId = this.ctx.props?.writerId;
+        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], {
+            pid: this._reportingPid(),
+            ...(typeof writerId === 'string' && writerId.length > 0 ? { writerId } : {}),
+        }));
     }
     async cpReadOutput(childPid, fd, sinceSeq, waitMs, acquire) {
         return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));

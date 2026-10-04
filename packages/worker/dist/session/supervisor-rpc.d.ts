@@ -449,6 +449,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
+        full?: boolean;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     /**

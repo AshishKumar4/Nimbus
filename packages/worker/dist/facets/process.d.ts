@@ -258,6 +258,7 @@ export declare class FacetProcessManager {
     private _runShellLine;
     stdinWrite(childPid: number, data: Uint8Array): {
         ok: boolean;
+        full?: boolean;
     };
     stdinEnd(childPid: number): void;
     /**

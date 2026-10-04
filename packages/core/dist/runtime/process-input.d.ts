@@ -24,9 +24,13 @@ export declare class ProcessInputStore {
     write(pid: number, data: string): {
         ok: boolean;
     };
-    /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+    /**
+     * Queue bytes exactly as given: a pipe or redirect, which need not be text.
+     * Refused for room, it says \`full\`: its writer waits and writes again.
+     */
     writeBytes(pid: number, data: Uint8Array): {
         ok: boolean;
+        full?: boolean;
     };
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;

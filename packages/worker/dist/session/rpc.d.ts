@@ -411,9 +411,10 @@ export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
  */
 export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
     ok: boolean;
+    full?: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
-export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<{
+export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string): Promise<{
     data: Uint8Array;
     ended: boolean;
     resize?: {

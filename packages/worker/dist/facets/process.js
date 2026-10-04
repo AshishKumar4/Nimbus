@@ -66,6 +66,8 @@ export const CHILD_PROCESS_MAX_DEPTH = 8;
  * signal (real Node would return false from .write).
  */
 const STDIN_QUEUE_MAX_BYTES = 256 * 1024; // 256 KiB
+/** The most of a child's queued stdin one read takes. */
+const STDIN_TAKE_BYTES = 64 * 1024;
 const EMPTY_BYTES = new Uint8Array(0);
 /**
  * How long the parent's cpReadOutput long-poll waits for new chunks
@@ -487,9 +489,11 @@ export class FacetProcessManager {
             return { ok: false };
         // The cap counts BYTES. It used to count the string's UTF-16 code units,
         // which undercounts any multibyte character and overcounts a surrogate
-        // pair, so the queue's own limit did not mean what it said.
+        // pair, so the queue's own limit did not mean what it said. A write
+        // refused for room says so: the writer waits and writes again, as a full
+        // pipe makes it, where one refused because nothing reads any more is gone.
         if (child.stdinTotalBytes + data.byteLength > STDIN_QUEUE_MAX_BYTES) {
-            return { ok: false };
+            return { ok: false, full: true };
         }
         child.stdinChunks.push(data);
         child.stdinTotalBytes += data.byteLength;
@@ -514,15 +518,35 @@ export class FacetProcessManager {
         const child = this.children.get(childPid);
         if (!child || chunks.length === 0)
             return;
-        child.stdinChunks.unshift(...chunks);
+        child.stdinChunks = chunks.concat(child.stdinChunks);
         for (const chunk of chunks)
             child.stdinTotalBytes += chunk.byteLength;
+        // A reader already waiting takes what came back.
+        for (const w of child.stdinWaiters.splice(0))
+            w();
     }
     /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
     _takeStdin(child) {
-        const data = child.stdinChunks.shift();
-        if (data !== undefined) {
-            child.stdinTotalBytes -= data.byteLength;
+        const first = child.stdinChunks.shift();
+        if (first !== undefined) {
+            // Chunks queued back to back leave together, up to a read's worth: a
+            // writer's small writes cost the reader one round trip, not one each.
+            let size = first.byteLength;
+            const run = [first];
+            while (child.stdinChunks.length > 0 && size + child.stdinChunks[0].byteLength <= STDIN_TAKE_BYTES) {
+                const next = child.stdinChunks.shift();
+                run.push(next);
+                size += next.byteLength;
+            }
+            child.stdinTotalBytes -= size;
+            if (run.length === 1)
+                return { data: first, ended: false };
+            const data = new Uint8Array(size);
+            let at = 0;
+            for (const piece of run) {
+                data.set(piece, at);
+                at += piece.byteLength;
+            }
             return { data, ended: false };
         }
         if (child.stdinClosed || child.exitCode !== null)

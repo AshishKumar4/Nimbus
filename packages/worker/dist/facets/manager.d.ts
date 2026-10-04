@@ -28,6 +28,7 @@ import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { StdinTaken } from '../runtime/stop-replay.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
@@ -994,6 +995,8 @@ export declare class FacetManager {
     readonly stdinReadAhead: ReadAheadBudget;
     /** Per one-shot that can stop at a read of stdin: its output across its runs (gateOutput). */
     private readonly outputGates;
+    /** Per stdin channel of a process that can stop: what its current run took (stdinTakenBy). */
+    private readonly stdinTaken;
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
@@ -1423,18 +1426,22 @@ export declare class FacetManager {
         };
     }): Promise<FacetExecResult>;
     /**
-     * A one-shot stopped at a synchronous read of stdin that needs input not
+     * A process stopped at a synchronous read of stdin that needs input not
      * there yet (runtime/stop-replay.ts): deliver what its record carries of
      * its output, wait for the input the read needs (the end of stdin, or any of
-     * it), hand the input back to the channel with what the run had taken, and
-     * say how to run it again; or how the process ends instead.
+     * it), hand the channel back what the run took and the input after it, and
+     * say how to run it again; or how the process ends instead. What the run
+     * took and what was shown are the session's own account (StdinTaken,
+     * ReplayOutputGate), not the record's.
      */
     private _resumeStoppedRun;
     /**
      * The input a stopped run's read waits for, taken off its channel: until
-     * the channel ends (`end`), or until it holds any (`data`). Held against
-     * the session's budget, at most STDIN_SYNC_READ_BYTES. A terminating signal
-     * on the channel ends the wait, and so does the shell's abort or a kill.
+     * the channel ends (\`end\`), or until it holds any (\`data\`). Held against
+     * the session's budget, at most STDIN_SYNC_READ_BYTES with what the run had
+     * already taken, as owned pieces however small the writes were; of the
+     * channel's control packets only the last resize is kept, and a terminating
+     * signal, the shell's abort or a kill ends the wait.
      */
     private _awaitStoppedInput;
     /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
@@ -1447,6 +1454,12 @@ export declare class FacetManager {
      * no gate cannot stop, and every chunk is delivered as it is.
      */
     gateOutput(pid: number, stream: 'stdout' | 'stderr', data: Uint8Array, at: number, run: number): Uint8Array;
+    /**
+     * The account of what the current run of a process that can stop takes
+     * from stdin channel \`pid\` (cpReadStdin notes each packet it hands over,
+     * and a read by a stopped run takes nothing); undefined for any other channel.
+     */
+    stdinTakenBy(pid: number): StdinTaken | undefined;
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
      * a full queue waits for the program to read, and the pipe's end ends the

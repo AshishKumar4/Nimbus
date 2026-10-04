@@ -158,6 +158,7 @@ export declare class SessionProcessSupervisor {
     /** Queue input bytes exactly as given (a pipe or redirect). */
     writeInputBytes(pid: number, data: Uint8Array): {
         ok: boolean;
+        full?: boolean;
     };
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
     whenInputWritable(pid: number): Promise<boolean>;
