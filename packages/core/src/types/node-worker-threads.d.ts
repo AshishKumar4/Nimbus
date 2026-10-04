@@ -1,7 +1,7 @@
-// The `node:worker_threads` and `node:process` surface the inline node's realm
-// uses (substrate/lifo/commands/system/node-realm.ts, node-guest.ts). Bun and
-// Node provide both; workerd has no worker threads, and the hosted session
-// runs its own `node`.
+// The `node:worker_threads` and `node:process` surface a realm uses
+// (runtime/realm.ts, realm-guest.ts; the inline node's and a local facet's).
+// Bun and Node provide both; workerd has no worker threads, and isolates of
+// its own.
 declare module 'node:worker_threads' {
   interface MessagePort {
     postMessage(value: unknown, transferList?: readonly MessagePort[]): void;
@@ -21,6 +21,8 @@ declare module 'node:worker_threads' {
     on(event: 'error', listener: (error: Error) => void): this;
     once(event: 'exit', listener: (code: number) => void): this;
     terminate(): Promise<number>;
+    ref(): void;
+    unref(): void;
   }
   export const parentPort: MessagePort | null;
   export function receiveMessageOnPort(port: MessagePort): { message: unknown } | undefined;

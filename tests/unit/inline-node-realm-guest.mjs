@@ -195,7 +195,7 @@ switch (process.env.CASE) {
     const code = await run(`node -e "try { require('fs').readFileSync('/home/user/nope'); } catch (e) { console.log(e.code + ' ' + e.syscall + ' ' + e.message) }"`);
     assert.equal(code.out, "ENOENT open ENOENT: no such file or directory, open '/home/user/nope'\n");
     // A plain error, as a mounted backend raises one, keeps every field across.
-    const { fromRealmError, realmError } = await import('../../packages/core/src/substrate/lifo/commands/system/node-realm.ts');
+    const { fromRealmError, realmError } = await import('../../packages/core/src/runtime/realm.ts');
     const plain = Object.assign(new Error("EACCES: permission denied, open '/pc/x'"), { code: 'EACCES', errno: -13, syscall: 'open', path: '/pc/x' });
     const rebuilt = fromRealmError(structuredClone(realmError(plain)));
     assert.deepEqual([rebuilt.message, rebuilt.code, rebuilt.errno, rebuilt.syscall, rebuilt.path], [plain.message, 'EACCES', -13, 'open', '/pc/x'], 'a plain error keeps its errno');
