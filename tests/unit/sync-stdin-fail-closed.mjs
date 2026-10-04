@@ -71,11 +71,11 @@ cases.redirect = async () => {
   await assert.rejects(ask(j, 'fsReadRange', new Uint8Array([66]), 'b', ['/same-file', 0, 1]), /answered differently/, 'a separate FileHandle read of the redirect is an observation');
 };
 
-function outboundRpc(events) {
+function outboundRpc(events, plan = { live: 'ticket' }) {
   return new SupervisorRPC({ props: { doId: 's', pid: 7, writerId: 'a' } }, {
     NIMBUS_SESSION: { idFromName: (id) => id, idFromString: (id) => id, get: () => ({ supervisorOp: async (e) => {
       events.push(e.args);
-      if (e.args[0] === 'fetch') return { live: 'ticket' };
+      if (e.args[0] === 'fetch') return plan;
       return true;
     } }) },
   });
@@ -92,12 +92,20 @@ cases.sse = async () => {
 };
 cases.bodyError = async () => {
   const saved = globalThis.fetch, events = [];
-  globalThis.fetch = async () => new Response(new ReadableStream({ pull(c) { c.error(new Error('body broke')); } }));
+  const original = Object.assign(new TypeError('body broke'), { code: 'EPIPE', cause: new Error('root cause') });
+  globalThis.fetch = async () => new Response(new ReadableStream({ pull(c) { c.error(original); } }));
   try {
     let response;
     try { response = await outboundRpc(events).fetch(new Request('http://fixture/error')); await response.text(); } catch (e) { assert.match(e.message, /body broke/); }
     assert.ok(events.some(([op, payload]) => ['fetched', 'fetchBody'].includes(op) && payload.result?.error === 'body broke'), 'a post-headers error answers the journal ticket');
     assert.ok(response, 'headers precede the body error');
+    const result = events.find(([op]) => op === 'fetchBody')[1].result;
+    const replay = await outboundRpc([], { ticket: 'replay', replay: {
+      status: 200, statusText: 'OK', headers: [], hasBody: true, body: result.body,
+      chunks: result.chunks, bodyError: result.error, bodyFailure: result.failure,
+    } }).fetch(new Request('http://fixture/error'));
+    await assert.rejects(replay.text(), (e) => e instanceof TypeError && e.code === 'EPIPE' && e.cause?.message === 'root cause' && e.stack === original.stack,
+      'a replay delivers the whole body error the program saw, not just its message');
   } finally { globalThis.fetch = saved; }
 };
 for (const [name, test] of Object.entries(cases)) if (!which || which === name) { await test(); console.log('sync-stdin-fail-closed: ' + name + ' ok'); }

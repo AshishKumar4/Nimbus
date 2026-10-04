@@ -1,4 +1,4 @@
-import { REPLAY_FETCH_MAX_BYTES } from './stop-replay-contracts.js';
+import { REPLAY_FETCH_MAX_BYTES, type ReplayFailure } from './stop-replay-contracts.js';
 import { OwnedPieces } from './stop-replay-host.js';
 
 /** Bounded recording and incremental digest; never delay response headers. */
@@ -27,4 +27,24 @@ export class ReplayBodyRecord {
     for (const piece of this.pieces.finish()) { body.set(piece, at); at += piece.length; }
     return { body, chunks: this.chunks, digest: this.a.toString(16).padStart(8, '0') + this.b.toString(16).padStart(8, '0') };
   }
+}
+
+/** The same error shape is delivered live and on replay, including its cause. */
+export function recordFailure(error: unknown): ReplayFailure {
+  const e = error instanceof Error ? error : new Error(String(error));
+  const properties = Object.fromEntries(Object.getOwnPropertyNames(e)
+    .filter((key) => !['name', 'message', 'stack', 'cause'].includes(key))
+    .map((key) => [key, (e as unknown as Record<string, unknown>)[key]]));
+  if (e.cause !== undefined && !(e.cause instanceof Error)) properties.cause = e.cause;
+  return { name: e.name, message: e.message, stack: e.stack, properties,
+    ...(e.cause instanceof Error ? { cause: recordFailure(e.cause) } : {}) };
+}
+export function failureOf(record: ReplayFailure): Error {
+  const constructors: Record<string, ErrorConstructor> = { Error, TypeError, RangeError, SyntaxError, ReferenceError, URIError, EvalError };
+  const error = new (constructors[record.name] ?? Error)(record.message);
+  error.name = record.name;
+  if (record.stack !== undefined) error.stack = record.stack;
+  Object.assign(error, record.properties);
+  if (record.cause) error.cause = failureOf(record.cause);
+  return error;
 }

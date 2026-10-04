@@ -92,5 +92,7 @@ export interface RecordedResponse {
   body: Uint8Array;
   chunks?: number[];
   bodyError?: string;
+  bodyFailure?: ReplayFailure;
 }
-export type RecordedBody = { body: Uint8Array; digest: string; chunks: number[]; error?: string } | { error: string } | { tooLarge: true };
+export interface ReplayFailure { name: string; message: string; stack?: string; properties: Record<string, unknown>; cause?: ReplayFailure }
+export type RecordedBody = { body: Uint8Array; digest: string; chunks: number[]; error?: string; failure?: ReplayFailure } | { error: string; failure?: ReplayFailure } | { tooLarge: true };

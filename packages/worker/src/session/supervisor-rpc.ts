@@ -59,7 +59,7 @@ import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { type RecordedResponse, type RecordedBody } from '../runtime/stop-replay-contracts.js';
-import { ReplayBodyRecord } from '../runtime/stop-replay-body.js';
+import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
@@ -1050,8 +1050,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
             return;
           }
           if (r.bodyError) {
-            await outbound('fetchBody', { ticket: plan.ticket, result: { ...recorder.finish(), error: r.bodyError } });
-            controller.error(new Error(r.bodyError));
+            await outbound('fetchBody', { ticket: plan.ticket, result: { ...recorder.finish(), error: r.bodyError, failure: r.bodyFailure } });
+            controller.error(r.bodyFailure ? failureOf(r.bodyFailure) : new Error(r.bodyError));
           } else {
             await outbound('fetchBody', { ticket: plan.ticket, result: recorder.finish() });
             controller.close();
@@ -1095,9 +1095,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
             controller.enqueue(next.value);
           }
         } catch (error) {
-          try { await finish({ ...recorder.finish(), error: error instanceof Error ? error.message : String(error) }); }
+          const failure = recordFailure(error);
+          try { await finish({ ...recorder.finish(), error: failure.message, failure }); }
           catch (journalError) { controller.error(journalError); return; }
-          controller.error(error);
+          controller.error(failureOf(failure));
         }
       },
       async cancel(reason) {

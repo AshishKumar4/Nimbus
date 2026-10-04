@@ -6437,7 +6437,13 @@ export class FacetManager {
           }
           plan({ live: ticket });
           const result = await fetched;
-          if ('error' in result) throw new Error(result.error);
+          if ('error' in result) {
+            // A pre-headers platform rejection has not crossed as a
+            // Response. Keep the live error, but never replay an incomplete
+            // failure shape (the body-error protocol below records one).
+            journal.disqualify(`${what} failed before its headers (${result.error})`);
+            throw new Error(result.error);
+          }
           response = { ...result, body: new Uint8Array(0) };
           return result;
         }, () => response);
@@ -6515,7 +6521,7 @@ export class FacetManager {
       const result = await pending;
       if ('tooLarge' in result) journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB (${live.what})`);
       else if (live.response) {
-        if ('error' in result) live.response.bodyError = result.error;
+        if ('error' in result) { live.response.bodyError = result.error; live.response.bodyFailure = result.failure; }
         if ('body' in result) {
           live.response.body = result.body;
           live.response.chunks = result.chunks;
