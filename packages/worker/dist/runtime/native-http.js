@@ -48,7 +48,8 @@ Object.defineProperty(builtins, "http", {
         const started = !this.destroyed && !inFlight.has(this);
         // A request is something a second run would send again
         // (runtime/stop-replay.ts): counted before it leaves.
-        if (started) __nimbusReplay?.effect("http " + String(this.method || "GET") + " " + String(this.host || "") + String(this.path || ""));
+        // \`__nimbusReplay\` is the shims' own; this source also runs without them.
+        if (started && typeof __nimbusReplay !== "undefined") __nimbusReplay?.effect("http " + String(this.method || "GET") + " " + String(this.host || "") + String(this.path || ""));
         if (started) {
           inFlight.add(this);
           globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
