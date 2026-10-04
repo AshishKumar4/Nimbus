@@ -1,22 +1,24 @@
 /**
- * local-facet-host.ts — a facet in a realm of its own, in the caller's process.
+ * local-facet-host.ts — a facet in a realm of its own, beside the caller.
  *
  * The {@link FacetHost} for every embedder that is not workerd. There is no
  * dynamic-worker substrate to reach for and no CSP forbidding a compile, so
- * each facet is a worker thread of this process (runtime/realm.ts; its side is
- * facet-guest.ts): the wasm table is compiled here and handed over (a
- * compiled module crosses to a worker without being compiled again, and V8
- * reuses this isolate's compilation of the same bytes), the preamble
- * evaluated once there, and each submitted function evaluated there inside
- * it.
+ * each facet is a realm (runtime/realm.ts; its side is facet-guest.ts): the
+ * wasm table filled, the preamble evaluated once there, and each submitted
+ * function evaluated there inside it. The realm is a worker thread of this
+ * process, or under Bun a process of its own: Bun 1.4 cannot end a worker
+ * running WebAssembly, and a facet runs nothing else. A thread is handed its
+ * modules compiled here (a compiled module crosses to a worker without a
+ * second compile, and V8 reuses this isolate's compilation of the same
+ * bytes); a process, which no compiled module crosses to, their bytes.
  *
  * A realm of its own because a facet used to be built in this realm, so what
  * its program reached of JavaScript was the host's: Ruby's `js` bridge
  * evaluates code (`JS.eval`) and reads and writes any global, so
  * `JS.eval("globalThis.Promise = null")` broke the host's shell, and a guest
  * spinning without a syscall held the host's only thread for good. Now the
- * program reaches the facet's realm, and a call's timeout or abort ends it
- * (`terminate()` stops even a loop that never yields).
+ * program reaches the facet's realm, and a call's timeout or abort ends it,
+ * even in a loop that never yields.
  *
  * The function is SERIALIZED rather than called in place, as on workerd. A
  * runner's facet function reads names the preamble declares —
@@ -61,8 +63,8 @@ export interface FacetSubmit {
   /** The function's source. */
   readonly source: string;
   readonly args: unknown;
-  /** Wasm modules to add to the table before the call, compiled here. */
-  readonly modules: Record<string, WebAssembly.Module>;
+  /** Wasm modules to add to the table before the call: compiled for a thread, bytes for a process to compile. */
+  readonly modules: Record<string, WebAssembly.Module | ArrayBuffer>;
 }
 
 /** A call the guest makes on its capability. */
@@ -86,7 +88,7 @@ export function isFacetPayload(value: unknown): value is FacetPayload {
 
 export function isFacetSubmit(value: unknown): value is FacetSubmit {
   return record(value) && value.type === 'submit' && Number.isSafeInteger(value.id) && typeof value.source === 'string'
-    && 'args' in value && record(value.modules) && Object.values(value.modules).every((module) => module instanceof WebAssembly.Module);
+    && 'args' in value && record(value.modules) && Object.values(value.modules).every((module) => module instanceof WebAssembly.Module || module instanceof ArrayBuffer);
 }
 
 function isSupervisorCall(value: unknown): value is SupervisorCall {
@@ -116,7 +118,7 @@ type WasmCompiler = (bytes: BufferSource) => Promise<WebAssembly.Module>;
  * that surface, so the one host that DOES compile asks for the capability by
  * name and says so plainly when it is absent.
  */
-function wasmCompiler(): WasmCompiler {
+export function wasmCompiler(): WasmCompiler {
   const compile: unknown = Reflect.get(WebAssembly, 'compile');
   if (typeof compile !== 'function') {
     throw new Error(
@@ -137,6 +139,17 @@ function wasmCompiler(): WasmCompiler {
  */
 function engineParks(): WasiParking {
   return typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function' ? 'jspi' : 'none';
+}
+
+/**
+ * Where a facet runs: a worker thread, or, under Bun, a process. Bun 1.4 does
+ * not terminate a worker that is running WebAssembly (its `terminate()` never
+ * settles and the thread spins on, a core for good), and a facet's guest is
+ * WebAssembly; Node ends one at once. Asked of the engine at hand, as
+ * {@link engineParks} is.
+ */
+function facetIsolation(): 'thread' | 'process' {
+  return Reflect.get(globalThis, 'Bun') === undefined ? 'thread' : 'process';
 }
 
 /**
@@ -169,7 +182,7 @@ const ended = (tag: string, why: string): Error => new Error(`Nimbus: facet '${t
 class RealmFacet implements Facet {
   /** The realm, started on the first call. */
   private realm: Promise<Realm> | null = null;
-  /** The image each name was last sent as: the same image is compiled, and sent, once per facet. */
+  /** The image each name was last sent as: the same image is sent, and compiled, once per facet. */
   private readonly sent = new Map<string, ArrayBuffer>();
   /** Submits are serialized: one scope, and a facet's calls are ordered. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -180,6 +193,7 @@ class RealmFacet implements Facet {
   private over: Error | null = null;
   private readonly supervisor: FilesystemSupervisor | null;
   private readonly synchronous: RuntimeFsBridge['synchronous'];
+  private readonly isolation = facetIsolation();
 
   constructor(private readonly spec: FacetSpec) {
     this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
@@ -207,6 +221,7 @@ class RealmFacet implements Facet {
     };
     const realm = await startRealm({
       entry: new URL('./facet-guest.js', import.meta.url),
+      isolation: this.isolation,
       payload,
       serve: (call) => this.serve(call),
       onEvent: (event) => {
@@ -237,11 +252,11 @@ class RealmFacet implements Facet {
   }
 
   /** The modules a call adds to the facet's table: the spec's, per-call ones over them, but those it holds already. */
-  private async modules(callModules: Record<string, ArrayBuffer> | undefined): Promise<Record<string, WebAssembly.Module>> {
-    const added: Record<string, WebAssembly.Module> = {};
+  private async modules(callModules: Record<string, ArrayBuffer> | undefined): Promise<Record<string, WebAssembly.Module | ArrayBuffer>> {
+    const added: Record<string, WebAssembly.Module | ArrayBuffer> = {};
     for (const [name, bytes] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
       if (this.sent.get(name) === bytes) continue;
-      added[name] = await wasmCompiler()(bytes);
+      added[name] = this.isolation === 'thread' ? await wasmCompiler()(bytes) : bytes;
       this.sent.set(name, bytes);
     }
     return added;

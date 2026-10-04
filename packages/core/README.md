@@ -263,15 +263,17 @@ request-time `WebAssembly.instantiate`, so wasm has to ride the Worker Loader
 module map. That machinery lives in `@nimbus-sh/worker` and
 `@nimbus-sh/fabric`. The shell, coreutils, and filesystem need none of it.
 
-Each facet `localFacetHost()` opens is a worker thread of its own, as each
-inline `node` run is. So nothing a program reaches through it is your
-process's: Ruby's `js` bridge (`JS.eval`, `JS.global`) sees the facet's
-globals, not yours. A kill, Ctrl-C or `signal` ends the program, answering
-130. A facet's `timeoutMs` ends it too, and an idle facet does not keep your
-process alive. Under Bun 1.4 one limit remains: a worker spinning inside
-WebAssembly cannot be terminated, so a killed `while True: pass` answers 130
-and your process runs on, but the guest's thread keeps spinning until your
-process exits. Node ends it.
+Each facet `localFacetHost()` opens is a realm of its own: a worker thread
+under Node, as each inline `node` run is, and a child process under Bun,
+because Bun 1.4 cannot end a worker that is running WebAssembly. So nothing a
+program reaches through it is your process's: Ruby's `js` bridge (`JS.eval`,
+`JS.global`) sees the facet's globals, not yours. A kill, Ctrl-C or `signal`
+ends the program, answering 130, and its thread or process with it, so
+nothing keeps spinning. A facet's `timeoutMs` ends it too, and an idle facet
+does not keep your process alive. Each wasm program run starts about 60 ms
+later under Bun and 40 ms later under Node than it did in your own realm,
+and each filesystem syscall costs about 55 µs more under Bun and 30 µs under
+Node.
 
 ## Sharing a database with your own app
 

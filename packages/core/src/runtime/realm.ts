@@ -16,14 +16,29 @@
  * facet host (local-facet-host.ts). The guest's side is realm-guest.ts. What
  * crosses:
  *
- *   - calls, guest to host, on `calls`: each names its id, and the host
- *     answers it there, value or error, then sets `wake` and notifies it. The
- *     guest may wait for an answer synchronously (Atomics.wait on `wake`, the
- *     answer taken with receiveMessageOnPort), which holds its thread as a
- *     blocking syscall holds a process, or asynchronously. Only answers travel
- *     guest-bound on `calls`, so nothing else can be taken for one;
- *   - events, either way, on `events`: whatever the realm's user says they
- *     are, each narrowed where it arrives.
+ *   - calls, guest to host: each names its id, and the host answers it,
+ *     value or error. The guest may wait for an answer synchronously, which
+ *     holds its thread as a blocking syscall holds a process, or
+ *     asynchronously;
+ *   - events, either way: whatever the realm's user says they are, each
+ *     narrowed where it arrives.
+ *
+ * A realm is a worker thread (`isolation: 'thread'`) or, for a guest its
+ * engine cannot end in a thread, a process of its own (`'process'`): Bun 1.4
+ * does not terminate a worker that is running WebAssembly (`terminate()`
+ * never settles and the thread spins on, a core for good, where Node ends it
+ * at once; a worker running JavaScript, or WebAssembly that calls into
+ * JavaScript, Bun ends), and a process ends at SIGKILL whatever it runs.
+ *
+ * In a thread, calls go on a MessagePort, `calls`; the host answers there,
+ * then sets `wake` and notifies it, and a guest that waits does so with
+ * Atomics.wait on `wake`, taking the answer with receiveMessageOnPort. Only
+ * answers travel guest-bound on `calls`, so nothing else can be taken for one.
+ * Events go on `events`. In a process, the same messages go as frames (a
+ * length, then the message's v8 serialization) on pipes: the host's events on
+ * fd 4, answers on fd 3 (which the guest only ever reads synchronously, so a
+ * call waits on it as on any blocking read), and the guest's calls and
+ * events on fd 5.
  *
  * The guest is untrusted (the program shares its realm), so the ports reach
  * it by its first message, never through `workerData` a program can import,
@@ -34,6 +49,9 @@
  * Atomics.wait in workers; workerd does not, and has isolates of its own.
  */
 
+import type * as ChildProcesses from 'node:child_process';
+import type HostProcess from 'node:process';
+import type * as V8 from 'node:v8';
 import type * as WorkerThreads from 'node:worker_threads';
 import type { MessagePort } from 'node:worker_threads';
 import { isVfsErrorCode, VfsError } from '../vfs/vfs-error.js';
@@ -80,6 +98,73 @@ export function isRealmCall(value: unknown): value is RealmCall {
 export function isRealmAnswer(value: unknown): value is RealmAnswer {
   return record(value) && Number.isSafeInteger(value.id)
     && ('value' in value || (record(value.error) && typeof value.error.message === 'string'));
+}
+
+// ── A process realm's frames ─────────────────────────────────────────────────
+
+/** The pipes of a process realm, by the guest's file descriptor. */
+export const REALM_FDS = { answers: 3, events: 4, toHost: 5 } as const;
+
+/** What a process realm's guest sends: a call, or an event. */
+export type GuestFrame =
+  | { readonly kind: 'call'; readonly id: number; readonly request: unknown }
+  | { readonly kind: 'event'; readonly event: unknown };
+
+export function isGuestFrame(value: unknown): value is GuestFrame {
+  return record(value) && ((value.kind === 'call' && Number.isSafeInteger(value.id) && 'request' in value)
+    || (value.kind === 'event' && 'event' in value));
+}
+
+/** A serialized message as a frame: its length (u32, little-endian), then the bytes. */
+export function encodeFrame(serialized: Uint8Array): Uint8Array {
+  const framed = new Uint8Array(4 + serialized.byteLength);
+  new DataView(framed.buffer).setUint32(0, serialized.byteLength, true);
+  framed.set(serialized, 4);
+  return framed;
+}
+
+/**
+ * The frames in a byte stream, as each completes; a partial one waits for its
+ * rest. Chunks are kept as they came and copied once, into the frame they
+ * complete: a frame of megabytes (a wasm image) arrives in many.
+ */
+export class FrameReader {
+  private readonly chunks: Uint8Array[] = [];
+  private buffered = 0;
+  /** The length of the frame being read, once its header is in. */
+  private length: number | null = null;
+
+  /** The frames `chunk` completes, each still serialized. */
+  push(chunk: Uint8Array): Uint8Array[] {
+    this.chunks.push(chunk);
+    this.buffered += chunk.byteLength;
+    const frames: Uint8Array[] = [];
+    for (;;) {
+      if (this.length === null) {
+        if (this.buffered < 4) break;
+        this.length = new DataView(this.take(4).buffer).getUint32(0, true);
+      }
+      if (this.buffered < this.length) break;
+      frames.push(this.take(this.length));
+      this.length = null;
+    }
+    return frames;
+  }
+
+  /** The next `count` bytes, out of the chunks. */
+  private take(count: number): Uint8Array {
+    const out = new Uint8Array(count);
+    for (let at = 0; at < count;) {
+      const head = this.chunks[0];
+      const used = Math.min(head.byteLength, count - at);
+      out.set(head.subarray(0, used), at);
+      at += used;
+      if (used === head.byteLength) this.chunks.shift();
+      else this.chunks[0] = head.subarray(used);
+    }
+    this.buffered -= count;
+    return out;
+  }
 }
 
 // ── Errors, either way across ─────────────────────────────────────────────────
@@ -143,8 +228,10 @@ export async function realmOutcome(perform: () => unknown): Promise<RealmOutcome
 // ── The host's side ───────────────────────────────────────────────────────────
 
 export interface RealmOptions {
-  /** The guest module the worker runs (it calls realm-guest.ts's joinRealm). */
+  /** The guest module the realm runs (it calls realm-guest.ts's joinRealm). */
   readonly entry: URL;
+  /** A worker thread of this process (the default), or a process of its own, ended by SIGKILL. */
+  readonly isolation?: 'thread' | 'process';
   /** What the guest starts with: cloned to it with its ports. */
   readonly payload: unknown;
   /** Answers one call the guest makes: its value, or what it throws. Never called after the realm ended. */
@@ -155,7 +242,7 @@ export interface RealmOptions {
 
 /** How a realm ended. */
 export interface RealmEnd {
-  /** The worker's exit code. */
+  /** The worker's or the process's exit code (a process ended by a signal: 128 + its number). */
   readonly code: number;
   /** The error that ended it, if one did. */
   readonly failure: Error | null;
@@ -168,18 +255,22 @@ export interface Realm {
   post(event: unknown): boolean;
   /** Ends the realm now, even in a loop that never yields. Idempotent. */
   terminate(): void;
-  /** Whether the realm (its worker and its ports) keeps the host's process alive: it does by default. */
+  /** Whether the realm (its worker or process, and its channels) keeps the host's process alive: it does by default. */
   hold(on: boolean): void;
-  /** Settles once the worker has ended and every event it posted was delivered. */
+  /** Settles once the realm has ended and every event it posted was delivered. */
   readonly ended: Promise<RealmEnd>;
 }
 
 /**
  * Starts a realm running `options.entry`, or answers why this host has none:
- * one without node:worker_threads (workerd, which loads this module in the
- * hosted session, has isolates of its own).
+ * one without node:worker_threads or node:child_process (workerd, which loads
+ * this module in the hosted session, has isolates of its own).
  */
 export async function startRealm(options: RealmOptions): Promise<Realm | { readonly unavailable: string }> {
+  return options.isolation === 'process' ? startProcessRealm(options) : startThreadRealm(options);
+}
+
+async function startThreadRealm(options: RealmOptions): Promise<Realm | { readonly unavailable: string }> {
   let threads: typeof WorkerThreads;
   try {
     // Imported when a realm starts, not with the module: a platform module
@@ -250,6 +341,89 @@ export async function startRealm(options: RealmOptions): Promise<Realm | { reado
       for (const handle of [worker, calls.port1, events.port1]) {
         if (on) handle.ref();
         else handle.unref();
+      }
+    },
+    ended,
+  };
+}
+
+/** The signals a process realm may end by, by number, for its exit code. */
+const SIGNAL_NUMBERS: Readonly<Record<string, number>> = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGSEGV: 11, SIGTERM: 15, SIGABRT: 6 };
+
+async function startProcessRealm(options: RealmOptions): Promise<Realm | { readonly unavailable: string }> {
+  let children: typeof ChildProcesses;
+  let v8: typeof V8;
+  let host: typeof HostProcess;
+  try {
+    // Imported when a realm starts, not with the module: platform modules
+    // workerd, which loads this module in the hosted session, does not have.
+    [children, v8, { default: host }] = await Promise.all([import('node:child_process'), import('node:v8'), import('node:process')]);
+  } catch {
+    return { unavailable: 'this host cannot start a process (Bun and Node can)' };
+  }
+  // The same engine runs the guest; a `.js` guest beside its `.ts` source runs under Bun from either.
+  const child = children.spawn(host.execPath, [decodeURIComponent(options.entry.pathname)], {
+    stdio: ['ignore', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe'],
+  });
+  const [, , , answers, events, fromGuest] = child.stdio;
+  // A pipe the guest's end of is gone (it was killed, or it ended) is what ending is; no error of the host's.
+  for (const pipe of [answers, events, fromGuest]) pipe.on('error', () => {});
+  let over = false;
+  const send = (pipe: ChildProcesses.Writable, message: unknown): boolean => {
+    if (over) return false;
+    try {
+      pipe.write(encodeFrame(v8.serialize(message)));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // The first frame on the events pipe is what the guest starts with.
+  send(events, { payload: options.payload });
+  const answer = (id: number, outcome: RealmOutcome) => {
+    if (!send(answers, { id, ...outcome })) send(answers, { id, error: realmError(new Error('the answer cannot cross to the realm')) });
+  };
+  const frames = new FrameReader();
+  fromGuest.on('data', (chunk) => {
+    for (const serialized of frames.push(chunk)) {
+      let message: unknown;
+      try { message = v8.deserialize(serialized); } catch { continue; }
+      if (!isGuestFrame(message)) continue;
+      if (message.kind === 'event') options.onEvent(message.event);
+      else {
+        const { id, request } = message;
+        void realmOutcome(() => options.serve(request)).then((outcome) => answer(id, outcome));
+      }
+    }
+  });
+
+  let terminated = false;
+  let failure: Error | null = null;
+  child.on('error', (error: Error) => { failure = error; });
+  // Ended once the process has exited and every frame it sent was read.
+  const exited = new Promise<number>((resolve) => {
+    child.once('exit', (code, signal) => resolve(code ?? 128 + (signal ? SIGNAL_NUMBERS[signal] ?? 0 : 0)));
+  });
+  const drained = new Promise<void>((resolve) => {
+    fromGuest.once('close', () => resolve());
+  });
+  const ended = Promise.all([exited, drained]).then(([code]): RealmEnd => {
+    over = true;
+    answers.destroy();
+    events.destroy();
+    return { code, failure, terminated };
+  });
+  return {
+    post: (event) => send(events, event),
+    terminate() {
+      if (over || terminated) return;
+      terminated = true;
+      child.kill('SIGKILL');
+    },
+    hold(on) {
+      for (const handle of [child, answers, events, fromGuest]) {
+        if (on) handle.ref?.();
+        else handle.unref?.();
       }
     },
     ended,

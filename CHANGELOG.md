@@ -6,8 +6,8 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - `@nimbus-sh/core`: each facet of `localFacetHost()` runs in a realm of its
-  own, a worker thread, as the inline `node`'s programs do (Kinu ask 17,
-  local-facet-host.ts:183). The facet's scope was built in the host's realm,
+  own, a worker thread under Node, as the inline `node`'s programs do, and a
+  child process under Bun (Kinu ask 17, local-facet-host.ts:183). The facet's scope was built in the host's realm,
   so what a program reached of JavaScript was the embedder's: a Ruby
   program's `JS.eval("globalThis.Promise = null")` broke the host's shell
   ("null is not an object (evaluating 'Promise.allSettled')"), and
@@ -19,14 +19,20 @@ published independently in the `@nimbus-sh` npm scope.
   (the supervisor's, answered by promise where the engine parks and at once
   where it cannot, and its synchronous view's), and a call's `timeoutMs` or
   new `signal` ends the facet. `python3`, `ruby` and `wasm-runner` pass the
-  command's signal, so a kill or Ctrl-C answers 130 and the host runs on. An
-  idle facet no longer keeps the process alive. Under Bun 1.4 a worker
-  spinning inside WebAssembly cannot be terminated: the command answers and
-  the host runs on, but the guest's thread spins until the process exits.
-  Node ends it. The mechanism is the inline `node`'s, now shared
-  (runtime/realm.ts, realm-guest.ts). It costs each wasm program run about
-  60 ms more to start under Bun and 90 ms under Node, and each filesystem
-  syscall about 20 µs. The `bash` command does not pass its signal yet.
+  command's signal, so a kill or Ctrl-C answers 130, the host runs on, and
+  nothing of the program is left: no thread, no process, no CPU within a
+  second of the kill (measured from /proc). Bun 1.4 cannot terminate a worker
+  running WebAssembly (`terminate()` never settles and the thread spins on, a
+  core for good, on 1.4.0, 1.4.2 and the 2026-10-03 canary alike; one in
+  JavaScript, or in WebAssembly that calls into JavaScript, it ends), so under
+  Bun a facet is a child process of the same engine, ended by SIGKILL, over
+  the same protocol framed on pipes; a guest whose host dies goes with it
+  within half a second. An idle facet no longer keeps the process alive. The
+  mechanism is the inline `node`'s, now shared (runtime/realm.ts,
+  realm-guest.ts). It costs each wasm program run about 60 ms more to start
+  under Bun and 40 ms under Node, and each filesystem syscall about 55 µs
+  under Bun and 30 µs under Node. The `bash` command does not pass its
+  signal yet.
   Unchanged before and after: under Bun, each Ruby run keeps about 1 GB of
   the process's memory. Node returns it.
 

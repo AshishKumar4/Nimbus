@@ -12,11 +12,14 @@
 //   (1) a facet that rebinds intrinsics and globals (Array.isArray, Array,
 //       setTimeout, Promise, Object.prototype) sees its own rebinding, and
 //       leaves the host's untouched;
-//   (2) a call's timeout and its abort end a facet that never yields, and
-//       the call is answered;
+//   (2) a call's timeout and its abort end a facet that never yields, in
+//       JavaScript or in WebAssembly, and the call is answered;
 //   (3) a program the workspace runs on the facet host (python3) that never
 //       yields is ended by the caller's abort, answering 130, and the host's
 //       event loop runs meanwhile;
+//   (2, 3) ended means ended: within 1 s of the abort, no CPU is spent by
+//       this process or any it started, and they hold no more threads than
+//       before the program started (Linux /proc);
 //   (4) a facet that waits for no call does not keep the host's process
 //       alive, and neither does one a timeout or abort ended: the case's
 //       process exits by itself;
@@ -27,16 +30,16 @@
 //
 // Each case runs in a process of its own (CASE=<name>), under bun against
 // the source and under node against the built package (packages/core/dist:
-// rebuild first), so a case that holds its process fails alone.
+// rebuild first), so a case that holds its process fails alone. No case
+// calls process.exit: each must end by itself.
 //
-// Bun 1.4 cannot terminate a worker thread spinning inside WebAssembly (a
-// worker spinning in JavaScript it can): the aborted python3 answers 130 and
-// the host runs on, but the guest's thread spins until the process exits, so
-// under Bun the `kill` case exits explicitly. Under Node it ends by itself.
+// Bun 1.4 cannot terminate a worker thread spinning inside WebAssembly, so
+// under Bun a facet is a process of its own (runtime/realm.ts); this is what
+// (2) and (3) prove there.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostSqlite } from './lib/host-sqlite.mjs';
@@ -72,6 +75,57 @@ const within = (promise, ms, what) => {
   const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what}: not settled after ${ms} ms`)), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 };
+// ── This process and every process it started: their CPU and their threads ──
+
+const statOf = (pid) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' '); } catch { return null; } };
+const family = () => {
+  const parentOf = new Map();
+  for (const pid of readdirSync('/proc').filter((name) => /^\d+$/.test(name))) {
+    const stat = statOf(pid);
+    if (stat) parentOf.set(pid, stat[1]);
+  }
+  const members = new Set([String(process.pid)]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [pid, parent] of parentOf) if (members.has(parent) && !members.has(pid)) { members.add(pid); grew = true; }
+  }
+  return [...members];
+};
+/** Clock ticks of CPU this process and its descendants have used. */
+const cpuTicks = () => family().reduce((sum, pid) => { const stat = statOf(pid); return stat ? sum + Number(stat[11]) + Number(stat[12]) : sum; }, 0);
+const threadCount = () => family().reduce((sum, pid) => { try { return sum + readdirSync(`/proc/${pid}/task`).length; } catch { return sum; } }, 0);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * That what an abort ended is over: from 1 s after it, 400 ms in which the
+ * family spends no more than a tick or two of CPU (a spinning thread spends
+ * about 40), and no process or thread is left that `before` (a
+ * {@link settled} count) did not have.
+ */
+async function assertEnded(what, before) {
+  await sleep(1000);
+  const from = cpuTicks();
+  await sleep(400);
+  const spent = cpuTicks() - from;
+  assert.ok(spent <= 3, `${what}: nothing spins after the abort (${spent} ticks in 400 ms)`);
+  const left = family().filter((pid) => !before.processes.includes(pid));
+  assert.deepEqual(left, [], `${what}: no process outlives it`);
+  const threads = threadCount();
+  assert.ok(threads <= before.threads, `${what}: no thread outlives it (${threads} threads, ${before.threads} before)`);
+}
+
+/**
+ * The family's processes and thread count once a facet has run and ended:
+ * what an ended one must come back to (an engine starts some threads of its
+ * own on first use).
+ */
+async function settled() {
+  const warm = host.open({ tag: 'warm' });
+  await warm.submit(function warm() { return 1; }, null);
+  warm.dispose();
+  await sleep(1000);
+  return { processes: family(), threads: threadCount() };
+}
+
 const hostGlobals = () => ({
   isArray: Array.isArray,
   Array: globalThis.Array,
@@ -108,17 +162,29 @@ case 'realm': {
 
 // ── (2) a timeout or an abort ends a facet that never yields ────────────────
 {
+  const before = await settled();
   const spin = function spin() { for (;;) { /* never yields */ } };
   const timed = host.open({ tag: 'spin-timeout' });
   const started = Date.now();
   await assert.rejects(within(timed.submit(spin, null, { timeoutMs: 300 }), 10_000, 'the timed call'), /timed out after 300 ms/);
   assert.ok(Date.now() - started < 5_000, '(2) the timeout ended it');
   await assert.rejects(timed.submit(function ok() { return 1; }, null), /disposed|ended/, '(2) and the facet with it');
+  await assertEnded('(2) a timed-out JavaScript loop', before);
 
   const controller = new AbortController();
   const aborted = host.open({ tag: 'spin-abort' });
   setTimeout(() => controller.abort(new Error('killed')), 300);
   await assert.rejects(within(aborted.submit(spin, null, { signal: controller.signal }), 10_000, 'the aborted call'), /killed/);
+  await assertEnded('(2) an aborted JavaScript loop', before);
+
+  // A loop inside WebAssembly, which calls nothing: (module (func (export "spin") (loop (br 0)))).
+  const looping = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 8, 1, 4, 115, 112, 105, 110, 0, 0, 10, 9, 1, 7, 0, 3, 64, 12, 0, 11, 11]).buffer;
+  const wasmController = new AbortController();
+  const wasm = host.open({ tag: 'spin-wasm', wasmModules: { 'spin.wasm': looping } });
+  setTimeout(() => wasmController.abort(new Error('killed')), 300);
+  const spinWasm = function spinWasm() { new WebAssembly.Instance(globalThis.__NIMBUS_WASM['spin.wasm'], {}).exports.spin(); };
+  await assert.rejects(within(wasm.submit(spinWasm, null, { signal: wasmController.signal }), 10_000, 'the aborted wasm call'), /killed/);
+  await assertEnded('(2) an aborted WebAssembly loop', before);
   // (4): the case's process exits by itself.
   break;
 }
@@ -128,7 +194,7 @@ case 'kill': {
   const missing = missingRuntimeFile();
   if (missing !== null) {
     console.log(`case kill ok (skipped: ${missing} not built)`);
-    process.exit(0);
+    break;
   }
   const { sql, transactions } = await hostSqlite();
   const seeding = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user' });
@@ -136,6 +202,7 @@ case 'kill': {
   const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: host });
   assert.equal((await ws.exec('python3 -c "print(6*7)"')).stdout, '42\n');
 
+  const before = await settled();
   const controller = new AbortController();
   let ticks = 0;
   const ticker = setInterval(() => { ticks++; }, 50);
@@ -147,13 +214,9 @@ case 'kill': {
   assert.equal(r.exitCode, 130, `(3) the aborted program answers 130: ${r.stderr}`);
   assert.ok(Date.now() - started < 10_000, '(3) promptly');
   assert.ok(ticks >= 5, `(3) the host's event loop ran while the program spun (${ticks} ticks)`);
+  await assertEnded('(3) the aborted python3', before);
   assert.equal((await ws.exec('python3 -c "print(1)"')).stdout, '1\n', '(3) the workspace runs the next program');
   await ws.close();
-  if (underBun) {
-    // Bun cannot terminate the spinning guest's thread (see the header).
-    console.log('case kill ok');
-    process.exit(0);
-  }
   break;
 }
 
@@ -162,7 +225,7 @@ case 'ruby': {
   const packages = process.env.NIMBUS_RUNTIME_PACKAGES;
   if (!packages || !existsSync(join(packages, 'ruby', 'index.js'))) {
     console.log('case ruby ok (skipped: set NIMBUS_RUNTIME_PACKAGES to a directory holding the ruby runtime package)');
-    process.exit(0);
+    break;
   }
   const ruby = (await import(join(packages, 'ruby', 'index.js'))).default;
   const { sql, transactions } = await hostSqlite();
