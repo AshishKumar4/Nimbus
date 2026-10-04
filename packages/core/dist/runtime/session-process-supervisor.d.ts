@@ -123,6 +123,10 @@ export declare class SessionProcessSupervisor {
      * unreleased left its binding behind. With no release set nothing is
      * reaped. A reaped pid whose logs hold no exit (a process killed around its
      * log) is an orphan from here, which gives its logs a deadline.
+     *
+     * A prune serves whoever runs next, not the processes it removes, so a
+     * release that fails goes to that process's own stderr log, where its
+     * output is read; every expired entry is still released and forgotten.
      */
     reap(maxAge?: number): Promise<number>;
     /**
@@ -142,6 +146,12 @@ export declare class SessionProcessSupervisor {
      * orphaned as by {@link reap}.
      */
     reapTree(pid: number): Promise<number>;
+    /**
+     * Release and forget each entry. A release that fails stops nothing:
+     * releaseProcess revokes everything before it reports what it could not
+     * do, so the entry is forgotten either way and the failure is returned.
+     */
+    private releaseAndForget;
     get stats(): ProcessTable['stats'];
     /** See ProcessTable.residentRunning — running long-running process count. */
     get residentRunning(): number;
