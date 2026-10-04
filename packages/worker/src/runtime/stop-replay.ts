@@ -291,6 +291,8 @@ const __nimbusStopReplay = (() => {
   return {
     ledger,
     observed,
+    bodyStarted(what) { const id = run.bodies.length; run.bodies[id] = what; return id; },
+    bodyFinished(id) { run.bodies[id] = null; },
     unreplayable,
     effect,
     begin(launch) {
@@ -298,6 +300,7 @@ const __nimbusStopReplay = (() => {
       const ctxAbort = launch.abort || null;
       run = {
         observed: {},
+        bodies: [],
         number: replay ? replay.run : 1,
         abort: ctxAbort,
         nonce: "" + (launch.nonce || ""),
@@ -407,6 +410,7 @@ const __nimbusStopReplay = (() => {
       if (replaying()) diverge("it waited for stdin at a read the run before it did not wait at");
       if (!run.canStop) return run.whyNot;
       if (run.why !== null) return run.why;
+      for (const body of run.bodies) if (body !== null) return "received headers of " + body + ", but its response body was still unfinished";
       // Captured output rides the stop, so a stop that cannot go on still
       // hands it back: bounded.
       if (capturedLength() > PREFIX_MAX) return "printed more than " + PREFIX_MAX + " bytes first, more than a stop can keep";
