@@ -52,7 +52,10 @@ import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LaunchLearningStore } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
-import { answerDigest, encodeBase64, OwnedPieces, REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, ReplayJournal, ReplayOutputGate, StdinTaken, STOP_LIMIT, STOP_REPLAY_SOURCE, stopRecordOf, } from '../runtime/stop-replay.js';
+import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
+import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
+import { answerDigest, ReplayJournal } from '../runtime/stop-replay-journal.js';
+import { REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, STOP_LIMIT } from '../runtime/stop-replay-contracts.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
@@ -5198,8 +5201,6 @@ export class FacetManager {
                 this.outputGates.get(entry.pid)?.close();
                 divergence.abort();
             }));
-            if (opts.stdinFile)
-                this.journals.get(entry.pid).input(opts.stdinFile.path);
         }
         if (inputChannel > 0)
             this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
@@ -5388,6 +5389,7 @@ export class FacetManager {
             tape: stop.tape,
             stopAt: stop.stopAt,
             prefix: stopped.prefix ? { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) } : null,
+            observations: this.journals.get(pid)?.observations,
         };
         // A \`< file\` the stopped run read synchronously but the launch had not
         // staged: the next run reads it ahead. Nothing is waited for.
@@ -5519,8 +5521,8 @@ export class FacetManager {
         return journal.handle(op, args, run, dispatch);
     }
     /** The run after a stop reached the read the run before it stopped at. */
-    replayBoundary(pid, run) {
-        this.journals.get(pid)?.boundary(run);
+    async replayBoundary(pid, run) {
+        await this.journals.get(pid)?.boundary(run);
     }
     /**
      * A process that can stop opening a TLS connection through the session
@@ -5579,7 +5581,7 @@ export class FacetManager {
                 // Nothing is recorded for a run that cannot be replayed (D1).
                 if (!journal.recording)
                     return { unrecorded: true };
-                const key = 'fetch ' + String(payload?.key ?? '');
+                const key = String(payload?.key ?? '');
                 const what = String(payload?.what ?? 'a request');
                 let plan;
                 const planned = new Promise((resolve) => { plan = resolve; });
@@ -5587,36 +5589,64 @@ export class FacetManager {
                 let deliver;
                 const fetched = new Promise((resolve) => { deliver = resolve; });
                 let replayed = false;
-                const done = journal.answer(key, what, async (expected) => {
+                let response;
+                const done = journal.answer('fetchHeader ' + key, what + ' headers', async (expected) => {
                     if (expected?.response) {
                         replayed = true;
-                        return expected.response;
+                        response = expected.response;
+                        const { status, statusText, headers, hasBody } = response;
+                        return { status, statusText, headers, hasBody };
                     }
                     plan({ live: ticket });
                     const result = await fetched;
                     if ('error' in result)
                         throw new Error(result.error);
-                    if ('tooLarge' in result) {
-                        journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB over the network first (${what}), more than a second run is handed back`);
-                    }
+                    response = { ...result, body: new Uint8Array(0) };
                     return result;
-                }, (value) => ('tooLarge' in value ? undefined : value));
-                this.fetchTickets.set(ticket, { pid, deliver, done });
-                done.then((value) => { if (replayed)
-                    plan({ replay: value }); }, (error) => plan({ error: errorMessage(error) }))
-                    .finally(() => { if (replayed)
-                    this.fetchTickets.delete(ticket); });
+                }, () => response);
+                const live = { pid, run, key, what, deliver, done, response: undefined };
+                this.fetchTickets.set(ticket, live);
+                done.then(() => {
+                    live.response = response;
+                    if (replayed) {
+                        if (response?.hasBody)
+                            this._startFetchBody(ticket, live, journal);
+                        else
+                            this.fetchTickets.delete(ticket);
+                        plan({ replay: response, ticket });
+                    }
+                }, (error) => { this.fetchTickets.delete(ticket); plan({ error: errorMessage(error) }); });
                 return await planned;
             }
             case 'fetched': {
                 const ticket = String(payload?.ticket ?? '');
                 const live = this.fetchTickets.get(ticket);
-                if (!live || live.pid !== pid)
+                if (!live || live.pid !== pid || live.run !== run)
                     throw new Error('outbound: no such request');
-                this.fetchTickets.delete(ticket);
                 const result = payload?.result;
                 live.deliver(result);
-                await live.done;
+                try {
+                    await live.done;
+                }
+                catch (error) {
+                    this.fetchTickets.delete(ticket);
+                    throw error;
+                }
+                if (!('error' in result) && result.hasBody)
+                    this._startFetchBody(ticket, live, journal);
+                else
+                    this.fetchTickets.delete(ticket);
+                return true;
+            }
+            case 'fetchBody': {
+                const ticket = String(payload?.ticket ?? '');
+                const live = this.fetchTickets.get(ticket);
+                if (!live || live.pid !== pid || live.run !== run || !live.body)
+                    throw new Error('outbound: no such response body');
+                this.fetchTickets.delete(ticket);
+                live.body.deliver(payload?.result);
+                await live.body.done;
+                journal.bodyFinished(ticket);
                 return true;
             }
             case 'connect': {
@@ -5649,6 +5679,31 @@ export class FacetManager {
                 throw new Error(`outbound: unknown action ${action}`);
         }
     }
+    _startFetchBody(ticket, live, journal) {
+        if (live.body)
+            return;
+        journal.bodyStarted(ticket, live.what);
+        let deliver;
+        const pending = new Promise((resolve) => { deliver = resolve; });
+        const done = journal.answer('fetchBody ' + live.key, live.what + ' body', async () => {
+            const result = await pending;
+            if ('tooLarge' in result)
+                journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB (${live.what})`);
+            else if (live.response) {
+                if ('error' in result)
+                    live.response.bodyError = result.error;
+                if ('body' in result) {
+                    live.response.body = result.body;
+                    live.response.chunks = result.chunks;
+                    journal.bodyBytes(result.body.byteLength);
+                }
+            }
+            return result;
+        });
+        // The ticket owns the pending answer even if its client is aborted.
+        done.catch(() => { });
+        live.body = { deliver, done };
+    }
     _netTarget(token, pid) {
         let target = this.netTargets.get(token);
         if (target === undefined) {
@@ -5676,6 +5731,7 @@ export class FacetManager {
             if (live.pid !== pid)
                 continue;
             live.deliver({ error: 'the process ended' });
+            live.body?.deliver({ error: 'the process ended' });
             this.fetchTickets.delete(ticket);
         }
     }

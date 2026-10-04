@@ -28,7 +28,7 @@ import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
-import { StdinTaken } from '../runtime/stop-replay.js';
+import { StdinTaken } from '../runtime/stop-replay-host.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
@@ -1484,7 +1484,7 @@ export declare class FacetManager {
      */
     journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown>;
     /** The run after a stop reached the read the run before it stopped at. */
-    replayBoundary(pid: number, run: string | undefined): void;
+    replayBoundary(pid: number, run: string | undefined): Promise<void>;
     /**
      * A process that can stop opening a TLS connection through the session
      * (\`open\`: where to; the outbound proxies it), and asking for its upgrade
@@ -1504,6 +1504,7 @@ export declare class FacetManager {
      *   upgraded(token, result) whether the outbound made it
      */
     outboundCall(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown>;
+    private _startFetchBody;
     private _netTarget;
     /** A process ended: its connections' names are forgotten and their waits answered. */
     private _dropNetTargets;

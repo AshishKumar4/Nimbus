@@ -79,6 +79,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _host;
     private _route;
     private _op;
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    private _caller;
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     private _fsOp;
     /**
@@ -462,6 +464,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * asking. The caller's pid names whose credential answers it.
      */
     replayBoundary(): Promise<void>;
+    /** fd-0 preparation, not a program's ordinary read of this pathname. */
+    stdinFileRead(path: string, offset: number, length: number): Promise<{
+        data: Uint8Array;
+        size: number;
+    }>;
     netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
     /**
      * The program's network, when this binding is its globalOutbound (a run

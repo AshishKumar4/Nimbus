@@ -651,7 +651,7 @@ export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
 // connection it opens through the session; and its outbound's calls.
 export async function _rpcReplayBoundary(self, pid, run) {
     if (typeof pid === 'number')
-        self.facetManager?.replayBoundary(pid, run);
+        await self.facetManager?.replayBoundary(pid, run);
 }
 export async function _rpcNetTls(self, action, token, payload, pid, run) {
     if (typeof pid !== 'number' || !self.facetManager)

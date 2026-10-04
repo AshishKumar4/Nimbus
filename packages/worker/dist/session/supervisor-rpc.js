@@ -51,9 +51,7 @@ import { SUPERVISOR_DELIVER_OP, } from '@nimbus-sh/core/workspace/supervisor-del
 import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
-import { REPLAY_FETCH_MAX_BYTES } from '../runtime/stop-replay.js';
-/** The most of one response the outbound records; a larger one streams on, unrecorded. */
-const OUTBOUND_RECORD_MAX_BYTES = REPLAY_FETCH_MAX_BYTES;
+import { ReplayBodyRecord } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
@@ -151,9 +149,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     _op(op, args = [], extra = {}) {
         // Every call says which run of the process made it: a process that can
         // stop at a read of stdin is answered for its current run only.
-        const run = this.ctx.props?.writerId;
-        const stamped = typeof run === 'string' && run.length > 0 ? { run, ...extra } : extra;
-        return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())({ op, args, ...stamped });
+        return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())(this._caller({ op, args, ...extra }));
+    }
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    _caller(envelope) {
+        return { ...envelope, pid: this._pid(), run: this._runId() };
     }
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     _fsOp(op, args = []) {
@@ -222,6 +222,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * span, under the RPC span of the attempt that reached it.
      */
     _resent(envelope, trace, policy) {
+        envelope = this._caller(envelope);
         const operation = envelope.delivery?.op ?? envelope.op;
         // The binding's props, minted by supervisorBindingProps: attribute values only, nothing trusted.
         const props = this.ctx.props;
@@ -239,7 +240,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
             'nimbus.read_id': envelope.readId,
         }, (span) => idempotent(operation, () => this._host(), 
         // Which run of the process sent it (see _op).
-        (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(writerId && envelope.run === undefined ? { ...envelope, run: writerId } : envelope), { ...policy, span }));
+        (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope), { ...policy, span }));
     }
     _hostIncarnation() {
         const props = this.ctx.props;
@@ -824,6 +825,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async replayBoundary() {
         return this._call(this._op('replayBoundary', [], { pid: this._pid() }));
     }
+    /** fd-0 preparation, not a program's ordinary read of this pathname. */
+    async stdinFileRead(path, offset, length) {
+        return this._call(this._op('stdinFileRead', [path, offset, length]));
+    }
     async netTls(action, token, payload) {
         return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
     }
@@ -858,7 +863,31 @@ export class SupervisorRPC extends WorkerEntrypoint {
         }
         if ('replay' in plan) {
             const r = plan.replay;
-            return new Response(method === 'HEAD' ? null : r.body, { status: r.status, statusText: r.statusText, headers: r.headers });
+            if (!r.hasBody)
+                return new Response(null, { status: r.status, statusText: r.statusText, headers: r.headers });
+            const recorder = new ReplayBodyRecord();
+            let at = 0, chunk = 0;
+            const body = new ReadableStream({
+                async pull(controller) {
+                    if (at < r.body.length) {
+                        const size = r.chunks?.[chunk++] ?? r.body.length;
+                        const bytes = r.body.subarray(at, at + size);
+                        at += bytes.length;
+                        recorder.add(bytes);
+                        controller.enqueue(bytes);
+                        return;
+                    }
+                    if (r.bodyError) {
+                        await outbound('fetchBody', { ticket: plan.ticket, result: { ...recorder.finish(), error: r.bodyError } });
+                        controller.error(new Error(r.bodyError));
+                    }
+                    else {
+                        await outbound('fetchBody', { ticket: plan.ticket, result: recorder.finish() });
+                        controller.close();
+                    }
+                },
+            }, { highWaterMark: 0 });
+            return new Response(body, { status: r.status, statusText: r.statusText, headers: r.headers });
         }
         const ticket = plan.live;
         let response;
@@ -869,52 +898,56 @@ export class SupervisorRPC extends WorkerEntrypoint {
             await outbound('fetched', { ticket, result: { error: error instanceof Error ? error.message : String(error) } });
             throw error;
         }
-        // Read up to the bound: a body that fits is recorded and answered again;
-        // a larger one streams on, and the run can no longer be replayed.
         const reader = response.body?.getReader();
-        const chunks = [];
-        let size = 0;
-        let done = reader === undefined;
-        while (!done && reader) {
-            const next = await reader.read();
-            if (next.done) {
-                done = true;
-                break;
-            }
-            chunks.push(next.value);
-            size += next.value.byteLength;
-            if (size > OUTBOUND_RECORD_MAX_BYTES)
-                break;
-        }
         const init = { status: response.status, statusText: response.statusText, headers: response.headers };
-        if (!done && reader) {
-            await outbound('fetched', { ticket, result: { tooLarge: true } });
-            const rest = reader;
-            const body = new ReadableStream({
-                start(controller) { for (const chunk of chunks)
-                    controller.enqueue(chunk); },
-                async pull(controller) {
-                    const next = await rest.read();
-                    if (next.done)
-                        controller.close();
-                    else
-                        controller.enqueue(next.value);
-                },
-                cancel(reason) { return rest.cancel(reason); },
-            });
-            return new Response(body, init);
-        }
-        const body = new Uint8Array(size);
-        let at = 0;
-        for (const chunk of chunks) {
-            body.set(chunk, at);
-            at += chunk.byteLength;
-        }
+        // Headers are their own observation. A body is recorded only while the
+        // caller consumes it, with backpressure; an endless SSE never holds them.
         await outbound('fetched', {
             ticket,
-            result: { status: response.status, statusText: response.statusText, headers: [...response.headers], body },
+            result: { status: response.status, statusText: response.statusText, headers: [...response.headers], hasBody: !!reader },
         });
-        return new Response(method === 'HEAD' ? null : body, init);
+        if (!reader)
+            return new Response(null, init);
+        const recorder = new ReplayBodyRecord();
+        let completed = false;
+        const finish = async (result) => {
+            if (completed)
+                return;
+            completed = true;
+            await outbound('fetchBody', { ticket, result });
+        };
+        const body = new ReadableStream({
+            async pull(controller) {
+                try {
+                    const next = await reader.read();
+                    if (next.done) {
+                        await finish(recorder.finish());
+                        controller.close();
+                    }
+                    else {
+                        recorder.add(next.value);
+                        if (recorder.over)
+                            await finish({ tooLarge: true });
+                        controller.enqueue(next.value);
+                    }
+                }
+                catch (error) {
+                    try {
+                        await finish({ ...recorder.finish(), error: error instanceof Error ? error.message : String(error) });
+                    }
+                    catch (journalError) {
+                        controller.error(journalError);
+                        return;
+                    }
+                    controller.error(error);
+                }
+            },
+            async cancel(reason) {
+                await finish({ error: 'response body was canceled: ' + String(reason) });
+                await reader.cancel(reason);
+            },
+        }, { highWaterMark: 0 });
+        return new Response(body, init);
     }
     /**
      * A connection the program opens. One its TLS shim opened is named

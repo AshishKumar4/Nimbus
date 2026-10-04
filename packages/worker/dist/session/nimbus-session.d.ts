@@ -368,6 +368,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
     _rpcReplayBoundary(pid?: number, run?: string): Promise<void>;
+    _rpcStdinFileRead(path: string, offset: number, length: number, pid?: number): Promise<{
+        data: Uint8Array;
+        size: number;
+    }>;
     _rpcNetTls(action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
     _rpcOutbound(action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{

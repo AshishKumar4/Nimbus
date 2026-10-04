@@ -758,6 +758,18 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcHmrNextEvent(timeoutMs) { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
     async _rpcReplayBoundary(pid, run) { return _rpc._rpcReplayBoundary(this, pid, run); }
+    async _rpcStdinFileRead(path, offset, length, pid) {
+        const bridge = this.supervisorBridge(pid);
+        const stat = await bridge.stat(path);
+        if (!stat)
+            throw Object.assign(new Error(`ENOENT: no such stdin file '${path}'`), { code: 'ENOENT' });
+        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 16 * 1024 * 1024)
+            throw new RangeError('invalid stdin preparation range');
+        const data = await bridge.readRange(path, offset, Math.min(length, Math.max(0, stat.size - offset)));
+        if (data === null)
+            throw Object.assign(new Error(`ENOENT: stdin file disappeared '${path}'`), { code: 'ENOENT' });
+        return { data, size: stat.size };
+    }
     async _rpcNetTls(action, token, payload, pid, run) { return _rpc._rpcNetTls(this, action, token, payload, pid, run); }
     async _rpcOutbound(action, payload, pid, run) { return _rpc._rpcOutbound(this, action, payload, pid, run); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
