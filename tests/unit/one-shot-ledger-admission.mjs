@@ -11,7 +11,12 @@
 //       flight, and every run in it completes, as room frees up;
 //   (4) aborting the run's request (a kill) while it waits rejects it with
 //       the abort, holding nothing, assembling nothing, loading nothing, and
-//       the next waiter keeps its place.
+//       the next waiter keeps its place;
+//   (5) inside a launch admission (a child_process child's), the run is the
+//       admission's worker whatever pid its runtime runs it as (Bun's runner
+//       allocates its own): with the admission the tenth worker it runs at
+//       once, where it used to wait for room its own admission held. A
+//       second run while the first holds the admission waits its turn.
 //
 // Before, a run took its hold just before its fetch and never waited: a
 // burst of 15 had 15 in flight, past the platform's limit.
@@ -22,6 +27,7 @@ import {
   DO_DYNAMIC_WORKER_LIMIT,
   dynamicWorkerHeadroom,
   loaderLedgerStats,
+  withLaunchAdmission,
 } from '../../packages/fabric/src/budgets.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -165,4 +171,32 @@ function oneShotHost(doId) {
   for (const end of holds) end();
 }
 
-console.log('ok - one-shot-ledger-admission (waits for room unassembled, a burst stays within the limit and completes, a kill while waiting holds nothing)');
+// ── (5) inside a launch admission: the run is its worker, any pid ─────────
+{
+  const h = oneShotHost('admission-launch');
+  const holds = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT - 1 }, (_, i) => beginLoaderFetch(h.ctx, `resident-${i}`));
+  let second;
+  const launched = withLaunchAdmission(h.ctx, { pid: 900, ancestors: [] }, undefined, async () => {
+    // The runtime runs the program as a pid of its own (h.run allocates one).
+    const first = h.run();
+    for (let i = 0; i < 5 && h.log.running === 0; i++) await tick();
+    assert.equal(h.log.running, 1, "the run claims its launch's admission and starts at once");
+    assert.equal(loaderLedgerStats(h.ctx).inFlightWorkers.length, DO_DYNAMIC_WORKER_LIMIT, 'the admission and its run count as one worker');
+    second = h.run();
+    for (let i = 0; i < 5; i++) await tick();
+    assert.equal(h.log.running, 1, 'a second run while the first holds the admission waits its turn');
+    assert.equal(loaderLedgerStats(h.ctx).waiting, 1);
+    h.finish.get(first.writerId)();
+    return first.done;
+  });
+  const firstAnswer = await launched;
+  assert.match(firstAnswer, /^ran /);
+  for (let i = 0; i < 5 && h.log.running === 0; i++) await tick();
+  assert.equal(h.log.running, 1, 'the second run is let in once the launch ends');
+  h.finishStarted();
+  await second.done;
+  for (const end of holds) end();
+  assert.equal(dynamicWorkerHeadroom(h.ctx), DO_DYNAMIC_WORKER_LIMIT);
+}
+
+console.log('ok - one-shot-ledger-admission (waits for room unassembled, a burst stays within the limit and completes, a kill while waiting holds nothing, a launch admission is its run\'s worker)');
