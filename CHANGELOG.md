@@ -5,6 +5,71 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-03
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
+file, so a mount that cannot tell must answer `unknown`; and
+`NimbusWorkspace.exec` without a `shellId` is one-shot, so a caller that
+relies on `cd` or `export` persisting passes a `shellId`; as described
+below.
+- `@nimbus-sh/core`: the library host's `node` runs each program in a realm
+  of its own, a worker thread, where it ran in the host's realm through
+  `new Function` (Kinu ask 17). A program that rebound `globalThis.Array`,
+  installed fake timers or patched `Object.prototype` changed them for the
+  embedder too: in Kinu's CLI, `Array.isArray = () => true` broke the host's
+  SQLite filesystem. Now its globals and built-ins are its own. With it: an ES
+  module is strict, as in Node (a write to a frozen property throws where it
+  was silent); an aborted call (kill, Ctrl-C, `signal`) terminates the
+  program even in a loop that never yields, where it held the host for good;
+  `readFileSync(0)` waits for stdin to end, also when it arrives in pieces,
+  where it threw; and timers the program leaves run before the command ends,
+  where they were dropped (`process.exit()` in one exits with its code, and
+  a rejection nothing handles exits 1, as in Node, a server listening or
+  not; an ES module whose top-level await never settles exits 13). A
+  program lives as long as its event loop has work: its timers, a server it
+  listens with (a server a timer starts included), a request it is waiting
+  on; a trivial ES module no longer waits 150 ms, nor one that loads `http`
+  without serving up to 10 s. The host answers only the realm's own calls,
+  so a program cannot end it. It needs `node:worker_threads` (Bun and Node).
+  Each run takes about 16 ms more to start, and each synchronous filesystem
+  call about 0.1 ms more.
+- Under `wrangler dev`, a Worker calls a classic Durable Object binding as on
+  Cloudflare. `env.P.get(env.P.idFromName('x')).hello()` threw "Could not
+  serialize object of type "RpcPromise"": `env.P` was a WorkerEntrypoint, so
+  `idFromName` answered an RpcPromise that `get()` could not take, and its
+  stub had no method but `fetch`. Now the bundle's first import replaces
+  `env.P`, in the env every handler, entrypoint and object of the Worker's
+  isolate sees, with a local namespace: ids and stubs are made at once, and
+  a stub is an RPC stub of a local target that relays each member its caller
+  reaches (a call, a read, a path through both, fetch included) to the
+  session, which reaches it on the object's facet. Checked against plain
+  workerd with a real namespace, Nimbus answers the same for calls,
+  arguments and answers, a thrown error, pipelining, KV and SQL storage, the
+  object's env, getters (`await stub.value`, `stub.obj.nested.y`,
+  `stub.obj.f()`), `Object.keys` of a namespace, id and stub, RpcTargets,
+  stubs (an object's own included) and functions passed and returned,
+  streams and responses returned, dup, dispose, `using`, a namespace refused
+  in a Worker Loader env, default exports whose fetch is on the prototype or
+  not enumerable, a Worker that exports `NimbusDurableObjectClasses` itself,
+  and what RPC does not reach: Symbol keys, `constructor`, `__proto__`, a
+  private field, `then` on a member, and the stub's tag ("[object
+  DurableObject]"). Two differences remain, documented as limits in the
+  fabric README: `typeof stub` is 'function', and a Worker Loader env cannot
+  carry a stub ("RpcStub cannot be serialized in this context because it is
+  not a persistent stub"), since Nimbus's loader loads a child again in each
+  later request. The Worker is loaded once, with its full env, and a binding
+  whose class it does not export fails the build (the check runs the
+  Worker's module code, so an error there is the build's too); before, a
+  probe load without env came first, and a missing class failed only the
+  object's first call.
+
 - Fixed: every outbound WebSocket a process opened (`ws://` or `wss://`)
   failed with "Fetch API cannot load: wss://...": the session fetched the
   socket's own URL for the upgrade, and workerd's fetch takes http(s) only.
@@ -112,71 +177,6 @@ published independently in the `@nimbus-sh` npm scope.
   python.wasm's 11 MB sent to the child and compiled there. Under Bun a
   Ruby run's memory now goes with its process: eight runs leave the host at
   207 MB, where they left it at 6.9 GB.
-
-## 2026-10-03
-
-Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
-0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
-unchanged. The carets are minor-strict, so every range on core, worker,
-fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
-`WorkspaceFs`, no longer a `ProcessView`; and core's
-`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
-`defaultGemHome` give way to `pythonSitePackages(home)` and
-`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
-file, so a mount that cannot tell must answer `unknown`; and
-`NimbusWorkspace.exec` without a `shellId` is one-shot, so a caller that
-relies on `cd` or `export` persisting passes a `shellId`; as described
-below.
-- `@nimbus-sh/core`: the library host's `node` runs each program in a realm
-  of its own, a worker thread, where it ran in the host's realm through
-  `new Function` (Kinu ask 17). A program that rebound `globalThis.Array`,
-  installed fake timers or patched `Object.prototype` changed them for the
-  embedder too: in Kinu's CLI, `Array.isArray = () => true` broke the host's
-  SQLite filesystem. Now its globals and built-ins are its own. With it: an ES
-  module is strict, as in Node (a write to a frozen property throws where it
-  was silent); an aborted call (kill, Ctrl-C, `signal`) terminates the
-  program even in a loop that never yields, where it held the host for good;
-  `readFileSync(0)` waits for stdin to end, also when it arrives in pieces,
-  where it threw; and timers the program leaves run before the command ends,
-  where they were dropped (`process.exit()` in one exits with its code, and
-  a rejection nothing handles exits 1, as in Node, a server listening or
-  not; an ES module whose top-level await never settles exits 13). A
-  program lives as long as its event loop has work: its timers, a server it
-  listens with (a server a timer starts included), a request it is waiting
-  on; a trivial ES module no longer waits 150 ms, nor one that loads `http`
-  without serving up to 10 s. The host answers only the realm's own calls,
-  so a program cannot end it. It needs `node:worker_threads` (Bun and Node).
-  Each run takes about 16 ms more to start, and each synchronous filesystem
-  call about 0.1 ms more.
-- Under `wrangler dev`, a Worker calls a classic Durable Object binding as on
-  Cloudflare. `env.P.get(env.P.idFromName('x')).hello()` threw "Could not
-  serialize object of type "RpcPromise"": `env.P` was a WorkerEntrypoint, so
-  `idFromName` answered an RpcPromise that `get()` could not take, and its
-  stub had no method but `fetch`. Now the bundle's first import replaces
-  `env.P`, in the env every handler, entrypoint and object of the Worker's
-  isolate sees, with a local namespace: ids and stubs are made at once, and
-  a stub is an RPC stub of a local target that relays each member its caller
-  reaches (a call, a read, a path through both, fetch included) to the
-  session, which reaches it on the object's facet. Checked against plain
-  workerd with a real namespace, Nimbus answers the same for calls,
-  arguments and answers, a thrown error, pipelining, KV and SQL storage, the
-  object's env, getters (`await stub.value`, `stub.obj.nested.y`,
-  `stub.obj.f()`), `Object.keys` of a namespace, id and stub, RpcTargets,
-  stubs (an object's own included) and functions passed and returned,
-  streams and responses returned, dup, dispose, `using`, a namespace refused
-  in a Worker Loader env, default exports whose fetch is on the prototype or
-  not enumerable, a Worker that exports `NimbusDurableObjectClasses` itself,
-  and what RPC does not reach: Symbol keys, `constructor`, `__proto__`, a
-  private field, `then` on a member, and the stub's tag ("[object
-  DurableObject]"). Two differences remain, documented as limits in the
-  fabric README: `typeof stub` is 'function', and a Worker Loader env cannot
-  carry a stub ("RpcStub cannot be serialized in this context because it is
-  not a persistent stub"), since Nimbus's loader loads a child again in each
-  later request. The Worker is loaded once, with its full env, and a binding
-  whose class it does not export fails the build (the check runs the
-  Worker's module code, so an error there is the build's too); before, a
-  probe load without env came first, and a missing class failed only the
-  object's first call.
 
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
