@@ -45,7 +45,6 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { connect as connectSocket } from 'cloudflare:sockets';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
@@ -1086,6 +1085,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * other connection is proxied as it is.
    */
   async connect(socket: Socket): Promise<void> {
+    // Loaded here, not at the module's top: only a connection the program
+    // opens needs it, and hosts without it (unit tests under Bun) load this
+    // module all the same.
+    const { connect: connectSocket } = await import('cloudflare:sockets');
     const outbound = (action: string, payload: Record<string, unknown>) =>
       this._call(this._op<unknown>('outbound', [action, payload], { pid: this._pid() }));
     // A program can close its side before anything below is answered (it
