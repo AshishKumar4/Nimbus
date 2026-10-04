@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a process whose release failed (a descriptor's buffered bytes lost
+  to an abort) stopped the prune of a session's or workspace's ended
+  processes: that pid and every one after it stayed bound to the
+  filesystem, and an unrelated launch that pruned first failed with the
+  other process's error. Every ended entry is now released and forgotten.
+  A prune by age writes a failure to the failed process's own stderr log; a
+  workspace exec reports its own tree's failures after all of it is gone.
+
 ## 2026-10-03
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli

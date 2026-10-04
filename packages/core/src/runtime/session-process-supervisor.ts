@@ -208,17 +208,16 @@ export class SessionProcessSupervisor {
    * unreleased left its binding behind. With no release set nothing is
    * reaped. A reaped pid whose logs hold no exit (a process killed around its
    * log) is an orphan from here, which gives its logs a deadline.
+   *
+   * A prune serves whoever runs next, not the processes it removes, so a
+   * release that fails goes to that process's own stderr log, where its
+   * output is read; every expired entry is still released and forgotten.
    */
   async reap(maxAge?: number): Promise<number> {
     const release = this.release;
     if (!release) return 0;
-    let reaped = 0;
-    for (const entry of this.table.expired(maxAge)) {
-      await release(entry.pid);
-      this.table.forget(entry.pid);
-      reaped++;
-    }
-    if (reaped > 0) this.logRetention?.();
+    const { reaped, failures } = await this.releaseAndForget(release, this.table.expired(maxAge));
+    for (const { pid, error } of failures) this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
     return reaped;
   }
 
@@ -244,15 +243,36 @@ export class SessionProcessSupervisor {
   async reapTree(pid: number): Promise<number> {
     const release = this.release;
     if (!release) throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
-    let reaped = 0;
-    for (const entry of [this.table.get(pid), ...this.table.descendantsOf(pid)]) {
-      if (entry === undefined || entry.state === 'running') continue;
-      await release(entry.pid);
-      this.table.forget(entry.pid);
-      reaped++;
-    }
-    if (reaped > 0) this.logRetention?.();
+    const ended = [this.table.get(pid), ...this.table.descendantsOf(pid)]
+      .filter((entry): entry is ProcessEntry => entry !== undefined && entry.state !== 'running');
+    const { reaped, failures } = await this.releaseAndForget(release, ended);
+    // The caller waited for this tree: it hears every failure, once all of it is gone.
+    if (failures.length === 1) throw failures[0].error;
+    if (failures.length > 1) throw new AggregateError(failures.map((f) => f.error), `releasing ${failures.length} ended processes failed`);
     return reaped;
+  }
+
+  /**
+   * Release and forget each entry. A release that fails stops nothing:
+   * releaseProcess revokes everything before it reports what it could not
+   * do, so the entry is forgotten either way and the failure is returned.
+   */
+  private async releaseAndForget(
+    release: (pid: number) => Promise<void>,
+    entries: readonly ProcessEntry[],
+  ): Promise<{ reaped: number; failures: { pid: number; error: unknown }[] }> {
+    const failures: { pid: number; error: unknown }[] = [];
+    for (const entry of entries) {
+      try {
+        await release(entry.pid);
+      } catch (error) {
+        failures.push({ pid: entry.pid, error });
+      } finally {
+        this.table.forget(entry.pid);
+      }
+    }
+    if (entries.length > 0) this.logRetention?.();
+    return { reaped: entries.length, failures };
   }
 
   get stats(): ProcessTable['stats'] {

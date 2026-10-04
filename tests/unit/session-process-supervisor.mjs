@@ -221,6 +221,54 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.equal(processes.get(live.pid)?.state, 'running');
 }
 
+// ── A release that fails stops neither prune: every ended entry still goes ──
+// releaseProcess revokes everything first and only then reports what it could
+// not do (a descriptor's buffered bytes lost to an abort). One failure must
+// not keep that pid, or the ones after it, bound.
+{
+  const processes = new SessionProcessSupervisor();
+  const first = processes.spawn('node a.js', [], '/');
+  const second = processes.spawn('node b.js', [], '/');
+  processes.exit(first.pid, 0);
+  processes.exit(second.pid, 0);
+  const released = [];
+  processes.setRelease(async (pid) => {
+    released.push(pid);
+    if (pid === first.pid) throw Object.assign(new Error('EIO: its buffered writes are lost (aborted)'), { code: 'EIO' });
+  });
+  // Pruning by age serves whoever launches next, not the process that ended:
+  // the failure goes to that process's own log, where its output is read.
+  assert.equal(await processes.reap(-1), 2, 'both ended entries are reaped');
+  assert.deepEqual(released, [first.pid, second.pid], 'the failure does not stop the next release');
+  assert.equal(processes.get(first.pid), undefined, 'the entry whose release failed is forgotten');
+  assert.equal(processes.get(second.pid), undefined);
+  assert.match(processes.allLogs(first.pid).map((c) => c.data).join(''), /EIO: its buffered writes are lost/, 'the failure is in the failed process\'s own log');
+}
+{
+  const processes = new SessionProcessSupervisor();
+  const parent = processes.spawn('sh -c', [], '/');
+  const a = processes.spawn('node a.js', [], '/', { parentPid: parent.pid });
+  const b = processes.spawn('node b.js', [], '/', { parentPid: parent.pid });
+  for (const entry of [a, b, parent]) processes.exit(entry.pid, 0);
+  const released = [];
+  processes.setRelease(async (pid) => {
+    released.push(pid);
+    if (pid === parent.pid || pid === a.pid) throw new Error(`release ${pid} failed`);
+  });
+  // A caller that waited for the tree hears every failure, after all of it is gone.
+  const failed = await processes.reapTree(parent.pid).then(() => null, (error) => error);
+  assert.ok(failed instanceof AggregateError, `two failures are reported together: ${failed}`);
+  assert.deepEqual(failed.errors.map((e) => e.message), [`release ${parent.pid} failed`, `release ${a.pid} failed`]);
+  assert.deepEqual(released, [parent.pid, a.pid, b.pid], 'every ended entry in the tree is released');
+  for (const entry of [parent, a, b]) assert.equal(processes.get(entry.pid), undefined, `pid ${entry.pid} is forgotten`);
+  // One failure is reported as itself.
+  const solo = processes.spawn('node c.js', [], '/');
+  processes.exit(solo.pid, 0);
+  processes.setRelease(async () => { throw new Error('only one'); });
+  await assert.rejects(processes.reapTree(solo.pid), { message: 'only one' });
+  assert.equal(processes.get(solo.pid), undefined);
+}
+
 // ── W9 persistence: activity hook + chunks-before-exit flush order ───
 {
   const processes = new SessionProcessSupervisor();
