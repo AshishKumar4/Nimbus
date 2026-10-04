@@ -56,6 +56,11 @@ const _rollupHelpers: Record<string, (...args: unknown[]) => unknown> = {
 };
 
 /** Strip shebang line (e.g. #!/usr/bin/env node) – replace with blank to preserve line numbers */
+/** Node's error for a module `require` cannot find: its message and its code. */
+function moduleNotFound(name: string): Error {
+	return Object.assign(new Error(`Cannot find module '${name}'`), { code: 'MODULE_NOT_FOUND' });
+}
+
 function stripShebang(src: string): string {
 	if (src.charCodeAt(0) === 0x23 /* # */ && src.charCodeAt(1) === 0x21 /* ! */) {
 		const nl = src.indexOf('\n');
@@ -737,7 +742,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 					const modSource = filesystem().readFileString(resolved.path);
 					return executeModule(modSource, resolved.path, resolved.path);
 				}
-				throw new Error(`Cannot find module '${name}'`);
+				throw moduleNotFound(name);
 			}
 
 			// Relative VFS files
@@ -758,7 +763,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 					return executeModule(modSource, resolved.path, resolved.path);
 				}
 
-				throw new Error(`Cannot find module '${name}'`);
+				throw moduleNotFound(name);
 			}
 
 			// Node-modules resolution (walk up node_modules, global, legacy)
@@ -781,7 +786,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			// Stub for rollup native binary packages
 			if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
 
-			throw new Error(`Cannot find module '${name}'`);
+			throw moduleNotFound(name);
 		}
 
 		// Override module shim so createRequire returns nodeRequire (resolves VFS + node_modules)
@@ -1046,7 +1051,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 						const childSource = filesystem().readFileString(resolved.path);
 						return executeModule(childSource, resolved.path, resolved.path);
 					}
-					throw new Error(`Cannot find module '${name}'`);
+					throw moduleNotFound(name);
 				}
 
 				if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
@@ -1065,7 +1070,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 						const childSource = filesystem().readFileString(resolved.path);
 						return executeModule(childSource, resolved.path, resolved.path);
 					}
-					throw new Error(`Cannot find module '${name}'`);
+					throw moduleNotFound(name);
 				}
 
 				// Node-modules resolution from this module's directory
@@ -1088,7 +1093,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 				// Stub for rollup native binary packages
 				if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
 
-				throw new Error(`Cannot find module '${name}'`);
+				throw moduleNotFound(name);
 			}
 
 			// Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)

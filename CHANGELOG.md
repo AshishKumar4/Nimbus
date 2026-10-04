@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in the library host under Bun, a program's realm kept Bun's
+  web-worker globals, which hosted Nimbus (workerd) does not have: `Worker`
+  (a worker of the host engine's own), `prompt`, `alert` and `confirm`
+  (they read the host process's stdin), `postMessage` and `onmessage` (the
+  worker's channel to the host). They are gone before a program runs, in
+  `node` and in the wasm runtimes' realms alike. `Bun` itself cannot be
+  removed from any Bun realm (Bun 1.4 makes it and its members
+  non-configurable, a ShadowRealm's included), so under Bun a program can
+  still reach the host machine's files, processes and network through it.
+  The library host is not a boundary against the host machine; under Node
+  no such namespace exists.
+- Fixed: the library host's `require` of a module it cannot find threw an
+  Error without Node's `code: 'MODULE_NOT_FOUND'`; and its `util.format`
+  (console.log) quoted string arguments (`console.log(true, 'x')` printed
+  `'x'`) and lacked `%i`, `%f` and `%c`. Both now match Node.
+
 - `@nimbus-sh/core`: each facet of `localFacetHost()` runs in a realm of its
   own, a worker thread under Node, as the inline `node`'s programs do, and a
   child process under Bun (Kinu ask 17, local-facet-host.ts:183). The facet's scope was built in the host's realm,

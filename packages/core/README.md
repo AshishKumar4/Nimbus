@@ -133,6 +133,20 @@ yields. It needs `node:worker_threads`, which Bun and Node have; each run
 costs about 16 ms to start, and each synchronous filesystem call about
 0.1 ms, against the host's. A hosted session runs its own `node`.
 
+### What a program can reach
+
+A `node` program and each wasm runtime (`python3`, `ruby`, `bash`, `clang`)
+run in a realm of their own: a worker thread, or under Bun a child process
+for the wasm runtimes. Their globals and built-ins are Nimbus's: `fs`,
+`child_process` and `process` act on the workspace, and nothing a program
+does to its globals reaches yours. Kill and abort end the realm.
+
+A realm separates programs from your process, not from your machine. Under
+Bun, every realm has Bun's `Bun` namespace, which Bun makes permanent, and
+through it a program can reach your files, processes and network around the
+workspace. Under Node there is no such namespace. To run code you do not
+trust, run the host in an OS sandbox (a container or VM).
+
 ## Files
 
 Files written through `.fs` are owned by the session user (uid 1000), not

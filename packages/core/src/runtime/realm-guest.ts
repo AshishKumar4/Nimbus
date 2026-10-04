@@ -49,7 +49,29 @@ export interface JoinedRealm {
 
 /** Joins the realm the host started this worker or process as. Throws in one no host started. */
 export async function joinRealm(): Promise<JoinedRealm> {
-  return parentPort ? joinThreadRealm(parentPort) : joinProcessRealm();
+  const joined = await (parentPort ? joinThreadRealm(parentPort) : joinProcessRealm());
+  withoutHostEngine();
+  return joined;
+}
+
+/**
+ * The host engine's web-worker globals, which a guest realm (a worker or a
+ * process of the host's runtime) starts with and hosted Nimbus (workerd) has
+ * none of. `Worker` starts a worker of the host engine's own; `prompt`,
+ * `alert` and `confirm` read the host process's stdin; `postMessage` and
+ * `onmessage` are the worker's channel to the host. The realm's transport is
+ * bound at import, so a guest program never needs them.
+ *
+ * Under Bun the guest also has `Bun`, and it stays: Bun 1.4 makes the global
+ * and nearly all its members non-configurable and non-writable, in every
+ * realm (a ShadowRealm's global included), so no guest realm can be without
+ * it. Its files, processes and network bypass the workspace; the library
+ * host under Bun is not a boundary against the host machine (core README).
+ */
+const HOST_ENGINE_GLOBALS = ['Worker', 'prompt', 'alert', 'confirm', 'postMessage', 'onmessage'] as const;
+
+function withoutHostEngine(): void {
+  for (const name of HOST_ENGINE_GLOBALS) Reflect.deleteProperty(globalThis, name);
 }
 
 // ── Calls, either transport ──────────────────────────────────────────────────
