@@ -46,12 +46,12 @@ export interface BashFacetSession {
     readonly initial: BashSlice;
     push(data: string, eof?: boolean): Promise<BashSlice>;
     /**
-     * Abort the step in flight and settle when it has. Present only where the
-     * facet host can carry a fetch signal through to the isolate — a local
-     * host shares the caller's thread, where nothing preemptible exists to
-     * interrupt, so the property is absent rather than a no-op.
+     * Abort the step in flight and settle when it has. Every facet host can:
+     * the Worker Loader host through the request's signal, the local host
+     * through its submit's (it ends the facet's realm). The session is over
+     * after it.
      */
-    interrupt?(): Promise<void>;
+    interrupt(): Promise<void>;
     close(): Promise<void>;
 }
 export declare function createBashFacetSession(deps: {

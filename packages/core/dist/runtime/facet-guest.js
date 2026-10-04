@@ -36,13 +36,19 @@ const joined = await joinRealm();
 if (!isFacetPayload(joined.payload))
     throw new Error('facet-guest: started without a facet');
 const { tag, parking, preamble, supervisor } = joined.payload;
+const isTypedArray = (value) => ArrayBuffer.isView(value) && !(value instanceof DataView);
 /**
- * A copy of `value` that owns its bytes when it is a view on more of them: a
- * view crosses with its whole buffer, and a guest's is its whole memory.
+ * A copy of `value` that owns its bytes when it is a view on more of them (a
+ * view crosses with its whole buffer, and a guest's is its whole memory),
+ * the same kind of view: a typed array its own type, a DataView a DataView.
  */
-const own = (value) => (ArrayBuffer.isView(value) && value.byteLength !== value.buffer.byteLength
-    ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
-    : value);
+const own = (value) => {
+    if (!ArrayBuffer.isView(value) || value.byteLength === value.buffer.byteLength)
+        return value;
+    if (isTypedArray(value))
+        return value.slice();
+    return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+};
 /** The supervisor's methods (or its synchronous view's), each a call to the host. */
 function view(name, methods) {
     const call = name === 'supervisor' && parking === 'jspi' ? joined.callAsync : joined.call;
@@ -90,10 +96,15 @@ async function scope() {
     evaluate = built;
     return built;
 }
-async function run(submit) {
+/** Adds the submit's modules to the table: every one, or (when one fails to compile) none. */
+async function install(submit) {
+    const compiled = {};
     for (const [name, module] of Object.entries(submit.modules)) {
-        wasmTable[name] = module instanceof WebAssembly.Module ? module : await wasmCompiler()(module);
+        compiled[name] = module instanceof WebAssembly.Module ? module : await wasmCompiler()(module);
     }
+    Object.assign(wasmTable, compiled);
+}
+async function run(submit) {
     const evaluateIn = await scope();
     let fn = scoped.get(submit.source);
     if (!fn) {
@@ -109,5 +120,9 @@ async function run(submit) {
 joined.events.on('message', (event) => {
     if (!isFacetSubmit(event))
         return;
-    void realmOutcome(() => run(event)).then((outcome) => joined.post({ type: 'done', id: event.id, ...outcome }));
+    void (async () => {
+        const installing = await realmOutcome(() => install(event));
+        const outcome = 'error' in installing ? installing : await realmOutcome(() => run(event));
+        joined.post({ type: 'done', id: event.id, installed: !('error' in installing), ...outcome });
+    })();
 });

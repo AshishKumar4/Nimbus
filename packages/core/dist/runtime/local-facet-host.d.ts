@@ -29,6 +29,7 @@
  * filesystem.
  */
 import type { FacetHost } from './facet-host.js';
+import { type RealmOutcome } from './realm.js';
 import type { WasiParking } from './wasi/types.js';
 /** Which of the facet's capabilities a call reaches: the supervisor, or its synchronous view. */
 export type SupervisorView = 'supervisor' | 'synchronous';
@@ -56,6 +57,13 @@ export interface FacetSubmit {
 }
 export declare function isFacetPayload(value: unknown): value is FacetPayload;
 export declare function isFacetSubmit(value: unknown): value is FacetSubmit;
+/** The guest's answer to a submit, named by the submit's id. */
+export type FacetDone = RealmOutcome & {
+    readonly type: 'done';
+    readonly id: number;
+    /** Whether the submit's modules are in the facet's table: all of them, or (when one failed) none. */
+    readonly installed: boolean;
+};
 type WasmCompiler = (bytes: BufferSource) => Promise<WebAssembly.Module>;
 /**
  * The standard `WebAssembly.compile`, checked for rather than assumed.
