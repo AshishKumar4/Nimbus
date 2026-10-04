@@ -18,11 +18,13 @@ published independently in the `@nimbus-sh` npm scope.
   deadline` on its stderr, while it ran on. Children now run beside each
   other, dispatched from the session itself: B prints at 1.2 s, about the
   time a child takes alone; a child spawned after a kill runs at once; a
-  nested spawn finishes; a child runs as long as it runs. A kill ends the
-  work behind the child's pid (its run is aborted, its Dynamic Worker given
-  back), and the process table records it `killed`. The relay's supervisor
-  RPC, `cpDispatchInline`, is gone with it; it ran a command as whatever
-  pid its caller named.
+  nested spawn finishes; a child runs as long as it runs. On a deployed
+  Worker, B printed at 218 ms beside a live 20 s A (a child alone: 260 ms),
+  where it had waited 20.5 s. A kill ends the work behind the child's pid
+  (its run is aborted, its Dynamic Worker given back), and the process
+  table records it `killed`. The relay's supervisor RPC,
+  `cpDispatchInline`, is gone with it; it ran a command as whatever pid
+  its caller named.
 - A one-shot program (`node -e`, a `child_process` child, a shell job) is
   let in by the Dynamic Worker ledger. While the Durable Object has its 10
   Dynamic Workers in flight, the program waits for a release to make room,
