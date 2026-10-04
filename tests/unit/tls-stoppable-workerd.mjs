@@ -89,11 +89,18 @@ const tlsOpts = (ca) => ({ ...creds(ca), ALPNProtocols: ['x-test', 'http/1.1'], 
     const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
     socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: ' + accept + '\\r\\n\\r\\n');
     socket.on('error', () => {});
-    socket.on('data', (frame) => {
-      const len = frame[1] & 127, mask = frame.subarray(2, 6), data = Buffer.from(frame.subarray(6, 6 + len));
-      for (let i = 0; i < data.length; i++) data[i] ^= mask[i % 4];
-      if ((frame[0] & 15) === 8) { socket.end(Buffer.from([0x88, 0])); return; }
-      socket.write(Buffer.concat([Buffer.from([0x81, data.length]), data]));
+    // Client frames are masked; a frame can arrive in pieces (short ones here).
+    let pending = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      pending = Buffer.concat([pending, chunk]);
+      while (pending.length >= 6 && pending.length >= 6 + (pending[1] & 127)) {
+        const len = pending[1] & 127, mask = pending.subarray(2, 6), data = Buffer.from(pending.subarray(6, 6 + len));
+        const opcode = pending[0] & 15;
+        pending = pending.subarray(6 + len);
+        for (let i = 0; i < data.length; i++) data[i] ^= mask[i % 4];
+        if (opcode === 8) { socket.end(Buffer.from([0x88, 0])); return; }
+        socket.write(Buffer.concat([Buffer.from([0x81, data.length]), data]));
+      }
     });
   });
   ports.wss = await listen(wss);
@@ -340,7 +347,9 @@ try {
   // workerd's own node:tls checks the certificate against it but sends the
   // host.
   check(same('sni', 'stoppable') && nimbus.sni?.plain?.authorized === true, `sni: as under node where the session makes the TLS${show('sni')}`);
-  // A WebSocket over TLS: what one way does, the other does.
+  // A WebSocket over TLS: what one way does, the other does. (With
+  // work/ws-scheme bce7bb0b9 both echo "hi", as under Node; before it the
+  // relay's upgrade fetch refuses the wss: URL both ways.)
   check(JSON.stringify(nimbus.wss?.stoppable) === JSON.stringify(nimbus.wss?.plain), `wss: the same either way${show('wss')}`);
   // What workerd's node:tls does not do, by name, both ways.
   check(named('alpn', 'stoppable', 'ALPNProtocols') && named('alpn', 'plain', 'ALPNProtocols'), `alpn: refused by name${show('alpn')}`);
