@@ -28,4 +28,16 @@ for (const field of ['resize', 'signal', 'acquired', 'futureMetadata']) {
   await input.handle('cpReadStdin', [], 'a', async () => ({ data: new Uint8Array(), ended: false, [field]: {} }));
   assert.equal(input.replayable, false, field + ' must not leak around the stdin tape');
 }
+// Primitive refusals are inputs too: never collapse their types to strings,
+// or mistake a rejection carrying undefined for a successful void reply.
+for (const original of [undefined, null, 0, false]) {
+  const failures = new ReplayJournal(() => {});
+  failures.start('a');
+  let caught = false;
+  try { await failures.handle('stat', ['/failure'], 'a', () => Promise.reject(original)); }
+  catch (error) { caught = true; assert.equal(error, original); }
+  assert.equal(caught, true);
+  failures.stopped(); failures.start('b');
+  await assert.rejects(failures.handle('stat', ['/failure'], 'b', () => Promise.reject(String(original))), /answered differently/);
+}
 console.log(`sync-stdin-operation-coverage: ${SUPERVISOR_OPS.length}/${SUPERVISOR_OPS.length} classified; unknown operations fail closed`);
