@@ -15,7 +15,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
 export function getNimbusCtxExports() {
@@ -423,6 +423,19 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
     const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
+    // The unkeyed worker is one distinct dynamic worker in flight until its
+    // response is consumed (the body streams from it), keyed by this run's
+    // writer id. It is let in by the ledger: while this Durable Object has its
+    // limit of workers in flight (other runs, residents, fan-outs), the run
+    // waits, before its module map is assembled, for a release to make room,
+    // rather than being refused by the platform. So a burst of programs (a
+    // parent's children, a shell's background jobs) runs as wide as the limit
+    // and no wider, and holds at most that many maps at once. Only the run's
+    // own abort (a kill, Ctrl-C) ends the wait: room may come late, but it
+    // comes when a holder ends. Bracketed, never wrapped: see beginLoaderFetch
+    // for the measured DO-poisoning hazard, and the pipelined-`fetch.call`
+    // note below for its sibling.
+    const endFetch = await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, { signal: params.request.signal });
     let supervisorBinding;
     let worker;
     let entrypoint;
@@ -455,12 +468,6 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
         }
         params.onLoaded?.();
-        // The unkeyed worker is one distinct dynamic worker in flight until its
-        // response is consumed (the body streams from it), keyed by this run's
-        // writer id — bracketed, never wrapped: see beginLoaderFetch for the
-        // measured DO-poisoning hazard, and the pipelined-`fetch.call` note above
-        // for its sibling.
-        const endFetch = beginLoaderFetch(ctx, `one-shot:${params.writerId}`);
         try {
             const response = await ep.fetch(params.request);
             try {
@@ -475,14 +482,12 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             endFetch(error);
             throw error;
         }
-        finally {
-            endFetch();
-        }
     }
     catch (error) {
         throw withDynamicWorkerCapNamed(ctx, error);
     }
     finally {
+        endFetch();
         disposeRpcResource(entrypoint);
         disposeRpcResource(worker);
         disposeRpcResource(supervisorBinding);

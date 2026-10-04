@@ -24,18 +24,20 @@
  * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
  * parent's exit path so unawaited children don't lose output.
  *
+ * Children run concurrently, as Node's do: each is dispatched on its own,
+ * and nothing here waits for one child before starting the next. What a
+ * child spends of the session's shared budgets it spends where it is spent
+ * (a facet program's Dynamic Worker is admitted by the fabric's ledger).
+ *
  * Lifecycle invariants:
  *   - exitCode is stamped exactly once (first writer wins). kill() and
  *     reportExit() race-free.
- *   - kill() resolves all pending waiters BEFORE invoking facets.abort,
- *     so cpWait/cpReadOutput don't hang on a torn-down facet.
- *   - facets.delete is deferred to a microtask after abort to give any
- *     in-flight reportExit RPC a chance to land (and be no-op'd by the
- *     idempotent guard).
+ *   - kill() ends the work behind the pid (its launch's terminator) before
+ *     it stamps the exit, which wakes every pending waiter, so
+ *     cpWait/cpReadOutput don't hang and nothing the child held outlives it.
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this
@@ -65,7 +67,6 @@ interface ChildEntry {
     args: string[];
     cwd: string;
     env: Record<string, string>;
-    facetName: string;
     startedAt: number;
     endedAt: number | null;
     stdinChunks: Uint8Array[];
@@ -95,10 +96,6 @@ interface ChildEntry {
         exitCode: number | null;
         signal: string | null;
     }) => void>;
-    facetSlot: {
-        abort?: () => void;
-        killed?: boolean;
-    } | null;
 }
 export interface SpawnReq {
     command: string;
@@ -111,8 +108,6 @@ export interface SpawnReq {
     stdin?: string;
     /** Supervisor-assigned invoking process PID. */
     parentPid: number;
-    /** Broker-assigned child PID for isolated inline dispatch. */
-    processPid?: number;
 }
 export interface ReadOutputResult {
     chunks: {
@@ -129,8 +124,8 @@ export interface DrainResult {
     stderrClosed: boolean;
 }
 /**
- * Hooks invoked by the inline runner / facet-direct runner to push
- * output back into the per-child ring. Kept as a small structural type
+ * Hooks invoked by a child's runner (builtin, shell line or facet program)
+ * to push output into the per-child ring. Kept as a small structural type
  * so tests can supply mocks. They carry bytes; a text producer encodes at
  * its own edge (see `textBytes`).
  */
@@ -151,12 +146,10 @@ export type CommandKind = 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'un
  */
 export interface FacetManagerLike {
     execStream(code: string, opts: {
-        facetName?: string;
         cwd?: string;
         env?: Record<string, string>;
         argv?: string[];
     }, hooks: OutputHooks): Promise<number>;
-    abort?(facetName: string, signal?: string): boolean;
 }
 /** Where a child runs from: its pid (whose credential it has), directory and environment. */
 export interface ChildOrigin {
@@ -189,20 +182,6 @@ export interface FacetProcessManagerDeps {
     vfsForProcess: (pid: number) => Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>;
     commandRegistry: CommandRegistryLike;
     shellExecutor?: ShellExecutorLike;
-    /** Optional: ctx for facets.abort/delete in production. */
-    ctx?: {
-        facets?: {
-            abort?: (name: string, e?: any) => void;
-            delete?: (name: string) => void;
-        };
-        storage?: {
-            sql?: SqlDatabase;
-        };
-    };
-    /** Optional Worker Loader pool for isolating child-process dispatch. */
-    spawnPool?: {
-        runOne: (req: any, kind: Exclude<CommandKind, 'unknown'>, hooks: OutputHooks) => Promise<number>;
-    };
 }
 /** Cap recursion depth to defend against runaway spawn loops. */
 export declare const CHILD_PROCESS_MAX_DEPTH = 8;
@@ -211,34 +190,27 @@ export declare class FacetProcessManager {
     private deps;
     constructor(deps: FacetProcessManagerDeps);
     /**
-     * Allocate a child PID, classify the command, dispatch to inline runner
-     * or facet-direct runner. Returns immediately with the child PID; the
-     * actual command executes asynchronously and pushes output via the
+     * Allocate a child PID, classify the command, dispatch it to its runner.
+     * Returns immediately with the child PID; the actual command executes
+     * asynchronously, beside any other child, and pushes output via the
      * per-child hooks.
      */
     spawn(req: SpawnReq): Promise<{
         childPid: number;
     }>;
-    /** Dispatch by kind. */
-    private _dispatch;
     /**
-     * child-process isolation gap #1: inline dispatch — runs the existing
-     * pure-builtin / facet-direct logic with string-collecting hooks
-     * and returns the final {exitCode, stdout, stderr} envelope.
+     * Run the child to its end and stamp its exit. A facet program or a shell
+     * line reads live stdin (NIMBUS_CP_CHILD_PID, cpReadStdin), as a Node
+     * child_process pipe does; a pure builtin takes the stdin the parent queued
+     * as one string. Output goes straight to the child's queues while it runs,
+     * so a prompt reaches the parent before the child waits for an answer.
      *
-     * Called by _rpcCpDispatchInline (src/session/rpc.ts) which is in
-     * turn called by the spawn-facet running inside a fresh Worker
-     * Loader isolate. The dispatch envelope is in a fresh isolate; the
-     * actual command logic still uses the existing registry paths.
-     *
-     * A managed child streams to its existing output queue while it runs;
-     * otherwise the inline caller receives captured text in the result.
+     * Runs in this isolate, on its own: a child that never exits holds nothing
+     * a later child needs. (It used to be relayed through a single-slot Worker
+     * Loader pool whose call stayed open for the child's life, so every later
+     * spawn queued behind it, a kill included.)
      */
-    dispatchInline(req: SpawnReq, kind: string): Promise<{
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-    }>;
+    private _dispatch;
     /**
      * Synchronously drain the stdin queue for a pure-builtin. Waits up to
      * 50ms for stdinClosed if data is still flowing. Pure-builtins block
@@ -248,8 +220,6 @@ export declare class FacetProcessManager {
     private _waitForStdinEvent;
     private _drainStdinForBuiltin;
     private _shellPlanFor;
-    private _dispatchShell;
-    private _drainStdinForShell;
     private _shellCommandLineForPlan;
     private _runShellLine;
     stdinWrite(childPid: number, data: Uint8Array): {
@@ -286,9 +256,12 @@ export declare class FacetProcessManager {
      */
     drainOutput(childPid: number): Promise<DrainResult>;
     /**
-     * Synchronous kill. First-writer-wins on exit slot. Resolves all
-     * pending waiters BEFORE invoking facets.abort so cpWait/cpReadOutput
-     * don't hang on a torn-down facet.
+     * Synchronous kill. First-writer-wins on exit slot. The work behind the
+     * pid ends first: the session's process kill runs the terminator its launch
+     * registered, which aborts a facet program's run, so the Dynamic Worker
+     * it held goes back to the ledger now rather than when the program would
+     * have ended on its own. (`exit()`, which the stamp below calls, drops that
+     * terminator without running it.) Then the stamp wakes every waiter.
      */
     kill(childPid: number, signal?: string): boolean;
     /**

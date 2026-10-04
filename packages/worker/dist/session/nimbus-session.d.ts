@@ -444,11 +444,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcCpDrainOutput(childPid: number): Promise<any>;
     _rpcCpKill(childPid: number, signal: string): Promise<boolean>;
     _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
-    _rpcCpDispatchInline(req: any, kind: string): Promise<{
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-    }>;
     _rpcReady(options?: _programmatic.ProgrammaticReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];

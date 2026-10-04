@@ -490,18 +490,5 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         signal: string | null;
         acquired?: VfsDeliveredAcquire;
     }>;
-    /**
-     * child-process isolation gap #1: dispatch a single cp.spawn request inline using
-     * the existing pure-builtin / facet-direct logic, returning final
-     * stdout/stderr/exitCode (NOT streamed via hooks). Called from
-     * spawn-facet.ts:runSpawnInIsolate inside a fresh Worker Loader
-     * isolate to delegate the actual command execution back to the
-     * supervisor while keeping the dispatch envelope in a fresh isolate.
-     */
-    cpDispatchInline(req: any, kind: string): Promise<{
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-    }>;
 }
 //# sourceMappingURL=supervisor-rpc.d.ts.map

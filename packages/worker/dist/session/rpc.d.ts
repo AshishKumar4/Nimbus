@@ -432,23 +432,6 @@ export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
 export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
-/**
- * child-process isolation gap #1: dispatch a single cp.spawn request inline using the
- * existing pure-builtin / facet-direct logic, returning final stdout/
- * stderr/exitCode rather than streaming via hooks. Called by
- * spawn-facet.ts:runSpawnInIsolate from inside a fresh Worker Loader
- * isolate (the per-spawn fresh-isolate envelope).
- *
- * The fpm exposes a `dispatchInline(req, kind)` that adapts the
- * existing _dispatch path (originally hook-based) into a string-result
- * shape. That adapter is responsible for ensuring stdout/stderr are
- * accumulated inline rather than streamed.
- */
-export declare function _rpcCpDispatchInline(self: RpcHost, req: any, kind: string): Promise<{
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-}>;
 /** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
 export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
 /** RPC: Read a file as string. Returns string or null. */

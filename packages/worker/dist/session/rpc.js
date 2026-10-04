@@ -1289,22 +1289,6 @@ export async function _rpcCpWait(self, childPid, waitMs, acquire, pid) {
     const status = await fpm.wait(childPid, waitMs);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
-/**
- * child-process isolation gap #1: dispatch a single cp.spawn request inline using the
- * existing pure-builtin / facet-direct logic, returning final stdout/
- * stderr/exitCode rather than streaming via hooks. Called by
- * spawn-facet.ts:runSpawnInIsolate from inside a fresh Worker Loader
- * isolate (the per-spawn fresh-isolate envelope).
- *
- * The fpm exposes a `dispatchInline(req, kind)` that adapts the
- * existing _dispatch path (originally hook-based) into a string-result
- * shape. That adapter is responsible for ensuring stdout/stderr are
- * accumulated inline rather than streamed.
- */
-export async function _rpcCpDispatchInline(self, req, kind) {
-    const fpm = self._ensureFacetProcessManager();
-    return fpm.dispatchInline(req, kind);
-}
 // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
 // Kept for backward compatibility with direct DO stub callers.
 /** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */

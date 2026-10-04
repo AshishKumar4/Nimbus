@@ -799,15 +799,4 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async cpWait(childPid, waitMs, acquire) {
         return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
     }
-    /**
-     * child-process isolation gap #1: dispatch a single cp.spawn request inline using
-     * the existing pure-builtin / facet-direct logic, returning final
-     * stdout/stderr/exitCode (NOT streamed via hooks). Called from
-     * spawn-facet.ts:runSpawnInIsolate inside a fresh Worker Loader
-     * isolate to delegate the actual command execution back to the
-     * supervisor while keeping the dispatch envelope in a fresh isolate.
-     */
-    async cpDispatchInline(req, kind) {
-        return this._call(this._op('cpDispatchInline', [req, kind]));
-    }
 }

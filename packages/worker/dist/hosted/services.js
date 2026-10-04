@@ -2,7 +2,6 @@ import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
-import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
@@ -204,14 +203,6 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return 1;
             }
         },
-        abort: (facetName) => {
-            // Best-effort: relay to ctx.facets.abort, mirroring FacetManager.kill.
-            try {
-                runtimeContext.ctx.facets?.abort?.(facetName, new Error('SIGKILL'));
-            }
-            catch { }
-            return true;
-        },
     };
     // Adapter for CommandRegistryLike. The shared shell registry is
     // attached to `this._cpRegistry` by the shell-init path (see
@@ -314,18 +305,6 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             self.processes.exit(child.pid, exitCode);
         }
     };
-    // Construct the child-process Loader pool when the binding is available.
-    // Unit-test hosts without LOADER continue through direct dispatch.
-    let spawnPool;
-    try {
-        const envAny = runtimeContext.env;
-        if (envAny?.LOADER && typeof envAny.LOADER.get === 'function') {
-            spawnPool = new ChildProcessSpawnPool(runtimeContext.env, runtimeContext.ctx);
-        }
-    }
-    catch {
-        spawnPool = undefined;
-    }
     self.facetProcessManager = new FacetProcessManager({
         facetMgr: facetMgrAdapter,
         processes: self.processes,
@@ -354,8 +333,6 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return typeof result?.exitCode === 'number' ? result.exitCode : 0;
             },
         },
-        ctx: runtimeContext.ctx,
-        spawnPool,
     });
     return self.facetProcessManager;
 }
