@@ -50,6 +50,7 @@ export declare class ReplayJournal {
     private stall;
     private recordedBytes;
     private boundaryWait;
+    private effectsHeld;
     constructor(onDiverge: DivergeHandler, stallMs?: number);
     /** A run begins: the writer identity its calls carry. */
     start(run: string): void;
@@ -78,6 +79,8 @@ export declare class ReplayJournal {
     close(): void;
     /** The current run did something outside itself (or `what` makes it unreplayable): see the class. */
     effect(what: string): Error | null;
+    /** RPC hops may deliver the post-read effect before its boundary notice. */
+    beforeEffect(what: string): Promise<Error | null>;
     /** The current run cannot be replayed (D1: nothing more is recorded for it). */
     disqualify(why: string): void;
     /** A supervisor call from the process: answered through `dispatch`, journaled, ordered. */

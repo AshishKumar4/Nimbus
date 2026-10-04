@@ -250,6 +250,11 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
  */
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
+/** A bounded range used only to prepare fd 0, never an ordinary file read. */
+export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{
+    data: Uint8Array;
+    size: number;
+}>;
 /**
  * Read many ranges, and lstat many paths, in ONE round trip.
  *

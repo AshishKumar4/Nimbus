@@ -1,3 +1,4 @@
+import { type ReplayFailure } from './stop-replay-contracts.js';
 /** Bounded recording and incremental digest; never delay response headers. */
 export declare class ReplayBodyRecord {
     private pieces;
@@ -14,4 +15,7 @@ export declare class ReplayBodyRecord {
         tooLarge: true;
     };
 }
+/** The same error shape is delivered live and on replay, including its cause. */
+export declare function recordFailure(error: unknown): ReplayFailure;
+export declare function failureOf(record: ReplayFailure): Error;
 //# sourceMappingURL=stop-replay-body.d.ts.map

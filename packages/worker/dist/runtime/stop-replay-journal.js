@@ -132,6 +132,7 @@ export class ReplayJournal {
     stall = null;
     recordedBytes = 0;
     boundaryWait = null;
+    effectsHeld = [];
     constructor(onDiverge, stallMs = REPLAY_STALL_MS) {
         this.onDiverge = onDiverge;
         this.stallMs = stallMs;
@@ -222,6 +223,13 @@ export class ReplayJournal {
         this.disqualify(what);
         return null;
     }
+    /** RPC hops may deliver the post-read effect before its boundary notice. */
+    async beforeEffect(what) {
+        if (!this.boundaryPassed) {
+            await new Promise((release, fail) => { this.effectsHeld.push({ what, release, fail }); this.watch(); });
+        }
+        return this.effect(what);
+    }
     /** The current run cannot be replayed (D1: nothing more is recorded for it). */
     disqualify(why) {
         if (this.disqualified === null)
@@ -236,8 +244,7 @@ export class ReplayJournal {
             return Promise.reject(new Error(this.diverged));
         const effect = supervisorCallEffect(op, args);
         if (effect !== null) {
-            const refused = this.effect(effect);
-            return refused ? Promise.reject(refused) : dispatch();
+            return this.beforeEffect(effect).then((refused) => refused ? Promise.reject(refused) : dispatch());
         }
         if (this.boundaryPassed && this.entries === null)
             return dispatch();
@@ -368,6 +375,9 @@ export class ReplayJournal {
         this.expected = null;
         for (const held of this.atBoundary.splice(0))
             held.release();
+        for (const held of this.effectsHeld.splice(0))
+            held.release();
+        this.watch();
     }
     /** Whether a run after a stop is still retracing the run before it. */
     get replaying() {
@@ -402,12 +412,15 @@ export class ReplayJournal {
         if (this.stall !== null)
             clearTimeout(this.stall);
         this.stall = null;
-        if (this.waiting.size === 0 && this.boundaryWait === null)
+        if (this.waiting.size === 0 && this.boundaryWait === null && this.effectsHeld.length === 0)
             return;
         this.stall = setTimeout(() => {
             this.stall = null;
             if (this.waiting.size > 0 || this.boundaryWait !== null) {
                 this.diverge(`it did not ask again for what the run before it was answered next (answer ${this.delivered + 1} of ${this.expectedCompleted})`);
+            }
+            else if (this.effectsHeld.length) {
+                this.diverge(`it did something outside itself before the read, which the run before it did not (${this.effectsHeld[0].what}); no completed replay boundary was delivered`);
             }
         }, this.stallMs);
     }
@@ -431,6 +444,8 @@ export class ReplayJournal {
             held.fail(error);
         this.boundaryWait?.fail(error);
         this.boundaryWait = null;
+        for (const held of this.effectsHeld.splice(0))
+            held.fail(error);
     }
 }
 /** A call's identity across runs: its op and arguments, digested. */

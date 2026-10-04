@@ -34,3 +34,25 @@ export class ReplayBodyRecord {
         return { body, chunks: this.chunks, digest: this.a.toString(16).padStart(8, '0') + this.b.toString(16).padStart(8, '0') };
     }
 }
+/** The same error shape is delivered live and on replay, including its cause. */
+export function recordFailure(error) {
+    const e = error instanceof Error ? error : new Error(String(error));
+    const properties = Object.fromEntries(Object.getOwnPropertyNames(e)
+        .filter((key) => !['name', 'message', 'stack', 'cause'].includes(key))
+        .map((key) => [key, e[key]]));
+    if (e.cause !== undefined && !(e.cause instanceof Error))
+        properties.cause = e.cause;
+    return { name: e.name, message: e.message, stack: e.stack, properties,
+        ...(e.cause instanceof Error ? { cause: recordFailure(e.cause) } : {}) };
+}
+export function failureOf(record) {
+    const constructors = { Error, TypeError, RangeError, SyntaxError, ReferenceError, URIError, EvalError };
+    const error = new (constructors[record.name] ?? Error)(record.message);
+    error.name = record.name;
+    if (record.stack !== undefined)
+        error.stack = record.stack;
+    Object.assign(error, record.properties);
+    if (record.cause)
+        error.cause = failureOf(record.cause);
+    return error;
+}

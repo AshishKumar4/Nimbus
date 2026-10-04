@@ -5538,7 +5538,7 @@ export class FacetManager {
             const host = String(payload?.host ?? ''), port = Number(payload?.port);
             if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port > 65535)
                 throw new Error('netTls: bad target');
-            const refused = journal.effect(`tls.connect ${host}:${port}`);
+            const refused = await journal.beforeEffect(`tls.connect ${host}:${port}`);
             if (refused)
                 throw refused;
             this._netTarget(token, pid).host = host;
@@ -5571,7 +5571,7 @@ export class FacetManager {
             throw new Error('outbound: this run of the process has stopped');
         switch (action) {
             case 'effect': {
-                const refused = journal.effect(String(payload?.what ?? 'a request'));
+                const refused = await journal.beforeEffect(String(payload?.what ?? 'a request'));
                 if (refused)
                     throw refused;
                 // The run cannot be replayed now: the outbound need not ask again.
@@ -5599,8 +5599,13 @@ export class FacetManager {
                     }
                     plan({ live: ticket });
                     const result = await fetched;
-                    if ('error' in result)
+                    if ('error' in result) {
+                        // A pre-headers platform rejection has not crossed as a
+                        // Response. Keep the live error, but never replay an incomplete
+                        // failure shape (the body-error protocol below records one).
+                        journal.disqualify(`${what} failed before its headers (${result.error})`);
                         throw new Error(result.error);
+                    }
                     response = { ...result, body: new Uint8Array(0) };
                     return result;
                 }, () => response);
@@ -5654,7 +5659,7 @@ export class FacetManager {
                 if (!/^[0-9a-f]{32}$/.test(token)) {
                     // A plain connection (not one the TLS shim opened): proxied, and
                     // something a second run would do again.
-                    const refused = journal.effect(`connect ${token}`);
+                    const refused = await journal.beforeEffect(`connect ${token}`);
                     if (refused)
                         throw refused;
                     return { plain: true, unrecorded: true };
@@ -5690,8 +5695,10 @@ export class FacetManager {
             if ('tooLarge' in result)
                 journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB (${live.what})`);
             else if (live.response) {
-                if ('error' in result)
+                if ('error' in result) {
                     live.response.bodyError = result.error;
+                    live.response.bodyFailure = result.failure;
+                }
                 if ('body' in result) {
                     live.response.body = result.body;
                     live.response.chunks = result.chunks;
