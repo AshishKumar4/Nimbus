@@ -23,8 +23,8 @@ import { assertEqualHolds } from './loose-equality.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
 export function createModuleMap(ctx) {
     const map = {
-        fs: () => createFs(ctx.filesystem(), ctx.cwd),
-        'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd).promises,
+        fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
+        'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
         path: () => pathModule,
         os: () => createOs(ctx.env),
         process: () => createProcess({
@@ -69,7 +69,7 @@ export function createModuleMap(ctx) {
         readline: () => readlineModule,
         'readline/promises': () => readlineModule.promises,
         constants: () => {
-            const fs = createFs(ctx.filesystem(), ctx.cwd);
+            const fs = createFs(ctx.filesystem(), ctx.cwd, ctx.stdin);
             const os = createOs(ctx.env);
             return { ...os.constants, ...fs.constants };
         },

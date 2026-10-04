@@ -1,10 +1,10 @@
-import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { ACTIVE_SERVERS } from '../../node-compat/http.js';
+import { runNodeInRealm } from './node-realm.js';
 const NODE_VERSION = 'v20.0.0';
 // ── Rollup / esbuild CJS-ESM interop helpers ──
 // Bundled npm packages (Vite, Rollup, etc.) reference these helpers at the module
@@ -528,12 +528,10 @@ function createNodeImpl(kernelOrPortRegistry) {
             await ctx.stdout.write('  -v, --version       print version\n\n');
             await ctx.stdout.write('Limitations:\n');
             await ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
-            await ctx.stdout.write('  - No event loop (top-level async does not settle)\n');
             await ctx.stdout.write('  - No native modules\n');
             await ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
             return 0;
         }
-        const filesystem = synchronousFilesystem(ctx.vfs);
         let source;
         let filename;
         let scriptArgs;
@@ -569,87 +567,403 @@ function createNodeImpl(kernelOrPortRegistry) {
             await ctx.stderr.write('Usage: node [-e code] [script.js] [args...]\n');
             return 1;
         }
-        const dir = filename === '[eval]' ? ctx.cwd : dirname(filename);
-        // Extract portRegistry from either Kernel or direct Map
-        const portRegistry = kernelOrPortRegistry instanceof Map
-            ? kernelOrPortRegistry
-            : kernelOrPortRegistry?.portRegistry;
-        const nodeCtx = {
-            filesystem,
-            cwd: ctx.cwd,
-            env: ctx.env,
+        const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
+        const kernel = kernelOrPortRegistry instanceof Map ? { portRegistry: kernelOrPortRegistry } : kernelOrPortRegistry;
+        // The program runs in a realm of its own (a worker per run), never the
+        // host's: its globals and intrinsics are its own (node-realm.ts).
+        return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType }, ctx, kernel);
+    };
+}
+/**
+ * Run `program` in the current realm, which is the program's own: its globals
+ * (process, Buffer, console, the bundlers' interop helpers) are installed on
+ * globalThis for good. Resolves once the main script has run and any servers
+ * it started have closed; timers it leaves run on after, in the realm's own
+ * event loop, unless its process ended.
+ */
+export async function runNodeProgram(program, host) {
+    const { source, filename, scriptArgs, mainType } = program;
+    const filesystem = host.filesystem;
+    const ctx = { stdout: host.stdout, stderr: host.stderr };
+    const dir = filename === '[eval]' ? program.cwd : dirname(filename);
+    const nodeCtx = {
+        filesystem,
+        cwd: program.cwd,
+        env: program.env,
+        stdout: host.stdout,
+        stderr: host.stderr,
+        argv: [filename, ...scriptArgs],
+        filename,
+        dirname: dir,
+        signal: new AbortController().signal,
+        portRegistry: host.portRegistry,
+        routeLoopback: host.routeLoopback,
+        stdin: host.stdin,
+    };
+    const moduleMap = createModuleMap(nodeCtx);
+    const moduleCache = new Map();
+    // Stub for @rollup/rollup-* native binary packages (platform-specific NAPI addons).
+    // These can't work in a browser environment. Provide shims for the exported functions.
+    // Vite's dev server primarily uses es-module-lexer, not rollup's parser, so these
+    // may never be called. If they are, hash stubs return safe defaults; parse stubs throw.
+    const rollupNativeStub = {
+        parse: () => { throw new Error('[lifo] rollup native parser is not available in browser'); },
+        parseAsync: () => Promise.reject(new Error('[lifo] rollup native parser is not available in browser')),
+        xxhashBase64Url: (data) => {
+            // Simple fallback hash — not cryptographically equivalent but sufficient for cache keys
+            const s = typeof data === 'string' ? data : String(data);
+            let h = 0;
+            for (let i = 0; i < s.length; i++)
+                h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+            return (h >>> 0).toString(36);
+        },
+        xxhashBase36: (data) => {
+            const s = typeof data === 'string' ? data : String(data);
+            let h = 0;
+            for (let i = 0; i < s.length; i++)
+                h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+            return (h >>> 0).toString(36);
+        },
+        xxhashBase16: (data) => {
+            const s = typeof data === 'string' ? data : String(data);
+            let h = 0;
+            for (let i = 0; i < s.length; i++)
+                h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+            return (h >>> 0).toString(16);
+        },
+    };
+    // Build require function (declared first, module shim overrides below)
+    function nodeRequire(name) {
+        // Strip node: prefix
+        if (name.startsWith('node:'))
+            name = name.slice(5);
+        // Check cache
+        if (moduleCache.has(name))
+            return moduleCache.get(name);
+        // Built-in modules
+        if (moduleMap[name]) {
+            const mod = moduleMap[name]();
+            moduleCache.set(name, mod);
+            return mod;
+        }
+        // Subpath imports (#specifier)
+        if (name.startsWith('#')) {
+            const resolved = resolvePackageImport(name, dir);
+            if (resolved) {
+                const cached = moduleCache.get(resolved.path);
+                if (cached)
+                    return cached;
+                const modSource = filesystem().readFileString(resolved.path);
+                return executeModule(modSource, resolved.path, resolved.path);
+            }
+            throw new Error(`Cannot find module '${name}'`);
+        }
+        // Relative VFS files
+        if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
+            const resolved = resolveVfsModule(name, dir);
+            if (resolved) {
+                const cached = moduleCache.get(resolved.path);
+                if (cached)
+                    return cached;
+                if (resolved.path.endsWith('.json')) {
+                    const content = filesystem().readFileString(resolved.path);
+                    const parsed = JSON.parse(content);
+                    moduleCache.set(resolved.path, parsed);
+                    return parsed;
+                }
+                const modSource = filesystem().readFileString(resolved.path);
+                return executeModule(modSource, resolved.path, resolved.path);
+            }
+            throw new Error(`Cannot find module '${name}'`);
+        }
+        // Node-modules resolution (walk up node_modules, global, legacy)
+        const nmResolved = resolveNodeModule(name, dir);
+        if (nmResolved) {
+            const cached = moduleCache.get(nmResolved.path);
+            if (cached)
+                return cached;
+            if (nmResolved.path.endsWith('.json')) {
+                const content = filesystem().readFileString(nmResolved.path);
+                const parsed = JSON.parse(content);
+                moduleCache.set(nmResolved.path, parsed);
+                return parsed;
+            }
+            const modSource = filesystem().readFileString(nmResolved.path);
+            return executeModule(modSource, nmResolved.path, nmResolved.path);
+        }
+        // Stub for rollup native binary packages
+        if (name.startsWith('@rollup/rollup-'))
+            return rollupNativeStub;
+        throw new Error(`Cannot find module '${name}'`);
+    }
+    // Override module shim so createRequire returns nodeRequire (resolves VFS + node_modules)
+    moduleMap.module = () => {
+        const createRequire = (_filename) => nodeRequire;
+        const builtinNames = Object.keys(moduleMap);
+        const isBuiltin = (s) => {
+            const n = s.startsWith('node:') ? s.slice(5) : s;
+            return builtinNames.includes(n);
+        };
+        return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
+    };
+    function resolveVfsModule(name, fromDir) {
+        const absPath = resolve(fromDir, name);
+        // Try exact path
+        if (filesystem().exists(absPath)) {
+            try {
+                const stat = filesystem().stat(absPath);
+                if (stat.type === 'file')
+                    return { path: absPath };
+                // Directory -- try index.js
+                const indexPath = join(absPath, 'index.js');
+                if (filesystem().exists(indexPath))
+                    return { path: indexPath };
+            }
+            catch { /* fall through */ }
+        }
+        // Try .js extension
+        if (!extname(absPath) && filesystem().exists(absPath + '.js')) {
+            return { path: absPath + '.js' };
+        }
+        // Try .mjs extension
+        if (!extname(absPath) && filesystem().exists(absPath + '.mjs')) {
+            return { path: absPath + '.mjs' };
+        }
+        // Try .json extension
+        if (!extname(absPath) && filesystem().exists(absPath + '.json')) {
+            return { path: absPath + '.json' };
+        }
+        return null;
+    }
+    // ── Subpath imports (#specifier) resolution ──
+    // Node.js package.json "imports" field: #name → conditional file path
+    function resolvePackageImport(name, fromDir) {
+        // Walk up to find the nearest package.json with an "imports" field
+        let current = fromDir;
+        for (;;) {
+            const pkgPath = join(current, 'package.json');
+            if (filesystem().exists(pkgPath)) {
+                try {
+                    const pkg = JSON.parse(filesystem().readFileString(pkgPath));
+                    if (pkg.imports && typeof pkg.imports === 'object') {
+                        const importsMap = pkg.imports;
+                        if (name in importsMap) {
+                            const target = resolveExportsCondition(importsMap[name]);
+                            if (target) {
+                                return resolveVfsModule(target, current);
+                            }
+                        }
+                    }
+                }
+                catch { /* ignore parse errors */ }
+                break; // Stop at nearest package.json (Node.js semantics)
+            }
+            const parent = dirname(current);
+            if (parent === current)
+                break;
+            current = parent;
+        }
+        return null;
+    }
+    // ── Node-modules resolution (walk up, global, legacy) ──
+    function resolveNodeModule(name, fromDir) {
+        // Parse package name and optional subpath
+        let packageName;
+        let subpath = null;
+        if (name.startsWith('@')) {
+            const parts = name.split('/');
+            if (parts.length < 2)
+                return null;
+            packageName = parts[0] + '/' + parts[1];
+            if (parts.length > 2)
+                subpath = parts.slice(2).join('/');
+        }
+        else {
+            const slashIdx = name.indexOf('/');
+            if (slashIdx !== -1) {
+                packageName = name.slice(0, slashIdx);
+                subpath = name.slice(slashIdx + 1);
+            }
+            else {
+                packageName = name;
+            }
+        }
+        // Walk up from fromDir
+        let current = fromDir;
+        for (;;) {
+            const candidate = join(current, 'node_modules', packageName);
+            if (filesystem().exists(candidate)) {
+                const resolved = resolvePackageEntry(candidate, subpath);
+                if (resolved)
+                    return resolved;
+            }
+            const parent = dirname(current);
+            if (parent === current)
+                break;
+            current = parent;
+        }
+        // Global modules
+        const globalCandidate = join('/usr/lib/node_modules', packageName);
+        if (filesystem().exists(globalCandidate)) {
+            const resolved = resolvePackageEntry(globalCandidate, subpath);
+            if (resolved)
+                return resolved;
+        }
+        // Legacy location (pkg command)
+        const legacyCandidate = join('/usr/share/pkg/node_modules', packageName);
+        if (filesystem().exists(legacyCandidate)) {
+            const resolved = resolvePackageEntry(legacyCandidate, subpath);
+            if (resolved)
+                return resolved;
+        }
+        return null;
+    }
+    /** Resolve a conditional exports value (string | { require, import, default, ... }) */
+    function resolveExportsCondition(value) {
+        if (typeof value === 'string')
+            return value;
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            const cond = value;
+            // Prefer require (CJS), then default, then import (ESM)
+            if (typeof cond.require === 'string')
+                return cond.require;
+            if (typeof cond.default === 'string')
+                return cond.default;
+            if (typeof cond.import === 'string')
+                return cond.import;
+            // Recurse into nested conditions (e.g. { node: { require: ... } })
+            for (const key of Object.keys(cond)) {
+                if (key === 'types')
+                    continue; // skip TS declarations
+                const nested = resolveExportsCondition(cond[key]);
+                if (nested)
+                    return nested;
+            }
+        }
+        return null;
+    }
+    function resolvePackageEntry(pkgDir, subpath) {
+        const pkgJsonPath = join(pkgDir, 'package.json');
+        let pkgJson = null;
+        if (filesystem().exists(pkgJsonPath)) {
+            try {
+                pkgJson = JSON.parse(filesystem().readFileString(pkgJsonPath));
+            }
+            catch { /* ignore */ }
+        }
+        // --- Subpath resolution (e.g. require('rollup/parseAst')) ---
+        if (subpath) {
+            // 1. Check exports map first (Node.js subpath exports)
+            if (pkgJson?.exports && typeof pkgJson.exports === 'object') {
+                const exportsMap = pkgJson.exports;
+                const key = './' + subpath;
+                if (key in exportsMap) {
+                    const target = resolveExportsCondition(exportsMap[key]);
+                    if (target) {
+                        const resolved = resolveVfsModule(target, pkgDir);
+                        if (resolved)
+                            return resolved;
+                    }
+                }
+                // Also try wildcard/glob patterns like "./dist/*": "./dist/*"
+                for (const pattern of Object.keys(exportsMap)) {
+                    if (pattern.endsWith('/*') && key.startsWith(pattern.slice(0, -1))) {
+                        const targetPattern = resolveExportsCondition(exportsMap[pattern]);
+                        if (targetPattern && targetPattern.endsWith('/*')) {
+                            const suffix = key.slice(pattern.length - 1);
+                            const target = targetPattern.slice(0, -1) + suffix;
+                            const resolved = resolveVfsModule(target, pkgDir);
+                            if (resolved)
+                                return resolved;
+                        }
+                    }
+                }
+            }
+            // 2. Fall back to direct file resolution
+            return resolveVfsModule('./' + subpath, pkgDir);
+        }
+        // --- Root resolution (e.g. require('rollup')) ---
+        // 1. Check exports["."] first
+        if (pkgJson?.exports) {
+            const exportsVal = pkgJson.exports;
+            let rootExport = null;
+            if (typeof exportsVal === 'string') {
+                rootExport = exportsVal;
+            }
+            else if (typeof exportsVal === 'object' && !Array.isArray(exportsVal)) {
+                const exportsMap = exportsVal;
+                rootExport = exportsMap['.'] ?? null;
+                // Handle case where exports IS the condition map (no "." key)
+                if (!rootExport && ('require' in exportsMap || 'import' in exportsMap || 'default' in exportsMap)) {
+                    rootExport = exportsMap;
+                }
+            }
+            if (rootExport) {
+                const target = resolveExportsCondition(rootExport);
+                if (target) {
+                    const resolved = resolveVfsModule(target, pkgDir);
+                    if (resolved)
+                        return resolved;
+                }
+            }
+        }
+        // 2. Check main field
+        if (pkgJson?.main && typeof pkgJson.main === 'string') {
+            const resolved = resolveVfsModule('./' + pkgJson.main, pkgDir);
+            if (resolved)
+                return resolved;
+        }
+        // 3. Default to index.js
+        const indexPath = join(pkgDir, 'index.js');
+        if (filesystem().exists(indexPath))
+            return { path: indexPath };
+        return null;
+    }
+    function executeModule(modSource, modFilename, cacheAs) {
+        const modDir = dirname(modFilename);
+        const modModule = { exports: {} };
+        const modExports = modModule.exports;
+        // Pre-cache to handle circular dependencies (Node.js behaviour)
+        if (cacheAs) {
+            moduleCache.set(cacheAs, modExports);
+        }
+        const modNodeCtx = { ...nodeCtx, filename: modFilename, dirname: modDir };
+        const modModuleMap = createModuleMap(modNodeCtx);
+        const modProcess = createProcess({
+            argv: nodeCtx.argv,
+            env: nodeCtx.env,
+            cwd: nodeCtx.cwd,
             stdout: ctx.stdout,
             stderr: ctx.stderr,
-            argv: [filename, ...scriptArgs],
-            filename,
-            dirname: dir,
-            signal: ctx.signal,
-            portRegistry,
-            routeLoopback: kernelOrPortRegistry instanceof Map
-                ? undefined
-                : kernelOrPortRegistry?.routeLoopback,
-        };
-        const moduleMap = createModuleMap(nodeCtx);
-        const moduleCache = new Map();
-        // Stub for @rollup/rollup-* native binary packages (platform-specific NAPI addons).
-        // These can't work in a browser environment. Provide shims for the exported functions.
-        // Vite's dev server primarily uses es-module-lexer, not rollup's parser, so these
-        // may never be called. If they are, hash stubs return safe defaults; parse stubs throw.
-        const rollupNativeStub = {
-            parse: () => { throw new Error('[lifo] rollup native parser is not available in browser'); },
-            parseAsync: () => Promise.reject(new Error('[lifo] rollup native parser is not available in browser')),
-            xxhashBase64Url: (data) => {
-                // Simple fallback hash — not cryptographically equivalent but sufficient for cache keys
-                const s = typeof data === 'string' ? data : String(data);
-                let h = 0;
-                for (let i = 0; i < s.length; i++)
-                    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-                return (h >>> 0).toString(36);
-            },
-            xxhashBase36: (data) => {
-                const s = typeof data === 'string' ? data : String(data);
-                let h = 0;
-                for (let i = 0; i < s.length; i++)
-                    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-                return (h >>> 0).toString(36);
-            },
-            xxhashBase16: (data) => {
-                const s = typeof data === 'string' ? data : String(data);
-                let h = 0;
-                for (let i = 0; i < s.length; i++)
-                    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-                return (h >>> 0).toString(16);
-            },
-        };
-        // Build require function (declared first, module shim overrides below)
-        function nodeRequire(name) {
+        });
+        const modConsole = createConsole(ctx.stdout, ctx.stderr);
+        function modRequire(name) {
             // Strip node: prefix
             if (name.startsWith('node:'))
                 name = name.slice(5);
-            // Check cache
-            if (moduleCache.has(name))
-                return moduleCache.get(name);
-            // Built-in modules
-            if (moduleMap[name]) {
-                const mod = moduleMap[name]();
+            // Built-in modules from child context
+            if (modModuleMap[name]) {
+                const cached = moduleCache.get(name);
+                if (cached)
+                    return cached;
+                const mod = modModuleMap[name]();
                 moduleCache.set(name, mod);
                 return mod;
             }
             // Subpath imports (#specifier)
             if (name.startsWith('#')) {
-                const resolved = resolvePackageImport(name, dir);
+                const resolved = resolvePackageImport(name, modDir);
                 if (resolved) {
                     const cached = moduleCache.get(resolved.path);
                     if (cached)
                         return cached;
-                    const modSource = filesystem().readFileString(resolved.path);
-                    return executeModule(modSource, resolved.path, resolved.path);
+                    const childSource = filesystem().readFileString(resolved.path);
+                    return executeModule(childSource, resolved.path, resolved.path);
                 }
                 throw new Error(`Cannot find module '${name}'`);
             }
-            // Relative VFS files
             if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
-                const resolved = resolveVfsModule(name, dir);
+                const resolved = resolveVfsModule(name, modDir);
                 if (resolved) {
                     const cached = moduleCache.get(resolved.path);
                     if (cached)
@@ -660,13 +974,13 @@ function createNodeImpl(kernelOrPortRegistry) {
                         moduleCache.set(resolved.path, parsed);
                         return parsed;
                     }
-                    const modSource = filesystem().readFileString(resolved.path);
-                    return executeModule(modSource, resolved.path, resolved.path);
+                    const childSource = filesystem().readFileString(resolved.path);
+                    return executeModule(childSource, resolved.path, resolved.path);
                 }
                 throw new Error(`Cannot find module '${name}'`);
             }
-            // Node-modules resolution (walk up node_modules, global, legacy)
-            const nmResolved = resolveNodeModule(name, dir);
+            // Node-modules resolution from this module's directory
+            const nmResolved = resolveNodeModule(name, modDir);
             if (nmResolved) {
                 const cached = moduleCache.get(nmResolved.path);
                 if (cached)
@@ -677,586 +991,218 @@ function createNodeImpl(kernelOrPortRegistry) {
                     moduleCache.set(nmResolved.path, parsed);
                     return parsed;
                 }
-                const modSource = filesystem().readFileString(nmResolved.path);
-                return executeModule(modSource, nmResolved.path, nmResolved.path);
+                const childSource = filesystem().readFileString(nmResolved.path);
+                return executeModule(childSource, nmResolved.path, nmResolved.path);
             }
             // Stub for rollup native binary packages
             if (name.startsWith('@rollup/rollup-'))
                 return rollupNativeStub;
             throw new Error(`Cannot find module '${name}'`);
         }
-        // Override module shim so createRequire returns nodeRequire (resolves VFS + node_modules)
-        moduleMap.module = () => {
-            const createRequire = (_filename) => nodeRequire;
-            const builtinNames = Object.keys(moduleMap);
+        // Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)
+        modModuleMap.module = () => {
+            const createRequire = (_filename) => modRequire;
+            const builtinNames = Object.keys(modModuleMap);
             const isBuiltin = (s) => {
                 const n = s.startsWith('node:') ? s.slice(5) : s;
                 return builtinNames.includes(n);
             };
             return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
         };
-        function resolveVfsModule(name, fromDir) {
-            const absPath = resolve(fromDir, name);
-            // Try exact path
-            if (filesystem().exists(absPath)) {
+        let cleanSource = stripShebang(modSource);
+        // An ES module is strict code, as Node runs one.
+        let strict = '';
+        if (treatAsEsm(cleanSource, modFilename, () => packageType(modFilename, filesystem()))) {
+            cleanSource = transformEsmToCjs(cleanSource);
+            strict = '"use strict";';
+        }
+        const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {${strict}\n${cleanSource}\n})`;
+        let fn;
+        try {
+            fn = new Function('return ' + wrapped)();
+        }
+        catch (e) {
+            const err = e instanceof Error ? e : new Error(String(e));
+            ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
+            // Binary search for exact error location, matching specific error
+            const lines = cleanSource.split('\n');
+            const targetErr = err.message;
+            let lo = 0, hi = lines.length;
+            while (hi - lo > 3) {
+                const mid = (lo + hi) >>> 1;
+                const partial = lines.slice(0, mid).join('\n');
                 try {
-                    const stat = filesystem().stat(absPath);
-                    if (stat.type === 'file')
-                        return { path: absPath };
-                    // Directory -- try index.js
-                    const indexPath = join(absPath, 'index.js');
-                    if (filesystem().exists(indexPath))
-                        return { path: indexPath };
+                    new Function(partial);
+                    lo = mid;
                 }
-                catch { /* fall through */ }
+                catch (e2) {
+                    if (e2 instanceof Error && e2.message === targetErr)
+                        hi = mid;
+                    else
+                        lo = mid; // Different error (e.g. unclosed), keep going
+                }
             }
-            // Try .js extension
-            if (!extname(absPath) && filesystem().exists(absPath + '.js')) {
-                return { path: absPath + '.js' };
+            ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
+            for (let li = Math.max(0, lo - 25); li < Math.min(lines.length, hi + 3); li++) {
+                ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
             }
-            // Try .mjs extension
-            if (!extname(absPath) && filesystem().exists(absPath + '.mjs')) {
-                return { path: absPath + '.mjs' };
-            }
-            // Try .json extension
-            if (!extname(absPath) && filesystem().exists(absPath + '.json')) {
-                return { path: absPath + '.json' };
-            }
-            return null;
+            err.message = `[${modFilename}] ${err.message}`;
+            throw err;
         }
-        // ── Subpath imports (#specifier) resolution ──
-        // Node.js package.json "imports" field: #name → conditional file path
-        function resolvePackageImport(name, fromDir) {
-            // Walk up to find the nearest package.json with an "imports" field
-            let current = fromDir;
-            for (;;) {
-                const pkgPath = join(current, 'package.json');
-                if (filesystem().exists(pkgPath)) {
-                    try {
-                        const pkg = JSON.parse(filesystem().readFileString(pkgPath));
-                        if (pkg.imports && typeof pkg.imports === 'object') {
-                            const importsMap = pkg.imports;
-                            if (name in importsMap) {
-                                const target = resolveExportsCondition(importsMap[name]);
-                                if (target) {
-                                    return resolveVfsModule(target, current);
-                                }
-                            }
-                        }
-                    }
-                    catch { /* ignore parse errors */ }
-                    break; // Stop at nearest package.json (Node.js semantics)
-                }
-                const parent = dirname(current);
-                if (parent === current)
+        const global = { process: modProcess, Buffer, console: modConsole };
+        const importMetaUrl = 'file://' + modFilename;
+        const importMeta = { url: importMetaUrl, dirname: modDir, filename: modFilename };
+        const importMetaResolve = (specifier) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
+        try {
+            fn(modExports, modRequire, modModule, modFilename, modDir, modConsole, modProcess, Buffer, globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval, global, importMetaUrl, importMeta, importMetaResolve);
+        }
+        catch (e) {
+            if (e instanceof ProcessExitError)
+                throw e;
+            const err = e instanceof Error ? e : new Error(String(e));
+            if (!err.message.includes('[/')) {
+                err.message = `[${modFilename}] ${err.message}`;
+            }
+            throw err;
+        }
+        // Update cache if module.exports was reassigned (not just mutated)
+        if (cacheAs && modModule.exports !== modExports) {
+            moduleCache.set(cacheAs, modModule.exports);
+        }
+        return modModule.exports;
+    }
+    // Execute main script
+    const process = createProcess({
+        argv: nodeCtx.argv,
+        env: nodeCtx.env,
+        cwd: nodeCtx.cwd,
+        stdout: ctx.stdout,
+        stderr: ctx.stderr,
+    });
+    const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
+    const module = { exports: {} };
+    const exports = module.exports;
+    const global = { process, Buffer, console: nodeConsole };
+    let cleanMainSource = stripShebang(source);
+    const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
+    if (isEsm) {
+        cleanMainSource = transformEsmToCjs(cleanMainSource);
+    }
+    // Use async IIFE for ESM (supports top-level await); an ES module is strict code.
+    const wrapped = isEsm
+        ? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {"use strict";\n${cleanMainSource}\n})`
+        : `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`;
+    // The realm is the program's: npm bundles that reach globalThis.process
+    // (not the wrapper param) find the program's, and the bundlers' interop
+    // helpers are its globals too.
+    const ga = globalThis;
+    ga.process = process;
+    ga.Buffer = Buffer;
+    ga.console = nodeConsole;
+    ga.global = globalThis;
+    for (const k of Object.keys(_rollupHelpers))
+        ga[k] = _rollupHelpers[k];
+    // Capture unhandled promise rejections from fire-and-forget async actions
+    let pendingRejection = null;
+    const stopRejections = host.onUnhandledRejection((reason) => {
+        pendingRejection = reason;
+        ctx.stderr.write(`Unhandled promise rejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}\n`);
+    });
+    const mainImportMetaUrl = 'file://' + filename;
+    const mainImportMeta = { url: mainImportMetaUrl, dirname: dir, filename };
+    const mainImportMetaResolve = (specifier) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
+    try {
+        const fn = new Function('return ' + wrapped)();
+        const result = fn(exports, nodeRequire, module, filename, dir, nodeConsole, process, Buffer, globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval, global, mainImportMetaUrl, mainImportMeta, mainImportMetaResolve);
+        // Await if ESM (async IIFE returns a promise)
+        if (isEsm && result && typeof result.then === 'function') {
+            await result;
+        }
+        // Check if any servers were started (long-running process).
+        // Many CLI tools (e.g. vite) fire async actions from cli.parse() whose
+        // promises are discarded. We poll briefly to let those async chains
+        // progress and create servers before deciding the process is done.
+        // Only poll if http was actually loaded (indicating server intent).
+        const getActiveServers = () => {
+            const httpMod = moduleCache.get('http');
+            return httpMod?.[ACTIVE_SERVERS];
+        };
+        let activeServers = getActiveServers();
+        if ((!activeServers || activeServers.length === 0) && isEsm) {
+            // ESM scripts may have fire-and-forget async actions (e.g. vite's
+            // cli.parse() triggers an async action whose promise is discarded).
+            // Yield briefly to let those chains start, then poll for servers.
+            // Phase 1: Quick yield — watch for new modules being loaded, which
+            // indicates async work is in progress. Stop early if nothing changes.
+            let prevCacheSize = moduleCache.size;
+            let staleCount = 0;
+            const quickDeadline = Date.now() + 2000;
+            while (Date.now() < quickDeadline) {
+                await new Promise((r) => setTimeout(r, 30));
+                activeServers = getActiveServers();
+                if (activeServers && activeServers.length > 0)
                     break;
-                current = parent;
-            }
-            return null;
-        }
-        // ── Node-modules resolution (walk up, global, legacy) ──
-        function resolveNodeModule(name, fromDir) {
-            // Parse package name and optional subpath
-            let packageName;
-            let subpath = null;
-            if (name.startsWith('@')) {
-                const parts = name.split('/');
-                if (parts.length < 2)
-                    return null;
-                packageName = parts[0] + '/' + parts[1];
-                if (parts.length > 2)
-                    subpath = parts.slice(2).join('/');
-            }
-            else {
-                const slashIdx = name.indexOf('/');
-                if (slashIdx !== -1) {
-                    packageName = name.slice(0, slashIdx);
-                    subpath = name.slice(slashIdx + 1);
+                if (pendingRejection)
+                    break;
+                // If new modules are loading, async work is progressing
+                const newSize = moduleCache.size;
+                if (newSize > prevCacheSize) {
+                    staleCount = 0;
+                    prevCacheSize = newSize;
                 }
                 else {
-                    packageName = name;
+                    staleCount++;
+                    // No new modules for 5 ticks (150ms) — async chain likely done
+                    if (staleCount >= 5)
+                        break;
                 }
             }
-            // Walk up from fromDir
-            let current = fromDir;
-            for (;;) {
-                const candidate = join(current, 'node_modules', packageName);
-                if (filesystem().exists(candidate)) {
-                    const resolved = resolvePackageEntry(candidate, subpath);
-                    if (resolved)
-                        return resolved;
-                }
-                const parent = dirname(current);
-                if (parent === current)
-                    break;
-                current = parent;
-            }
-            // Global modules
-            const globalCandidate = join('/usr/lib/node_modules', packageName);
-            if (filesystem().exists(globalCandidate)) {
-                const resolved = resolvePackageEntry(globalCandidate, subpath);
-                if (resolved)
-                    return resolved;
-            }
-            // Legacy location (pkg command)
-            const legacyCandidate = join('/usr/share/pkg/node_modules', packageName);
-            if (filesystem().exists(legacyCandidate)) {
-                const resolved = resolvePackageEntry(legacyCandidate, subpath);
-                if (resolved)
-                    return resolved;
-            }
-            return null;
-        }
-        /** Resolve a conditional exports value (string | { require, import, default, ... }) */
-        function resolveExportsCondition(value) {
-            if (typeof value === 'string')
-                return value;
-            if (value && typeof value === 'object' && !Array.isArray(value)) {
-                const cond = value;
-                // Prefer require (CJS), then default, then import (ESM)
-                if (typeof cond.require === 'string')
-                    return cond.require;
-                if (typeof cond.default === 'string')
-                    return cond.default;
-                if (typeof cond.import === 'string')
-                    return cond.import;
-                // Recurse into nested conditions (e.g. { node: { require: ... } })
-                for (const key of Object.keys(cond)) {
-                    if (key === 'types')
-                        continue; // skip TS declarations
-                    const nested = resolveExportsCondition(cond[key]);
-                    if (nested)
-                        return nested;
-                }
-            }
-            return null;
-        }
-        function resolvePackageEntry(pkgDir, subpath) {
-            const pkgJsonPath = join(pkgDir, 'package.json');
-            let pkgJson = null;
-            if (filesystem().exists(pkgJsonPath)) {
-                try {
-                    pkgJson = JSON.parse(filesystem().readFileString(pkgJsonPath));
-                }
-                catch { /* ignore */ }
-            }
-            // --- Subpath resolution (e.g. require('rollup/parseAst')) ---
-            if (subpath) {
-                // 1. Check exports map first (Node.js subpath exports)
-                if (pkgJson?.exports && typeof pkgJson.exports === 'object') {
-                    const exportsMap = pkgJson.exports;
-                    const key = './' + subpath;
-                    if (key in exportsMap) {
-                        const target = resolveExportsCondition(exportsMap[key]);
-                        if (target) {
-                            const resolved = resolveVfsModule(target, pkgDir);
-                            if (resolved)
-                                return resolved;
-                        }
-                    }
-                    // Also try wildcard/glob patterns like "./dist/*": "./dist/*"
-                    for (const pattern of Object.keys(exportsMap)) {
-                        if (pattern.endsWith('/*') && key.startsWith(pattern.slice(0, -1))) {
-                            const targetPattern = resolveExportsCondition(exportsMap[pattern]);
-                            if (targetPattern && targetPattern.endsWith('/*')) {
-                                const suffix = key.slice(pattern.length - 1);
-                                const target = targetPattern.slice(0, -1) + suffix;
-                                const resolved = resolveVfsModule(target, pkgDir);
-                                if (resolved)
-                                    return resolved;
-                            }
-                        }
-                    }
-                }
-                // 2. Fall back to direct file resolution
-                return resolveVfsModule('./' + subpath, pkgDir);
-            }
-            // --- Root resolution (e.g. require('rollup')) ---
-            // 1. Check exports["."] first
-            if (pkgJson?.exports) {
-                const exportsVal = pkgJson.exports;
-                let rootExport = null;
-                if (typeof exportsVal === 'string') {
-                    rootExport = exportsVal;
-                }
-                else if (typeof exportsVal === 'object' && !Array.isArray(exportsVal)) {
-                    const exportsMap = exportsVal;
-                    rootExport = exportsMap['.'] ?? null;
-                    // Handle case where exports IS the condition map (no "." key)
-                    if (!rootExport && ('require' in exportsMap || 'import' in exportsMap || 'default' in exportsMap)) {
-                        rootExport = exportsMap;
-                    }
-                }
-                if (rootExport) {
-                    const target = resolveExportsCondition(rootExport);
-                    if (target) {
-                        const resolved = resolveVfsModule(target, pkgDir);
-                        if (resolved)
-                            return resolved;
-                    }
-                }
-            }
-            // 2. Check main field
-            if (pkgJson?.main && typeof pkgJson.main === 'string') {
-                const resolved = resolveVfsModule('./' + pkgJson.main, pkgDir);
-                if (resolved)
-                    return resolved;
-            }
-            // 3. Default to index.js
-            const indexPath = join(pkgDir, 'index.js');
-            if (filesystem().exists(indexPath))
-                return { path: indexPath };
-            return null;
-        }
-        function executeModule(modSource, modFilename, cacheAs) {
-            const modDir = dirname(modFilename);
-            const modModule = { exports: {} };
-            const modExports = modModule.exports;
-            // Pre-cache to handle circular dependencies (Node.js behaviour)
-            if (cacheAs) {
-                moduleCache.set(cacheAs, modExports);
-            }
-            const modNodeCtx = { ...nodeCtx, filename: modFilename, dirname: modDir };
-            const modModuleMap = createModuleMap(modNodeCtx);
-            const modProcess = createProcess({
-                argv: nodeCtx.argv,
-                env: nodeCtx.env,
-                cwd: nodeCtx.cwd,
-                stdout: ctx.stdout,
-                stderr: ctx.stderr,
-            });
-            const modConsole = createConsole(ctx.stdout, ctx.stderr);
-            function modRequire(name) {
-                // Strip node: prefix
-                if (name.startsWith('node:'))
-                    name = name.slice(5);
-                // Built-in modules from child context
-                if (modModuleMap[name]) {
-                    const cached = moduleCache.get(name);
-                    if (cached)
-                        return cached;
-                    const mod = modModuleMap[name]();
-                    moduleCache.set(name, mod);
-                    return mod;
-                }
-                // Subpath imports (#specifier)
-                if (name.startsWith('#')) {
-                    const resolved = resolvePackageImport(name, modDir);
-                    if (resolved) {
-                        const cached = moduleCache.get(resolved.path);
-                        if (cached)
-                            return cached;
-                        const childSource = filesystem().readFileString(resolved.path);
-                        return executeModule(childSource, resolved.path, resolved.path);
-                    }
-                    throw new Error(`Cannot find module '${name}'`);
-                }
-                if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
-                    const resolved = resolveVfsModule(name, modDir);
-                    if (resolved) {
-                        const cached = moduleCache.get(resolved.path);
-                        if (cached)
-                            return cached;
-                        if (resolved.path.endsWith('.json')) {
-                            const content = filesystem().readFileString(resolved.path);
-                            const parsed = JSON.parse(content);
-                            moduleCache.set(resolved.path, parsed);
-                            return parsed;
-                        }
-                        const childSource = filesystem().readFileString(resolved.path);
-                        return executeModule(childSource, resolved.path, resolved.path);
-                    }
-                    throw new Error(`Cannot find module '${name}'`);
-                }
-                // Node-modules resolution from this module's directory
-                const nmResolved = resolveNodeModule(name, modDir);
-                if (nmResolved) {
-                    const cached = moduleCache.get(nmResolved.path);
-                    if (cached)
-                        return cached;
-                    if (nmResolved.path.endsWith('.json')) {
-                        const content = filesystem().readFileString(nmResolved.path);
-                        const parsed = JSON.parse(content);
-                        moduleCache.set(nmResolved.path, parsed);
-                        return parsed;
-                    }
-                    const childSource = filesystem().readFileString(nmResolved.path);
-                    return executeModule(childSource, nmResolved.path, nmResolved.path);
-                }
-                // Stub for rollup native binary packages
-                if (name.startsWith('@rollup/rollup-'))
-                    return rollupNativeStub;
-                throw new Error(`Cannot find module '${name}'`);
-            }
-            // Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)
-            modModuleMap.module = () => {
-                const createRequire = (_filename) => modRequire;
-                const builtinNames = Object.keys(modModuleMap);
-                const isBuiltin = (s) => {
-                    const n = s.startsWith('node:') ? s.slice(5) : s;
-                    return builtinNames.includes(n);
-                };
-                return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
-            };
-            let cleanSource = stripShebang(modSource);
-            if (treatAsEsm(cleanSource, modFilename, () => packageType(modFilename, filesystem()))) {
-                cleanSource = transformEsmToCjs(cleanSource);
-            }
-            const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanSource}\n})`;
-            let fn;
-            try {
-                fn = new Function('return ' + wrapped)();
-            }
-            catch (e) {
-                const err = e instanceof Error ? e : new Error(String(e));
-                ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
-                // Binary search for exact error location, matching specific error
-                const lines = cleanSource.split('\n');
-                const targetErr = err.message;
-                let lo = 0, hi = lines.length;
-                while (hi - lo > 3) {
-                    const mid = (lo + hi) >>> 1;
-                    const partial = lines.slice(0, mid).join('\n');
-                    try {
-                        new Function(partial);
-                        lo = mid;
-                    }
-                    catch (e2) {
-                        if (e2 instanceof Error && e2.message === targetErr)
-                            hi = mid;
-                        else
-                            lo = mid; // Different error (e.g. unclosed), keep going
-                    }
-                }
-                ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
-                for (let li = Math.max(0, lo - 25); li < Math.min(lines.length, hi + 3); li++) {
-                    ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
-                }
-                err.message = `[${modFilename}] ${err.message}`;
-                throw err;
-            }
-            const global = { process: modProcess, Buffer, console: modConsole };
-            // Many npm bundles access globalThis.process directly (not the wrapper param).
-            // Only override in browser-like envs; skip in real Node.js (test runner).
-            const ga = globalThis;
-            const isRealNode = typeof ga.process?.pid === 'number';
-            const savedProcess = ga.process;
-            const savedBuffer = ga.Buffer;
-            const savedConsole = ga.console;
-            if (!isRealNode) {
-                ga.process = modProcess;
-                ga.Buffer = Buffer;
-                ga.console = modConsole;
-            }
-            // Inject Rollup/esbuild interop helpers so bundled npm packages can find them
-            const savedHelpers = {};
-            for (const k of Object.keys(_rollupHelpers)) {
-                savedHelpers[k] = ga[k];
-                ga[k] = _rollupHelpers[k];
-            }
-            const importMetaUrl = 'file://' + modFilename;
-            const importMeta = { url: importMetaUrl, dirname: modDir, filename: modFilename };
-            const importMetaResolve = (specifier) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
-            try {
-                fn(modExports, modRequire, modModule, modFilename, modDir, modConsole, modProcess, Buffer, globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval, global, importMetaUrl, importMeta, importMetaResolve);
-            }
-            catch (e) {
-                if (e instanceof ProcessExitError)
-                    throw e;
-                const err = e instanceof Error ? e : new Error(String(e));
-                if (!err.message.includes('[/')) {
-                    err.message = `[${modFilename}] ${err.message}`;
-                }
-                throw err;
-            }
-            finally {
-                for (const k of Object.keys(savedHelpers))
-                    ga[k] = savedHelpers[k];
-                if (!isRealNode) {
-                    ga.process = savedProcess;
-                    ga.Buffer = savedBuffer;
-                    ga.console = savedConsole;
-                }
-            }
-            // Update cache if module.exports was reassigned (not just mutated)
-            if (cacheAs && modModule.exports !== modExports) {
-                moduleCache.set(cacheAs, modModule.exports);
-            }
-            return modModule.exports;
-        }
-        // Execute main script
-        const process = createProcess({
-            argv: nodeCtx.argv,
-            env: nodeCtx.env,
-            cwd: nodeCtx.cwd,
-            stdout: ctx.stdout,
-            stderr: ctx.stderr,
-        });
-        const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
-        const module = { exports: {} };
-        const exports = module.exports;
-        const global = { process, Buffer, console: nodeConsole };
-        let cleanMainSource = stripShebang(source);
-        const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
-        const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
-        if (isEsm) {
-            cleanMainSource = transformEsmToCjs(cleanMainSource);
-        }
-        // Use async IIFE for ESM (supports top-level await)
-        const wrapped = isEsm
-            ? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`
-            : `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`;
-        // Many npm bundles access globalThis.process directly (not the wrapper param).
-        // Only override in browser-like envs; skip in real Node.js (test runner).
-        const ga = globalThis;
-        const isRealNode = typeof ga.process?.pid === 'number';
-        const savedProcess = ga.process;
-        const savedBuffer = ga.Buffer;
-        const savedConsole = ga.console;
-        if (!isRealNode) {
-            ga.process = process;
-            ga.Buffer = Buffer;
-            ga.console = nodeConsole;
-        }
-        // Inject Rollup/esbuild interop helpers so bundled npm packages can find them
-        const savedHelpers = {};
-        for (const k of Object.keys(_rollupHelpers)) {
-            savedHelpers[k] = ga[k];
-            ga[k] = _rollupHelpers[k];
-        }
-        // Capture unhandled promise rejections from fire-and-forget async actions
-        let pendingRejection = null;
-        const rejectionHandler = (event) => {
-            pendingRejection = event.reason;
-            event.preventDefault(); // prevent browser default logging
-            ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
-        };
-        if (typeof globalThis.addEventListener === 'function') {
-            globalThis.addEventListener('unhandledrejection', rejectionHandler);
-        }
-        const mainImportMetaUrl = 'file://' + filename;
-        const mainImportMeta = { url: mainImportMetaUrl, dirname: dir, filename };
-        const mainImportMetaResolve = (specifier) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
-        try {
-            const fn = new Function('return ' + wrapped)();
-            const result = fn(exports, nodeRequire, module, filename, dir, nodeConsole, process, Buffer, globalThis.setTimeout, globalThis.setInterval, globalThis.clearTimeout, globalThis.clearInterval, global, mainImportMetaUrl, mainImportMeta, mainImportMetaResolve);
-            // Await if ESM (async IIFE returns a promise)
-            if (isEsm && result && typeof result.then === 'function') {
-                await result;
-            }
-            // Check if any servers were started (long-running process).
-            // Many CLI tools (e.g. vite) fire async actions from cli.parse() whose
-            // promises are discarded. We poll briefly to let those async chains
-            // progress and create servers before deciding the process is done.
-            // Only poll if http was actually loaded (indicating server intent).
-            const getActiveServers = () => {
-                const httpMod = moduleCache.get('http');
-                return httpMod?.[ACTIVE_SERVERS];
-            };
-            let activeServers = getActiveServers();
-            if ((!activeServers || activeServers.length === 0) && isEsm) {
-                // ESM scripts may have fire-and-forget async actions (e.g. vite's
-                // cli.parse() triggers an async action whose promise is discarded).
-                // Yield briefly to let those chains start, then poll for servers.
-                // Phase 1: Quick yield — watch for new modules being loaded, which
-                // indicates async work is in progress. Stop early if nothing changes.
-                let prevCacheSize = moduleCache.size;
-                let staleCount = 0;
-                const quickDeadline = Date.now() + 2000;
-                while (Date.now() < quickDeadline) {
-                    await new Promise((r) => setTimeout(r, 30));
+            // Phase 2: If http was loaded during Phase 1 (indicating server intent)
+            // but no servers yet, keep polling up to 10s for the full server startup.
+            if ((!activeServers || activeServers.length === 0) && moduleCache.has('http')) {
+                const longDeadline = Date.now() + 10000;
+                while (Date.now() < longDeadline) {
+                    await new Promise((r) => setTimeout(r, 50));
                     activeServers = getActiveServers();
                     if (activeServers && activeServers.length > 0)
                         break;
-                    if (ctx.signal.aborted || pendingRejection)
+                    if (pendingRejection)
                         break;
-                    // If new modules are loading, async work is progressing
-                    const newSize = moduleCache.size;
-                    if (newSize > prevCacheSize) {
-                        staleCount = 0;
-                        prevCacheSize = newSize;
-                    }
-                    else {
-                        staleCount++;
-                        // No new modules for 5 ticks (150ms) — async chain likely done
-                        if (staleCount >= 5)
-                            break;
-                    }
-                }
-                // Phase 2: If http was loaded during Phase 1 (indicating server intent)
-                // but no servers yet, keep polling up to 10s for the full server startup.
-                if ((!activeServers || activeServers.length === 0) && moduleCache.has('http')) {
-                    const longDeadline = Date.now() + 10000;
-                    while (Date.now() < longDeadline) {
-                        await new Promise((r) => setTimeout(r, 50));
-                        activeServers = getActiveServers();
-                        if (activeServers && activeServers.length > 0)
-                            break;
-                        if (ctx.signal.aborted || pendingRejection)
-                            break;
-                    }
                 }
             }
-            if (activeServers && activeServers.length > 0) {
-                // Collect all server promises
-                const serverPromises = activeServers
-                    .map((s) => s.getPromise())
-                    .filter((p) => p !== null);
-                if (serverPromises.length > 0) {
-                    // Wait for all servers to close OR for abort signal
-                    const abortPromise = new Promise((resolve) => {
-                        if (ctx.signal.aborted) {
-                            resolve();
-                            return;
-                        }
-                        ctx.signal.addEventListener('abort', () => resolve(), { once: true });
-                    });
-                    await Promise.race([
-                        Promise.all(serverPromises),
-                        abortPromise,
-                    ]);
-                    // On abort, close all active servers
-                    if (ctx.signal.aborted) {
-                        for (const server of [...activeServers]) {
-                            server.close();
-                        }
-                    }
-                }
-            }
-            // If an async action failed (e.g. unhandled rejection from ProcessExitError)
-            if (pendingRejection) {
-                if (pendingRejection instanceof ProcessExitError)
-                    return pendingRejection.exitCode;
-                return 1;
-            }
-            return 0;
         }
-        catch (e) {
-            if (e instanceof ProcessExitError) {
-                return e.exitCode;
-            }
-            if (e instanceof Error) {
-                await ctx.stderr.write(`${e.stack || e.message}\n`);
-            }
-            else {
-                await ctx.stderr.write(`${String(e)}\n`);
-            }
-            return 1;
+        if (activeServers && activeServers.length > 0) {
+            // Collect all server promises
+            const serverPromises = activeServers
+                .map((s) => s.getPromise())
+                .filter((p) => p !== null);
+            // Until they close. A kill or Ctrl-C ends the realm, servers and all.
+            if (serverPromises.length > 0)
+                await Promise.all(serverPromises);
         }
-        finally {
-            for (const k of Object.keys(savedHelpers))
-                ga[k] = savedHelpers[k];
-            if (!isRealNode) {
-                ga.process = savedProcess;
-                ga.Buffer = savedBuffer;
-                ga.console = savedConsole;
-            }
-            // Remove unhandled rejection listener
-            if (typeof globalThis.removeEventListener === 'function') {
-                globalThis.removeEventListener('unhandledrejection', rejectionHandler);
-            }
+        // If an async action failed (e.g. unhandled rejection from ProcessExitError)
+        if (pendingRejection) {
+            if (pendingRejection instanceof ProcessExitError)
+                return { code: pendingRejection.exitCode, ended: true };
+            return { code: 1, ended: true };
         }
-    };
+        return { code: 0, ended: false };
+    }
+    catch (e) {
+        if (e instanceof ProcessExitError) {
+            return { code: e.exitCode, ended: true };
+        }
+        if (e instanceof Error) {
+            await ctx.stderr.write(`${e.stack || e.message}\n`);
+        }
+        else {
+            await ctx.stderr.write(`${String(e)}\n`);
+        }
+        return { code: 1, ended: true };
+    }
+    finally {
+        stopRejections();
+    }
 }
 export function createNodeCommand(kernel) {
     return createNodeImpl(kernel);
