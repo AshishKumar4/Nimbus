@@ -185,7 +185,7 @@ declare const NATIVE_OPS: {
     exists: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<boolean>;
     readdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
     readlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string | null>;
-    fsLinkLeadsTo: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string>;
+    fsLinkLeadsTo: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string | null>;
     fsReadRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     fsReadRangeUncached: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     fsRevision: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;

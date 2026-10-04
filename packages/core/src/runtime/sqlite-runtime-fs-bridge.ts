@@ -837,19 +837,31 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         pending.unshift(...legacyTarget.split('/').filter(Boolean));
         continue;
       }
-      const target = this.vfs.resolveSymlink(candidate);
-      if (target === null) return null;
+      // The link's own target, walked here component by component as the
+      // rest of the path is: it may lead onto a mount, which SQLite cannot
+      // resolve inside itself (a link to /m/dir/x answered ENOENT at m).
       // Hops are counted, as Linux does (40): a link met again on a longer
       // path is one more hop, not a cycle.
       if (++hops > MAX_LINK_HOPS) return null;
-      pending.unshift(...target.split('/').filter(Boolean));
+      const target = this.vfs.readlink(candidate);
+      // A relative target is taken from the link's directory under the
+      // name the engine gives it: a confined caller may spell its own /tmp
+      // by its storage name, and the engine names it /tmp.
+      const from = target.startsWith('/') ? '' : this.vfs.resolveName(resolved.join('/'), false)?.name ?? resolved.join('/');
       resolved.length = 0;
+      resolved.push(...from.split('/').filter(Boolean));
+      pending.unshift(...target.split('/').filter(Boolean));
     }
 
     return resolved.join('/');
   }
 
-  /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
+  /**
+   * A mounted (or composed) entry's link target, or null when it is not a
+   * link or not there, or when the namespace has no name for where it leads
+   * (linkLeadsTo): then the walk keeps the link's own name, and the
+   * namespace hands it to the backend that follows it.
+   */
   private mountedLink(path: string): string | null {
     let stat;
     try {
@@ -864,7 +876,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
-  linkLeadsTo(path: string, link: string): string {
+  linkLeadsTo(path: string, link: string): string | null {
     return this.namespace === undefined ? link : this.namespace.linkLeadsTo(path, link);
   }
 
@@ -872,15 +884,24 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
-    // Leases are held on storage keys: a confined caller's /tmp/x is its
-    // private file, not the shared tmp/x.
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(this.pathArgument(path))));
+    this.leaseAllows(this.pathArgument(path));
     const located = this.locate(path, followSymlinks);
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     // And the name it reaches, on a mount as on SQLite.
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(located.mount ? normalizeVfsPath(located.path) : located.path));
+    this.leaseAllows(located.path);
     return located;
   }
+
+  /**
+   * Refuses a mutation at the namespace path `path` that another owner's
+   * exclusive-mutation lease covers (EBUSY), or that lies outside the
+   * caller's own lease root (EPERM). Leases are held on storage keys: a
+   * confined caller's /tmp/x is its private file, not the shared tmp/x.
+   */
+  private leaseAllows(path: string): void {
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
+  }
+
 
   /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
   private sqlitePath(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): string {
@@ -1144,7 +1165,10 @@ export function* walkBeneath(
       continue;
     }
     if (++hops > MAX_LINK_HOPS) return null;
-    const target = (yield { readlink: '/' + candidate }) as string;
+    const target = (yield { readlink: '/' + candidate }) as string | null;
+    // A link whose target the namespace has no name for (a mount nested in
+    // its backend covers it) cannot be followed beneath the root.
+    if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
     if (target.startsWith('/')) resolved.length = 0;
     pending.unshift(...target.split('/').filter(Boolean));
   }

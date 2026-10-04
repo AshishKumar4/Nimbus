@@ -499,12 +499,79 @@ function launched(named = []) {
   assert.equal(named.size, 7, `the stat through the link is the mount's file (${JSON.stringify(named)})`);
   assert.ok(named.read === 'backend' || named.read === 'ERR:EAGAIN', `and so is the read, or the mount's refusal (${JSON.stringify(named)})`);
   assert.equal(named.live, 'backend', 'fs.promises reads the mount\'s file');
-  // Naming only the link, the file it leads to is not staged: the mount's refusal, never SQLite's file.
-  assert.deepEqual(JSON.parse(await through(['/ro/link'], true)), { read: 'ERR:EAGAIN', size: 'ERR:EAGAIN', live: 'backend', write: 'ERR:EAGAIN' },
-    'a target the launch did not list is the mount\'s refusal');
+  // Naming only the link, the file it leads to is not staged: a synchronous
+  // call is the mount's refusal, never SQLite's file; the asynchronous write
+  // is the authority's to answer, and the read-only mount refuses it.
+  assert.deepEqual(JSON.parse(await through(['/ro/link'], true)), { read: 'ERR:EAGAIN', size: 'ERR:EAGAIN', live: 'backend', write: 'ERR:EROFS' },
+    'a target the launch did not list is the mount\'s to answer for');
   await assert.rejects(ws.fs.writeFile('/ro/link', 'changed'), { code: 'EROFS' }, 'the namespace refuses the write on the mount');
   assert.equal(await ws.fs.readFileString('/home/user/x'), 'sqlite', 'SQLite\'s file is untouched');
   ws.filesystem.vfs.unmount('/ro');
+}
+
+// ── A backend's link whose target a nested mount covers ─────────────────
+// /pc (read-only, resolvesPaths) holds /link -> /inner/x and its own
+// /inner/x; a writable mount nested at /pc/inner holds another x. The
+// backend follows /link to its own /inner/x, which the namespace cannot name:
+// /pc/inner/x is the nested mount's. A node program reads the backend's bytes
+// through /pc/link and its write is /pc's EROFS, never the nested x's.
+{
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await backend.mkdir('/inner', { recursive: true });
+  await backend.writeFile('/inner/x', enc.encode('backend'));
+  await backend.symlink('/inner/x', '/link');
+  const nested = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await nested.writeFile('/x', enc.encode('nested'));
+  ws.filesystem.vfs.mount('/pc', remote(backend), { resolvesPaths: true, readOnly: true });
+  ws.filesystem.vfs.mount('/pc/inner', nested);
+  assert.equal(ws.filesystem.vfs.linkLeadsTo('/pc/link', '/inner/x'), null, 'the namespace has no name for where it leads');
+  for (const argv of [['/pc/link', '/pc/inner/x'], ['/pc/link']]) {
+    // A synchronous read of a name the launch could not stage fails the run
+    // by design; existsSync asks without reading.
+    const seen = JSON.parse(await node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  live: await fs.promises.readFile(process.argv[2], 'utf8').catch((e) => 'ERR:' + e.code),
+  write: await fs.promises.writeFile(process.argv[2], 'changed').then(() => 'written', (e) => 'ERR:' + e.code),
+  nested: fs.existsSync('/pc/inner/x'),
+})))();`, { filename: '/home/user/shadowed.js', cwd: '/home/user', argv }));
+    assert.deepEqual(seen, { live: 'backend', write: 'ERR:EROFS', nested: true },
+      `fs.promises reads the backend's bytes and the write is /pc's refusal (${JSON.stringify(argv)})`);
+    assert.equal(dec.decode(await nested.readFile('/x')), 'nested', 'the nested mount\'s x is untouched');
+  }
+  // The namespace's own answers agree: its realpath names the link (the
+  // backend follows it), as the shell's realpath and readlink -f do.
+  assert.equal(await ws.filesystem.vfs.realpathAsync('/pc/link'), '/pc/link');
+  const shell = await ws.exec('realpath -e /pc/link && readlink -f /pc/link && cat /pc/link');
+  assert.deepEqual([shell.exitCode, shell.stdout, shell.stderr], [0, '/pc/link\n/pc/link\nbackend', ''], 'the shell names the link and reads the backend\'s bytes');
+  await assert.rejects(ws.fs.writeFile('/pc/link', 'changed'), { code: 'EROFS' });
+  ws.filesystem.vfs.unmount('/pc/inner');
+  ws.filesystem.vfs.unmount('/pc');
+}
+
+// ── A write through such a link on a writable mount, then a read ─────────
+// The same shape on a writable /pc2: the async write lands at the backend's
+// own /inner/x, and the program's view of /pc2/link is the bytes it wrote,
+// also after it read (and kept) the old ones.
+{
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await backend.mkdir('/inner', { recursive: true });
+  await backend.writeFile('/inner/x', enc.encode('old'));
+  await backend.symlink('/inner/x', '/link');
+  const nested = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await nested.writeFile('/x', enc.encode('nested'));
+  ws.filesystem.vfs.mount('/pc2', remote(backend), { resolvesPaths: true });
+  ws.filesystem.vfs.mount('/pc2/inner', nested);
+  const seen = JSON.parse(await node(`${CHECK}
+(async () => {
+  const before = await fs.promises.readFile('/pc2/link', 'utf8');
+  await fs.promises.writeFile('/pc2/link', 'new');
+  console.log(JSON.stringify({ before, sync: code(() => fs.readFileSync('/pc2/link', 'utf8')), live: await fs.promises.readFile('/pc2/link', 'utf8') }));
+})();`, { filename: '/home/user/through.js', cwd: '/home/user', argv: ['/pc2/link'] }));
+  assert.deepEqual(seen, { before: 'old', sync: 'new', live: 'new' }, 'a synchronous read after the write is the bytes written');
+  assert.equal(dec.decode(await backend.readFile('/inner/x')), 'new', 'which landed at the backend\'s own file');
+  assert.equal(dec.decode(await nested.readFile('/x')), 'nested', 'and not the nested mount\'s');
+  ws.filesystem.vfs.unmount('/pc2/inner');
+  ws.filesystem.vfs.unmount('/pc2');
 }
 
 await ws.close();

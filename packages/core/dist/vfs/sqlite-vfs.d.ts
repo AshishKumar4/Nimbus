@@ -87,6 +87,11 @@ export interface VfsStat {
     /** Generation that last wrote this inode; absent for a stat from a non-SQLite mount. */
     gen?: number;
 }
+/** Why a mutation is refused at a path (SqliteVFS.mutationRefusal). */
+export interface MutationRefusal {
+    code: 'EBUSY' | 'EPERM';
+    detail: string;
+}
 /** Where a caller's path leads on SQLite (SqliteVFS.resolveName). */
 export interface VfsNameResolution {
     /** The canonical caller name; following a link leaves resolution to the namespace instead. */
@@ -910,6 +915,16 @@ export declare class SqliteVFS {
     hasExclusiveMutation(): boolean;
     private withMutationOwner;
     assertMutationAllowed(path: string): void;
+    /**
+     * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
+     * is its own file), is refused: another owner's exclusive-mutation lease
+     * covers it (EBUSY), or it lies outside the root of the lease whose work is
+     * running (EPERM). Null when it may go ahead. What this engine's own
+     * mutations are refused with; a namespace that lays other filesystems over
+     * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
+     */
+    mutationRefusal(path: string, cred: VfsCred): MutationRefusal | null;
+    private refusalAt;
     private assertMutationsAllowed;
     private mkdir;
     private _mkdirSingle;

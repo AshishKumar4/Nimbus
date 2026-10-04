@@ -9,6 +9,68 @@ published independently in the `@nimbus-sh` npm scope.
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
   and `vite`'s "Root:" and "Config:" lines did too. They print the path
   ("/home/user/app/src/main.tsx").
+- A read or write through a SQLite link that leads into a mount below its
+  point (`/home/user/dir -> /s/top`) reaches the mount. A process's bridge
+  resolved such a link's target inside SQLite, where `/s` is nothing, so
+  every read and write through it answered ENOENT, on a synchronous mount
+  as on an asynchronous one; a link to the mount point itself worked. The
+  bridge now walks the target component by component, as it walks the rest
+  of the path, naming a relative target from the link's directory as the
+  engine names it.
+- An exclusive-mutation lease holds on an asynchronous-only mount where a
+  mutation lands, as on a synchronous one. A process's mutation there is
+  awaited through the namespace once the synchronous walk refuses it, and
+  that path checked no lease at the name its lookup reaches: with a lease
+  on `m/leased`, a write, rename, unlink, mkdir, chmod, truncate, symlink,
+  remove, copy or open for writing through `/home/user/alias -> /m`, or
+  relative to a descriptor open on the mount, went through, and so did a
+  write, truncate, chmod, chown or utimes through a descriptor opened before
+  the lease. The namespace now refuses them itself: `CompositeVFS.guardMutations`
+  takes a guard that every mutation a credentialed view makes is checked
+  against, at the name it was given and on the route the namespace resolved,
+  right before the backend is called, so what is checked is where the
+  mutation goes even if a link on the way is repointed meanwhile. Each raw
+  backend mutation is checked, after the reads it waited on: every write,
+  link and directory of a copy across filesystems, every unlink of a walked
+  removal (a refused entry is kept and reported, as rm -r does), and rmdir's
+  unlink on a backend without rmdir. A process
+  namespace's guard is the engine's lease (`SqliteVFS.mutationRefusal`, the
+  one definition its own mutations use too). A write through a dangling link
+  into the lease is refused, and unlinking that link is not. An awaited write
+  with `createParents` makes the directories above where it lands (a link's
+  target's, as the synchronous bridge does), not the link's own; the
+  namespace's `writeFile` and `writeRange` take `parents` for that. An
+  awaited `open` with O_NOFOLLOW on a trailing link answers ELOOP, as the
+  synchronous bridge does, and a descriptor opened on an asynchronous mount
+  keeps the file it opened: it re-resolved its path on every call, so a
+  link on the way repointed after the open moved its writes to another
+  file. A node program's write-back refused with EROFS or
+  EBUSY is the authority's verdict (nothing landed), no longer a durability
+  failure reported at exit.
+- A link on a `resolvesPaths` mount whose target a mount nested in it
+  covers belongs to that backend. With `/pc` read-only holding
+  `/link -> /inner/x`, and a writable mount at `/pc/inner`, the namespace
+  named the target `/pc/inner/x`, the nested mount's file: a node program's
+  `fs.promises.writeFile('/pc/link')` wrote the nested `x` past `/pc`'s
+  EROFS, and the shell's `realpath` and `readlink -f` named it. The backend
+  follows the link to its own `/inner/x`, which the namespace has no name
+  for, so `CompositeVFS.linkLeadsTo` (and a process's `linkLeadsTo`) now
+  answers null there, and each caller hands the link's own path to the
+  namespace instead: the write is `/pc`'s EROFS, a read is the backend's
+  bytes, `realpath /pc/link` names `/pc/link` (as the namespace's realpath
+  does), a launch takes what the link leads to as unknown rather than absent,
+  and a lookup beneath a preopen inside the mount refuses it (ENOTCAPABLE;
+  VFS-COMP-006 refuses it too). A node program's asynchronous write to a
+  name its launch did not list is now parked and written back like any
+  other, the authority answering for it as for its asynchronous rename,
+  where it answered EAGAIN: a synchronous read after it is the bytes
+  written, and a refused one drops them.
+- The `python3` prompt starts in the shell's working directory, as the
+  `ruby` prompt does: once per interpreter, keeping the directory the
+  program's own `os.chdir` left on later lines, and refusing one it cannot
+  enter (`python3: can't enter working directory '/x': [Errno 44] No such
+  file or directory`). It started in `/`, so `open("hello.txt")` at the
+  prompt looked in the root.
 
 ## 2026-10-03
 

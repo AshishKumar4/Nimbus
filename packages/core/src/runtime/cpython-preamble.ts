@@ -202,7 +202,16 @@ globalThis.__cpythonReplRun = async function __cpythonReplRun(args) {
   });
   try {
     if (!globalThis.__cpythonReplBoot) {
-      globalThis.__cpythonReplBoot = await __nimbusPyBoot(args);
+      const boot = await __nimbusPyBoot(args);
+      globalThis.__cpythonReplBoot = boot;
+      // The prompt starts in the shell's cwd, once per interpreter (args.enter,
+      // enterWorkingDirectory); a later line keeps whatever directory the
+      // program's own os.chdir left. One it cannot enter ends the prompt.
+      if (args.enter) {
+        const entered = await boot.run(args.enter);
+        await boot.flush();
+        if (entered !== 0) return { exitCode: entered, ...drain() };
+      }
     }
   } catch (e) {
     return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };

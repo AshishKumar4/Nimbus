@@ -86,6 +86,24 @@ const CPYTHON_CACERT_REL = 'etc/ssl/cert.pem';
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose
  * language prelude was missing.
  */
+/**
+ * Python source that enters `cwd`, as the interpreter's first act. WASI has
+ * no process cwd, so wasi-libc starts every guest at '/'. Leaving it there
+ * silently reroutes every relative path a program opens (the shell says the
+ * user is in /home/user and Python resolves against the root), so a cwd it
+ * cannot enter fails the launch, as a shell's cd fails, naming it: `binName:
+ * can't enter working directory 'cwd': [Errno N] reason`, exit 1.
+ */
+export function enterWorkingDirectory(binName: string, cwd: string): string {
+  return [
+    'import os',
+    'try:',
+    `    os.chdir(${JSON.stringify(cwd)})`,
+    'except OSError as error:',
+    `    raise SystemExit("%s: can't enter working directory '%s': [Errno %d] %s" % (${JSON.stringify(binName)}, ${JSON.stringify(cwd)}, error.errno, error.strerror))`,
+  ].join('\n');
+}
+
 export function buildCPythonPreamble(): string {
   return [
     VIRTUAL_SOCKET_KERNEL_SRC,
@@ -349,16 +367,7 @@ export function makeCPythonRunnerFactory(deps: {
           : []),
         `sys.path.insert(0, ${JSON.stringify(`/${pythonSitePackages(home)}`)})`,
         `sys.path.insert(0, ${JSON.stringify(cwd)})`,
-        // WASI has no process cwd, so wasi-libc starts every guest at '/'.
-        // Leaving it there silently reroutes every relative path a program
-        // opens — the shell says the user is in /home/user and Python resolves
-        // against the root — so a cwd it cannot enter fails the launch, as a
-        // shell's cd fails, naming it.
-        'import os',
-        'try:',
-        `    os.chdir(${JSON.stringify(cwd)})`,
-        'except OSError as error:',
-        `    raise SystemExit("%s: can't enter working directory '%s': [Errno %d] %s" % (${JSON.stringify(binName)}, ${JSON.stringify(cwd)}, error.errno, error.strerror))`,
+        enterWorkingDirectory(binName, cwd),
       ].join('\n');
 
       const cacertVfs = findFile(CPYTHON_CACERT_REL);

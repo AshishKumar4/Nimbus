@@ -86,6 +86,15 @@ function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { signal: 
 }
 
 /**
+ * A scope still held: its caller's signal not aborted (that abort's reason),
+ * and the scope not closed (EBADF: released, killed, or its lease disposed).
+ */
+function assertScopeLive(scope: SqliteDescriptorScope, signal: AbortSignal | undefined): void {
+  signal?.throwIfAborted();
+  if (scope.closed) throw fsError('EBADF', 'fd', 'filesystem scope closed');
+}
+
+/**
  * A process's bridge with three checks at the door: abort first (the caller
  * revoked), then a closed scope (EBADF, the POSIX answer for an operation on
  * a released descriptor table), then the append-process identity (a bound
@@ -177,7 +186,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   rmdir(path: RuntimeFsPath): void { this.guard(); return this.target.rmdir(path); }
   rename(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.rename(from, to); }
   readlink(path: RuntimeFsPath): string | null { this.guard(); return this.target.readlink(path); }
-  linkLeadsTo(path: string, link: string): string { this.guard(); return this.target.linkLeadsTo(path, link); }
+  linkLeadsTo(path: string, link: string): string | null { this.guard(); return this.target.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
   fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
   revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
@@ -257,6 +266,10 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.bufferedWriteBytes = options.bufferedWriteBytes;
     this.namespace = engine.namespace;
     this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
+    // An exclusive-mutation lease holds wherever a process's mutation lands,
+    // on a mount as on SQLite: checked by the namespace on the route it
+    // resolved, right before the backend is called.
+    this.vfs.guardMutations((cred, path) => engine.mutationRefusal(path, cred));
     this.proc = standardProc();
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
@@ -459,7 +472,11 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   }
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
-    const view = this.vfs.as(cred);
+    // The scope is checked again by the namespace right before each mutation
+    // reaches a backend, after the lookups it awaited: a write still
+    // resolving when the process is released or killed, or its lease is
+    // disposed, does not land.
+    const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal));
     const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, view, this.bufferedWriteBytes);
     const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
     // Every other method forwards to the guarded bridge.
@@ -566,8 +583,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
 
   /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
   private live(): void {
-    this.signal?.throwIfAborted();
-    if (this.scope.closed) throw fsError('EBADF', 'fd', 'filesystem scope closed');
+    assertScopeLive(this.scope, this.signal);
   }
 
   /**
@@ -734,17 +750,16 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
     return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
-      const p = (await this.path(path));
-      if (options?.createParents) await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
-      await this.namespace.writeFile(p, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
+      // createParents makes the directories above where the write lands, in
+      // the same lookup as the write (a link's target's, not the link's).
+      const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+      await this.namespace.writeFile(await this.path(path), data, { parents: options?.createParents === true });
       return this.clock();
     });
   }
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
     return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-      const p = await this.path(path);
-      if (options?.createParents) await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
-      await this.namespace.writeRange(p, offset, bytes);
+      await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
       return this.receipt();
     });
   }
@@ -818,7 +833,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   readlink(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.namespace.readlink((await this.path(path, false)))));
   }
-  linkLeadsTo(path: string, link: string): string { return this.bridge.linkLeadsTo(path, link); }
+  linkLeadsTo(path: string, link: string): string | null { return this.bridge.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
   }
@@ -862,15 +877,22 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
 
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags) {
     return this.either([path], () => this.bridge.open(path, flags), async () => {
-      const p = await this.path(path, flags.followSymlinks !== false);
-      const stat = await this.namespace.stat(p, { follow: flags.followSymlinks !== false });
+      const follow = flags.followSymlinks !== false;
+      const p = await this.path(path, follow);
+      const stat = await this.namespace.stat(p, { follow });
+      // O_NOFOLLOW on a trailing link is ELOOP, as the synchronous bridge
+      // answers: there is no descriptor on the link itself, and a write
+      // would land where it leads.
+      if (!follow && stat?.type === 'symlink') throw syscallError('ELOOP', 'open', p);
       if (stat !== null && flags.create && flags.exclusive) throw syscallError('EEXIST', 'open', p);
       if (stat === null && !flags.create) throw syscallError('ENOENT', 'open', p);
       if (stat !== null && stat.type === 'directory' && (flags.write || flags.truncate || flags.append)) throw syscallError('EISDIR', 'open', p);
       if (flags.directory && stat !== null && stat.type !== 'directory') throw syscallError('ENOTDIR', 'open', p);
       if (stat === null || flags.truncate) await this.namespace.writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
       return this.issue({
-        path: p,
+        // The file it opened, by the name the namespace resolved for it: a
+        // link on the way repointed later does not move the descriptor.
+        path: await this.namespace.realpathAsync(p),
         flags: {
           read: !!flags.read, write: !!flags.write, append: !!flags.append, create: !!flags.create,
           exclusive: !!flags.exclusive, directory: !!flags.directory, truncate: !!flags.truncate,
@@ -1165,7 +1187,7 @@ export class ProcessView implements VFS {
     return target;
   }
   /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
-  async linkLeadsTo(path: string, link: string): Promise<string> { return await this.process.linkLeadsTo(path, link); }
+  async linkLeadsTo(path: string, link: string): Promise<string | null> { return await this.process.linkLeadsTo(path, link); }
   async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.process.chmod(path, mode)); }
   /** chown(2): a null side keeps what the file has (chown -1). */
   async chown(path: string, uid: number | null, gid: number | null): Promise<void> {

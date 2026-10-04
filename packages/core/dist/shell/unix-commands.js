@@ -125,8 +125,11 @@ async function resolveSymlinkPath(vfs, startPath) {
         const text = (await readSymlinkTarget(vfs, current));
         if (text === null)
             return current;
-        // Where the link leads in this namespace (a mount may read it from its own root).
+        // Where the link leads in this namespace (a mount may read it from its
+        // own root); one whose target it has no name for is named by itself.
         const target = await vfs.linkLeadsTo(current, text);
+        if (target === null)
+            return current;
         current = target.startsWith('/')
             ? resolvePath('/', target)
             : resolvePath(dirname(current), target);
@@ -3619,24 +3622,19 @@ async function canonicalizePath(vfs, absolute, options) {
             resolved.push(part);
             continue;
         }
-        let stat;
-        try {
-            // -s keeps a link's name, but whether it is a directory is its target's.
-            stat = await vfs.stat(candidate, { follow: options.noSymlinks });
-        }
-        catch (error) {
-            if (!isVfsError(error, 'ENOTDIR'))
-                throw error;
-            stat = null;
-        }
-        if (stat === null) {
-            if (options.mode === 'e' || (options.mode === 'E' && !last))
-                throw syscallError('ENOENT', 'realpath', candidate);
-            missing = true;
-            resolved.push(part);
-            continue;
-        }
-        if (stat.type === 'symlink' && !options.noSymlinks) {
+        const statOf = async (follow) => {
+            try {
+                return await vfs.stat(candidate, { follow });
+            }
+            catch (error) {
+                if (!isVfsError(error, 'ENOTDIR'))
+                    throw error;
+                return null;
+            }
+        };
+        // -s keeps a link's name, but whether it is a directory is its target's.
+        let stat = await statOf(options.noSymlinks);
+        if (stat?.type === 'symlink' && !options.noSymlinks) {
             if (++hops > 40) {
                 // Under -m a component that loops counts as missing (GNU).
                 if (options.mode !== 'm')
@@ -3647,9 +3645,21 @@ async function canonicalizePath(vfs, absolute, options) {
             }
             // Where the link leads in this namespace (a mount may read it from its own root).
             const target = await vfs.linkLeadsTo(candidate, await vfs.readlink(candidate));
-            if (target.startsWith('/'))
-                resolved.length = 0;
-            pending = [...target.split('/').filter(Boolean), ...pending];
+            if (target !== null) {
+                if (target.startsWith('/'))
+                    resolved.length = 0;
+                pending = [...target.split('/').filter(Boolean), ...pending];
+                continue;
+            }
+            // One whose target the namespace has no name for (a mount nested in
+            // its backend covers it) is named by itself, and is what it leads to.
+            stat = await statOf(true);
+        }
+        if (stat === null) {
+            if (options.mode === 'e' || (options.mode === 'E' && !last))
+                throw syscallError('ENOENT', 'realpath', candidate);
+            missing = true;
+            resolved.push(part);
             continue;
         }
         if (stat.type !== 'directory' && !last && options.mode !== 'm')

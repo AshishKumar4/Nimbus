@@ -437,14 +437,17 @@ def handsIn (S : St) (q : Path) : Bool :=
 def handsTo (S : St) (q to : Path) : Bool :=
   handsIn S q && (!structural S.mounts q || (ownerOf S.mounts to).point == (ownerOf S.mounts q).point)
 
-/-- The components a walk resumes from `/` with, for the link at `q` reading `a`, `t`,
-    on a flagged mount (whatever `within` is): its backend reads it from its own root,
-    so an absolute target re-roots at the mount point and a relative one climbs no
-    higher than it (CompositeVFS's `linkLeadsTo`). Any other link: its target. -/
-def linkComps (S : St) (q : Path) (a : Bool) (t : List String) : List String :=
+/-- The components a walk resumes with, for the link at `q` reading `a`, `t`: on a
+    flagged mount (whatever `within` is), from `/`, as its backend reads it from its own
+    root, so an absolute target re-roots at the mount point and a relative one climbs
+    no higher than it; none when that name is another mount's (a mount nested in the
+    flagged one covers it), which the namespace cannot name (CompositeVFS's
+    `linkLeadsTo`). Any other link: its target. -/
+def linkComps (S : St) (q : Path) (a : Bool) (t : List String) : Option (List String) :=
   if S.hands q then
-    (ownerOf S.mounts q).point ++ lex (if a then [] else q.dropLast.drop (ownerOf S.mounts q).point.length) t
-  else t
+    let p := (ownerOf S.mounts q).point ++ lex (if a then [] else q.dropLast.drop (ownerOf S.mounts q).point.length) t
+    if (ownerOf S.mounts p).point == (ownerOf S.mounts q).point then some p else none
+  else some t
 
 /-- Whether the walk at `done`, taking `x` and then `rs`, is in a path its backend
     resolves: it is already, or `x` takes it there. Then nothing is looked up or
@@ -472,7 +475,9 @@ def walk (S : St) (c : Cred) (follow : Bool) : Nat → Nat → Path → List Str
       | some (.link a t, _) =>
         if rs = [] ∧ follow = false then .ok q
         else if h = 0 then .error "ELOOP"
-        else walk S c follow n (h - 1) (if (S.hands q || a) = true then [] else done) (linkComps S q a t ++ rs)
+        else match linkComps S q a t with
+          | none => .error "ENOTCAPABLE"
+          | some l => walk S c follow n (h - 1) (if (S.hands q || a) = true then [] else done) (l ++ rs)
       | some (.dir, _) => walk S c follow n h q rs
       | some (.file _, _) => if rs = [] then .ok q else .error "ENOTDIR"
 
@@ -680,8 +685,10 @@ theorem walk_named (S : St) (c : Cred) (f : Bool) (hw : HandsWF S) :
                 · split at hwk
                   · cases hwk
                   · split at hwk
-                    · exact ih _ _ _ _ (fun i hi => by simp at hi) (.inr (root_dir S)) hwk
-                    · exact ih _ _ _ _ hn hd hwk
+                    · cases hwk
+                    · split at hwk
+                      · exact ih _ _ _ _ (fun i hi => by simp at hi) (.inr (root_dir S)) hwk
+                      · exact ih _ _ _ _ hn hd hwk
               · rename_i m he
                 exact ih _ _ _ _ (namedH_snoc x hn hs) (.inr ⟨m, he⟩) hwk
               · split at hwk

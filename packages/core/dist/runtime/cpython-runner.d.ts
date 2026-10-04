@@ -48,6 +48,15 @@ import type { RuntimeManifest } from './runtime-manifest.js';
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose
  * language prelude was missing.
  */
+/**
+ * Python source that enters `cwd`, as the interpreter's first act. WASI has
+ * no process cwd, so wasi-libc starts every guest at '/'. Leaving it there
+ * silently reroutes every relative path a program opens (the shell says the
+ * user is in /home/user and Python resolves against the root), so a cwd it
+ * cannot enter fails the launch, as a shell's cd fails, naming it: `binName:
+ * can't enter working directory 'cwd': [Errno N] reason`, exit 1.
+ */
+export declare function enterWorkingDirectory(binName: string, cwd: string): string;
 export declare function buildCPythonPreamble(): string;
 export interface CPythonFacetResult {
     stdout: string;

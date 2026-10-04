@@ -143,12 +143,24 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     releaseExclusiveMutation(owner: string): void;
     private pathArgument;
     private resolveDataPath;
-    /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
+    /**
+     * A mounted (or composed) entry's link target, or null when it is not a
+     * link or not there, or when the namespace has no name for where it leads
+     * (linkLeadsTo): then the walk keeps the link's own name, and the
+     * namespace hands it to the backend that follows it.
+     */
     private mountedLink;
     /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
-    linkLeadsTo(path: string, link: string): string;
+    linkLeadsTo(path: string, link: string): string | null;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
+    /**
+     * Refuses a mutation at the namespace path `path` that another owner's
+     * exclusive-mutation lease covers (EBUSY), or that lies outside the
+     * caller's own lease root (EPERM). Leases are held on storage keys: a
+     * confined caller's /tmp/x is its private file, not the shared tmp/x.
+     */
+    private leaseAllows;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
     private openRoot;

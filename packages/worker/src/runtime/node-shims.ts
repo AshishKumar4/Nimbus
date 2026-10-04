@@ -1063,8 +1063,9 @@ const __fsMod = (() => {
   function _noteCreation(k) {
     if (_createdHere.has(k)) return;
     const absPath = "/" + k;
-    // Known absent: the namespace names everything this credential can see.
-    if (_statLadder(absPath) !== undefined) return;
+    // Known absent: the namespace names everything this credential can see,
+    // except on a mount where the launch did not list it, which is unknown.
+    if (_statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null) return;
     _createdHere.add(k);
   }
   function _forgetCreation(k) {
@@ -3183,8 +3184,12 @@ const __fsMod = (() => {
 
   async function _writeFileAsync(p, data, opts) {
     const absPath = _resolveFollow(p, "open");
-    writeFileSync(p, data, opts);
     const supervisor = _supervisor();
+    // A target this view cannot judge (on a mount, where the launch did not
+    // list it) is the authority's to answer for, as the async rename's
+    // destination is: parked and written back like any other write, and
+    // refused (and the parked bytes dropped) if the authority refuses it.
+    _parkWholeWrite(p, data, supervisor && typeof supervisor.writeFile === "function");
     if (supervisor && typeof supervisor.writeFile === "function") {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
@@ -3605,8 +3610,17 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
+    _parkWholeWrite(p, data, false);
+  }
+
+  /**
+   * A whole-file write's local effect: the bytes parked for write-back.
+   * \`live\`: the async form, whose write-back the authority answers for a
+   * target this view cannot judge (_ensureWritable).
+   */
+  function _parkWholeWrite(p, data, live) {
     const absPath = _resolveFollow(p, "open");
-    _ensureWritable(absPath, "open", p);
+    _ensureWritable(absPath, "open", p, live);
     const k = _strip(absPath);
     let cell;
     if (data instanceof Uint8Array) cell = data;

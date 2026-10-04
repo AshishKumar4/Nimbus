@@ -22,8 +22,9 @@
   `within := R`): its backend follows links only in its own tree, so beneath `R`. From
   a root inside such a mount every component is walked here, and its links are read as
   its backend reads them (`linkComps`: an absolute target re-rooted at the mount point,
-  a relative one climbing no higher than it). `handsWF_beneath`: the restriction keeps
-  the hand-off well formed.
+  a relative one climbing no higher than it; ENOTCAPABLE where a mount nested in it
+  covers that name, which the namespace cannot name). `handsWF_beneath`: the
+  restriction keeps the hand-off well formed.
 
   Proved:
   - `beneath_contained`: whatever `resolve(R, path)` resolves to lies at or under `R`,
@@ -74,7 +75,9 @@ def walkB (S : St) (c : Cred) (follow : Bool) (R : Path) : Nat → Nat → Path 
       | some (.link a t, _) =>
         if rs = [] ∧ follow = false then .ok q
         else if h = 0 then .error "ELOOP"
-        else walkB S c follow R n (h - 1) (if (S.hands q || a) = true then [] else done) (linkComps S q a t ++ rs)
+        else match linkComps S q a t with
+          | none => .error "ENOTCAPABLE"
+          | some l => walkB S c follow R n (h - 1) (if (S.hands q || a) = true then [] else done) (l ++ rs)
       | some (.dir, _) => walkB S c follow R n h q rs
       | some (.file _, _) => if rs = [] then .ok q else .error "ENOTDIR"
 
@@ -379,8 +382,10 @@ theorem walkB_named (S : St) (c : Cred) (f : Bool) (R : Path) (hwf : HandsWF S) 
                 · split at hw
                   · cases hw
                   · split at hw
-                    · exact ih _ _ _ _ (.inr fun i hi => by simp at hi) (.inr (root_dir S)) hw
-                    · exact ih _ _ _ _ hW hd hw
+                    · cases hw
+                    · split at hw
+                      · exact ih _ _ _ _ (.inr fun i hi => by simp at hi) (.inr (root_dir S)) hw
+                      · exact ih _ _ _ _ hW hd hw
               · rename_i m he
                 exact ih _ _ _ _ (walked_snoc x hW hs) (.inr ⟨m, he⟩) hw
               · split at hw
@@ -476,7 +481,11 @@ theorem walkB_agrees (S : St) (c : Cred) (f : Bool) (R : Path) :
                     split at hw
                     · cases hw
                     · rw [if_neg ‹_›]
-                      exact ih _ _ _ _ hw
+                      split at hw
+                      · cases hw
+                      · rename_i l hl
+                        rw [hl]
+                        exact ih _ _ _ _ hw
 
 /-- When `path` resolves beneath `R`, it resolves to exactly what the unrestricted
     walk from `R` gives. -/
@@ -553,7 +562,8 @@ def deviceTrace (resolves : Bool) : St :=
           (["vault"], ⟨.dir, ⟨0o700, 0, 0⟩⟩), (["vault", "mine"], ⟨.dir, ⟨0o755, 2, 2⟩⟩),
           (["vault", "mine", "g"], ⟨.file 1, ⟨0o644, 2, 2⟩⟩), (["locked"], ⟨.dir, ⟨0o700, 0, 0⟩⟩),
           (["safe"], ⟨.dir, ⟨0o755, 2, 2⟩⟩), (["safe", "out"], ⟨.link true ["secret"], ⟨0o777, 2, 2⟩⟩),
-          (["safe", "up"], ⟨.link false ["..", "secret"], ⟨0o777, 2, 2⟩⟩), (["secret"], ⟨.file 6, ⟨0o644, 2, 2⟩⟩)]
+          (["safe", "up"], ⟨.link false ["..", "secret"], ⟨0o777, 2, 2⟩⟩), (["secret"], ⟨.file 6, ⟨0o644, 2, 2⟩⟩),
+          (["locked", "l"], ⟨.link true ["locked", "inner", "x"], ⟨0o777, 0, 0⟩⟩)]
       else memory [(["x"], ⟨.file 1, synthMeta⟩), (["al"], ⟨.link true ["pc", "home", "me", "f"], synthMeta⟩)],
     hands := fun q => resolves && (ownerOf deviceMounts q).point == ["pc"] && decide (1 < q.length) }
 
@@ -569,7 +579,10 @@ def deviceTrace (resolves : Bool) : St :=
     `x` is a file, so `x/child` is ENOTDIR) and follows its absolute link. From a root
     inside the device, its links are read as the device reads them (`linkComps`):
     `up` and `climb` lead to `/pc/home/me` and on to its `f`; on an unflagged device
-    `up` leads to the namespace's `/home/me`, which is not there. -/
+    `up` leads to the namespace's `/home/me`, which is not there. A link the device
+    reads to its own `locked/inner/x`, which the nested mount covers in the namespace,
+    has no name here: from a root inside the device it is ENOTCAPABLE, never the
+    nested mount's `x`. -/
 theorem beneath_hands_over :
     ans (resolveB (deviceTrace false) u2 true [] false ["pc", "vault", "mine", "g"]) = ("EACCES", []) ∧
     ans (resolveB (deviceTrace true) u2 true [] false ["pc", "vault", "mine", "g"]) = ("", ["pc", "vault", "mine", "g"]) ∧
@@ -589,7 +602,9 @@ theorem beneath_hands_over :
     ans (resolveB (deviceTrace true) kernel true ["pc", "locked", "inner"] false ["al"]) = ("ENOTCAPABLE", []) ∧
     ans (resolveB (deviceTrace true) u2 true ["pc", "home", "me"] false ["up", "f"]) = ("", ["pc", "home", "me", "f"]) ∧
     ans (resolveB (deviceTrace true) u2 true ["pc", "home", "me"] false ["climb", "f"]) = ("", ["pc", "home", "me", "f"]) ∧
-    ans (resolveB (deviceTrace false) u2 true ["pc", "home", "me"] false ["up", "f"]) = ("ENOENT", []) := by
+    ans (resolveB (deviceTrace false) u2 true ["pc", "home", "me"] false ["up", "f"]) = ("ENOENT", []) ∧
+    ans (resolveB (deviceTrace true) kernel true ["pc", "locked"] false ["l"]) = ("ENOTCAPABLE", []) ∧
+    ans (resolveB (deviceTrace true) kernel true ["pc", "locked"] false ["inner", "x"]) = ("", ["pc", "locked", "inner", "x"]) := by
   decide
 
 end Nimbus.Vfs.CompositeBeneath

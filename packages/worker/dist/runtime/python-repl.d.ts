@@ -1,3 +1,4 @@
+import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 /**
  * python-repl.ts — the interactive `python` prompt.
@@ -55,7 +56,43 @@ export interface PythonReplDeps {
      * never touches a file.
      */
     pid?: number;
+    /**
+     * Where the prompt starts: the shell's working directory, entered once
+     * per interpreter, and the command that started it, which a refusal to
+     * enter names. Absent only for the install-time warm-up.
+     */
+    start?: {
+        cwd: string;
+        binName: string;
+    };
 }
+/**
+ * What one prompt line hands the facet (__cpythonReplRun): the driver, the
+ * interpreter's setup, and `enter`, the source that starts the prompt in the
+ * shell's working directory, which the facet runs once per interpreter.
+ */
+export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start'>, pythonHome: string, userCode: string): {
+    enter?: string | undefined;
+    userCode: string;
+    pythonHome: string;
+    pyArgv: string[];
+    userEnv: {
+        HOME: string;
+        PYTHONUNBUFFERED: string;
+    };
+    progName: string;
+};
+/**
+ * Facet-side, request-shaped: serialized with fn.toString() into the
+ * pool's fetch entrypoint, so it captures nothing and names no import —
+ * __cpythonReplRun is put on globalThis by the preamble, and unlike
+ * __cpythonRun it keeps its interpreter between calls. The request body
+ * is the step payload the adapter JSON-encodes; the response is the
+ * step result. Request transport because it is the pool's only
+ * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
+ * interpreter at its suspension point.
+ */
+export declare function pythonReplStepRequestFn(request: Request, facetEnv: FacetBindings): Promise<Response>;
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
 /**
  * Pay the interpreter's boot before the user asks for a prompt. Pushing empty

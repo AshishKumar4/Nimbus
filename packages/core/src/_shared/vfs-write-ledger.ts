@@ -78,7 +78,9 @@ async function __nimbusVfsRpc(issue) {
  * why \`fs.truncate(missing).catch(() => {})\` is ordinary, correct code.
  *
  * ENOSPC is one of them: the session's storage ledger (N18) refuses a write
- * before any of it is made.
+ * before any of it is made. So are EROFS (a read-only mount) and EBUSY (an
+ * exclusive-mutation lease): the namespace refuses those before the backend
+ * is called.
  *
  * Everything else — EIO, a dropped RPC, an authority that died, an
  * error carrying no errno at all — is not an answer. It means the outcome of
@@ -89,6 +91,7 @@ async function __nimbusVfsRpc(issue) {
 const __NIMBUS_SYSCALL_VERDICT_CODES = new Set([
   "ENOENT", "EEXIST", "EISDIR", "ENOTDIR", "ENOTEMPTY",
   "EBADF", "EINVAL", "EPERM", "EACCES", "ELOOP", "ENAMETOOLONG", "ENOSPC",
+  "EROFS", "EBUSY",
 ]);
 
 function __nimbusIsDurabilityFailure(error) {
