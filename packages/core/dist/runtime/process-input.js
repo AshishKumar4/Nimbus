@@ -102,6 +102,20 @@ export class ProcessInputStore {
             return Promise.resolve(false);
         return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
     }
+    /**
+     * Put input a reader took back in front of the queue, as it was: a process
+     * that stopped before using it, run again (worker runtime/stop-replay.ts).
+     * Past the queue's bound if need be, and after the channel ended too: the
+     * writer wrote it within both.
+     */
+    unread(pid, packets) {
+        const state = this.pids.get(pid);
+        if (!state || packets.length === 0)
+            return;
+        state.packets.unshift(...packets);
+        for (const packet of packets)
+            state.bytes += packet.data.length;
+    }
     end(pid) {
         const state = this.pids.get(pid);
         if (!state || state.closed)

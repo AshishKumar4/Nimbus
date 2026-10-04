@@ -260,6 +260,12 @@ export declare class FacetProcessManager {
         ok: boolean;
     };
     stdinEnd(childPid: number): void;
+    /**
+     * Put stdin the child took back in front of its queue, as it was, past the
+     * queue's cap and after its end too: a run of the child that stopped
+     * before using it, run again (runtime/stop-replay.ts).
+     */
+    unreadStdin(childPid: number, chunks: readonly Uint8Array[]): void;
     /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
     private _takeStdin;
     /**

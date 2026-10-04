@@ -28,6 +28,7 @@ import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -41,6 +42,13 @@ type LaunchFs = RuntimeFsBridge;
 /** A pipe or redirect's bytes, exactly as written, until it ends (null). */
 export interface StdinBytes {
     readBytes(maxLength: number): Promise<Uint8Array | null>;
+}
+/** A process's stdin channel as a stopped run waits on it (FacetManagerHooks.stdinChannel). */
+export interface StdinChannel {
+    /** The next packet: input, the end, or (after `waitMs`) nothing. */
+    read(waitMs: number): Promise<ProcessInputPacket>;
+    /** Put packets taken from it back in front of it, in order. */
+    unread(packets: readonly ProcessInputPacket[]): void;
 }
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -721,6 +729,19 @@ export interface FacetManagerHooks {
     /** Fired right after the supervisor's spawn — lets the session print a notification. */
     onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
     /**
+     * Deliver output as the process's own, as its supervisor RPC would: what a
+     * run that stopped at a read of stdin had not delivered yet, and why a
+     * process that stopped could not go on (runtime/stop-replay.ts).
+     */
+    deliverOutput?: (pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
+    /**
+     * A process's stdin channel, wherever its writer queues it: the session's
+     * input store, or a child_process child's queue in the broker. A run that
+     * stopped at a read of stdin waits on it, and what it took goes back in
+     * front of it (runtime/stop-replay.ts). Null when the pid has none.
+     */
+    stdinChannel?: (pid: number) => StdinChannel | null;
+    /**
      * Arrange for `pumpResidentLaunches` to run on a fresh Durable Object turn.
      *
      * The session satisfies this with an alarm, which is the only primitive that
@@ -851,6 +872,12 @@ export interface ResidentSpawnOptions {
     command?: string;
     port?: number;
     attachedTty?: boolean;
+    /**
+     * Its launcher writes its stdin and ends it, and does not wait for the
+     * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
+     * read of stdin and boot again once the input is there.
+     */
+    stdinWriter?: boolean;
     skipSpawn?: boolean;
     callerPid?: number;
     /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
@@ -960,11 +987,13 @@ export declare class FacetManager {
     private debugEnabled;
     private processRpcResources;
     /**
-     * The session's pipe read-ahead budget (stdin-read.ts), held here because a
-     * read ahead is held in this Durable Object, whichever launch holds it. One
-     * byte over the bound shows whether a pipe ended exactly there.
+     * The session's budget for stdin held while a run is stopped (stdin-read.ts,
+     * _awaitStoppedInput), held here because the bytes are held in this
+     * Durable Object, whichever process waits for them.
      */
     readonly stdinReadAhead: ReadAheadBudget;
+    /** Per one-shot that can stop at a read of stdin: its output across its runs (gateOutput). */
+    private readonly outputGates;
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
@@ -1383,19 +1412,9 @@ export declare class FacetManager {
          */
         stdinPipe?: StdinBytes;
         /**
-         * The pipe ends within what was read ahead of it: the program takes all
-         * of it before it starts, for its synchronous reads of stdin.
-         */
-        stdinWhole?: boolean;
-        /**
-         * The program reads stdin synchronously, and its stdin is its own live
-         * input channel (a child_process child's): it reads the channel before
-         * it starts, until the end or STDIN_SYNC_READ_BYTES.
-         */
-        stdinSyncRead?: boolean;
-        /**
          * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
-         * program reads stdin synchronously, so it reads the file first.
+         * program reads the file ahead before it starts (a run after one that
+         * stopped at a synchronous read of it).
          */
         stdinFile?: {
             path: string;
@@ -1403,6 +1422,31 @@ export declare class FacetManager {
             syncRead: boolean;
         };
     }): Promise<FacetExecResult>;
+    /**
+     * A one-shot stopped at a synchronous read of stdin that needs input not
+     * there yet (runtime/stop-replay.ts): deliver what its record carries of
+     * its output, wait for the input the read needs (the end of stdin, or any of
+     * it), hand the input back to the channel with what the run had taken, and
+     * say how to run it again; or how the process ends instead.
+     */
+    private _resumeStoppedRun;
+    /**
+     * The input a stopped run's read waits for, taken off its channel: until
+     * the channel ends (`end`), or until it holds any (`data`). Held against
+     * the session's budget, at most STDIN_SYNC_READ_BYTES. A terminating signal
+     * on the channel ends the wait, and so does the shell's abort or a kill.
+     */
+    private _awaitStoppedInput;
+    /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
+    private _stdinChannel;
+    /** A process's output, delivered as its own supervisor RPC delivers it. */
+    private _deliverOutput;
+    /**
+     * A chunk a process printed, tagged with its run and its offset in what the
+     * run printed: the part to deliver (runtime/stop-replay.ts). A process with
+     * no gate cannot stop, and every chunk is delivered as it is.
+     */
+    gateOutput(pid: number, stream: 'stdout' | 'stderr', data: Uint8Array, at: number, run: number): Uint8Array;
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
      * a full queue waits for the program to read, and the pipe's end ends the

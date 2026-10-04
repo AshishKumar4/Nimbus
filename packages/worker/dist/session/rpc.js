@@ -771,10 +771,16 @@ const _terminalTeeDecoders = new StreamTextDecoders();
 function decodeForTerminal(pid, stream, data) {
     return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
 }
-export async function _rpcStdout(self, pid, data) {
+export async function _rpcStdout(self, pid, data, at, run) {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —
     // its output must not merge into this generation's logs or shell.
     if (isPriorGenerationPid(self, pid))
+        return;
+    // A chunk a run that stopped already delivered, or that its stop carried
+    // (runtime/stop-replay.ts), is not delivered twice.
+    if (at !== undefined && run !== undefined)
+        data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
+    if (data.byteLength === 0)
         return;
     if (self.facetProcessManager?.routeOutput(pid, 1, data))
         return;
@@ -805,8 +811,12 @@ export async function _rpcStdout(self, pid, data) {
         }
     }
 }
-export async function _rpcStderr(self, pid, data) {
+export async function _rpcStderr(self, pid, data, at, run) {
     if (isPriorGenerationPid(self, pid))
+        return;
+    if (at !== undefined && run !== undefined)
+        data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
+    if (data.byteLength === 0)
         return;
     if (self.facetProcessManager?.routeOutput(pid, 2, data))
         return;

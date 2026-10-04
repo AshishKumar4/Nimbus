@@ -40,8 +40,8 @@ export interface SessionSupervisorHost {
      * spawned. Absent, the session serves no delivered mutation.
      */
     readonly supervisorDeliveries?: SupervisorDeliveries;
-    _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
-    _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+    _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+    _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 }
 export interface SessionSupervisorOps {
     readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;

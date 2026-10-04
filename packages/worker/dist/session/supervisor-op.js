@@ -23,6 +23,12 @@ function outputBytesArg(value) {
         return value;
     throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
 }
+/** A chunk's offset in what its run printed, and the run, when the guest sent them. */
+function outputPlace(args) {
+    const at = args?.[1];
+    const run = args?.[2];
+    return typeof at === 'number' && typeof run === 'number' ? [at, run] : [];
+}
 export function buildSessionSupervisorOps(host, store, methods) {
     host.ensureSqliteFs();
     const vfs = host.sqliteFs;
@@ -49,8 +55,8 @@ export function buildSessionSupervisorOps(host, store, methods) {
         },
         // stdout/stderr are session methods, not bridge ops: mirroring,
         // log-append and prior-generation filtering all live in _rpcStdout.
-        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
-        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
+        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
+        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
     };
     const dispatch = createSupervisorOpHandler({
         vfs: host.sqliteFs,

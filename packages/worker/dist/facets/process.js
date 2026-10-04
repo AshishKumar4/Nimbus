@@ -505,6 +505,19 @@ export class FacetProcessManager {
         for (const w of child.stdinWaiters.splice(0))
             w();
     }
+    /**
+     * Put stdin the child took back in front of its queue, as it was, past the
+     * queue's cap and after its end too: a run of the child that stopped
+     * before using it, run again (runtime/stop-replay.ts).
+     */
+    unreadStdin(childPid, chunks) {
+        const child = this.children.get(childPid);
+        if (!child || chunks.length === 0)
+            return;
+        child.stdinChunks.unshift(...chunks);
+        for (const chunk of chunks)
+            child.stdinTotalBytes += chunk.byteLength;
+    }
     /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
     _takeStdin(child) {
         const data = child.stdinChunks.shift();

@@ -166,6 +166,8 @@ export declare class SessionProcessSupervisor {
     /** End and drop the input channel entirely. */
     closeInput(pid: number): void;
     readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket>;
+    /** See ProcessInputStore.unread: input taken back to the front of the queue. */
+    unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;
     };

@@ -402,8 +402,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    stdout(data: Uint8Array): Promise<void>;
-    stderr(data: Uint8Array): Promise<void>;
+    stdout(data: Uint8Array, at?: number, run?: number): Promise<void>;
+    stderr(data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**
      * Report process exit to the supervisor. Called from the facet's own
      * `finally` block after I/O has drained. The supervisor uses this to

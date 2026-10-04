@@ -326,8 +326,8 @@ export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): P
     failed: number;
 }>;
 export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
-export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
-export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
+export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 /** A live server can catch a codegen miss and continue serving: persist its
  * ledger before it is killed or evicted, without changing its process state. */
 export declare function _rpcReportRuntimeCode(self: ReportRpcHost, pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;

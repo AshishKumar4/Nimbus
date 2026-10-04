@@ -52,6 +52,7 @@ import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LaunchLearningStore } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
+import { decodeBase64, ReplayOutputGate, STOP_LIMIT, STOP_REPLAY_SOURCE, stopRecordOf, } from '../runtime/stop-replay.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
@@ -588,6 +589,9 @@ const __NimbusHostResponse = globalThis.Response;
 // The SUPERVISOR binding's filesystem calls answer a refusal as a value
 // (core vfs-supervisor.ts answeringSupervisor).
 ${SUPERVISOR_ANSWERING_SRC}
+// A synchronous read of stdin that has to wait stops the run, which is run
+// again once the input is there (runtime/stop-replay.ts).
+${STOP_REPLAY_SOURCE}
 
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
@@ -603,18 +607,24 @@ class __ProcessExit extends Error {
 }
 
 export default {
-  async fetch(request, workerEnv) {
+  async fetch(request, workerEnv, workerCtx) {
     const args = await request.json();
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
     const __nimbusLiveInputPid = Number(args.stdinPid || 0);
-    // It ends within what was read ahead: taken whole before the entry runs.
+    // The channel has ended, and what it holds is taken whole before the
+    // entry runs: a run after a stop that waited for the end of stdin.
     const __nimbusStdinWhole = args.stdinWhole === true;
-    // The program reads fd 0 synchronously and its own channel is its stdin:
-    // read ahead here, until the end or the bound (node-shims, __nimbusPrepareStdin).
-    const __nimbusStdinSyncRead = args.stdinSyncRead === true;
+    // This run's stop, and what it replays of the run that stopped before it.
+    // ctx.abort ends the isolate's JavaScript where it stands, so the program
+    // never sees the stop.
+    globalThis.__nimbusStopReplay.begin(
+      args.replay || null,
+      workerCtx && typeof workerCtx.abort === "function" ? (reason) => workerCtx.abort(reason) : null,
+      !!captureOutput || !workerEnv?.SUPERVISOR,
+    );
     // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
     const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
     // Per invocation, not per module: this body is cached on
@@ -627,7 +637,10 @@ ${VFS_CURSOR_SEED_SOURCE}
     // ends it early.
     const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
-    const __supervisor = workerEnv?.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
+    // Every call that changes something outside the process is counted: a
+    // run that made one cannot stop to be run again.
+    const __supervisor = workerEnv?.SUPERVISOR
+      ? globalThis.__nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
     // The same store, namespace and data plan a resident boots on, backed by
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
     // Declared inside the request, beside the shims, so a loader that reuses
@@ -665,11 +678,18 @@ ${sources.residentStore}
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
     // The relay carries bytes (see "Process output is bytes" in the shims).
+    // Each chunk goes with its offset in what this run printed and the run's
+    // number: what a replay prints again of the stopped run's output is
+    // checked and dropped here, and a chunk the session has not acknowledged
+    // when the run stops rides the stop (runtime/stop-replay.ts).
     const __queueRpcWrite = (method, bytes) => {
+      const __chunk = globalThis.__nimbusStopReplay.write(method, bytes);
+      if (__chunk === null) return;
       __rpcWriteCount++;
       const __task = __rpcWriteChain
-        .then(() => __supervisor[method](bytes))
-        .catch((e) => __onRpcDrop(bytes.byteLength, e));
+        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
+        .then(() => globalThis.__nimbusStopReplay.acked(__chunk))
+        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
     };
@@ -719,6 +739,9 @@ ${RESIDENCY_MISS_REPORT}
     __require.main = mod;
     try {
       await __nimbusPrepareStdin();
+      // From here on the program runs: a stop is possible while stdin can
+      // still come short of a read.
+      globalThis.__nimbusStopReplay.arm(__nimbusStdinCanStop());
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
@@ -770,6 +793,18 @@ ${RESIDENCY_MISS_REPORT}
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
       if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
+    }
+    // A run after a stop that ended before printing all the stopped run had
+    // printed did not retrace it: what it printed past that is not the
+    // program's output.
+    const __replayShort = globalThis.__nimbusStopReplay.finish();
+    if (__replayShort) {
+      stderr += __replayShort;
+      exitCode = 1;
+      if (__supervisor && !captureOutput) {
+        const __shortBytes = __nimbusOutEnc.encode(__replayShort);
+        __pendingIO.push(__supervisor.stderr(__shortBytes).catch((e) => __onRpcDrop(__shortBytes.byteLength, e)));
+      }
     }
     await __drainPendingIO();
 
@@ -926,6 +961,9 @@ const __NimbusHostResponse = globalThis.Response;
 // The SUPERVISOR binding's filesystem calls answer a refusal as a value
 // (core vfs-supervisor.ts answeringSupervisor).
 ${SUPERVISOR_ANSWERING_SRC}
+// A synchronous read of stdin that has to wait stops the run with the
+// facet's ctx.abort (runtime/stop-replay.ts).
+${STOP_REPLAY_SOURCE}
 
 // The process's code: a module per cell, compiled when first required. The
 // only other way a string becomes code in a Worker is \`new Function\` at
@@ -1021,13 +1059,22 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
     // Every resident process has a live input channel on its pid.
     const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
+    // The channel has ended, and what it holds is taken whole before the
+    // entry runs: a boot after a stop that waited for the end of stdin.
+    const __nimbusStdinWhole = !!(__startArgs && __startArgs.stdinWhole);
     // Off the start payload, never out of the module text: this body is
     // content-addressed into the facet image store, and a revision that
     // advances on every spawn would give the same program a new image each
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    const __supervisor = workerEnv?.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
+    globalThis.__nimbusStopReplay.begin(
+      (__startArgs && __startArgs.replay) || null,
+      workerCtx && typeof workerCtx.abort === "function" ? (reason) => workerCtx.abort(String((reason && reason.message) || reason)) : null,
+      !!captureOutput || !workerEnv?.SUPERVISOR,
+    );
+    const __supervisor = workerEnv?.SUPERVISOR
+      ? globalThis.__nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
         await __nimbusReportLearningFailure(__supervisor, error);
@@ -1107,12 +1154,16 @@ ${VFS_CURSOR_SEED_SOURCE}
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
-    // The relay carries bytes (see "Process output is bytes" in the shims).
+    // The relay carries bytes (see "Process output is bytes" in the shims),
+    // each chunk placed in what this run printed (runtime/stop-replay.ts).
     const __queueRpcWrite = (method, bytes) => {
+      const __chunk = globalThis.__nimbusStopReplay.write(method, bytes);
+      if (__chunk === null) return;
       __rpcWriteCount++;
       const __task = __rpcWriteChain
-        .then(() => __supervisor[method](bytes))
-        .catch((e) => __onRpcDrop(bytes.byteLength, e));
+        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
+        .then(() => globalThis.__nimbusStopReplay.acked(__chunk))
+        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
     };
@@ -1168,6 +1219,20 @@ ${RESIDENCY_MISS_REPORT}
     const __nimbusHeldWithoutHandles = Array.isArray(argv)
       && argv.some((__arg) => __arg === "--watch" || __arg === "--inspect-brk");
     let __nimbusEndedAtBoot = false;
+    // A resident whose launcher writes its stdin takes what has arrived
+    // before the entry runs, and a boot after a stop takes all of it (it has
+    // ended), for its synchronous reads of fd 0. Any other resident's stdin
+    // is read only as the program reads it: an attached one's carries the
+    // terminal's resizes and signals too.
+    if (__startArgs && __startArgs.stdinWriter) await __nimbusPrepareStdin();
+    // From here on the program runs. Its boot can stop while stdin can still
+    // come short of a read, when its launcher writes that stdin
+    // (FacetManager._residentLaunchBody); nothing else would ever end it.
+    globalThis.__nimbusStopReplay.arm(
+      __nimbusStdinCanStop() && !!(__startArgs && __startArgs.stdinWriter),
+      attachedTty ? "runs attached to a terminal, which Nimbus does not run again"
+        : "is a server started from the terminal, whose stdin nothing writes",
+    );
     try {
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
@@ -1336,6 +1401,9 @@ export class NimbusProcess extends DurableObject {
     // starts from the same payload startProcess would have used.
     if (startArgs) __nimbusStartArgs = startArgs;
     await __nimbusEnsureStarted(this.env, this.ctx, __nimbusStartArgs);
+    // Booted: what it does from now on is a running server's, and the
+    // coordinator boots a resident again only while it is starting.
+    globalThis.__nimbusStopReplay.unreplayable("had already started, and Nimbus runs a resident again only while it boots");
     if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
     // What this facet's database holds now, and the cap its store keeps
     // under, for the session's storage ledger (N18).
@@ -3835,11 +3903,13 @@ export class FacetManager {
     debugEnabled = false;
     processRpcResources = new Map();
     /**
-     * The session's pipe read-ahead budget (stdin-read.ts), held here because a
-     * read ahead is held in this Durable Object, whichever launch holds it. One
-     * byte over the bound shows whether a pipe ended exactly there.
+     * The session's budget for stdin held while a run is stopped (stdin-read.ts,
+     * _awaitStoppedInput), held here because the bytes are held in this
+     * Durable Object, whichever process waits for them.
      */
     stdinReadAhead = new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1);
+    /** Per one-shot that can stop at a read of stdin: its output across its runs (gateOutput). */
+    outputGates = new Map();
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
@@ -5009,8 +5079,7 @@ export class FacetManager {
         }
         // Started with the launch, so a writer that has finished (echo, head) has
         // delivered all of it, and its end, by the time the program starts: the
-        // guest takes what is queued then, or all of it when the pipe ended
-        // within the read ahead (stdinWhole), for a synchronous read of fd 0
+        // guest takes what is queued then, for its synchronous reads of fd 0
         // (node-shims.ts, __nimbusPrepareStdin).
         const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
         const diagOn = isExecDiagEnabled();
@@ -5072,14 +5141,43 @@ export class FacetManager {
         // same kill, forwarded onto the controller the runOnce request carries.
         const onShellAbort = () => abortController.abort();
         opts.signal?.addEventListener('abort', onShellAbort, { once: true });
+        // A process whose stdin a read could find short can stop at that read and
+        // run again (runtime/stop-replay.ts): its input channel, if it has one,
+        // and the gate that delivers its output once across its runs.
+        const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
+        const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
+        if (stoppable)
+            this.outputGates.set(entry.pid, new ReplayOutputGate());
+        const held = this.stdinReadAhead.open();
         try {
             // A one-shot holds its module map and what it was seen to read (both in
             // the bundle), and plans no listing of the namespace (§2.8: the
             // principal's image is where that comes from). What its closure reads
             // synchronously by a path its code spells out needs no listing, and is
             // its data plan.
-            const dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-            const result = await this._execViaLoader(code, opts, entry, vfsState, dataPlan, abortController.signal, pacer, diagSink);
+            let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+            let launch = opts;
+            let result;
+            for (let stops = 0;; stops++) {
+                const outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, abortController.signal, pacer, diagSink);
+                if (!('stop' in outcome)) {
+                    result = outcome;
+                    break;
+                }
+                const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held);
+                if ('exit' in resumed) {
+                    result = resumed.exit;
+                    break;
+                }
+                launch = { ...launch, ...resumed.next };
+                // The stopped run's module map was released once it loaded, unless
+                // the prefetch cache keeps it: the next run builds it again, a hit
+                // when nothing it holds has changed since.
+                if (vfsState.generatedSourcesReleased) {
+                    vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
+                    dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                }
+            }
             await this._recordLaunchLearning(vfsState.bundleKey, {
                 code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
             }).catch((error) => this._learningLost(entry.pid, error));
@@ -5130,7 +5228,133 @@ export class FacetManager {
             opts.signal?.removeEventListener('abort', onShellAbort);
             pacer.settle();
             stdinPump?.stop();
+            held.give();
+            if (stoppable)
+                this.outputGates.delete(entry.pid);
         }
+    }
+    /**
+     * A one-shot stopped at a synchronous read of stdin that needs input not
+     * there yet (runtime/stop-replay.ts): deliver what its record carries of
+     * its output, wait for the input the read needs (the end of stdin, or any of
+     * it), hand the input back to the channel with what the run had taken, and
+     * say how to run it again; or how the process ends instead.
+     */
+    async _resumeStoppedRun(entry, stop, stops, inputChannel, launch, signal, held) {
+        const pid = entry.pid;
+        const gate = this.outputGates.get(pid);
+        for (const { stream, bytes } of gate?.stopped(stop) ?? [])
+            await this._deliverOutput(pid, stream, bytes);
+        const fail = async (message) => {
+            const text = message.endsWith('\n') ? message : `${message}\n`;
+            if (!launch.captureOutput)
+                await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(text));
+            return { exit: { exitCode: 1, stdout: '', stderr: launch.captureOutput ? text : '' } };
+        };
+        if (stop.kind === 'diverged') {
+            return fail(`node: this program printed something different when Nimbus ran it again to wait for stdin `
+                + `(${stop.stream} byte ${stop.at} differs from the run before), so it was ended; what it printed before its read `
+                + 'of stdin had already been shown. A program whose output before such a read depends on more than its input, '
+                + 'its clock and its random numbers cannot be run again: read process.stdin instead.');
+        }
+        if (stops + 1 >= STOP_LIMIT) {
+            return fail(`node: this program waited for stdin ${STOP_LIMIT} times through synchronous reads, each by running `
+                + 'it again from its start; Nimbus runs a program at most that many times. Read process.stdin instead.');
+        }
+        const replay = { run: stop.run + 1, tape: stop.tape, prefix: stop.prefix ?? null };
+        // A `< file` the stopped run read synchronously but the launch had not
+        // staged: the next run reads it ahead. Nothing is waited for.
+        if (launch.stdinFile)
+            return { next: { stdinFile: { ...launch.stdinFile, syncRead: true }, replay } };
+        const channel = inputChannel > 0 ? this._stdinChannel(inputChannel) : null;
+        if (channel === null)
+            return fail('node: a synchronous read of stdin stopped a process that has no input channel');
+        const until = stop.until === 'data' ? 'data' : 'end';
+        const input = await this._awaitStoppedInput(channel, until, signal, held);
+        if ('aborted' in input) {
+            this.processes.kill(pid);
+            return { exit: { exitCode: 130, stdout: '', stderr: '' } };
+        }
+        if ('signal' in input) {
+            const code = input.signal === 'SIGINT' ? 130 : input.signal === 'SIGKILL' ? 137 : 143;
+            return { exit: { exitCode: code, stdout: '', stderr: '' } };
+        }
+        if ('full' in input) {
+            return fail(`node: fs.readFileSync(0) waits for the end of stdin, and stdin passed ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB `
+                + `(the most a synchronous read holds, one budget across the session) without ending. Read process.stdin, `
+                + 'which takes it as it arrives.');
+        }
+        // What the stopped run had taken from the channel goes back first.
+        const taken = decodeBase64(stop.taken);
+        channel.unread([
+            ...(taken.byteLength > 0 ? [{ data: taken, ended: false }] : []),
+            ...input.packets,
+        ]);
+        return { next: { replay, stdinWhole: input.ended } };
+    }
+    /**
+     * The input a stopped run's read waits for, taken off its channel: until
+     * the channel ends (`end`), or until it holds any (`data`). Held against
+     * the session's budget, at most STDIN_SYNC_READ_BYTES. A terminating signal
+     * on the channel ends the wait, and so does the shell's abort or a kill.
+     */
+    async _awaitStoppedInput(channel, until, signal, held) {
+        const packets = [];
+        let bytes = 0;
+        const aborted = new Promise((resolve) => {
+            if (signal.aborted)
+                resolve('aborted');
+            else
+                signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+        });
+        for (;;) {
+            const packet = await Promise.race([channel.read(1000), aborted]);
+            if (packet === 'aborted')
+                return { aborted: true };
+            if (packet.signal === 'SIGINT' || packet.signal === 'SIGTERM' || packet.signal === 'SIGKILL')
+                return { signal: packet.signal };
+            const size = typeof packet.data === 'string' ? new TextEncoder().encode(packet.data).byteLength : packet.data.byteLength;
+            if (size > 0) {
+                const granted = bytes + size > STDIN_SYNC_READ_BYTES ? 0 : held.take(size);
+                if (granted < size) {
+                    held.give(granted);
+                    return { full: true };
+                }
+                bytes += size;
+            }
+            if (size > 0 || packet.resize || packet.signal)
+                packets.push(packet);
+            if (packet.ended)
+                return { packets, ended: true };
+            if (until === 'data' && bytes > 0)
+                return { packets, ended: false };
+        }
+    }
+    /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
+    _stdinChannel(pid) {
+        if (this.hooks.stdinChannel)
+            return this.hooks.stdinChannel(pid);
+        if (!this.processes.hasInput(pid))
+            return null;
+        return {
+            read: (waitMs) => this.processes.readInput(pid, waitMs),
+            unread: (packets) => this.processes.unreadInput(pid, packets),
+        };
+    }
+    /** A process's output, delivered as its own supervisor RPC delivers it. */
+    async _deliverOutput(pid, stream, bytes) {
+        if (this.hooks.deliverOutput)
+            await this.hooks.deliverOutput(pid, stream, bytes);
+        else
+            this.processes.appendOutputBytes(pid, stream, bytes);
+    }
+    /**
+     * A chunk a process printed, tagged with its run and its offset in what the
+     * run printed: the part to deliver (runtime/stop-replay.ts). A process with
+     * no gate cannot stop, and every chunk is delivered as it is.
+     */
+    gateOutput(pid, stream, data, at, run) {
+        return this.outputGates.get(pid)?.take(stream, data, at, run) ?? data;
     }
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
@@ -5231,8 +5455,9 @@ export class FacetManager {
             // or not. A `< file`: the file fd 0 is.
             stdinPid: opts.stdinPipe ? entry.pid : 0,
             ...(opts.stdinWhole ? { stdinWhole: true } : {}),
-            ...(opts.stdinSyncRead ? { stdinSyncRead: true } : {}),
             ...(opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
+            // A run after a stop: what the stopped run drew, and what it printed.
+            ...(opts.replay ? { replay: opts.replay } : {}),
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
             vfsCursor: vfsState.cursor,
@@ -5318,6 +5543,14 @@ export class FacetManager {
                     diagSink.runMs = Date.now() - __runStart;
                 return result;
             });
+        }
+        catch (error) {
+            // The run stopped itself with ctx.abort, at a synchronous read of stdin
+            // that has to wait (runtime/stop-replay.ts): its reason is the record.
+            const stop = stopRecordOf(error);
+            if (stop)
+                return { stop };
+            throw error;
         }
         finally {
             // A one-shot worker is unkeyed and cannot be re-resolved into a later
@@ -5712,16 +5945,17 @@ export class FacetManager {
      * decides anything about where a program runs.
      */
     async _startResidentProcess(pid, spec) {
+        const { run, ...process } = spec;
         const handle = await this.processFabric.startResidentProcess({
             pid,
-            workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
+            workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}${run !== undefined && run > 1 ? `:run${run}` : ''}`,
             onWriterActivated: (writerId) => {
                 this._activateProcessVfsWriter(pid, writerId);
             },
             onWriterRetired: (writerId) => {
                 this.vfs?.revokeAppendWriter(pid, writerId);
             },
-            ...spec,
+            ...process,
         });
         this._noteProcessPlacement(pid, handle);
         return handle;
@@ -6242,111 +6476,166 @@ export class FacetManager {
             const { [CODE_PACK_IMAGE]: codePackPath, ...vfsTextModules } = await this.imageStore.materialize(entry.pid, (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)]; })(), pacer);
             if (this.debugEnabled)
                 this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: images stored, starting the facet\n');
-            // Last gate before the facet exists. A launch now spans many turns, so
-            // a kill can land anywhere inside it; booting a process the table has
-            // already exited would leave a facet nothing owns, running against a
-            // pid the session has finished reporting on.
-            this._assertLaunchStillOwned(entry.pid);
-            handle = await this._startResidentProcess(entry.pid, {
-                // The attached-TTY runner holds startProcess open for the process's
-                // life; the server/watch runner returns once it is up.
-                startContract: opts.attachedTty ? 'lifetime' : 'boot',
-                startArgs: {
-                    pid: entry.pid, vfsCursor, dataPlan,
-                    ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
-                    ...(this.debugEnabled ? { diag: true } : {}),
-                },
-                storageBytes,
-                // A resident whose declared port is reserved binds the owner's
-                // durable slot — the same store a durable worker spawn takes — so the
-                // reservation's durability reaches this process's storage too.
-                ...(durableFacetName !== undefined
-                    ? { facet: { name: durableFacetName, durable: true } }
-                    : {}),
-                boot: {
-                    kind: 'code',
-                    code: {
-                        compatibilityDate: CF_COMPAT_DATE,
-                        compatibilityFlags: [...GUEST_COMPAT_FLAGS],
-                        mainModule: 'worker.js',
-                        // Only fixed-size assets of the worker's own ride by value: the
-                        // sqlite sidecar and the staged bindings' trampoline.
-                        modules: staged ? { ...sqliteModules, [STAGED_BINDING_TRAMPOLINE_MODULE]: { wasm: staged.trampoline } } : sqliteModules,
-                        vfsTextModules,
-                        // Wasm images are read by path when the facet loads: the closure's
-                        // own, and the staged bindings' kernel-owned copies.
-                        vfsWasmModules: {
-                            ...Object.fromEntries(wasmImports.map((image) => [image.moduleName, image.vfsPath])),
-                            ...staged?.bindingPaths,
-                        },
-                        vfsCommonJsPacks: [codePackPath],
-                    },
-                },
-            });
-            // Ended while its facet was being created (a signal's default action).
-            if (this.processes.get(entry.pid)?.state !== 'running') {
-                handle.kill();
-                return;
-            }
-            if (diagOn) {
-                recordExecTelemetry({
-                    command,
-                    bundleMs,
-                    // Both spans are pure computation plus SQLite, and workerd's clock
-                    // only moves on I/O, so timing them here reads 0 however many
-                    // seconds they burn. The tail's per-turn cpuTime is the authority on
-                    // what a launch costs; what this record adds is what it is made OF.
-                    loadMs: 0,
-                    runMs: 0,
-                    drainPasses: 0,
-                    moduleMapBytes,
-                    // The side modules ARE the VFS bundle whenever the map was split;
-                    // when it stayed inline it rides inside worker.js and shows up only
-                    // in the total.
-                    bundleBytes,
-                    namespaceRefusals: 0,
-                    rpcWrites: 0,
-                    fsRpcReads: 0,
-                    cacheHit,
-                    turns: pacer.chunks,
-                    exitCode: 0,
-                    at: Date.now(),
-                });
-            }
-            this.trackProcessRpcResources(entry.pid, [handle], { releaseOnReportExit: !opts.attachedTty });
-            resourcesTracked = true;
-            // A node-shims resident: its __nimbusServeHttp takes the delivered ACQUIRE off each request.
-            this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
-            if (opts.attachedTty) {
-                this.ctx.waitUntil(handle.done
-                    .catch((e) => {
-                    // Teardown echo guard (same as the staged-artifact path): a pid
-                    // that is already terminal rejects the held-open call as an
-                    // ECHO of its own kill — don't double-record it as a code-1
-                    // failure.
-                    const current = this.processes.get(entry.pid);
-                    if (!current || current.state !== 'running')
-                        return;
-                    const reason = 'long-running node process failed: ' + errorMessage(e);
+            // A resident whose launcher writes its stdin can stop at a synchronous
+            // read of it while it boots, and boot again once the input is there
+            // (runtime/stop-replay.ts). One started from the terminal is awaited by
+            // the shell, which nothing could write past; an attached one's stdin is
+            // the terminal.
+            const stdinWriter = opts.stdinWriter === true && !opts.attachedTty;
+            if (stdinWriter)
+                this.outputGates.set(entry.pid, new ReplayOutputGate());
+            const heldStdin = this.stdinReadAhead.open();
+            let rerun = null;
+            try {
+                for (let stops = 0;; stops++) {
+                    // Last gate before the facet exists. A launch now spans many turns, so
+                    // a kill can land anywhere inside it; booting a process the table has
+                    // already exited would leave a facet nothing owns, running against a
+                    // pid the session has finished reporting on.
+                    this._assertLaunchStillOwned(entry.pid);
                     try {
-                        this.processes.exit(entry.pid, 1);
+                        handle = await this._startResidentProcess(entry.pid, {
+                            // The attached-TTY runner holds startProcess open for the process's
+                            // life; the server/watch runner returns once it is up.
+                            startContract: opts.attachedTty ? 'lifetime' : 'boot',
+                            startArgs: {
+                                pid: entry.pid, vfsCursor, dataPlan,
+                                ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
+                                ...(this.debugEnabled ? { diag: true } : {}),
+                                ...(stdinWriter ? { stdinWriter: true } : {}),
+                                // A boot after a stop: what the stopped boot drew and printed.
+                                ...(rerun ?? {}),
+                            },
+                            // Each boot after a stop is a fresh isolate: a keyed loader keeps the
+                            // stopped one's module state.
+                            ...(rerun !== null ? { run: rerun.replay.run } : {}),
+                            storageBytes,
+                            // A resident whose declared port is reserved binds the owner's
+                            // durable slot — the same store a durable worker spawn takes — so the
+                            // reservation's durability reaches this process's storage too.
+                            ...(durableFacetName !== undefined
+                                ? { facet: { name: durableFacetName, durable: true } }
+                                : {}),
+                            boot: {
+                                kind: 'code',
+                                code: {
+                                    compatibilityDate: CF_COMPAT_DATE,
+                                    compatibilityFlags: [...GUEST_COMPAT_FLAGS],
+                                    mainModule: 'worker.js',
+                                    // Only fixed-size assets of the worker's own ride by value: the
+                                    // sqlite sidecar and the staged bindings' trampoline.
+                                    modules: staged ? { ...sqliteModules, [STAGED_BINDING_TRAMPOLINE_MODULE]: { wasm: staged.trampoline } } : sqliteModules,
+                                    vfsTextModules,
+                                    // Wasm images are read by path when the facet loads: the closure's
+                                    // own, and the staged bindings' kernel-owned copies.
+                                    vfsWasmModules: {
+                                        ...Object.fromEntries(wasmImports.map((image) => [image.moduleName, image.vfsPath])),
+                                        ...staged?.bindingPaths,
+                                    },
+                                    vfsCommonJsPacks: [codePackPath],
+                                },
+                            },
+                        });
+                        // Ended while its facet was being created (a signal's default action).
+                        if (this.processes.get(entry.pid)?.state !== 'running') {
+                            handle.kill();
+                            return;
+                        }
+                        if (diagOn) {
+                            recordExecTelemetry({
+                                command,
+                                bundleMs,
+                                // Both spans are pure computation plus SQLite, and workerd's clock
+                                // only moves on I/O, so timing them here reads 0 however many
+                                // seconds they burn. The tail's per-turn cpuTime is the authority on
+                                // what a launch costs; what this record adds is what it is made OF.
+                                loadMs: 0,
+                                runMs: 0,
+                                drainPasses: 0,
+                                moduleMapBytes,
+                                // The side modules ARE the VFS bundle whenever the map was split;
+                                // when it stayed inline it rides inside worker.js and shows up only
+                                // in the total.
+                                bundleBytes,
+                                namespaceRefusals: 0,
+                                rpcWrites: 0,
+                                fsRpcReads: 0,
+                                cacheHit,
+                                turns: pacer.chunks,
+                                exitCode: 0,
+                                at: Date.now(),
+                            });
+                        }
+                        this.trackProcessRpcResources(entry.pid, [handle], { releaseOnReportExit: !opts.attachedTty });
+                        resourcesTracked = true;
+                        // A node-shims resident: its __nimbusServeHttp takes the delivered ACQUIRE off each request.
+                        this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
+                        if (opts.attachedTty) {
+                            this.ctx.waitUntil(handle.done
+                                .catch((e) => {
+                                // Teardown echo guard (same as the staged-artifact path): a pid
+                                // that is already terminal rejects the held-open call as an
+                                // ECHO of its own kill — don't double-record it as a code-1
+                                // failure.
+                                const current = this.processes.get(entry.pid);
+                                if (!current || current.state !== 'running')
+                                    return;
+                                const reason = 'long-running node process failed: ' + errorMessage(e);
+                                try {
+                                    this.processes.exit(entry.pid, 1);
+                                }
+                                catch { }
+                                try {
+                                    this._w5RecordTermination(entry.pid, 1, 'facet', reason);
+                                }
+                                catch { }
+                                try {
+                                    this.hooks.onExternalExit?.(entry.pid, 1, reason);
+                                }
+                                catch { }
+                            })
+                                .finally(() => {
+                                this.releaseProcessRpcResources(entry.pid);
+                            }));
+                        }
+                        else {
+                            await handle.booted();
+                        }
+                        break;
                     }
-                    catch { }
-                    try {
-                        this._w5RecordTermination(entry.pid, 1, 'facet', reason);
+                    catch (e) {
+                        // The boot stopped itself at a synchronous read of stdin that has to
+                        // wait: wait for the input, then boot it again.
+                        const stop = stdinWriter ? stopRecordOf(e) : null;
+                        if (stop === null)
+                            throw e;
+                        // The stopped facet is released whole (its slot, its name, its
+                        // storage) before the next boot takes a slot of its own.
+                        handle?.kill();
+                        await handle?.done.catch(() => { });
+                        handle = undefined;
+                        this.portRegistry.unregisterByPid(entry.pid);
+                        const waiting = new AbortController();
+                        this.processes.setTerminator(entry.pid, () => waiting.abort());
+                        const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin);
+                        if ('exit' in resumed) {
+                            if (this.processes.get(entry.pid)?.state === 'running') {
+                                this.processes.exit(entry.pid, resumed.exit.exitCode);
+                                try {
+                                    this.hooks.onExternalExit?.(entry.pid, resumed.exit.exitCode, 'stopped at a synchronous read of stdin');
+                                }
+                                catch { }
+                            }
+                            return;
+                        }
+                        rerun = { replay: resumed.next.replay, ...(resumed.next.stdinWhole ? { stdinWhole: true } : {}) };
                     }
-                    catch { }
-                    try {
-                        this.hooks.onExternalExit?.(entry.pid, 1, reason);
-                    }
-                    catch { }
-                })
-                    .finally(() => {
-                    this.releaseProcessRpcResources(entry.pid);
-                }));
+                }
             }
-            else {
-                await handle.booted();
+            finally {
+                heldStdin.give();
+                if (stdinWriter)
+                    this.outputGates.delete(entry.pid);
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
                 await this._registerResidentPort(entry.pid, opts.port);

@@ -750,8 +750,8 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
-    async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
-    async _rpcStderr(pid, data) { return _rpc._rpcStderr(this, pid, data); }
+    async _rpcStdout(pid, data, at, run) { return _rpc._rpcStdout(this, pid, data, at, run); }
+    async _rpcStderr(pid, data, at, run) { return _rpc._rpcStderr(this, pid, data, at, run); }
     async _rpcReportExit(pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
     async _rpcReportRuntimeCode(pid, entries, executedModules = [], dataReads = []) { return _rpc._rpcReportRuntimeCode(this, pid, entries, executedModules, dataReads); }
     // W3 emitters / external-exit / log janitor

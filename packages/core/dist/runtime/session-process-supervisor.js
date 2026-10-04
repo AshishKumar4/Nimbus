@@ -255,6 +255,10 @@ export class SessionProcessSupervisor {
     readInput(pid, waitMs) {
         return this.input.read(pid, waitMs);
     }
+    /** See ProcessInputStore.unread: input taken back to the front of the queue. */
+    unreadInput(pid, packets) {
+        this.input.unread(pid, packets);
+    }
     resize(pid, columns, rows) {
         return this.input.resize(pid, columns, rows);
     }
