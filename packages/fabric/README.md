@@ -390,6 +390,32 @@ and never `method.call(ep, request)`, which workerd refuses.
 
 Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.
 
+A classic Durable Object binding is a local namespace inside the inner
+Worker (`inner-do-env.ts`), because a namespace's API is synchronous and an
+RpcPromise cannot travel as an argument. `innerWorkerModules` makes an adapter
+the bundle's first import; it replaces `env.MY_DO` in the env every handler,
+entrypoint and object of the isolate sees, so
+`env.MY_DO.get(env.MY_DO.idFromName('x'))` needs no `await`. A stub is
+`new RpcStub(target)`, with a prototype shaped as a Durable Object stub's:
+an entrypoint of a dynamically-loaded Worker is not transferable, an RPC stub
+is. The target relays each member the caller reaches (a call, a read, or a
+path through both) to `NimbusDurableObjectNamespace.callOn` or `getOn`, and
+the session reaches it on the object's facet. The adapter also exports the
+build's class check, under a name the bundle never spells.
+tests/unit/wrangler-dev-do-rpc-workerd.mjs checks the whole stub surface
+against plain workerd.
+
+Limits, where a stub differs from Cloudflare's:
+
+- `typeof stub` is `'function'`, not `'object'`: the runtime makes every RPC
+  stub callable.
+- A Worker Loader env cannot carry a stub. `env.LOADER.load({ env: { S: stub } })`
+  throws "RpcStub cannot be serialized in this context because it is not a
+  persistent stub", where Cloudflare passes it. The loader shim keeps a
+  child's code and loads it again in each later request, so the child's env
+  can carry nothing made in one request; a namespace is refused there on
+  Cloudflare too.
+
 ## Measured platform limits
 
 Figures below come from production workerd, June to August 2026. The code

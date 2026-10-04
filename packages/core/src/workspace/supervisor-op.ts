@@ -234,7 +234,7 @@ export const SUPERVISOR_OPS = [
   'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
   'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
   'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
-  'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
+  'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
   'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
 ] as const;
 
@@ -310,6 +310,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cpWait: { method: '_rpcCpWait', args: [0,1,2,'pid'] },
   cpDispatchInline: { method: '_rpcCpDispatchInline', args: [0,1] },
   innerDoFetch: { method: '_rpcInnerDoFetch', args: [0] },
+  innerDoCall: { method: '_rpcInnerDoCall', args: [0] },
   fanoutExecute: { method: '_rpcFanoutExecute', args: [0,1,2] },
   processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
   hostProcess: { method: '_rpcHostProcess', args: [0,1] },

@@ -796,6 +796,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid, cred); }
   async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
+  async _rpcInnerDoCall(req: any): Promise<unknown> { return _rpc._rpcInnerDoCall(this as any, req); }
   async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid, cred); }
   async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
     return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);

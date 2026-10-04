@@ -26,6 +26,7 @@ import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
+import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -244,14 +245,9 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
     url: string;
     headers: [string, string][];
     body: ArrayBuffer | null;
-  }): Promise<{
-    status: number;
-    statusText: string;
-    headers: [string, string][];
-    body: ArrayBuffer | null;
-  }> {
-    const cls = getInnerDoClass(self.ctx.id.toString(), req.bindingName);
-    if (!cls) {
+  }): Promise<InnerDoFetchAnswer> {
+    const facet = innerDoFacet(self, req.bindingName, req.id);
+    if (!facet) {
       const body = enc.encode(
         `Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`,
       );
@@ -262,16 +258,6 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
         body: body.buffer as ArrayBuffer,
       };
     }
-    const facetName = 'innerDO-' + req.bindingName + '-' + req.id;
-    const ctx: DurableObjectState = self.ctx;
-    if (noteInnerDoFacetOpened(ctx, req.bindingName, facetName)) {
-      // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
-      ctx.facets.abort(facetName, new Error('Nimbus: this inner Durable Object restarts on the current build'));
-    }
-    const facet = ctx.facets.get(facetName, async () => ({
-      class: cls,
-      id: req.id, // FacetStartupOptions.id — inner DO sees this as its ctx.id
-    }));
     try {
       // Reconstruct the Request in the current context.
       const headers = new Headers();
@@ -306,6 +292,57 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
         body: body.buffer as ArrayBuffer,
       };
     }
+}
+
+/**
+ * The facet that runs the inner Worker's object `id` of binding
+ * `bindingName`, with the class the current build registered (none when
+ * the binding has none). Got in the calling RPC method's own context, so no
+ * cross-request I/O boundary is crossed.
+ */
+function innerDoFacet(self: RpcHost, bindingName: string, id: string): Fetcher | null {
+  const cls = getInnerDoClass(self.ctx.id.toString(), bindingName);
+  if (!cls) return null;
+  const facetName = 'innerDO-' + bindingName + '-' + id;
+  const ctx: DurableObjectState = self.ctx;
+  if (noteInnerDoFacetOpened(ctx, bindingName, facetName)) {
+    // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
+    ctx.facets.abort(facetName, new Error('Nimbus: this inner Durable Object restarts on the current build'));
+  }
+  return ctx.facets.get(facetName, async () => ({
+    class: cls,
+    id, // FacetStartupOptions.id — inner DO sees this as its ctx.id
+  }));
+}
+
+/**
+ * A member of the inner Worker's Durable Object, as a stub's caller reaches
+ * it on Cloudflare (NimbusDurableObjectNamespace.callOn and getOn): the names
+ * of `path`, from the object down, walked on the object's facet, then called
+ * with `args`, or read when `args` is null. It answers what the object
+ * answers, or rejects with what it throws (the error's type and message
+ * travel back).
+ */
+export async function _rpcInnerDoCall(self: RpcHost, req: {
+  bindingName: string;
+  id: string;
+  path: string[];
+  args: unknown[] | null;
+}): Promise<unknown> {
+  const facet = innerDoFacet(self, req.bindingName, req.id);
+  if (!facet) {
+    throw new Error(`Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`);
+  }
+  const names = [...req.path];
+  const last = names.pop();
+  if (last === undefined) throw new TypeError('Nimbus: an inner DO member needs a name');
+  // Each name is a wildcard property of the stub, pipelined: walked on it, and
+  // a method called on its holder, never through call().
+  const holder: object = names.reduce((at: object, name) => Reflect.get(at, name), facet);
+  const member: unknown = Reflect.get(holder, last);
+  if (req.args === null) return await member;
+  if (typeof member !== 'function') throw new TypeError(`Nimbus: inner DO member '${req.path.join('.')}' is not callable`);
+  return await Reflect.apply(member, holder, req.args);
 }
 
 export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> {

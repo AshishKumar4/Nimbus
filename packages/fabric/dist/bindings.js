@@ -27,6 +27,7 @@ import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { supervisorEntrypoint, supervisorEntrypointName, stagedBootAssembler } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
+import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 /**
  * `ctx.exports` — workerd's loopback bag, which the installed
@@ -586,46 +587,23 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     }
 }
 /**
- * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.
+ * The binding the loader passes for `env.MY_DO` (a WorkerEntrypoint of the
+ * session's isolate). The inner Worker does not use it as its namespace: a
+ * DurableObjectNamespace's API is synchronous, and this one's answers are
+ * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
+ * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * and stubs itself, and relays each member a stub's caller reaches, its
+ * fetch included, to `callOn` or `getOn`.
  *
- * Usage from inner Worker:
- *   const id   = await env.MY_DO.idFromName('x');   // AWAIT required
- *   const stub = env.MY_DO.get(id);
- *   await stub.fetch(request);
- *
- * IMPORTANT: unlike the real DurableObjectNamespace, idFromName /
- * newUniqueId / idFromString here return **Promises**, because they're
- * RPC-backed WorkerEntrypoint methods. The inner caller MUST `await`
- * them before passing the result to `.get()`. Workers RPC pipelining
- * does not currently allow passing an RpcPromise as a method argument
- * — the no-await form fails with:
- *     "Could not serialize object of type \"RpcPromise\"."
- *
- * Typical real-Worker code written for Cloudflare's synchronous
- * DurableObjectNamespace needs a one-word change (add `await`).
- *
- * idFromName produces prefix `name:` (deterministic FNV-style hash);
- * newUniqueId uses `uniq:` (random). The prefixes keep the two id
- * spaces distinct so a name-derived id can't collide with a random
- * one.
+ * `idFromName`, `newUniqueId`, `idFromString` and `get` answer as before, for
+ * a caller that awaits them. idFromName produces prefix `name:` (a
+ * deterministic hash, innerDoIdFromName); newUniqueId uses `uniq:`; the
+ * prefixes keep the two id spaces distinct.
  */
 export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
     /** Stable string id derived from a name. Hash is deterministic. */
     idFromName(name) {
-        // Simple 64-bit-ish FNV-style hash → hex. Stable across runs;
-        // distinct names → distinct strings; same name → same string.
-        let h1 = 0xdeadbeef ^ name.length;
-        let h2 = 0x41c6ce57 ^ name.length;
-        for (let i = 0; i < name.length; i++) {
-            const ch = name.charCodeAt(i);
-            h1 = Math.imul(h1 ^ ch, 2654435761);
-            h2 = Math.imul(h2 ^ ch, 1597334677);
-        }
-        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-        const high = (h1 >>> 0).toString(16).padStart(8, '0');
-        const low = (h2 >>> 0).toString(16).padStart(8, '0');
-        return 'name:' + high + low;
+        return innerDoIdFromName(name);
     }
     /** Fresh random id (matches DurableObjectNamespace.newUniqueId()). */
     newUniqueId() {
@@ -650,72 +628,105 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
             },
         });
     }
+    /**
+     * The member of object `id` at `path` (names from the object down), called
+     * with `args`: its answer, or what it throws, as the object gave it.
+     */
+    callOn(id, path, args) {
+        return innerDoMember(this.env, { ...(this.ctx.props || {}), id: String(id) }, path, args);
+    }
+    /** The member of object `id` at `path`, read. */
+    getOn(id, path) {
+        return innerDoMember(this.env, { ...(this.ctx.props || {}), id: String(id) }, path, null);
+    }
 }
 /**
- * A Durable-Object-namespace-stub for a specific id. Exposes fetch()
- * and will, if we later need it, forward RPC method calls through a
- * dispatch helper. The important invariant: EVERY call resolves the
- * inner DO class via getInnerDoClass() (./inner-do-registry.js) and
- * spins up / attaches to a facet via the supervisor's ctx.facets in
- * the SAME outer request context — never reusing stubs across requests.
+ * The session Durable Object, through the composed host namespace, and its
+ * one supervisorOp entrypoint: a host forwards envelopes, not private _rpc*
+ * methods. Throws when the binding cannot reach it; `release` drops the stub.
  */
-export class NimbusDOStub extends WorkerEntrypoint {
-    /**
-     * Resolve the supervisor DO through the composed host namespace and
-     * dispatch the innerDoFetch op through its one supervisorOp entrypoint —
-     * a host forwards envelopes, not private _rpc* methods.
-     */
-    async fetch(request) {
-        const props = this.ctx.props || {};
-        const supervisorDoId = String(props.supervisorDoId || '');
-        if (!supervisorDoId)
-            return new Response('Nimbus: supervisorDoId missing', { status: 500 });
-        const bindingName = String(props.bindingName || '');
-        const id = String(props.id || '');
-        let stub = null;
-        let dispatch;
-        try {
-            const ns = hostNamespaceBinding(this.env ?? {}, 'NimbusDOStub', props.route);
-            stub = ns.get(ns.idFromString(supervisorDoId));
-            dispatch = hostOpDispatch(stub, 'NimbusDOStub', props.route);
-        }
-        catch (e) {
-            disposeRpcResource(stub);
-            return new Response(`Nimbus: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
-        }
-        // Forward the full request (method, body, headers preserved) by
-        // serializing what's needed and reconstructing on the other side.
-        // The supervisor reconstitutes the Request from these fields and
-        // invokes the facet.
-        const body = request.method !== 'GET' && request.method !== 'HEAD'
-            ? await request.arrayBuffer()
-            : null;
+function supervisorOf(env, props) {
+    const supervisorDoId = String(props.supervisorDoId || '');
+    if (!supervisorDoId)
+        throw new Error('supervisorDoId missing');
+    let stub = null;
+    try {
+        const ns = hostNamespaceBinding(env ?? {}, 'NimbusDOStub', props.route);
+        stub = ns.get(ns.idFromString(supervisorDoId));
+        const held = stub;
+        return { dispatch: hostOpDispatch(stub, 'NimbusDOStub', props.route), release: () => disposeRpcResource(held) };
+    }
+    catch (e) {
+        disposeRpcResource(stub);
+        throw e;
+    }
+}
+function isInnerDoFetchAnswer(value) {
+    return value !== null && typeof value === 'object'
+        && 'status' in value && typeof value.status === 'number'
+        && 'statusText' in value && typeof value.statusText === 'string'
+        && 'headers' in value && Array.isArray(value.headers)
+        && 'body' in value && (value.body === null || value.body instanceof ArrayBuffer);
+}
+/**
+ * The inner object's fetch: the request forwarded whole (method, body,
+ * headers) as fields the session reconstructs, and its response rebuilt here
+ * from the fields the session answers. A binding that cannot reach the
+ * session answers 500.
+ */
+async function innerDoFetch(env, props, request) {
+    let supervisor;
+    try {
+        supervisor = supervisorOf(env, props);
+    }
+    catch (e) {
+        return new Response(`Nimbus: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+    }
+    try {
+        const body = request.method !== 'GET' && request.method !== 'HEAD' ? await request.arrayBuffer() : null;
         const headerList = [];
         request.headers.forEach((v, k) => { headerList.push([k, v]); });
-        try {
-            return await useRpcResource(dispatch({
-                op: 'innerDoFetch',
-                args: [{
-                        bindingName,
-                        id,
-                        method: request.method,
-                        url: request.url,
-                        headers: headerList,
-                        body,
-                    }],
-            }), (res) => {
-                if (!(res instanceof Response)) {
-                    return new Response('Nimbus: innerDoFetch returned an invalid result', { status: 502 });
-                }
-                return new Response(res.body, {
-                    status: res.status,
-                    statusText: res.statusText,
-                    headers: res.headers,
-                });
-            });
-        }
-        finally {
-            disposeRpcResource(stub);
-        }
+        return await useRpcResource(supervisor.dispatch({
+            op: 'innerDoFetch',
+            args: [{ bindingName: String(props.bindingName || ''), id: String(props.id || ''), method: request.method, url: request.url, headers: headerList, body }],
+        }), (res) => {
+            if (!isInnerDoFetchAnswer(res)) {
+                return new Response('Nimbus: innerDoFetch returned an invalid result', { status: 502 });
+            }
+            return new Response(res.body, { status: res.status, statusText: res.statusText, headers: res.headers });
+        });
+    }
+    finally {
+        supervisor.release();
+    }
+}
+/**
+ * A member of the inner object, called with `args` or read (`args` null): the
+ * session reaches it on the object's facet and answers what it answered (a
+ * stub, function or stream travels as one) or rejects with what it threw,
+ * type and message kept.
+ */
+async function innerDoMember(env, props, path, args) {
+    const supervisor = supervisorOf(env, props);
+    try {
+        return await supervisor.dispatch({
+            op: 'innerDoCall',
+            args: [{ bindingName: String(props.bindingName || ''), id: String(props.id || ''), path, args }],
+        });
+    }
+    finally {
+        supervisor.release();
+    }
+}
+/**
+ * A Durable-Object-namespace-stub for a specific id, for a caller of the
+ * binding's own `get`: its fetch. The important invariant: EVERY call
+ * resolves the inner DO class via getInnerDoClass() (./inner-do-registry.js)
+ * and spins up / attaches to a facet via the supervisor's ctx.facets in the
+ * SAME outer request context — never reusing stubs across requests.
+ */
+export class NimbusDOStub extends WorkerEntrypoint {
+    async fetch(request) {
+        return innerDoFetch(this.env, this.ctx.props || {}, request);
     }
 }

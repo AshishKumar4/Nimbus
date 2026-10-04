@@ -40,6 +40,35 @@ below.
   so a program cannot end it. It needs `node:worker_threads` (Bun and Node).
   Each run takes about 16 ms more to start, and each synchronous filesystem
   call about 0.1 ms more.
+- Under `wrangler dev`, a Worker calls a classic Durable Object binding as on
+  Cloudflare. `env.P.get(env.P.idFromName('x')).hello()` threw "Could not
+  serialize object of type "RpcPromise"": `env.P` was a WorkerEntrypoint, so
+  `idFromName` answered an RpcPromise that `get()` could not take, and its
+  stub had no method but `fetch`. Now the bundle's first import replaces
+  `env.P`, in the env every handler, entrypoint and object of the Worker's
+  isolate sees, with a local namespace: ids and stubs are made at once, and
+  a stub is an RPC stub of a local target that relays each member its caller
+  reaches (a call, a read, a path through both, fetch included) to the
+  session, which reaches it on the object's facet. Checked against plain
+  workerd with a real namespace, Nimbus answers the same for calls,
+  arguments and answers, a thrown error, pipelining, KV and SQL storage, the
+  object's env, getters (`await stub.value`, `stub.obj.nested.y`,
+  `stub.obj.f()`), `Object.keys` of a namespace, id and stub, RpcTargets,
+  stubs (an object's own included) and functions passed and returned,
+  streams and responses returned, dup, dispose, `using`, a namespace refused
+  in a Worker Loader env, default exports whose fetch is on the prototype or
+  not enumerable, a Worker that exports `NimbusDurableObjectClasses` itself,
+  and what RPC does not reach: Symbol keys, `constructor`, `__proto__`, a
+  private field, `then` on a member, and the stub's tag ("[object
+  DurableObject]"). Two differences remain, documented as limits in the
+  fabric README: `typeof stub` is 'function', and a Worker Loader env cannot
+  carry a stub ("RpcStub cannot be serialized in this context because it is
+  not a persistent stub"), since Nimbus's loader loads a child again in each
+  later request. The Worker is loaded once, with its full env, and a binding
+  whose class it does not export fails the build (the check runs the
+  Worker's module code, so an error there is the build's too); before, a
+  probe load without env came first, and a missing class failed only the
+  object's first call.
 
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),

@@ -18,4 +18,9 @@
  * esbuild-bundled worker ever needs this.
  */
 export declare const ESBUILD_NAME_GLOBAL_SHIM = "if (typeof globalThis.__name !== \"function\") {\n  globalThis.__name = (target, value) => Object.defineProperty(target, \"name\", { value, configurable: true });\n}";
+/**
+ * The same helper, declared for a module we generate whole (it owns its
+ * scope, so the binding stays in it and the guest's global is untouched).
+ */
+export declare const ESBUILD_NAME_MODULE_SHIM = "const __name = (target, value) => Object.defineProperty(target, \"name\", { value, configurable: true });";
 //# sourceMappingURL=esbuild-facet-shim.d.ts.map
