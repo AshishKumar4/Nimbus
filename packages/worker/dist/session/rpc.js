@@ -29,7 +29,7 @@ import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom } from '@nimbus-sh/fabric/budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -1288,9 +1288,15 @@ export async function _rpcCpKill(self, childPid, signal) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.kill(childPid, signal);
 }
-export async function _rpcCpWait(self, childPid, waitMs, acquire, pid) {
+/** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
+export async function _rpcCpBlocked(self, pid, blocked) {
+    if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running')
+        return;
+    setProcessBlocked(self.ctx, pid, blocked === true);
+}
+export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
     const fpm = self._ensureFacetProcessManager();
-    const status = await fpm.wait(childPid, waitMs);
+    const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
 // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────

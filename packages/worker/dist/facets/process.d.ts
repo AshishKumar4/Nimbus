@@ -94,6 +94,15 @@ interface ChildEntry {
     killed: boolean;
     /** The errno code of a spawn that failed: the child never ran (EAGAIN: no room to start it). */
     spawnError: string | null;
+    /**
+     * The child has started: its runner admitted it (a facet program, once
+     * its launch is let in on the Dynamic Worker ledger) or began it (a
+     * builtin, a shell line). Until then it is pending, and may yet be
+     * refused (spawnError). A parent's ChildProcess emits 'spawn' on this.
+     */
+    started: boolean;
+    /** Woken when the child starts, or ends, whichever is first. */
+    startWaiters: Array<() => void>;
     exitWaiters: Array<(r: ChildExitStatus) => void>;
 }
 /**
@@ -106,6 +115,8 @@ export interface ChildExitStatus {
     exitCode: number | null;
     signal: string | null;
     spawnError?: string;
+    /** Not done, but started: what a wait that asked to hear of the start answers. */
+    started?: boolean;
 }
 export interface SpawnReq {
     command: string;
@@ -142,6 +153,8 @@ export interface DrainResult {
 export interface OutputHooks {
     onStdout: (data: Uint8Array) => void;
     onStderr: (data: Uint8Array) => void;
+    /** The runner has started the program: a facet program's launch was let in (ChildEntry.started). */
+    onStarted?: () => void;
 }
 /** A text producer's edge onto the byte hooks. */
 export declare function textBytes(text: string): Uint8Array;
@@ -301,7 +314,9 @@ export declare class FacetProcessManager {
      * Long-poll wait. Returns immediately if already exited; otherwise
      * registers a waiter that resolves on the next exit-slot stamp.
      */
-    wait(childPid: number, waitMs?: number): Promise<ChildExitStatus>;
+    wait(childPid: number, waitMs?: number, knownStarted?: boolean): Promise<ChildExitStatus>;
+    /** The child has started (ChildEntry.started): wake whoever waits to hear of it. */
+    private _markStarted;
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */
     reap(maxAgeMs?: number): number;
     get stats(): {

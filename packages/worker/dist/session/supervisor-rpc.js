@@ -796,7 +796,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async cpKill(childPid, signal) {
         return this._call(this._op('cpKill', [childPid, signal]));
     }
-    async cpWait(childPid, waitMs, acquire) {
-        return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+    /**
+     * The child's end; with `knownStarted` false, also its start, as soon as
+     * it comes (`started`), for a parent that emits 'spawn' on it.
+     */
+    async cpWait(childPid, waitMs, acquire, knownStarted) {
+        return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this._reportingPid() }));
+    }
+    /**
+     * This process says whether its only remaining work is waiting on its own
+     * children (the session's Dynamic Worker ledger tells a wait no release can
+     * satisfy by it: fabric budgets.ts setProcessBlocked).
+     */
+    async cpBlocked(blocked) {
+        return this._call(this._op('cpBlocked', [blocked === true], { pid: this._pid() }));
     }
 }

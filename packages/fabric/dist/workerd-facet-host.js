@@ -15,7 +15,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginAdmittedFetch, beginLoaderFetch, beginLoaderFetchWhenFree, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
 export function getNimbusCtxExports() {
@@ -432,13 +432,13 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
     // parent's children, a shell's background jobs) runs as wide as the limit
     // and no wider, and holds at most that many maps at once. The run's own
     // abort (a kill, Ctrl-C) ends the wait, and so does the ledger when room
-    // can never come, every holder waiting on a descendant of its own that
-    // waits here (DynamicWorkerDeadlockError, EAGAIN). Bracketed, never
+    // can never come, every holder blocked on children that wait here
+    // (DynamicWorkerDeadlockError, EAGAIN). Bracketed, never
     // wrapped: see beginLoaderFetch for the measured DO-poisoning hazard, and
     // the pipelined-`fetch.call` note below for its sibling.
     // A run inside an admitted launch (withLaunchAdmission) is that launch's
-    // worker, already let in.
-    const endFetch = beginAdmittedFetch(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
+    // worker, already let in (claimAdmission), whatever pid it runs as.
+    const endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
         signal: params.request.signal,
         process: { pid: params.pid, ancestors: params.ancestors },
     });

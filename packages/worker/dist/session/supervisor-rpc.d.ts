@@ -484,12 +484,23 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         stderrClosed: boolean;
     }>;
     cpKill(childPid: number, signal: string): Promise<boolean>;
-    cpWait(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
+    /**
+     * The child's end; with `knownStarted` false, also its start, as soon as
+     * it comes (`started`), for a parent that emits 'spawn' on it.
+     */
+    cpWait(childPid: number, waitMs: number, acquire?: FsAcquireArgs, knownStarted?: boolean): Promise<{
         done: boolean;
         exitCode: number | null;
         signal: string | null;
         spawnError?: string;
+        started?: boolean;
         acquired?: VfsDeliveredAcquire;
     }>;
+    /**
+     * This process says whether its only remaining work is waiting on its own
+     * children (the session's Dynamic Worker ledger tells a wait no release can
+     * satisfy by it: fabric budgets.ts setProcessBlocked).
+     */
+    cpBlocked(blocked: boolean): Promise<void>;
 }
 //# sourceMappingURL=supervisor-rpc.d.ts.map

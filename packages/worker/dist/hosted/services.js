@@ -205,7 +205,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             // aborting ctx.signal still reaches it.
             self.processes.setTerminator(payload.processPid, () => ac.abort());
             try {
-                const code = await withLaunchAdmission(runtimeContext.ctx, { pid: payload.processPid, ancestors: self.processes.ancestorsOf(payload.processPid) }, ac.signal, () => cmd(ctx));
+                const code = await withLaunchAdmission(runtimeContext.ctx, { pid: payload.processPid, ancestors: self.processes.ancestorsOf(payload.processPid) }, ac.signal, () => { hooks.onStarted?.(); return cmd(ctx); });
                 return typeof code === 'number' ? code : 0;
             }
             catch (e) {

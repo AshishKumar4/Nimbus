@@ -23,8 +23,9 @@
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
- *   - supportsBinSpawn: true for node (the .bin handler propagates
- *     a callerPid); other runtimes use a plain spawn flow.
+ *   - supportsBinSpawn: true for node and bun (a .bin handler, the
+ *     child_process broker or a background job propagates a callerPid);
+ *     other runtimes use a plain spawn flow.
  *
  * Anti-requirements observed
  * ──────────────────────────

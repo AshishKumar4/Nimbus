@@ -160,8 +160,10 @@ export class FacetProcessManager {
         // Recursion-depth cap (env-propagated).
         const depthIn = parseInt(req.env?.NIMBUS_CP_DEPTH || '0', 10) || 0;
         if (depthIn >= CHILD_PROCESS_MAX_DEPTH) {
-            throw new Error(`EAGAIN: child_process spawn depth ${depthIn} exceeds ` +
-                `CHILD_PROCESS_MAX_DEPTH=${CHILD_PROCESS_MAX_DEPTH}`);
+            // A spawn at a process limit: the parent's ChildProcess reports it as
+            // Node does (code and errno ride across RPC).
+            throw Object.assign(new Error(`EAGAIN: child_process spawn depth ${depthIn} exceeds ` +
+                `CHILD_PROCESS_MAX_DEPTH=${CHILD_PROCESS_MAX_DEPTH}`), { code: 'EAGAIN', errno: -11 });
         }
         const childEnv = {
             ...req.env,
@@ -192,6 +194,8 @@ export class FacetProcessManager {
             signal: null,
             killed: false,
             spawnError: null,
+            started: false,
+            startWaiters: [],
             exitWaiters: [],
         };
         this.children.set(pid, child);
@@ -234,6 +238,7 @@ export class FacetProcessManager {
      */
     async _dispatch(child, kind, req) {
         if (kind === 'unknown') {
+            this._markStarted(child);
             this._appendText(child, 2, `${req.command}: command not found\n`);
             this._stampExit(child, 127, null);
             return;
@@ -241,8 +246,13 @@ export class FacetProcessManager {
         const hooks = {
             onStdout: (d) => this._appendOutput(child, 1, d),
             onStderr: (d) => this._appendOutput(child, 2, d),
+            onStarted: () => this._markStarted(child),
         };
         const cwd = String(req.cwd || '/home/user');
+        // A builtin or a shell line starts as it is dispatched; a facet program
+        // once its launch is let in (hooks.onStarted).
+        if (kind !== 'facet-direct')
+            this._markStarted(child);
         if (kind === 'pure-builtin') {
             const stdin = await this._drainStdinForBuiltin(child);
             try {
@@ -630,26 +640,45 @@ export class FacetProcessManager {
      * Long-poll wait. Returns immediately if already exited; otherwise
      * registers a waiter that resolves on the next exit-slot stamp.
      */
-    async wait(childPid, waitMs = WAIT_MAX_MS) {
+    async wait(childPid, waitMs = WAIT_MAX_MS, knownStarted = true) {
         const child = this.children.get(childPid);
         if (!child) {
             return { done: true, exitCode: 1, signal: null };
         }
         if (child.exitCode !== null)
             return this._exitStatus(child);
+        // A caller that has not heard of the start (a parent's ChildProcess,
+        // which emits 'spawn' on it) is told of it as soon as it comes.
+        const startNews = () => ({ done: false, exitCode: null, signal: null, started: true });
+        if (!knownStarted && child.started)
+            return startNews();
         return new Promise((resolve) => {
-            const timer = setTimeout(() => {
-                const idx = child.exitWaiters.indexOf(wrapped);
-                if (idx >= 0)
-                    child.exitWaiters.splice(idx, 1);
-                resolve({ done: false, exitCode: null, signal: null });
-            }, Math.min(waitMs, WAIT_MAX_MS));
-            const wrapped = (r) => {
+            const settle = (r) => {
                 clearTimeout(timer);
+                const at = child.exitWaiters.indexOf(onExit);
+                if (at >= 0)
+                    child.exitWaiters.splice(at, 1);
+                const started = child.startWaiters.indexOf(onStart);
+                if (started >= 0)
+                    child.startWaiters.splice(started, 1);
                 resolve(r);
             };
-            child.exitWaiters.push(wrapped);
+            const timer = setTimeout(() => settle({ done: false, exitCode: null, signal: null }), Math.min(waitMs, WAIT_MAX_MS));
+            const onExit = (r) => settle(r);
+            const onStart = () => { if (child.exitCode === null)
+                settle(startNews()); };
+            child.exitWaiters.push(onExit);
+            if (!knownStarted)
+                child.startWaiters.push(onStart);
         });
+    }
+    /** The child has started (ChildEntry.started): wake whoever waits to hear of it. */
+    _markStarted(child) {
+        if (child.started)
+            return;
+        child.started = true;
+        for (const w of child.startWaiters.splice(0))
+            w();
     }
     // ── housekeeping ────────────────────────────────────────────────────────
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */

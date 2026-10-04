@@ -433,8 +433,8 @@ export interface OneShotParams {
     request: Request;
     /**
      * The pids `pid` descends from, nearest first. Its wait for a Dynamic
-     * Worker is refused rather than left to wait for good when every worker in
-     * flight is held by one of them waiting on it (DynamicWorkerDeadlockError).
+     * Worker may be the one refused when every worker in flight is held by a
+     * process blocked on its children (DynamicWorkerDeadlockError).
      */
     ancestors?: readonly number[];
     /**

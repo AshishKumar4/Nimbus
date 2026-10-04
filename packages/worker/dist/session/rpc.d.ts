@@ -431,7 +431,9 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
-export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
+/** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
+export declare function _rpcCpBlocked(self: RpcHost, pid: number, blocked: boolean): Promise<void>;
+export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
 /** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
 export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
 /** RPC: Read a file as string. Returns string or null. */
