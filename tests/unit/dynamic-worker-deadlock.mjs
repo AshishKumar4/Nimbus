@@ -1,29 +1,41 @@
 #!/usr/bin/env bun
 // A wait for a Dynamic Worker that no release can ever satisfy is refused,
 // and one that can still be satisfied keeps waiting. Told from explicit
-// state, never by a timeout or by ancestry alone: a worker is given back
-// when its holder ends, and a holder ends on its own unless it has said it
-// is blocked (setProcessBlocked: its only remaining work is waiting on its
-// own children, as its event loop knows). What has to hold:
+// state, never by a timeout or by ancestry alone. A process reports that
+// its only remaining work is waiting on its own children, and which
+// (setProcessBlocked); a report is current only while no news of those
+// children has been produced for it since, and only if it had seen every
+// news reply made for it (noteProcessNews, processNewsReply). A holder is
+// stuck when its current report waits only on children that are queued for
+// a worker or stuck themselves: a fixpoint over the wait-for graph. What has
+// to hold:
 //
-//   (1) at the limit, with every worker held by a blocked process (nine
+//   (1) at the limit, with every worker held by a stuck process (nine
 //       children of a parent, each doing nothing but wait on a grandchild of
-//       its own), the newest waiter that descends from a holder is refused
-//       with DynamicWorkerDeadlockError (EAGAIN, errno -11), holding nothing;
-//       the others keep waiting, and are let in, in order, as holders end;
+//       its own), the newest queued process a stuck holder waits on is
+//       refused with DynamicWorkerDeadlockError (EAGAIN, errno -11), holding
+//       nothing; the others keep waiting, and are let in, in order, as
+//       holders end;
 //   (2) a holder that is not blocked will end on its own, so nothing is
-//       refused, though every holder has a waiting descendant: children
-//       that each wait on a grandchild AND have a process.exit(0) scheduled
-//       (the reviewer's counterexample) wait, and are let in when one ends;
-//       a holder that unblocks (a timer set) withdraws the refusal's ground;
+//       refused, though every holder has a waiting descendant (children that
+//       also have a process.exit(0) scheduled); a holder that unblocks
+//       withdraws the refusal's ground;
 //   (3) nothing is refused while a hold no process owns (a pool's call) is
 //       in flight, nor while a fan-out's claim is held;
 //   (4) a one-shot run is such a waiter: refused, it rejects with the error
 //       and assembles nothing;
-//   (5) a holder's blocked state ends with its last hold.
+//   (5) a holder's report ends with its last hold;
+//   (6) a holder blocked on a child that is neither queued nor stuck (a
+//       `sleep 5` builtin, which runs without a worker) is not stuck, and
+//       neither is a parent waiting on it: nothing is refused until that
+//       child's exit has been heard and the holder reports again;
+//   (7) news of a child produced for a holder after its report withdraws the
+//       report, and a report that had not seen every news reply made for the
+//       holder is not taken.
 //
 // Before, every such wait waited for good; then (3160c492f..312210f89) a
-// wait was refused from ancestry alone, which refused (2).
+// wait was refused from ancestry alone, which refused (2); then
+// (34f5b1e0e) from blocked state alone, which refused (6) and (7).
 
 import assert from 'node:assert/strict';
 import {
@@ -35,6 +47,8 @@ import {
   dynamicWorkerHeadroom,
   isDynamicWorkerDeadlock,
   loaderLedgerStats,
+  noteProcessNews,
+  processNewsReply,
   setProcessBlocked,
 } from '../../packages/fabric/src/budgets.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -45,6 +59,11 @@ assert.equal(DO_DYNAMIC_WORKER_LIMIT, 10, 'the scenarios below fill a limit of 1
 let ctxCount = 0;
 const freshCtx = () => ({ id: { toString: () => `deadlock-${++ctxCount}` } });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Process `pid` reports it waits only on `waitsOn`, having seen `seen` news replies. */
+const block = (ctx, pid, waitsOn, seen = 0) => setProcessBlocked(ctx, pid, { blocked: true, seen, waitsOn });
+const unblock = (ctx, pid) => setProcessBlocked(ctx, pid, { blocked: false, seen: 0, waitsOn: [] });
+const children = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
 /** Parent 1 holds a worker, and so does each of its nine children, 2..10. */
 function fullOfAFamily(ctx) {
@@ -77,12 +96,12 @@ function grandchild(ctx, k, log) {
   const holds = fullOfAFamily(ctx);
   const log = [];
   const waits = [];
-  setProcessBlocked(ctx, 1, true); // the parent waits on its children
+  block(ctx, 1, children(2, 10)); // the parent waits on its children
   for (let k = 2; k <= 10; k++) {
     waits.push(grandchild(ctx, k, log));
     await tick();
     if (k < 10) assert.deepEqual(log, [], `with child ${k + 1} not yet blocked, every wait waits`);
-    setProcessBlocked(ctx, k, true); // child k now waits on its grandchild only
+    block(ctx, k, [100 + k]); // child k now waits on its grandchild only
     await tick();
   }
   assert.deepEqual(log, ['refused 110'], 'the last holder blocking makes it a deadlock: the newest waiter is refused');
@@ -110,7 +129,7 @@ function grandchild(ctx, k, log) {
   const ctx = freshCtx();
   const holds = fullOfAFamily(ctx);
   const log = [];
-  setProcessBlocked(ctx, 1, true);
+  block(ctx, 1, children(2, 10));
   // Every child waits on a grandchild of its own, but has a process.exit(0)
   // scheduled too: not blocked.
   const waits = [];
@@ -118,12 +137,12 @@ function grandchild(ctx, k, log) {
   await tick();
   assert.deepEqual(log, [], 'children with work of their own will end: every wait keeps waiting');
   // Eight of them have only their grandchild left; one still has its timer.
-  for (let k = 2; k <= 9; k++) setProcessBlocked(ctx, k, true);
+  for (let k = 2; k <= 9; k++) block(ctx, k, [100 + k]);
   await tick();
   assert.deepEqual(log, [], 'one holder not blocked is enough to keep waiting');
   // A blocked holder sets a timer: it unblocks, and blocking the last one is not a deadlock.
-  setProcessBlocked(ctx, 4, false);
-  setProcessBlocked(ctx, 10, true);
+  unblock(ctx, 4);
+  block(ctx, 10, [110]);
   await tick();
   assert.deepEqual(log, [], 'a holder that unblocked withdraws the ground for a refusal');
   // Child 4's timer fires: it exits and gives its worker back.
@@ -138,7 +157,8 @@ function grandchild(ctx, k, log) {
   const ctx = freshCtx();
   const holds = fullOfAFamily(ctx);
   holds.get(10)();
-  for (let k = 1; k <= 9; k++) setProcessBlocked(ctx, k, true);
+  block(ctx, 1, children(2, 10));
+  for (let k = 2; k <= 9; k++) block(ctx, k, [100 + k]);
   const pool = beginLoaderFetch(ctx, 'nfp:a-pool-call');
   const log = [];
   const waits = Array.from({ length: 8 }, (_, i) => grandchild(ctx, i + 2, log));
@@ -152,7 +172,8 @@ function grandchild(ctx, k, log) {
 {
   const ctx = freshCtx();
   const holds = new Map(Array.from({ length: 9 }, (_, i) => [i + 1, beginLoaderFetch(ctx, `run-${i + 1}`, undefined, i + 1)]));
-  for (let k = 1; k <= 9; k++) setProcessBlocked(ctx, k, true);
+  block(ctx, 1, children(2, 10));
+  for (let k = 2; k <= 9; k++) block(ctx, k, [100 + k]);
   const claim = claimDynamicWorkers(ctx, 1);
   assert.ok(claim);
   const log = [];
@@ -174,7 +195,11 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   const env = { LOADER: { get: world.loader.get, load() { loaded++; throw new Error('not reached'); } } };
   const host = processHostFor(ctx, env, () => ({ readFile() { throw new Error('no disk'); } }));
   const holds = fullOfAFamily(ctx);
-  for (let k = 1; k <= 10; k++) setProcessBlocked(ctx, k, true);
+  const log = [];
+  const waits = [];
+  for (let k = 2; k <= 9; k++) waits.push(grandchild(ctx, k, log));
+  block(ctx, 1, children(2, 10));
+  for (let k = 2; k <= 10; k++) block(ctx, k, [100 + k]);
   let assembled = 0;
   const run = (pid, ancestors) => host.runOnce({
     pid,
@@ -187,35 +212,89 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   await assert.rejects(run(110, [10, 1]), (error) => isDynamicWorkerDeadlock(error) && error.pid === 110 && error.code === 'EAGAIN');
   assert.equal(assembled, 0, 'the refused run assembled no module map');
   assert.equal(loaded, 0, 'and loaded no worker');
-  for (const [, end] of holds) end();
+  assert.deepEqual(log, [], 'the other grandchildren wait on');
+  await release(holds, waits);
 }
 
-// ── (5) a holder's blocked state ends with its last hold ────────────────────
+// ── (5) a holder's report ends with its last hold ──────────────────────────
 {
   const ctx = freshCtx();
   const first = beginLoaderFetch(ctx, 'run-7', undefined, 7);
   const second = beginLoaderFetch(ctx, 'run-7-b', undefined, 7);
-  setProcessBlocked(ctx, 7, true);
+  block(ctx, 7, [300]);
   first();
-  const holds = Array.from({ length: 9 }, (_, i) => beginLoaderFetch(ctx, `other-${i}`, undefined, 20 + i));
-  for (let i = 0; i < 9; i++) setProcessBlocked(ctx, 20 + i, true);
-  const log = [];
-  const waiting = beginLoaderFetchWhenFree(ctx, 'late', { process: { pid: 300, ancestors: [7] } }).then(
-    () => log.push('in'), (error) => log.push(error.code));
-  await tick();
-  assert.deepEqual(log, ['EAGAIN'], 'process 7, still holding one worker, is still blocked');
+  assert.deepEqual(loaderLedgerStats(ctx).blockedOn, { 7: [300] }, 'process 7, still holding a worker, still reports');
   second();
+  assert.deepEqual(loaderLedgerStats(ctx).blockedOn, {}, 'its last hold ended: its report with it');
   const again = beginLoaderFetch(ctx, 'run-7-c', undefined, 7);
-  const log2 = [];
-  beginLoaderFetchWhenFree(ctx, 'later', { process: { pid: 301, ancestors: [7] } }).then(
-    (end) => { log2.push('in'); end(); }, (error) => log2.push(error.code));
-  await tick();
-  assert.deepEqual(log2, [], 'once its last hold ended, a new hold of process 7 is not taken to be blocked');
+  assert.deepEqual(loaderLedgerStats(ctx).blockedOn, {}, 'a new hold of process 7 is not taken to be blocked');
   again();
-  await tick();
-  assert.deepEqual(log2, ['in']);
-  await waiting;
-  for (const end of holds) end();
+  block(ctx, 8, [1]);
+  assert.deepEqual(loaderLedgerStats(ctx).blockedOn, {}, 'nor is a report from a process that holds no worker taken');
 }
 
-console.log('ok - dynamic-worker-deadlock (refused only when every holder is blocked on its children, newest descendant first; a holder with work of its own keeps them waiting)');
+// ── (6) a child that runs without a worker: not stuck ──────────────────────
+{
+  const ctx = freshCtx();
+  const holds = fullOfAFamily(ctx);
+  const log = [];
+  const waits = [];
+  block(ctx, 1, children(2, 10));
+  for (let k = 2; k <= 10; k++) waits.push(grandchild(ctx, k, log));
+  for (let k = 2; k <= 9; k++) block(ctx, k, [100 + k]);
+  // Child 10 also waits on 500, `sleep 5`: a builtin, running in the session.
+  block(ctx, 10, [110, 500]);
+  await tick();
+  assert.deepEqual(log, [], 'child 10 waits on a child that will end: nothing is refused');
+  assert.deepEqual(loaderLedgerStats(ctx).blockedOn[10], [110, 500]);
+  // sleep exits: its exit is news for child 10, delivered in reply 1; child 10 reports again.
+  noteProcessNews(ctx, 10);
+  assert.equal(processNewsReply(ctx, 10), 1);
+  block(ctx, 10, [110], 1);
+  await tick();
+  assert.deepEqual(log, ['refused 110'], 'once it waits on its queued grandchild only, it is stuck: the refusal comes');
+  await release(holds, waits);
+}
+
+// ── (7) news withdraws a report; a stale report is not taken ───────────────
+{
+  const ctx = freshCtx();
+  const holds = fullOfAFamily(ctx);
+  const log = [];
+  const waits = [];
+  block(ctx, 1, children(2, 10));
+  for (let k = 2; k <= 10; k++) waits.push(grandchild(ctx, k, log));
+  for (let k = 2; k <= 9; k++) block(ctx, k, [100 + k]);
+  // Child 3's grandchild-to-be... child 3 hears output of another child of its own after reporting.
+  noteProcessNews(ctx, 3);
+  block(ctx, 10, [110]);
+  await tick();
+  assert.deepEqual(log, [], "news produced for child 3 withdrew its report: it may be runnable, so nothing is refused");
+  // The news is delivered in a reply numbered 1; a report that has not seen it is not taken.
+  assert.equal(processNewsReply(ctx, 3), 1);
+  block(ctx, 3, [103], 0);
+  await tick();
+  assert.deepEqual(log, [], 'a report that had not seen reply 1 is stale');
+  assert.equal(loaderLedgerStats(ctx).blockedOn[3], undefined);
+  block(ctx, 3, [103], 1);
+  await tick();
+  assert.deepEqual(log, ['refused 110'], 'the current one is taken, and the deadlock refused');
+  await release(holds, waits);
+}
+
+// ── (8) a parent waiting on a child no one can account for: not stuck ──────
+{
+  const ctx = freshCtx();
+  const holds = fullOfAFamily(ctx);
+  const log = [];
+  const waits = [];
+  // The parent also waits on 11, a child that exited and whose exit it has not heard yet.
+  block(ctx, 1, [...children(2, 10), 11]);
+  for (let k = 2; k <= 10; k++) waits.push(grandchild(ctx, k, log));
+  for (let k = 2; k <= 10; k++) block(ctx, k, [100 + k]);
+  await tick();
+  assert.deepEqual(log, [], 'the parent is not stuck, so its worker is not held for good: nothing is refused');
+  await release(holds, waits);
+}
+
+console.log('ok - dynamic-worker-deadlock (refused only when every holder is stuck on queued or stuck children, from current reports; a builtin child, news or a stale report keeps them waiting)');
