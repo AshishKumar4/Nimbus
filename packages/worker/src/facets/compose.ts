@@ -90,6 +90,7 @@ export interface FacetManagerHostHooks {
    */
   deliverOutput?: FacetManagerHooks['deliverOutput'];
   stdinChannel?: FacetManagerHooks['stdinChannel'];
+  rewindProcessFiles?: FacetManagerHooks['rewindProcessFiles'];
   onSpawn?: FacetManagerHooks['onSpawn'];
   resolveWorkerLaunch?: FacetManagerHooks['resolveWorkerLaunch'];
 }
@@ -185,6 +186,7 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
     requestLaunchTurn: deps.hooks.requestLaunchTurn,
     ...(deps.hooks.deliverOutput !== undefined ? { deliverOutput: deps.hooks.deliverOutput } : {}),
     ...(deps.hooks.stdinChannel !== undefined ? { stdinChannel: deps.hooks.stdinChannel } : {}),
+    ...(deps.hooks.rewindProcessFiles !== undefined ? { rewindProcessFiles: deps.hooks.rewindProcessFiles } : {}),
     ...(deps.hooks.onSpawn !== undefined ? { onSpawn: deps.hooks.onSpawn } : {}),
     ...(deps.hooks.resolveWorkerLaunch !== undefined
       ? { resolveWorkerLaunch: deps.hooks.resolveWorkerLaunch }

@@ -45,6 +45,7 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { connect as connectSocket } from 'cloudflare:sockets';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
@@ -58,6 +59,13 @@ import {
 import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
+import { REPLAY_FETCH_MAX_BYTES } from '../runtime/stop-replay.js';
+
+/** A response the session recorded for a run that can stop (stop-replay.ts RecordedResponse). */
+interface RecordedResponseShape { status: number; statusText: string; headers: [string, string][]; body: Uint8Array }
+
+/** The most of one response the outbound records; a larger one streams on, unrecorded. */
+const OUTBOUND_RECORD_MAX_BYTES = REPLAY_FETCH_MAX_BYTES;
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
@@ -172,7 +180,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     args: readonly unknown[] = [],
     extra: Omit<SupervisorOpEnvelope, 'op' | 'args'> = {},
   ): Promise<T> {
-    return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())({ op, args, ...extra }) as Promise<T>;
+    // Every call says which run of the process made it: a process that can
+    // stop at a read of stdin is answered for its current run only.
+    const run = (this.ctx.props as { writerId?: unknown } | undefined)?.writerId;
+    const stamped = typeof run === 'string' && run.length > 0 ? { run, ...extra } : extra;
+    return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())({ op, args, ...stamped }) as Promise<T>;
   }
 
   /** Stamp filesystem credentials from the binding, not the supplied arguments. */
@@ -274,7 +286,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }, (span) => idempotent(
       operation,
       () => this._host(),
-      (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope) as Promise<T>,
+      // Which run of the process sent it (see _op).
+      (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(writerId && envelope.run === undefined ? { ...envelope, run: writerId } : envelope) as Promise<T>,
       { ...policy, span },
     ));
   }
@@ -950,6 +963,145 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
    * asking. The caller's pid names whose credential answers it.
    */
+  // ── A process that can stop at a read of stdin ─────────────────────────
+  // (worker runtime/stop-replay.ts). Its run after a stop reached the read the
+  // run before stopped at; a TLS connection it opens through the session.
+
+  async replayBoundary(): Promise<void> {
+    return this._call(this._op('replayBoundary', [], { pid: this._pid() }));
+  }
+
+  async netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown> {
+    return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
+  }
+
+  /**
+   * The program's network, when this binding is its globalOutbound (a run
+   * that can stop): a read is recorded with its bytes and answered again to a
+   * run after a stop; anything else is something done outside the process.
+   */
+  async fetch(request: Request): Promise<Response> {
+    const method = request.method.toUpperCase();
+    const outbound = (action: string, payload: Record<string, unknown>) =>
+      this._call(this._op<unknown>('outbound', [action, payload], { pid: this._pid() }));
+    if ((method !== 'GET' && method !== 'HEAD') || request.headers.has('upgrade')) {
+      await outbound('effect', { what: `${method} ${request.url}` });
+      return fetch(request);
+    }
+    const headers = [...request.headers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const key = `${method} ${request.url} ${JSON.stringify(headers)}`;
+    const plan = await outbound('fetch', { key, what: `${method} ${request.url}` }) as
+      { replay: RecordedResponseShape } | { live: string } | { error: string };
+    if ('error' in plan) throw new Error(plan.error);
+    if ('replay' in plan) {
+      const r = plan.replay;
+      return new Response(method === 'HEAD' ? null : r.body, { status: r.status, statusText: r.statusText, headers: r.headers });
+    }
+    const ticket = plan.live;
+    let response: Response;
+    try {
+      response = await fetch(request);
+    } catch (error) {
+      await outbound('fetched', { ticket, result: { error: error instanceof Error ? error.message : String(error) } });
+      throw error;
+    }
+    // Read up to the bound: a body that fits is recorded and answered again;
+    // a larger one streams on, and the run can no longer be replayed.
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    let done = reader === undefined;
+    while (!done && reader) {
+      const next = await reader.read();
+      if (next.done) { done = true; break; }
+      chunks.push(next.value);
+      size += next.value.byteLength;
+      if (size > OUTBOUND_RECORD_MAX_BYTES) break;
+    }
+    const init = { status: response.status, statusText: response.statusText, headers: response.headers };
+    if (!done && reader) {
+      await outbound('fetched', { ticket, result: { tooLarge: true } });
+      const rest = reader;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) { for (const chunk of chunks) controller.enqueue(chunk); },
+        async pull(controller) {
+          const next = await rest.read();
+          if (next.done) controller.close(); else controller.enqueue(next.value);
+        },
+        cancel(reason) { return rest.cancel(reason); },
+      });
+      return new Response(body, init);
+    }
+    const body = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) { body.set(chunk, at); at += chunk.byteLength; }
+    await outbound('fetched', {
+      ticket,
+      result: { status: response.status, statusText: response.statusText, headers: [...response.headers], body },
+    });
+    return new Response(method === 'HEAD' ? null : body, init);
+  }
+
+  /**
+   * A connection the program opens. One its TLS shim opened is named
+   * `<token>.nimbus-net.invalid`: the session says where it goes, and this
+   * side makes the TLS session with the server when the program asks for it
+   * (netTls 'upgrade'), then carries the plaintext both ways. workerd's
+   * outbound connect cannot carry TLS itself ("Incoming CONNECT with TLS not
+   * supported", worker-entrypoint.c++), which is why TLS ends here. Any
+   * other connection is proxied as it is.
+   */
+  async connect(socket: Socket): Promise<void> {
+    const outbound = (action: string, payload: Record<string, unknown>) =>
+      this._call(this._op<unknown>('outbound', [action, payload], { pid: this._pid() }));
+    // A program can close its side before anything below is answered (it
+    // destroyed the socket at once): then nothing is waited for.
+    const gone = socket.closed.then(() => null, () => null);
+    const info = await Promise.race([socket.opened, gone]);
+    if (info === null) return;
+    const address = info.localAddress ?? '';
+    const named = /^([0-9a-f]{32})\.nimbus-net\.invalid:\d+$/.exec(address);
+    if (!named) {
+      await outbound('connect', { token: address });
+      const upstream = connectSocket(address, { allowHalfOpen: true });
+      await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => {});
+      return;
+    }
+    const token = named[1];
+    const target = await outbound('connect', { token }) as { host: string; port: number };
+    // null: the process ended before it asked for the TLS session.
+    const request = await Promise.race([outbound('awaitUpgrade', { token }) as Promise<{ servername?: string } | null>, gone]);
+    if (request === null) {
+      await socket.close().catch(() => {});
+      return;
+    }
+    let upstream: Socket;
+    try {
+      // TLS from the first byte: no plaintext was read, so the socket is free
+      // to be upgraded. A servername other than the host is the server's
+      // expected name (workerd's own node:tls does the same).
+      const address = `${target.host}:${target.port}`;
+      if (request.servername === undefined || request.servername === target.host) {
+        upstream = connectSocket(address, { secureTransport: 'on', allowHalfOpen: true });
+      } else {
+        upstream = connectSocket(address, { secureTransport: 'starttls', allowHalfOpen: true })
+          .startTls({ expectedServerHostname: request.servername });
+      }
+      await upstream.opened;
+    } catch (error) {
+      await outbound('upgraded', { token, result: { ok: false, error: error instanceof Error ? error.message : String(error) } });
+      await socket.close().catch(() => {});
+      return;
+    }
+    await outbound('upgraded', { token, result: { ok: true } });
+    // Both ways, with each side's end carried to the other (half-close), and
+    // backpressure as the streams give it.
+    await Promise.all([
+      socket.readable.pipeTo(upstream.writable).catch(() => upstream.close().catch(() => {})),
+      upstream.readable.pipeTo(socket.writable).catch(() => socket.close().catch(() => {})),
+    ]);
+  }
+
   async cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
     data: Uint8Array;
     ended: boolean;

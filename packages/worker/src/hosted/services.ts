@@ -47,7 +47,7 @@ export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
 }
 
 export type RuntimeServiceHost = Pick<SessionInternal,
-  '_cpRegistry' | '_ensureFacetProcessManager' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'shell' | 'sqliteFs' | 'terminal'
+  '_cpRegistry' | '_ensureFacetProcessManager' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'shell' | 'sqliteFs' | 'terminal'
 > & { webSocketRelay: WebSocketRelay | null };
 
 export interface RuntimeServiceContext {
@@ -120,6 +120,7 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
         hooks: {
           onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
           deliverOutput: (pid, stream, bytes) => (stream === 'stdout' ? self._rpcStdout(pid, bytes) : self._rpcStderr(pid, bytes)),
+          rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
           // Where cpReadStdin reads a pid's stdin (session/rpc.ts): the input
           // store when it has a channel there, else the broker's child queue.
           stdinChannel: (pid) => {

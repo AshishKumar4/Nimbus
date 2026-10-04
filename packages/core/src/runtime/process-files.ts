@@ -412,6 +412,18 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     }
   }
 
+  /** See NimbusFilesystemAuthority.rewindProcess. */
+  async rewindProcess(pid: number): Promise<void> {
+    if (this.retired.has(pid)) return;
+    this.listings.delete(pid);
+    const scope = this.processes.get(pid);
+    try {
+      if (scope) this.closeScope(scope);
+    } finally {
+      this.processes.delete(pid);
+    }
+  }
+
   /**
    * The process died without closing its descriptors: nothing is flushed,
    * and what that loses is reported, the descriptors whose buffered writes

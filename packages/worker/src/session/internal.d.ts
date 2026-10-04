@@ -193,6 +193,8 @@ export interface SessionInternal {
   // (runtime/stop-replay.ts), so one a stopped run already delivered is not
   // delivered again.
   _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+  /** Close a live process's descriptors (a run of it that stopped goes with them). */
+  supervisorRewindBridge(pid: number): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 
   // Programmatic sandbox SDK RPC.

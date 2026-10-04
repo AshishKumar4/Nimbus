@@ -28,8 +28,12 @@ const build = await Bun.build({
               JSON.stringify(new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname) + ';',
             loader: 'js',
           }
-        : { contents: 'export class WorkerEntrypoint {}', loader: 'js' });
+        : args.path === 'sockets'
+          ? { contents: 'export function connect() { throw new Error("no sockets in this test"); }', loader: 'js' }
+          : { contents: 'export class WorkerEntrypoint {}', loader: 'js' });
       builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'workers', namespace: 'test' }));
+      // The binding's outbound connect (SupervisorRPC.connect) is not driven here.
+      builder.onResolve({ filter: /^cloudflare:sockets$/ }, () => ({ path: 'sockets', namespace: 'test' }));
       builder.onResolve({ filter: /^@nimbus-sh\/platform\/composition\.js$/ }, () => ({
         // Bundled, not external: a bare specifier inside a data: URL module
         // has nothing to resolve against.
@@ -196,11 +200,14 @@ const INPUTS = {
   cancelHostProcess: ['wk'],
   hmrRelay: ['client-1', 'hmr-message'],
   hmrNextEvent: [25_000],
+  replayBoundary: [],
+  netTls: ['open', '0123456789abcdef0123456789abcdef', { host: 'db.example.test', port: 5432 }],
+  outbound: ['effect', { what: 'POST https://example.test/' }],
 };
 
 // The props the supervisor binding stamps — the envelope's identity fields
 // every arg spec reads from.
-const PROPS = { pid, writerId, mutationOwner, stream };
+const PROPS = { pid, writerId, run: writerId, mutationOwner, stream };
 
 // Cases derive from the canonical op list: a routed op carries the route the
 // table names — its delegate and its expected arguments — and a native op
@@ -462,7 +469,7 @@ for (const [op, route] of cases) {
       // The routed half is what the table names — drive it directly. The
       // caller owns the response — disposal happens in the RPC layer this
       // path bypasses (callers dispose via disposeRpcResource).
-      result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, mutationOwner });
+      result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, run: writerId, mutationOwner });
     }
   } catch (error) {
     if (!Object.hasOwn(NATIVE_REFUSED, op)) throw error;

@@ -6,42 +6,54 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a synchronous read of stdin waits for its input, as Node's does,
-  and only a read that runs waits. `fs.readFileSync(0)` (and
-  `/dev/stdin`) waits for the end of stdin and `fs.readSync(0, …)` for
-  any of it, so a child can print READY and have its parent write only
-  then, a parent can write in delayed pieces, and a readSync prompt answers
-  each line as it comes. A Nimbus process cannot block, so the run stops at
-  such a read (`ctx.abort`, which the program cannot catch), the session
-  waits for the input, and the program runs again from its start with it:
-  the second run replays what the first drew (its random numbers, clock
-  readings, random bytes and stdin reads) and the output it already
-  printed is checked and not shown twice. Every file read, stat, listing
-  and response body the first run saw is checked too: a file that changed
-  while it waited ends the second run loudly instead of letting it go on
-  with the new bytes, as does any other way the second run strays before
-  the read. Only Nimbus can stop a run this way: a program that forges a
-  stop is not believed. A program that never makes such
-  a read, or finds its input there when it does, runs once and is never
-  held: the guess about which programs read stdin, made from their code
-  before they ran, is gone, and with it the read ahead of their pipe. So
-  `sleep 30 | node -e "function u(){fs.readFileSync(0)} console.log(1)"`
-  prints at once, and a child whose code merely mentions such a read no
-  longer waits for a stdin its parent leaves open. A program that changed
-  something outside itself before the read (a file write that reached the
-  session, a spawn, a request other than GET) cannot be run again, and the
-  read fails with `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one
-  that read `process.stdin` as it arrived first; opening a socket (TLS,
-  net, an http client request) counts as such a change. What arrives on
-  stdin while the program runs reaches a later synchronous read, its end
-  too, so a program its parent finishes writing to before it reads never
-  has to stop. Ctrl-C during the wait ends the program with 130; a pipe
-  that passes 16 MiB without ending fails the read naming the bound, and
-  output a piped program printed before such a failure is still handed on.
+  and only a read that runs waits. `fs.readFileSync(0)` (and `/dev/stdin`)
+  waits for the end of stdin and `fs.readSync(0, …)` for any of it, so a
+  child can print READY and have its parent write only then, a parent can
+  write in delayed pieces, and a readSync prompt answers each line as it
+  comes. A Nimbus process cannot block, so the run stops at such a read
+  (`ctx.abort`, which the program cannot catch), the session waits for the
+  input, and the program runs again from its start with it: the second run
+  replays what the first drew (its random numbers, clock readings, random
+  bytes and stdin reads) and the output it already printed is checked and
+  not shown twice. What the session told the first run is journaled there,
+  out of the program's reach, and the second run must be told the same in
+  the same order: a file that changed while the program waited ends the
+  second run loudly instead of letting it go on with the new bytes, as
+  does any other way the second run strays before the read. Such a
+  program's network goes through the session too: a GET (`fetch`,
+  `https.get`) is recorded with its status, headers and bytes, and the
+  second run is handed the same response however it reads it; a request
+  still on its way at the stop is answered only past the read; and
+  `tls.connect`'s TLS session is made by the session (an option that needs
+  the program's own certificate or CA, or a socket it opened, fails by
+  name). Only Nimbus can stop a run this way: a program that forges a stop
+  is not believed. A program that never makes such a read, or finds its
+  input there when it does, runs once and is never held: the guess about
+  which programs read stdin, made from their code before they ran, is
+  gone, and with it the read ahead of their pipe. So `sleep 30 | node -e
+  "function u(){fs.readFileSync(0)} console.log(1)"` prints at once, and a
+  child whose code merely mentions such a read no longer waits for a stdin
+  its parent leaves open. A program that changed something outside itself
+  before the read (a file write that reached the session, a spawn, a
+  request other than GET) cannot be run again, and the read fails with
+  `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one that read
+  `process.stdin` as it arrived first; opening a connection counts as such
+  a change, however it was opened (node:net, node:tls, or workerd's own
+  socket class). What arrives on stdin while the program runs reaches a
+  later synchronous read, its end too, so a program its parent finishes
+  writing to before it reads never has to stop. Ctrl-C during the wait
+  ends the program with 130; a pipe that passes 16 MiB without ending
+  fails the read naming the bound, and output a piped program printed
+  before such a failure is still handed on, as is what it printed before a
+  second run that strays. A server the SDK starts with its stdin open
+  waits for what its caller writes the same way; one started from the
+  terminal answers such a read with `ERR_NIMBUS_SYNC_STDIN`, as nothing
+  can write its stdin while the shell waits for its boot.
 - Fixed: bytes a parent wrote to a child's stdin faster than the child
   read them were dropped past the child's 256 KiB queue, all of them when
   written before the child had started. A write waits for room now, as a
-  full pipe holds its writer. Resident processes (servers, attached
-  terminal programs) answer such a read with `ERR_NIMBUS_SYNC_STDIN`.
+  full pipe holds its writer, and goes in pieces no larger than the queue,
+  so one write larger than the queue gets through instead of never fitting.
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
   and `vite`'s "Root:" and "Config:" lines did too. They print the path

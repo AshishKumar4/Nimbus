@@ -112,11 +112,14 @@ import { LaunchLearningStore, type LaunchLearning, type LaunchReport } from './l
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import {
-  decodeBase64,
+  answerDigest,
   encodeBase64,
   OwnedPieces,
+  REPLAY_FETCH_MAX_BYTES,
   REPLAY_PREFIX_MAX_BYTES,
+  ReplayJournal,
   ReplayOutputGate,
+  type RecordedResponse,
   StdinTaken,
   STOP_LIMIT,
   STOP_REPLAY_SOURCE,
@@ -272,7 +275,21 @@ type ExecLaunchOpts = Parameters<FacetManager['exec']>[1] & {
   stdinAtLeast?: number;
   /** This run's stop nonce: a stop record counts only with it (stop-replay.ts stopRecordOf). */
   stopNonce?: string;
+  /** Its network goes through the session (SupervisorRPC as its globalOutbound). */
+  outbound?: boolean;
+  /**
+   * A digest of the module map the first run loaded: a run after a stop
+   * whose map differs (its code or data changed while it waited) does not run.
+   */
+  codeDigest?: { value: string | undefined };
 };
+
+/** A run after a stop would load another module map than the run before it. */
+class ReplayCodeChanged extends Error {
+  constructor() {
+    super('its code, or a file it holds in its module map, changed while it waited');
+  }
+}
 
 /** How a process stopped at a read of stdin runs again. */
 type StoppedRunNext = Pick<ExecLaunchOpts, 'stdinWhole' | 'stdinFile' | 'stdinAtLeast'> & { replay: ReplayLaunch };
@@ -918,13 +935,21 @@ export default {
     // ctx.abort ends the isolate's JavaScript where it stands, so the program
     // never sees the stop; the session believes a stop only with this run's
     // nonce, which only this module holds.
+    // ctx.abort is taken now, before the program runs, and handed a string.
+    const __ctxAbort = workerCtx && typeof workerCtx.abort === "function" ? workerCtx.abort : null;
+    const __apply = Reflect.apply;
     __nimbusStopReplay.begin({
       replay: args.replay || null,
-      abort: workerCtx && typeof workerCtx.abort === "function" ? (reason) => workerCtx.abort(reason) : null,
+      abort: __ctxAbort ? (reason) => __apply(__ctxAbort, workerCtx, [reason]) : null,
       captured: !!captureOutput || !workerEnv?.SUPERVISOR,
       // Read at a stop, after the run has printed (declared below).
       capturedText: () => ({ stdout, stderr }),
       nonce: args.stopNonce,
+      // Its network goes through the session, which records what it reads.
+      outbound: args.outbound === true,
+      // The session holds what it answers past the read the run before
+      // stopped at until the replay gets there.
+      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; if (typeof b === "function") Reflect.apply(b, __supervisor, []).catch(() => {}); },
     });
     // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
     const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
@@ -1043,8 +1068,6 @@ ${RESIDENCY_MISS_REPORT}
       // From here on the program runs: a stop is possible while stdin can
       // still come short of a read.
       __nimbusStopReplay.arm(__nimbusStdinCanStop());
-      // What it reads of the filesystem is checked against the run before it.
-      __nimbusObserveFs();
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
@@ -1410,11 +1433,14 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
     const __nimbusStdinAtLeast = Number((__startArgs && __startArgs.stdinAtLeast) || 0);
+    const __ctxAbort = workerCtx && typeof workerCtx.abort === "function" ? workerCtx.abort : null;
+    const __apply = Reflect.apply;
     __nimbusStopReplay.begin({
       replay: (__startArgs && __startArgs.replay) || null,
-      abort: workerCtx && typeof workerCtx.abort === "function" ? (reason) => workerCtx.abort(String((reason && reason.message) || reason)) : null,
+      abort: __ctxAbort ? (reason) => __apply(__ctxAbort, workerCtx, [reason]) : null,
       captured: !!captureOutput || !workerEnv?.SUPERVISOR,
       nonce: __startArgs && __startArgs.stopNonce,
+      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; if (typeof b === "function") Reflect.apply(b, __supervisor, []).catch(() => {}); },
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
@@ -1576,7 +1602,6 @@ ${RESIDENCY_MISS_REPORT}
       attachedTty ? "runs attached to a terminal, which Nimbus does not run again"
         : "is a server started from the terminal, whose stdin nothing writes",
     );
-    __nimbusObserveFs();
     try {
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
@@ -4364,6 +4389,12 @@ export interface FacetManagerHooks {
    */
   stdinChannel?: (pid: number) => StdinChannel | null;
   /**
+   * Close a live process's descriptors: a run of it that stopped at a read of
+   * stdin goes, and the next opens its own, numbered as the run before's
+   * were (runtime/stop-replay.ts).
+   */
+  rewindProcessFiles?: (pid: number) => Promise<void>;
+  /**
    * Arrange for `pumpResidentLaunches` to run on a fresh Durable Object turn.
    *
    * The session satisfies this with an alarm, which is the only primitive that
@@ -4686,6 +4717,27 @@ export class FacetManager {
   private readonly outputGates = new Map<number, ReplayOutputGate>();
   /** Per stdin channel of a process that can stop: what its current run took (stdinTakenBy). */
   private readonly stdinTaken = new Map<number, StdinTaken>();
+  /** Per process that can stop: what each of its runs was answered (journalCall). */
+  private readonly journals = new Map<number, ReplayJournal>();
+  /**
+   * Connections a process that can stop opened through the session, by the
+   * token its socket names (netTls, outboundCall): where to, and the upgrade
+   * rendezvous between the guest asking and the outbound doing it.
+   */
+  private readonly netTargets = new Map<string, {
+    pid: number;
+    host: string;
+    port: number;
+    registered: Promise<void>;
+    register: () => void;
+    /** What the program asked of its TLS session; null once the process has ended. */
+    asked: Promise<{ servername?: string } | null>;
+    ask: (request: { servername?: string } | null) => void;
+    answered: Promise<{ ok: boolean; error?: string }>;
+    answer: (result: { ok: boolean; error?: string }) => void;
+  }>();
+  /** A live fetch the outbound is making for a journaled answer: its result, by ticket. */
+  private readonly fetchTickets = new Map<string, { pid: number; deliver: (value: RecordedResponse | { error: string } | { tooLarge: true }) => void; done: Promise<unknown> }>();
   /**
    * The content-addressed boot-image store (fabric's image-store.ts),
    * writing through this session's kernel-credentialed VFS and rooted off the
@@ -6006,11 +6058,21 @@ export class FacetManager {
     const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
     const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
     const held = this.stdinReadAhead.open();
-    if (stoppable) this.outputGates.set(entry.pid, new ReplayOutputGate());
+    // A run after a stop that strays is ended here, as a kill ends one, but
+    // it is not a kill: the process fails, naming how it strayed.
+    const divergence = new AbortController();
+    if (stoppable) {
+      this.outputGates.set(entry.pid, new ReplayOutputGate());
+      this.journals.set(entry.pid, new ReplayJournal(() => {
+        this.outputGates.get(entry.pid)?.close();
+        divergence.abort();
+      }));
+    }
     if (inputChannel > 0) this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
     // Each run starts from the umask the process started with: a umask the
     // program set is its run's own.
     const startUmask = entry.cred.umask;
+    const runSignal = AbortSignal.any([abortController.signal, divergence.signal]);
     try {
       // A one-shot holds its module map and what it was seen to read (both in
       // the bundle), and plans no listing of the namespace (§2.8: the
@@ -6018,12 +6080,41 @@ export class FacetManager {
       // synchronously by a path its code spells out needs no listing, and is
       // its data plan.
       let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-      let launch: ExecLaunchOpts = { ...opts, stopNonce: crypto.randomUUID() };
+      // A stoppable run's network goes through the session (SupervisorRPC's
+      // fetch and connect), which records what it answers; its code is
+      // digested, so a run after a stop that would load other code does not.
+      let launch: ExecLaunchOpts = {
+        ...opts,
+        stopNonce: crypto.randomUUID(),
+        ...(stoppable ? { outbound: true, codeDigest: { value: undefined } } : {}),
+      };
       let result: FacetExecResult;
+      // What the session has of a captured run's output: the last stopped
+      // run's, until a run after it gets past the read it stopped at (N8).
+      let acceptedCapture: { stdout: string; stderr: string } = { stdout: '', stderr: '' };
+      const journal = this.journals.get(entry.pid);
       for (let stops = 0; ; stops++) {
-        const outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, abortController.signal, pacer, diagSink);
+        let outcome: FacetExecResult | { stop: StopRecord };
+        try {
+          outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, runSignal, pacer, diagSink);
+        } catch (error) {
+          const changed = error instanceof ReplayCodeChanged;
+          if (!changed && (!divergence.signal.aborted || abortController.signal.aborted)) throw error;
+          outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: changed ? error.message : journal?.diverged ?? errorMessage(error) } };
+        }
+        if (!('stop' in outcome) && journal?.diverged) {
+          outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: journal.diverged } };
+        }
         if (!('stop' in outcome)) { result = outcome; break; }
-        const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held);
+        // The session decides whether the run may go again: what it did
+        // outside itself is counted here, whatever the guest counted.
+        const refused = outcome.stop.kind === 'stdin' && journal ? journal.unreplayable : null;
+        if (outcome.stop.kind === 'stdin' && outcome.stop.captured) acceptedCapture = outcome.stop.captured;
+        journal?.stopped();
+        // The stopped run's descriptors go with it: the next run opens its
+        // own, numbered as the stopped run's were.
+        await this.hooks.rewindProcessFiles?.(entry.pid);
+        const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held, { accepted: acceptedCapture, refused });
         if ('exit' in resumed) { result = resumed.exit; break; }
         this.processes.setUmask(entry.pid, startUmask);
         launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
@@ -6092,7 +6183,12 @@ export class FacetManager {
       if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
       this.stdinTaken.delete(inputChannel);
       held.give();
-      if (stoppable) this.outputGates.delete(entry.pid);
+      if (stoppable) {
+        this.outputGates.delete(entry.pid);
+        this.journals.get(entry.pid)?.close();
+        this.journals.delete(entry.pid);
+        this._dropNetTargets(entry.pid);
+      }
     }
   }
 
@@ -6113,6 +6209,9 @@ export class FacetManager {
     launch: Pick<ExecLaunchOpts, 'captureOutput' | 'stdinFile'>,
     signal: AbortSignal,
     held: ReadAheadAccount,
+    // The captured output the session holds (the last stopped run's), and why
+    // the session refuses to run it again, when it does.
+    session: { accepted: { stdout: string; stderr: string }; refused: string | null } = { accepted: { stdout: '', stderr: '' }, refused: null },
   ): Promise<{ next: StoppedRunNext } | { exit: FacetExecResult }> {
     const pid = entry.pid;
     const taken = this.stdinTaken.get(inputChannel);
@@ -6122,10 +6221,10 @@ export class FacetManager {
     for (const { stream, bytes } of stopped.fresh) await this._deliverOutput(pid, stream, bytes);
     // Output a captured run printed before it stopped: the result of an exit
     // that does not run it again. A run that does run again prints it again.
-    const decoder = new TextDecoder();
-    const captured = launch.captureOutput && stop.captured
-      ? { stdout: decoder.decode(decodeBase64(stop.captured.stdout)), stderr: decoder.decode(decodeBase64(stop.captured.stderr)) }
-      : { stdout: '', stderr: '' };
+    // A run that strayed before the read is not its own: what the session
+    // holds is the run's before it (N8).
+    const captured = !launch.captureOutput ? { stdout: '', stderr: '' }
+      : stop.kind === 'stdin' && stop.captured ? stop.captured : session.accepted;
     const ends = (exitCode: number): { exit: FacetExecResult } => ({ exit: { exitCode, stdout: captured.stdout, stderr: captured.stderr } });
     const fail = async (message: string): Promise<{ exit: FacetExecResult }> => {
       const text = message.endsWith('\n') ? message : `${message}\n`;
@@ -6137,6 +6236,11 @@ export class FacetManager {
         + 'so it was ended; what it printed before its read of stdin had already been shown. A program whose path to such '
         + 'a read depends on more than its input, its clock, its random numbers and the files and responses it reads cannot '
         + 'be run again: read process.stdin instead.');
+    }
+    if (session.refused !== null) {
+      return fail(`ERR_NIMBUS_SYNC_STDIN: fs.readFileSync(0) has to wait for stdin, which is still open. Nimbus waits by running `
+        + `the program again from its start once the input is there, but this program ${session.refused}. Read process.stdin `
+        + 'instead: it takes the input as it arrives.');
     }
     if (stops + 1 >= STOP_LIMIT) {
       return fail(`node: this program waited for stdin ${STOP_LIMIT} times through synchronous reads, each by running `
@@ -6249,6 +6353,163 @@ export class FacetManager {
    */
   stdinTakenBy(pid: number): StdinTaken | undefined {
     return this.stdinTaken.get(pid);
+  }
+
+  /**
+   * A supervisor call from a process, answered through \`dispatch\`: for one
+   * that can stop, through its journal (runtime/stop-replay.ts ReplayJournal),
+   * which counts what it does outside itself and checks what a run after a
+   * stop is answered against the run before it.
+   */
+  journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown> {
+    const journal = pid === undefined ? undefined : this.journals.get(pid);
+    if (!journal || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
+    return journal.handle(op, args, run, dispatch);
+  }
+
+  /** The run after a stop reached the read the run before it stopped at. */
+  replayBoundary(pid: number, run: string | undefined): void {
+    this.journals.get(pid)?.boundary(run);
+  }
+
+  /**
+   * A process that can stop opening a TLS connection through the session
+   * (\`open\`: where to; the outbound proxies it), and asking for its upgrade
+   * (\`upgrade\`: answered once the outbound has made the TLS session with the
+   * server). Opening one is something a second run would do again.
+   */
+  async netTls(pid: number, run: string | undefined, action: string, token: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
+    const journal = this.journals.get(pid);
+    if (!journal || !journal.admits(run) || !/^[0-9a-f]{32}$/.test(token)) throw new Error('netTls: no such process or connection');
+    if (action === 'open') {
+      const host = String(payload?.host ?? ''), port = Number(payload?.port);
+      if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('netTls: bad target');
+      const refused = journal.effect(`tls.connect ${host}:${port}`);
+      if (refused) throw refused;
+      this._netTarget(token, pid).host = host;
+      this._netTarget(token, pid).port = port;
+      this._netTarget(token, pid).register();
+      return true;
+    }
+    if (action === 'upgrade') {
+      const target = this._netTarget(token, pid);
+      const servername = typeof payload?.servername === 'string' ? payload.servername : undefined;
+      target.ask(servername === undefined ? {} : { servername });
+      return await target.answered;
+    }
+    throw new Error(`netTls: unknown action ${action}`);
+  }
+
+  /**
+   * The outbound side of a process's network (SupervisorRPC.fetch/connect,
+   * the globalOutbound of a run that can stop):
+   *   effect(what)            a request that is not a read, a plain connection
+   *   fetch(key, what)        a read: { replay: response } or { live: ticket }
+   *   fetched(ticket, result) what the live read got; answered when the
+   *                           program may have it
+   *   connect(token)          where a TLS connection goes
+   *   awaitUpgrade(token)     resolves when the guest asks for the TLS session
+   *   upgraded(token, result) whether the outbound made it
+   */
+  async outboundCall(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
+    const journal = this.journals.get(pid);
+    if (!journal || !journal.admits(run)) throw new Error('outbound: this run of the process has stopped');
+    switch (action) {
+      case 'effect': {
+        const refused = journal.effect(String(payload?.what ?? 'a request'));
+        if (refused) throw refused;
+        return true;
+      }
+      case 'fetch': {
+        const key = 'fetch ' + String(payload?.key ?? '');
+        const what = String(payload?.what ?? 'a request');
+        let plan!: (value: unknown) => void;
+        const planned = new Promise((resolve) => { plan = resolve; });
+        const ticket = crypto.randomUUID();
+        let deliver!: (value: RecordedResponse | { error: string } | { tooLarge: true }) => void;
+        const fetched = new Promise<RecordedResponse | { error: string } | { tooLarge: true }>((resolve) => { deliver = resolve; });
+        let replayed = false;
+        const done = journal.answer(key, what, async (expected) => {
+          if (expected?.response) { replayed = true; return expected.response; }
+          plan({ live: ticket });
+          const result = await fetched;
+          if ('error' in result) throw new Error(result.error);
+          if ('tooLarge' in result) {
+            journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB over the network first (${what}), more than a second run is handed back`);
+          }
+          return result;
+        }, (value) => ('tooLarge' in value ? undefined : value as RecordedResponse));
+        this.fetchTickets.set(ticket, { pid, deliver, done });
+        done.then((value) => { if (replayed) plan({ replay: value }); }, (error) => plan({ error: errorMessage(error) }))
+          .finally(() => { if (replayed) this.fetchTickets.delete(ticket); });
+        return await planned;
+      }
+      case 'fetched': {
+        const ticket = String(payload?.ticket ?? '');
+        const live = this.fetchTickets.get(ticket);
+        if (!live || live.pid !== pid) throw new Error('outbound: no such request');
+        this.fetchTickets.delete(ticket);
+        const result = payload?.result as RecordedResponse | { error: string } | { tooLarge: true };
+        live.deliver(result);
+        await live.done;
+        return true;
+      }
+      case 'connect': {
+        const token = String(payload?.token ?? '');
+        if (!/^[0-9a-f]{32}$/.test(token)) {
+          // A plain connection (not one the TLS shim opened): proxied, and
+          // something a second run would do again.
+          const refused = journal.effect(`connect ${token}`);
+          if (refused) throw refused;
+          return { plain: true };
+        }
+        const target = this._netTarget(token, pid);
+        const registered = await Promise.race([target.registered.then(() => true), new Promise((r) => setTimeout(() => r(false), 10_000))]);
+        if (!registered) throw new Error('outbound: no connection was opened under this name');
+        return { host: target.host, port: target.port };
+      }
+      case 'awaitUpgrade': {
+        const target = this._netTarget(String(payload?.token ?? ''), pid);
+        return await target.asked;
+      }
+      case 'upgraded': {
+        const target = this._netTarget(String(payload?.token ?? ''), pid);
+        const result = payload?.result as { ok: boolean; error?: string } | undefined;
+        target.answer(result && result.ok ? { ok: true } : { ok: false, error: String(result?.error ?? 'the TLS session could not be made') });
+        return true;
+      }
+      default:
+        throw new Error(`outbound: unknown action ${action}`);
+    }
+  }
+
+  private _netTarget(token: string, pid: number) {
+    let target = this.netTargets.get(token);
+    if (target === undefined) {
+      let register!: () => void, ask!: (request: { servername?: string } | null) => void, answer!: (result: { ok: boolean; error?: string }) => void;
+      const registered = new Promise<void>((resolve) => { register = resolve; });
+      const asked = new Promise<{ servername?: string } | null>((resolve) => { ask = resolve; });
+      const answered = new Promise<{ ok: boolean; error?: string }>((resolve) => { answer = resolve; });
+      target = { pid, host: '', port: 0, registered, register, asked, ask, answered, answer };
+      this.netTargets.set(token, target);
+    }
+    if (target.pid !== pid) throw new Error('no such connection');
+    return target;
+  }
+
+  /** A process ended: its connections' names are forgotten and their waits answered. */
+  private _dropNetTargets(pid: number): void {
+    for (const [token, target] of this.netTargets) {
+      if (target.pid !== pid) continue;
+      target.ask(null);
+      target.answer({ ok: false, error: 'the process ended' });
+      this.netTargets.delete(token);
+    }
+    for (const [ticket, live] of this.fetchTickets) {
+      if (live.pid !== pid) continue;
+      live.deliver({ error: 'the process ended' });
+      this.fetchTickets.delete(ticket);
+    }
   }
 
   /**
@@ -6365,6 +6626,8 @@ export class FacetManager {
       ...(opts.stdinAtLeast ? { stdinAtLeast: opts.stdinAtLeast } : {}),
       // Only this run's stop counts (stop-replay.ts stopRecordOf).
       ...(opts.stopNonce ? { stopNonce: opts.stopNonce } : {}),
+      // Its network goes through the session (runOnce's outbound below).
+      ...(opts.outbound ? { outbound: true } : {}),
       captureOutput: !!opts.captureOutput,
       cred: { ...entry.cred, groups: [...entry.cred.groups] },
       vfsCursor: vfsState.cursor,
@@ -6377,6 +6640,7 @@ export class FacetManager {
         {
           pid: entry.pid,
           writerId,
+          ...(opts.outbound ? { outbound: true } : {}),
           // The module map is the largest thing this DO builds — pi's is ~23 MB
           // — and it is dead the moment the loader has taken it. Everything
           // that holds it is therefore scoped to the load: it is assembled in
@@ -6418,6 +6682,14 @@ export class FacetManager {
               for (const text of Object.values(vfsState.bundleSource?.codeModules ?? {})) {
                 diagSink.bundleBytes += _encodedSourceBytes(text);
               }
+            }
+            // A run after a stop loads what the first run loaded, or nothing:
+            // a module map rebuilt from files that changed while it waited
+            // would answer it differently with nothing to show for it.
+            if (opts.codeDigest) {
+              const digest = answerDigest([generatedWorker.code, generatedWorker.modules, generatedWorker.codeModules]);
+              if (opts.codeDigest.value === undefined) opts.codeDigest.value = digest;
+              else if (opts.codeDigest.value !== digest) throw new ReplayCodeChanged();
             }
             if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
             if (diagSink) __loadStart = Date.now();
@@ -6891,8 +7163,10 @@ export class FacetManager {
   }
 
   private _activateProcessVfsWriter(pid: number, writerId: string): void {
-    // The run this writer is reads the process's stdin, and no run before it.
+    // The run this writer is reads the process's stdin, and no run before it,
+    // and is the one its supervisor calls are answered for.
     this.stdinTaken.get(pid)?.start(writerId);
+    this.journals.get(pid)?.start(writerId);
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') {
       throw new Error(`Nimbus: cannot activate append writer for non-running process ${pid}`);
@@ -7456,9 +7730,16 @@ export class FacetManager {
       // the terminal.
       const stdinWriter = opts.stdinWriter === true && !opts.attachedTty;
       const heldStdin = this.stdinReadAhead.open();
+      // A boot after a stop that strays is ended (its facet killed) and the
+      // process fails, naming how.
+      let strayed: (() => void) | null = null;
       if (stdinWriter) {
         this.outputGates.set(entry.pid, new ReplayOutputGate());
         this.stdinTaken.set(entry.pid, new StdinTaken(heldStdin, STDIN_SYNC_READ_BYTES));
+        this.journals.set(entry.pid, new ReplayJournal(() => {
+          this.outputGates.get(entry.pid)?.close();
+          strayed?.();
+        }));
       }
       // Each boot starts from the umask the process started with.
       const startUmask = entry.cred.umask;
@@ -7515,6 +7796,9 @@ export class FacetManager {
           },
         },
       });
+      // A boot after a stop that strays is killed where it stands.
+      const booting = handle;
+      strayed = () => booting.kill();
       // Ended while its facet was being created (a signal's default action).
       if (this.processes.get(entry.pid)?.state !== 'running') {
         handle.kill();
@@ -7580,9 +7864,14 @@ export class FacetManager {
       } catch (e: unknown) {
         // The boot stopped itself at a synchronous read of stdin that has to
         // wait: wait for the input, then boot it again.
-        const stop = stdinWriter ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
+        const journal = this.journals.get(entry.pid);
+        let stop = stdinWriter ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
+        if (stop === null && journal?.diverged) stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
         if (stop === null) throw e;
         this.stdinTaken.get(entry.pid)?.retire();
+        const refused = stop.kind === 'stdin' && journal ? journal.unreplayable : null;
+        journal?.stopped();
+        await this.hooks.rewindProcessFiles?.(entry.pid);
         // The stopped facet is released whole (its slot, its name, its
         // storage) before the next boot takes a slot of its own.
         handle?.kill();
@@ -7591,7 +7880,8 @@ export class FacetManager {
         this.portRegistry.unregisterByPid(entry.pid);
         const waiting = new AbortController();
         this.processes.setTerminator(entry.pid, () => waiting.abort());
-        const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin);
+        const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin,
+          { accepted: { stdout: '', stderr: '' }, refused });
         if ('exit' in resumed) {
           if (this.processes.get(entry.pid)?.state === 'running') {
             this.processes.exit(entry.pid, resumed.exit.exitCode);
@@ -7608,7 +7898,13 @@ export class FacetManager {
         this.stdinTaken.get(entry.pid)?.release();
         this.stdinTaken.delete(entry.pid);
         heldStdin.give();
-        if (stdinWriter) this.outputGates.delete(entry.pid);
+        if (stdinWriter) {
+          this.outputGates.delete(entry.pid);
+          // Booted: from here it is a running server, never run again.
+          this.journals.get(entry.pid)?.close();
+          this.journals.delete(entry.pid);
+          this._dropNetTargets(entry.pid);
+        }
       }
 
       if (opts.port && opts.port > 0 && opts.port < 65536) {

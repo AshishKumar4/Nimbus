@@ -222,6 +222,12 @@ export interface NimbusFilesystemAuthority {
   bind(binding: NimbusFilesystemBinding): RuntimeFsBridge;
   openHost(cred: Readonly<VfsCred>, options?: { signal?: AbortSignal }): NimbusHostFilesystemLease;
   releaseProcess(pid: number): Promise<void>;
+  /**
+   * A run of the process ended and another of the same process starts in its
+   * place: its descriptors close, and the next run opens its own, numbered
+   * from the first as the run before's were. The pid stays live.
+   */
+  rewindProcess?(pid: number): Promise<void>;
   activateAppendWriter(pid: number, writerId: string): Promise<void>;
   revokeAppendWriter(pid: number, writerId: string): Promise<void>;
   revokeAppendWriters(pid: number): Promise<void>;

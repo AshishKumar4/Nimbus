@@ -21,18 +21,29 @@
 //   - never-reads: stdin never ends and the program never reads it.
 //   - nondeterministic: Math.random, Date.now, new Date() and
 //     crypto.randomUUID printed before READY and again after the read.
+//   - drainThenWrite: 1 MiB through readSync, a file written, then the
+//     last byte: the read after the write finds it.
+//   - bigEnd: one write of stdin larger than a stdin queue holds.
+//   - the network: a GET's headers and bytes, a request still on its way at
+//     the stop, https.get (see the fixtures).
 // And Nimbus's own answers where Node has none: a program that changed the
-// world before the read cannot be run again, and says so; Ctrl-C while the
-// read waits is 130; a pipe whose writer is still running does not hold
-// output of a program that never reads it.
+// world before the read cannot be run again, and says so (a file write, a
+// TLS connection, a connection through workerd's own socket class); a file
+// it read changing while it waited ends the run after the stop loudly, and
+// never hands it the new bytes; Ctrl-C while the read waits is 130; a pipe
+// whose writer is still running does not hold output of a program that never
+// reads it.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { createServer as createTcpServer } from 'node:net';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { startLocalProbe } from './lib/workerd-probe.mjs';
@@ -112,6 +123,25 @@ const CHILDREN = {
   // A umask set before the read is that run's, even once the session has it
   // (the read waits a beat for it to land); the run after a stop starts from
   // the process's own.
+  // Its parent writes 1 MiB once it has started (taken in while the program
+  // waits a beat), readSync drains it, the program writes a file (it cannot
+  // run again from here), and its parent writes the last byte and ends stdin
+  // only then: the read after the write finds them, as the stdin follower
+  // goes on taking input in once the program has read what it held.
+  drainThenWrite: [
+    "const fs = require('fs');",
+    'const b = Buffer.alloc(65536);',
+    "console.log('GO');",
+    'setTimeout(() => {',
+    '  let total = 0;',
+    '  while (total < 1048576) { const n = fs.readSync(0, b, 0, b.length, null); if (n === 0) break; total += n; }',
+    "  fs.writeFileSync('drained-' + process.pid + '.tmp', 'w');",
+    "  console.log('NEXT ' + total);",
+    "  setTimeout(() => { let rest = 0; for (;;) { const n = fs.readSync(0, b, 0, b.length, null); if (n === 0) break; rest += n; } console.log('REST ' + rest); }, 1500);",
+    '}, 1500);',
+  ].join('\n'),
+  // Its parent ends stdin with one write larger than a stdin queue holds.
+  bigEnd: "console.log('GOT ' + require('fs').readFileSync(0).length)",
   umask: [
     "const fs = require('fs');",
     'const before = process.umask(0o077);',
@@ -155,6 +185,8 @@ const PARENT = [
   "  history: async (c, until) => { const piece = Buffer.alloc(65536, 120); for (let i = 0; i < 20; i++) { if (!c.stdin.write(piece)) await new Promise((r) => c.stdin.once('drain', r)); } await until('GOT1'); await sleep(100); c.stdin.end('tail'); },",
   "  endedWhileRunning: async (c, until) => { await until('READY'); c.stdin.end('x'); },",
   "  umask: async (c, until) => { await until('READY'); await sleep(1500); c.stdin.end('x'); },",
+  "  drainThenWrite: async (c, until) => { await until('GO'); const piece = Buffer.alloc(65536, 120); for (let i = 0; i < 16; i++) { if (!c.stdin.write(piece)) await new Promise((r) => c.stdin.once('drain', r)); } await until('NEXT'); await sleep(150); c.stdin.end('z'); },",
+  "  bigEnd: async (c) => { c.stdin.end(Buffer.alloc(1048577, 121)); },",
   '};',
   '(async () => {',
   '  for (const [name, drive] of Object.entries(cases)) {',
@@ -203,7 +235,191 @@ assert.deepEqual(expected, [
   'CASE history {"code":0,"out":"GOT1 1310720\\nTOTAL 1310724\\n"}',
   'CASE endedWhileRunning {"code":0,"out":"child: READY\\ngot x\\n"}',
   'CASE umask {"code":0,"out":"child: READY fresh\\numask 77 x\\n"}',
+  'CASE drainThenWrite {"code":0,"out":"GO\\nNEXT 1048576\\nREST 1\\n"}',
+  'CASE bigEnd {"code":0,"out":"GOT 1048577\\n"}',
 ], 'the host blocks each read for its input and nothing else');
+
+// ── The network, against Node ──────────────────────────────────────────────
+// A program that can stop has its network go through the session: a GET is
+// recorded with its status, headers and bytes and answered again to the run
+// after a stop, however the program reads it; a request still on its way at
+// the stop is answered past the read; a connection is something done outside
+// the process, however it was opened; TLS is made by the session.
+// Fixtures on an address of this machine that is not loopback (a Nimbus
+// program's loopback is its session's ports): HTTP and, when openssl is
+// there, HTTPS with a CA made here that workerd trusts (NODE_EXTRA_CA_CERTS,
+// read by miniflare at start), and a TCP echo that counts connections.
+const lan = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address ?? null;
+const fixtureDir = mkdtempSync(join(tmpdir(), 'sync-stdin-fixtures-'));
+function makeCerts(ip) {
+  const ssl = (args) => spawnSync('openssl', args, { cwd: fixtureDir, encoding: 'utf8' });
+  if (ssl(['version']).status !== 0) return null;
+  ssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.pem', '-days', '2', '-subj', '/CN=Nimbus sync-stdin test CA',
+    '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign']);
+  ssl(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'server.key', '-out', 'server.csr', '-subj', '/CN=' + ip]);
+  writeFileSync(join(fixtureDir, 'ext.cnf'), `subjectAltName=IP:${ip}\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n`);
+  const signed = ssl(['x509', '-req', '-in', 'server.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial', '-out', 'server.pem', '-days', '2', '-extfile', 'ext.cnf']);
+  if (signed.status !== 0) return null;
+  return { ca: join(fixtureDir, 'ca.pem'), key: readFileSync(join(fixtureDir, 'server.key')), cert: readFileSync(join(fixtureDir, 'server.pem')) };
+}
+const certs = lan ? makeCerts(lan) : null;
+if (certs) process.env.NODE_EXTRA_CA_CERTS = certs.ca;
+let cfg = 'ABCD';
+const slowSeen = new Set();
+const fixtureStats = { tcp: 0 };
+const route = (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/cfg') { res.setHeader('etag', `"${cfg}"`); res.end(cfg); return; }
+  if (url.pathname === '/set') { cfg = url.searchParams.get('cfg') ?? cfg; res.end('ok'); return; }
+  // Slow the first time a key is asked for, at once after.
+  if (url.pathname === '/slow-once') {
+    const key = url.searchParams.get('k');
+    const first = !slowSeen.has(key);
+    slowSeen.add(key);
+    setTimeout(() => res.end('slow:' + cfg), first ? 1500 : 0);
+    return;
+  }
+  res.statusCode = 404;
+  res.end();
+};
+const listen = (server) => new Promise((resolve) => server.listen(0, lan, () => resolve(server.address().port)));
+const fixtures = [];
+let httpBase = null, tlsPort = null, tcpPort = null;
+if (lan) {
+  const httpServer = createHttpServer(route);
+  const tcpServer = createTcpServer((socket) => { fixtureStats.tcp++; socket.on('error', () => {}); socket.pipe(socket); });
+  fixtures.push(httpServer, tcpServer);
+  httpBase = `http://${lan}:${await listen(httpServer)}`;
+  tcpPort = await listen(tcpServer);
+  if (certs) {
+    const tlsServer = createHttpsServer({ key: certs.key, cert: certs.cert }, route);
+    fixtures.push(tlsServer);
+    tlsPort = await listen(tlsServer);
+  }
+}
+const NET = {};
+if (lan) {
+  // Node-comparable: the run after a stop is answered as the run before was.
+  NET.headers = [
+    "const fs = require('fs');",
+    '(async () => {',
+    `  const r1 = await fetch('${httpBase}/cfg?k=h1-__KEY__');`,
+    "  const etag = r1.headers.get('etag');",
+    '  const viaBlob = await (await r1.blob()).text();',
+    `  const r2 = await fetch('${httpBase}/cfg?k=h2-__KEY__');`,
+    '  const reader = r2.body.getReader();',
+    "  let viaStream = '';",
+    '  for (;;) { const { value, done } = await reader.read(); if (done) break; viaStream += Buffer.from(value).toString(); }',
+    "  console.log('child: READY');",
+    "  const input = fs.readFileSync(0, 'utf8');",
+    "  console.log(etag + ' ' + viaBlob + ' ' + viaStream + ' ' + input);",
+    '})();',
+  ].join('\n');
+  NET.pending = [
+    "const fs = require('fs');",
+    "let v = 'unset';",
+    `fetch('${httpBase}/slow-once?k=__KEY__').then((r) => r.text()).then((t) => { v = t; });`,
+    "console.log('child: READY');",
+    "setTimeout(() => { const input = fs.readFileSync(0, 'utf8'); console.log('at read ' + v + ' ' + input); setTimeout(() => console.log('later ' + v), 3000); }, 200);",
+  ].join('\n');
+  // Nimbus answers where Node goes on: a connection through workerd's own
+  // socket class, past every export of node:net and node:tls.
+  NET.nativeSocket = [
+    "const fs = require('fs');",
+    "const Socket = Object.getPrototypeOf(require('tls').TLSSocket);",
+    'const s = new Socket();',
+    "s.on('error', (e) => console.log('socket error ' + e.message));",
+    `s.connect(${tcpPort}, '${lan}', () => {`,
+    "  s.write('hi');",
+    "  console.log('child: READY');",
+    "  let r; try { r = 'got ' + fs.readFileSync(0, 'utf8'); } catch (e) { r = 'caught ' + e.code; }",
+    '  console.log(r);',
+    '  s.destroy();',
+    '});',
+  ].join('\n');
+  if (certs) {
+    NET.https = [
+      "const fs = require('fs');",
+      `require('https').get('https://${lan}:${tlsPort}/cfg?k=s-__KEY__', (r) => {`,
+      "  let b = ''; r.on('data', (d) => { b += d; });",
+      "  r.on('end', () => {",
+      "    console.log('child: READY ' + r.statusCode + ' ' + b);",
+      "    let x; try { x = 'got ' + fs.readFileSync(0, 'utf8'); } catch (e) { x = 'caught ' + e.code; }",
+      '    console.log(x);',
+      '  });',
+      "}).on('error', (e) => console.log('error ' + e.message));",
+    ].join('\n');
+    NET.tlsRaw = [
+      "const fs = require('fs');",
+      `const s = require('tls').connect(${tlsPort}, '${lan}', () => { s.write('GET /cfg HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n'); });`,
+      "let got = '';",
+      "s.on('data', (d) => { got += d; });",
+      "s.on('error', (e) => console.log('tls error ' + e.message));",
+      "s.on('end', () => {",
+      "  console.log('child: READY ' + got.split('\\r\\n')[0] + ' ' + got.split('\\r\\n\\r\\n')[1]);",
+      "  let x; try { x = 'got ' + fs.readFileSync(0, 'utf8'); } catch (e) { x = 'caught ' + e.code; }",
+      '  console.log(x);',
+      '});',
+    ].join('\n');
+  }
+}
+const NET_PARENT = [
+  "const { spawn } = require('child_process');",
+  'const sleep = (ms) => new Promise((r) => setTimeout(r, ms));',
+  `const CHILDREN = ${JSON.stringify(NET)};`,
+  `const BASE = ${JSON.stringify(httpBase)};`,
+  'const KEY = String(Date.now()) + String(Math.random()).slice(2, 8);',
+  'function run(name, drive) {',
+  '  return new Promise((resolve) => {',
+  "    const c = spawn('node', ['-e', CHILDREN[name].split('__KEY__').join(KEY)]);",
+  "    let out = '';",
+  '    const stuck = setTimeout(() => { c.kill(); resolve({ stuck: true, out }); }, 60000);',
+  "    c.stdout.on('data', (d) => { out += d; });",
+  "    c.stderr.on('data', (d) => { out += d; });",
+  '    const until = (text) => new Promise((ok) => { const iv = setInterval(() => { if (out.includes(text)) { clearInterval(iv); ok(); } }, 10); });',
+  '    drive(c, until).catch(() => {});',
+  "    c.on('close', (code) => { clearTimeout(stuck); resolve({ code, out }); });",
+  '  });',
+  '}',
+  'const cases = {',
+  "  headers: async (c, until) => { await until('READY'); await fetch(BASE + '/set?cfg=WXYZ'); await sleep(150); c.stdin.end('x'); },",
+  "  pending: async (c, until) => { await until('READY'); await sleep(1000); c.stdin.end('x'); },",
+  "  nativeSocket: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
+  "  https: async (c, until) => { await until('READY'); await fetch(BASE + '/set?cfg=WXYZ'); await sleep(150); c.stdin.end('x'); },",
+  "  tlsRaw: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
+  '};',
+  '(async () => {',
+  "  for (const name of Object.keys(CHILDREN)) { await fetch(BASE + '/set?cfg=ABCD'); console.log('NET ' + name + ' ' + JSON.stringify(await run(name, cases[name]))); }",
+  '  process.exit(0);',
+  '})();',
+].join('\n');
+const netLines = (stdout) => {
+  const found = {};
+  for (const m of stdout.matchAll(/^NET (\w+) (.*)$/gm)) found[m[1]] = JSON.parse(m[2].replace(/\r$/, ''));
+  return found;
+};
+let netExpected = {};
+if (lan) {
+  // Asynchronously: the fixtures answer from this process.
+  const host = await new Promise((resolve) => {
+    const child = spawn('node', ['-e', NET_PARENT], { cwd: fixtureDir, env: { ...process.env, ...(certs ? { NODE_EXTRA_CA_CERTS: certs.ca } : {}) } });
+    let out = '', err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('close', (code) => resolve({ code, out, err }));
+  });
+  assert.equal(host.code, 0, host.err);
+  netExpected = netLines(host.out);
+  assert.deepEqual(netExpected.headers, { code: 0, out: 'child: READY\n"ABCD" ABCD ABCD x\n' });
+  assert.deepEqual(netExpected.pending, { code: 0, out: 'child: READY\nat read unset x\nlater slow:ABCD\n' });
+  assert.deepEqual(netExpected.nativeSocket, { code: 0, out: 'child: READY\ngot x\n' });
+  if (certs) {
+    assert.deepEqual(netExpected.https, { code: 0, out: 'child: READY 200 ABCD\ngot x\n' });
+    assert.deepEqual(netExpected.tlsRaw, { code: 0, out: 'child: READY HTTP/1.1 200 OK ABCD\ngot x\n' });
+  }
+} else {
+  console.log('sync-stdin-replay-workerd: no address but loopback; the network cases are skipped');
+}
 
 // ── Nimbus ──────────────────────────────────────────────────────────────────
 const W = '/home/user/w';
@@ -277,6 +493,20 @@ try {
         "  console.log('cfg ' + cfg.trim() + ' input ' + input);",
         '})();',
       ].join('\n'),
+      // Four bytes read into the middle of a buffer through a FileHandle;
+      // the file changes, same size, while the program waits.
+      fileHandle: [
+        "const fs = require('fs');",
+        '(async () => {',
+        `  const h = await fs.promises.open('${W}/fh.txt');`,
+        '  const b = Buffer.alloc(8, 46);',
+        '  await h.read(b, 4, 4, 0);',
+        '  await h.close();',
+        "  console.log('child: READY ' + b);",
+        "  const input = fs.readFileSync(0, 'utf8');",
+        "  console.log('after ' + b + ' ' + input);",
+        '})();',
+      ].join('\n'),
     };
     const REVIEW_PARENT = [
       "const { spawn } = require('child_process');",
@@ -299,9 +529,11 @@ try {
       "  forged: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
       "  tls: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
       `  config: async (c, until) => { await until('READY'); await fs.promises.writeFile('${W}/cfg.txt', 'v2'); await sleep(150); c.stdin.end('x'); },`,
+      `  fileHandle: async (c, until) => { await until('READY'); await fs.promises.writeFile('${W}/fh.txt', 'WXYZ'); await sleep(150); c.stdin.end('x'); },`,
       '};',
       '(async () => {',
       `  fs.writeFileSync('${W}/cfg.txt', 'v1');`,
+      `  fs.writeFileSync('${W}/fh.txt', 'ABCD');`,
       "  for (const [name, drive] of Object.entries(cases)) console.log('REVIEW ' + name + ' ' + JSON.stringify(await run(name, drive)));",
       '  process.exit(0);',
       '})();',
@@ -316,6 +548,38 @@ try {
       `a TLS connection before the read: the read names it\n${JSON.stringify(review.tls)}`);
     check(review.config && !/cfg v2/.test(review.config.out) && /did not retrace/.test(review.config.out),
       `a file read before the read changed while it waited: the run after the stop is ended, loudly\n${JSON.stringify(review.config)}`);
+    // Node: "child: READY ....ABCD" then "after ....ABCD x". The bytes
+    // checked are the four the read filled, not the buffer's start.
+    check(review.fileHandle && /child: READY \.\.\.\.ABCD/.test(review.fileHandle.out) && !/WXYZ/.test(review.fileHandle.out)
+      && (/after \.\.\.\.ABCD x/.test(review.fileHandle.out) || /did not retrace/.test(review.fileHandle.out)),
+      `a FileHandle read into the middle of a buffer, its file changed while the program waited: never the new bytes\n${JSON.stringify(review.fileHandle)}`);
+
+    // The network (see the fixtures above): as under Node where Node and
+    // Nimbus can agree, and the connection named where they cannot.
+    if (lan) {
+      await write(`${W}/net.js`, NET_PARENT);
+      fixtureStats.tcp = 0;
+      const net = netLines((await run(`cd ${W} && node net.js`, 400_000)).stdout);
+      check(JSON.stringify(net.headers) === JSON.stringify(netExpected.headers),
+        `a response's headers and bytes, through blob() and a body reader, are the run before's\n  node:   ${JSON.stringify(netExpected.headers)}\n  nimbus: ${JSON.stringify(net.headers)}`);
+      check(JSON.stringify(net.pending) === JSON.stringify(netExpected.pending),
+        `a request still on its way at the stop is answered past the read\n  node:   ${JSON.stringify(netExpected.pending)}\n  nimbus: ${JSON.stringify(net.pending)}`);
+      check(net.nativeSocket?.code === 0 && net.nativeSocket.out === 'child: READY\ncaught ERR_NIMBUS_SYNC_STDIN\n' && fixtureStats.tcp === 1,
+        `a connection through workerd's own socket class: the read names it, and the server saw it once (${fixtureStats.tcp})\n${JSON.stringify(net.nativeSocket)}`);
+      if (certs) {
+        check(JSON.stringify(net.https) === JSON.stringify(netExpected.https),
+          `https.get, its TLS made by the session, then the read\n  node:   ${JSON.stringify(netExpected.https)}\n  nimbus: ${JSON.stringify(net.https)}`);
+        check(net.tlsRaw?.code === 0 && net.tlsRaw.out === 'child: READY HTTP/1.1 200 OK ABCD\ncaught ERR_NIMBUS_SYNC_STDIN\n',
+          `tls.connect, its TLS made by the session: it works, and the read after it names it\n${JSON.stringify(net.tlsRaw)}`);
+      }
+    }
+
+    // Output captured rather than streamed, and a run after a stop that
+    // strays before printing: what the run before printed is still handed on.
+    await write(`${W}/cfg8.txt`, 'v1');
+    const strayCaptured = await run(`(sleep 1; printf v2 > ${W}/cfg8.txt; sleep 1; echo x) | node -e "const fs = require('fs'); (async () => { const c = await fs.promises.readFile('${W}/cfg8.txt', 'utf8'); console.log('READY ' + c); console.log('got ' + fs.readFileSync(0, 'utf8').trim()); })()" | cat`, 120_000);
+    check(/READY v1/.test(strayCaptured.stdout) && !/READY v2/.test(strayCaptured.stdout) && (/got x/.test(strayCaptured.stdout) || /did not retrace/.test(strayCaptured.stdout)),
+      `captured output of a run whose successor strays is still shown\n${strayCaptured.stdout.slice(-600)}`);
 
     // A shell pipe past 1 MiB, the program catching up with its writer at
     // the end: the run after the stop is handed all of it back, whatever its
@@ -425,6 +689,8 @@ try {
 } finally {
   workerLog = probe.log();
   await probe.stop();
+  for (const server of fixtures) server.close();
+  rmSync(fixtureDir, { recursive: true, force: true });
 }
 if (failures.length > 0) {
   const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);

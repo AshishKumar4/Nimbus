@@ -1,16 +1,20 @@
 #!/usr/bin/env bun
 // Stop and replay (packages/worker/src/runtime/stop-replay.ts), its pieces
-// apart from workerd: the session's output gate and its own account of what
-// a run took from stdin, the stop record and what makes one believable, input
-// going back in front of a channel, and the guest half, each run of which is
-// a fresh process here as each run of a program is a fresh isolate there.
+// apart from workerd: the session's output gate, its own account of what a
+// run took from stdin, and its journal of what each run was answered; the
+// stop record and what makes one believable; input going back in front of a
+// channel; and the guest half, each run of which is a fresh process here as
+// each run of a program is a fresh isolate there.
 // sync-stdin-replay-workerd.mjs runs them together.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 import {
+  answerDigest,
+  callKey,
   OwnedPieces,
+  ReplayJournal,
   ReplayOutputGate,
   StdinTaken,
   STOP_RECORD_PREFIX,
@@ -23,7 +27,7 @@ const enc = (text) => new TextEncoder().encode(text);
 const dec = (bytes) => new TextDecoder().decode(bytes);
 const b64 = (text) => Buffer.from(text).toString('base64');
 const NONCE = 'c0ffee00-1111-4222-8333-444455556666';
-const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], obs: [] };
+const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
 
 // ── The output gate: what the session showed is the prefix ─────────────────
 {
@@ -33,7 +37,7 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], obs
   // Run 1 stops with READY\n in flight (it arrived) and more\n never sent:
   // the stop carries both, and only more\n is new.
   const { fresh, prefix } = gate.stopped({
-    v: 2, kind: 'stdin', run: 1, until: 'end', stopAt: 0, tape: TAPE,
+    v: 3, kind: 'stdin', run: 1, until: 'end', stopAt: 0, tape: TAPE,
     out: [{ s: 'stdout', at: 0, b: b64('READY\n') }, { s: 'stdout', at: 6, b: b64('more\n') }],
   });
   assert.deepEqual(fresh.map(({ stream, bytes }) => [stream, dec(bytes)]), [['stdout', 'more\n']]);
@@ -43,12 +47,12 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], obs
   // More shown than a run can be checked against: no prefix.
   const big = new ReplayOutputGate();
   big.take('stdout', new Uint8Array(1024 * 1024 + 1), 0, 1);
-  assert.equal(big.stopped({ v: 2, kind: 'stdin', run: 1, until: 'end', stopAt: 0, tape: TAPE, out: [] }).prefix, null);
+  assert.equal(big.stopped({ v: 3, kind: 'stdin', run: 1, until: 'end', stopAt: 0, tape: TAPE, out: [] }).prefix, null);
 }
 
 // ── A stop record counts only with the run's nonce, and only in its shape ───
 {
-  const record = { v: 2, kind: 'stdin', run: 2, until: 'data', stopAt: 3, tape: TAPE, out: [] };
+  const record = { v: 3, kind: 'stdin', run: 2, until: 'data', stopAt: 3, tape: TAPE, out: [] };
   const message = (r, nonce = NONCE) => new Error(STOP_RECORD_PREFIX + nonce + ' ' + JSON.stringify(r));
   assert.deepEqual(stopRecordOf(message(record), NONCE, 2), record);
   assert.deepEqual(stopRecordOf(new Error('Error: ' + message(record).message), NONCE, 2), record, 'wherever the platform puts it in the message');
@@ -57,7 +61,7 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], obs
   assert.equal(stopRecordOf(message(record), NONCE, 3), null, 'another run');
   assert.equal(stopRecordOf(message(record), 'short', 2), null, 'a nonce too short to be one');
   for (const [what, broken] of [
-    ['an older shape', { ...record, v: 1 }],
+    ['an older shape', { ...record, v: 2 }],
     ['an unknown kind', { ...record, kind: 'other' }],
     ['no tape', { ...record, tape: undefined }],
     ['a tape seed of three words', { ...record, tape: { ...TAPE, seed: [1, 2, 3] } }],
@@ -65,7 +69,8 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], obs
     ['a read of a negative length', { ...record, tape: { ...TAPE, reads: [-1] } }],
     ['output on a third stream', { ...record, out: [{ s: 'stdlog', at: 0, b: '' }] }],
     ['output too long to be one', { ...record, out: [{ s: 'stdout', at: 0, b: 'A'.repeat(4 * 1024 * 1024) }] }],
-    ['a divergence without its reason', { v: 2, kind: 'diverged', run: 2, out: [] }],
+    ['a divergence without its reason', { v: 3, kind: 'diverged', run: 2, out: [] }],
+    ['captured output that is not text', { ...record, captured: { stdout: 1, stderr: '' } }],
   ]) {
     assert.equal(stopRecordOf(message(broken), NONCE, 2), null, what);
   }
@@ -124,18 +129,137 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], obs
   assert.equal(dec((await read).data), 'back');
 }
 
+// ── The session's journal ──────────────────────────────────────────────────
+{
+  const diverged = [];
+  const make = () => new ReplayJournal((why) => diverged.push(why), 300);
+  const ask = (j, op, args, answer, run = 'r1') => j.handle(op, args, run, () => Promise.resolve(answer));
+  // Run 1 is answered two reads, the second a response still pending when it stops.
+  const j = make();
+  j.start('r1');
+  assert.equal(await ask(j, 'readFile', ['/cfg'], 'ABCD'), 'ABCD');
+  let slow;
+  const pending = j.handle('fsRead', [3, 0, 4], 'r1', () => new Promise((r) => { slow = r; }));
+  pending.catch(() => {});
+  j.stopped();
+  slow(new Uint8Array([1]));
+  await assert.rejects(pending, /stopped/, 'nothing a stopped run asked for is answered');
+  await assert.rejects(ask(j, 'readFile', ['/cfg'], 'ABCD', 'r1'), /stopped/, 'a stopped run\'s late call takes nothing');
+
+  // N3/N4: run 2 is answered a same-length change: it strays, loudly.
+  j.start('r2');
+  await assert.rejects(ask(j, 'readFile', ['/cfg'], 'WXYZ', 'r2'), /answered differently/);
+  assert.match(diverged.at(-1), /readFile \/cfg was answered differently/);
+
+  // N6: a request pending at the stop is not answered before the boundary.
+  const k = make();
+  k.start('a');
+  await ask(k, 'readFile', ['/x'], 'X', 'a');
+  const never = k.handle('readFile', ['/slow'], 'a', () => new Promise(() => {}));
+  never.catch(() => {});
+  k.stopped();
+  k.start('b');
+  await ask(k, 'readFile', ['/x'], 'X', 'b');
+  let early = false;
+  const slowAgain = ask(k, 'readFile', ['/slow'], 'S', 'b').then((v) => { early = true; return v; });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(early, false, 'the request pending at the stop waits for the boundary');
+  k.boundary('b');
+  assert.equal(await slowAgain, 'S');
+
+  // A replay that gets to the read before an answer the run before had by
+  // then (a prefetch it does not wait for) has asked for it: the boundary
+  // passes, and the answer is still checked when it comes. One that never
+  // asked strays at the boundary.
+  const q = make();
+  q.start('a');
+  await ask(q, 'fsReadBatch', [['/.rc']], 'RC', 'a');
+  q.stopped();
+  q.start('b');
+  let late;
+  const prefetch = q.handle('fsReadBatch', [['/.rc']], 'b', () => new Promise((r) => { late = r; }));
+  const seen = diverged.length;
+  q.boundary('b');
+  assert.equal(diverged.length, seen, 'an answer on its way at the boundary is not a stray');
+  late('RC');
+  assert.equal(await prefetch, 'RC');
+  const n = make();
+  n.start('a');
+  await ask(n, 'fsReadBatch', [['/.rc']], 'RC', 'a');
+  n.stopped();
+  n.start('b');
+  n.boundary('b');
+  assert.match(diverged.at(-1), /without asking for everything .* \(0 of 1\)/);
+
+  // Answers come back in the order the run before was answered.
+  const o = make();
+  o.start('a');
+  await ask(o, 'stat', ['/1'], 1, 'a');
+  await ask(o, 'stat', ['/2'], 2, 'a');
+  o.stopped();
+  o.start('b');
+  const order = [];
+  const second = ask(o, 'stat', ['/2'], 2, 'b').then(() => order.push(2));
+  await new Promise((r) => setTimeout(r, 20));
+  const first = ask(o, 'stat', ['/1'], 1, 'b').then(() => order.push(1));
+  await Promise.all([first, second]);
+  assert.deepEqual(order, [1, 2], 'the second answer waits for the first');
+
+  // A replay that never asks again for what came first strays at the stall bound.
+  const w = make();
+  w.start('a');
+  await ask(w, 'stat', ['/1'], 1, 'a');
+  await ask(w, 'stat', ['/2'], 2, 'a');
+  w.stopped();
+  w.start('b');
+  const before = diverged.length;
+  await assert.rejects(ask(w, 'stat', ['/2'], 2, 'b'), /did not ask again/);
+  assert.equal(diverged.length, before + 1);
+
+  // Effects: before the boundary a replay strays; otherwise the run cannot be
+  // replayed and nothing more is recorded for it (D1).
+  const e = make();
+  e.start('a');
+  let dispatched = 0;
+  await e.handle('writeFile', ['/out', 'x'], 'a', async () => { dispatched++; return 1; });
+  assert.equal(e.replayable, false);
+  assert.match(e.unreplayable, /writeFile \/out/);
+  await ask(e, 'readFile', ['/after'], 'A', 'a');
+  e.stopped();
+  e.start('b');
+  await e.handle('readFile', ['/whatever'], 'b', async () => 'Q').then(() => assert.fail('a replay of an unrecorded run asked for something it never asked for'), () => {});
+  const f = make();
+  f.start('a');
+  f.stopped();
+  f.start('b');
+  await assert.rejects(f.handle('writeFile', ['/out', 'x'], 'b', async () => { dispatched++; return 1; }), /did something outside itself before the read/);
+  assert.equal(dispatched, 1, 'an effect before the boundary is not performed');
+  // A read-only open is a read; a writing one is not.
+  const g = make();
+  g.start('a');
+  await g.handle('fsOpen', ['/r', { read: true }], 'a', async () => ({ fd: 3 }));
+  assert.equal(g.replayable, true);
+  await g.handle('fsOpen', ['/w', { write: true, create: true }], 'a', async () => ({ fd: 4 }));
+  assert.match(g.unreplayable, /fsOpen \/w for writing/);
+  // Volatile fields do not count; contents do.
+  assert.equal(answerDigest({ size: 4, mtime: 1, atime: 1, acquired: { a: 1 } }), answerDigest({ size: 4, mtime: 1, atime: 9, acquired: { b: 2 } }));
+  assert.notEqual(answerDigest(new Uint8Array([65, 66, 67, 68])), answerDigest(new Uint8Array([87, 88, 89, 90])));
+  assert.notEqual(callKey('fsRead', [3, 0, 4]), callKey('fsRead', [3, 4, 4]), 'a read at another offset is another call');
+}
+
 // ── The guest ──────────────────────────────────────────────────────────────
 // One run per process: `script` runs with the module-private
-// __nimbusStopReplay in scope, `abort` throws what a real ctx.abort would
-// never let the program see, and the run prints one JSON line.
+// __nimbusStopReplay in scope, `abort` records the string a real ctx.abort is
+// handed (and throws what a real one would never let the program see), and
+// the run prints one JSON line.
 function guest(script, input = '') {
   const program = [
     STOP_REPLAY_SOURCE,
     'const enc = (t) => new TextEncoder().encode(t);',
     'const sr = __nimbusStopReplay;',
     `const NONCE = ${JSON.stringify(NONCE)};`,
-    'let stopped = null;',
-    `const abort = (e) => { const m = e.message; stopped = JSON.parse(m.slice(m.indexOf(NONCE) + NONCE.length + 1)); throw "ABORTED"; };`,
+    'let stopped = null, reason = null;',
+    `const abort = (r) => { reason = r; stopped = JSON.parse(r.slice(r.indexOf(NONCE) + NONCE.length + 1)); throw "ABORTED"; };`,
     'const aborts = (f) => { try { f(); } catch (e) { if (e !== "ABORTED") throw e; } };',
     `const input = ${JSON.stringify(input)};`,
     '(async () => {',
@@ -151,72 +275,98 @@ function guest(script, input = '') {
 assert.deepEqual(guest('console.log(JSON.stringify({ global: typeof globalThis.__nimbusStopReplay, local: typeof sr.block }));'),
   { global: 'undefined', local: 'function' });
 
-// Run 1 draws from every source, observes a file, prints on both streams,
-// reads 3 bytes, then stops for more.
+// Run 1 draws from every source, prints on both streams, reads 3 bytes, then
+// stops for more.
 const first = guest(`
   sr.begin({ replay: null, abort, captured: false, nonce: NONCE });
   sr.arm(true);
   const draws = [Math.random(), Date.now(), new Date().toISOString(), crypto.randomUUID(), performance.now(), [...crypto.getRandomValues(new Uint8Array(4))]];
-  sr.observe('readFileSync', 'config v1');
-  const out = sr.write('stdout', enc('before ' + JSON.stringify(draws) + '\\n'));
+  sr.write('stdout', enc('before ' + JSON.stringify(draws) + '\\n'));
   sr.write('stderr', enc('warn\\n'));
   const read = sr.readSome(3, false);
   aborts(() => sr.block('data', 'read'));
-  console.log(JSON.stringify({ draws, read, outAt: out.at, stopped }));
+  console.log(JSON.stringify({ draws, read, stopped, reasonType: typeof reason }));
 `);
 assert.equal(first.read, 3);
-assert.deepEqual([first.stopped.v, first.stopped.kind, first.stopped.until, first.stopped.run, first.stopped.stopAt], [2, 'stdin', 'data', 1, 1]);
+assert.equal(first.reasonType, 'string', 'ctx.abort is handed a string');
+assert.deepEqual([first.stopped.v, first.stopped.kind, first.stopped.until, first.stopped.run, first.stopped.stopAt], [3, 'stdin', 'data', 1, 1]);
 assert.equal(first.stopped.out.length, 2, 'what the session never acknowledged rides the stop');
 assert.deepEqual(first.stopped.tape.reads, [3]);
-assert.equal(first.stopped.tape.obs.length, 1);
 assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify(first.stopped)), NONCE, 1), null, 'what the guest stops with is a record the session believes');
+
+// N1: nothing the program can replace is called while the nonce is in hand.
+const hostile = guest(`
+  sr.begin({ replay: null, abort, captured: true, capturedText: () => ({ stdout: 'printed "so far"\\n', stderr: '' }), nonce: NONCE });
+  sr.arm(true);
+  Math.random(); Date.now(); crypto.getRandomValues(new Uint8Array(7));
+  sr.readSome(2, false);
+  const calls = [];
+  const saw = (what) => { calls[calls.length] = what; };
+  const saved = {
+    stringify: JSON.stringify, parse: JSON.parse, btoa: globalThis.btoa, map: Array.prototype.map, push: Array.prototype.push,
+    charCodeAt: String.prototype.charCodeAt, Error: globalThis.Error, apply: Reflect.apply,
+    length: Reflect.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'length'),
+  };
+  JSON.stringify = () => { saw('JSON.stringify'); return '{}'; };
+  globalThis.btoa = () => { saw('btoa'); return ''; };
+  Array.prototype.map = function () { saw('Array.map'); return []; };
+  Array.prototype.push = function () { saw('Array.push'); return 0; };
+  String.prototype.charCodeAt = function () { saw('charCodeAt'); return 0; };
+  Object.defineProperty(Object.getPrototypeOf(Uint8Array.prototype), 'length', { get() { saw('length'); return 0; }, configurable: true });
+  Object.defineProperty(Error.prototype, 'stack', { get() { saw('Error.stack'); return ''; }, configurable: true });
+  Error.prepareStackTrace = () => { saw('prepareStackTrace'); return ''; };
+  globalThis.Error = function () { saw('Error'); };
+  Reflect.apply = () => { saw('Reflect.apply'); };
+  aborts(() => sr.block('end', 'read'));
+  Object.defineProperty(Object.getPrototypeOf(Uint8Array.prototype), 'length', saved.length);
+  JSON.stringify = saved.stringify; JSON.parse = saved.parse; globalThis.btoa = saved.btoa; Array.prototype.map = saved.map;
+  Array.prototype.push = saved.push; String.prototype.charCodeAt = saved.charCodeAt; globalThis.Error = saved.Error; Reflect.apply = saved.apply;
+  console.log(JSON.stringify({ calls, stopped }));
+`);
+assert.deepEqual(hostile.calls, [], 'the stop calls nothing the program replaced');
+assert.equal(hostile.stopped.captured.stdout, 'printed "so far"\n', 'captured output rides the stop');
+assert.equal(hostile.stopped.tape.reads[0], 2);
+assert.equal(Buffer.from(hostile.stopped.tape.random, 'base64').length, 7);
 
 const prefix = { stdout: b64('before ' + JSON.stringify(first.draws) + '\n'), stderr: b64('warn\n') };
 const replay = { run: 2, tape: first.stopped.tape, stopAt: 1, prefix };
 const replayed = (script, launch = replay) => guest(`
   const replay = JSON.parse(input);
-  sr.begin({ replay, abort, captured: false, nonce: NONCE });
+  let boundaries = 0;
+  sr.begin({ replay, abort, captured: false, nonce: NONCE, boundary: () => { boundaries++; } });
   sr.arm(false);
   const draws = () => [Math.random(), Date.now(), new Date().toISOString(), crypto.randomUUID(), performance.now(), [...crypto.getRandomValues(new Uint8Array(4))]];
   ${script}
 `, JSON.stringify(launch));
 
-// Run 2 replays it: the same draws, observation, output (dropped) and read;
-// at the boundary it goes on, live.
+// Run 2 replays it: the same draws, the same output (dropped), the same read;
+// at the boundary it tells the session, and goes on, live.
 const second = replayed(`
   const d = draws();
-  sr.observe('readFileSync', 'config v1');
   const dropped = [sr.write('stdout', enc('before ' + JSON.stringify(d) + '\\n')), sr.write('stderr', enc('warn\\n'))];
   const reads = [sr.readSome(7, false), sr.readSome(9, true)];
   const fresh = sr.write('stdout', enc('after\\n'));
-  console.log(JSON.stringify({ d, dropped, reads, freshAt: fresh.at, freshRun: fresh.run, short: sr.finish(), next: Math.random() }));
+  console.log(JSON.stringify({ d, dropped, reads, freshAt: fresh.at, freshRun: fresh.run, short: sr.finish(), boundaries }));
 `);
 assert.deepEqual(second.d, first.draws, 'every draw the stopped run made is drawn again');
 assert.deepEqual(second.dropped, [null, null], 'what the stopped run printed is not sent again');
 assert.deepEqual(second.reads, [3, 9], 'the stopped run\'s read returns what it did; past the boundary, what is there');
 assert.deepEqual([second.freshAt, second.freshRun], [Buffer.from(prefix.stdout, 'base64').length, 2]);
 assert.equal(second.short, '');
+assert.equal(second.boundaries, 1, 'the session is told when the replay reaches the read');
 
 // A replay is ended, before it shows or does anything, when it does not
-// retrace the run before it:
+// retrace the run before it.
 const divergence = (script) => replayed(`aborts(() => { const d = draws(); ${script} }); console.log(JSON.stringify({ stopped }));`).stopped;
-const writes = `sr.observe('readFileSync', 'config v1'); sr.write('stdout', enc('before ' + JSON.stringify(d) + '\\n'));`;
-//   it observes a changed file (the config it read changed while it waited);
-assert.match(divergence(`sr.observe('readFileSync', 'config v2');`).why, /readFileSync is not what the run before it saw/);
-//   it prints new output on one stream before the other has caught up;
+const writes = `sr.write('stdout', enc('before ' + JSON.stringify(d) + '\\n'));`;
 assert.match(divergence(`${writes} sr.write('stdout', enc('C\\n'));`).why, /printed more to stdout than the run before/);
-//   it reaches the read with a stream short of what was shown;
 assert.match(divergence(`${writes} sr.readSome(3, false); sr.readSome(5, false);`).why, /had printed 5 bytes to stderr and this one 0/);
-//   it does something outside itself the run before it did not;
 assert.match(divergence(`sr.effect('writeFile /x');`).why, /did something outside itself before the read/);
-//   it waits at a read the run before it did not wait at.
 assert.match(divergence(`${writes} sr.write('stderr', enc('warn\\n')); sr.readSome(0, false); sr.block('data', 'read');`).why, /its read of stdin found less/);
-const diverged = divergence(`sr.observe('readFileSync', 'config v2');`);
+const diverged = divergence(`sr.write('stdout', enc('BEFORE'));`);
 assert.equal(diverged.kind, 'diverged');
 assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify(diverged)), NONCE, 2), null);
 
-// A replay that ends, or a resident that finishes booting, before the read it
-// stopped at did not retrace its run.
 const unfinished = replayed(`console.log(JSON.stringify({ finish: sr.finish(), booted: sr.booted() }));`);
 assert.match(unfinished.finish, /ended before the read of stdin it stopped at/);
 assert.match(unfinished.booted, /finished starting before the read of stdin it stopped at/);
@@ -225,10 +375,10 @@ assert.match(unfinished.booted, /finished starting before the read of stdin it s
 // open and its own output do not count, nor does anything before it started.
 const ledgered = guest(`
   sr.begin({ replay: null, abort, captured: false, nonce: NONCE });
-  const supervisor = sr.ledger({ stat: () => 'stat', fsOpen: () => 'open', writeFile: () => 'written', stdout: () => 'out', cpSpawn: () => 'spawned' });
+  const supervisor = sr.ledger({ stat: () => 'stat', fsOpen: () => 'open', writeFile: () => 'written', stdout: () => 'out', replayBoundary: () => 'b' });
   supervisor.writeFile('/during/boot', 'x');
   sr.arm(true);
-  supervisor.stat('/a'); supervisor.fsOpen('/a', { read: true }); supervisor.stdout(enc('x'));
+  supervisor.stat('/a'); supervisor.fsOpen('/a', { read: true }); supervisor.stdout(enc('x')); supervisor.replayBoundary();
   aborts(() => sr.block('end', 'read'));
   console.log(JSON.stringify({ stopped: stopped !== null }));
 `);
@@ -243,6 +393,15 @@ const changed = guest(`
 `);
 assert.equal(changed.stopped, null);
 assert.equal(changed.why, 'did something outside itself first (anythingNew /z), which a second run would do again', 'an unknown call counts, and the first is named');
+// D1: once it cannot be replayed, the run records nothing more.
+const disqualified = guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE });
+  sr.arm(true);
+  sr.effect('writeFile /x');
+  for (let i = 0; i < 1000; i++) { Date.now(); Math.random(); }
+  console.log(JSON.stringify({ why: sr.block('end', 'read') }));
+`);
+assert.match(disqualified.why, /writeFile \/x/);
 assert.equal(guest(`
   sr.begin({ replay: null, abort: null, captured: false, nonce: NONCE });
   sr.arm(true);
@@ -253,27 +412,11 @@ assert.equal(guest(`
   sr.arm(false, 'is a server started from the terminal, whose stdin nothing writes');
   console.log(JSON.stringify({ why: sr.block('end', 'read') }));
 `).why, 'is a server started from the terminal, whose stdin nothing writes');
-
-// Captured output rides the stop, so an exit that does not run it again
-// still hands it back.
-const captured = guest(`
-  let stdout = '', stderr = '';
-  sr.begin({ replay: null, abort, captured: true, capturedText: () => ({ stdout, stderr }), nonce: NONCE });
+// Captured output past the bound: no stop.
+assert.match(guest(`
+  sr.begin({ replay: null, abort, captured: true, capturedText: () => ({ stdout: 'x'.repeat(1024 * 1024 + 1), stderr: '' }), nonce: NONCE });
   sr.arm(true);
-  stdout += 'before\\n';
-  aborts(() => sr.block('end', 'read'));
-  const first = stopped;
-  const big = guest2();
-  console.log(JSON.stringify({ stopped: first, big }));
-  function guest2() {
-    stopped = null;
-    stdout = 'x'.repeat(1024 * 1024 + 1);
-    sr.begin({ replay: null, abort, captured: true, capturedText: () => ({ stdout, stderr }), nonce: NONCE });
-    sr.arm(true);
-    return sr.block('end', 'read');
-  }
-`);
-assert.equal(Buffer.from(captured.stopped.captured.stdout, 'base64').toString(), 'before\n');
-assert.match(captured.big, /printed more than 1048576 bytes first/, 'more captured output than a stop can keep: no stop');
+  console.log(JSON.stringify({ why: sr.block('end', 'read') }));
+`).why, /printed more than 1048576 bytes first/);
 
-console.log('stop-replay: the gate, the account, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it');
+console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it');

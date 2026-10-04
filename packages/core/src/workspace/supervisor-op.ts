@@ -52,6 +52,12 @@ export interface SupervisorOpEnvelope {
   /** A host call's credential. Meaningless — and refused — with a pid. */
   readonly cred?: VfsCred;
   readonly writerId?: string;
+  /**
+   * Which run of the process sent it: its writer identity, stamped by the
+   * supervisor binding from its props. A process that can stop at a read of
+   * stdin is answered for its current run only (worker stop-replay.ts).
+   */
+  readonly run?: string;
   readonly mutationOwner?: string;
   readonly stream?: ReadableStream<Uint8Array>;
   /** Which mutation a {@link SUPERVISOR_DELIVER_OP} envelope carries. Refused on any other op. */
@@ -182,7 +188,7 @@ function credFor(deps: SupervisorOpDeps, pid: number | undefined, cred?: VfsCred
  * `mutationOwner`). The envelope is always the shape — a host never
  * re-parses it.
  */
-export type SupervisorOpArg = number | 'pid' | 'writerId' | 'stream' | 'mutationOwner';
+export type SupervisorOpArg = number | 'pid' | 'writerId' | 'run' | 'stream' | 'mutationOwner';
 
 export interface SupervisorOpRoute {
   /** The host method this op dispatches to. */
@@ -236,6 +242,7 @@ export const SUPERVISOR_OPS = [
   'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
   'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
   'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
+  'replayBoundary', 'netTls', 'outbound',
 ] as const;
 
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
@@ -319,6 +326,10 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
   hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
+  // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
+  replayBoundary: { method: '_rpcReplayBoundary', args: ['pid', 'run'] },
+  netTls: { method: '_rpcNetTls', args: [0, 1, 2, 'pid', 'run'] },
+  outbound: { method: '_rpcOutbound', args: [0, 1, 'pid', 'run'] },
 } as const;
 
 /** Every native op reads its filesystem the same way: the envelope's identity. */
@@ -445,6 +456,8 @@ export interface SupervisorOpBridgeStore {
   readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
   readonly forget: (pid: number) => Promise<void>;
+  /** Close a live pid's descriptors for a run that starts in place of another (NimbusFilesystemAuthority.rewindProcess). */
+  readonly rewind?: (pid: number) => Promise<void>;
   readonly dispose: () => Promise<void>;
 }
 
@@ -468,6 +481,7 @@ export function createSupervisorBridgeStore(
       return lease.fs;
     },
     forget: (pid) => authority.releaseProcess(pid),
+    rewind: async (pid) => { await authority.rewindProcess?.(pid); },
     dispose: async () => {
       await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));
       hostLeases.clear();
