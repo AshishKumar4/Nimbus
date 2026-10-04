@@ -97,6 +97,10 @@ const __streamMod = (() => {
         emitClose: opts?.emitClose !== false,
         destroyed: false,
         readableLength: 0,
+        // A consumer reads it in readable mode: a 'readable' listener, or an
+        // async iterator, which owns it for its life. Node's flushStdio
+        // leaves such a stream to its consumer.
+        readableListening: false,
       };
       this.readable = true;
       if (opts?.read) this._read = opts.read.bind(this);
@@ -214,6 +218,7 @@ const __streamMod = (() => {
     on(event, listener) {
       const result = super.on(event, listener);
       if (event === 'data' && this._readableState.flowing !== false) this.resume();
+      else if (event === 'readable') this._readableState.readableListening = true;
       return result;
     }
     addListener(event, listener) { return this.on(event, listener); }
@@ -270,6 +275,7 @@ const __streamMod = (() => {
     [Symbol.asyncIterator]() {
       const self = this;
       const state = self._readableState;
+      state.readableListening = true;
       const iterator = {
         next() {
           return new Promise((resolve, reject) => {

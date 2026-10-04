@@ -24,6 +24,10 @@
 //   - unread: a child fails, writing its error to a stderr its parent never
 //     reads. Its parent still gets 'close', as Node's flushStdio gives it.
 //     Before, the unread stderr held 'close' back for good.
+//   - exitcapture: a program run by a shell line (`sh -c 'node x'`, its
+//     output captured for the line) calls process.exit(0) with a callback
+//     still queued: nothing it would print after the exit is printed.
+//     Before, the captured form kept writing (`after` and a child's 'close').
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -68,6 +72,14 @@ for (let i = 0; i < N; i++) {
     if (results.length === N) { console.log(results.sort().join('\\n')); console.log('T ' + (Date.now() - t0)); }
   });
 }
+`,
+  exitcapture: `
+const { spawn } = require('child_process');
+require('fs').writeFileSync('/tmp/exitcapture.js', "Promise.resolve().then(() => console.log('after')); process.on('exit', () => console.log('exit handler')); console.log('first'); process.exit(0);");
+const c = spawn('sh', ['-c', 'node /tmp/exitcapture.js']);
+let out = '';
+c.stdout.on('data', (d) => { out += d; });
+c.on('close', (code) => console.log(JSON.stringify(out) + ' ' + code));
 `,
   unread: `
 const { spawn } = require('child_process');

@@ -64,6 +64,8 @@ export interface ExecStreamResult {
 interface OutputChunk {
   seq: number;
   data: Uint8Array;
+  /** Its number among the parent's news (FacetProcessManagerDeps.issueNews); 0 for none. */
+  news: number;
 }
 
 /**
@@ -118,6 +120,13 @@ interface ChildEntry {
   /** Woken when the child starts, or ends, whichever is first. */
   startWaiters: Array<() => void>;
   exitWaiters: Array<(r: ChildExitStatus) => void>;
+
+  // The parent's news of it, numbered as it is produced (issueNews): its
+  // start, its exit, and the end of each output stream the parent reads.
+  // Each reply that delivers one carries its number. 0: none issued.
+  startNews: number;
+  exitNews: number;
+  closedNews: { 1: number; 2: number };
 }
 
 /**
@@ -132,6 +141,8 @@ export interface ChildExitStatus {
   spawnError?: string;
   /** Not done, but started: what a wait that asked to hear of the start answers. */
   started?: boolean;
+  /** The parent's news this answer delivers (FacetProcessManagerDeps.issueNews). */
+  news?: number[];
 }
 
 export interface SpawnReq {
@@ -151,6 +162,8 @@ export interface ReadOutputResult {
   chunks: { seq: number; data: Uint8Array }[];
   closed: boolean;
   maxSeq: number;
+  /** The parent's news this answer delivers (FacetProcessManagerDeps.issueNews). */
+  news?: number[];
 }
 
 export interface DrainResult {
@@ -260,11 +273,13 @@ export interface FacetProcessManagerDeps {
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
   /**
-   * News of a child was produced for its parent `parentPid`: output the
-   * parent reads, the child's start, its exit. The parent's report that it
-   * is blocked on its children stops being current (fabric noteProcessNews).
+   * Number a piece of news of a child as it is produced, for its parent
+   * `parentPid`: output the parent reads, the child's start, the end of a
+   * stream, its exit (fabric issueProcessNews). The reply that delivers it
+   * carries the number, and the parent's report that it is blocked counts
+   * only once it has applied every number issued. 0: not numbered.
    */
-  onNews?: (parentPid: number) => void;
+  issueNews?: (parentPid: number) => number;
 }
 
 /** Cap recursion depth to defend against runaway spawn loops. */
@@ -437,6 +452,9 @@ export class FacetProcessManager {
       spawnError: null,
       started: false,
       startWaiters: [],
+      startNews: 0,
+      exitNews: 0,
+      closedNews: { 1: 0, 2: 0 },
       exitWaiters: [],
     };
     this.children.set(pid, child);
@@ -729,9 +747,9 @@ export class FacetProcessManager {
   /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
   private _appendOutput(child: ChildEntry, fd: 1 | 2, data: Uint8Array): void {
     if (data.byteLength === 0) return;
-    if (child.stdio[fd] !== 'ignore') this._news(child);
     child.outputSeq[fd]++;
-    const chunk: OutputChunk = { seq: child.outputSeq[fd], data };
+    const news = child.stdio[fd] !== 'ignore' ? this._news(child) : 0;
+    const chunk: OutputChunk = { seq: child.outputSeq[fd], data, news };
     child.outputs[fd].push(chunk);
     // Tee to the process supervisor's log ring for `logs <pid>` parity
     // with facet processes; the ring decodes at its own edge.
@@ -742,16 +760,31 @@ export class FacetProcessManager {
     for (let i = child.outputWaiters.length - 1; i >= 0; i--) {
       const w = child.outputWaiters[i];
       if (w.fd !== fd) continue;
-      const fresh = child.outputs[fd].filter((c) => c.seq > w.sinceSeq);
-      if (fresh.length > 0) {
+      if (child.outputs[fd].some((c) => c.seq > w.sinceSeq)) {
         child.outputWaiters.splice(i, 1);
-        w.resolve({
-          chunks: fresh,
-          closed: child.exitCode !== null,
-          maxSeq: child.outputSeq[fd],
-        });
+        w.resolve(this._readResult(child, fd, w.sinceSeq));
       }
     }
+  }
+
+  /**
+   * A read's answer: the chunks past `sinceSeq`, whether the stream has
+   * ended, and the parent's news it delivers: each chunk's, the child's
+   * start (its output says it started), and the stream's end.
+   */
+  private _readResult(child: ChildEntry, fd: 1 | 2, sinceSeq: number): ReadOutputResult {
+    const fresh = child.outputs[fd].filter((c) => c.seq > sinceSeq);
+    const closed = child.exitCode !== null;
+    const news = fresh.map((c) => c.news);
+    if (fresh.length > 0) news.push(child.startNews);
+    if (closed) news.push(child.closedNews[fd]);
+    const numbers = news.filter((n) => n > 0);
+    return {
+      chunks: fresh.map(({ seq, data }) => ({ seq, data })),
+      closed,
+      maxSeq: child.outputSeq[fd],
+      ...(numbers.length > 0 ? { news: numbers } : {}),
+    };
   }
 
   /**
@@ -768,13 +801,8 @@ export class FacetProcessManager {
     if (!child) {
       return { chunks: [], closed: true, maxSeq: 0 };
     }
-    const fresh = child.outputs[fd].filter((c) => c.seq > sinceSeq);
-    if (fresh.length > 0 || child.exitCode !== null) {
-      return {
-        chunks: fresh,
-        closed: child.exitCode !== null,
-        maxSeq: child.outputSeq[fd],
-      };
+    if (child.exitCode !== null || child.outputs[fd].some((c) => c.seq > sinceSeq)) {
+      return this._readResult(child, fd, sinceSeq);
     }
     return new Promise<ReadOutputResult>((resolve) => {
       const expiresAt = Date.now() + Math.min(waitMs, 5000);
@@ -791,12 +819,7 @@ export class FacetProcessManager {
         const idx = child.outputWaiters.indexOf(waiter);
         if (idx >= 0) child.outputWaiters.splice(idx, 1);
         // Re-snapshot at resolution time
-        const fresh2 = child.outputs[fd].filter((c) => c.seq > sinceSeq);
-        resolve({
-          chunks: fresh2,
-          closed: child.exitCode !== null,
-          maxSeq: child.outputSeq[fd],
-        });
+        resolve(this._readResult(child, fd, sinceSeq));
       }, expiresAt - Date.now());
       child.outputWaiters.push(waiter);
     });
@@ -863,7 +886,13 @@ export class FacetProcessManager {
     child.exitCode = exitCode;
     child.signal = signal;
     child.endedAt = Date.now();
-    this._news(child);
+    // Numbered before the process table hears of the exit, so the parent's
+    // report is stale before its child is gone from the table. A refused
+    // spawn's streams carry nothing: its parent ends them itself.
+    child.exitNews = this._news(child);
+    if (child.spawnError === null) {
+      for (const fd of [1, 2] as const) if (child.stdio[fd] !== 'ignore') child.closedNews[fd] = this._news(child);
+    }
 
     // Tell the process supervisor so `ps` and `logs <pid>` line up.
     try { this.deps.processes.exit(child.pid, exitCode); } catch {}
@@ -873,18 +902,17 @@ export class FacetProcessManager {
     const status = this._exitStatus(child);
     for (const w of child.exitWaiters.splice(0)) w(status);
     // Wake output waiters with closed=true so polling parents stop.
-    for (const w of child.outputWaiters.splice(0)) {
-      const fresh = child.outputs[w.fd].filter((c) => c.seq > w.sinceSeq);
-      w.resolve({ chunks: fresh, closed: true, maxSeq: child.outputSeq[w.fd] });
-    }
+    for (const w of child.outputWaiters.splice(0)) w.resolve(this._readResult(child, w.fd, w.sinceSeq));
     // A child blocked on cpReadStdin is told stdin ended, and exits cleanly.
     for (const w of child.stdinWaiters.splice(0)) w();
   }
 
-  /** A stamped child's end, as Node reports it (ChildExitStatus). */
+  /** A stamped child's end, as Node reports it (ChildExitStatus), with the news it delivers. */
   private _exitStatus(child: ChildEntry): ChildExitStatus {
-    if (child.spawnError !== null) return { done: true, exitCode: child.exitCode, signal: null, spawnError: child.spawnError };
-    return { done: true, exitCode: child.signal === null ? child.exitCode : null, signal: child.signal };
+    const numbers = [child.startNews, child.exitNews].filter((n) => n > 0);
+    const news = numbers.length > 0 ? { news: numbers } : {};
+    if (child.spawnError !== null) return { done: true, exitCode: child.exitCode, signal: null, spawnError: child.spawnError, ...news };
+    return { done: true, exitCode: child.signal === null ? child.exitCode : null, signal: child.signal, ...news };
   }
 
   /**
@@ -909,7 +937,9 @@ export class FacetProcessManager {
     if (child.exitCode !== null) return this._exitStatus(child);
     // A caller that has not heard of the start (a parent's ChildProcess,
     // which emits 'spawn' on it) is told of it as soon as it comes.
-    const startNews = (): ChildExitStatus => ({ done: false, exitCode: null, signal: null, started: true });
+    const startNews = (): ChildExitStatus => ({
+      done: false, exitCode: null, signal: null, started: true, ...(child.startNews > 0 ? { news: [child.startNews] } : {}),
+    });
     if (!knownStarted && child.started) return startNews();
     return new Promise((resolve) => {
       const settle = (r: ChildExitStatus) => {
@@ -932,13 +962,13 @@ export class FacetProcessManager {
   private _markStarted(child: ChildEntry): void {
     if (child.started) return;
     child.started = true;
-    this._news(child);
+    child.startNews = this._news(child);
     for (const w of child.startWaiters.splice(0)) w();
   }
 
-  /** News of `child` for its parent (FacetProcessManagerDeps.onNews). */
-  private _news(child: ChildEntry): void {
-    try { this.deps.onNews?.(child.parentPid); } catch { /* the news still reaches it */ }
+  /** A piece of news of `child` for its parent, numbered (FacetProcessManagerDeps.issueNews). */
+  private _news(child: ChildEntry): number {
+    try { return this.deps.issueNews?.(child.parentPid) ?? 0; } catch { return 0; }
   }
 
   // ── housekeeping ────────────────────────────────────────────────────────

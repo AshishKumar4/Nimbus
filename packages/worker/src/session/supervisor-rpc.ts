@@ -929,8 +929,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   // route through the shared FacetProcessManager.
   //
 
-  /** `news`: this reply's number among the news replies made for the caller (fabric processNewsReply). */
-  async cpSpawn(req: any): Promise<{ childPid: number; news?: number }> {
+  async cpSpawn(req: any): Promise<{ childPid: number }> {
     return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
   }
 
@@ -965,7 +964,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     sinceSeq: number,
     waitMs: number,
     acquire?: FsAcquireArgs,
-  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number; news?: number; acquired?: VfsDeliveredAcquire }> {
+  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number; news?: number[]; acquired?: VfsDeliveredAcquire }> {
     return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));
   }
 
@@ -986,17 +985,17 @@ export class SupervisorRPC extends WorkerEntrypoint {
     waitMs: number,
     acquire?: FsAcquireArgs,
     knownStarted?: boolean,
-  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; spawnError?: string; started?: boolean; news?: number; acquired?: VfsDeliveredAcquire }> {
+  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; spawnError?: string; started?: boolean; news?: number[]; acquired?: VfsDeliveredAcquire }> {
     return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this._reportingPid() }));
   }
 
   /**
    * This process says whether its only remaining work is waiting on its own
-   * children, on which, and how many of the news replies made for it it has
-   * seen, every one (the session's Dynamic Worker ledger tells a wait no
-   * release can satisfy by it: fabric budgets.ts setProcessBlocked).
+   * children, and the contiguous run of news numbers it has applied (the
+   * session's Dynamic Worker ledger tells a wait no release can satisfy by
+   * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
    */
-  async cpBlocked(report: { blocked: boolean; seen: number; waitsOn: number[] }): Promise<void> {
+  async cpBlocked(report: { blocked: boolean; frontier: number; seq: number }): Promise<void> {
     return this._call(this._op('cpBlocked', [report], { pid: this._pid() }));
   }
 }

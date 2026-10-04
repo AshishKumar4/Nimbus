@@ -2,7 +2,13 @@ import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
-import { isDynamicWorkerDeadlock, noteProcessNews, withLaunchAdmission } from "@nimbus-sh/fabric/budgets.js";
+import {
+  bindProcessWaitGraph,
+  isDynamicWorkerDeadlock,
+  issueProcessNews,
+  processWaitGraphChanged,
+  withLaunchAdmission,
+} from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import type { ChildExit, Command, CommandContext, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
@@ -243,7 +249,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         try {
           const code = await withLaunchAdmission(
             runtimeContext.ctx,
-            { pid: payload.processPid, ancestors: self.processes.ancestorsOf(payload.processPid) },
+            { pid: payload.processPid },
             ac.signal,
             () => { hooks.onStarted?.(); return cmd(ctx); },
           );
@@ -355,12 +361,22 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         self.processes.exit(child.pid, exitCode);
       }
     };
+    // The Dynamic Worker ledger's wait-for edges are the session's own
+    // account of its processes: the table's children, and what a shell line
+    // awaits (fabric ProcessWaitGraph); a change to either may let it tell a
+    // wait nothing can satisfy.
+    const ledgerCtx = runtimeContext.ctx;
+    bindProcessWaitGraph(ledgerCtx, {
+      children: (pid) => self.processes.childrenOf(pid),
+      awaits: (pid) => self.processes.awaitsOnly(pid),
+    });
+    self.processes.setOnWaitChange(() => processWaitGraphChanged(ledgerCtx));
     self.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processes: self.processes,
       vfsForProcess: (pid) => new ProcessView(self.getFilesystemAuthority().bind({ pid, cred: self.processes.cred(pid) })),
       commandRegistry: cmdRegistryAdapter,
-      onNews: (parentPid) => noteProcessNews(runtimeContext.ctx, parentPid),
+      issueNews: (parentPid) => issueProcessNews(ledgerCtx, parentPid),
       shellExecutor: {
         execute: async (
           pid: number,

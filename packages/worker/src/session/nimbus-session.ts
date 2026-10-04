@@ -933,7 +933,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   // W8 child_process RPC
-  async _rpcCpSpawn(req: any): Promise<{ childPid: number; news: number }> { return _rpc._rpcCpSpawn(this as any, req); }
+  async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }
   async _rpcCpStdinEnd(childPid: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid); }
   async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid); }

@@ -5802,6 +5802,10 @@ export class FacetManager {
       // its pid. At the top of the table it ran as the session user whoever
       // started it.
       entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { parentPid: opts.invokerPid });
+      // The command that ran it awaits it as that command's work (a shell
+      // line's `node x`), until it ends: the session tells a shell doing
+      // nothing but await its programs by it (SessionProcessSupervisor).
+      if (opts.invokerPid !== undefined) this.processes.beginAwait(opts.invokerPid, entry.pid);
       // Short foreground `node -e ...` helpers are quiet by design — only
       // notify for user-facing `node <file>` invocations, which covers the
       // real user intent (running scripts, wrangler, etc.).
@@ -6134,7 +6138,6 @@ export class FacetManager {
             body,
             signal,
           }),
-          ancestors: this.processes.ancestorsOf(entry.pid),
           onWriterActivated: (id) => {
             this._activateProcessVfsWriter(entry.pid, id);
             writerActivated = true;

@@ -30,7 +30,9 @@
 //     not compared with it. Before, all of them waited for good. The same
 //     with each child an ES module blocked inside its top-level await
 //     (tladeadlock): before, such children never reported
-//     their state, and all ten hung.
+//     their state, and all ten hung. The same with each child a shell line
+//     running the program (shdeadlock): the parent's children are shells,
+//     which hold no worker; before, they were never stuck, and all ten hung.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -142,6 +144,46 @@ for (let i = 0; i < N; i++) {
     if (results.length === N) console.log(results.sort().join('\\n'));
   });
 }
+`,
+  shdeadlock: `
+const { spawn } = require('child_process');
+const fs = require('fs');
+const N = 9;
+// As deadlock, but each child is a shell line, sh -c 'node <program>': the
+// parent's child is the shell, and the program, which spawns and waits on a
+// grandchild, runs under a pid of its own the parent never names. A shell
+// line hands its program's output back when the program ends, so readiness
+// is a file each program writes.
+fs.writeFileSync('/home/user/sh-child.js', [
+  "const fs = require('fs');",
+  "fs.writeFileSync('/home/user/shready/' + process.pid, 'ready');",
+  "const go = async () => { for (;;) { try { await fs.promises.access('/home/user/shdeadlock-go'); return; } catch { await new Promise((r) => setTimeout(r, 100)); } } };",
+  "go().then(() => {",
+  "  const g = require('child_process').spawn('node', ['-e', 'console.log(1+1)']);",
+  "  let o = '';",
+  "  g.stdout.on('data', (d) => { o += d; });",
+  "  g.on('error', (e) => { console.log('error ' + e.code); process.exit(0); });",
+  "  g.on('close', (code) => { console.log('close ' + code + ' ' + o.trim()); process.exit(0); });",
+  "});",
+].join('\\n'));
+try { fs.unlinkSync('/home/user/shdeadlock-go'); } catch {}
+fs.rmSync('/home/user/shready', { recursive: true, force: true });
+fs.mkdirSync('/home/user/shready');
+const results = [];
+for (let i = 0; i < N; i++) {
+  const c = spawn('sh', ['-c', 'node /home/user/sh-child.js']);
+  let out = '';
+  c.stdout.on('data', (d) => { out += d; });
+  c.on('close', (code) => {
+    results.push(out.trim() + ' ; ' + code);
+    if (results.length === N) console.log(results.sort().join('\\n'));
+  });
+}
+const poll = setInterval(() => {
+  if (fs.readdirSync('/home/user/shready').length < N) return;
+  clearInterval(poll);
+  fs.writeFileSync('/home/user/shdeadlock-go', 'go');
+}, 100);
 `,
   tladeadlock: `
 const { spawn } = require('child_process');
@@ -299,7 +341,7 @@ function split(text) {
 }
 
 // Host node has no Dynamic Worker limit to deadlock on; that scenario is asserted on its own.
-const NO_DIFFERENTIAL = new Set(['deadlock', 'tladeadlock', 'tsburst', 'exitsched', 'bun10', 'syncchain', 'syncfork']);
+const NO_DIFFERENTIAL = new Set(['deadlock', 'shdeadlock', 'tladeadlock', 'tsburst', 'exitsched', 'bun10', 'syncchain', 'syncfork']);
 const host = {};
 for (const [name, source] of Object.entries(SCENARIOS)) {
   if (NO_DIFFERENTIAL.has(name)) continue;
@@ -390,6 +432,14 @@ try {
 
     // The same nine as ES modules, blocked inside their top-level await: they
     // report it as callbacks do (before, they never did, and all ten hung).
+    // The same nine as shell lines over their programs: the shell awaits its
+    // program, and is stuck exactly when it is (before, the parent named
+    // the shells, which held no worker and said nothing, and all ten hung).
+    const sh = await run('shdeadlock');
+    console.log('  shdeadlock:\n    ' + sh.lines.join('\n    '));
+    assert.deepEqual(sh.lines, ['close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'error EAGAIN ; 0'],
+      "through sh -c, one grandchild's spawn fails EAGAIN, and the other eight run");
+
     const tla = await run('tladeadlock');
     console.log('  tladeadlock:\n    ' + tla.lines.join('\n    '));
     assert.deepEqual(tla.lines, ['close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'error EAGAIN ; 0'],

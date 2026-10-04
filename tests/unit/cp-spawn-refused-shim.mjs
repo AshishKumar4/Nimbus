@@ -9,7 +9,9 @@
 //
 // A child whose output its parent never reads still closes after it exits,
 // as Node's does (flushStdio resumes untouched streams): red on 84f4aba2f,
-// where the unread stderr held 'close' back for good.
+// where the unread stderr held 'close' back for good. A stream an async
+// iterator owns is left to it: red on f5faea96e, where the drain resumed it
+// and its second chunk went to no one.
 //
 // Two races, red on 34f5b1e0e: the wait loop and the exit-time drain both
 // hearing the same refusal emitted 'error' twice; output that arrived before
@@ -142,6 +144,30 @@ const supervisorFor = (answer) => ({
   child.on('close', (code) => events.push(['close', code]));
   for (let i = 0; i < 200 && !events.some((e) => e[0] === 'close'); i++) await tick();
   assert.deepEqual(events, [['exit', 1], ['close', 1]], "unread output is drained after 'exit', and 'close' follows");
+}
+
+// ── an async iterator owns its stream: the drain after 'exit' leaves it ────
+{
+  // Two chunks, A and B, then the end; the child exits while the iterator,
+  // having taken A, is busy with it (paused, between next() calls).
+  let polls = 0;
+  const supervisor = supervisorFor(() => (++polls < 2 ? { done: false, started: true } : { done: true, exitCode: 0, signal: null }));
+  supervisor.cpReadOutput = async (_pid, fd, since) => {
+    await tick();
+    if (fd === 1 && since === 0) {
+      return { chunks: [{ seq: 1, data: new TextEncoder().encode('A') }, { seq: 2, data: new TextEncoder().encode('B') }], closed: true, maxSeq: 2 };
+    }
+    return { chunks: [], closed: true, maxSeq: since };
+  };
+  const { cp } = make(supervisor);
+  const child = cp.spawn('node', ['-e', 'process.stdout.write("AB")'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise((resolve) => child.on('exit', resolve));
+  const read = [];
+  for await (const chunk of child.stdout) {
+    read.push(String(chunk));
+    if (read.length === 1) { await exited; for (let i = 0; i < 10; i++) await tick(); }
+  }
+  assert.deepEqual(read, ['A', 'B'], "the iterator reads every chunk: the drain after 'exit' does not resume a stream it owns");
 }
 
 // ── started: the pid and 'spawn' come with the start, not before ───────────

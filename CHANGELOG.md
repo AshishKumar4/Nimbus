@@ -33,24 +33,34 @@ published independently in the `@nimbus-sh` npm scope.
   completes. Only a kill, Ctrl-C, or the ledger's refusal of a wait nothing
   can satisfy (below) ends the wait.
 - A wait for a Dynamic Worker that no release can satisfy is refused rather
-  than left to wait for good. A process says when its only remaining work
-  is waiting on its own children, and which (its event loop, top-level
-  `await` included, has no timer, socket, server, stdin read or fetch of
-  its own pending). A holder is stuck when it says so and every child it
-  waits on is queued for a worker or stuck too; when every worker in flight
-  is held by a stuck process, nothing will make room, and the newest queued
-  child of a stuck holder is refused. A child that runs without a worker (a
-  `sleep 5` builtin), or one whose output, start or exit the holder has not
-  yet heard, keeps it from being stuck: a report counts only while no news
-  of its children has come since. That child's spawn fails as Node's does
-  at a process limit: an 'error' event (`spawn node EAGAIN`, errno -11), no
+  than left to wait for good. Who waits on whom is the session's own
+  account, never pids a guest names: a guest holding a worker waits on its
+  running children in the process table; a shell line running in the
+  session (`sh -c 'node x'`) waits on the programs it started, when awaiting
+  them is all its commands are doing. A guest says when its only remaining
+  work is waiting on its children (its event loop, top-level `await`
+  included, has no timer, socket, server, stdin read or fetch of its own
+  pending). The session numbers each piece of news of a guest's children as
+  it is produced (a start, output, the end of a stream, an exit, a refused
+  spawn); the reply that delivers it carries the number, and the guest
+  acknowledges the contiguous run it has applied, whatever order the
+  replies came in. Its report counts only while that run is everything
+  issued, and a report older than the last taken is dropped. A process is
+  stuck when it is in that state and each process it waits on is queued for
+  a worker or stuck too; a builtin running (`sleep`) never is. When every
+  worker in flight is held by a stuck process, the newest queued process a
+  stuck one waits on is refused. That child's spawn fails as Node's does at
+  a process limit: an 'error' event (`spawn node EAGAIN`, errno -11), no
   'spawn', no 'exit', no pid, and 'close' with -11. Its program never runs;
-  its parent hears it and can go on. Nine children each doing nothing but
-  wait on a grandchild (in a callback, or in a top-level `await`) get one
-  EAGAIN and eight runs; the same nine with a `process.exit(0)` scheduled
-  keep waiting and complete; two `spawnSync` chains that fill the limit get
-  one EAGAIN and both finish. A process that does not say (a resident, a
-  non-Node runtime) is taken to end on its own.
+  whoever waits on it hears it and can go on. Nine children each doing
+  nothing but wait on a grandchild (in a callback, a top-level `await`, or
+  under `sh -c`) get one EAGAIN and eight runs; the same nine with a
+  `process.exit(0)` scheduled keep waiting and complete; two `spawnSync`
+  chains that fill the limit get one EAGAIN and both finish. A process that
+  does not say (a resident, a non-Node runtime) is taken to end on its own.
+  The protocol is checked over every interleaving of reports, news (sent and
+  delivered out of order), exits, admissions and refusals for small
+  families (`dynamic-worker-protocol-model`).
 - A child's pid is published, and 'spawn' emitted, once the session has
   admitted it or its first output arrives, as Node publishes them only for
   a spawn that succeeded and always before the child's output; a refused
@@ -81,9 +91,11 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a child whose output its parent never read exited but never
   closed: its unread stderr (an error message) held 'close' back for good,
   and a parent waiting for 'close' waited with it. Unread output is now
-  drained after 'exit', as Node's `flushStdio` does, and 'close' follows. A
-  failing child's exit no longer prints a dump of its output to the
-  terminal either: its output and its end are its parent's to report.
+  drained after 'exit', as Node's `flushStdio` does, and 'close' follows; a
+  stream a consumer reads in readable mode (an async iterator, a
+  'readable' listener) is left to it, as Node leaves one. A failing child's
+  exit no longer prints a dump of its output to the terminal either: its
+  output and its end are its parent's to report.
 - Fixed: `process.exit()` in a `child_process` child whose stdin was still
   open did not end it. The child had read its input and exited 0, but its
   run then waited for its stdin pump, which ends only when the parent ends
