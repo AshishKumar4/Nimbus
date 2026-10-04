@@ -26,8 +26,18 @@ published independently in the `@nimbus-sh` npm scope.
   core for good, on 1.4.0, 1.4.2 and the 2026-10-03 canary alike; one in
   JavaScript, or in WebAssembly that calls into JavaScript, it ends), so under
   Bun a facet is a child process of the same engine, ended by SIGKILL, over
-  the same protocol framed on pipes; a guest whose host dies goes with it
-  within half a second. An idle facet no longer keeps the process alive. The
+  the same protocol framed on pipes. That process is a realm's own in full:
+  it starts with none of the host's environment (a thread realm too) and,
+  under Bun, no .env and no bunfig preload from where it runs; it is a
+  process group of its own, so ending it ends every process it started that
+  stayed in the group, and its end waits for none that left; it ends with
+  its host, even when the host dies before it has started (it is told the
+  host's pid, not left to read its parent once); a frame it announces over
+  256 MiB ends it before a byte is kept, where 4 GiB was allocated as it
+  came; a process that cannot be started ends its realm with the reason
+  (ENOENT), where the call hung; and a call that waits for its answer and one
+  that does not take theirs on separate channels, so a guest's second call
+  no longer blocks on its first. An idle facet no longer keeps the process alive. The
   mechanism is the inline `node`'s, now shared (runtime/realm.ts,
   realm-guest.ts). It costs each wasm program run about 60 ms more to start
   under Bun and 40 ms under Node, and each filesystem syscall about 55 µs
@@ -42,9 +52,9 @@ published independently in the `@nimbus-sh` npm scope.
   DataView on part of a buffer comes back as that type, where it became a
   Uint8Array. A spare realm started ahead was measured and not added: it
   saves at most 20 ms of python3's 165 ms under Bun, most of the rest being
-  python.wasm's 11 MB sent to the child and compiled there.
-  Unchanged before and after: under Bun, each Ruby run keeps about 1 GB of
-  the process's memory. Node returns it.
+  python.wasm's 11 MB sent to the child and compiled there. Under Bun a
+  Ruby run's memory now goes with its process: eight runs leave the host at
+  207 MB, where they left it at 6.9 GB.
 
 ## 2026-10-03
 

@@ -83,11 +83,11 @@ switch (process.env.CASE) {
       '  MessagePort.prototype.postMessage = function (...args) { if (!taken) taken = this; return post.apply(this, args); };',
       "  require('fs').existsSync('/home/user');",
       '  MessagePort.prototype.postMessage = post;',
-      // Each as a call the host's transport carries, so it reaches the dispatcher, which refuses it.
+      // Each as a call the host's transport carries ({ id, request, wait }), so it reaches the dispatcher, which refuses it.
       '  const refused = [];',
       '  taken.on(\'message\', (m) => { if (m && m.id >= 9000) refused.push(m.id + (m.error ? \' refused\' : \' answered\')); });',
       "  [{ op: 'fs', method: 'valueOf', args: [] }, { op: 'fs', method: 'constructor', args: [] }, { op: 'fs', method: 'exists', args: [42] }, { op: 'nope' }, null].forEach((request, i) => {",
-      '    try { taken.postMessage({ id: 9000 + i, request }); } catch (e) { console.log(\'NOT SENT \' + e.message); }',
+      '    try { taken.postMessage({ id: 9000 + i, request, wait: false }); } catch (e) { console.log(\'NOT SENT \' + e.message); }',
       '  });',
       "  console.log('SENT ' + (taken !== null));",
       "  setTimeout(() => console.log('ANSWERS ' + refused.sort().join(',')), 300);",

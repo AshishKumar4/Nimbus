@@ -16,11 +16,12 @@ declare module 'node:worker_threads' {
     readonly port2: MessagePort;
   }
   export class Worker {
-    constructor(url: URL);
+    constructor(url: URL, options?: { env: Record<string, string> });
     constructor(source: string, options: { eval: true });
     postMessage(value: unknown, transferList?: readonly MessagePort[]): void;
     on(event: 'error', listener: (error: Error) => void): this;
     once(event: 'exit', listener: (code: number) => void): this;
+    once(event: 'message', listener: (value: unknown) => void): this;
     terminate(): Promise<number>;
     ref(): void;
     unref(): void;
@@ -37,6 +38,11 @@ declare module 'node:process' {
     exit(code: number): never;
     /** The engine running this process: a process realm's guest runs under the same. */
     readonly execPath: string;
+    readonly pid: number;
+    readonly ppid: number;
+    readonly argv: readonly string[];
+    /** A negative pid: its process group. */
+    kill(pid: number, signal: 'SIGKILL'): boolean;
   }
   const process: RealmProcess;
   export default process;
@@ -60,8 +66,13 @@ declare module 'node:child_process' {
     once(event: 'close', listener: () => void): this;
   }
   export interface ChildProcess {
-    /** With stdio ['ignore', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe']: the three pipes at 3, 4 and 5. */
-    readonly stdio: readonly [null, null, null, Writable, Writable, Readable];
+    /** Absent when the process could not be started. */
+    readonly pid: number | undefined;
+    /**
+     * With stdio ['ignore', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe', 'pipe']: the pipes at 3 to 6.
+     * Bun gives none for a process it could not start.
+     */
+    readonly stdio: readonly [null, null, null, Writable | null, Writable | null, Readable | null, Writable | null];
     on(event: 'error', listener: (error: Error) => void): this;
     once(event: 'exit', listener: (code: number | null, signal: string | null) => void): this;
     kill(signal: 'SIGKILL'): boolean;
@@ -71,7 +82,12 @@ declare module 'node:child_process' {
   export function spawn(
     command: string,
     args: readonly string[],
-    options: { stdio: readonly ['ignore', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe'] },
+    options: {
+      cwd: string;
+      env: Record<string, string>;
+      detached: boolean;
+      stdio: readonly ['ignore', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe', 'pipe'];
+    },
   ): ChildProcess;
 }
 
