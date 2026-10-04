@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "12c1a77dd41a8e1ee4467e97cd77eb0247c5501273536c4cf5cd62ff4072024b",
+  "fingerprint": "8cf742b7b6e8c6036ff5836db5aae5f3639ec5e34791e075475d55bbb850c508",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1625,7 +1625,7 @@
     "packages/platform/dist/weighted-credit-pool.d.ts": "238c2ce0b5d48dd1c4ac8cb6b7d051bea2715ca2aee948e2a9e2a48a4d2bff12",
     "packages/platform/dist/weighted-credit-pool.d.ts.map": "9d04043fd3fc734aad0d118998d7f78be481dcd25a8d2d6ee15228b59aebf2dd",
     "packages/platform/dist/weighted-credit-pool.js": "0cb56af6a614bad2ecba7d590e9f0e819659f563892e88dbafe8a655f0cc22a3",
-    "packages/platform/package.json": "08b8146eace9b07d3403b0416f8d45e5ce1bc380c8c574c84ae39bc95997cd1b",
+    "packages/platform/package.json": "02825a8a718873d456e3435c65a775bc0134556d610268c2c6139a9a9189d8a6",
     "packages/platform/src/composition.ts": "21cd3a106bf96102d3475b7b855d94cfd9503767fd1425347751269c99c03af6",
     "packages/platform/src/crc32.ts": "803eedeacaa6c5d4aebec6c13924438498d6ac0419b3db106f4a1700899f792f",
     "packages/platform/src/diag-counters.ts": "4f89f42034775f8cb201fe62b9ea71072a7e6067fc1a5b4fb1c1674c95908f3d",
@@ -2170,7 +2170,7 @@
     "packages/worker/frontend/agent-chat/tokens.css": "04c37e4cc297bde14bf77860bc582a515876dfe95bad0f8ecca8256cbc235c3f",
     "packages/worker/frontend/preview-isolation/index.ts": "e592fc35a91c9d293f5c42d3df84f540c11d5f9fe1bff2f7ac29930b78605ee2",
     "packages/worker/frontend/tsconfig.json": "c6b1163cc00c0fc55efa03e5b1bea78d2387b58a11a43fe313308061d19fba8d",
-    "packages/worker/package.json": "da4203a603bd2eb7a29fcde6a44fed5154eb9d01b406469f9d42c108ae2814c6",
+    "packages/worker/package.json": "72fa09d5ef6b49cc513f938d0cf9005f24f2f791802ed17b57574ec95dfc6b02",
     "packages/worker/patches/@ashishkumar472+cf-git+1.0.5.patch": "baa3391f23b2113a9fef15c35a9394b814f135b66ed5599b9cd27de8194cabcf",
     "packages/worker/public/_assets/agent-chat/agent-chat.css": "7bde9e33b2b137754633315859f14919449dee3f8a7de448c7af3981a7a018d6",
     "packages/worker/public/_assets/agent-chat/agent-chat.js": "51a318dbdf72fe6fbf63d4cb12d02bee6d6c04c5e1b7baad486017cbfeacb8e7",

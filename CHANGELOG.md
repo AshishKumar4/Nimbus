@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-04: platform 0.7.1, worker 0.13.1
+
+- Fixed: worker 0.13.0 imports `recordSupervisorAnswer` from
+  `@nimbus-sh/platform/diag-counters.js`, which platform 0.7.0 does not
+  export: platform's source gained it after 0.7.0 was published, and its
+  version was never bumped, so the release skipped it. Every module that
+  loaded the worker failed with "Export named 'recordSupervisorAnswer' not
+  found". Platform 0.7.1 exports it, and worker 0.13.1 requires
+  `@nimbus-sh/platform` `^0.7.1`. Worker 0.13.0 is deprecated.
+
 ## 2026-10-04
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
