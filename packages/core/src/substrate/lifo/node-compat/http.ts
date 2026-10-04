@@ -368,24 +368,21 @@ class ServerResponse extends EventEmitter {
 
 // --- Server class ---
 
-// Symbol used to track active server promises on the http module instance
-export const ACTIVE_SERVERS = Symbol.for('lifo.http.activeServers');
-
+/**
+ * A server listens by holding its port in the registry; that is all that
+ * keeps it, and the process it runs in, alive (the realm's event loop counts
+ * listening ports: commands/system/node-guest.ts).
+ */
 class Server extends EventEmitter {
   private portRegistry: Map<number, VirtualRequestHandler>;
   private _port: number | null = null;
-  private _closeResolve: (() => void) | null = null;
-  private _promise: Promise<void> | null = null;
-  private _activeServers: Server[];
 
   constructor(
     portRegistry: Map<number, VirtualRequestHandler>,
-    activeServers: Server[],
     requestHandler?: (req: unknown, res: unknown) => void,
   ) {
     super();
     this.portRegistry = portRegistry;
-    this._activeServers = activeServers;
     if (requestHandler) {
       this.on('request', requestHandler as (...args: unknown[]) => void);
     }
@@ -401,11 +398,6 @@ class Server extends EventEmitter {
     }
 
     this._port = port;
-
-    // Create a promise that resolves when server.close() is called
-    this._promise = new Promise<void>((resolve) => {
-      this._closeResolve = resolve;
-    });
 
     // Register the handler in portRegistry
     const handler: VirtualRequestHandler = (vReq, vRes) => {
@@ -429,9 +421,6 @@ class Server extends EventEmitter {
     };
     this.portRegistry.set(port, handler);
 
-    // Track this server
-    this._activeServers.push(this);
-
     // Emit 'listening' event asynchronously (like Node does) and call callback
     queueMicrotask(() => {
       this.emit('listening');
@@ -444,15 +433,7 @@ class Server extends EventEmitter {
   close(callback?: () => void): this {
     if (this._port !== null) {
       this.portRegistry.delete(this._port);
-    }
-
-    // Remove from active servers list
-    const idx = this._activeServers.indexOf(this);
-    if (idx !== -1) this._activeServers.splice(idx, 1);
-
-    if (this._closeResolve) {
-      this._closeResolve();
-      this._closeResolve = null;
+      this._port = null;
     }
 
     if (callback) {
@@ -468,9 +449,6 @@ class Server extends EventEmitter {
     return { port: this._port, address: '127.0.0.1', family: 'IPv4' };
   }
 
-  getPromise(): Promise<void> | null {
-    return this._promise;
-  }
 }
 
 // --- Factory function ---
@@ -481,7 +459,6 @@ export function createHttp(
   routeLoopback?: LoopbackRouter,
 ) {
   // Track active servers created by this http module instance
-  const activeServers: Server[] = [];
 
   function httpRequest(
     urlOrOptions: string | RequestOptions,
@@ -527,7 +504,7 @@ export function createHttp(
     if (!portRegistry) {
       throw new Error('http.createServer() is not supported in Lifo');
     }
-    return new Server(portRegistry, activeServers, requestHandler);
+    return new Server(portRegistry, requestHandler);
   }
 
   const mod = {
@@ -538,7 +515,6 @@ export function createHttp(
     ClientRequest,
     Server,
     ServerResponse,
-    [ACTIVE_SERVERS]: activeServers,
   };
 
   return mod;
