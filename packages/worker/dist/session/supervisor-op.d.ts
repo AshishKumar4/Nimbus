@@ -51,4 +51,12 @@ export interface SessionSupervisorOps {
     readonly dispose: () => Promise<void>;
 }
 export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore, methods?: SupervisorOpHost): SessionSupervisorOps;
+/**
+ * Answer `envelope` to a caller outside the session (NimbusSession's
+ * `supervisorOp`, which host stubs call): `serve` answers it, and the file
+ * contents and stdin the answer hands a process are counted (diag counters'
+ * supervisorAnsweredBytes). Only here: a call the session makes to itself
+ * (fsAcquired's read) is part of the answer it is in.
+ */
+export declare function answerSupervisorOp(serve: (envelope: SupervisorOpEnvelope) => Promise<unknown>, envelope: SupervisorOpEnvelope): Promise<unknown>;
 //# sourceMappingURL=supervisor-op.d.ts.map

@@ -1,7 +1,6 @@
 import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { traced } from '@nimbus-sh/platform/tracing.js';
-import { recordSupervisorAnswer } from '@nimbus-sh/platform/diag-counters.js';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
@@ -222,7 +221,10 @@ const NATIVE_OPS = {
         const bytes = await readWholeFile(e, t, stringArg(e, 0));
         return bytes === null ? null : new TextDecoder().decode(bytes);
     },
-    fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), OpenOptions.parse(e.args?.[1])),
+    // A process's descriptors are O_SYNC here: each write is answered with what
+    // the store did (SqliteVFS holds none of its appends), so a refusal is that
+    // write's, and a delivered write's receipt records its outcome.
+    fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }),
     fsRead: (e, t) => {
         const length = numberArg(e, 2);
         return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
@@ -326,22 +328,6 @@ export function createSupervisorBridgeStore(deps) {
         },
     };
 }
-/**
- * The bytes in an answer: byte arrays and text, through the arrays and plain
- * objects that carry them (a batch of reads, a stdin packet), to a few levels.
- */
-function answerBytes(value, depth) {
-    if (typeof value === 'string')
-        return value.length;
-    if (value instanceof Uint8Array || value instanceof ArrayBuffer)
-        return value.byteLength;
-    if (depth >= 4 || typeof value !== 'object' || value === null)
-        return 0;
-    let total = 0;
-    for (const entry of Array.isArray(value) ? value : Object.values(value))
-        total += answerBytes(entry, depth + 1);
-    return total;
-}
 export function createSupervisorOpHandler(deps) {
     const bridgeFor = deps.bridge?.bridge ?? createSupervisorBridgeStore(deps).bridge;
     const tools = {
@@ -444,7 +430,7 @@ export function createSupervisorOpHandler(deps) {
      * id, and what its receipt or join made of this attempt. A refusal is
      * recorded on the span as the exception the sender receives.
      */
-    const dispatch = async (envelope) => {
+    return async (envelope) => {
         if (!envelope || typeof envelope.op !== 'string') {
             throw new Error('supervisor op: envelope names no operation');
         }
@@ -457,12 +443,5 @@ export function createSupervisorOpHandler(deps) {
         if (envelope.readId !== undefined)
             return traced('nimbus.session.read', {}, (span) => read(op, envelope, span));
         return serve(op, envelope);
-    };
-    // Every answer leaves the session here, whichever op made it: its bytes are
-    // counted (diag counters' supervisorAnsweredBytes).
-    return async (envelope) => {
-        const answer = await dispatch(envelope);
-        recordSupervisorAnswer(answerBytes(answer, 0));
-        return answer;
     };
 }

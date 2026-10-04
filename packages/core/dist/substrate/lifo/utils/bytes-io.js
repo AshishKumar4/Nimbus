@@ -168,6 +168,13 @@ function isHigh(c) { return c >= 0xd800 && c <= 0xdbff; }
 export function isBrokenPipe(error) {
     return error?.code === 'EPIPE';
 }
+/** The errors of a write the store or a device refused: out of room, too large, or lost. */
+const REFUSED_WRITE_CODES = new Set(['ENOSPC', 'EDQUOT', 'EFBIG', 'EIO']);
+/** Whether `error` is a write the store or a device refused (not a broken pipe: that is SIGPIPE's). */
+export function isRefusedWrite(error) {
+    return typeof error === 'object' && error !== null && 'code' in error
+        && typeof error.code === 'string' && REFUSED_WRITE_CODES.has(error.code);
+}
 /** Records split on `delim`: each without its delimiter; `terminated` says whether the last had one. */
 export function splitRecords(bytes, delim) {
     const records = [];

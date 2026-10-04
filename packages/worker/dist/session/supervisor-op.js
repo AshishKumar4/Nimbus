@@ -16,6 +16,7 @@
  *   canonical route table maps them.
  */
 import { createSupervisorOpHandler, createSupervisorBridgeStore, SUPERVISOR_OP_ROUTES, } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { recordSupervisorAnswer } from '@nimbus-sh/platform/diag-counters.js';
 import { withReadAllocation } from './rpc.js';
 /** The stdout/stderr ops carry bytes; anything else is a caller bug, named. */
 function outputBytesArg(value) {
@@ -77,4 +78,52 @@ export function buildSessionSupervisorOps(host, store, methods) {
         return store.forget(pid);
     };
     return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
+}
+/**
+ * Answer `envelope` to a caller outside the session (NimbusSession's
+ * `supervisorOp`, which host stubs call): `serve` answers it, and the file
+ * contents and stdin the answer hands a process are counted (diag counters'
+ * supervisorAnsweredBytes). Only here: a call the session makes to itself
+ * (fsAcquired's read) is part of the answer it is in.
+ */
+export async function answerSupervisorOp(serve, envelope) {
+    const answer = await serve(envelope);
+    recordSupervisorAnswer(handedBytes(envelope.op, envelope.args, answer));
+    return answer;
+}
+/**
+ * The file contents and stdin in `answer` to `op`: read where each read op's
+ * answer carries them, never by walking it (a stat or a listing hands a
+ * process no file's contents).
+ */
+function handedBytes(op, args, answer) {
+    switch (op) {
+        case 'readFile':
+            return typeof answer === 'string' ? answer.length : 0;
+        case 'readFileBytes':
+        case 'fsRead':
+        case 'fsReadRange':
+        case 'fsReadRangeUncached':
+            return answer instanceof Uint8Array ? answer.byteLength : 0;
+        case 'fsReadBatch':
+            return Array.isArray(answer) ? answer.reduce((total, entry) => total + bytesAt(entry, 'bytes'), 0) : 0;
+        case 'cpReadStdin':
+            return bytesAt(answer, 'data');
+        case 'fsAcquired': {
+            // The read it carries, whose op is its second argument.
+            const read = args?.[1];
+            if (typeof read !== 'string' || typeof answer !== 'object' || answer === null)
+                return 0;
+            return handedBytes(read, undefined, Reflect.get(answer, 'value'));
+        }
+        default:
+            return 0;
+    }
+}
+/** The length of `value`'s `field`, when that is bytes. */
+function bytesAt(value, field) {
+    if (typeof value !== 'object' || value === null)
+        return 0;
+    const bytes = Reflect.get(value, field);
+    return bytes instanceof Uint8Array ? bytes.byteLength : 0;
 }

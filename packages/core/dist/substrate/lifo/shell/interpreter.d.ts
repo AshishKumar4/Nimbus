@@ -74,6 +74,8 @@ export type BuiltinFn = (args: string[], stdout: CommandOutputStream, stderr: Co
  */
 type OpenFile = {
     stream: CommandInputStream | CommandOutputStream;
+    /** An output file's: write what the VFS still holds for it (fsync), throwing what that failed with. */
+    flush?: () => Promise<void>;
     close: () => Promise<void>;
     refs: number;
 };
@@ -324,12 +326,19 @@ export declare class Interpreter {
     private openOutputTarget;
     private openInputTarget;
     /**
-     * Run `body` and commit every file-backed descriptor it wrote through,
-     * whether it returned or threw. This is the close(2) side of the buffering
-     * in file-sink.ts: buffered bytes must reach the store before the next
-     * command can read the file.
+     * Run `body`, whose answer is an exit status, and end its descriptors
+     * (flushFds) whether it returned or threw. A file it wrote that could not
+     * be written fails it: status 1 where it would have been 0.
      */
     private withFdFlush;
+    /**
+     * End a command's descriptors: flush its output streams, and write what
+     * each file its redirections opened still holds (the VFS may hold a
+     * file's last appends until fsync), then let go of those files. A write
+     * that fails there is the command's failure, not the shell's: it is
+     * reported on the command's stderr, as `name`'s, and the answer is true,
+     * for the command's status. A close that fails still throws.
+     */
     private flushFds;
     /**
      * Byte-faithful redirected input: bounded range reads keep >64 KiB

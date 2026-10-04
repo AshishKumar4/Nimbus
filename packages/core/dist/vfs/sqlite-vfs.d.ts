@@ -61,12 +61,23 @@ export interface VfsOpenDescription {
     utimes(atime: number, mtime: number): void;
     close(): void;
     /**
+     * Where an O_APPEND write lands: the end of the file as written so far,
+     * appends SqliteVFS holds for it included (appendThrough), without
+     * writing them. Absent: `stat().size`.
+     */
+    end?(): number;
+    /**
      * A description whose backend cannot write in place buffers its writes
      * (VFS-PF-001): an append goes at the end as it stands at the flush,
      * `flush` applies what is pending, and `pendingBytes` is what a process
-     * killed now would lose. Absent: every write is in place and durable.
+     * killed now would lose. Absent: every write is in place.
      */
     writeAppend?(bytes: Uint8Array): number;
+    /**
+     * Write what is held for the file (fsync): a buffered mount handle's
+     * pending writes, the appends SqliteVFS holds; throws what writing them
+     * failed with. Absent: nothing is held.
+     */
     flush?(): void;
     pendingBytes?(): number;
     /** `file` with this description's pending writes applied, as flush applies them. */
@@ -396,6 +407,18 @@ export interface VfsColdStore {
 }
 export declare class SqliteVFS {
     private readonly openNodes;
+    /**
+     * Appends held in memory, one run per file by inode number (appendThrough).
+     * Invisible: anything that looks at the store first writes them
+     * (settleAppends), and none is begun inside a transaction.
+     */
+    private readonly appendRuns;
+    /** What every run holds together. */
+    private appendRunBytes;
+    /** What storing a run failed with, for each description that wrote to it: its next write, fsync or close throws it. */
+    private readonly appendFailures;
+    /** Transactions this VFS has open (transactionSync); no append is held from inside one. */
+    private transactionDepth;
     private sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     readonly ledger: StorageLedger;
@@ -599,7 +622,45 @@ export declare class SqliteVFS {
     openDescription(path: string, cred: VfsCred, rights: {
         read: boolean;
         write: boolean;
+        sync?: boolean;
     }): VfsOpenDescription;
+    /**
+     * Hold `bytes`, written through `opened` at `offset`, in its file's
+     * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
+     * redirection or a log written a piece at a time is then stored a block at
+     * a time. Each write to the store rewrites the file's growing last chunk
+     * (rewriteFile) and costs a commit at the end of its turn, so 8 KiB writes
+     * stored 3.5 bytes for each byte of the file, and `yes | head -c 48M > f`
+     * took 43 s on a local workerd.
+     *
+     * Nothing else can tell: every look at the store writes the runs first
+     * (settleAppends: every call of a view but a leaf read, which path
+     * resolution covers, a description's other calls, the public calls that
+     * read the live store, an embedder's transaction and the start of work
+     * spanning turns), and none is begun inside a transaction or while such
+     * work runs, where a rollback or a later turn could not tell it was
+     * there. A run held while another file's transaction runs is not in it,
+     * so a rollback cannot take it along. A run is written when it holds
+     * APPEND_RUN_BYTES, after APPEND_RUN_LATENCY_MS, and when a description
+     * of its file is flushed or closed. A write that fails is thrown by the
+     * next write, fsync or close of each description that wrote to the file.
+     * Near the storage limit, and for any write that is not such an append,
+     * this answers false and the caller writes through, where the write is
+     * refused if it must be.
+     */
+    private appendThrough;
+    /**
+     * Write `run` to its file, as the descriptions that wrote it would have,
+     * whatever call is running. Never throws: a failure is kept for each of
+     * them (appendFailures).
+     */
+    private writeAppendRun;
+    /** Write the appends held for inode `ino`, if any. */
+    private settleAppend;
+    /** Write every held append: what any look at the store must do first (appendThrough). */
+    private settleAppends;
+    /** Throw what writing `opened`'s held appends failed with, once. */
+    private raiseAppendFailure;
     private now;
     private parentPath;
     private blobToUint8Array;
@@ -723,6 +784,15 @@ export declare class SqliteVFS {
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
     }): CredentialedVfs;
+    /**
+     * `view`, each of its calls but LEAF_READS first writing every append
+     * this VFS holds (appendThrough): a view is how a caller changes the
+     * store or reads more of it than one file, and none may do either
+     * without them. A leaf read looks at the one file it names, which path
+     * resolution writes the appends of, so a program reading one file while
+     * appending to another is not made to store each append as it comes.
+     */
+    private settlingView;
     private accessInode;
     private accessMode;
     /**
@@ -741,8 +811,12 @@ export declare class SqliteVFS {
      *
      * `path` is the storage key the walk ends at, `name` the caller's name for it.
      * `tree` looks inodes up by key: the live tree, or a snapshot's (SnapshotVfs).
+     * A live file it reaches is reached with what has been appended to it
+     * (appendThrough): every call that names a path comes through here.
      */
     private resolvePath;
+    /** resolvePath's walk. */
+    private walkPath;
     /**
      * Walk a plain SQLite path once, checking ancestor search permission. A
      * link that needs following, or a name claimed by the namespace, returns

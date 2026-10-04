@@ -484,7 +484,7 @@ export class SqliteRuntimeFsBridge {
                 this.vfs.truncate(p, 0);
             }
             const stat = this.vfs.stat(p);
-            const node = this.rawVfs.openDescription(p, this.vfs.cred, normalizedFlags);
+            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true });
             const handle = {
                 id: this.scope.nextId++,
                 path: p,
@@ -517,7 +517,7 @@ export class SqliteRuntimeFsBridge {
             return bytes.byteLength;
         }
         const start = handle.flags.append
-            ? node.stat().size
+            ? node.end?.() ?? node.stat().size
             : offset == null ? handle.position : Math.max(0, offset);
         node.write(start, bytes);
         const end = start + bytes.byteLength;
@@ -698,8 +698,9 @@ export class SqliteRuntimeFsBridge {
         });
     }
     fsync(handleId) {
-        // SqliteVFS writes are synchronously durable before their calls return; a
-        // buffered mount handle flushes.
+        // Writes what the description's file has held: a buffered mount handle's
+        // writes, the appends SqliteVFS holds (appendThrough). Any other write was
+        // in the store before its call returned.
         if (handleId !== undefined)
             this.description(handleId).node.flush?.();
     }
