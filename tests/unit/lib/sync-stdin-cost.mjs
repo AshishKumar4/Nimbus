@@ -20,7 +20,8 @@ try {
   for (let i = 0; i < count + 3; i++) {
     const start = performance.now();
     const { output } = await terminal.run('node -e "console.log(17)"', 60000);
-    assert.match(output, /17/);
+    const text = output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+    assert.match(text, /\n17\n/, 'the launch must actually print, not just echo its command');
     if (i >= 3) launches.push(performance.now() - start);
   }
   const child = `(async () => { const t = performance.now(); const r = await fetch(${JSON.stringify(url)}); const b = await r.text(); if (b.length !== 4096) throw new Error('short body'); console.log('GET_MS ' + (performance.now() - t)); })()`;
