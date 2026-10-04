@@ -5,6 +5,32 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's `child_process` children ran one at a time. Every
+  spawn was relayed through a Worker Loader pool of one slot, and the
+  relay's call stayed open for the child's whole life, so a child that does
+  not exit (a dev server, a watcher, a language server) held back every
+  later spawn. A parent that spawned A (`setTimeout(…, 15000)`) and then B
+  (`console.log`) saw B at 15.9 s on a local workerd, where host node
+  prints it at 37 ms. Killing A freed nothing: its program ran on to its
+  own end, holding the slot and its Dynamic Worker. A child that spawned a
+  grandchild and waited for it deadlocked. A child still running at 120 s
+  was reported closed, status 1, with `spawn-pool: Task exceeded 120000ms
+  deadline` on its stderr, while it ran on. Children now run beside each
+  other, dispatched from the session itself: B prints at 1.2 s, about the
+  time a child takes alone; a child spawned after a kill runs at once; a
+  nested spawn finishes; a child runs as long as it runs. A kill ends the
+  work behind the child's pid (its run is aborted, its Dynamic Worker given
+  back), and the process table records it `killed`. The relay's supervisor
+  RPC, `cpDispatchInline`, is gone with it; it ran a command as whatever
+  pid its caller named.
+- A one-shot program (`node -e`, a `child_process` child, a shell job) is
+  let in by the Dynamic Worker ledger. While the Durable Object has its 10
+  Dynamic Workers in flight, the program waits for a release to make room,
+  before its module map is assembled, where it used to start anyway and be
+  refused by the platform. A burst of 14 children runs 10 wide and
+  completes. Only a kill or Ctrl-C ends the wait, so more children than
+  the limit has room for, each waiting on a grandchild of its own, still
+  wait for good (before, any child waiting on a grandchild did).
 - Fixed: a process whose release failed (a descriptor's buffered bytes lost
   to an abort) stopped the prune of a session's or workspace's ended
   processes: that pid and every one after it stayed bound to the

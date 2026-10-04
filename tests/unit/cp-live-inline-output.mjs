@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-// A managed child dispatched through the spawn pool must publish its prompt
-// while waiting for stdin, not return all its output only after it exits.
+// A managed child must publish its prompt while waiting for stdin, not
+// return all its output only after it exits, and each byte reaches the
+// parent once.
 import assert from 'node:assert/strict';
 import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -20,14 +21,6 @@ manager=new FacetProcessManager({
    hooks.onStderr(encoder.encode('received '+decoder.decode(packet.data)));
    return 0;
  }},
- // The pool's RPC returns to the same manager's inline dispatcher. Exactly
- // as its production relay, only output in the returned result is replayed.
- spawnPool:{async runOne(req,kind,hooks){
-   const result=await manager.dispatchInline(req,kind);
-   if(result.stdout)hooks.onStdout(encoder.encode(result.stdout));
-   if(result.stderr)hooks.onStderr(encoder.encode(result.stderr));
-   return result.exitCode;
- }},
 });
 const {childPid}=await manager.spawn({parentPid:parent.pid,command:'node',args:['interactive.js'],cwd:'/home/user',env:{},stdio:['inherit','inherit','inherit']});
 try {
@@ -39,7 +32,7 @@ try {
  assert.equal(status.exitCode,0);
  const stdout=await manager.readOutput(childPid,1,0,0);
  const stderr=await manager.readOutput(childPid,2,0,0);
- assert.equal(decoder.decode(Buffer.concat(stdout.chunks.map(c=>c.data))),'question> ','the pool completion does not duplicate already streamed output');
+ assert.equal(decoder.decode(Buffer.concat(stdout.chunks.map(c=>c.data))),'question> ','the completion does not duplicate already streamed output');
  assert.equal(decoder.decode(Buffer.concat(stderr.chunks.map(c=>c.data))),'received yes\n');
 }finally{manager.stdinEnd(childPid);}
 console.log('cp-live-inline-output: prompt before input, output exactly once');

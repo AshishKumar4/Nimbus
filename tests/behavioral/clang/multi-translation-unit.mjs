@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // clang/multi-translation-unit — compile two .c files separately, link
-// them via wasm-ld; exercise the spawn-pool clang→lld dispatch.
+// them via wasm-ld; exercise the child_process clang→lld dispatch.
 //
 // Asserts:
 //   1. Two .c files compile to .o files.

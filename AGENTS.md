@@ -461,6 +461,7 @@ Agent-specific probes:
 - `tests/behavioral/preview/new/vite-preview-dedupes-port-tab.mjs`
 - `tests/behavioral/preview/new/vite-mount-base-per-door.mjs`
 - `tests/behavioral/agentic-cli/new/node-child-process-primitives.mjs`
+- `tests/behavioral/agentic-cli/new/node-child-process-concurrent.mjs`
 - `tests/behavioral/agentic-cli/new/node-live-vfs-async-fs.mjs`
 - `tests/behavioral/agentic-cli/new/node-live-vfs-symlink.mjs`
 - `tests/behavioral/agentic-cli/new/node-sync-cwd-project-snapshot.mjs`

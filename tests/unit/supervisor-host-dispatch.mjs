@@ -185,7 +185,6 @@ const INPUTS = {
   cpDrainOutput: [childPid],
   cpKill: [childPid, signal],
   cpWait: [childPid, waitMs, { epoch, cursor }],
-  cpDispatchInline: [req, kind],
   innerDoFetch: [{ bindingName: 'NimbusDO', id: 'inner-id', method: 'GET', url: 'https://inner.test/', headers: [] }],
   innerDoCall: [{ bindingName: 'NimbusDO', id: 'inner-id', path: ['hello'], args: [1, 'two'] }],
   fanoutExecute: ['fn-source', [1, 2], { tag: 'probe' }],

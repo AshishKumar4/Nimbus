@@ -941,8 +941,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
   async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid); }
-  // child-process isolation gap #1: per-spawn fresh-isolate dispatch.
-  async _rpcCpDispatchInline(req: any, kind: string) { return _rpc._rpcCpDispatchInline(this as any, req, kind); }
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: _programmatic.ProgrammaticReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }

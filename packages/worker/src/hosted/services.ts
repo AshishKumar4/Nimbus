@@ -2,7 +2,6 @@ import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
-import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import type { ChildExit, Command, CommandContext, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
@@ -180,7 +179,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     const facetMgrAdapter = {
       execStream: async (
         codeJson: string,
-        opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[] },
+        opts: { cwd?: string; env?: Record<string, string>; argv?: string[] },
         hooks: OutputHooks,
       ): Promise<number> => {
         // codeJson is a payload from FacetProcessManager._dispatch facet-direct
@@ -238,11 +237,6 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           hooks.onStderr(textBytes(`${payload.command}: ${e?.message || String(e)}\n`));
           return 1;
         }
-      },
-      abort: (facetName: string) => {
-        // Best-effort: relay to ctx.facets.abort, mirroring FacetManager.kill.
-        try { (runtimeContext.ctx as any).facets?.abort?.(facetName, new Error('SIGKILL')); } catch {}
-        return true;
       },
     };
     // Adapter for CommandRegistryLike. The shared shell registry is
@@ -341,17 +335,6 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         self.processes.exit(child.pid, exitCode);
       }
     };
-    // Construct the child-process Loader pool when the binding is available.
-    // Unit-test hosts without LOADER continue through direct dispatch.
-    let spawnPool: ChildProcessSpawnPool | undefined;
-    try {
-      const envAny = runtimeContext.env as any;
-      if (envAny?.LOADER && typeof envAny.LOADER.get === 'function') {
-        spawnPool = new ChildProcessSpawnPool(runtimeContext.env, runtimeContext.ctx as any);
-      }
-    } catch {
-      spawnPool = undefined;
-    }
     self.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processes: self.processes,
@@ -388,8 +371,6 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           return typeof (result as any)?.exitCode === 'number' ? (result as any).exitCode : 0;
         },
       },
-      ctx: runtimeContext.ctx as any,
-      spawnPool,
     });
     return self.facetProcessManager;
   }

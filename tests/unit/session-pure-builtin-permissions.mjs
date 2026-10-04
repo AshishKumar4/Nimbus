@@ -195,129 +195,36 @@ try {
   assert.equal(elevated.stdout, 'SECRET\n');
   assert.equal(elevated.stderr, '');
 
-  const inlineUser = processes.spawn('cat', ['readable.txt'], '/', { parentPid: userParent.pid });
-  const inlineReadable = await session._rpcCpDispatchInline({
-    command: 'cat',
-    args: ['readable.txt'],
-    env: {},
-    cwd: '/',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    parentPid: userParent.pid,
-    processPid: inlineUser.pid,
-  }, 'pure-builtin');
-  assert.deepEqual(inlineReadable, { exitCode: 0, stdout: 'PUBLIC\n', stderr: '' });
+  const facetReadable = await spawnCommandAndCollect(userParent.pid, 'node', ['readable.txt']);
+  assert.deepEqual(facetReadable, { exitCode: 0, stdout: 'PUBLIC\n', stderr: '' });
 
-  const inlineDenied = await session._rpcCpDispatchInline({
-    command: 'cat',
-    args: ['secret.txt'],
-    env: {},
-    cwd: '/',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    parentPid: userParent.pid,
-    processPid: inlineUser.pid,
-  }, 'pure-builtin');
-  assert.equal(inlineDenied.exitCode, 1);
-  assert.match(inlineDenied.stderr, /EACCES|Permission denied/);
-  assert.doesNotMatch(inlineDenied.stderr, /TypeError|undefined is not an object/);
+  const facetDenied = await spawnCommandAndCollect(userParent.pid, 'node', ['secret.txt']);
+  assert.equal(facetDenied.exitCode, 1);
+  assert.equal(facetDenied.stdout, '');
+  assert.match(facetDenied.stderr, /EACCES|Permission denied/);
 
-  const missingInlineIdentity = await session._rpcCpDispatchInline({
-    command: 'cat',
-    args: ['readable.txt'],
-    env: {},
-    cwd: '/',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    parentPid: userParent.pid,
-  }, 'pure-builtin');
-  assert.equal(missingInlineIdentity.exitCode, 1);
-  assert.match(missingInlineIdentity.stderr, /broker-assigned process pid/);
+  const facetRoot = await spawnCommandAndCollect(rootParent.pid, 'node', ['secret.txt']);
+  assert.deepEqual(facetRoot, { exitCode: 0, stdout: 'SECRET\n', stderr: '' });
 
-  const inlineRoot = processes.spawn('cat', ['secret.txt'], '/', { parentPid: rootParent.pid });
-  const inlineElevated = await session._rpcCpDispatchInline({
-    command: 'cat',
-    args: ['secret.txt'],
-    env: {},
-    cwd: '/',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    parentPid: rootParent.pid,
-    processPid: inlineRoot.pid,
-  }, 'pure-builtin');
-  assert.deepEqual(inlineElevated, { exitCode: 0, stdout: 'SECRET\n', stderr: '' });
-
-  const legacyFacetReadable = await spawnCommandAndCollect(userParent.pid, 'node', ['readable.txt']);
-  assert.deepEqual(legacyFacetReadable, { exitCode: 0, stdout: 'PUBLIC\n', stderr: '' });
-
-  const legacyFacetDenied = await spawnCommandAndCollect(userParent.pid, 'node', ['secret.txt']);
-  assert.equal(legacyFacetDenied.exitCode, 1);
-  assert.equal(legacyFacetDenied.stdout, '');
-  assert.match(legacyFacetDenied.stderr, /EACCES|Permission denied/);
-
-  const legacyFacetRoot = await spawnCommandAndCollect(rootParent.pid, 'node', ['secret.txt']);
-  assert.deepEqual(legacyFacetRoot, { exitCode: 0, stdout: 'SECRET\n', stderr: '' });
-
-  const inlineFacetUser = processes.spawn('node', ['secret.txt'], '/', { parentPid: userParent.pid });
-  const inlineFacetDenied = await session._rpcCpDispatchInline({
-    command: 'node', args: ['secret.txt'], env: {}, cwd: '/',
-    stdio: ['pipe', 'pipe', 'pipe'], parentPid: userParent.pid, processPid: inlineFacetUser.pid,
-  }, 'facet-direct');
-  assert.equal(inlineFacetDenied.exitCode, 1);
-  assert.equal(inlineFacetDenied.stdout, '');
-  assert.match(inlineFacetDenied.stderr, /EACCES|Permission denied/);
-
-  const inlineFacetRoot = processes.spawn('node', ['secret.txt'], '/', { parentPid: rootParent.pid });
-  assert.deepEqual(await session._rpcCpDispatchInline({
-    command: 'node', args: ['secret.txt'], env: {}, cwd: '/',
-    stdio: ['pipe', 'pipe', 'pipe'], parentPid: rootParent.pid, processPid: inlineFacetRoot.pid,
-  }, 'facet-direct'), { exitCode: 0, stdout: 'SECRET\n', stderr: '' });
-
-  const legacyScriptDenied = await spawnCommandAndCollect(userParent.pid, 'sh', ['private.sh'], '/home/user');
-  assert.notEqual(legacyScriptDenied.exitCode, 0);
-  assert.equal(legacyScriptDenied.stdout, '');
-  assert.match(legacyScriptDenied.stderr, /EACCES|Permission denied/);
+  const scriptDenied = await spawnCommandAndCollect(userParent.pid, 'sh', ['private.sh'], '/home/user');
+  assert.notEqual(scriptDenied.exitCode, 0);
+  assert.equal(scriptDenied.stdout, '');
+  assert.match(scriptDenied.stderr, /EACCES|Permission denied/);
 
   assert.deepEqual(
     await spawnCommandAndCollect(rootParent.pid, 'sh', ['private.sh'], '/home/user'),
     { exitCode: 0, stdout: 'PRIVATE-SCRIPT\n', stderr: '' },
   );
 
-  const legacyShellDenied = await spawnCommandAndCollect(userParent.pid, 'sh', ['-c', 'cat shell-secret.txt'], '/home/user');
-  assert.equal(legacyShellDenied.exitCode, 1);
-  assert.equal(legacyShellDenied.stdout, '');
-  assert.match(legacyShellDenied.stderr, /EACCES|Permission denied/);
+  const shellDenied = await spawnCommandAndCollect(userParent.pid, 'sh', ['-c', 'cat shell-secret.txt'], '/home/user');
+  assert.equal(shellDenied.exitCode, 1);
+  assert.equal(shellDenied.stdout, '');
+  assert.match(shellDenied.stderr, /EACCES|Permission denied/);
 
   assert.deepEqual(
     await spawnCommandAndCollect(rootParent.pid, 'sh', ['-c', 'cat shell-secret.txt'], '/home/user'),
     { exitCode: 0, stdout: 'SHELL-SECRET\n', stderr: '' },
   );
-
-  const inlineShellUser = processes.spawn('sh', ['private.sh'], '/home/user', { parentPid: userParent.pid });
-  const inlineScriptDenied = await session._rpcCpDispatchInline({
-    command: 'sh', args: ['private.sh'], env: {}, cwd: '/home/user',
-    stdio: ['pipe', 'pipe', 'pipe'], parentPid: userParent.pid, processPid: inlineShellUser.pid,
-  }, 'shell-direct');
-  assert.notEqual(inlineScriptDenied.exitCode, 0);
-  assert.equal(inlineScriptDenied.stdout, '');
-  assert.match(inlineScriptDenied.stderr, /EACCES|Permission denied/);
-
-  const inlineShellRoot = processes.spawn('sh', ['private.sh'], '/home/user', { parentPid: rootParent.pid });
-  assert.deepEqual(await session._rpcCpDispatchInline({
-    command: 'sh', args: ['private.sh'], env: {}, cwd: '/home/user',
-    stdio: ['pipe', 'pipe', 'pipe'], parentPid: rootParent.pid, processPid: inlineShellRoot.pid,
-  }, 'shell-direct'), { exitCode: 0, stdout: 'PRIVATE-SCRIPT\n', stderr: '' });
-
-  const inlineCommandUser = processes.spawn('sh', ['-c', 'cat shell-secret.txt'], '/home/user', { parentPid: userParent.pid });
-  const inlineCommandDenied = await session._rpcCpDispatchInline({
-    command: 'sh', args: ['-c', 'cat shell-secret.txt'], env: {}, cwd: '/home/user',
-    stdio: ['pipe', 'pipe', 'pipe'], parentPid: userParent.pid, processPid: inlineCommandUser.pid,
-  }, 'shell-direct');
-  assert.equal(inlineCommandDenied.exitCode, 1);
-  assert.equal(inlineCommandDenied.stdout, '');
-  assert.match(inlineCommandDenied.stderr, /EACCES|Permission denied/);
-
-  const inlineCommandRoot = processes.spawn('sh', ['-c', 'cat shell-secret.txt'], '/home/user', { parentPid: rootParent.pid });
-  assert.deepEqual(await session._rpcCpDispatchInline({
-    command: 'sh', args: ['-c', 'cat shell-secret.txt'], env: {}, cwd: '/home/user',
-    stdio: ['pipe', 'pipe', 'pipe'], parentPid: rootParent.pid, processPid: inlineCommandRoot.pid,
-  }, 'shell-direct'), { exitCode: 0, stdout: 'SHELL-SECRET\n', stderr: '' });
 
   async function spawnAndCollect(parentPid, path, command = 'cat') {
     return spawnCommandAndCollect(parentPid, command, command === 'sudo' ? ['cat', path] : [path]);
