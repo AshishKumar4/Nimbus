@@ -238,7 +238,7 @@ export function makeClangRunnerFactory(deps: {
             '-x', isCpp ? 'c++' : 'c',
             src,
           ];
-          const compileResult = await dispatchClangFacet(compile, { argv: compileArgv });
+          const compileResult = await dispatchClangFacet(compile, { argv: compileArgv }, ctx.signal);
           if (compileResult.stdout) ctx.stdout.write(compileResult.stdout);
           if (compileResult.stderr) ctx.stderr.write(compileResult.stderr);
           if (compileResult.error) {
@@ -285,7 +285,7 @@ export function makeClangRunnerFactory(deps: {
           '-lclang_rt.builtins-wasm32',
           '-o', outputGuest,
         ];
-        const linkResult = await dispatchClangFacet(link, { argv: linkArgv });
+        const linkResult = await dispatchClangFacet(link, { argv: linkArgv }, ctx.signal);
         if (linkResult.stdout) ctx.stdout.write(linkResult.stdout);
         if (linkResult.stderr) ctx.stderr.write(linkResult.stderr);
         if (linkResult.error) {
@@ -633,6 +633,7 @@ async function loadClangToolchain(
 async function dispatchClangFacet(
   target: ClangFacetTarget,
   args: ClangFacetArgs,
+  signal: AbortSignal,
 ): Promise<ClangFacetResult> {
   const facetFn = async function clangFacetCall(
     inArgs: { primaryName: string; argv: string[] },
@@ -668,6 +669,8 @@ async function dispatchClangFacet(
       argv: args.argv,
     }, {
       timeoutMs: 300_000,
+      // A kill or Ctrl-C ends the facet too, where the host can.
+      signal,
     });
     return {
       exitCode: result.exitCode,
@@ -676,6 +679,8 @@ async function dispatchClangFacet(
       error: result.error,
     };
   } catch (e: unknown) {
+    // Killed: the tool ends as an interrupted one does.
+    if (signal.aborted) return { exitCode: 130, stdout: '', stderr: '' };
     return {
       exitCode: 1,
       stdout: '',

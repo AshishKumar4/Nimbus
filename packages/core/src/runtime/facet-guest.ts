@@ -44,13 +44,20 @@ const joined = await joinRealm();
 if (!isFacetPayload(joined.payload)) throw new Error('facet-guest: started without a facet');
 const { tag, parking, preamble, supervisor } = joined.payload;
 
+type TypedArray = Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array
+  | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
+const isTypedArray = (value: unknown): value is TypedArray => ArrayBuffer.isView(value) && !(value instanceof DataView);
+
 /**
- * A copy of `value` that owns its bytes when it is a view on more of them: a
- * view crosses with its whole buffer, and a guest's is its whole memory.
+ * A copy of `value` that owns its bytes when it is a view on more of them (a
+ * view crosses with its whole buffer, and a guest's is its whole memory),
+ * the same kind of view: a typed array its own type, a DataView a DataView.
  */
-const own = (value: unknown): unknown => (ArrayBuffer.isView(value) && value.byteLength !== value.buffer.byteLength
-  ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
-  : value);
+const own = (value: unknown): unknown => {
+  if (!ArrayBuffer.isView(value) || value.byteLength === value.buffer.byteLength) return value;
+  if (isTypedArray(value)) return value.slice();
+  return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+};
 
 /** The supervisor's methods (or its synchronous view's), each a call to the host. */
 function view(name: SupervisorView, methods: readonly string[]): Record<string, (...args: unknown[]) => unknown> {
@@ -100,10 +107,16 @@ async function scope(): Promise<(source: string) => unknown> {
   return built;
 }
 
-async function run(submit: FacetSubmit): Promise<unknown> {
+/** Adds the submit's modules to the table: every one, or (when one fails to compile) none. */
+async function install(submit: FacetSubmit): Promise<void> {
+  const compiled: Record<string, WebAssembly.Module> = {};
   for (const [name, module] of Object.entries(submit.modules)) {
-    wasmTable[name] = module instanceof WebAssembly.Module ? module : await wasmCompiler()(module);
+    compiled[name] = module instanceof WebAssembly.Module ? module : await wasmCompiler()(module);
   }
+  Object.assign(wasmTable, compiled);
+}
+
+async function run(submit: FacetSubmit): Promise<unknown> {
   const evaluateIn = await scope();
   let fn = scoped.get(submit.source);
   if (!fn) {
@@ -118,5 +131,9 @@ async function run(submit: FacetSubmit): Promise<unknown> {
 // Submits arrive one at a time (the host orders them), each answered by its id.
 joined.events.on('message', (event) => {
   if (!isFacetSubmit(event)) return;
-  void realmOutcome(() => run(event)).then((outcome) => joined.post({ type: 'done', id: event.id, ...outcome }));
+  void (async () => {
+    const installing = await realmOutcome(() => install(event));
+    const outcome = 'error' in installing ? installing : await realmOutcome(() => run(event));
+    joined.post({ type: 'done', id: event.id, installed: !('error' in installing), ...outcome });
+  })();
 });

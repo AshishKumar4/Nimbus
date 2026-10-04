@@ -26,7 +26,13 @@
 //   (5) with the Ruby runtime package (NIMBUS_RUNTIME_PACKAGES, as
 //       core-ruby-clang-bun), a Ruby program that rebinds the host's globals
 //       through `JS.eval` leaves them untouched, and the workspace keeps
-//       working.
+//       working; with the clang package, an aborted compile answers 130;
+//   (6) a call's contract: an abort that comes while the facet starts, while
+//       its modules compile, or in the same turn as the submit, ends it; a
+//       call whose modules fail is retried whole, the ones that did compile
+//       included; and an answer that is a view on part of a buffer comes back
+//       as that view's type, with its own bytes;
+//   (3) also `bash`: an aborted `while :; do :; done` answers 130.
 //
 // Each case runs in a process of its own (CASE=<name>), under bun against
 // the source and under node against the built package (packages/core/dist:
@@ -46,7 +52,7 @@ import { hostSqlite } from './lib/host-sqlite.mjs';
 import { missingRuntimeFile, RUNTIMES, seedRuntime } from './lib/wasm-runtimes.mjs';
 
 const underBun = typeof process.versions.bun === 'string';
-const CASES = ['realm', 'kill', 'ruby'];
+const CASES = ['realm', 'kill', 'ruby', 'calls', 'clang'];
 
 if (process.env.CASE === undefined) {
   const failed = [];
@@ -216,6 +222,103 @@ case 'kill': {
   assert.ok(ticks >= 5, `(3) the host's event loop ran while the program spun (${ticks} ticks)`);
   await assertEnded('(3) the aborted python3', before);
   assert.equal((await ws.exec('python3 -c "print(1)"')).stdout, '1\n', '(3) the workspace runs the next program');
+
+  // bash, whose facet is a session of steps.
+  assert.equal((await ws.exec('bash -c "echo hi"')).stdout, 'hi\n');
+  const bashBefore = await settled();
+  const bashController = new AbortController();
+  const bashStarted = Date.now();
+  const looping = ws.exec('bash -c "while :; do :; done"', { signal: bashController.signal });
+  setTimeout(() => bashController.abort(), 500);
+  const looped = await within(looping, 15_000, 'the aborted bash');
+  assert.equal(looped.exitCode, 130, `(3) the aborted bash answers 130: ${looped.stderr}`);
+  assert.ok(Date.now() - bashStarted < 10_000, '(3) promptly');
+  await assertEnded('(3) the aborted bash', bashBefore);
+  assert.equal((await ws.exec('bash -c "echo again"')).stdout, 'again\n', '(3) the workspace runs the next bash');
+  await ws.close();
+  break;
+}
+
+// ── (6) a call's contract ─────────────────────────────────────────────────────
+case 'calls': {
+  const spin = function spin() { for (;;) { /* never yields */ } };
+  const before = await settled();
+  // An abort in the same turn as the submit, and one a microtask later, while the facet starts.
+  for (const when of ['sync', 'microtask', 'after start']) {
+    const controller = new AbortController();
+    const facet = host.open({ tag: `abort-${when}` });
+    if (when === 'after start') await facet.submit(function ready() { return 1; }, null);
+    const pending = facet.submit(spin, null, { signal: controller.signal });
+    if (when === 'sync') controller.abort(new Error('killed'));
+    else queueMicrotask(() => controller.abort(new Error('killed')));
+    await assert.rejects(within(pending, 10_000, `an abort ${when}`), /killed/, `(6) an abort ${when} ends the call`);
+  }
+  // An abort while the modules compile (a large image takes a while).
+  {
+    const controller = new AbortController();
+    const facet = host.open({ tag: 'abort-compile' });
+    const big = (await import('node:fs')).readFileSync(new URL('../../packages/worker/wasm/python/python.wasm', import.meta.url));
+    const image = big.buffer.slice(big.byteOffset, big.byteOffset + big.byteLength);
+    const pending = facet.submit(spin, null, { signal: controller.signal, wasmModules: { 'python.wasm': image } });
+    setTimeout(() => controller.abort(new Error('killed')), 1);
+    await assert.rejects(within(pending, 10_000, 'an abort while compiling'), /killed/, '(6) an abort while the modules compile ends the call');
+  }
+  await assertEnded('(6) the aborted calls', before);
+
+  // A call whose second module fails is retried whole.
+  {
+    const valid = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer;
+    const invalid = new Uint8Array([0, 97, 115, 109, 9, 9, 9, 9]).buffer;
+    const facet = host.open({ tag: 'modules' });
+    const both = function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); };
+    await assert.rejects(facet.submit(both, null, { wasmModules: { a: valid, b: invalid } }), /./, '(6) an invalid module fails the call');
+    assert.deepEqual(await facet.submit(both, null, { wasmModules: { a: valid, b: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer } }),
+      ['a', 'b'], '(6) the retry has every module, the one that compiled before included');
+    facet.dispose();
+  }
+
+  // Views on part of a buffer come back as their own type, with their own bytes.
+  {
+    const facet = host.open({ tag: 'views' });
+    const view = function view(kind) {
+      const buffer = new ArrayBuffer(16);
+      new Uint8Array(buffer).set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+      return kind === 'words' ? new Uint16Array(buffer, 2, 2) : new DataView(buffer, 4, 3);
+    };
+    const words = await facet.submit(view, 'words');
+    const bytes = await facet.submit(view, 'data');
+    assert.ok(words instanceof Uint16Array, `(6) a Uint16Array stays one: ${words?.constructor?.name}`);
+    assert.deepEqual([words.length, words.buffer.byteLength, words[0]], [2, 4, 0x0403]);
+    assert.ok(bytes instanceof DataView, `(6) a DataView stays one: ${bytes?.constructor?.name}`);
+    assert.deepEqual([bytes.byteLength, bytes.buffer.byteLength, bytes.getUint8(0)], [3, 3, 5]);
+    facet.dispose();
+  }
+  break;
+}
+
+// ── (5) clang: an aborted compile ends ──────────────────────────────────────
+case 'clang': {
+  const packages = process.env.NIMBUS_RUNTIME_PACKAGES;
+  if (!packages || !existsSync(join(packages, 'clang', 'index.js'))) {
+    console.log('case clang ok (skipped: set NIMBUS_RUNTIME_PACKAGES to a directory holding the clang runtime package)');
+    break;
+  }
+  const clang = (await import(join(packages, 'clang', 'index.js'))).default;
+  const { sql, transactions } = await hostSqlite();
+  const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: host, runtimes: [clang] });
+  // About 20 s of optimising, in which the compiler makes no syscall, so the
+  // abort lands in the middle of it.
+  const source = Array.from({ length: 6000 }, (_, i) => `int f${i}(int x) { int s = 0; for (int j = 0; j < x; j++) s += j * ${i} ^ (s >> 3); return s; }`);
+  await ws.fs.writeFile('/home/user/a.c', `${source.join('\n')}\nint main(void) { return 0; }\n`);
+  const before = await settled();
+  const controller = new AbortController();
+  const started = Date.now();
+  const pending = ws.exec('clang -O2 -c a.c -o a.o', { signal: controller.signal });
+  setTimeout(() => controller.abort(), 3000);
+  const r = await within(pending, 15_000, 'the aborted clang');
+  assert.equal(r.exitCode, 130, `(5) the aborted compile answers 130: ${r.stderr}`);
+  assert.ok(Date.now() - started < 5_000, `(5) promptly (${Date.now() - started} ms)`);
+  await assertEnded('(5) the aborted clang', before);
   await ws.close();
   break;
 }

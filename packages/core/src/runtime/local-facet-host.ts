@@ -97,8 +97,15 @@ function isSupervisorCall(value: unknown): value is SupervisorCall {
 }
 
 /** The guest's answer to a submit, named by the submit's id. */
-function isFacetDone(value: unknown): value is RealmOutcome & { readonly type: 'done'; readonly id: number } {
-  return record(value) && value.type === 'done' && isRealmAnswer(value);
+export type FacetDone = RealmOutcome & {
+  readonly type: 'done';
+  readonly id: number;
+  /** Whether the submit's modules are in the facet's table: all of them, or (when one failed) none. */
+  readonly installed: boolean;
+};
+
+function isFacetDone(value: unknown): value is FacetDone {
+  return record(value) && value.type === 'done' && typeof value.installed === 'boolean' && isRealmAnswer(value);
 }
 
 /** The supervisor's names, as a facet calls them. */
@@ -182,11 +189,13 @@ const ended = (tag: string, why: string): Error => new Error(`Nimbus: facet '${t
 class RealmFacet implements Facet {
   /** The realm, started on the first call. */
   private realm: Promise<Realm> | null = null;
-  /** The image each name was last sent as: the same image is sent, and compiled, once per facet. */
-  private readonly sent = new Map<string, ArrayBuffer>();
+  /** The image each name is in the facet's table as: what a call need not send again. */
+  private readonly installed = new Map<string, ArrayBuffer>();
+  /** Each image compiled for a thread, once, whether or not a call that sent it succeeded. */
+  private readonly compiled = new WeakMap<ArrayBuffer, WebAssembly.Module>();
   /** Submits are serialized: one scope, and a facet's calls are ordered. */
   private queue: Promise<unknown> = Promise.resolve();
-  private readonly waiting = new Map<number, (outcome: RealmOutcome | Error) => void>();
+  private readonly waiting = new Map<number, (outcome: FacetDone | Error) => void>();
   private ids = 0;
   private disposed = false;
   /** Why the realm ended, once it has. */
@@ -251,48 +260,81 @@ class RealmFacet implements Facet {
     return Reflect.apply(method, target, call.args);
   }
 
-  /** The modules a call adds to the facet's table: the spec's, per-call ones over them, but those it holds already. */
-  private async modules(callModules: Record<string, ArrayBuffer> | undefined): Promise<Record<string, WebAssembly.Module | ArrayBuffer>> {
-    const added: Record<string, WebAssembly.Module | ArrayBuffer> = {};
+  /**
+   * The images a call adds to the facet's table (the spec's, per-call ones
+   * over them, but those it holds already), by name, and each as it is sent.
+   * Nothing is recorded as held here: only the guest's answer that it
+   * installed them does that, so a call that fails sends them all again.
+   */
+  private async modules(callModules: Record<string, ArrayBuffer> | undefined): Promise<{
+    images: Record<string, ArrayBuffer>;
+    sent: Record<string, WebAssembly.Module | ArrayBuffer>;
+  }> {
+    const images: Record<string, ArrayBuffer> = {};
+    const sent: Record<string, WebAssembly.Module | ArrayBuffer> = {};
     for (const [name, bytes] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
-      if (this.sent.get(name) === bytes) continue;
-      added[name] = this.isolation === 'thread' ? await wasmCompiler()(bytes) : bytes;
-      this.sent.set(name, bytes);
+      if (this.installed.get(name) === bytes) continue;
+      images[name] = bytes;
+      sent[name] = this.isolation === 'thread' ? await this.compile(bytes) : bytes;
     }
-    return added;
+    return { images, sent };
+  }
+
+  private async compile(bytes: ArrayBuffer): Promise<WebAssembly.Module> {
+    const cached = this.compiled.get(bytes);
+    if (cached) return cached;
+    const module = await wasmCompiler()(bytes);
+    this.compiled.set(bytes, module);
+    return module;
   }
 
   private async call<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
     if (this.disposed) throw ended(this.spec.tag, 'is disposed');
-    options?.signal?.throwIfAborted();
-    const realm = await this.started();
-    if (this.over) throw this.over;
-    const submit: FacetSubmit = { type: 'submit', id: ++this.ids, source: fn.toString(), args, modules: await this.modules(options?.wasmModules) };
-    const answered = new Promise<RealmOutcome | Error>((resolve) => this.waiting.set(submit.id, resolve));
-    if (!realm.post(submit)) {
-      this.waiting.delete(submit.id);
-      throw ended(this.spec.tag, 'was submitted arguments that cannot cross to its realm');
-    }
-    // The call holds this process while it runs; its timeout or abort ends the facet.
-    realm.hold(true);
-    const end = (why: Error) => {
-      this.waiting.get(submit.id)?.(why);
-      this.waiting.delete(submit.id);
-      this.dispose();
-    };
+    const signal = options?.signal;
+    signal?.throwIfAborted();
+    // From here a timeout or an abort ends the call, and the facet with it,
+    // at whatever step it has reached: starting, compiling, or running. Every
+    // step waits racing it.
+    const state: { stopped: Error | null } = { stopped: null };
+    let stop: (why: Error) => void = () => {};
+    const stopping = new Promise<never>((_, reject) => {
+      stop = (why) => {
+        if (state.stopped) return;
+        state.stopped = why;
+        reject(why);
+        this.dispose();
+      };
+    });
+    stopping.catch(() => {});
+    const onAbort = () => stop(signal?.reason instanceof Error ? signal.reason : ended(this.spec.tag, 'was aborted'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // An abort that came between the check above and the listener.
+    if (signal?.aborted) onAbort();
     const timer = options?.timeoutMs === undefined ? undefined
-      : setTimeout(() => end(ended(this.spec.tag, `timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
-    const abort = () => end(options?.signal?.reason instanceof Error ? options.signal.reason : ended(this.spec.tag, 'was aborted'));
-    options?.signal?.addEventListener('abort', abort, { once: true });
+      : setTimeout(() => stop(ended(this.spec.tag, `timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
+    let realm: Realm | null = null;
+    const id = ++this.ids;
     try {
-      const outcome = await answered;
+      realm = await Promise.race([this.started(), stopping]);
+      if (this.over) throw this.over;
+      const { images, sent } = await Promise.race([this.modules(options?.wasmModules), stopping]);
+      // Stopped in the turn the modules were ready: not posted.
+      if (state.stopped) throw state.stopped;
+      const submit: FacetSubmit = { type: 'submit', id, source: fn.toString(), args, modules: sent };
+      const answered = new Promise<FacetDone | Error>((resolve) => this.waiting.set(id, resolve));
+      if (!realm.post(submit)) throw ended(this.spec.tag, 'was submitted arguments that cannot cross to its realm');
+      // The call holds this process while it runs.
+      realm.hold(true);
+      const outcome = await Promise.race([answered, stopping]);
       if (outcome instanceof Error) throw outcome;
+      if (outcome.installed) for (const [name, bytes] of Object.entries(images)) this.installed.set(name, bytes);
       if ('error' in outcome) throw fromRealmError(outcome.error);
       return outcome.value;
     } finally {
+      this.waiting.delete(id);
       if (timer !== undefined) clearTimeout(timer);
-      options?.signal?.removeEventListener('abort', abort);
-      realm.hold(false);
+      signal?.removeEventListener('abort', onAbort);
+      realm?.hold(false);
     }
   }
 

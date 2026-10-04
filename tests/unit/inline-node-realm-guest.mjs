@@ -83,15 +83,20 @@ switch (process.env.CASE) {
       '  MessagePort.prototype.postMessage = function (...args) { if (!taken) taken = this; return post.apply(this, args); };',
       "  require('fs').existsSync('/home/user');",
       '  MessagePort.prototype.postMessage = post;',
-      "  for (const call of [{ op: 'fs', method: 'valueOf', args: [] }, { op: 'fs', method: 'constructor', args: [] }, { op: 'fs', method: 'exists', args: [{ toString() { return '/'; } }] }, { op: 'nope' }, null]) {",
-      '    try { taken.postMessage(call); } catch (e) { console.log(\'NOT SENT \' + e.message); }',
-      '  }',
+      // Each as a call the host's transport carries, so it reaches the dispatcher, which refuses it.
+      '  const refused = [];',
+      '  taken.on(\'message\', (m) => { if (m && m.id >= 9000) refused.push(m.id + (m.error ? \' refused\' : \' answered\')); });',
+      "  [{ op: 'fs', method: 'valueOf', args: [] }, { op: 'fs', method: 'constructor', args: [] }, { op: 'fs', method: 'exists', args: [42] }, { op: 'nope' }, null].forEach((request, i) => {",
+      '    try { taken.postMessage({ id: 9000 + i, request }); } catch (e) { console.log(\'NOT SENT \' + e.message); }',
+      '  });',
       "  console.log('SENT ' + (taken !== null));",
-      '  setTimeout(() => {}, 300);',
+      "  setTimeout(() => console.log('ANSWERS ' + refused.sort().join(',')), 300);",
       '});',
     ].join(' ');
     const escaped = await within(run(`node -e "${escape}"`), 20_000, 'a guest posting on the host\'s port');
     assert.match(escaped.out, /^SENT true$/m, `the guest took a real port: ${escaped.out}${escaped.err}`);
+    assert.match(escaped.out, /^ANSWERS 9000 refused,9001 refused,9002 refused,9003 refused,9004 refused$/m,
+      `each forged call reached the host's dispatcher and was refused: ${escaped.out}${escaped.err}`);
     await sleep(500);
     assert.equal((await run('echo up')).out, 'up\n', 'the host is up');
     // A guest that does hold a port of the host's, whatever it posts, is answered or ignored.

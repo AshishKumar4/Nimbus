@@ -31,8 +31,18 @@ published independently in the `@nimbus-sh` npm scope.
   mechanism is the inline `node`'s, now shared (runtime/realm.ts,
   realm-guest.ts). It costs each wasm program run about 60 ms more to start
   under Bun and 40 ms under Node, and each filesystem syscall about 55 µs
-  under Bun and 30 µs under Node. The `bash` command does not pass its
-  signal yet.
+  under Bun and 30 µs under Node. `bash` and `clang` pass the command's
+  signal too, through one step controller for both facet transports, so a
+  killed `bash -c "while :; do :; done"` answers 130 at once where it waited
+  out its 300 s step deadline; a bash session's `interrupt` is now always
+  there. An abort that comes while a facet starts or compiles its modules, or
+  in the same turn as the call, ends the call (it hung); a call whose
+  modules failed sends all of them again, where the ones compiled before the
+  failure were dropped from the retry; and an answer that is a typed array or
+  DataView on part of a buffer comes back as that type, where it became a
+  Uint8Array. A spare realm started ahead was measured and not added: it
+  saves at most 20 ms of python3's 165 ms under Bun, most of the rest being
+  python.wasm's 11 MB sent to the child and compiled there.
   Unchanged before and after: under Bun, each Ruby run keeps about 1 GB of
   the process's memory. Node returns it.
 
