@@ -246,6 +246,13 @@ export class ReplayJournal {
             // Input packets are checked by the session-owned stdin account and
             // read tape; output acknowledgements by the output-prefix protocol.
             return dispatch().then((value) => {
+                if (policy.kind === 'output' && value !== undefined)
+                    this.disqualify(`${op} returned an observable acknowledgement without a replay contract`);
+                if (policy.kind === 'input' && value && typeof value === 'object') {
+                    const unsupported = Object.keys(value).find((key) => !policy.inputFields?.includes(key) && value[key] !== undefined);
+                    if (unsupported)
+                        this.disqualify(`${op} delivered ${unsupported}, which the stdin tape cannot replay`);
+                }
                 if (this.protocolReplies.length >= REPLAY_JOURNAL_MAX_ENTRIES)
                     this.disqualify('received too many protocol replies');
                 else

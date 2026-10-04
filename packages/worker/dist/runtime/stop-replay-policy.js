@@ -22,7 +22,6 @@ const withAcquire = (value) => {
 const read = { kind: 'observation' };
 const effect = { kind: 'effect' };
 const output = { kind: 'output' };
-const input = { kind: 'input' };
 const control = { kind: 'control' };
 /**
  * The complete session-boundary policy. New operations fail closed both at
@@ -58,7 +57,9 @@ export const REPLAY_OPERATION_POLICY = {
     registerPort: effect, allocatePort: effect, unregisterPort: effect,
     reportExit: output, routeLoopback: effect, transform: read,
     cpSpawn: effect, reportRuntimeCode: output, cpStdinWrite: effect,
-    cpStdinEnd: effect, cpReadStdin: input, stdinFileRead: input,
+    cpStdinEnd: effect,
+    cpReadStdin: { kind: 'input', inputFields: ['data', 'ended'] },
+    stdinFileRead: { kind: 'input', inputFields: ['data', 'size'] },
     cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
     cpDrainOutput: read, cpKill: effect,
     cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },

@@ -4,6 +4,8 @@ export interface ReplayPolicy {
     /** Exact, operation-local rules; never strip a property by its name globally. */
     answer?: Projection;
     args?: (args: readonly unknown[]) => readonly unknown[];
+    /** Only these fields have a separate input-tape contract. */
+    inputFields?: readonly string[];
 }
 /**
  * The complete session-boundary policy. New operations fail closed both at
@@ -196,10 +198,12 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     cpReadStdin: {
-        readonly kind: "input";
+        kind: "input";
+        inputFields: string[];
     };
     stdinFileRead: {
-        readonly kind: "input";
+        kind: "input";
+        inputFields: string[];
     };
     cpReadOutput: {
         kind: "observation";
