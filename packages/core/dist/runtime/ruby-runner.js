@@ -216,7 +216,7 @@ export function makeRubyRunnerFactory(deps) {
                 });
             }
             else {
-                result = await dispatchRubyFacet(deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
+                result = await dispatchRubyFacet(deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid, ctx.signal);
             }
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -532,7 +532,7 @@ function toRubyCallArgs(args) {
         cwd: args.cwd,
     };
 }
-async function dispatchRubyFacet(facets, vfs, args, image, pid) {
+async function dispatchRubyFacet(facets, vfs, args, image, pid, signal) {
     // The Ruby preamble runs the entire bootstrap in the facet's own scope,
     // before any function is submitted: the wasm Module is instantiated where
     // the host permits it, _initialize + __wasi_vfs_rt_init run, and the live
@@ -577,6 +577,8 @@ async function dispatchRubyFacet(facets, vfs, args, image, pid) {
                 'ruby+stdlib.wasm': image,
             },
             timeoutMs: 300_000,
+            // A kill or Ctrl-C ends the facet too, where the host can.
+            signal,
         });
         return normalizeRubyFacetResult(rawResult) || {
             exitCode: 1,
@@ -586,6 +588,9 @@ async function dispatchRubyFacet(facets, vfs, args, image, pid) {
         };
     }
     catch (e) {
+        // Killed: the program ends as an interrupted one does.
+        if (signal.aborted)
+            return { exitCode: 130, stdout: '', stderr: '' };
         return {
             exitCode: 1,
             stdout: '',

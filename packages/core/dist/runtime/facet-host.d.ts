@@ -93,14 +93,20 @@ export interface FacetSyscalls {
 }
 export interface FacetSubmitOptions {
     /**
-     * Deadline for this call, honoured by hosts that can abandon a facet.
-     *
-     * A host sharing the caller's thread cannot: a wasm guest in a synchronous
-     * loop holds the only thread there is, and nothing observes a timer until it
-     * yields. Such a host says so ({@link ./local-facet-host.ts}) rather than
-     * racing a timer and returning while the guest runs on.
+     * Deadline for this call, honoured by hosts that can abandon a facet: the
+     * call rejects and the facet is ended, its scope with it. Both hosts can:
+     * a dynamic worker, and the local host's worker thread
+     * ({@link ./local-facet-host.ts}), which `terminate()` stops even in a
+     * loop that never yields.
      */
     timeoutMs?: number;
+    /**
+     * The caller's abort (a kill, Ctrl-C): when it fires, the call rejects with
+     * its reason and the facet is ended, as at the deadline. The local host
+     * honours it; the Worker Loader host does not for `submit`, and ends a call
+     * through the request's own signal instead ({@link Facet.submitRequest}).
+     */
+    signal?: AbortSignal;
     /** Wasm images for this call alone, merged over {@link FacetSpec.wasmModules}. */
     wasmModules?: Record<string, ArrayBuffer>;
 }

@@ -1,49 +1,36 @@
 /**
- * The inline `node`'s realm: each run is a worker thread of its own.
+ * The inline `node`'s realm: each run is a realm of its own (runtime/realm.ts).
  *
  * The program used to be evaluated with `new Function` in the host's realm,
  * so its globals and intrinsics were the host's: a program that rebound
  * `Array` or installed fake timers changed them for the host (in Kinu's CLI, a
- * rebound `globalThis.Array` broke the host's sqlite-vfs). A worker thread is
- * a realm and an event loop of its own, which ends when its program does, and
- * `terminate()` ends even a loop that never yields. A `vm` context is a realm
- * too, but every host object handed into it (the fs bridge, Buffer, the
- * http module) carries the host's prototypes, a sync loop in it cannot be
- * stopped, and a blocking read could only block the host's own thread.
+ * rebound `globalThis.Array` broke the host's sqlite-vfs).
  *
  * The guest (node-guest.ts) runs node.ts's runNodeProgram. What it reaches
  * outside its realm crosses here:
  *
- *   - synchronous calls (the filesystem `require` and `fs` read, fd 0, the
- *     session's ports): the guest posts the call on `calls` and waits on
- *     `wake` (Atomics.wait); this side answers on `calls` and wakes it, and
- *     the guest takes the answer with receiveMessageOnPort. Only answers
- *     travel guest-bound on `calls`, so nothing else can be taken for one.
- *     A call this side answers asynchronously (fd 0, read to its end) holds
- *     the guest exactly as a blocking read holds a Node program;
- *   - asynchronous traffic, on `events`: its output, the requests its loopback
- *     clients make, the requests this side forwards to its servers, its exit.
+ *   - synchronous calls ({@link NodeCall}: the filesystem `require` and `fs`
+ *     read, fd 0, the session's ports). A call this side answers
+ *     asynchronously (fd 0, read to its end) holds the guest exactly as a
+ *     blocking read holds a Node program;
+ *   - events: its output, the requests its loopback clients make, the
+ *     requests this side forwards to its servers, its exit.
  *
- * The program shares its realm with the guest, so everything it sends is
- * untrusted: the ports reach the guest by its first message, never through
- * `workerData` a program can import, and this side answers only the calls it
- * names below, with arguments of their kind, and never lets a message, an
+ * Everything the program sends is untrusted: this side answers only the calls
+ * it names below, with arguments of their kind, and never lets a message, an
  * answer that cannot cross, or a failed request end the host.
  *
- * Bun and Node both carry node:worker_threads, SharedArrayBuffer and
- * Atomics.wait in workers; workerd does not, and its sessions run their own
- * `node` (worker hosted/commands.ts).
+ * workerd has no worker threads; its sessions run their own `node` (worker
+ * hosted/commands.ts).
  */
+import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
-import { isVfsErrorCode, VfsError } from '../../../../vfs/vfs-error.js';
+import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
 // Each side receives a structured clone it must narrow: a guard per shape.
 const record = (value) => typeof value === 'object' && value !== null;
 const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
-export function isRealmAnswer(value) {
-    return record(value) && ('value' in value || (record(value.error) && typeof value.error.message === 'string'));
-}
 const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers) && typeof value.body === 'string');
 export function isGuestEvent(value) {
     if (!record(value))
@@ -68,60 +55,14 @@ export function isHostEvent(value) {
         default: return false;
     }
 }
-export function isRealmStart(value) {
-    return record(value) && record(value.program) && typeof value.program.source === 'string'
-        && value.wake instanceof SharedArrayBuffer && record(value.calls) && record(value.events);
+export function isNodeRealmPayload(value) {
+    return record(value) && record(value.program) && typeof value.program.source === 'string';
 }
 export function isStat(value) {
     return record(value) && typeof value.type === 'string' && typeof value.mode === 'number' && typeof value.size === 'number';
 }
 export function isDirEntries(value) {
     return Array.isArray(value) && value.every((entry) => record(entry) && typeof entry.name === 'string' && typeof entry.type === 'string');
-}
-// ── Errors, either way across ──────────────────────────────────────────────
-/** An error as data: its class name, message and own primitive properties (code, syscall, path, errno, dest, detail). */
-export function realmError(error) {
-    if (!(error instanceof Error))
-        return { name: 'Error', message: String(error), properties: {} };
-    const properties = {};
-    for (const key of Object.getOwnPropertyNames(error)) {
-        if (key === 'message' || key === 'stack')
-            continue;
-        const value = Reflect.get(error, key);
-        if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
-            properties[key] = value;
-    }
-    return { name: error.name, message: error.message, properties };
-}
-/**
- * The error `error` was: a VfsError as a VfsError (node-compat's fs tells a
- * filesystem refusal by its class, as `rm(..., { force: true })` of a missing
- * path does), a standard class as itself, else an Error bearing its name; with
- * its message and own properties.
- */
-export function fromRealmError(error) {
-    const text = (key) => {
-        const value = error.properties[key];
-        return typeof value === 'string' ? value : undefined;
-    };
-    const code = error.properties.code;
-    let rebuilt;
-    if (error.name === 'VfsError' && isVfsErrorCode(code)) {
-        rebuilt = new VfsError(code, '', text('path'), { syscall: text('syscall'), dest: text('dest'), detail: text('detail') });
-    }
-    else {
-        const Standard = error.name === 'TypeError' ? TypeError : error.name === 'RangeError' ? RangeError : error.name === 'SyntaxError' ? SyntaxError : Error;
-        rebuilt = new Standard(error.message);
-        if (rebuilt.name !== error.name)
-            Object.defineProperty(rebuilt, 'name', { value: error.name, configurable: true, writable: true });
-    }
-    Object.defineProperty(rebuilt, 'message', { value: error.message, configurable: true, writable: true });
-    for (const [key, value] of Object.entries(error.properties)) {
-        if (key === 'name' || Object.hasOwn(rebuilt, key))
-            continue;
-        Object.defineProperty(rebuilt, key, { value, configurable: true, enumerable: true, writable: true });
-    }
-    return rebuilt;
 }
 /** A call no method answers, or with arguments not of its kind. */
 function refused(what) {
@@ -206,56 +147,18 @@ async function performCall(call, services) {
  * above, or the error it raised; an error, too, for a call none answers and
  * for a value that cannot cross to the guest. Never rejects.
  */
-export async function serveRealmCall(call, services) {
-    try {
-        const value = await performCall(call, services);
-        // Proven to cross before it is posted: a value that cannot is an error.
-        structuredClone(value);
-        return { value };
-    }
-    catch (error) {
-        return { error: realmError(error) };
-    }
+export function serveRealmCall(call, services) {
+    return realmOutcome(() => performCall(call, services));
 }
 /**
- * Run `program` in a worker of its own, serving what it reaches from `ctx` and
+ * Run `program` in a realm of its own, serving what it reaches from `ctx` and
  * `kernel`. Resolves with its exit code once its realm has ended: its event
  * loop ran empty, or the caller's abort (kill, Ctrl-C) terminated it.
  */
 export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
         return 130;
-    let threads;
-    try {
-        // Imported when a program runs, not with the module: workerd, which loads
-        // this module in the hosted session, has no worker threads.
-        threads = await import('node:worker_threads');
-    }
-    catch {
-        await ctx.stderr.write('node: this host has no worker threads, which the inline node runs each program in (Bun and Node have them)\n');
-        return 1;
-    }
-    // An abort that came while the module loaded: nothing is started.
-    if (ctx.signal.aborted)
-        return 130;
-    const calls = new threads.MessageChannel();
-    const events = new threads.MessageChannel();
-    const wake = new SharedArrayBuffer(4);
-    const flag = new Int32Array(wake);
     const filesystem = synchronousFilesystem(ctx.vfs);
-    const worker = new threads.Worker(new URL('./node-guest.js', import.meta.url));
-    // A kill or Ctrl-C ends the realm, even in a loop that never yields; the
-    // signal is checked again once the listener is on, so none is missed.
-    let aborted = false;
-    const abort = () => {
-        aborted = true;
-        void worker.terminate().catch(() => { });
-    };
-    ctx.signal.addEventListener('abort', abort, { once: true });
-    if (ctx.signal.aborted)
-        abort();
-    const start = { program, calls: calls.port2, events: events.port2, wake };
-    worker.postMessage(start, [calls.port2, events.port2]);
     // Output in the order it was written, each write after the last.
     let written = Promise.resolve();
     const write = (stream, data) => {
@@ -268,29 +171,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 await stream.write(new TextDecoder().decode(data));
         }).catch(() => { });
     };
-    // Posted, or the post's own failure posted; the guest is woken either way.
-    const answer = (reply) => {
-        try {
-            calls.port1.postMessage(reply);
-        }
-        catch (error) {
-            try {
-                calls.port1.postMessage({ error: realmError(error) });
-            }
-            catch { /* the port is gone */ }
-        }
-        Atomics.store(flag, 0, 1);
-        Atomics.notify(flag, 0);
-    };
-    const post = (event) => {
-        try {
-            events.port1.postMessage(event);
-            return true;
-        }
-        catch {
-            return false;
-        }
-    };
+    // The realm, once it has started: a request for one of the guest's servers waits for none before.
+    let post = () => false;
     const ports = new Set();
     const pending = new Map();
     let served = 0;
@@ -344,58 +226,60 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 fs.onChange = undefined; };
         },
     };
-    calls.port1.on('message', (request) => {
-        // Answered as soon as known; fd 0 waits for its end, holding the guest as Node's read does.
-        void serveRealmCall(request, services).then(answer);
-    });
     let code = null;
-    const onEvent = (event) => {
-        if (!isGuestEvent(event))
-            return;
-        switch (event.type) {
-            case 'output':
-                write(event.fd === 1 ? ctx.stdout : ctx.stderr, event.data);
+    const payload = { program };
+    const realm = await startRealm({
+        entry: new URL('./node-guest.js', import.meta.url),
+        payload,
+        serve: (call) => performCall(call, services),
+        onEvent: (event) => {
+            if (!isGuestEvent(event))
                 return;
-            case 'exit':
-                code = event.code;
-                return;
-            case 'served':
-                pending.get(event.id)?.(event.response);
-                pending.delete(event.id);
-                return;
-            case 'fetch':
-                void fetchForGuest(kernel, event).then((response) => {
-                    post({ type: 'fetched', id: event.id, response });
-                });
-                return;
-        }
-    };
-    events.port1.on('message', onEvent);
-    let failure = null;
-    worker.on('error', (error) => { failure = error; });
-    const exited = await new Promise((resolve) => worker.once('exit', resolve));
-    ctx.signal.removeEventListener('abort', abort);
-    // What the guest posted before it ended, its last output and its exit code
-    // among it, may still be queued: the worker's exit does not wait for it.
-    for (let left = threads.receiveMessageOnPort(events.port1); left; left = threads.receiveMessageOnPort(events.port1)) {
-        onEvent(left.message);
+            switch (event.type) {
+                case 'output':
+                    write(event.fd === 1 ? ctx.stdout : ctx.stderr, event.data);
+                    return;
+                case 'exit':
+                    code = event.code;
+                    return;
+                case 'served':
+                    pending.get(event.id)?.(event.response);
+                    pending.delete(event.id);
+                    return;
+                case 'fetch':
+                    void fetchForGuest(kernel, event).then((response) => {
+                        post({ type: 'fetched', id: event.id, response });
+                    });
+                    return;
+            }
+        },
+    });
+    if ('unavailable' in realm) {
+        await ctx.stderr.write(`node: ${realm.unavailable}, and the inline node runs each program in a realm of its own\n`);
+        return 1;
     }
+    post = (event) => realm.post(event);
+    // A kill or Ctrl-C ends the realm, even in a loop that never yields; the
+    // signal is checked again once the listener is on, so none is missed.
+    const abort = () => realm.terminate();
+    ctx.signal.addEventListener('abort', abort, { once: true });
+    if (ctx.signal.aborted)
+        abort();
+    const end = await realm.ended;
+    ctx.signal.removeEventListener('abort', abort);
     for (const port of ports)
         kernel?.portRegistry.delete(port);
     for (const respond of pending.values())
         respond(null);
     unwatch?.();
-    calls.port1.close();
-    events.port1.close();
     await written;
-    if (aborted)
+    if (end.terminated)
         return 130;
-    if (failure !== null) {
-        const error = failure;
-        await ctx.stderr.write(`${error.stack ?? error.message}\n`);
+    if (end.failure !== null) {
+        await ctx.stderr.write(`${end.failure.stack ?? end.failure.message}\n`);
         return code ?? 1;
     }
-    return code ?? exited;
+    return code ?? end.code;
 }
 /** All of `stdin`, to its end. */
 async function readToEnd(stdin) {
