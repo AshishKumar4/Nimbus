@@ -113,10 +113,18 @@ const terminal = new Terminal(sid);
 try {
   await terminal.connect();
   await terminal.waitForPrompt(60_000);
-  const write = (path, content) => terminal.run(
-    `node -e "require('fs').mkdirSync(require('path').dirname('${path}'),{recursive:true});require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}','base64'))"`,
-    30_000,
-  );
+  // The project's directories are the user's, made through the shell; its
+  // files are written through the session's file route, not typed through
+  // the terminal, where a long Worker takes longer to echo than to run.
+  await terminal.run('mkdir -p /home/user/do-rpc/src', 10_000);
+  const write = async (path, content) => {
+    const response = await fetch(`${probe.base}/s/${sid}/api/write-file`, {
+      method: 'POST',
+      headers: requestHeaders({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ path, content }),
+    });
+    assert.equal(response.status, 200, `write ${path}: ${await response.text()}`);
+  };
   const answer = async () => {
     const response = await fetch(`${probe.base}/s/${sid}/worker/`, { headers: requestHeaders() });
     const body = await response.text();
