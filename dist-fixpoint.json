@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a892e6a2ab6200bc8963a10d7e03a6d538510e23236f6558d58d19afdbd7e916",
+  "fingerprint": "12c1a77dd41a8e1ee4467e97cd77eb0247c5501273536c4cf5cd62ff4072024b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2126,8 +2126,8 @@
     "packages/worker/dist/session/vite-command.d.ts.map": "c168817727f511a32e9c7558dd11511c74c91dd2ea503bc0217fd77b84727e1b",
     "packages/worker/dist/session/vite-command.js": "db93d6153e8edca49c26ca1dd48fed2ba1f0f21566b23356e863cc0d4cf8d89b",
     "packages/worker/dist/session/ws-relay.d.ts": "55f229cf7d97e30427abcc7db8daa8ffd20144e9a09ba94252ad169844316e08",
-    "packages/worker/dist/session/ws-relay.d.ts.map": "c4c67aa0038a4374bd4c6ab72e65e762d553d5db7d1a29064171954d98820786",
-    "packages/worker/dist/session/ws-relay.js": "ae863335772491180edf4180b453add95ef9eb1ed9777a21d23408dcf05dd2ec",
+    "packages/worker/dist/session/ws-relay.d.ts.map": "0e81f825a0acc76b1b13fe8d3eb427914a84a1144c9814c0896c6412e7448661",
+    "packages/worker/dist/session/ws-relay.js": "ac9c6d18d23d1e7bd8f6c0bcdb626db7898f371e373f6c32469b49f3f9dd6e2d",
     "packages/worker/dist/session/ws.d.ts": "ac256a1f0f74261d0baccbac685433ae5f546bfe6ba5b5504edf5ee8c20fc186",
     "packages/worker/dist/session/ws.d.ts.map": "f9cb7331caac02e23846a1cd4ae2be91bf8088d2b1447cbcef7af2f0ce4d793c",
     "packages/worker/dist/session/ws.js": "76c45c0c7a2c6bb94aee76909e56f83f0610d62797e226e21aa09d81a95284be",
@@ -2446,7 +2446,7 @@
     "packages/worker/src/session/supervisor-op.ts": "6d118c435b2af61a1c2e59f8d0faf75db4879c4b836e7ec5f3608877cebf31b0",
     "packages/worker/src/session/supervisor-rpc.ts": "1e3db3b767b3e620113e7a0d5de534edff2d271ad2d8d4fcbee69886ac93c0a4",
     "packages/worker/src/session/vite-command.ts": "fdfdd1718d615a2b4eff35b26eba8190832bfa8623792f00beeaa9354d394e17",
-    "packages/worker/src/session/ws-relay.ts": "b6c94d0d32217c38c7028a59f737862fd7e55f94e08ed5fa8bb16369a0a35da2",
+    "packages/worker/src/session/ws-relay.ts": "e657c182793f4c2e5b302b0f9fdfd68e2eaeb790fd60874fdb3a5466cb513d65",
     "packages/worker/src/session/ws.ts": "292ae44895abb0257d7a94e6e9c16676286dcf01806d9a4b1c25f68117c7c6e4",
     "packages/worker/src/shell/npm-bin-entrypoints.ts": "c23b04379e592cd293c512fd34cdd4db0bc0f71d3e3e5e92df537245ae069a7a",
     "packages/worker/src/sqlite-wasm-bundle.generated.ts": "d66507810a5cfff08991e9d496723bdee884d2f4912904c04ca6144a56053add",
