@@ -419,6 +419,8 @@ export declare class SqliteVFS {
     private readonly appendFailures;
     /** Transactions this VFS has open (transactionSync); no append is held from inside one. */
     private transactionDepth;
+    /** While a held append is stored (writeAppendRun), when it was made: what now() answers. */
+    private heldWriteMadeAt;
     private sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     readonly ledger: StorageLedger;
@@ -661,6 +663,7 @@ export declare class SqliteVFS {
     private settleAppends;
     /** Throw what writing `opened`'s held appends failed with, once. */
     private raiseAppendFailure;
+    /** The time a mutation is made at: now, or while a held append is stored, when it was made (writeAppendRun). */
     private now;
     private parentPath;
     private blobToUint8Array;

@@ -610,6 +610,8 @@ export class SqliteVFS {
     appendFailures = new Map();
     /** Transactions this VFS has open (transactionSync); no append is held from inside one. */
     transactionDepth = 0;
+    /** While a held append is stored (writeAppendRun), when it was made: what now() answers. */
+    heldWriteMadeAt = null;
     sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     ledger;
@@ -1371,9 +1373,13 @@ export class SqliteVFS {
                     this.rewriteFile(node, null, Math.max(node.size, start + bytes.length), { start, bytes });
                 return bytes.length;
             },
+            // fsync: the file's held appends are stored, whoever made them, so a
+            // read-only descriptor's fsync is as durable as a writer's. What storing
+            // them failed with is told to the descriptions that wrote them.
             flush: () => {
+                current();
                 if (rights.write)
-                    writable();
+                    this.raiseAppendFailure(opened);
             },
             truncate: size => {
                 if (!rights.write)
@@ -1475,7 +1481,7 @@ export class SqliteVFS {
         if (run === undefined) {
             if (this.refusalAt(path) !== null)
                 return false;
-            run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, writers: new Set(), timer: null };
+            run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, writers: new Set(), madeAt: 0, timer: null };
         }
         if (run.bytes + bytes.byteLength > run.admitted) {
             try {
@@ -1490,6 +1496,7 @@ export class SqliteVFS {
         run.parts.push(bytes.slice());
         run.bytes += bytes.byteLength;
         run.writers.add(opened);
+        run.madeAt = this.now();
         this.appendRunBytes += bytes.byteLength;
         this.appendRuns.set(node.ino, run);
         if (run.bytes >= APPEND_RUN_BYTES || this.appendRunBytes >= APPEND_RUNS_MAX_BYTES) {
@@ -1526,6 +1533,9 @@ export class SqliteVFS {
         this.privileged = run.privileged;
         this.activeMutationOwner = null;
         this.activeReservation = null;
+        // Stored with the time it was made, in the same transaction as its bytes:
+        // a stat that stores it later must not move the file's mtime and ctime.
+        this.heldWriteMadeAt = run.madeAt;
         try {
             this.writeRange(run.path, run.base, block, CRED_KERNEL);
         }
@@ -1535,6 +1545,7 @@ export class SqliteVFS {
                     this.appendFailures.set(writer, error);
         }
         finally {
+            this.heldWriteMadeAt = null;
             this.privileged = caller.privileged;
             this.activeMutationOwner = caller.owner;
             this.activeReservation = caller.reservation;
@@ -1561,7 +1572,8 @@ export class SqliteVFS {
         this.appendFailures.delete(opened);
         throw failure;
     }
-    now() { return Date.now(); }
+    /** The time a mutation is made at: now, or while a held append is stored, when it was made (writeAppendRun). */
+    now() { return this.heldWriteMadeAt ?? Date.now(); }
     parentPath(path) {
         return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
     }

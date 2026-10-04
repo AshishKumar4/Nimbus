@@ -452,7 +452,7 @@ export class SqliteRuntimeFsBridge {
             if (located === null)
                 throw fsError('ELOOP', 'open', path);
             if (located.mount)
-                return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode);
+                return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode, flags.sync === true);
             const p = located.path;
             if (p === '')
                 return this.openRoot(path, normalizedFlags);
@@ -985,7 +985,7 @@ export class SqliteRuntimeFsBridge {
         return { ...handle };
     }
     /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
-    openMount(mount, name, path, flags, mode) {
+    openMount(mount, name, path, flags, mode, sync = false) {
         const exists = mount.stat(name) !== null;
         if (flags.exclusive && flags.create && exists)
             throw fsError('EEXIST', 'open', path);
@@ -1014,7 +1014,7 @@ export class SqliteRuntimeFsBridge {
             utimes: (atime, mtime) => mountOp(mount.utimes, 'futimes', path)(name, atime, mtime), close: () => { },
         };
         if (stat.type === 'file' && !this.namespace.writesInPlace(name))
-            this.buffer(node, mount, name, path);
+            this.buffer(node, mount, name, path, sync);
         const handle = {
             id: this.scope.nextId++, path: name, flags: Object.freeze(flags),
             position: flags.append ? stat.size : 0, closed: false,
@@ -1026,9 +1026,11 @@ export class SqliteRuntimeFsBridge {
      * A mount that cannot write in place (no writeRange): the handle buffers
      * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
      * buffered), and a flush (fsync, the last close, the process's release)
-     * reads the file, applies them in order and writes it back.
+     * reads the file, applies them in order and writes it back. Opened `sync`
+     * (O_SYNC), each write is flushed before it returns, so its answer is what
+     * the mount did.
      */
-    buffer(node, mount, name, path) {
+    buffer(node, mount, name, path, sync) {
         const pending = [];
         let held = 0;
         const take = (offset, bytes) => {
@@ -1073,9 +1075,16 @@ export class SqliteRuntimeFsBridge {
             const viewed = this.processView(mount, name);
             return viewed ? { ...mountedStat(), size: viewed.byteLength } : mountedStat();
         };
+        // O_SYNC: flushed as it is written, so a refusal is the write's own.
+        const write = (offset, bytes) => {
+            const written = take(offset, bytes);
+            if (sync)
+                flush();
+            return written;
+        };
         node.applyPending = applyPending;
-        node.write = take;
-        node.writeAppend = (bytes) => take(null, bytes);
+        node.write = write;
+        node.writeAppend = (bytes) => write(null, bytes);
         node.flush = flush;
         node.pendingBytes = () => held;
         node.close = flush;

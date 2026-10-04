@@ -42,6 +42,12 @@ export interface SessionSupervisorHost {
     readonly supervisorDeliveries?: SupervisorDeliveries;
     _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+    /**
+     * `envelope` served, not counted: a call the session makes to itself inside
+     * another answer (session/rpc.ts _rpcFsAcquired's read). The host's
+     * external `supervisorOp` answers through answerSupervisorOp, which counts.
+     */
+    serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
 }
 export interface SessionSupervisorOps {
     readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
