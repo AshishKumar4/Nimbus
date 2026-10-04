@@ -131,6 +131,9 @@ const __nimbusStopReplay = (() => {
       get(target, name) {
         const value = Reflect.get(target, name);
         if (typeof value !== "function" || typeof name !== "string") return value;
+        // Completion counting is needed only on a replay. The common path
+        // keeps its read RPCs unchanged, with no wrapper or extra microtask.
+        if (ObjectHasOwn(QUIET, name) && (!run || run.replay === null)) return value;
         return (...args) => {
           const flags = name === "fsOpen" ? args[1] : null;
           const writes = name === "fsOpen" ? !!(flags && (flags.write || flags.append || flags.create || flags.truncate)) : !ObjectHasOwn(QUIET, name);
