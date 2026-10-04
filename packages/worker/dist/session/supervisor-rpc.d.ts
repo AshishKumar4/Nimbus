@@ -140,6 +140,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _reportingPid;
     private _call;
     private _pid;
+    /** The run of the process this binding was minted for, when it has one. */
+    private _runId;
     private _writerId;
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a

@@ -299,6 +299,11 @@ export declare class ReplayJournal {
     /** Whether the run being answered may still be stopped and replayed. */
     get replayable(): boolean;
     /**
+     * Whether what the run is answered is still journaled: it may yet stop, or
+     * it is a run after a stop still short of its boundary.
+     */
+    get recording(): boolean;
+    /**
      * The current run stopped: what it was answered becomes what the next run
      * must be answered again, and what it was still waiting for is answered to
      * the next only past the boundary. Nothing it asked for is answered now.

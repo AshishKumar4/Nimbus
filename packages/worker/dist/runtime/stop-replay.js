@@ -516,6 +516,13 @@ export class ReplayJournal {
         return this.unreplayable === null && this.diverged === null;
     }
     /**
+     * Whether what the run is answered is still journaled: it may yet stop, or
+     * it is a run after a stop still short of its boundary.
+     */
+    get recording() {
+        return this.entries !== null || !this.boundaryPassed;
+    }
+    /**
      * The current run stopped: what it was answered becomes what the next run
      * must be answered again, and what it was still waiting for is answered to
      * the next only past the boundary. Nothing it asked for is answered now.

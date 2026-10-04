@@ -5568,9 +5568,13 @@ export class FacetManager {
                 const refused = journal.effect(String(payload?.what ?? 'a request'));
                 if (refused)
                     throw refused;
-                return true;
+                // The run cannot be replayed now: the outbound need not ask again.
+                return { unrecorded: true };
             }
             case 'fetch': {
+                // Nothing is recorded for a run that cannot be replayed (D1).
+                if (!journal.recording)
+                    return { unrecorded: true };
                 const key = 'fetch ' + String(payload?.key ?? '');
                 const what = String(payload?.what ?? 'a request');
                 let plan;
@@ -5619,7 +5623,7 @@ export class FacetManager {
                     const refused = journal.effect(`connect ${token}`);
                     if (refused)
                         throw refused;
-                    return { plain: true };
+                    return { plain: true, unrecorded: true };
                 }
                 const target = this._netTarget(token, pid);
                 const registered = await Promise.race([target.registered.then(() => true), new Promise((r) => setTimeout(() => r(false), 10_000))]);

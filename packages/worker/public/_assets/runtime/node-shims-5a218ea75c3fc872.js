@@ -8589,6 +8589,8 @@ const __tlsMod = (() => {
   const tokens = new WeakMap();
   // The plaintext net.Socket each proxied native socket belongs to.
   const carriers = new WeakMap();
+  // What a failed TLS session's error adds, by native socket (options.ca).
+  const notes = new WeakMap();
   let startTlsPatched = false;
   const notImplemented = (option, why) => {
     const e = new Error('The ' + option + ' option is not implemented: ' + why);
@@ -8617,7 +8619,7 @@ const __tlsMod = (() => {
       const opened = Promise.resolve(self.opened).then(async (info) => {
         const answer = await __nimbusUseRpcResultUnref(
           __supervisor.netTls('upgrade', token, servername === undefined ? {} : { servername }), (result) => result);
-        if (!answer || !answer.ok) throw new Error(String((answer && answer.error) || 'the TLS session could not be made'));
+        if (!answer || !answer.ok) throw new Error(String((answer && answer.error) || 'the TLS session could not be made') + (notes.get(self) || ''));
         return info;
       });
       opened.catch(() => {});
@@ -8645,11 +8647,17 @@ const __tlsMod = (() => {
     if (options.socket) {
       throw notImplemented('options.socket', 'a TLS session over a socket the program opened is not made in a program whose network goes through Nimbus (one started with its stdin open)');
     }
-    for (const name of ['ca', 'cert', 'key', 'pfx', 'secureContext', 'passphrase']) {
+    for (const name of ['cert', 'key', 'pfx', 'passphrase']) {
       if (options[name] !== undefined) {
-        throw notImplemented('options.' + name, 'Nimbus checks a server against the platform trust store only, and presents no client certificate');
+        throw notImplemented('options.' + name, 'Nimbus presents no client certificate');
       }
     }
+    // A CA the program names is not used, as workerd's own node:tls does not
+    // use it: the platform's trust store decides. A server it does not trust
+    // fails the TLS session, and the error says the CA went unused.
+    const note = options.ca !== undefined || options.secureContext !== undefined
+      ? ' (the options.' + (options.ca !== undefined ? 'ca' : 'secureContext') + ' given is not used: Nimbus checks a server against the platform trust store only)'
+      : '';
     if (!realNet) throw new Error('tls: node:net is not available');
     let token = '';
     for (const b of crypto.getRandomValues(new Uint8Array(16))) token += (b < 16 ? '0' : '') + b.toString(16);
@@ -8664,7 +8672,7 @@ const __tlsMod = (() => {
     }
     const name = () => {
       const native = raw._handle && raw._handle.socket;
-      if (native) { tokens.set(native, token); carriers.set(native, raw); patchStartTls(native); }
+      if (native) { tokens.set(native, token); carriers.set(native, raw); if (note) notes.set(native, note); patchStartTls(native); }
     };
     name();
     raw.once('connect', name);
