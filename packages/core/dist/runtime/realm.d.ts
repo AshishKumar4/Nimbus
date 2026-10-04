@@ -1,5 +1,6 @@
 /**
- * realm.ts — a program's realm of its own: a worker thread, and what crosses.
+ * realm.ts — a program's realm of its own: a worker thread or a process, and
+ * what crosses.
  *
  * The library host used to evaluate what it ran in its own realm, so a
  * program's globals and intrinsics were the host's: an inline `node` program
@@ -16,10 +17,10 @@
  * facet host (local-facet-host.ts). The guest's side is realm-guest.ts. What
  * crosses:
  *
- *   - calls, guest to host: each names its id, and the host answers it,
- *     value or error. The guest may wait for an answer synchronously, which
- *     holds its thread as a blocking syscall holds a process, or
- *     asynchronously;
+ *   - calls, guest to host: each names its id and whether the guest waits
+ *     for it (holding its thread, as a blocking syscall holds a process) or
+ *     goes on and takes the answer when it comes; the host answers each,
+ *     value or error, on the channel its kind is read from;
  *   - events, either way: whatever the realm's user says they are, each
  *     narrowed where it arrives.
  *
@@ -30,23 +31,27 @@
  * at once; a worker running JavaScript, or WebAssembly that calls into
  * JavaScript, Bun ends), and a process ends at SIGKILL whatever it runs.
  *
- * In a thread, calls go on a MessagePort, `calls`; the host answers there,
- * then sets `wake` and notifies it, and a guest that waits does so with
- * Atomics.wait on `wake`, taking the answer with receiveMessageOnPort. Only
- * answers travel guest-bound on `calls`, so nothing else can be taken for one.
+ * In a thread, calls and their answers go on a MessagePort, `calls`; the host
+ * sets `wake` and notifies it after each answer, and a waiting guest waits
+ * with Atomics.wait on `wake`, taking answers with receiveMessageOnPort.
  * Events go on `events`. In a process, the same messages go as frames (a
- * length, then the message's v8 serialization) on pipes: the host's events on
- * fd 4, answers on fd 3 (which the guest only ever reads synchronously, so a
- * call waits on it as on any blocking read), and the guest's calls and
- * events on fd 5.
+ * length, then the message's v8 serialization) on pipes ({@link REALM_FDS}):
+ * the answers a guest waits for on one it only ever reads synchronously, the
+ * others on one it reads as they come, so a guest never blocks on an answer
+ * it did not wait for.
  *
- * The guest is untrusted (the program shares its realm), so the ports reach
- * it by its first message, never through `workerData` a program can import,
- * and nothing it sends, no answer that cannot cross and no failed call ends
- * the host.
+ * The guest is untrusted (the program shares its realm). Its channels reach
+ * it by its first message, never through `workerData` a program can import.
+ * It starts with nothing of the host's environment, and a process guest with
+ * no .env, no config and no preload of where it runs. Nothing it sends ends
+ * the host: no answer that cannot cross, no failed call, no frame larger than
+ * {@link MAX_FRAME_BYTES} (which ends the realm). A process realm is a process
+ * group of its own: ending it ends every process the guest started that
+ * stayed in it, and its end waits for none that left.
  *
  * Bun and Node both carry node:worker_threads, SharedArrayBuffer and
- * Atomics.wait in workers; workerd does not, and has isolates of its own.
+ * Atomics.wait in workers, and child processes; workerd has none, and
+ * isolates of its own.
  */
 import type { MessagePort } from 'node:worker_threads';
 /** The guest's first message: what it was started with, and its ports. */
@@ -57,10 +62,11 @@ export interface RealmStart {
     /** One Int32: set to 1 and notified when an answer is on `calls`. */
     readonly wake: SharedArrayBuffer;
 }
-/** A call the guest makes. */
+/** A call the guest makes; `wait` when the guest holds its thread for the answer. */
 export interface RealmCall {
     readonly id: number;
     readonly request: unknown;
+    readonly wait: boolean;
 }
 /** What a call came to: its value, or the error it threw, as data. */
 export type RealmOutcome = {
@@ -80,38 +86,57 @@ export interface RealmError {
 export declare function isRealmStart(value: unknown): value is RealmStart;
 export declare function isRealmCall(value: unknown): value is RealmCall;
 export declare function isRealmAnswer(value: unknown): value is RealmAnswer;
-/** The pipes of a process realm, by the guest's file descriptor. */
+/**
+ * The pipes of a process realm, by the guest's file descriptor: the answers
+ * it waits for (read only synchronously), the host's events, what the guest
+ * sends (its calls and events), and the answers it does not wait for.
+ */
 export declare const REALM_FDS: {
-    readonly answers: 3;
+    readonly waited: 3;
     readonly events: 4;
     readonly toHost: 5;
+    readonly answers: 6;
 };
+/**
+ * The largest frame a process guest may send: the largest single value it
+ * has reason to (a write, an answer), with room. A host holds one frame at a
+ * time per realm, allocated once its length is known, so this bounds what a
+ * guest can make it hold; a longer one ends the realm before a byte of it is
+ * kept.
+ */
+export declare const MAX_FRAME_BYTES: number;
 /** What a process realm's guest sends: a call, or an event. */
-export type GuestFrame = {
+export type GuestFrame = ({
     readonly kind: 'call';
-    readonly id: number;
-    readonly request: unknown;
-} | {
+} & RealmCall) | {
     readonly kind: 'event';
     readonly event: unknown;
 };
 export declare function isGuestFrame(value: unknown): value is GuestFrame;
 /** A serialized message as a frame: its length (u32, little-endian), then the bytes. */
 export declare function encodeFrame(serialized: Uint8Array): Uint8Array;
+/** A frame announced longer than its reader takes. */
+export declare class FrameTooLarge extends Error {
+    readonly length: number;
+    readonly limit: number;
+    constructor(length: number, limit: number);
+}
 /**
  * The frames in a byte stream, as each completes; a partial one waits for its
- * rest. Chunks are kept as they came and copied once, into the frame they
- * complete: a frame of megabytes (a wasm image) arrives in many.
+ * rest. A frame is allocated once its length is in, and its bytes copied
+ * into it as they come: a frame of megabytes (a wasm image) arrives in many
+ * pieces, and a 4-byte header in up to four.
  */
 export declare class FrameReader {
-    private readonly chunks;
-    private buffered;
-    /** The length of the frame being read, once its header is in. */
-    private length;
+    private readonly limit;
+    private readonly header;
+    private headerAt;
+    private frame;
+    private frameAt;
+    /** `limit`: the longest frame taken; a longer one throws {@link FrameTooLarge}, and nothing after it is read. */
+    constructor(limit?: number);
     /** The frames `chunk` completes, each still serialized. */
     push(chunk: Uint8Array): Uint8Array[];
-    /** The next `count` bytes, out of the chunks. */
-    private take;
 }
 /** An error as data: its class name, message and own primitive properties (code, syscall, path, errno, dest, detail). */
 export declare function realmError(error: unknown): RealmError;
@@ -162,7 +187,8 @@ export interface Realm {
 /**
  * Starts a realm running `options.entry`, or answers why this host has none:
  * one without node:worker_threads or node:child_process (workerd, which loads
- * this module in the hosted session, has isolates of its own).
+ * this module in the hosted session, has isolates of its own). A process
+ * that cannot be started is a realm that ends at once, with the reason.
  */
 export declare function startRealm(options: RealmOptions): Promise<Realm | {
     readonly unavailable: string;

@@ -5,8 +5,16 @@
  * What the host started the realm with is taken before anything of the
  * program's runs, and the channels live only in the closure this answers,
  * never in `workerData` a program can import.
+ *
+ * Both transports share one way of calling the host ({@link joinedRealm}):
+ * a call names its id and whether it waits; answers go to the call that
+ * waits for each, through one router, whichever channel brought them. Only
+ * {@link JoinedRealm.call} holds the guest's thread; an asynchronous call
+ * never does, so a guest can make a second call while its first is waiting
+ * on it.
  */
 import { createReadStream, readSync, writeSync } from 'node:fs';
+import realmProcess from 'node:process';
 import { deserialize, serialize } from 'node:v8';
 import { parentPort, receiveMessageOnPort, Worker } from 'node:worker_threads';
 import { encodeFrame, FrameReader, fromRealmError, isRealmAnswer, isRealmStart, REALM_FDS, } from './realm.js';
@@ -14,6 +22,77 @@ import { encodeFrame, FrameReader, fromRealmError, isRealmAnswer, isRealmStart, 
 export async function joinRealm() {
     return parentPort ? joinThreadRealm(parentPort) : joinProcessRealm();
 }
+// ── Calls, either transport ──────────────────────────────────────────────────
+/** Each answer, to the call it answers: one waiting asynchronously, or one a blocked call takes. */
+class AnswerRouter {
+    waiting = new Map();
+    arrived = new Map();
+    deliver(message) {
+        if (!isRealmAnswer(message))
+            return;
+        const settle = this.waiting.get(message.id);
+        if (settle === undefined) {
+            this.arrived.set(message.id, message);
+            return;
+        }
+        this.waiting.delete(message.id);
+        settle(message);
+    }
+    /** Whether `id`'s answer has arrived and waits to be taken. */
+    has(id) {
+        return this.arrived.has(id);
+    }
+    /** The answer to `id`, once it has arrived, taken. */
+    take(id) {
+        const answer = this.arrived.get(id);
+        this.arrived.delete(id);
+        return answer;
+    }
+    expect(id) {
+        return new Promise((resolve) => this.waiting.set(id, resolve));
+    }
+    get pending() {
+        return this.waiting.size;
+    }
+}
+function valueOf(answer) {
+    if ('error' in answer)
+        throw fromRealmError(answer.error);
+    return answer.value;
+}
+/** The realm a transport joined: one router for its answers, the same calls for both. */
+function joinedRealm(link, router) {
+    let ids = 0;
+    return {
+        payload: link.payload,
+        call(request) {
+            const id = ++ids;
+            link.send({ id, request, wait: true });
+            link.block(id, router);
+            const answer = router.take(id);
+            if (answer === undefined)
+                throw new Error('realm: the host answered no call');
+            return valueOf(answer);
+        },
+        async callAsync(request) {
+            const id = ++ids;
+            const answered = router.expect(id);
+            link.awaiting(true);
+            link.send({ id, request, wait: false });
+            try {
+                return valueOf(await answered);
+            }
+            finally {
+                if (router.pending === 0)
+                    link.awaiting(false);
+            }
+        },
+        post: (event) => link.post(event),
+        events: link.events,
+        hold: (on) => link.hold(on),
+    };
+}
+// ── A thread ─────────────────────────────────────────────────────────────────
 /**
  * The host's first message: taken at once when it is already there, else
  * awaited. The worker can start before the host has posted it (a host
@@ -39,59 +118,33 @@ async function joinThreadRealm(parent) {
         throw new Error('realm: started without a realm');
     const { calls, events } = start;
     const flag = new Int32Array(start.wake);
-    const waiting = new Map();
-    let ids = 0;
-    /** An answer, to the call that waits for it. */
-    const deliver = (message) => {
-        if (!isRealmAnswer(message))
-            return undefined;
-        const settle = waiting.get(message.id);
-        waiting.delete(message.id);
-        settle?.(message);
-        return message;
-    };
+    const router = new AnswerRouter();
     // Answers to asynchronous calls arrive while the event loop runs; held only while one waits.
-    calls.on('message', deliver);
+    calls.on('message', (message) => router.deliver(message));
     calls.unref();
-    return {
+    return joinedRealm({
         payload: start.payload,
-        call(request) {
-            const id = ++ids;
-            let own;
-            waiting.set(id, (answer) => { own = answer; });
-            calls.postMessage({ id, request });
+        send: (call) => calls.postMessage(call),
+        block(id) {
             for (;;) {
                 // Cleared, then every answer already there taken, then waited for: an
                 // answer posted after the take sets the flag after it was cleared, so
                 // the wait returns at once.
                 Atomics.store(flag, 0, 0);
                 for (let next = receiveMessageOnPort(calls); next; next = receiveMessageOnPort(calls))
-                    deliver(next.message);
-                if (own)
-                    return valueOf(own);
+                    router.deliver(next.message);
+                if (router.has(id))
+                    return;
                 Atomics.wait(flag, 0, 0);
             }
         },
-        callAsync(request) {
-            const id = ++ids;
-            return new Promise((resolve, reject) => {
-                waiting.set(id, (answer) => {
-                    if (waiting.size === 0)
-                        calls.unref();
-                    try {
-                        resolve(valueOf(answer));
-                    }
-                    catch (error) {
-                        reject(error);
-                    }
-                });
+        awaiting(on) {
+            if (on)
                 calls.ref();
-                calls.postMessage({ id, request });
-            });
+            else
+                calls.unref();
         },
-        post(event) {
-            events.postMessage(event);
-        },
+        post: (event) => events.postMessage(event),
         events,
         hold(on) {
             if (on)
@@ -99,13 +152,9 @@ async function joinThreadRealm(parent) {
             else
                 events.unref();
         },
-    };
+    }, router);
 }
-function valueOf(answer) {
-    if ('error' in answer)
-        throw fromRealmError(answer.error);
-    return answer.value;
-}
+// ── A process ────────────────────────────────────────────────────────────────
 /** `length` bytes of `fd`, read synchronously; the host gone is an error. */
 function readExactly(fd, length) {
     const bytes = new Uint8Array(length);
@@ -122,16 +171,36 @@ function readFrame(fd) {
     const length = new DataView(readExactly(fd, 4).buffer).getUint32(0, true);
     return deserialize(readExactly(fd, length));
 }
+/** Each frame of `fd` as it comes, deserialized, to `listener`. */
+function readFrames(fd, listener) {
+    const frames = new FrameReader();
+    createReadStream('', { fd }).on('data', (chunk) => {
+        for (const serialized of frames.push(chunk))
+            listener(deserialize(serialized));
+    });
+}
 /**
- * Its host gone, however it ended (a host killed, or one that exited in the
- * middle of a call), a process realm ends too, even while its own thread
- * spins: a thread of its own watches for its parent to change, and kills the
- * process when it does. A host that ends normally closes the events pipe,
- * which ends an idle realm by itself.
+ * A guest whose host is gone ends, with everything in its process group,
+ * even while its own thread spins: a thread of its own compares its parent
+ * with the host's pid, which the host gave it as its argument (a parent read
+ * when the watch starts would already be the reaper's if the host died
+ * first), at once and twice a second. It says when it has looked once; the
+ * guest waits for that before it takes anything from the host.
  */
-const ORPHAN_WATCH = `const parent = process.ppid;
-setInterval(() => { if (process.ppid !== parent) process.kill(process.pid, 'SIGKILL'); }, 500);`;
-function joinProcessRealm() {
+async function watchHost(hostPid) {
+    const watch = new Worker(`const { parentPort } = require('node:worker_threads');
+const check = () => { if (process.ppid !== ${hostPid}) process.kill(-process.pid, 'SIGKILL'); };
+check();
+parentPort.postMessage('watching');
+setInterval(check, 500);`, { eval: true });
+    watch.unref();
+    await new Promise((resolve) => watch.once('message', () => resolve()));
+}
+async function joinProcessRealm() {
+    const hostPid = Number(realmProcess.argv[realmProcess.argv.length - 1]);
+    if (!Number.isSafeInteger(hostPid) || hostPid <= 1)
+        throw new Error('realm: started without a realm');
+    await watchHost(hostPid);
     let start;
     try {
         start = readFrame(REALM_FDS.events);
@@ -141,39 +210,26 @@ function joinProcessRealm() {
     }
     if (typeof start !== 'object' || start === null || !('payload' in start))
         throw new Error('realm: started without a realm');
-    new Worker(ORPHAN_WATCH, { eval: true }).unref();
+    const router = new AnswerRouter();
+    // The answers not waited for, as they come; those waited for are read only by the call that waits.
+    readFrames(REALM_FDS.answers, (message) => router.deliver(message));
+    const listeners = [];
+    readFrames(REALM_FDS.events, (event) => { for (const listener of listeners)
+        listener(event); });
     const send = (frame) => {
         const bytes = encodeFrame(serialize(frame));
         for (let at = 0; at < bytes.byteLength;)
             at += writeSync(REALM_FDS.toHost, bytes, at, bytes.byteLength - at);
     };
-    let ids = 0;
-    const call = (request) => {
-        const id = ++ids;
-        send({ kind: 'call', id, request });
-        // Answers come in the order of the calls, and every call waits for its own.
-        for (;;) {
-            const answer = readFrame(REALM_FDS.answers);
-            if (isRealmAnswer(answer) && answer.id === id)
-                return valueOf(answer);
-        }
-    };
-    // The host's events after the first, read as they come; the host gone ends the process.
-    const listeners = [];
-    const frames = new FrameReader();
-    const stream = createReadStream('', { fd: REALM_FDS.events });
-    stream.on('data', (chunk) => {
-        for (const serialized of frames.push(chunk)) {
-            const event = deserialize(serialized);
-            for (const listener of listeners)
-                listener(event);
-        }
-    });
-    return {
+    return joinedRealm({
         payload: start.payload,
-        call,
-        // The answers' pipe is only ever read synchronously, so an asynchronous call waits as a synchronous one.
-        callAsync: async (request) => call(request),
+        send: (call) => send({ kind: 'call', ...call }),
+        block(id) {
+            // Only answers to waited calls come on this pipe, and only one call waits at a time.
+            while (!router.has(id))
+                router.deliver(readFrame(REALM_FDS.waited));
+        },
+        awaiting: () => { },
         post: (event) => send({ kind: 'event', event }),
         events: {
             on(_event, listener) {
@@ -182,5 +238,5 @@ function joinProcessRealm() {
             },
         },
         hold: () => { },
-    };
+    }, router);
 }
