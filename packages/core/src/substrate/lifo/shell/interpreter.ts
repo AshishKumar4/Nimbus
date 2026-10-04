@@ -48,6 +48,8 @@ import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { exists, statOrThrow } from '../../../vfs/vfs.js';
+import { yieldToEventLoop } from '../utils/event-loop.js';
+import { fileSink } from './file-sink.js';
 
 /**
  * Bytes a file-backed descriptor holds before committing. Matches the stream
@@ -328,26 +330,6 @@ export function assignScalar(
 
 
 
-/**
- * One turn of the event loop, unclamped: setImmediate where the host has it
- * (Bun, Node, workerd with nodejs_compat), else a MessageChannel post. A
- * timer would do, but hosts clamp it to about a millisecond.
- */
-const eventLoopHost = globalThis as unknown as {
-  setImmediate?: (callback: () => void) => unknown;
-  MessageChannel: new () => {
-    port1: { onmessage: (() => void) | null };
-    port2: { postMessage(message: unknown): void };
-  };
-};
-const yieldToEventLoop: () => Promise<void> = typeof eventLoopHost.setImmediate === 'function'
-  ? () => new Promise<void>((resolve) => eventLoopHost.setImmediate!(resolve))
-  : (() => {
-    const channel = new eventLoopHost.MessageChannel();
-    const waiting: (() => void)[] = [];
-    channel.port1.onmessage = () => waiting.shift()?.();
-    return () => new Promise<void>((resolve) => { waiting.push(resolve); channel.port2.postMessage(0); });
-  })();
 export class Interpreter {
   private config: InterpreterConfig;
   private lastExitCode = 0;
@@ -1854,16 +1836,23 @@ export class Interpreter {
     try {
       const bridge = vfs.process;
       const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
-      const push = async (bytes: Uint8Array) => {
+      // Written in blocks (file-sink.ts): the shell flushes it as each command
+      // that wrote it ends (flushFds), and it closes with its last reference.
+      const stream = fileSink(async (bytes) => {
         let offset = 0;
         while (offset < bytes.length) {
           const written = await bridge.write(handle.id, null, bytes.subarray(offset));
           if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
           offset += written;
         }
-      };
-      const stream: CommandOutputStream = { write: text => push(encode(text)), writeBytes: push };
-      fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
+      });
+      fds.opened.set(stream, {
+        stream,
+        close: async () => {
+          try { await stream.flush(); } finally { await bridge.close(handle.id); }
+        },
+        refs: 1,
+      });
       return { stream, terminal: false };
     } catch (error) {
       throw new RedirectionOpenError(target, error);
