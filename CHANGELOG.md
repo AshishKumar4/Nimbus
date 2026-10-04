@@ -5,7 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-## 2026-10-03
+## 2026-10-04
 
 Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
 0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
