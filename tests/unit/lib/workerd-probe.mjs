@@ -186,7 +186,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
 export async function localTerminal(probe, { install = ['bash'] } = {}) {
   process.env.BASE = probe.base;
   process.env.NIMBUS_PROBE_TOKEN = probe.token;
-  const { mintSession, deleteSession, Terminal } = await import('../../behavioral/_driver.mjs');
+  const { mintSession, deleteSession, Terminal, requestHeaders } = await import('../../behavioral/_driver.mjs');
   const sid = await mintSession();
   const terminal = new Terminal(sid);
   await terminal.connect();
@@ -211,6 +211,12 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   }
   return {
     run,
+    /** The session's /api/_diag/memory: its counters, VFS cache and heap estimate. */
+    memory: async () => {
+      const response = await fetch(`${probe.base}/s/${sid}/api/_diag/memory`, { cache: 'no-store', headers: requestHeaders() });
+      if (!response.ok) throw new Error(`_diag/memory: HTTP ${response.status}`);
+      return response.json();
+    },
     close: async () => { await terminal.close(); await deleteSession(sid); },
   };
 }

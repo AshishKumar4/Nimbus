@@ -31,7 +31,6 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
@@ -372,25 +371,24 @@ try {
     assert.match(concurrent.stdout, /^SLOWB 2$/m, `a concurrent launch's slow read ahead does not starve this one: ${concurrent.stdout.slice(-600)}`);
     assert.match(concurrent.stdout, /^SLOWA 1$/m, concurrent.stdout.slice(-600));
     // A read ahead for a synchronous read is bounded, in memory as in time.
-    const groupRssMiB = () => {
-      let kib = 0;
-      for (const entry of readdirSync('/proc')) {
-        if (!/^\d+$/.test(entry)) continue;
-        try {
-          const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
-          if (Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]) !== probe.pid) continue;
-          kib += Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${entry}/status`, 'utf8'))?.[1] ?? 0);
-        } catch { /* exited */ }
-      }
-      return kib / 1024;
+    // What a run can hold of its stdin is what the session hands it: the
+    // session's supervisorAnsweredBytes counts every answer where it leaves
+    // (core workspace/supervisor-op.ts), file reads and pipe read ahead alike.
+    const READ_AHEAD = 16 * 1048576;
+    const answered = async (work) => {
+      const before = (await terminal.memory()).counters.supervisorAnsweredBytes;
+      const result = await work();
+      return { result, bytes: (await terminal.memory()).counters.supervisorAnsweredBytes - before };
     };
-    const rssBefore = groupRssMiB();
-    const unrun = await terminal.run(`cd ${W} && yes | node fp.js`, 30_000);
-    const rssGrowth = groupRssMiB() - rssBefore;
-    assert.equal(unrun.status, 0, unrun.stdout);
-    assert.match(unrun.stdout, /^RAN$/m, 'a sync read that never runs does not hold the launch for an endless pipe');
-    assert.ok(rssGrowth < 100, `the read ahead is bounded: the probe grew ${rssGrowth.toFixed(0)} MiB`);
-    console.log(`yes | node fp.js: probe memory grew ${rssGrowth.toFixed(1)} MiB`);
+    const unrun = await answered(() => terminal.run(`cd ${W} && yes | node fp.js`, 30_000));
+    assert.equal(unrun.result.status, 0, unrun.result.stdout);
+    assert.match(unrun.result.stdout, /^RAN$/m, 'a sync read that never runs does not hold the launch for an endless pipe');
+    console.log(`yes | node fp.js: the run was handed ${(unrun.bytes / 1048576).toFixed(1)} MiB`);
+    assert.ok(unrun.bytes <= READ_AHEAD + 1048576, `the read ahead is bounded: the run was handed ${unrun.bytes} bytes`);
+    // And what the session held of the pipe for it: never past the bound, and none once it ended.
+    const readAhead = (await terminal.memory()).stdinReadAhead;
+    assert.ok(readAhead.peakBytes <= READ_AHEAD + 1, `the session's read ahead stays within its bound: ${JSON.stringify(readAhead)}`);
+    assert.equal(readAhead.heldBytes, 0, `the session holds none of the pipe once the run ended: ${JSON.stringify(readAhead)}`);
     const server = await terminal.run(`cd ${W} && yes | node srv.js`, 30_000);
     assert.equal(server.status, 0, server.stdout);
     const served = await terminal.run('curl -s -m 5 http://localhost:8931/', 30_000);
@@ -427,19 +425,22 @@ try {
     assert.notEqual(overBound.status, 0, overBound.stdout);
     assert.match(overBound.stdout, /first \d+ MiB[\s\S]*< file/, `the refusal names the bound and suggests < file: ${overBound.stdout.slice(-600)}`);
     // A large `< file` into a program flagged as reading stdin synchronously
-    // is preloaded only up to the read ahead: one that never reads stdin
-    // holds no more, and one that streams it still gets every byte.
-    const peakGrowthMiB = async (work) => {
-      const before = groupRssMiB();
-      let peak = before;
-      const poll = setInterval(() => { peak = Math.max(peak, groupRssMiB()); }, 100);
-      try { return { result: await work(), growth: peak - before }; } finally { clearInterval(poll); }
-    };
-    await terminal.run(`cd ${W} && yes | head -c ${48 * 1048576} > big.txt`, 120_000);
-    const bigUnread = await peakGrowthMiB(() => terminal.run(`cd ${W} && node fp.js < big.txt`, 60_000));
+    // is preloaded only up to the read ahead: one that never reads stdin is
+    // handed no more, and one that streams it still gets every byte. Twice in
+    // a row, the same: nothing kept the file for the next run, and the
+    // session's cache did not grow with it.
+    const made = await terminal.run(`cd ${W} && yes | head -c ${48 * 1048576} > big.txt && wc -c < big.txt`, 120_000);
+    assert.match(made.stdout, new RegExp(`^${48 * 1048576}$`, 'm'), made.stdout);
+    const bigUnread = await answered(() => terminal.run(`cd ${W} && node fp.js < big.txt`, 60_000));
     assert.match(bigUnread.result.stdout, /^RAN$/m, bigUnread.result.stdout);
-    console.log(`node fp.js < 48 MiB file: probe peak memory grew ${bigUnread.growth.toFixed(1)} MiB`);
-    assert.ok(bigUnread.growth < 40, `a 48 MiB < file is not held whole: the probe grew ${bigUnread.growth.toFixed(0)} MiB`);
+    console.log(`node fp.js < 48 MiB file: the run was handed ${(bigUnread.bytes / 1048576).toFixed(1)} MiB`);
+    assert.ok(bigUnread.bytes <= READ_AHEAD + 1048576, `a 48 MiB < file is not held whole: the run was handed ${bigUnread.bytes} bytes`);
+    const cacheAfterFirst = (await terminal.memory()).vfsDetail.lruBytes;
+    const again = await answered(() => terminal.run(`cd ${W} && node fp.js < big.txt`, 60_000));
+    assert.match(again.result.stdout, /^RAN$/m, again.result.stdout);
+    assert.equal(again.bytes, bigUnread.bytes, 'the second run is handed what the first was');
+    const cacheAfterSecond = (await terminal.memory()).vfsDetail.lruBytes;
+    assert.ok(cacheAfterSecond <= cacheAfterFirst, `the session's cache did not grow with the file: ${cacheAfterFirst} -> ${cacheAfterSecond} bytes`);
     const bigStream = await terminal.run(`cd ${W} && node -e 'if (process.argv[2]) require("fs").readFileSync(0); let n = 0; process.stdin.on("data", (d) => { n += d.length; }).on("end", () => console.log("BIGSTREAM " + n))' < big.txt`, 120_000);
     assert.match(bigStream.stdout, new RegExp(`^BIGSTREAM ${48 * 1048576}$`, 'm'), `a flagged program streams all of a 48 MiB < file: ${bigStream.stdout}`);
     const bigSync = await terminal.run(`cd ${W} && node -e 'require("fs").readFileSync(0)' < big.txt`, 60_000);

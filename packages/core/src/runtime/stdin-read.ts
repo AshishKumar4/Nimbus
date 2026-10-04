@@ -80,12 +80,18 @@ export interface ReadAheadAccount {
  */
 export class ReadAheadBudget {
   private heldBytes = 0;
+  private peakBytes = 0;
 
   constructor(readonly capacity: number) {}
 
   /** Bytes held now, across all launches. */
   get held(): number {
     return this.heldBytes;
+  }
+
+  /** The most bytes held at once since the budget was made: never past its capacity. */
+  get peak(): number {
+    return this.peakBytes;
   }
 
   /** An account for one launch's read ahead. */
@@ -96,6 +102,7 @@ export class ReadAheadBudget {
       take: (max) => {
         const got = Math.max(0, Math.min(max, this.capacity - this.heldBytes));
         this.heldBytes += got;
+        this.peakBytes = Math.max(this.peakBytes, this.heldBytes);
         mine += got;
         return got;
       },
