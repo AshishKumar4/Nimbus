@@ -360,18 +360,19 @@ try {
     assert.equal(endless.status, 0, endless.stdout);
     assert.match(endless.stdout, /^IGNORED 1$/m, endless.stdout);
     // A program that reads stdin synchronously gets all of it, however slow
-    // its writer: that read cannot wait once the program runs.
+    // its writer: the read waits for it (runtime/stop-replay.ts).
     const slow = await terminal.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 30_000);
     assert.equal(slow.status, 0, slow.stdout);
     assert.match(slow.stdout, /^SLOW 1$/m, slow.stdout);
-    // The session's read-ahead budget counts bytes held, not bytes a launch
-    // might read: one waiting on a slow writer does not starve another.
+    // The session's budget for stdin held across stops counts bytes held, not
+    // bytes a read might wait for: one waiting on a slow writer does not
+    // starve another.
     const slowA = `(sleep 6; echo '{"a":1}') | node -e 'console.log("SLOWA " + JSON.parse(require("fs").readFileSync(0)).a)'`;
     const slowB = `(sleep 1; echo '{"b":2}') | node -e 'let r; try { r = JSON.parse(require("fs").readFileSync(0)).b; } catch (e) { r = "ERR " + e.code; } console.log("SLOWB " + r)'`;
     const concurrent = await terminal.run(`{ ${slowA} & } ; sleep 2; ${slowB}; wait`, 90_000);
     assert.match(concurrent.stdout, /^SLOWB 2$/m, `a concurrent launch's slow read ahead does not starve this one: ${concurrent.stdout.slice(-600)}`);
     assert.match(concurrent.stdout, /^SLOWA 1$/m, concurrent.stdout.slice(-600));
-    // A read ahead for a synchronous read is bounded, in memory as in time.
+    // Stdin held for a synchronous read is bounded, in memory as in time.
     const groupRssMiB = () => {
       let kib = 0;
       for (const entry of readdirSync('/proc')) {
@@ -389,7 +390,7 @@ try {
     const rssGrowth = groupRssMiB() - rssBefore;
     assert.equal(unrun.status, 0, unrun.stdout);
     assert.match(unrun.stdout, /^RAN$/m, 'a sync read that never runs does not hold the launch for an endless pipe');
-    assert.ok(rssGrowth < 100, `the read ahead is bounded: the probe grew ${rssGrowth.toFixed(0)} MiB`);
+    assert.ok(rssGrowth < 100, `an unrun read holds nothing: the probe grew ${rssGrowth.toFixed(0)} MiB`);
     console.log(`yes | node fp.js: probe memory grew ${rssGrowth.toFixed(1)} MiB`);
     const server = await terminal.run(`cd ${W} && yes | node srv.js`, 30_000);
     assert.equal(server.status, 0, server.stdout);
@@ -407,7 +408,7 @@ try {
       assert.match(run.stdout, form === 'readSync' ? /^FORM "hi\|\\n"$/m : /^FORM "hi\\n"$/m, `${form}: ${run.stdout}`);
     }
     // A 2 MiB lockfile read synchronously, through `< file` (fd 0 is the
-    // file, no read ahead) and through a pipe (read ahead, within the bound).
+    // file) and through a pipe (waited for, within the bound).
     await terminal.run(`cd ${W} && node -e 'const o = {}; for (let i = 0; i < 20000; i++) o["pkg" + i] = { version: "1.0." + i, resolved: "https://registry.npmjs.org/pkg" + i + "/-/pkg-1.0." + i + ".tgz", integrity: "sha512-abcdefghij" }; require("fs").writeFileSync("lock.json", JSON.stringify(o)); console.log("LOCKBYTES " + require("fs").statSync("lock.json").size)'`);
     const lockParse = `node -e 'console.log("LOCK " + Object.keys(JSON.parse(require("fs").readFileSync(0))).length)'`;
     for (const [how, line] of [['< file', `${lockParse} < lock.json`], ['cat |', `cat lock.json | ${lockParse}`]]) {
@@ -421,14 +422,14 @@ try {
     assert.equal(/^FILESTREAM (\d+)$/m.exec(fileStream.stdout)?.[1], /^LOCKBYTES (\d+)$/m.exec((await terminal.run(`cd ${W} && node -e 'console.log("LOCKBYTES " + require("fs").statSync("lock.json").size)'`)).stdout)?.[1], fileStream.stdout);
     const filePos = await terminal.run(`cd ${W} && printf 'abcdef' > six.txt && node -e 'const b = Buffer.alloc(2); const fs = require("fs"); fs.readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("FILEPOS " + b + "|" + s))' < six.txt`, 30_000);
     assert.match(filePos.stdout, /^FILEPOS ab\|cdef$/m, filePos.stdout);
-    // Past the read ahead, a synchronous read of a pipe fails naming the
-    // bound and the redirect that avoids it.
+    // A synchronous read of a pipe that passes the bound without ending
+    // fails naming the bound and process.stdin, which streams it.
     const overBound = await terminal.run(`yes | node -e 'require("fs").readFileSync(0)'`, 90_000);
     assert.notEqual(overBound.status, 0, overBound.stdout);
-    assert.match(overBound.stdout, /first \d+ MiB[\s\S]*< file/, `the refusal names the bound and suggests < file: ${overBound.stdout.slice(-600)}`);
-    // A large `< file` into a program flagged as reading stdin synchronously
-    // is preloaded only up to the read ahead: one that never reads stdin
-    // holds no more, and one that streams it still gets every byte.
+    assert.match(overBound.stdout, /passed \d+ MiB[\s\S]*process\.stdin/, `the refusal names the bound and process.stdin: ${overBound.stdout.slice(-600)}`);
+    // A large `< file` is read ahead only for a program that reads it
+    // synchronously, and only up to the bound: one that never reads stdin
+    // holds none of it, and one that streams it still gets every byte.
     const peakGrowthMiB = async (work) => {
       const before = groupRssMiB();
       let peak = before;

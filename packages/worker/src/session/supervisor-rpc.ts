@@ -847,12 +847,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
   // down, cpReadStdin/cpReadOutput/cpDrainOutput in a child's direction. A
   // text producer encodes at its own edge; a text consumer decodes at its.
 
-  async stdout(data: Uint8Array): Promise<void> {
-    return this._call(this._op('stdout', [data], { pid: this._reportingPid() }));
+  // `at` and `run`: where the chunk falls in what the run printed, and which
+  // run of the process printed it (runtime/stop-replay.ts, ReplayOutputGate).
+  async stdout(data: Uint8Array, at?: number, run?: number): Promise<void> {
+    return this._call(this._op('stdout', [data, at, run], { pid: this._reportingPid() }));
   }
 
-  async stderr(data: Uint8Array): Promise<void> {
-    return this._call(this._op('stderr', [data], { pid: this._reportingPid() }));
+  async stderr(data: Uint8Array, at?: number, run?: number): Promise<void> {
+    return this._call(this._op('stderr', [data, at, run], { pid: this._reportingPid() }));
   }
 
   /**

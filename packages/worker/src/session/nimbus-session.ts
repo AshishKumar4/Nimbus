@@ -868,8 +868,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
-  async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
-  async _rpcStderr(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
+  async _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> { return _rpc._rpcStdout(this as any, pid, data, at, run); }
+  async _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> { return _rpc._rpcStderr(this as any, pid, data, at, run); }
   async _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void> { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
   async _rpcReportRuntimeCode(pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> { return _rpc._rpcReportRuntimeCode(this, pid, entries, executedModules, dataReads); }
 

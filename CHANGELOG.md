@@ -5,6 +5,30 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a synchronous read of stdin waits for its input, as Node's does,
+  and only a read that runs waits. `fs.readFileSync(0)` (and
+  `/dev/stdin`) waits for the end of stdin and `fs.readSync(0, …)` for
+  any of it, so a child can print READY and have its parent write only
+  then, a parent can write in delayed pieces, and a readSync prompt answers
+  each line as it comes. A Nimbus process cannot block, so the run stops at
+  such a read (`ctx.abort`, which the program cannot catch), the session
+  waits for the input, and the program runs again from its start with it:
+  the second run replays what the first drew (its random numbers, clock
+  readings, random bytes and stdin reads) and the output it already
+  printed is checked and not shown twice. A program that never makes such
+  a read, or finds its input there when it does, runs once and is never
+  held: the guess about which programs read stdin, made from their code
+  before they ran, is gone, and with it the read ahead of their pipe. So
+  `sleep 30 | node -e "function u(){fs.readFileSync(0)} console.log(1)"`
+  prints at once, and a child whose code merely mentions such a read no
+  longer waits for a stdin its parent leaves open. A program that changed
+  something outside itself before the read (a file write that reached the
+  session, a spawn, a request other than GET) cannot be run again, and the
+  read fails with `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one
+  that read `process.stdin` as it arrived first. Ctrl-C during the wait
+  ends the program with 130; a pipe that passes 16 MiB without ending
+  fails the read naming the bound. Resident processes (servers, attached
+  terminal programs) answer such a read with `ERR_NIMBUS_SYNC_STDIN`.
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
   and `vite`'s "Root:" and "Config:" lines did too. They print the path

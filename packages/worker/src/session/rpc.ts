@@ -1032,10 +1032,14 @@ function decodeForTerminal(pid: number, stream: 'stdout' | 'stderr', data: Uint8
   return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
 }
 
-export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): Promise<void> {
+export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —
     // its output must not merge into this generation's logs or shell.
     if (isPriorGenerationPid(self, pid)) return;
+    // A chunk a run that stopped already delivered, or that its stop carried
+    // (runtime/stop-replay.ts), is not delivered twice.
+    if (at !== undefined && run !== undefined) data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
+    if (data.byteLength === 0) return;
     if (self.facetProcessManager?.routeOutput(pid, 1, data)) return;
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
@@ -1059,8 +1063,10 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): 
     }
 }
 
-export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void> {
+export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> {
     if (isPriorGenerationPid(self, pid)) return;
+    if (at !== undefined && run !== undefined) data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
+    if (data.byteLength === 0) return;
     if (self.facetProcessManager?.routeOutput(pid, 2, data)) return;
     try {
       if (pid > 0) self.processes.appendOutputBytes(pid, 'stderr', data);

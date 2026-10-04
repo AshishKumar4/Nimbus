@@ -49,8 +49,8 @@ export interface SessionSupervisorHost {
    * spawned. Absent, the session serves no delivered mutation.
    */
   readonly supervisorDeliveries?: SupervisorDeliveries;
-  _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
-  _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+  _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+  _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 }
 export interface SessionSupervisorOps {
   readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
@@ -64,6 +64,13 @@ export interface SessionSupervisorOps {
 function outputBytesArg(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
+}
+
+/** A chunk's offset in what its run printed, and the run, when the guest sent them. */
+function outputPlace(args: SupervisorOpEnvelope['args']): [number, number] | [] {
+  const at = args?.[1];
+  const run = args?.[2];
+  return typeof at === 'number' && typeof run === 'number' ? [at, run] : [];
 }
 
 export function buildSessionSupervisorOps(
@@ -94,8 +101,8 @@ export function buildSessionSupervisorOps(
     },
     // stdout/stderr are session methods, not bridge ops: mirroring,
     // log-append and prior-generation filtering all live in _rpcStdout.
-    stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
-    stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
+    stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
+    stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
   };
   const dispatch = createSupervisorOpHandler({
     vfs: host.sqliteFs!,

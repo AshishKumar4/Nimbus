@@ -461,6 +461,10 @@ function __nimbusWasmDigest(bytes) {
     return value;
   };
   const __barriered = async (input, init) => {
+    // A request other than a read may change something a second run of the
+    // program would change again (runtime/stop-replay.ts).
+    const method = String((init && init.method) || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (method !== "GET" && method !== "HEAD") globalThis.__nimbusStopReplay?.effect(method + " " + __fetchUrl(input));
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
     return __resumeCoherent(__dispatch(input, init));
@@ -3568,11 +3572,14 @@ const __fsMod = (() => {
   function readFileSync(p, opts) {
     // fd 0 and the paths that name it read the launch's stdin from the
     // position synchronous reads share (__nimbusSyncStdinState): all of it
-    // once its writer has finished. A pipe still open has more to come,
-    // which synchronous I/O cannot block for (as _notResidentError says of
-    // content), so it answers EAGAIN, as Node does for a non-blocking fd 0.
+    // once its writer has finished. A pipe still open has more to come, which
+    // Node blocks for: the run stops until its writer ends it, and runs again
+    // (__nimbusStopForStdin). A \`< file\` larger than the read ahead is
+    // served from its start only.
     if (p === 0 || __NIMBUS_STDIN_PATHS.has(p)) {
-      if (!__nimbusStdinEnded()) throw __nimbusStdinWouldBlock("read");
+      if (!__nimbusStdinEnded()) {
+        throw __nimbusSyncStdinError("readFileSync", __nimbusStdinFileSource() !== null ? "" : __nimbusStopForStdin("end", "read"));
+      }
       const state = __nimbusSyncStdinState();
       const bytes = __BufferMod.from(state.bytes.subarray(state.pos));
       state.pos = state.bytes.byteLength;
@@ -7574,9 +7581,16 @@ function __nimbusTakeStdin() {
   if (__nimbusQueuedStdin !== null) return { bytes: __nimbusQueuedStdin.bytes, ended };
   const file = __nimbusStdinFileSource();
   if (file !== null) {
-    // Not read before the entry ran (its code was not seen to read stdin
-    // synchronously): the file as the process's own synchronous read of it.
-    return { bytes: __fsMod.readFileSync(file.path).subarray(file.offset), ended };
+    // Not read before the entry ran: the file as the process's own
+    // synchronous read of it. One the launch did not stage stops the run, and
+    // the next run reads it ahead (FacetManager.exec); a run that cannot stop
+    // answers as any unstaged read does.
+    try {
+      return { bytes: __fsMod.readFileSync(file.path).subarray(file.offset), ended };
+    } catch (err) {
+      if (err && err.code === "EAGAIN") __nimbusStopForStdin("end", "read");
+      throw err;
+    }
   }
   if (__nimbusLiveInputChannel()) return { bytes: __BufferMod.alloc(0), ended };
   return { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : ""), ended };
@@ -7599,56 +7613,80 @@ function __nimbusStdinRemainder() {
   __nimbusSyncStdin.pos = __nimbusSyncStdin.bytes.byteLength;
   return rest;
 }
-function __nimbusStdinWouldBlock(syscall) {
+// Whether a read of fd 0 could find it short of what it needs, which makes
+// the run one that can stop (runtime/stop-replay.ts): a pipe or a child's
+// channel not ended when the program starts, or a \`< file\` not read ahead.
+function __nimbusStdinCanStop() {
+  if (__nimbusStdinFileSource() !== null) return __nimbusQueuedStdin === null;
+  return __nimbusLiveInputChannel() !== 0 && !__nimbusStdinEnded();
+}
+// A read of fd 0 needs input that has not arrived: \`until\` "end" (all of
+// stdin) or "data" (any of it). Node blocks the program until its writer
+// gives it. Here the run stops, and the supervisor runs the program again from
+// its start once the input is there, replaying what this run drew
+// (FacetManager.exec, runtime/stop-replay.ts). When it stops this never
+// returns: ctx.abort ends the isolate's JavaScript, so no catch or finally of
+// the program runs. It returns why the run cannot stop.
+function __nimbusStopForStdin(until, syscall) {
+  const replay = globalThis.__nimbusStopReplay;
+  if (!replay || !replay.armed) return "had not started";
+  // process.stdin's pump takes input off the channel as it arrives, which a
+  // second run could not be handed back.
+  if (__nimbusLiveStdinPump !== null) return "read process.stdin as it arrived first, which a second run could not be handed back";
+  // What this run took from its channel before it started: the next run gets
+  // it back first.
+  const taken = __nimbusLiveInputChannel() && __nimbusQueuedStdin !== null ? __nimbusQueuedStdin.bytes : null;
+  return replay.stop(until, syscall, taken);
+}
+function __nimbusSyncStdinError(api, why) {
   // The whole message before the Error is built: its stack, which is what an
   // uncaught error prints, captures the message at construction.
-  const why = __nimbusStdinFileSource() !== null
-    ? " — stdin is a file larger than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, and synchronous reads of it are served from its first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
-    : " — stdin is a pipe that had not ended within what was read ahead of the program (at most the first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, one budget shared by the session's concurrent launches), and a synchronous read cannot wait for the rest. Redirect a file instead (\`node script.js < file\`), or read process.stdin, which takes the pipe as it arrives";
-  const err = new Error("EAGAIN: resource temporarily unavailable, " + syscall + " '0'" + why);
-  err.code = "EAGAIN";
-  err.errno = -11;
-  err.syscall = syscall;
+  const file = __nimbusStdinFileSource();
+  const err = new Error(file !== null && __nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended
+    ? "ERR_NIMBUS_SYNC_STDIN: stdin is a file larger than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, and synchronous reads of it are served from its first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
+    : "ERR_NIMBUS_SYNC_STDIN: fs." + api + "(0) has to wait for stdin, which is still open. Nimbus waits by running the program again from its start once the input is there, but this program " + why + ". Read process.stdin instead: it takes the input as it arrives");
+  err.code = "ERR_NIMBUS_SYNC_STDIN";
+  err.syscall = "read";
   return err;
 }
-// A read of fd 0 into \`target\`: bytes copied, 0 at its end, EAGAIN when a
-// writer still owes more than fd 0 held at the start.
+// A read of fd 0 into \`target\`: bytes copied, 0 at its end. With nothing
+// there and its writer still open, the run stops until there is
+// (__nimbusStopForStdin). A run after a stop returns what each of the stopped
+// run's reads returned, in order, then what is there.
 function __nimbusReadStdinInto(target, offset, length, syscall) {
   const state = __nimbusSyncStdinState();
   const view = new Uint8Array(target.buffer, target.byteOffset, target.byteLength);
   const at = Number.isInteger(offset) ? offset : 0;
   const room = Math.max(0, view.byteLength - at);
   const want = Math.min(Number.isInteger(length) ? length : room, room);
-  const n = Math.min(want, state.bytes.byteLength - state.pos);
+  let n = Math.min(want, state.bytes.byteLength - state.pos);
+  if (n === 0 && want > 0 && !__nimbusStdinEnded()) {
+    throw __nimbusSyncStdinError("readSync", __nimbusStopForStdin("data", syscall));
+  }
+  if (globalThis.__nimbusStopReplay) n = globalThis.__nimbusStopReplay.read(n);
   if (n > 0) {
     view.set(state.bytes.subarray(state.pos, state.pos + n), at);
     state.pos += n;
-    return n;
   }
-  if (want === 0 || __nimbusStdinEnded()) return 0;
-  throw __nimbusStdinWouldBlock(syscall);
+  return n;
 }
-// Read from the live channel before the entry runs: until the pipe ends when
-// it ends within the read ahead (\`whole\`, __nimbusStdinWhole); until it ends
-// or the read ahead's bound is reached when nothing read it ahead of the
-// program (\`toBound\`, __nimbusStdinSyncRead: a child_process child, whose
-// channel is its stdin itself); else what the channel holds now, without
-// waiting, up to a bound (an endless writer refills the channel as fast as it
-// is read).
+// Read from the live channel before the entry runs: all of it when it has
+// ended (\`whole\`, __nimbusStdinWhole: a run after a stop that waited for the
+// end of stdin); else what the channel holds now, without waiting, up to a
+// bound (an endless writer refills the channel as fast as it is read).
 const __NIMBUS_QUEUED_STDIN_MAX_BYTES = 1024 * 1024;
-async function __nimbusTakeQueuedStdin(whole, toBound) {
+async function __nimbusTakeQueuedStdin(whole) {
   const pid = __nimbusLiveInputChannel();
   if (!pid || !__supervisor || typeof __supervisor.cpReadStdin !== "function") return;
   const chunks = [];
   let ended = false;
   let bytes = 0;
   let failures = 0;
-  const waits = whole || toBound;
-  while (whole || bytes < (toBound ? ${STDIN_SYNC_READ_BYTES} : __NIMBUS_QUEUED_STDIN_MAX_BYTES)) {
+  while (whole || bytes < __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
     let packet;
     try {
       packet = await __nimbusUseRpcResult(
-        __supervisor.cpReadStdin(pid, waits ? 1000 : 0, __nimbusVfsAcquireArgs()),
+        __supervisor.cpReadStdin(pid, whole ? 1000 : 0, __nimbusVfsAcquireArgs()),
         (result) => result,
       );
       failures = 0;
@@ -7672,16 +7710,16 @@ async function __nimbusTakeQueuedStdin(whole, toBound) {
       }
     }
     if (packet.ended) { ended = true; break; }
-    if (!waits && !hasData && !packet.signal) break;
+    if (!whole && !hasData && !packet.signal) break;
   }
   __nimbusQueuedStdin = { bytes: __BufferMod.concat(chunks), ended };
 }
-// Before the entry runs: what its synchronous reads of fd 0 need in hand.
-// A pipe: what the channel holds (all of it when it ends within the read
-// ahead). A \`< file\` the program reads synchronously: the file from its
+// Before the entry runs: what its synchronous reads of fd 0 have in hand.
+// A pipe: what the channel holds (all of it when it has ended). A \`< file\`
+// a run that stopped read synchronously (\`syncRead\`): the file from its
 // offset up to the read ahead, read in ranges into one buffer; a larger file
-// is never held whole, and process.stdin streams on from there. A file the
-// program only streams is read as process.stdin reads.
+// is never held whole, and process.stdin streams on from there. Any other
+// file is read as the program reads it.
 async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
@@ -7706,10 +7744,7 @@ async function __nimbusPrepareStdin() {
     return;
   }
   if (__nimbusLiveInputChannel()) {
-    await __nimbusTakeQueuedStdin(
-      typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true,
-      typeof __nimbusStdinSyncRead !== "undefined" && __nimbusStdinSyncRead === true,
-    );
+    await __nimbusTakeQueuedStdin(typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true);
   }
 }
 function __makeProcessStdin() {

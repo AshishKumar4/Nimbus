@@ -11,8 +11,8 @@
 // NUL, a UTF-8 sequence split across two writes) reach it unchanged; and a
 // child that reads fd 0 synchronously gets all of it when its parent writes
 // it in pieces (`a`, 5 s, `b`, end; the child starts within them): the child's
-// own channel was then its stdin, and nothing read it ahead of the program,
-// so readFileSync(0) threw EAGAIN on what had not arrived yet. (A program
+// own channel was then its stdin, and readFileSync(0) threw EAGAIN on what
+// had not arrived yet; it now waits for the end (runtime/stop-replay.ts). (A program
 // `python3 -` reads in pieces: core-wasm-runtime-bun; this probe stages only
 // bash.)
 //

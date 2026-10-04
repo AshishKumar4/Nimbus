@@ -10,9 +10,9 @@
 //   every read saw empty stdin and readFileSync(0) threw ENOENT for a file
 //   named "0". It streams: a program that ignores a pipe that never ends
 //   (`yes`, `tail -f`) exits at once instead of waiting for its end, while
-//   a program whose code reads stdin synchronously gets all of a pipe first
-//   (within the read ahead), however slow its writer, and all of a
-//   `< file`, which is the file itself.
+//   a synchronous read of stdin waits for all of a pipe (within the bound),
+//   however slow its writer, and gets all of a `< file`, which is the file
+//   itself.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell, fetchPort, sleep } from '../../_driver.mjs';
 
@@ -59,12 +59,12 @@ try {
     }
     a.check(`${label} into a program that ignores stdin exits`, line(out, 'IGNORED') === 'IGNORED 1', out.slice(-400));
   }
-  // A program that reads stdin synchronously gets all of it before it starts,
-  // however slow its writer (stdin-read.ts).
+  // A synchronous read of stdin gets all of it, however slow its writer: the
+  // read waits for it (runtime/stop-replay.ts).
   const slow = (await t.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 90_000)).output;
   a.check('a slow writer into a synchronous readFileSync(0)', line(slow, 'SLOW') === 'SLOW 1', slow.slice(-400));
   // A synchronous read that never runs, and a server: neither is held for an
-  // endless pipe (the read ahead is bounded; a session isolate has 128 MB).
+  // endless pipe (only a read that runs waits, within its bound).
   await writeFileViaShell((cmd) => t.run(cmd, 60_000), `${DIR}/fp.js`, 'if (process.argv[2]) require("fs").readFileSync(0); console.log("RAN");');
   const unrun = (await t.run(`cd ${DIR} && yes | node fp.js`, 90_000)).output;
   a.check('an unrun sync read does not hold `yes | node fp.js`', /^RAN\r?$/m.test(unrun), unrun.slice(-400));
