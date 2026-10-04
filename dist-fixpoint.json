@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4b248a1b4ad4cc29a53652c38c84946a94e0456555e916f2c3226eb0090a9f39",
+  "fingerprint": "0b3710fe95b892facf0ca34d86ddacf9a5f3ca25c9810c179eca807bc4de1f3d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1032,9 +1032,9 @@
     "packages/core/dist/vfs/sqlite-files.d.ts": "432ecb9ccff6a0f7e264bb223c873c0a64c3cbe19182d9c46ba0c6e3187a9a16",
     "packages/core/dist/vfs/sqlite-files.d.ts.map": "ad25f28345414e99941c32b31e55573446ab45d6ca99920b19b101fdca516e63",
     "packages/core/dist/vfs/sqlite-files.js": "7b5a8f3aa35127fa914575d13ce0b986f88fe8f08c67adbc4362452410b204cb",
-    "packages/core/dist/vfs/sqlite-vfs.d.ts": "a5e30cac6039ecc7be31af8432312823afa7f8519934ab91556d52b346293412",
-    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "5826e6408b69b1d6a5e7c19f7a1c015858339ec5d22ac544c0d232417ccebc70",
-    "packages/core/dist/vfs/sqlite-vfs.js": "ebe5ff3e406af71aba8be53865ee834f5e0d8b61e63096a0d925a751e40b45fd",
+    "packages/core/dist/vfs/sqlite-vfs.d.ts": "621b51c524414ad9c5368b19f531ea8338b270717353666ee174a08bee2f582a",
+    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "de68e3391fd0e22fc54b8219051856c6d15ae3af4eeedca976435a4df959f5e4",
+    "packages/core/dist/vfs/sqlite-vfs.js": "77806a33158e6e92fbbdd77c46f7b8597da9aabb8554a3516a229e5a925fd7c5",
     "packages/core/dist/vfs/symlink-registry.d.ts": "2f070895b41608e49772066ace71fa2415b5500e655bbd6a204944057a4f0803",
     "packages/core/dist/vfs/symlink-registry.d.ts.map": "cb3c101363d49acdd12258f9e2e4941ddc026d6bf0092758080e922f9ecf1e96",
     "packages/core/dist/vfs/symlink-registry.js": "aeff373a644847fa6b5edcba0b3df01b1d81253f308adc859924c6fba0fbed1a",
@@ -1387,7 +1387,7 @@
     "packages/core/src/vfs/proc-vfs.ts": "6b66fc887bed23d11cb76f1906206c378ab42d78da8339b54751a451f3faea91",
     "packages/core/src/vfs/seed-project.ts": "72a9217bb335b6b2881a41e563cfd18361344bc0c5b69f6c3c74e0ad46f44e7d",
     "packages/core/src/vfs/sqlite-files.ts": "9882e8c50b8b0db6d64ee1c31c28f5d806274718b9c4077c0e74493e254734f6",
-    "packages/core/src/vfs/sqlite-vfs.ts": "a6942a8bba46508769281224131d1c4980f797393dff000750a3568d8488ea25",
+    "packages/core/src/vfs/sqlite-vfs.ts": "087c12c60f7232b86241256ab622558a623e7b3350bdd5b19ce9310215f7173e",
     "packages/core/src/vfs/symlink-registry.ts": "02e7663e91b0ce2e6cb96732722767eef3669808e12693af66c65d695af7c98c",
     "packages/core/src/vfs/vfs-error.ts": "439e84c79368babe6151d6c89c306c2533c15def7d1485f696dcee385a023d5b",
     "packages/core/src/vfs/vfs.ts": "fd63e2fd55ca28d7a128e794929351f0c07cc3d58dbc1640d3770fee390e1da8",

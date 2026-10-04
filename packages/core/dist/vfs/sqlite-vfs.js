@@ -610,8 +610,6 @@ export class SqliteVFS {
     appendFailures = new Map();
     /** Transactions this VFS has open (transactionSync); no append is held from inside one. */
     transactionDepth = 0;
-    /** While a held append is stored (writeAppendRun), when it was made: what now() answers. */
-    heldWriteMadeAt = null;
     sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     ledger;
@@ -1533,11 +1531,12 @@ export class SqliteVFS {
         this.privileged = run.privileged;
         this.activeMutationOwner = null;
         this.activeReservation = null;
-        // Stored with the time it was made, in the same transaction as its bytes:
-        // a stat that stores it later must not move the file's mtime and ctime.
-        this.heldWriteMadeAt = run.madeAt;
         try {
-            this.writeRange(run.path, run.base, block, CRED_KERNEL);
+            // Published with the time it was made, in the same transaction as its
+            // bytes: a stat that stores it later must not move the file's mtime and
+            // ctime. Only this publication's: a listener its event reaches writes
+            // at its own time.
+            this.writeRange(run.path, run.base, block, CRED_KERNEL, undefined, run.madeAt);
         }
         catch (error) {
             for (const writer of run.writers)
@@ -1545,7 +1544,6 @@ export class SqliteVFS {
                     this.appendFailures.set(writer, error);
         }
         finally {
-            this.heldWriteMadeAt = null;
             this.privileged = caller.privileged;
             this.activeMutationOwner = caller.owner;
             this.activeReservation = caller.reservation;
@@ -1572,8 +1570,7 @@ export class SqliteVFS {
         this.appendFailures.delete(opened);
         throw failure;
     }
-    /** The time a mutation is made at: now, or while a held append is stored, when it was made (writeAppendRun). */
-    now() { return this.heldWriteMadeAt ?? Date.now(); }
+    now() { return Date.now(); }
     parentPath(path) {
         return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
     }
@@ -3129,9 +3126,11 @@ export class SqliteVFS {
      * Overwrite `bytes` at `offset`. Only the chunks around the range are
      * re-cut and rewritten (rewriteFile); writing past EOF zero-fills the gap.
      * Creates the file when missing; callers own parent-dir creation (same
-     * contract as writeFile).
+     * contract as writeFile). `madeAt`: when the write was made, the mtime and
+     * ctime an existing file is published with (a held append, stored later:
+     * writeAppendRun); absent, now.
      */
-    writeRange(path, offset, bytes, cred, onCommit) {
+    writeRange(path, offset, bytes, cred, onCommit, madeAt) {
         const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
         const effectivePath = resolved.path;
         this.assertMutationsAllowed([this.storageKey(path, cred), effectivePath]);
@@ -3159,7 +3158,7 @@ export class SqliteVFS {
                 this.transactionSync(onCommit);
             return;
         }
-        this.rewriteFile(prior, effectivePath, Math.max(prior.size, end), { start, bytes }, onCommit);
+        this.rewriteFile(prior, effectivePath, Math.max(prior.size, end), { start, bytes, madeAt }, onCommit);
     }
     /**
      * Publish an append and its dedupe receipt in the same SQLite transaction.
@@ -3498,6 +3497,7 @@ export class SqliteVFS {
      * copied by reference. The manifest always equals FastCDC of the bytes.
      */
     rewriteFile(node, path, newSize, change, onCommit) {
+        const madeAt = change?.madeAt;
         const oldSize = node.size;
         const changeStart = change === null ? Math.min(oldSize, newSize) : Math.min(change.start, oldSize);
         const changeEnd = change === null ? newSize : change.start + change.bytes.length;
@@ -3526,7 +3526,7 @@ export class SqliteVFS {
                     ? { type: 'rewrite', chunkId: node.chunkId, piece: next }
                     : { type: 'small', piece: next };
             }
-            this.publishRewrite(node, path, newSize, content, onCommit);
+            this.publishRewrite(node, path, newSize, content, onCommit, madeAt);
             return;
         }
         // The old chunk holding the first changed byte; for growth, the last one,
@@ -3612,7 +3612,7 @@ export class SqliteVFS {
                         digest.add(entry.piece.hash);
                     content = { type: 'large', pieces: held.map((entry) => entry.piece), size: newSize, digest: digest.digest(newSize) };
                 }
-                if (content !== null && this.tryPublishRewrite(node, path, newSize, content, onCommit))
+                if (content !== null && this.tryPublishRewrite(node, path, newSize, content, onCommit, madeAt))
                     return;
                 startStaging();
             }
@@ -3623,7 +3623,7 @@ export class SqliteVFS {
                 this.stageManifestCopy(target, node.contentId, to, oldSize);
             }
             flush();
-            this.publishRewrite(node, path, newSize, { type: 'staged', content: target }, onCommit);
+            this.publishRewrite(node, path, newSize, { type: 'staged', content: target }, onCommit, madeAt);
         }
         catch (error) {
             const failed = staging;
@@ -3633,23 +3633,24 @@ export class SqliteVFS {
         }
     }
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
-    tryPublishRewrite(node, path, newSize, content, onCommit) {
+    tryPublishRewrite(node, path, newSize, content, onCommit, madeAt) {
         const builder = this.newPlan();
-        builder.addInode(this.rewrittenEntry(node, path, newSize, content));
+        builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
         const plan = builder.build();
         if (exceededTransactionLimit(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics) !== null)
             return false;
         this.commitRewrite(node, path, plan, onCommit);
         return true;
     }
-    publishRewrite(node, path, newSize, content, onCommit) {
+    publishRewrite(node, path, newSize, content, onCommit, madeAt) {
         const builder = this.newPlan();
-        builder.addInode(this.rewrittenEntry(node, path, newSize, content));
+        builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
         const plan = builder.build();
         this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
         this.commitRewrite(node, path, plan, onCommit);
     }
-    rewrittenEntry(node, path, newSize, content) {
+    /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
+    rewrittenEntry(node, path, newSize, content, madeAt) {
         return {
             path: path ?? node.path,
             parentPath: path === null ? node.parentPath : this.parentPath(path),
@@ -3657,7 +3658,8 @@ export class SqliteVFS {
             isDir: false,
             size: newSize,
             atime: node.atime,
-            mtime: this.now(),
+            mtime: madeAt ?? this.now(),
+            ctime: madeAt,
             mode: node.mode,
             uid: node.uid,
             gid: node.gid,

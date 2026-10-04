@@ -419,8 +419,6 @@ export declare class SqliteVFS {
     private readonly appendFailures;
     /** Transactions this VFS has open (transactionSync); no append is held from inside one. */
     private transactionDepth;
-    /** While a held append is stored (writeAppendRun), when it was made: what now() answers. */
-    private heldWriteMadeAt;
     private sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     readonly ledger: StorageLedger;
@@ -663,7 +661,6 @@ export declare class SqliteVFS {
     private settleAppends;
     /** Throw what writing `opened`'s held appends failed with, once. */
     private raiseAppendFailure;
-    /** The time a mutation is made at: now, or while a held append is stored, when it was made (writeAppendRun). */
     private now;
     private parentPath;
     private blobToUint8Array;
@@ -1076,7 +1073,9 @@ export declare class SqliteVFS {
      * Overwrite `bytes` at `offset`. Only the chunks around the range are
      * re-cut and rewritten (rewriteFile); writing past EOF zero-fills the gap.
      * Creates the file when missing; callers own parent-dir creation (same
-     * contract as writeFile).
+     * contract as writeFile). `madeAt`: when the write was made, the mtime and
+     * ctime an existing file is published with (a held append, stored later:
+     * writeAppendRun); absent, now.
      */
     private writeRange;
     /**
@@ -1117,6 +1116,7 @@ export declare class SqliteVFS {
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
     private tryPublishRewrite;
     private publishRewrite;
+    /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
     private rewrittenEntry;
     private commitRewrite;
     /** The start offsets of a manifest's rows after `after`, read a page at a time on demand. */
