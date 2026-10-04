@@ -499,6 +499,8 @@ export class ReplayJournal {
     atBoundary = [];
     stall = null;
     recordedBytes = 0;
+    /** Paths the process's stdin is (a `< file`), as storage keys: reading them is reading input. */
+    inputPaths = new Set();
     constructor(onDiverge, stallMs = REPLAY_STALL_MS) {
         this.onDiverge = onDiverge;
         this.stallMs = stallMs;
@@ -506,6 +508,15 @@ export class ReplayJournal {
     /** A run begins: the writer identity its calls carry. */
     start(run) {
         this.run = run;
+    }
+    /**
+     * The process's stdin is the file at `path` (`< file`). Reading it is
+     * reading input, as a pipe's packets are, not the world the run saw: a run
+     * after a stop reads ahead what the run before stopped short of. A call
+     * that names only that file is answered without being journaled.
+     */
+    input(path) {
+        this.inputPaths.add(storageKey(path));
     }
     /** Whether a call made by `run` belongs to the run being answered. */
     admits(run) {
@@ -588,6 +599,8 @@ export class ReplayJournal {
         if (!JOURNALED_CALLS.has(op))
             return dispatch();
         if (this.boundaryPassed && this.entries === null)
+            return dispatch();
+        if (this.inputPaths.size > 0 && namesOnly(args, this.inputPaths))
             return dispatch();
         const key = callKey(op, args);
         return this.answer(key, describeCall(op, args), dispatch, undefined);
@@ -741,6 +754,31 @@ export class ReplayJournal {
         for (const held of this.atBoundary.splice(0))
             held.fail(error);
     }
+}
+function storageKey(path) {
+    return path.replace(/^\/+/, '');
+}
+/**
+ * Whether a call names a path, and every path it names is one of `paths`:
+ * its string arguments, and the `path` of each entry of an array argument
+ * (fsReadBatch).
+ */
+function namesOnly(args, paths) {
+    let named = false;
+    for (const arg of args ?? []) {
+        const items = Array.isArray(arg) ? arg : [arg];
+        for (const item of items) {
+            const path = typeof item === 'string' ? item
+                : item !== null && typeof item === 'object' && typeof item.path === 'string' ? item.path
+                    : null;
+            if (path === null)
+                continue;
+            if (!paths.has(storageKey(path)))
+                return false;
+            named = true;
+        }
+    }
+    return named;
 }
 /** A call's identity across runs: its op and arguments, digested. */
 export function callKey(op, args) {

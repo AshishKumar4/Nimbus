@@ -291,9 +291,18 @@ export declare class ReplayJournal {
     private atBoundary;
     private stall;
     private recordedBytes;
+    /** Paths the process's stdin is (a `< file`), as storage keys: reading them is reading input. */
+    private readonly inputPaths;
     constructor(onDiverge: DivergeHandler, stallMs?: number);
     /** A run begins: the writer identity its calls carry. */
     start(run: string): void;
+    /**
+     * The process's stdin is the file at `path` (`< file`). Reading it is
+     * reading input, as a pipe's packets are, not the world the run saw: a run
+     * after a stop reads ahead what the run before stopped short of. A call
+     * that names only that file is answered without being journaled.
+     */
+    input(path: string): void;
     /** Whether a call made by `run` belongs to the run being answered. */
     admits(run: string | undefined): boolean;
     /** Whether the run being answered may still be stopped and replayed. */
