@@ -27,7 +27,9 @@
 //   (8) a held append keeps the time it was made: a stat that stores it
 //       later does not move the file's mtime or ctime;
 //   (9) O_SYNC (`sync`) holds nothing, on SQLite and on a mount that cannot
-//       write in place, so each write is in the store when it returns.
+//       write in place, so each write is in the store when it returns;
+//  (10) only the held append's own publication carries its time: a watcher
+//       its event reaches writes, and holds, at its own time.
 
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
@@ -277,6 +279,41 @@ const giveRoom = () => vfs.ledger.deleteFacet('room-taker');
   writer.write(0, noise(3000, 31));
   assert.ok(handed() - before >= 3000, '(9) and a sync SQLite descriptor stores each write as it is made');
   writer.close();
+}
+
+// ── (10) a watcher of a stored append writes at its own time ──────────────
+{
+  const root = vfs.as(CRED_KERNEL);
+  const [a, b, c] = ['home/user/watched.txt', 'home/user/by-watcher.txt', 'home/user/held-by-watcher.txt'];
+  root.writeFile(a, bytesOf('a'));
+  root.writeFile(c, bytesOf('c'));
+  const writerA = vfs.openDescription(a, CRED_KERNEL, { read: false, write: true });
+  const writerC = vfs.openDescription(c, CRED_KERNEL, { read: false, write: true });
+  // Watching first: subscribing is a call that stores what is held.
+  let fired = null;
+  const stop = root.subscribe(a, () => {
+    if (fired !== null) return;
+    fired = Date.now();
+    root.writeFile(b, bytesOf('b'));
+    writerC.write(writerC.end(), bytesOf('!'));
+  });
+  const madeFrom = Date.now();
+  writerA.write(1, bytesOf('!'));
+  const madeBy = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(fired, null, 'the append is held: no event yet');
+  assert.equal(root.stat(a).size, 2, 'the stat stores the held append, and its event reaches the watcher');
+  stop();
+  assert.ok(fired !== null, 'the watcher ran');
+  assert.ok(root.stat(a).mtime <= madeBy && root.stat(a).mtime >= madeFrom, '(10) the stored append keeps its own time');
+  for (const [path, what] of [[b, 'a write the watcher made'], [c, 'an append the watcher made, held and stored later']]) {
+    const seen = root.stat(path);
+    for (const field of ['mtime', 'ctime']) {
+      assert.ok(seen[field] >= fired, `(10) ${what} has its own ${field}: ${seen[field]}, not before the watcher ran (${fired}); the stored append's is ${madeFrom}..${madeBy}`);
+    }
+  }
+  writerA.close();
+  writerC.close();
 }
 
 await ws.close();
