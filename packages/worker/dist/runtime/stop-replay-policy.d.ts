@@ -205,6 +205,18 @@ export declare const REPLAY_OPERATION_POLICY: {
         kind: "input";
         inputFields: string[];
     };
+    stdinPrepared: {
+        readonly kind: "control";
+    };
+    getCachedTarball: {
+        readonly kind: "observation";
+    };
+    getPackument: {
+        readonly kind: "observation";
+    };
+    putCachedTarball: {
+        readonly kind: "effect";
+    };
     cpReadOutput: {
         kind: "observation";
         answer: (value: unknown) => unknown;
@@ -313,6 +325,18 @@ export declare const REPLAY_OPERATION_POLICY: {
     };
 };
 export declare function operationPolicy(op: string): ReplayPolicy | undefined;
+/** Public RPC methods that deliberately delegate or implement a protocol. */
+export declare const REPLAY_PUBLIC_METHOD_POLICY: {
+    readonly answer: {
+        readonly kind: "validated-filesystem-delegation";
+    };
+    readonly fetch: {
+        readonly kind: "journaled-outbound-protocol";
+    };
+    readonly connect: {
+        readonly kind: "effectful-outbound-protocol";
+    };
+};
 export declare const SUPERVISOR_CALLS_WITHOUT_EFFECTS: readonly string[];
 export declare const REPLAY_OBSERVATION_CALLS: readonly string[];
 export {};

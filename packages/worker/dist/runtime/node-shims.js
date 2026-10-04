@@ -8031,7 +8031,7 @@ function __nimbusFollowStdin(pid) {
 async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
-    if (!file.syncRead) return;
+    if (!file.syncRead) { await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined); return; }
     const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 65536), (r) => r);
     const want = Math.max(0, Math.min(prepared.size - file.offset, ${STDIN_SYNC_READ_BYTES}));
     const bytes = __BufferMod.allocUnsafe(want);
@@ -8044,6 +8044,7 @@ async function __nimbusPrepareStdin() {
       if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(65536, want - got)), (r) => r);
     }
     __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= prepared.size, from: file.offset + got };
+    await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined);
     return;
   }
   const pid = __nimbusLiveInputChannel();

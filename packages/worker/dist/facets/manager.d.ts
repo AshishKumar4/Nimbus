@@ -1483,6 +1483,9 @@ export declare class FacetManager {
      * stop is answered against the run before it.
      */
     journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown>;
+    /** Whether this bound run is still recording: cache reads must not fill shared stores. */
+    journalRecording(pid: number | undefined, run: string | undefined): boolean;
+    stdinPrepared(pid: number, run: string | undefined): void;
     /** The run after a stop reached the read the run before it stopped at. */
     replayBoundary(pid: number, run: string | undefined): Promise<void>;
     /**

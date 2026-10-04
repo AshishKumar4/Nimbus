@@ -758,6 +758,10 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcHmrNextEvent(timeoutMs) { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
     async _rpcReplayBoundary(pid, run) { return _rpc._rpcReplayBoundary(this, pid, run); }
+    async _rpcStdinPrepared(pid, run) { return _rpc._rpcStdinPrepared(this, pid, run); }
+    async _rpcGetCachedTarball(integrity, pid, run) { return _rpc._rpcGetCachedTarball(this, integrity, pid, run); }
+    async _rpcPutCachedTarball(integrity, bytes) { return _rpc._rpcPutCachedTarball(this, integrity, bytes); }
+    async _rpcGetPackument(name, options, pid, run) { return _rpc._rpcGetPackument(this, name, options, pid, run); }
     async _rpcStdinFileRead(path, offset, length, pid) {
         return _rpc._rpcStdinFileRead(this, path, offset, length, pid);
     }

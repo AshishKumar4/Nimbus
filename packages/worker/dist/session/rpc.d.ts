@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import type { PackumentReadThrough, R2CacheStatEvent } from '../npm/r2-cache.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
@@ -31,6 +32,19 @@ import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 type RpcHost = any;
+export declare function _rpcGetCachedTarball(self: RpcHost, integrity: string, pid?: number, run?: string): Promise<{
+    bytes: Uint8Array | null;
+    events: R2CacheStatEvent[];
+}>;
+export declare function _rpcPutCachedTarball(self: RpcHost, integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean>;
+export declare function _rpcGetPackument(self: RpcHost, name: string, options?: {
+    retries?: number;
+    timeoutMs?: number;
+    registry?: string;
+}, pid?: number, run?: string): Promise<PackumentReadThrough & {
+    events: R2CacheStatEvent[];
+}>;
+export declare function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void>;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug'>;

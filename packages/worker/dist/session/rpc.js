@@ -26,6 +26,7 @@ import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
+import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -48,6 +49,26 @@ import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYT
 import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
+function npmReadClient(self, pid, run) {
+    const readOnly = !!self.facetManager?.journalRecording(pid, run);
+    return new R2CacheClient(self.env?.NPM_TARBALL_CACHE ?? null, self.env?.NPM_PACKUMENT_CACHE ?? null, readOnly);
+}
+export async function _rpcGetCachedTarball(self, integrity, pid, run) {
+    const client = npmReadClient(self, pid, run);
+    const bytes = await client.getTarball(integrity);
+    return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
+}
+export async function _rpcPutCachedTarball(self, integrity, bytes) {
+    return new R2CacheClient(self.env?.NPM_TARBALL_CACHE ?? null, self.env?.NPM_PACKUMENT_CACHE ?? null).putTarball(integrity, bytes);
+}
+export async function _rpcGetPackument(self, name, options, pid, run) {
+    const client = npmReadClient(self, pid, run);
+    return { ...await client.readThroughPackument(name, options), events: client._cacheEvents };
+}
+export async function _rpcStdinPrepared(self, pid, run) {
+    if (pid !== undefined)
+        self.facetManager?.stdinPrepared(pid, run);
+}
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
     parentPath: z.string(),

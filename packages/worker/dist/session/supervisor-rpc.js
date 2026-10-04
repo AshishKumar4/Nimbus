@@ -54,31 +54,10 @@ import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
-// W4: R2 cross-tenant npm cache (tarballs + packuments)
-import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isSupervisorAnsweredMethod, supervisorAnswer, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { fsReadBatchRequestBytes } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
-/**
- * Drain the per-call event list captured by R2CacheClient during this
- * SupervisorRPC call.
- *
- * cache-obs-2 (the v2 fold-side flip):
- *   We RETURN the drained events to the facet so they propagate via
- *   the install-batch-facet result -> installer.ts fold -> DO
- *   singleton path. No recursion (return-value flow, not subrequest).
- *
- * The R2CacheClient instance lives only for the duration of one RPC
- * call (constructed fresh in _r2()). Draining its event list at the
- * end of the call is the natural lifecycle boundary.
- */
-function _drainCacheEvents(client) {
-    const drained = (client && Array.isArray(client._cacheEvents)) ? client._cacheEvents : [];
-    if (client && Array.isArray(client._cacheEvents))
-        client._cacheEvents = [];
-    return drained;
-}
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
  * /api/_diag/memory.rpc.lastFrame.payloadBytes field is meaningful.
@@ -655,24 +634,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // to the facet without pinning a binding stub through the LOADER, we
     // proxy reads/writes through these RPC methods.
     //
-    // Counter increments live HERE (supervisor isolate, where diag-counters
-    // is module-scoped). The facet itself never sees the counter module.
+    // Reads and writes cross the session journal like every other operation.
+    // Cache-stat events still return to the calling facet for installer folding.
     //
     // Graceful-degrade: if NPM_TARBALL_CACHE / NPM_PACKUMENT_CACHE bindings
     // aren't configured (deploy without R2 buckets, or local dev), the
     // R2CacheClient falls through to null returns / no-op writes; the
     // facet sees null and uses its existing network-fetch path. No errors,
-    /**
-     * Build a fresh R2CacheClient bound to this request's env. Cheap to
-     * instantiate; does no async work. Called from each R2 RPC method to
-     * avoid keeping the client in instance state (the WorkerEntrypoint
-     * lifecycle is per-invocation and we want a clean closure each time).
-     */
-    _r2() {
-        const tar = this.env?.NPM_TARBALL_CACHE ?? null;
-        const pkm = this.env?.NPM_PACKUMENT_CACHE ?? null;
-        return new R2CacheClient(tar, pkm);
-    }
     /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns
@@ -691,13 +659,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * verification happens at the storage boundary and nowhere else.
      */
     async getCachedTarball(integrity) {
-        const r2 = this._r2();
-        const bytes = await r2.getTarball(integrity);
-        const events = _drainCacheEvents(r2);
-        if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
-            return { bytes, events };
-        }
-        return { bytes: null, events };
+        return this._call(this._op('getCachedTarball', [integrity]));
     }
     /**
      * Store a tarball in the R2 cross-tenant cache under its content
@@ -711,8 +673,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // its own cacheStatEvents list before calling putCachedTarball.
         // This RPC remains a one-way write (returns bool); the L4 event
         // does NOT flow through this return path.
-        const r2 = this._r2();
-        return r2.putTarball(integrity, bytes);
+        return this._call(this._op('putCachedTarball', [integrity, bytes]));
     }
     /**
      * Resolve one package's corgi packument: cross-tenant cache read, and
@@ -729,9 +690,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * (`options.registry`, the install's `NPM_REGISTRY`) has its own keys.
      */
     async getPackument(name, options) {
-        const r2 = this._r2();
-        const result = await r2.readThroughPackument(name, options);
-        return { ...result, events: _drainCacheEvents(r2) };
+        return this._call(this._op('getPackument', [name, options]));
     }
     // ── Process I/O ───────────────────────────────────────────────────────
     //
@@ -834,6 +793,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async stdinFileRead(path, offset, length) {
         return this._call(this._op('stdinFileRead', [path, offset, length]));
     }
+    async stdinPrepared() { return this._call(this._op('stdinPrepared')); }
     async netTls(action, token, payload) {
         return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
     }

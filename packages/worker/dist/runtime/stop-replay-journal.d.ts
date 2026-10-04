@@ -51,9 +51,17 @@ export declare class ReplayJournal {
     private recordedBytes;
     private boundaryWait;
     private effectsHeld;
+    private stdinFile;
+    private preparation;
     constructor(onDiverge: DivergeHandler, stallMs?: number);
     /** A run begins: the writer identity its calls carry. */
     start(run: string): void;
+    bindStdinFile(file: {
+        path: string;
+        offset: number;
+        limit: number;
+    }): void;
+    prepared(run: string | undefined): void;
     get unreplayable(): string | null;
     bodyStarted(ticket: string, what: string): void;
     bodyFinished(ticket: string): void;

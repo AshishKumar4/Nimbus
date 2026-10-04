@@ -5201,6 +5201,8 @@ export class FacetManager {
                 this.outputGates.get(entry.pid)?.close();
                 divergence.abort();
             }));
+            if (opts.stdinFile)
+                this.journals.get(entry.pid).bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
         }
         if (inputChannel > 0)
             this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
@@ -5520,6 +5522,12 @@ export class FacetManager {
             return dispatch();
         return journal.handle(op, args, run, dispatch);
     }
+    /** Whether this bound run is still recording: cache reads must not fill shared stores. */
+    journalRecording(pid, run) {
+        const journal = pid === undefined ? undefined : this.journals.get(pid);
+        return !!journal && journal.admits(run) && journal.recording;
+    }
+    stdinPrepared(pid, run) { this.journals.get(pid)?.prepared(run); }
     /** The run after a stop reached the read the run before it stopped at. */
     async replayBoundary(pid, run) {
         await this.journals.get(pid)?.boundary(run);

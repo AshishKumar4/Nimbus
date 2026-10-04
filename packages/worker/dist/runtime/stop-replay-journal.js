@@ -133,6 +133,8 @@ export class ReplayJournal {
     recordedBytes = 0;
     boundaryWait = null;
     effectsHeld = [];
+    stdinFile = null;
+    preparation = null;
     constructor(onDiverge, stallMs = REPLAY_STALL_MS) {
         this.onDiverge = onDiverge;
         this.stallMs = stallMs;
@@ -140,7 +142,11 @@ export class ReplayJournal {
     /** A run begins: the writer identity its calls carry. */
     start(run) {
         this.run = run;
+        this.preparation = this.stdinFile ? { run, at: this.stdinFile.offset, remaining: this.stdinFile.limit, pending: false } : null;
     }
+    bindStdinFile(file) { this.stdinFile = { ...file }; }
+    prepared(run) { if (this.admits(run))
+        this.preparation = null; }
     get unreplayable() {
         return this.disqualified ?? (this.bodies.size ? `received headers of ${this.bodies.values().next().value}, but its response body was still unfinished` : null);
     }
@@ -249,6 +255,27 @@ export class ReplayJournal {
         if (this.boundaryPassed && this.entries === null)
             return dispatch();
         const policy = operationPolicy(op);
+        if (op === 'stdinFileRead') {
+            const prep = this.preparation;
+            const [path, offset, length] = args ?? [];
+            const authorized = prep && prep.run === run && !prep.pending && path === this.stdinFile?.path && offset === prep.at
+                && typeof length === 'number' && Number.isSafeInteger(length) && length > 0 && length <= Math.min(65536, prep.remaining);
+            if (!authorized)
+                return this.answer(callKey(op, args), describeCall(op, args), dispatch);
+            prep.pending = true;
+            return dispatch().then((value) => {
+                const reply = value;
+                if (!(reply.data instanceof Uint8Array) || reply.data.length > length)
+                    throw new Error('invalid stdin preparation reply');
+                prep.at += reply.data.length;
+                prep.remaining -= reply.data.length;
+                prep.pending = false;
+                if (prep.at >= reply.size || prep.remaining === 0)
+                    this.preparation = null;
+                this.protocolReplies.push(op + ' ' + answerDigest(value));
+                return value;
+            }, (error) => { prep.pending = false; throw error; });
+        }
         if (policy.kind === 'input' || policy.kind === 'output' || policy.kind === 'control') {
             // Input packets are checked by the session-owned stdin account and
             // read tape; output acknowledgements by the output-prefix protocol.

@@ -351,13 +351,6 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         failed: number;
     }>;
     /**
-     * Build a fresh R2CacheClient bound to this request's env. Cheap to
-     * instantiate; does no async work. Called from each R2 RPC method to
-     * avoid keeping the client in instance state (the WorkerEntrypoint
-     * lifecycle is per-invocation and we want a clean closure each time).
-     */
-    private _r2;
-    /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns
      * { bytes, events } where:
@@ -469,6 +462,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         data: Uint8Array;
         size: number;
     }>;
+    stdinPrepared(): Promise<void>;
     netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
     /**
      * The program's network, when this binding is its globalOutbound (a run

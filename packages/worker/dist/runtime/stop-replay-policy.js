@@ -60,6 +60,8 @@ export const REPLAY_OPERATION_POLICY = {
     cpStdinEnd: effect,
     cpReadStdin: { kind: 'input', inputFields: ['data', 'ended'] },
     stdinFileRead: { kind: 'input', inputFields: ['data', 'size'] },
+    stdinPrepared: control,
+    getCachedTarball: read, getPackument: read, putCachedTarball: effect,
     cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
     cpDrainOutput: read, cpKill: effect,
     cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
@@ -77,6 +79,12 @@ export function operationPolicy(op) {
     return Object.hasOwn(REPLAY_OPERATION_POLICY, op)
         ? REPLAY_OPERATION_POLICY[op] : undefined;
 }
+/** Public RPC methods that deliberately delegate or implement a protocol. */
+export const REPLAY_PUBLIC_METHOD_POLICY = {
+    answer: { kind: 'validated-filesystem-delegation' },
+    fetch: { kind: 'journaled-outbound-protocol' },
+    connect: { kind: 'effectful-outbound-protocol' },
+};
 export const SUPERVISOR_CALLS_WITHOUT_EFFECTS = [
     ...Object.entries(REPLAY_OPERATION_POLICY).filter(([, p]) => p.kind !== 'effect' && p.kind !== 'open').map(([name]) => name),
     // Object protocol, not supervisor operations.

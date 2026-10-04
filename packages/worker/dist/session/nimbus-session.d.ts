@@ -368,6 +368,19 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
     _rpcReplayBoundary(pid?: number, run?: string): Promise<void>;
+    _rpcStdinPrepared(pid?: number, run?: string): Promise<void>;
+    _rpcGetCachedTarball(integrity: string, pid?: number, run?: string): Promise<{
+        bytes: Uint8Array | null;
+        events: import("../npm/r2-cache.js").R2CacheStatEvent[];
+    }>;
+    _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean>;
+    _rpcGetPackument(name: string, options?: {
+        retries?: number;
+        timeoutMs?: number;
+        registry?: string;
+    }, pid?: number, run?: string): Promise<import("../npm/r2-cache.js").PackumentReadThrough & {
+        events: import("../npm/r2-cache.js").R2CacheStatEvent[];
+    }>;
     _rpcStdinFileRead(path: string, offset: number, length: number, pid?: number): Promise<{
         data: Uint8Array;
         size: number;
