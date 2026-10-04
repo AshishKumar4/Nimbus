@@ -191,6 +191,26 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
   n.boundary('b');
   assert.match(diverged.at(-1), /without asking for everything .* \(0 of 1\)/);
 
+  // A `< file` stdin: reading that file is reading input (the run after a
+  // stop reads ahead what the run before stopped short of), never journaled;
+  // a call naming anything else is.
+  const i = make();
+  i.input('/home/user/w/lock.json');
+  i.start('a');
+  i.stopped();
+  i.start('b');
+  const seenBefore = diverged.length;
+  assert.deepEqual(await ask(i, 'stat', ['/home/user/w/lock.json'], { size: 9 }, 'b'), { size: 9 });
+  await ask(i, 'fsReadBatch', [[{ path: 'home/user/w/lock.json', offset: 0, length: 9 }]], 'LOCK', 'b');
+  i.boundary('b');
+  assert.equal(diverged.length, seenBefore, 'reads of the stdin file are input');
+  const mixed = make();
+  mixed.input('/home/user/w/lock.json');
+  mixed.start('a');
+  mixed.stopped();
+  mixed.start('b');
+  await assert.rejects(ask(mixed, 'fsReadBatch', [[{ path: 'home/user/w/lock.json' }, { path: 'home/user/w/other' }]], 'X', 'b'), /did not ask for there/);
+
   // Answers come back in the order the run before was answered.
   const o = make();
   o.start('a');

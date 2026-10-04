@@ -6067,6 +6067,7 @@ export class FacetManager {
         this.outputGates.get(entry.pid)?.close();
         divergence.abort();
       }));
+      if (opts.stdinFile) this.journals.get(entry.pid)!.input(opts.stdinFile.path);
     }
     if (inputChannel > 0) this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
     // Each run starts from the umask the process started with: a umask the
@@ -6363,7 +6364,9 @@ export class FacetManager {
    */
   journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown> {
     const journal = pid === undefined ? undefined : this.journals.get(pid);
-    if (!journal || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
+    // A call that names no run is the session's own on the process's behalf
+    // (the stat a `< file` relaunch makes), not something a run was told.
+    if (!journal || run === undefined || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
     return journal.handle(op, args, run, dispatch);
   }
 
