@@ -498,6 +498,14 @@ published package's `prepublishOnly` is `bun ../../scripts/dist-integrity.mjs
 --publish`, which also refuses a package directory that differs from HEAD, so
 the tarball holds the committed, verified dist. Build and commit first.
 
+A publish skips a version npm already has, and `prepublishOnly` runs only
+for the packages it publishes. So before publishing anything, run
+`bun scripts/check-published.mjs`: it packs every package whose version is
+already on npm and refuses if one differs from what npm holds, naming the
+files. Bump that package and move the ranges that need the change. (Worker
+0.13.0 went out importing an export that platform 0.7.0 lacked: platform's
+source had changed without a version bump.)
+
 **Production is `wrangler deploy -e production`, and nothing else.**
 `apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own
 database, rate-limit namespace and Worker:
