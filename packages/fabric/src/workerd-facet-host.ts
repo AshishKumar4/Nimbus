@@ -626,7 +626,7 @@ async function runOneShot<T>(
   // worker, already let in (claimAdmission), whatever pid it runs as.
   const endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
     signal: params.request.signal,
-    process: { pid: params.pid, ancestors: params.ancestors },
+    process: { pid: params.pid },
   });
   let supervisorBinding: unknown;
   let worker: LoadedWorkerStub | undefined;

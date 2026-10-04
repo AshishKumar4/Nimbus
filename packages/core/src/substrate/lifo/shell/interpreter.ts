@@ -222,6 +222,12 @@ export interface CommandIdentity {
   readonly pid: number;
   readonly cred: VfsCred;
   setUmask(mask: number): void;
+  /**
+   * The process has a unit of in-flight work while a command of its runs,
+   * until the returned function is called: how its session tells a shell
+   * doing nothing but await its children (SessionProcessSupervisor.beginWork).
+   */
+  beginWork?(): () => void;
 }
 
 /** What a program started by runProgram runs with: its identity, directory, environment and inherited streams. */
@@ -1057,6 +1063,9 @@ export class Interpreter {
           const builtin = this.config.builtins.get(name);
           if (builtin) {
             const builtinIo = this.createIoFromFds(io, fds);
+            // A builtin is work of the shell's own (a `sleep`, a `read`, a
+            // `wait`), never an await of a child.
+            const endWork = io.commandIdentity?.beginWork?.();
             try {
               exitCode = await builtin(args, stdout, stderr, stdin, {
                 vfs: builtinIo.vfs ?? this.config.vfs,
@@ -1092,6 +1101,8 @@ export class Interpreter {
                 // Its stderr may be what refused; the status still says so.
               }
               exitCode = 1;
+            } finally {
+              endWork?.();
             }
           } else {
             // Check registry; a bare name not registered is searched for on the
@@ -1103,23 +1114,31 @@ export class Interpreter {
             } else {
               const identity = io.commandIdentity;
               if (!identity) throw new Error('shell command identity is unavailable');
-              const ended = await this.runCommand(command, name, args, {
-                commandContext: io.commandContext,
-                identity,
-                cwd: this.config.getCwd(),
-                env: { ...this.config.env },
-                vfs: io.vfs ?? this.config.vfs,
-                stdout,
-                stderr,
-                stdin,
-                terminalStdin: io.terminalStdin,
-                isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
-                isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
-                signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
-                runAs: io.runAs,
-                register: io.registerProcess !== false,
-                shellBuiltin: BASH_BUILTINS.has(name),
-              });
+              // A command is a unit of the process's work; one that runs a
+              // program as a child of its own counts that as its await.
+              const endWork = identity.beginWork?.();
+              let ended: ChildExit;
+              try {
+                ended = await this.runCommand(command, name, args, {
+                  commandContext: io.commandContext,
+                  identity,
+                  cwd: this.config.getCwd(),
+                  env: { ...this.config.env },
+                  vfs: io.vfs ?? this.config.vfs,
+                  stdout,
+                  stderr,
+                  stdin,
+                  terminalStdin: io.terminalStdin,
+                  isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
+                  isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
+                  signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+                  runAs: io.runAs,
+                  register: io.registerProcess !== false,
+                  shellBuiltin: BASH_BUILTINS.has(name),
+                });
+              } finally {
+                endWork?.();
+              }
               exitCode = ended.status;
 
               // A signalled command reports the SIGNAL's status, not whatever

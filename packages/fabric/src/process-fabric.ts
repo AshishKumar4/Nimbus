@@ -564,12 +564,6 @@ export interface OneShotParams {
   /** The invocation. Its body carries argv/env/cwd; its signal bounds the run. */
   request: Request;
   /**
-   * The pids `pid` descends from, nearest first. Its wait for a Dynamic
-   * Worker may be the one refused when every worker in flight is held by a
-   * process blocked on its children (DynamicWorkerDeadlockError).
-   */
-  ancestors?: readonly number[];
-  /**
    * Called before any capability able to write as `writerId` exists, and only
    * if this host can mint one at all. Granting append authority to an identity
    * nothing will ever present would leave a writer live with no writer.

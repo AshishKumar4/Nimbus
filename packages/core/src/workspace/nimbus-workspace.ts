@@ -538,6 +538,7 @@ export class NimbusWorkspace {
         get cred() { return processes.cred(pid); },
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
+        beginWork: () => processes.beginWork(pid),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
