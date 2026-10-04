@@ -4,7 +4,13 @@
 // reports a failed spawn, whichever of the parent's waits hears of it: an
 // 'error', then 'close' with the negative errno; no 'spawn', no 'exit', no
 // pid. A child that starts publishes its pid and emits 'spawn' only once the
-// broker says it started, never before.
+// broker says it started, never before, and always before its first byte of
+// output, whichever reply brings that first.
+//
+// Two races, red on 34f5b1e0e: the wait loop and the exit-time drain both
+// hearing the same refusal emitted 'error' twice; output that arrived before
+// the wait loop heard of the start was forwarded before 'spawn', with
+// child.pid still undefined.
 //
 // Before, the shim published the broker's pid and emitted 'spawn' as soon
 // as the broker took the request, and the parent's exit-time drain turned a
@@ -74,6 +80,44 @@ const supervisorFor = (answer) => ({
   for (let i = 0; i < 200 && !events.some((e) => e[0] === 'close'); i++) await tick();
   assert.deepEqual(events.map((e) => e.slice(0, 3)), [['error', 'EAGAIN', -11], ['close', -11, null]],
     "a spawn the broker refused is 'error' then 'close' -11, as Node's at a process limit");
+}
+
+// ── the same refusal heard by both waits: 'error' once ─────────────────────
+{
+  // Both the wait loop's poll and the drain's are in flight when the refusal comes.
+  let refuse;
+  const refused = new Promise((resolve) => { refuse = resolve; });
+  const supervisor = supervisorFor(() => ({ done: false }));
+  supervisor.cpWait = async () => { await refused; return REFUSED; };
+  const { cp } = make(supervisor);
+  const child = cp.spawn('node', ['-e', 'console.log(1)'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const events = watch(child);
+  for (let i = 0; i < 20; i++) await tick();
+  const drained = cp.__cpDrainAllChildren();
+  await tick();
+  refuse();
+  await drained;
+  for (let i = 0; i < 20; i++) await tick();
+  assert.deepEqual(events.map((e) => e[0]), ['error', 'close'], "one 'error' and one 'close', though both waits heard the refusal");
+}
+
+// ── output before the start is heard: 'spawn' and the pid first ─────────────
+{
+  let read = 0;
+  const supervisor = supervisorFor((_waitMs, knownStarted) => (knownStarted === false ? { done: false } : { done: false }));
+  // The wait loop has not heard of the start (its poll waits); the output poll answers first.
+  supervisor.cpWait = async () => new Promise(() => {});
+  supervisor.cpReadOutput = async (_pid, fd) => {
+    await tick();
+    if (fd === 1 && ++read === 1) return { chunks: [{ seq: 1, data: new TextEncoder().encode('hi\n') }], closed: false, maxSeq: 1 };
+    return new Promise(() => {});
+  };
+  const { cp } = make(supervisor);
+  const child = cp.spawn('node', ['-e', 'console.log("hi")'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const events = watch(child);
+  child.stdout.on('data', (d) => events.push(['data', String(d), child.pid]));
+  for (let i = 0; i < 200 && !events.some((e) => e[0] === 'data'); i++) await tick();
+  assert.deepEqual(events, [['spawn', 77], ['data', 'hi\n', 77]], "'spawn', with the pid, before the first byte");
 }
 
 // ── started: the pid and 'spawn' come with the start, not before ───────────

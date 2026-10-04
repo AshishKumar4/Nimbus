@@ -34,22 +34,29 @@ published independently in the `@nimbus-sh` npm scope.
   can satisfy (below) ends the wait.
 - A wait for a Dynamic Worker that no release can satisfy is refused rather
   than left to wait for good. A process says when its only remaining work
-  is waiting on its own children (its event loop has no timer, socket,
-  server, stdin read or fetch of its own pending); when every worker in
-  flight is held by a process in that state, nothing will make room, and
-  the newest wait that descends from a holder is refused. That child's
-  spawn fails as Node's does at a process limit: an 'error' event (`spawn
-  node EAGAIN`, errno -11), no 'spawn', no 'exit', no pid, and 'close' with
-  -11. Its program never runs; its parent hears it and can go on. Nine
-  children each doing nothing but wait on a grandchild get one EAGAIN and
-  eight runs; the same nine with a `process.exit(0)` scheduled keep waiting
-  and complete; a `spawnSync` chain ten deep gets EAGAIN at the eleventh
-  level and unwinds. A process that does not say (a resident, a non-Node
-  runtime) is taken to end on its own.
+  is waiting on its own children, and which (its event loop, top-level
+  `await` included, has no timer, socket, server, stdin read or fetch of
+  its own pending). A holder is stuck when it says so and every child it
+  waits on is queued for a worker or stuck too; when every worker in flight
+  is held by a stuck process, nothing will make room, and the newest queued
+  child of a stuck holder is refused. A child that runs without a worker (a
+  `sleep 5` builtin), or one whose output, start or exit the holder has not
+  yet heard, keeps it from being stuck: a report counts only while no news
+  of its children has come since. That child's spawn fails as Node's does
+  at a process limit: an 'error' event (`spawn node EAGAIN`, errno -11), no
+  'spawn', no 'exit', no pid, and 'close' with -11. Its program never runs;
+  its parent hears it and can go on. Nine children each doing nothing but
+  wait on a grandchild (in a callback, or in a top-level `await`) get one
+  EAGAIN and eight runs; the same nine with a `process.exit(0)` scheduled
+  keep waiting and complete; two `spawnSync` chains that fill the limit get
+  one EAGAIN and both finish. A process that does not say (a resident, a
+  non-Node runtime) is taken to end on its own.
 - A child's pid is published, and 'spawn' emitted, once the session has
-  admitted it, as Node publishes them only for a spawn that succeeded; a
-  refused child never has either, whichever of the parent's waits hears of
-  the refusal (the exit-time drain gave it an 'exit' with -11).
+  admitted it or its first output arrives, as Node publishes them only for
+  a spawn that succeeded and always before the child's output; a refused
+  child never has either, and has one 'error', whichever of the parent's
+  waits hears of the refusal, or both (the exit-time drain gave it an
+  'exit' with -11, and both hearing it gave two 'error's).
 - Fixed: a `child_process` child ended by a signal reported the shell's
   status to its parent. 'exit' and 'close' gave (143, 'SIGTERM') for every
   signal but SIGKILL (137), SIGINT included, and `exitCode` was 143. They

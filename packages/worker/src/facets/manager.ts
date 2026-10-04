@@ -479,19 +479,6 @@ async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs,
   return { passes: __pass, pending: __exited ? 0 : __countHandles() };
 }
 
-// An ESM entry's own evaluation promise (top-level await) is the one promise
-// that IS a handle — the module has not finished loading until it settles.
-// Answers true when process.exit won the race instead.
-async function __nimbusAwaitEntryEvaluation(__entryResult) {
-  if (!__entryResult || typeof __entryResult.then !== "function") return false;
-  const __exit = {};
-  const __raced = await Promise.race([
-    __entryResult.then(() => null),
-    __nimbusProcessExitPromise.then(() => __exit, () => __exit),
-  ]);
-  return __raced === __exit;
-}
-
 // Whether the program's only remaining work is waiting on its children (the
 // polls for their output and exit, __nimbusChildOps): no timer, socket,
 // server, stdin read or fetch of its own. Said to the session when it
@@ -505,10 +492,32 @@ function __nimbusReportBlockedState() {
 }
 
 // A one-shot facet's lifetime IS the loop: it runs the program until Node
-// would exit, or until the lifetime budget runs out.
+// would exit, or until the lifetime budget runs out. One loop from the
+// start, with the entry's evaluation (top-level await) counted as a handle
+// while it is pending, so the program's state is reported throughout: a
+// module whose top-level await waits on a child's close is blocked on that
+// child as much as a callback would be. Once the evaluation settles, the
+// loop gives a settling chain its warm-up turns again; a rejected
+// evaluation is thrown once the loop ends.
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
-  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
-  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
+  let __failure = null;
+  let __grace = 0;
+  if (__evaluating) {
+    __entryResult.then(
+      () => { __evaluating = false; __grace = 4; },
+      (error) => { __evaluating = false; __failure = { error }; },
+    );
+  }
+  const __count = () => {
+    if (__failure) return 0;
+    if (__evaluating) return 1 + __nimbusLiveHandles();
+    if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
+    return __nimbusLiveHandles();
+  };
+  const __drain = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  if (__failure && (typeof __nimbusProcessExitCode === "undefined" || __nimbusProcessExitCode === null)) throw __failure.error;
+  return __drain;
 }
 
 // Whether the program holds no live handle once a settling chain has had the

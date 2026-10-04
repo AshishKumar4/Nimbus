@@ -73,6 +73,10 @@ interface OutputChunk {
  */
 interface ChildEntry {
   pid: number;
+  /** The process that spawned it: whom its output, start and exit are news for. */
+  parentPid: number;
+  /** The descriptors its parent reads: output to an ignored one reaches nobody. */
+  stdio: Array<'pipe' | 'ignore' | 'inherit'>;
   command: string;
   args: string[];
   cwd: string;
@@ -255,6 +259,12 @@ export interface FacetProcessManagerDeps {
   vfsForProcess: (pid: number) => Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>;
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
+  /**
+   * News of a child was produced for its parent `parentPid`: output the
+   * parent reads, the child's start, its exit. The parent's report that it
+   * is blocked on its children stops being current (fabric noteProcessNews).
+   */
+  onNews?: (parentPid: number) => void;
 }
 
 /** Cap recursion depth to defend against runaway spawn loops. */
@@ -286,6 +296,14 @@ type ShellSpawnPlan =
   | { kind: 'command'; commandLine: string; args: string[] }
   | { kind: 'script'; path: string; args: string[] }
   | { kind: 'stdin'; args: string[] };
+
+/** A spawn's stdio as the parent's ChildProcess reads it (node-shims _normalizeStdio): a mode per descriptor. */
+function normalizeStdio(stdio: unknown): Array<'pipe' | 'ignore' | 'inherit'> {
+  const mode = (v: unknown) => (v === 'ignore' || v === 'inherit' ? v : 'pipe');
+  if (typeof stdio === 'string') return [mode(stdio), mode(stdio), mode(stdio)];
+  if (!Array.isArray(stdio)) return ['pipe', 'pipe', 'pipe'];
+  return [mode(stdio[0]), mode(stdio[1]), mode(stdio[2])];
+}
 
 function basenameOfCommand(command: string): string {
   const text = String(command || '').trim();
@@ -398,6 +416,8 @@ export class FacetProcessManager {
     const pid = processEntry.pid;
     const child: ChildEntry = {
       pid,
+      parentPid: req.parentPid,
+      stdio: normalizeStdio(req.stdio),
       command: req.command,
       args: req.args || [],
       cwd: req.cwd,
@@ -709,6 +729,7 @@ export class FacetProcessManager {
   /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
   private _appendOutput(child: ChildEntry, fd: 1 | 2, data: Uint8Array): void {
     if (data.byteLength === 0) return;
+    if (child.stdio[fd] !== 'ignore') this._news(child);
     child.outputSeq[fd]++;
     const chunk: OutputChunk = { seq: child.outputSeq[fd], data };
     child.outputs[fd].push(chunk);
@@ -842,6 +863,7 @@ export class FacetProcessManager {
     child.exitCode = exitCode;
     child.signal = signal;
     child.endedAt = Date.now();
+    this._news(child);
 
     // Tell the process supervisor so `ps` and `logs <pid>` line up.
     try { this.deps.processes.exit(child.pid, exitCode); } catch {}
@@ -910,7 +932,13 @@ export class FacetProcessManager {
   private _markStarted(child: ChildEntry): void {
     if (child.started) return;
     child.started = true;
+    this._news(child);
     for (const w of child.startWaiters.splice(0)) w();
+  }
+
+  /** News of `child` for its parent (FacetProcessManagerDeps.onNews). */
+  private _news(child: ChildEntry): void {
+    try { this.deps.onNews?.(child.parentPid); } catch { /* the news still reaches it */ }
   }
 
   // ── housekeeping ────────────────────────────────────────────────────────

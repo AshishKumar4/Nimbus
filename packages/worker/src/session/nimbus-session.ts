@@ -933,7 +933,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   // W8 child_process RPC
-  async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
+  async _rpcCpSpawn(req: any): Promise<{ childPid: number; news: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }
   async _rpcCpStdinEnd(childPid: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid); }
   async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid); }
@@ -941,7 +941,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
   async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid, knownStarted); }
-  async _rpcCpBlocked(pid: number, blocked: boolean) { return _rpc._rpcCpBlocked(this as any, pid, blocked); }
+  async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: _programmatic.ProgrammaticReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }

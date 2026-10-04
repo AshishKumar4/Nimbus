@@ -32,7 +32,7 @@ import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, processNewsReply, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import {
   residentBootSpecSchema,
   type ResidentDiskReader,
@@ -1450,9 +1450,11 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
   // facet calls cp* before the supervisor has initialized the broker
   // (e.g., immediately after DO hibernation wake-up).
 
-export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number }> {
+export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number; news: number }> {
     const fpm = self._ensureFacetProcessManager();
-    return fpm.spawn(req);
+    const spawned = await fpm.spawn(req);
+    // A new child is news for its parent: its blocked report must name it.
+    return { ...spawned, news: processNewsReply(self.ctx, req.parentPid) };
 }
 
 /**
@@ -1539,7 +1541,9 @@ export async function _rpcCpReadOutput(
 ) {
     const fpm = self._ensureFacetProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
-    return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
+    const delivers = output.chunks.length > 0 || output.closed;
+    const reply = delivers && typeof pid === 'number' ? { ...output, news: processNewsReply(self.ctx, pid) } : output;
+    return withDeliveredAcquire(self, reply, delivers, acquire, pid);
 }
 
 export async function _rpcCpDrainOutput(self: RpcHost, childPid: number) {
@@ -1553,15 +1557,22 @@ export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string
 }
 
 /** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
-export async function _rpcCpBlocked(self: RpcHost, pid: number, blocked: boolean): Promise<void> {
+export async function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void> {
     if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running') return;
-    setProcessBlocked(self.ctx, pid, blocked === true);
+    const said = (report ?? {}) as { blocked?: unknown; seen?: unknown; waitsOn?: unknown };
+    setProcessBlocked(self.ctx, pid, {
+      blocked: said.blocked === true,
+      seen: Number.isInteger(said.seen) ? said.seen as number : -1,
+      waitsOn: Array.isArray(said.waitsOn) ? said.waitsOn.filter((child): child is number => Number.isInteger(child)) : [],
+    });
 }
 
 export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) {
     const fpm = self._ensureFacetProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
-    return withDeliveredAcquire(self, status, status.done, acquire, pid);
+    const delivers = status.done || status.started === true;
+    const reply = delivers && typeof pid === 'number' ? { ...status, news: processNewsReply(self.ctx, pid) } : status;
+    return withDeliveredAcquire(self, reply, status.done, acquire, pid);
 }
 
   // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────

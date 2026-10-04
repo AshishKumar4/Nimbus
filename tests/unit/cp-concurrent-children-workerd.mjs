@@ -27,7 +27,10 @@
 //     spawn fails as Node's does at a process limit ('error', EAGAIN, no
 //     'exit', no pid, 'close' with -11), its parent ends, and the other
 //     eight grandchildren run. Host node has no such limit, so this one is
-//     not compared with it. Before, all of them waited for good.
+//     not compared with it. Before, all of them waited for good. The same
+//     with each child an ES module blocked inside its top-level await
+//     (tladeadlock): before, such children never reported
+//     their state, and all ten hung.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -136,6 +139,42 @@ for (let i = 0; i < N; i++) {
   });
   c.on('close', (code) => {
     results.push(out.replace('ready\\n', '').trim().split('\\n').join(' | ') + ' ; ' + code);
+    if (results.length === N) console.log(results.sort().join('\\n'));
+  });
+}
+`,
+  tladeadlock: `
+const { spawn } = require('child_process');
+const fs = require('fs');
+const N = 9;
+// As deadlock, but each child is an ES module whose top-level await waits
+// on its grandchild's close: still evaluating, and blocked on its child.
+fs.writeFileSync('/home/user/tla-child.mjs', [
+  "import { spawn } from 'node:child_process';",
+  "import { promises as fs } from 'node:fs';",
+  "console.log('ready');",
+  "for (;;) { try { await fs.access('/home/user/tla-go'); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }",
+  "const said = await new Promise((resolve) => {",
+  "  const g = spawn('node', ['-e', 'console.log(1+1)']);",
+  "  let o = '';",
+  "  g.stdout.on('data', (d) => { o += d; });",
+  "  g.on('error', (e) => resolve('error ' + e.code));",
+  "  g.on('close', (code) => resolve('close ' + code + ' ' + o.trim()));",
+  "});",
+  "console.log(said);",
+].join('\\n'));
+try { fs.unlinkSync('/home/user/tla-go'); } catch {}
+const results = [];
+let ready = 0;
+for (let i = 0; i < N; i++) {
+  const c = spawn('node', ['/home/user/tla-child.mjs']);
+  let out = '';
+  c.stdout.on('data', (d) => {
+    out += d;
+    if (String(d).includes('ready') && ++ready === N) fs.promises.writeFile('/home/user/tla-go', 'go');
+  });
+  c.on('close', (code) => {
+    results.push(out.replace('ready\\n', '').trim() + ' ; ' + code);
     if (results.length === N) console.log(results.sort().join('\\n'));
   });
 }
@@ -260,7 +299,7 @@ function split(text) {
 }
 
 // Host node has no Dynamic Worker limit to deadlock on; that scenario is asserted on its own.
-const NO_DIFFERENTIAL = new Set(['deadlock', 'tsburst', 'exitsched', 'bun10', 'syncchain', 'syncfork']);
+const NO_DIFFERENTIAL = new Set(['deadlock', 'tladeadlock', 'tsburst', 'exitsched', 'bun10', 'syncchain', 'syncfork']);
 const host = {};
 for (const [name, source] of Object.entries(SCENARIOS)) {
   if (NO_DIFFERENTIAL.has(name)) continue;
@@ -348,6 +387,13 @@ try {
     const refused = 'error EAGAIN -11 spawn node node ["-e","console.log(1+1)"] spawn node EAGAIN pid=undefined | close -11 null ; 0';
     assert.deepEqual(deadlock.lines, [refused, ...Array(8).fill(ran)],
       "the newest grandchild's spawn fails EAGAIN, as Node's at a process limit (no 'spawn', no pid), and the other eight run");
+
+    // The same nine as ES modules, blocked inside their top-level await: they
+    // report it as callbacks do (before, they never did, and all ten hung).
+    const tla = await run('tladeadlock');
+    console.log('  tladeadlock:\n    ' + tla.lines.join('\n    '));
+    assert.deepEqual(tla.lines, ['close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'error EAGAIN ; 0'],
+      "one grandchild's spawn fails EAGAIN, and the other eight run, with every child inside its top-level await");
 
     // The same nine, each with process.exit(0) scheduled: they end on their
     // own, so no grandchild is refused (refused from ancestry alone before).
