@@ -1,11 +1,10 @@
 /**
  * An inline `node` run, inside the worker that is its realm (node-realm.ts).
  *
- * Everything the program reaches outside the realm goes through the host:
- * the filesystem and fd 0 by synchronous calls (the guest waits on `wake`
- * until the answer is on `calls`), its output and its network by messages on
- * `events`. The ports come in the first message on parentPort, taken before
- * the program runs, and live only in this module's closure.
+ * Everything the program reaches outside the realm goes through the host
+ * (runtime/realm-guest.ts): the filesystem and fd 0 by synchronous calls,
+ * its output and its network by events. The realm is joined before the
+ * program runs, and its ports live only in this module's closure.
  *
  * The realm lives as a Node process does: while its event loop has work. Its
  * own timers hold it; so does `events` while a server it started listens and
@@ -15,56 +14,24 @@
  */
 
 import realm from 'node:process';
-import { parentPort, receiveMessageOnPort } from 'node:worker_threads';
+import { joinRealm } from '../../../../runtime/realm-guest.js';
 import type { VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import {
-  fromRealmError, isDirEntries, isHostEvent, isRealmAnswer, isRealmStart, isStat,
-  type GuestEvent, type RealmCall, type RealmResponse,
+  isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
+  type GuestEvent, type NodeCall, type RealmResponse,
 } from './node-realm.js';
 
-/**
- * The host's first message: taken at once when it is already there, else
- * awaited. The worker can start before the host has posted it (a host
- * descheduled between starting the worker and posting). The listener goes
- * with it, so the program finds parentPort as it would in a worker of its own.
- */
-async function realmStart(): Promise<unknown> {
-  if (!parentPort) return undefined;
-  const ready = receiveMessageOnPort(parentPort);
-  if (ready) return ready.message;
-  const port = parentPort;
-  return new Promise((resolve) => {
-    const take = (message: unknown) => {
-      port.off('message', take);
-      port.unref();
-      resolve(message);
-    };
-    port.on('message', take);
-  });
-}
-const start = await realmStart();
-if (!isRealmStart(start)) throw new Error('node-guest: started without a realm');
-const { calls, events, program } = start;
-const flag = new Int32Array(start.wake);
+const joined = await joinRealm();
+if (!isNodeRealmPayload(joined.payload)) throw new Error('node-guest: started without a program');
+const { program } = joined.payload;
+const { events } = joined;
 
-/** A synchronous call to the host: posted, then waited for. Its value is the host's answer, as cloned. */
-function call(request: RealmCall): unknown {
-  Atomics.store(flag, 0, 0);
-  calls.postMessage(request);
-  for (;;) {
-    Atomics.wait(flag, 0, 0);
-    const received = receiveMessageOnPort(calls);
-    if (received && isRealmAnswer(received.message)) {
-      const answer = received.message;
-      if ('error' in answer) throw fromRealmError(answer.error);
-      return answer.value;
-    }
-  }
-}
+/** A synchronous call to the host: its value is the host's answer, as cloned. */
+const call = (request: NodeCall): unknown => joined.call(request);
 
 /** A host answer that is not the shape its call returns: a broken realm, not a program error. */
 function malformed(method: string): never {
@@ -72,7 +39,7 @@ function malformed(method: string): never {
 }
 
 function post(event: GuestEvent): void {
-  events.postMessage(event);
+  joined.post(event);
 }
 
 // ── Liveness ────────────────────────────────────────────────────────────────
@@ -82,8 +49,7 @@ let exiting = false;
 const fetched = new Map<number, (response: RealmResponse | null) => void>();
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  if (fetched.size > 0 || ports.size > 0) events.ref();
-  else events.unref();
+  joined.hold(fetched.size > 0 || ports.size > 0);
 }
 
 /** End the process now with `code`, as process.exit() and a fatal error do. */

@@ -1,4 +1,4 @@
-export declare function format(fmt: string, ...args: unknown[]): string;
+export declare function format(fmt: unknown, ...args: unknown[]): string;
 export declare function inspect(obj: unknown, opts?: {
     depth?: number;
     colors?: boolean;

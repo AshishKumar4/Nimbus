@@ -41,6 +41,72 @@ published independently in the `@nimbus-sh` npm scope.
   where a supervisor envelope's answer leaves the session), and
   `stdinReadAhead` (`heldBytes`, `peakBytes`, `capacityBytes`), the pipe
   read ahead launches hold for their synchronous reads of fd 0.
+- Fixed: in the library host under Bun, a program's realm kept Bun's
+  web-worker globals, which hosted Nimbus (workerd) does not have: `Worker`
+  (a worker of the host engine's own), `prompt`, `alert` and `confirm`
+  (they read the host process's stdin), `postMessage` and `onmessage` (the
+  worker's channel to the host). They are gone before a program runs, in
+  `node` and in the wasm runtimes' realms alike. `Bun` itself cannot be
+  removed from any Bun realm (Bun 1.4 makes it and its members
+  non-configurable, a ShadowRealm's included), so under Bun a program can
+  still reach the host machine's files, processes and network through it.
+  The library host is not a boundary against the host machine; under Node
+  no such namespace exists.
+- Fixed: the library host's `require` of a module it cannot find threw an
+  Error without Node's `code: 'MODULE_NOT_FOUND'`; and its `util.format`
+  (console.log) quoted string arguments (`console.log(true, 'x')` printed
+  `'x'`) and lacked `%i`, `%f` and `%c`. Both now match Node.
+
+- `@nimbus-sh/core`: each facet of `localFacetHost()` runs in a realm of its
+  own, a worker thread under Node, as the inline `node`'s programs do, and a
+  child process under Bun (Kinu ask 17, local-facet-host.ts:183). The facet's scope was built in the host's realm,
+  so what a program reached of JavaScript was the embedder's: a Ruby
+  program's `JS.eval("globalThis.Promise = null")` broke the host's shell
+  ("null is not an object (evaluating 'Promise.allSettled')"), and
+  `Array.isArray`, timers and `Object.prototype` were the host's to rebind.
+  The other runtimes (bash, CPython, clang, `wasm-runner`) reach no
+  JavaScript, but a guest of any of them that spun without a syscall held the
+  host's only thread, so nothing could end it, and `timeoutMs` was ignored.
+  Now a facet's globals are its own, its session capability crosses as calls
+  (the supervisor's, answered by promise where the engine parks and at once
+  where it cannot, and its synchronous view's), and a call's `timeoutMs` or
+  new `signal` ends the facet. `python3`, `ruby` and `wasm-runner` pass the
+  command's signal, so a kill or Ctrl-C answers 130, the host runs on, and
+  nothing of the program is left: no thread, no process, no CPU within a
+  second of the kill (measured from /proc). Bun 1.4 cannot terminate a worker
+  running WebAssembly (`terminate()` never settles and the thread spins on, a
+  core for good, on 1.4.0, 1.4.2 and the 2026-10-03 canary alike; one in
+  JavaScript, or in WebAssembly that calls into JavaScript, it ends), so under
+  Bun a facet is a child process of the same engine, ended by SIGKILL, over
+  the same protocol framed on pipes. That process is a realm's own in full:
+  it starts with none of the host's environment (a thread realm too) and,
+  under Bun, no .env and no bunfig preload from where it runs; it is a
+  process group of its own, so ending it ends every process it started that
+  stayed in the group, and its end waits for none that left; it ends with
+  its host, even when the host dies before it has started (it is told the
+  host's pid, not left to read its parent once); a frame it announces over
+  256 MiB ends it before a byte is kept, where 4 GiB was allocated as it
+  came; a process that cannot be started ends its realm with the reason
+  (ENOENT), where the call hung; and a call that waits for its answer and one
+  that does not take theirs on separate channels, so a guest's second call
+  no longer blocks on its first. An idle facet no longer keeps the process alive. The
+  mechanism is the inline `node`'s, now shared (runtime/realm.ts,
+  realm-guest.ts). It costs each wasm program run about 60 ms more to start
+  under Bun and 40 ms under Node, and each filesystem syscall about 55 µs
+  under Bun and 30 µs under Node. `bash` and `clang` pass the command's
+  signal too, through one step controller for both facet transports, so a
+  killed `bash -c "while :; do :; done"` answers 130 at once where it waited
+  out its 300 s step deadline; a bash session's `interrupt` is now always
+  there. An abort that comes while a facet starts or compiles its modules, or
+  in the same turn as the call, ends the call (it hung); a call whose
+  modules failed sends all of them again, where the ones compiled before the
+  failure were dropped from the retry; and an answer that is a typed array or
+  DataView on part of a buffer comes back as that type, where it became a
+  Uint8Array. A spare realm started ahead was measured and not added: it
+  saves at most 20 ms of python3's 165 ms under Bun, most of the rest being
+  python.wasm's 11 MB sent to the child and compiled there. Under Bun a
+  Ruby run's memory now goes with its process: eight runs leave the host at
+  207 MB, where they left it at 6.9 GB.
 
 ## 2026-10-03
 

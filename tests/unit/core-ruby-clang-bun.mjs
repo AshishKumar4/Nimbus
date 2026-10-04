@@ -155,7 +155,7 @@ int main(void) {
   // -c stops at the object file, which lands in the session filesystem.
   const objectOnly = await ws.exec('clang -c greet.c');
   assert.equal(objectOnly.exitCode, 0, `clang -c failed: ${objectOnly.stderr}`);
-  const object = await readText(ws.fs, '/home/user/greet.o');
+  const object = await ws.fs.readFile('/home/user/greet.o');
   assert.deepEqual(Array.from(object.slice(0, 4)), [0x00, 0x61, 0x73, 0x6d],
     'an object file is a wasm object');
   console.log('  ok  -c leaves an object file in the workspace filesystem');

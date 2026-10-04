@@ -98,11 +98,8 @@ class BashReplAdapter implements ReplAdapter {
   async interrupt(): Promise<void> {
     const active = this.active;
     const session = this.session;
-    if (active && session && !session.interrupt) {
-      throw new Error('Bash facet does not support interruption');
-    }
     active?.controller.abort();
-    if (active && session?.interrupt) await session.interrupt();
+    if (active && session) await session.interrupt();
     await active?.done;
     await this.resetSession();
   }

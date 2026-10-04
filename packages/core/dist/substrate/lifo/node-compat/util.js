@@ -1,17 +1,25 @@
+/** An argument as util.format writes it outside a specifier: a string as itself, anything else inspected. */
+const formatArg = (arg) => (typeof arg === 'string' ? arg : inspect(arg));
+/** A number as util.format writes it: -0 keeps its sign. */
+const formatNumber = (n) => (Object.is(n, -0) ? '-0' : String(n));
+/** %d and %i: a BigInt keeps its `n`, a Symbol is NaN, anything else parsed by `parse`. */
+const formatInteger = (arg, parse) => typeof arg === 'bigint' ? `${arg}n` : typeof arg === 'symbol' ? 'NaN' : formatNumber(parse(arg));
 export function format(fmt, ...args) {
     if (typeof fmt !== 'string') {
-        return [fmt, ...args].map((a) => inspect(a)).join(' ');
+        return [fmt, ...args].map(formatArg).join(' ');
     }
     let i = 0;
-    let result = fmt.replace(/%([sdjoO%])/g, (match, type) => {
+    let result = fmt.replace(/%([sdifjoOc%])/g, (match, type) => {
         if (type === '%')
             return '%';
         if (i >= args.length)
             return match;
         const arg = args[i++];
         switch (type) {
-            case 's': return String(arg);
-            case 'd': return String(Number(arg));
+            case 's': return typeof arg === 'string' ? arg : String(arg);
+            case 'd': return formatInteger(arg, Number);
+            case 'i': return formatInteger(arg, (value) => parseInt(String(value)));
+            case 'f': return typeof arg === 'symbol' ? 'NaN' : formatNumber(parseFloat(String(arg)));
             case 'j':
                 try {
                     return JSON.stringify(arg);
@@ -21,12 +29,14 @@ export function format(fmt, ...args) {
                 }
             case 'o':
             case 'O': return inspect(arg);
+            // CSS for a browser console: consumed, written as nothing.
+            case 'c': return '';
             default: return match;
         }
     });
-    // Append remaining args
+    // The arguments no specifier took, each as util.format writes it.
     while (i < args.length) {
-        result += ' ' + inspect(args[i++]);
+        result += ' ' + formatArg(args[i++]);
     }
     return result;
 }

@@ -739,10 +739,15 @@ export function makeWasmRunner(deps: {
           // microseconds; runaway loops hit this and a host that can
           // abandon the facet surfaces a timeout as exitCode 1 + stderr.
           timeoutMs: 30_000,
+          // A kill or Ctrl-C ends the facet too, where the host can.
+          signal: opts.signal,
         },
       )) as DispatchOutcome;
     } catch (e) {
-      outcome = { ok: false, error: `dispatch failed: ${errorText(e)}` };
+      // Killed: the program ends as an interrupted one does, with no error of its own.
+      outcome = opts.signal?.aborted
+        ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: '' }
+        : { ok: false, error: `dispatch failed: ${errorText(e)}` };
     } finally {
       facet?.dispose();
     }

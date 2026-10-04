@@ -1,51 +1,118 @@
 /**
- * local-facet-host.ts — a facet that runs in the caller's own isolate.
+ * local-facet-host.ts — a facet in a realm of its own, beside the caller.
  *
  * The {@link FacetHost} for every embedder that is not workerd. There is no
- * dynamic-worker substrate to reach for and no CSP forbidding a compile, so the
- * scope a facet needs is built where it is asked for: compile the wasm table,
- * evaluate the preamble once, and evaluate each submitted function inside it.
+ * dynamic-worker substrate to reach for and no CSP forbidding a compile, so
+ * each facet is a realm (runtime/realm.ts; its side is facet-guest.ts): the
+ * wasm table filled, the preamble evaluated once there, and each submitted
+ * function evaluated there inside it. The realm is a worker thread of this
+ * process, or under Bun a process of its own: Bun 1.4 cannot end a worker
+ * running WebAssembly, and a facet runs nothing else. A thread is handed its
+ * modules compiled here (a compiled module crosses to a worker without a
+ * second compile, and V8 reuses this isolate's compilation of the same
+ * bytes); a process, which no compiled module crosses to, their bytes.
  *
- * The function is still SERIALIZED rather than called in place, and that is the
- * point rather than an accident of symmetry. A runner's facet function reads
- * names the preamble declares — `__wasiMakeImports`, `__bashBoot` — which exist
- * only in the scope the preamble was evaluated in; calling the original closure
- * would resolve them against this module instead and fail. Serializing also
- * keeps the contract honest: a closure reference that would break on workerd
- * breaks here too, in a unit test, rather than in production.
+ * A realm of its own because a facet used to be built in this realm, so what
+ * its program reached of JavaScript was the host's: Ruby's `js` bridge
+ * evaluates code (`JS.eval`) and reads and writes any global, so
+ * `JS.eval("globalThis.Promise = null")` broke the host's shell, and a guest
+ * spinning without a syscall held the host's only thread for good. Now the
+ * program reaches the facet's realm, and a call's timeout or abort ends it,
+ * even in a loop that never yields.
  *
- * `globalThis` inside a facet is the facet's own scope object, not the process
- * global. Preambles publish their entry points on it and runners read them back
- * from it, so two facets in one process must not see each other's — and the
- * process must not see either.
+ * The function is SERIALIZED rather than called in place, as on workerd. A
+ * runner's facet function reads names the preamble declares —
+ * `__wasiMakeImports`, `__bashBoot` — which exist only in the scope the
+ * preamble was evaluated in. Its arguments and answer cross as plain data, and
+ * the session capability as calls to this side: each supervisor method, and
+ * each of its synchronous view's, is answered here from the facet's
+ * filesystem.
  */
 
 import type {
   Facet,
-  FacetBindings,
   FacetFn,
   FacetHost,
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
-import { vfsSupervisor } from './vfs-supervisor.js';
+import type { RuntimeFsBridge } from './os-contracts.js';
+import { fromRealmError, isRealmAnswer, startRealm, type Realm, type RealmOutcome } from './realm.js';
+import { FILESYSTEM_RPC_METHODS, vfsSupervisor, type FilesystemSupervisor } from './vfs-supervisor.js';
 import type { WasiParking } from './wasi/types.js';
 
-/** A submitted function after it has been re-created inside the facet's scope. */
-type ScopedFacetFn = (args: unknown, bindings: FacetBindings) => unknown;
+// ── The facet's protocol (facet-guest.ts is the other side) ──────────────────
 
-/**
- * `new Function`, but for a body that may `await` at its top level.
- *
- * A facet preamble is written as a MODULE body, and the WASI shim uses that:
- * it resolves `cloudflare:sockets` with a top-level `await import(...)` inside a
- * try/catch, so a host that does not have the module gets a shim without
- * sockets instead of a shim that fails to parse. `new Function` cannot hold
- * that; an async function body can, and the rejected import lands in the same
- * catch it was written for.
- */
-const AsyncFunction = Object.getPrototypeOf(async (): Promise<void> => {}).constructor as
-  new (...args: string[]) => (this: object, ...args: unknown[]) => Promise<unknown>;
+/** Which of the facet's capabilities a call reaches: the supervisor, or its synchronous view. */
+export type SupervisorView = 'supervisor' | 'synchronous';
+
+/** What the realm starts with. */
+export interface FacetPayload {
+  readonly tag: string;
+  /** The host's parking: whether the facet's supervisor answers by promise (jspi) or at once (none). */
+  readonly parking: WasiParking;
+  readonly preamble?: string;
+  /** The supervisor's method names, and its synchronous view's when it has one; absent without syscalls. */
+  readonly supervisor?: { readonly methods: readonly string[]; readonly synchronous: readonly string[] | null };
+}
+
+/** A submitted call, host to guest. */
+export interface FacetSubmit {
+  readonly type: 'submit';
+  readonly id: number;
+  /** The function's source. */
+  readonly source: string;
+  readonly args: unknown;
+  /** Wasm modules to add to the table before the call: compiled for a thread, bytes for a process to compile. */
+  readonly modules: Record<string, WebAssembly.Module | ArrayBuffer>;
+}
+
+/** A call the guest makes on its capability. */
+interface SupervisorCall {
+  readonly op: 'supervisor';
+  readonly view: SupervisorView;
+  readonly method: string;
+  readonly args: readonly unknown[];
+}
+
+const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const strings = (value: unknown): value is readonly string[] => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
+export function isFacetPayload(value: unknown): value is FacetPayload {
+  if (!record(value) || typeof value.tag !== 'string' || (value.parking !== 'jspi' && value.parking !== 'none')) return false;
+  if (value.preamble !== undefined && typeof value.preamble !== 'string') return false;
+  const supervisor = value.supervisor;
+  return supervisor === undefined
+    || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous)));
+}
+
+export function isFacetSubmit(value: unknown): value is FacetSubmit {
+  return record(value) && value.type === 'submit' && Number.isSafeInteger(value.id) && typeof value.source === 'string'
+    && 'args' in value && record(value.modules) && Object.values(value.modules).every((module) => module instanceof WebAssembly.Module || module instanceof ArrayBuffer);
+}
+
+function isSupervisorCall(value: unknown): value is SupervisorCall {
+  return record(value) && value.op === 'supervisor' && (value.view === 'supervisor' || value.view === 'synchronous')
+    && typeof value.method === 'string' && Array.isArray(value.args);
+}
+
+/** The guest's answer to a submit, named by the submit's id. */
+export type FacetDone = RealmOutcome & {
+  readonly type: 'done';
+  readonly id: number;
+  /** Whether the submit's modules are in the facet's table: all of them, or (when one failed) none. */
+  readonly installed: boolean;
+};
+
+function isFacetDone(value: unknown): value is FacetDone {
+  return record(value) && value.type === 'done' && typeof value.installed === 'boolean' && isRealmAnswer(value);
+}
+
+/** The supervisor's names, as a facet calls them. */
+const SUPERVISOR_METHODS: readonly string[] = Object.values(FILESYSTEM_RPC_METHODS);
+/** Its synchronous view's: the bridge's names, but those with no synchronous form (os-contracts.ts). */
+const SYNCHRONOUS_METHODS: readonly string[] = Object.keys(FILESYSTEM_RPC_METHODS)
+  .filter((name) => name !== 'writeStream' && name !== 'acquire' && name !== 'copyTree');
 
 type WasmCompiler = (bytes: BufferSource) => Promise<WebAssembly.Module>;
 
@@ -58,7 +125,7 @@ type WasmCompiler = (bytes: BufferSource) => Promise<WebAssembly.Module>;
  * that surface, so the one host that DOES compile asks for the capability by
  * name and says so plainly when it is absent.
  */
-function wasmCompiler(): WasmCompiler {
+export function wasmCompiler(): WasmCompiler {
   const compile: unknown = Reflect.get(WebAssembly, 'compile');
   if (typeof compile !== 'function') {
     throw new Error(
@@ -82,46 +149,64 @@ function engineParks(): WasiParking {
 }
 
 /**
- * Run facets in this isolate.
+ * Where a facet runs: a worker thread, or, under Bun, a process. Bun 1.4 does
+ * not terminate a worker that is running WebAssembly (its `terminate()` never
+ * settles and the thread spins on, a core for good), and a facet's guest is
+ * WebAssembly; Node ends one at once. Asked of the engine at hand, as
+ * {@link engineParks} is.
+ */
+function facetIsolation(): 'thread' | 'process' {
+  return Reflect.get(globalThis, 'Bun') === undefined ? 'thread' : 'process';
+}
+
+/**
+ * Run each facet in a realm of its own, a worker thread of this process.
  *
- * `parking` is the engine's: where it can suspend a guest the facet is entered
- * through `WebAssembly.promising` and a syscall may park on a promise, so a
- * plain-WASI child waits at a full pipe as it would on Linux. Where it cannot,
- * the guest is entered on an ordinary stack, no syscall may suspend it, the
- * supervisor it mints is the authority's synchronous view, and a pipe buffers
- * to the host's {@link FacetHost.memoryBudgetBytes} instead (pipe-rules.ts).
+ * `parking` is the engine's (a worker's is the same engine): where it can
+ * suspend a guest the facet is entered through `WebAssembly.promising` and a
+ * syscall may park on a promise, so a plain-WASI child waits at a full pipe as
+ * it would on Linux. Where it cannot, the guest is entered on an ordinary
+ * stack, no syscall may suspend it, the supervisor it mints is the authority's
+ * synchronous view, and a pipe buffers to the host's
+ * {@link FacetHost.memoryBudgetBytes} instead (pipe-rules.ts).
  *
- * The one thing a substrate with its own isolates gives that this cannot:
- * {@link FacetSubmitOptions.timeoutMs} is not honoured. A guest spinning
- * synchronously holds the only thread, so no timer fires until it is already
- * finished; racing one would return while the program ran on.
+ * {@link FacetSubmitOptions.timeoutMs} and `signal` are honoured: either ends
+ * the facet, as a substrate with isolates of its own does. A facet waiting for
+ * no call holds no part of this process: it does not keep it alive.
  */
 export function localFacetHost(): FacetHost {
   return {
     parking: engineParks(),
-    // This isolate is a Bun or Node process, not a Worker isolate.
+    // A worker of a Bun or Node process, not a Worker isolate.
     memoryBudgetBytes: 1024 * 1024 * 1024,
-    open: (spec) => new LocalFacet(spec),
+    open: (spec) => new RealmFacet(spec),
   };
 }
 
-class LocalFacet implements Facet {
-  /** Evaluates a source string in the preamble's own scope. Built on first use. */
-  private evaluate: ((source: string) => unknown) | null = null;
-  private readonly wasmTable: Record<string, WebAssembly.Module> = {};
-  /** Keyed by the bytes themselves: the same image is compiled once per facet. */
-  private readonly modules = new WeakMap<ArrayBuffer, WebAssembly.Module>();
-  private readonly scoped = new Map<FacetFn<never, unknown>, ScopedFacetFn>();
+/** Why a call ended without its answer. */
+const ended = (tag: string, why: string): Error => new Error(`Nimbus: facet '${tag}' ${why}`);
+
+class RealmFacet implements Facet {
+  /** The realm, started on the first call. */
+  private realm: Promise<Realm> | null = null;
+  /** The image each name is in the facet's table as: what a call need not send again. */
+  private readonly installed = new Map<string, ArrayBuffer>();
+  /** Each image compiled for a thread, once, whether or not a call that sent it succeeded. */
+  private readonly compiled = new WeakMap<ArrayBuffer, WebAssembly.Module>();
   /** Submits are serialized: one scope, and a facet's calls are ordered. */
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly waiting = new Map<number, (outcome: FacetDone | Error) => void>();
+  private ids = 0;
   private disposed = false;
-
-  private readonly bindings: FacetBindings;
+  /** Why the realm ended, once it has. */
+  private over: Error | null = null;
+  private readonly supervisor: FilesystemSupervisor | null;
+  private readonly synchronous: RuntimeFsBridge['synchronous'];
+  private readonly isolation = facetIsolation();
 
   constructor(private readonly spec: FacetSpec) {
-    this.bindings = spec.syscalls
-      ? { SUPERVISOR: vfsSupervisor(spec.syscalls.vfs) }
-      : {};
+    this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
+    this.synchronous = spec.syscalls?.vfs.synchronous;
   }
 
   submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
@@ -131,67 +216,131 @@ class LocalFacet implements Facet {
     return run as Promise<Awaited<R>>;
   }
 
-  private async call<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<R> {
-    if (this.disposed) throw new Error(`Nimbus: facet '${this.spec.tag}' is disposed`);
-    const scope = await this.scope(options?.wasmModules);
-    let scoped = this.scoped.get(fn as FacetFn<never, unknown>);
-    if (!scoped) {
-      const value = scope(`(${fn.toString()})`);
-      if (typeof value !== 'function') {
-        throw new Error(`Nimbus: facet '${this.spec.tag}' was submitted a value that is not a function`);
-      }
-      scoped = value as ScopedFacetFn;
-      this.scoped.set(fn as FacetFn<never, unknown>, scoped);
-    }
-    return await scoped(args, this.bindings) as R;
+  private started(): Promise<Realm> {
+    this.realm ??= this.start();
+    return this.realm;
+  }
+
+  private async start(): Promise<Realm> {
+    const payload: FacetPayload = {
+      tag: this.spec.tag,
+      parking: engineParks(),
+      preamble: this.spec.preamble,
+      supervisor: this.supervisor ? { methods: SUPERVISOR_METHODS, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+    };
+    const realm = await startRealm({
+      entry: new URL('./facet-guest.js', import.meta.url),
+      isolation: this.isolation,
+      payload,
+      serve: (call) => this.serve(call),
+      onEvent: (event) => {
+        if (!isFacetDone(event)) return;
+        const settle = this.waiting.get(event.id);
+        this.waiting.delete(event.id);
+        settle?.(event);
+      },
+    });
+    if ('unavailable' in realm) throw ended(this.spec.tag, `has no realm: ${realm.unavailable}`);
+    realm.hold(false);
+    void realm.ended.then((end) => {
+      this.over = ended(this.spec.tag, end.terminated ? 'was ended' : `ended (${end.failure?.message ?? `exit ${end.code}`})`);
+      for (const settle of this.waiting.values()) settle(this.over);
+      this.waiting.clear();
+    });
+    return realm;
+  }
+
+  /** One call the facet makes on its capability: only the methods it was handed, of the view it names. */
+  private serve(call: unknown): unknown {
+    if (!isSupervisorCall(call)) throw new TypeError('Nimbus: a facet called nothing its host answers');
+    const target = call.view === 'synchronous' ? this.synchronous : this.supervisor;
+    const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : SUPERVISOR_METHODS;
+    const method = target && names.includes(call.method) ? Reflect.get(target, call.method) : undefined;
+    if (typeof method !== 'function') throw new TypeError(`Nimbus: a facet's ${call.view} has no method ${JSON.stringify(call.method)}`);
+    return Reflect.apply(method, target, call.args);
   }
 
   /**
-   * The facet's scope, built once.
-   *
-   * The returned closure's `eval` is a DIRECT eval inside the body the preamble
-   * was evaluated in, which is what puts the preamble's top-level declarations
-   * in scope for every function submitted afterwards.
-   *
-   * Both wasm tables are filled BEFORE that body runs, per-call images merged
-   * over the spec's. A preamble may boot its runtime as it is evaluated — Ruby
-   * instantiates the interpreter right there — so it reads the table at that
-   * moment and an image added afterwards would arrive to a facet that had
-   * already given up on it. workerd has the same ordering for the same reason:
-   * per-call images ride in the module map the inner worker is built from.
+   * The images a call adds to the facet's table (the spec's, per-call ones
+   * over them, but those it holds already), by name, and each as it is sent.
+   * Nothing is recorded as held here: only the guest's answer that it
+   * installed them does that, so a call that fails sends them all again.
    */
-  private async scope(
-    callModules: Record<string, ArrayBuffer> | undefined,
-  ): Promise<(source: string) => unknown> {
-    const built = this.evaluate;
-    if (!built) await this.addModules(this.spec.wasmModules);
-    await this.addModules(callModules);
-    if (built) return built;
-    const globals = { __NIMBUS_WASM: this.wasmTable };
-    const build = new AsyncFunction(
-      'globalThis',
-      `${this.spec.preamble ?? ''}\nreturn (source) => eval(source);`,
-    );
-    const evaluate = await build.call(globals, globals) as (source: string) => unknown;
-    this.evaluate = evaluate;
-    return evaluate;
+  private async modules(callModules: Record<string, ArrayBuffer> | undefined): Promise<{
+    images: Record<string, ArrayBuffer>;
+    sent: Record<string, WebAssembly.Module | ArrayBuffer>;
+  }> {
+    const images: Record<string, ArrayBuffer> = {};
+    const sent: Record<string, WebAssembly.Module | ArrayBuffer> = {};
+    for (const [name, bytes] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
+      if (this.installed.get(name) === bytes) continue;
+      images[name] = bytes;
+      sent[name] = this.isolation === 'thread' ? await this.compile(bytes) : bytes;
+    }
+    return { images, sent };
   }
 
-  private async addModules(modules: Record<string, ArrayBuffer> | undefined): Promise<void> {
-    for (const [name, bytes] of Object.entries(modules ?? {})) {
-      let module = this.modules.get(bytes);
-      if (!module) {
-        module = await wasmCompiler()(bytes);
-        this.modules.set(bytes, module);
-      }
-      this.wasmTable[name] = module;
+  private async compile(bytes: ArrayBuffer): Promise<WebAssembly.Module> {
+    const cached = this.compiled.get(bytes);
+    if (cached) return cached;
+    const module = await wasmCompiler()(bytes);
+    this.compiled.set(bytes, module);
+    return module;
+  }
+
+  private async call<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
+    if (this.disposed) throw ended(this.spec.tag, 'is disposed');
+    const signal = options?.signal;
+    signal?.throwIfAborted();
+    // From here a timeout or an abort ends the call, and the facet with it,
+    // at whatever step it has reached: starting, compiling, or running. Every
+    // step waits racing it.
+    const state: { stopped: Error | null } = { stopped: null };
+    let stop: (why: Error) => void = () => {};
+    const stopping = new Promise<never>((_, reject) => {
+      stop = (why) => {
+        if (state.stopped) return;
+        state.stopped = why;
+        reject(why);
+        this.dispose();
+      };
+    });
+    stopping.catch(() => {});
+    const onAbort = () => stop(signal?.reason instanceof Error ? signal.reason : ended(this.spec.tag, 'was aborted'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // An abort that came between the check above and the listener.
+    if (signal?.aborted) onAbort();
+    const timer = options?.timeoutMs === undefined ? undefined
+      : setTimeout(() => stop(ended(this.spec.tag, `timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
+    let realm: Realm | null = null;
+    const id = ++this.ids;
+    try {
+      realm = await Promise.race([this.started(), stopping]);
+      if (this.over) throw this.over;
+      const { images, sent } = await Promise.race([this.modules(options?.wasmModules), stopping]);
+      // Stopped in the turn the modules were ready: not posted.
+      if (state.stopped) throw state.stopped;
+      const submit: FacetSubmit = { type: 'submit', id, source: fn.toString(), args, modules: sent };
+      const answered = new Promise<FacetDone | Error>((resolve) => this.waiting.set(id, resolve));
+      if (!realm.post(submit)) throw ended(this.spec.tag, 'was submitted arguments that cannot cross to its realm');
+      // The call holds this process while it runs.
+      realm.hold(true);
+      const outcome = await Promise.race([answered, stopping]);
+      if (outcome instanceof Error) throw outcome;
+      if (outcome.installed) for (const [name, bytes] of Object.entries(images)) this.installed.set(name, bytes);
+      if ('error' in outcome) throw fromRealmError(outcome.error);
+      return outcome.value;
+    } finally {
+      this.waiting.delete(id);
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      realm?.hold(false);
     }
   }
 
   dispose(): void {
     this.disposed = true;
-    this.evaluate = null;
-    this.scoped.clear();
-    for (const name of Object.keys(this.wasmTable)) delete this.wasmTable[name];
+    void this.realm?.then((realm) => realm.terminate(), () => {});
   }
 }
+

@@ -111,7 +111,6 @@ export async function createBashFacetSession(deps) {
         preamble: BASH_RUNNER_PREAMBLE,
         wasmModules,
     });
-    const canInterrupt = typeof facet.submitRequest === 'function';
     let stepController = null;
     let stepInFlight = null;
     let active = true;
@@ -119,26 +118,34 @@ export async function createBashFacetSession(deps) {
     const submit = (args) => {
         const tracked = (async () => {
             deps.signal?.throwIfAborted();
+            // One step's abort, the session's (interrupt) or the caller's, for either transport.
+            const controller = new AbortController();
+            stepController = controller;
+            const signal = deps.signal ? AbortSignal.any([controller.signal, deps.signal]) : controller.signal;
             let raw;
-            if (canInterrupt && facet.submitRequest) {
-                const controller = new AbortController();
-                stepController = controller;
-                try {
+            try {
+                if (facet.submitRequest) {
                     const response = await facet.submitRequest(bashRequestStep, new Request('https://bash-facet.invalid/step', {
                         method: 'POST',
                         headers: { 'content-type': 'application/json' },
                         body: JSON.stringify(args),
-                        signal: deps.signal ? AbortSignal.any([controller.signal, deps.signal]) : controller.signal,
+                        signal,
                     }), { timeoutMs: 300_000 });
                     raw = await response.json();
                 }
-                finally {
-                    if (stepController === controller)
-                        stepController = null;
+                else {
+                    raw = await facet.submit(bashFacetStep, args, { timeoutMs: 300_000, signal });
                 }
             }
-            else {
-                raw = await facet.submit(bashFacetStep, args, { timeoutMs: 300_000 });
+            catch (error) {
+                // An aborted step leaves the facet's session dead.
+                if (signal.aborted)
+                    active = false;
+                throw error;
+            }
+            finally {
+                if (stepController === controller)
+                    stepController = null;
             }
             const slice = normalizeSlice(raw);
             if (!slice)
@@ -179,24 +186,23 @@ export async function createBashFacetSession(deps) {
                     throw new Error('bash facet session is closed');
                 return submit({ op: 'feed', data, eof });
             },
-            // Abort the in-flight step's fetch signal, then settle when the step
+            // Abort the in-flight step's signal, then settle when the step
             // promise has — the caller observes the abort as the push's rejection.
-            ...(canInterrupt ? {
-                async interrupt() {
-                    stepController?.abort();
-                    const inFlight = stepInFlight;
-                    if (inFlight) {
-                        try {
-                            await inFlight;
-                        }
-                        catch { /* the push surfaces the error */ }
+            async interrupt() {
+                stepController?.abort();
+                const inFlight = stepInFlight;
+                if (inFlight) {
+                    try {
+                        await inFlight;
                     }
-                    // The aborted dispatch leaves the isolate's session dead — the
-                    // pool's generation bump guarantees the next dispatch a fresh
-                    // worker — so close() must not feed an EOF into the corpse.
-                    active = false;
-                },
-            } : {}),
+                    catch { /* the push surfaces the error */ }
+                }
+                // The aborted dispatch leaves the facet's session dead — the
+                // pool's generation bump guarantees the next dispatch a fresh
+                // worker, and the local host's realm has ended — so close() must
+                // not feed an EOF into the corpse.
+                active = false;
+            },
             async close() {
                 if (closed)
                     return;
@@ -306,6 +312,8 @@ export function makeBashRunnerFactory(deps) {
                     stdinData,
                     stdinClosed,
                     stdinTty: stdinIsTty,
+                    // A kill or Ctrl-C ends the step running, and the program with it.
+                    signal: ctx.signal,
                 }));
                 let slice = session.initial;
                 for (;;) {
@@ -334,6 +342,9 @@ export function makeBashRunnerFactory(deps) {
                 }
             }
             catch (e) {
+                // Killed: the program ends as an interrupted one does.
+                if (ctx.signal.aborted)
+                    return 130;
                 ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
                 return 1;
             }

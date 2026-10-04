@@ -217,7 +217,7 @@ export function makeClangRunnerFactory(deps) {
                         '-x', isCpp ? 'c++' : 'c',
                         src,
                     ];
-                    const compileResult = await dispatchClangFacet(compile, { argv: compileArgv });
+                    const compileResult = await dispatchClangFacet(compile, { argv: compileArgv }, ctx.signal);
                     if (compileResult.stdout)
                         ctx.stdout.write(compileResult.stdout);
                     if (compileResult.stderr)
@@ -266,7 +266,7 @@ export function makeClangRunnerFactory(deps) {
                     '-lclang_rt.builtins-wasm32',
                     '-o', outputGuest,
                 ];
-                const linkResult = await dispatchClangFacet(link, { argv: linkArgv });
+                const linkResult = await dispatchClangFacet(link, { argv: linkArgv }, ctx.signal);
                 if (linkResult.stdout)
                     ctx.stdout.write(linkResult.stdout);
                 if (linkResult.stderr)
@@ -595,7 +595,7 @@ async function loadClangToolchain(args) {
         lld: await args.vfs.readArrayBufferUncached(args.lldVfsPath),
     };
 }
-async function dispatchClangFacet(target, args) {
+async function dispatchClangFacet(target, args, signal) {
     const facetFn = async function clangFacetCall(inArgs, facetEnv) {
         const wasm = Reflect.get(globalThis, '__NIMBUS_WASM');
         const primaryMod = wasm?.['primary.wasm'];
@@ -625,6 +625,8 @@ async function dispatchClangFacet(target, args) {
             argv: args.argv,
         }, {
             timeoutMs: 300_000,
+            // A kill or Ctrl-C ends the facet too, where the host can.
+            signal,
         });
         return {
             exitCode: result.exitCode,
@@ -634,6 +636,9 @@ async function dispatchClangFacet(target, args) {
         };
     }
     catch (e) {
+        // Killed: the tool ends as an interrupted one does.
+        if (signal.aborted)
+            return { exitCode: 130, stdout: '', stderr: '' };
         return {
             exitCode: 1,
             stdout: '',

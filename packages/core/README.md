@@ -133,6 +133,20 @@ yields. It needs `node:worker_threads`, which Bun and Node have; each run
 costs about 16 ms to start, and each synchronous filesystem call about
 0.1 ms, against the host's. A hosted session runs its own `node`.
 
+### What a program can reach
+
+A `node` program and each wasm runtime (`python3`, `ruby`, `bash`, `clang`)
+run in a realm of their own: a worker thread, or under Bun a child process
+for the wasm runtimes. Their globals and built-ins are Nimbus's: `fs`,
+`child_process` and `process` act on the workspace, and nothing a program
+does to its globals reaches yours. Kill and abort end the realm.
+
+A realm separates programs from your process, not from your machine. Under
+Bun, every realm has Bun's `Bun` namespace, which Bun makes permanent, and
+through it a program can reach your files, processes and network around the
+workspace. Under Node there is no such namespace. To run code you do not
+trust, run the host in an OS sandbox (a container or VM).
+
 ## Files
 
 Files written through `.fs` are owned by the session user (uid 1000), not
@@ -282,6 +296,19 @@ The wasm runtimes are a dependency you add.
 request-time `WebAssembly.instantiate`, so wasm has to ride the Worker Loader
 module map. That machinery lives in `@nimbus-sh/worker` and
 `@nimbus-sh/fabric`. The shell, coreutils, and filesystem need none of it.
+
+Each facet `localFacetHost()` opens is a realm of its own: a worker thread
+under Node, as each inline `node` run is, and a child process under Bun,
+because Bun 1.4 cannot end a worker that is running WebAssembly. So nothing a
+program reaches through it is your process's: Ruby's `js` bridge (`JS.eval`,
+`JS.global`) sees the facet's globals, not yours, and none of your
+environment variables. A kill, Ctrl-C or `signal` ends the program, answering
+130, and its thread or process with it (under Bun, every process it started
+that stayed in its process group too), so nothing keeps spinning. A facet's `timeoutMs` ends it too, and an idle facet
+does not keep your process alive. Each wasm program run starts about 60 ms
+later under Bun and 40 ms later under Node than it did in your own realm,
+and each filesystem syscall costs about 55 µs more under Bun and 30 µs under
+Node.
 
 ## Sharing a database with your own app
 
