@@ -49,7 +49,10 @@ try {
     waitUntil: 'domcontentloaded',
     timeout: 90_000,
   });
-  a.check('session shell page returns 200', response?.status() === 200, `status=${response?.status()}`);
+  // A browser that already holds the shell page revalidates it and gets 304
+  // (the shell's assets are shared by every session); either is a load.
+  a.check('session shell page loads (200, or 304 from the browser cache)',
+    response?.status() === 200 || response?.status() === 304, `status=${response?.status()}`);
 
   await waitForSessionTerminalText(page, /user@nimbus:/);
 
