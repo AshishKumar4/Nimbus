@@ -226,30 +226,19 @@ interface NimbusDoNamespaceProps {
     route?: HostRoute;
 }
 /**
- * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.
+ * The binding the loader passes for `env.MY_DO` (a WorkerEntrypoint of the
+ * session's isolate). The inner Worker does not use it as its namespace: a
+ * DurableObjectNamespace's API is synchronous, and this one's answers are
+ * RpcPromises, which cannot travel as arguments. The inner Worker wraps it
+ * in a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * and stubs itself and calls `fetchOn` and `callOn` for each stub call.
  *
- * Usage from inner Worker:
- *   const id   = await env.MY_DO.idFromName('x');   // AWAIT required
- *   const stub = env.MY_DO.get(id);
- *   await stub.fetch(request);
- *
- * IMPORTANT: unlike the real DurableObjectNamespace, idFromName /
- * newUniqueId / idFromString here return **Promises**, because they're
- * RPC-backed WorkerEntrypoint methods. The inner caller MUST `await`
- * them before passing the result to `.get()`. Workers RPC pipelining
- * does not currently allow passing an RpcPromise as a method argument
- * — the no-await form fails with:
- *     "Could not serialize object of type \"RpcPromise\"."
- *
- * Typical real-Worker code written for Cloudflare's synchronous
- * DurableObjectNamespace needs a one-word change (add `await`).
- *
- * idFromName produces prefix `name:` (deterministic FNV-style hash);
- * newUniqueId uses `uniq:` (random). The prefixes keep the two id
- * spaces distinct so a name-derived id can't collide with a random
- * one.
+ * `idFromName`, `newUniqueId`, `idFromString` and `get` answer as before, for
+ * a caller that awaits them. idFromName produces prefix `name:` (a
+ * deterministic hash, innerDoIdFromName); newUniqueId uses `uniq:`; the
+ * prefixes keep the two id spaces distinct.
  */
-export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<unknown, NimbusDoNamespaceProps> {
+export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<object, NimbusDoNamespaceProps> {
     /** Stable string id derived from a name. Hash is deterministic. */
     idFromName(name: string): string;
     /** Fresh random id (matches DurableObjectNamespace.newUniqueId()). */
@@ -258,25 +247,33 @@ export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<unkno
     idFromString(s: string): string;
     /** Return a stub bound to the given id. */
     get(id: string): unknown;
+    /** The object `id`'s fetch. */
+    fetchOn(id: string, request: Request): Promise<Response>;
+    /**
+     * The object `id`'s RPC method `method`, called with `args`: its answer, or
+     * what it throws, as the object gave it.
+     */
+    callOn(id: string, method: string, args: unknown[]): Promise<unknown>;
 }
 /** Props the DO stub carries: which binding, which supervisor, which id. */
 interface NimbusDoStubProps extends NimbusDoNamespaceProps {
     id?: string;
 }
+/** What the session's innerDoFetch answers: the object's response, as fields. */
+export interface InnerDoFetchAnswer {
+    status: number;
+    statusText: string;
+    headers: [string, string][];
+    body: ArrayBuffer | null;
+}
 /**
- * A Durable-Object-namespace-stub for a specific id. Exposes fetch()
- * and will, if we later need it, forward RPC method calls through a
- * dispatch helper. The important invariant: EVERY call resolves the
- * inner DO class via getInnerDoClass() (./inner-do-registry.js) and
- * spins up / attaches to a facet via the supervisor's ctx.facets in
- * the SAME outer request context — never reusing stubs across requests.
+ * A Durable-Object-namespace-stub for a specific id, for a caller of the
+ * binding's own `get`: its fetch. The important invariant: EVERY call
+ * resolves the inner DO class via getInnerDoClass() (./inner-do-registry.js)
+ * and spins up / attaches to a facet via the supervisor's ctx.facets in the
+ * SAME outer request context — never reusing stubs across requests.
  */
 export declare class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
-    /**
-     * Resolve the supervisor DO through the composed host namespace and
-     * dispatch the innerDoFetch op through its one supervisorOp entrypoint —
-     * a host forwards envelopes, not private _rpc* methods.
-     */
     fetch(request: Request): Promise<Response>;
 }
 export {};

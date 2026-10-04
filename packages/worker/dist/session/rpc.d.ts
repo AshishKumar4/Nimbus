@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
@@ -66,12 +67,20 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     url: string;
     headers: [string, string][];
     body: ArrayBuffer | null;
-}): Promise<{
-    status: number;
-    statusText: string;
-    headers: [string, string][];
-    body: ArrayBuffer | null;
-}>;
+}): Promise<InnerDoFetchAnswer>;
+/**
+ * An RPC method of the inner Worker's Durable Object, as `stub.method(...args)`
+ * calls it on Cloudflare (NimbusDurableObjectNamespace.callOn): on the
+ * object's facet, answering what it answers, or rejecting with what it
+ * throws (the error's type and message travel back). `fetch` is the
+ * object's fetch, reached by innerDoFetch.
+ */
+export declare function _rpcInnerDoCall(self: RpcHost, req: {
+    bindingName: string;
+    id: string;
+    method: string;
+    args: unknown[];
+}): Promise<unknown>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
 /**
  * Write one host-governed file at a session root and let ordinary Unix

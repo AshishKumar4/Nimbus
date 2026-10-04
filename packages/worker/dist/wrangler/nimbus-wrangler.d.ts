@@ -100,6 +100,12 @@ export declare class NimbusWrangler {
      */
     private resolveEntryPath;
     private buildAndLoad;
+    /**
+     * Registers each Durable Object binding's class from `classOf` (a loaded
+     * inner Worker's), for the session's facets to run; buildInnerEnv
+     * registered the class-extraction load's, which has no env.
+     */
+    private registerDoClasses;
     private buildInnerEnv;
     private handleVfsEvents;
     /**

@@ -167,8 +167,8 @@ export async function _rpcReadFileBytes(self, path, pid, cred) {
  * are both created here.
  */
 export async function _rpcInnerDoFetch(self, req) {
-    const cls = getInnerDoClass(self.ctx.id.toString(), req.bindingName);
-    if (!cls) {
+    const facet = innerDoFacet(self, req.bindingName, req.id);
+    if (!facet) {
         const body = enc.encode(`Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`);
         return {
             status: 502,
@@ -177,16 +177,6 @@ export async function _rpcInnerDoFetch(self, req) {
             body: body.buffer,
         };
     }
-    const facetName = 'innerDO-' + req.bindingName + '-' + req.id;
-    const ctx = self.ctx;
-    if (noteInnerDoFacetOpened(ctx, req.bindingName, facetName)) {
-        // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
-        ctx.facets.abort(facetName, new Error('Nimbus: this inner Durable Object restarts on the current build'));
-    }
-    const facet = ctx.facets.get(facetName, async () => ({
-        class: cls,
-        id: req.id, // FacetStartupOptions.id — inner DO sees this as its ctx.id
-    }));
     try {
         // Reconstruct the Request in the current context.
         const headers = new Headers();
@@ -222,6 +212,45 @@ export async function _rpcInnerDoFetch(self, req) {
             body: body.buffer,
         };
     }
+}
+/**
+ * The facet that runs the inner Worker's object `id` of binding
+ * `bindingName`, with the class the current build registered (none when
+ * the binding has none). Got in the calling RPC method's own context, so no
+ * cross-request I/O boundary is crossed.
+ */
+function innerDoFacet(self, bindingName, id) {
+    const cls = getInnerDoClass(self.ctx.id.toString(), bindingName);
+    if (!cls)
+        return null;
+    const facetName = 'innerDO-' + bindingName + '-' + id;
+    const ctx = self.ctx;
+    if (noteInnerDoFacetOpened(ctx, bindingName, facetName)) {
+        // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
+        ctx.facets.abort(facetName, new Error('Nimbus: this inner Durable Object restarts on the current build'));
+    }
+    return ctx.facets.get(facetName, async () => ({
+        class: cls,
+        id, // FacetStartupOptions.id — inner DO sees this as its ctx.id
+    }));
+}
+/**
+ * An RPC method of the inner Worker's Durable Object, as `stub.method(...args)`
+ * calls it on Cloudflare (NimbusDurableObjectNamespace.callOn): on the
+ * object's facet, answering what it answers, or rejecting with what it
+ * throws (the error's type and message travel back). `fetch` is the
+ * object's fetch, reached by innerDoFetch.
+ */
+export async function _rpcInnerDoCall(self, req) {
+    const facet = innerDoFacet(self, req.bindingName, req.id);
+    if (!facet) {
+        throw new Error(`Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`);
+    }
+    // A method is a wildcard property of the stub: called on it, never through call().
+    const call = Reflect.get(facet, req.method);
+    if (typeof call !== 'function')
+        throw new TypeError(`Nimbus: inner DO method '${req.method}' is not callable`);
+    return await Reflect.apply(call, facet, req.args);
 }
 export async function _rpcWriteFile(self, path, content, pid, cred) {
     // binary-fs wave: the bridge's writeFile already accepts
