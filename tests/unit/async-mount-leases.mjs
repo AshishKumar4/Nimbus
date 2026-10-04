@@ -415,4 +415,65 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
   ws.filesystem.vfs.unmount('/g');
 }
 
+// ── An aborted binding's buffered descriptor, torn down ──────────────────
+// On a synchronous mount with no writeRange, a descriptor buffers its writes
+// and its last close flushes them through the binding's own view, which
+// refuses once the binding's signal is aborted. That flush failing stopped
+// the teardown half way: the scope stayed open (a same-pid bridge without
+// the signal went on using it), and the process stayed bound. Now the
+// teardown finishes, then reports that the buffered bytes are lost.
+{
+  const plain = new MemoryVFS(USER);
+  /** `vfs` with no writeRange, its credentialed and synchronous views too: a descriptor buffers. */
+  const unranged = (vfs) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'writeRange') return undefined;
+      const value = target[key];
+      if (key === 'sync') return value === undefined ? undefined : unranged(value);
+      if (typeof value !== 'function') return value;
+      if (key === 'as') return (...args) => unranged(value.apply(target, args));
+      return value.bind(target);
+    },
+    has: (target, key) => key !== 'writeRange' && key in target,
+  });
+  ws.filesystem.vfs.mount('/b', unranged(plain));
+  assert.equal(box.files.vfs.as({ uid: 1000, gid: 1000, groups: [1000] }).writesInPlace('/b/x'), false, 'the mount buffers');
+  const files = box.files;
+  const cred = { ...USER, groups: [1000], umask: 0o022 };
+  const lostOnClose = (error) => error.code === 'EIO' && /its buffered writes are lost/.test(error.message) && error.cause?.name === 'AbortError';
+
+  // A process: released after its signal-bound binding was aborted.
+  {
+    const aborts = new AbortController();
+    const signalled = files.bind({ pid: 601, cred, signal: aborts.signal });
+    const other = files.bind({ pid: 601, cred });
+    const fd = await signalled.open('/b/p.txt', { write: true, create: true });
+    await signalled.write(fd.id, 0, enc.encode('buffered'));
+    aborts.abort();
+    await assert.rejects(files.releaseProcess(601), lostOnClose, 'the release reports the lost bytes');
+    assert.equal(await code(() => other.stat('/b')), 'EBADF', 'and the scope is closed for every bridge on it');
+    assert.equal(plain.stat('/p.txt')?.size ?? 0, 0, 'nothing was flushed');
+  }
+  // A host lease: disposed after its signal was aborted.
+  {
+    const aborts = new AbortController();
+    const lease = files.openHost(cred, { signal: aborts.signal });
+    const fd = await lease.fs.open('/b/h.txt', { write: true, create: true });
+    await lease.fs.write(fd.id, 0, enc.encode('buffered'));
+    aborts.abort();
+    await assert.rejects(lease.dispose(), lostOnClose, 'the dispose reports the lost bytes');
+    await lease.dispose();
+    assert.equal(plain.stat('/h.txt')?.size ?? 0, 0, 'nothing was flushed');
+  }
+  // A live binding's release flushes, as before.
+  {
+    const live = files.bind({ pid: 602, cred });
+    const fd = await live.open('/b/l.txt', { write: true, create: true });
+    await live.write(fd.id, 0, enc.encode('flushed'));
+    await files.releaseProcess(602);
+    assert.equal(new TextDecoder().decode(plain.readFile('/l.txt')), 'flushed');
+  }
+  ws.filesystem.vfs.unmount('/b');
+}
+
 console.log(`async-mount-leases: ${mutations.length} awaited mutations are checked where they land`);
