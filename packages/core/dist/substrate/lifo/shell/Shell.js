@@ -346,11 +346,14 @@ export class Shell {
             Object.assign(this.shellOptions, options.shellOptions);
         }
         let stdinStream;
-        if (options?.stdin !== undefined) {
+        if (typeof options?.stdin === 'string') {
             const fixedStdin = new TerminalStdin();
             fixedStdin.feed(options.stdin);
             fixedStdin.close();
             stdinStream = fixedStdin;
+        }
+        else {
+            stdinStream = options?.stdin;
         }
         try {
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {

@@ -178,7 +178,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             }
             // Synthesize a CommandContext for the internal shell substrate.
             const ac = new AbortController();
-            const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
+            const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', opts.stdin ?? staticStdinReader(payload.stdin || ''), hooks);
             const ctx = {
                 ...io,
                 cred,
@@ -191,8 +191,10 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 // live queues. A direct inline invocation without a managed child
                 // still needs a captured result.
                 __nimbusCaptureOutput: !self.facetProcessManager?.isChild(payload.processPid),
+                // A child's runtime reads its stdin from its own live channel, the
+                // broker's queue for its pid (NIMBUS_CP_CHILD_PID), as the parent writes it.
                 ...(self.facetProcessManager?.isChild(payload.processPid) ? {
-                    __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
+                    __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' '), liveInput: true },
                 } : {}),
             };
             try {
@@ -253,14 +255,20 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
         },
     };
-    /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
+    /**
+     * A process's descriptors, environment and directory: its stdin, and its
+     * output over the broker's hooks. They are pipes (or /dev/null), never a
+     * terminal: the broker has none to give a child, and a shell that took
+     * its stdin for one read nothing from it.
+     */
     const processIo = (pid, env, cwd, stdin, hooks) => ({
         pid,
         env,
         cwd,
         stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
         stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
-        stdin: staticStdinReader(stdin),
+        stdin,
+        isFdTerminal: () => false,
     });
     /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
     const runBuiltin = async (cmd, name, args, io) => {
@@ -306,7 +314,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
         let exitCode = 1;
         try {
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
+            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
             exitCode = ended.status;
             return ended;
         }

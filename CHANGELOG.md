@@ -76,6 +76,29 @@ published independently in the `@nimbus-sh` npm scope.
   enter (`python3: can't enter working directory '/x': [Errno 44] No such
   file or directory`). It started in `/`, so `open("hello.txt")` at the
   prompt looked in the root.
+- Fixed: a shell script that `child_process.spawn` starts (`spawn('./s.sh')`,
+  by absolute path, by its name on PATH, or `spawn('sh', ['s.sh'])`) got
+  no stdin. The broker ran it on an empty fixed stdin and never said its
+  descriptors were pipes, so `sh` took its stdin for a terminal and handed
+  its commands none, and a script of `cat` printed nothing. A child's stdin
+  is now a pipe its command reads as the parent writes it, for every kind
+  of child the broker runs: a registry command, a shell, or a program found
+  by name or path. It used to be what had been written once the parent
+  ended stdin or half a second had passed. So such a child answers each
+  line before its parent ends, as under Node, and a child that reads its
+  stdin waits for its parent to end it rather than giving up after half a
+  second. `sh` hands its stdin on to its program's commands as a stream,
+  where it read all of it first. A node run by a child's script reads the
+  script's stdin, not the child's queue, whose pid it inherits in its
+  environment. A runtime whose stdout is a pipe still hands its output
+  back when it exits. A command that does not read its stdin no longer
+  waits on it: the shell's builtins (`printf`, `true`, `echo`, `test` and
+  others) used to read their stdin to its end before running, so `sleep 5 |
+  true` took 5 seconds. `head -n 0` and `head -c 0` read nothing, as GNU
+  head does, where they waited on their stdin.
+- Fixed: bytes a parent wrote to a long-running child's stdin (a server it
+  started with `child_process.spawn`) were decoded as UTF-8 on the way, so
+  a byte that is not UTF-8 arrived as U+FFFD. They arrive as written.
 
 ## 2026-10-03
 

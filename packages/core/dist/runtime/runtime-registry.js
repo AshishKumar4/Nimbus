@@ -113,17 +113,20 @@ export function buildRuntimeHandler(spec, ctx0) {
         // is a file, a pipe, a command substitution, or the capture sink of a
         // programmatic exec, the bytes have to come back in the result and be
         // written through ctx.stdout instead. A context with no fd table of its own
-        // — the child_process broker synthesizes one — says so directly.
-        const captureOutput = !!nimbusCtx.__nimbusCaptureOutput
-            || ctx.isFdTerminal?.(1) === false
-            || ctx.isFdTerminal?.(2) === false;
-        // fd 0 the same way: a pipe or redirect is the program's stdin. It used
-        // to be dropped, so `echo hi | node x.js` read nothing.
-        const pipedStdin = ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
-            ? ctx.stdin : undefined;
+        // — the child_process broker synthesizes one — says so directly, and that
+        // wins: a broker child's fds are pipes, and its live output reaches the
+        // parent through them (the broker routes a child pid's output to its queue).
+        const captureOutput = typeof nimbusCtx.__nimbusCaptureOutput === 'boolean'
+            ? nimbusCtx.__nimbusCaptureOutput
+            : ctx.isFdTerminal?.(1) === false || ctx.isFdTerminal?.(2) === false;
         // A bin wrapper or child-process broker may already own the process
         // entry; preserve it for eval/stdin programs as well as script files.
         const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
+        // fd 0 the same way: a pipe or redirect is the program's stdin. It used
+        // to be dropped, so `echo hi | node x.js` read nothing. A process whose
+        // live input channel already is that stdin reads the channel.
+        const pipedStdin = binSpawn?.liveInput !== true && ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
+            ? ctx.stdin : undefined;
         const reservedProcess = binSpawn ? {
             skipSpawn: true, callerPid: binSpawn.callerPid,
             forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
@@ -163,12 +166,15 @@ export function buildRuntimeHandler(spec, ctx0) {
         // (RuntimeRunOpts.stdinReadsSync). A server is resident and never waits
         // for its stdin, so its code is not asked.
         const programStdin = async (code, path, dir, launchesServer) => {
-            if (pipedStdin === undefined)
+            const ownChannel = binSpawn?.liveInput === true;
+            if (pipedStdin === undefined && !ownChannel)
                 return {};
             // A `< file` is the file itself; nothing is read from its stream here.
-            const source = pipedStdin.file
-                ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-                : { stdin: pipedStdin };
+            // The process's own channel is read by the program itself.
+            const source = pipedStdin === undefined ? {}
+                : pipedStdin.file
+                    ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+                    : { stdin: pipedStdin };
             if (launchesServer || binSpawn?.forceLongRunning === true)
                 return source;
             const key = normalizeVfsPath(dir);

@@ -7520,13 +7520,15 @@ function __nimbusEmitTerminalResize() {
     try { stream.emit("resize"); } catch {}
   }
 }
-// The process's live input channel (a child_process child names it in its
-// env; a resident process gets it in its start payload, __nimbusLiveInputPid
-// in facets/manager.ts), or 0 when its stdin is the launch's own text.
+// The process's live input channel, or 0 when its stdin is the launch's own
+// text: the channel the launch was given (a pipe its fd 0 streams through, or
+// a resident's start payload: __nimbusLiveInputPid in facets/manager.ts), else
+// the child_process child its env names. The launch's own wins: a node that a
+// child's script runs reads the script's stdin as the shell handed it, not the
+// child's queue it inherited the name of.
 function __nimbusLiveInputChannel() {
-  return env && env.NIMBUS_CP_CHILD_PID
-    ? Number(env.NIMBUS_CP_CHILD_PID)
-    : typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
+  const own = typeof __nimbusLiveInputPid === "number" ? __nimbusLiveInputPid : 0;
+  return own || (env && env.NIMBUS_CP_CHILD_PID ? Number(env.NIMBUS_CP_CHILD_PID) : 0);
 }
 // fd 0 of a \`< file\` redirect is the file itself, from the redirect's
 // offset (facets/manager.ts, __nimbusStdinFile): read at a position for a
@@ -7613,22 +7615,26 @@ function __nimbusReadStdinInto(target, offset, length, syscall) {
   throw __nimbusStdinWouldBlock(syscall);
 }
 // Read from the live channel before the entry runs: until the pipe ends when
-// it ends within the read ahead (__nimbusStdinWhole), else what the channel
-// holds now, without waiting, up to a bound (an endless writer refills the
-// channel as fast as it is read).
+// it ends within the read ahead (\`whole\`, __nimbusStdinWhole); until it ends
+// or the read ahead's bound is reached when nothing read it ahead of the
+// program (\`toBound\`, __nimbusStdinSyncRead: a child_process child, whose
+// channel is its stdin itself); else what the channel holds now, without
+// waiting, up to a bound (an endless writer refills the channel as fast as it
+// is read).
 const __NIMBUS_QUEUED_STDIN_MAX_BYTES = 1024 * 1024;
-async function __nimbusTakeQueuedStdin(whole) {
+async function __nimbusTakeQueuedStdin(whole, toBound) {
   const pid = __nimbusLiveInputChannel();
   if (!pid || !__supervisor || typeof __supervisor.cpReadStdin !== "function") return;
   const chunks = [];
   let ended = false;
   let bytes = 0;
   let failures = 0;
-  while (whole || bytes < __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
+  const waits = whole || toBound;
+  while (whole || bytes < (toBound ? ${STDIN_SYNC_READ_BYTES} : __NIMBUS_QUEUED_STDIN_MAX_BYTES)) {
     let packet;
     try {
       packet = await __nimbusUseRpcResult(
-        __supervisor.cpReadStdin(pid, whole ? 1000 : 0, __nimbusVfsAcquireArgs()),
+        __supervisor.cpReadStdin(pid, waits ? 1000 : 0, __nimbusVfsAcquireArgs()),
         (result) => result,
       );
       failures = 0;
@@ -7652,7 +7658,7 @@ async function __nimbusTakeQueuedStdin(whole) {
       }
     }
     if (packet.ended) { ended = true; break; }
-    if (!whole && !hasData && !packet.signal) break;
+    if (!waits && !hasData && !packet.signal) break;
   }
   __nimbusQueuedStdin = { bytes: __BufferMod.concat(chunks), ended };
 }
@@ -7686,7 +7692,10 @@ async function __nimbusPrepareStdin() {
     return;
   }
   if (__nimbusLiveInputChannel()) {
-    await __nimbusTakeQueuedStdin(typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true);
+    await __nimbusTakeQueuedStdin(
+      typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true,
+      typeof __nimbusStdinSyncRead !== "undefined" && __nimbusStdinSyncRead === true,
+    );
   }
 }
 function __makeProcessStdin() {

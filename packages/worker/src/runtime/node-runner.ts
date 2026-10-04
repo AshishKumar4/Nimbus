@@ -142,13 +142,18 @@ export async function runFresh(
     // budget, held by concurrent launches' read ahead, cannot cover the next
     // piece, the launch streams the rest. A `< file` needs no read ahead:
     // fd 0 is the file.
+    // A program whose own input channel is its stdin (a child_process
+    // child's) and reads it synchronously reads that channel ahead itself,
+    // to the same bound (stdinSyncRead): there is no second channel to feed.
     const { stdin, stdinReadsSync, stdinFile, ...execOpts } = opts;
-    let stdinOpts: { stdinPipe?: StdinBytes; stdinWhole?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean } } = {};
+    let stdinOpts: { stdinPipe?: StdinBytes; stdinWhole?: boolean; stdinSyncRead?: boolean; stdinFile?: { path: string; offset: number; syncRead: boolean } } = {};
     let account: ReadAheadAccount | null = null;
     try {
       if (stdinFile) {
         stdinOpts = { stdinFile: { ...stdinFile, syncRead: stdinReadsSync === true } };
-      } else if (stdin) {
+      } else if (!stdin) {
+        if (stdinReadsSync) stdinOpts = { stdinSyncRead: true };
+      } else {
         const source = stdinBytesOf(stdin);
         if (stdinReadsSync) {
           account = facetMgr.stdinReadAhead.open();

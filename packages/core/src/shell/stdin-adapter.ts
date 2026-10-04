@@ -9,50 +9,88 @@ import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
  * streaming commands see an empty pipe.
  */
 export function staticStdinReader(text: string): CommandInputStream {
-  const bytes = new TextEncoder().encode(text);
-  const decoder = new TextDecoder('utf-8');
-  let offset = 0;
+  let bytes: Uint8Array | null = new TextEncoder().encode(text);
+  return pulledStdinReader(async () => {
+    const all = bytes;
+    bytes = null;
+    return all;
+  });
+}
 
-  const pull = (max: number): Uint8Array | null => {
-    if (offset >= bytes.length) return null;
-    const end = Math.min(offset + max, bytes.length);
-    const chunk = bytes.subarray(offset, end);
-    offset = end;
-    return chunk;
+/**
+ * A live source behind the full reader contract: `pull` hands the next
+ * bytes its producer delivered, waiting for them, and null at the end. The
+ * reader asks for more only when a consumer reads, so a producer's queue
+ * holds what is not read yet; what a read does not take (past a readBytes
+ * bound, after a readLine's newline) stays here, in order, for the next.
+ * Text is decoded progressively, so a multi-byte sequence split across two
+ * deliveries survives, and an empty delivery is not the end.
+ */
+export function pulledStdinReader(pull: () => Promise<Uint8Array | null>): CommandInputStream {
+  const pushedBack: Uint8Array[] = [];
+  const decoder = new TextDecoder('utf-8');
+  let ended = false;
+
+  const next = async (): Promise<Uint8Array | null> => {
+    const held = pushedBack.shift();
+    if (held) return held;
+    while (!ended) {
+      const bytes = await pull();
+      if (bytes === null) ended = true;
+      else if (bytes.length > 0) return bytes;
+    }
+    return null;
+  };
+
+  const read = async (): Promise<string | null> => {
+    for (;;) {
+      const bytes = await next();
+      if (bytes === null) {
+        const tail = decoder.decode();
+        return tail.length > 0 ? tail : null;
+      }
+      const text = decoder.decode(bytes, { stream: true });
+      if (text.length > 0) return text;
+    }
   };
 
   return {
-    readBytes: async (maxLength: number) => {
-      if (maxLength <= 0) return new Uint8Array(0);
-      return pull(maxLength);
-    },
-    read: async () => {
-      while (offset < bytes.length) {
-        const end = Math.min(offset + 65536, bytes.length);
-        const text2 = decoder.decode(bytes.subarray(offset, end), { stream: true });
-        offset = end;
-        if (text2.length > 0) return text2;
-      }
-      const tail = decoder.decode();
-      return tail.length > 0 ? tail : null;
-    },
+    read,
     readAll: async () => {
-      if (offset >= bytes.length) return '';
-      const out = decoder.decode(bytes.subarray(offset));
-      offset = bytes.length;
-      return out;
+      const parts: string[] = [];
+      for (let chunk = await read(); chunk !== null; chunk = await read()) parts.push(chunk);
+      return parts.join('');
     },
     readLine: async () => {
-      if (offset >= bytes.length) return null;
-      const newline = bytes.indexOf(0x0a, offset);
-      if (newline === -1) {
-        const line = decoder.decode(bytes.subarray(offset));
-        offset = bytes.length;
-        return line;
+      let line = '';
+      let sawAny = false;
+      for (;;) {
+        const bytes = await next();
+        if (bytes === null) break;
+        sawAny = true;
+        // Split on the raw 0x0A byte so what follows is held back as its
+        // original bytes, a sequence straddling the newline intact.
+        const newline = bytes.indexOf(0x0a);
+        if (newline >= 0) {
+          const rest = bytes.subarray(newline + 1);
+          if (rest.length > 0) pushedBack.unshift(rest);
+          line += decoder.decode(bytes.subarray(0, newline), { stream: true });
+          return line + decoder.decode();
+        }
+        line += decoder.decode(bytes, { stream: true });
       }
-      const line = decoder.decode(bytes.subarray(offset, newline));
-      offset = newline + 1;
-      return line;
+      // A trailing incomplete sequence still surfaces as U+FFFD at the end.
+      const tail = decoder.decode();
+      line += tail;
+      return sawAny || tail.length > 0 ? line : null;
+    },
+    // Whatever has been delivered, capped at maxLength: a bound, never a fill target.
+    readBytes: async (maxLength: number) => {
+      if (maxLength <= 0) return new Uint8Array(0);
+      const bytes = await next();
+      if (bytes === null || bytes.length <= maxLength) return bytes;
+      pushedBack.unshift(bytes.subarray(maxLength));
+      return bytes.subarray(0, maxLength);
     },
   };
 }

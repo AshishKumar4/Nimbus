@@ -13,7 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
-import { prewarmBuildFacet, rolldownBuildHost, BUILD_FACET_WORKER_ID } from '../../packages/worker/src/facets/build-facet.ts';
+import { loadBuildFacet, prewarmBuildFacet, rolldownBuildHost, BUILD_FACET_WORKER_ID } from '../../packages/worker/src/facets/build-facet.ts';
 import { STAGED_BINDING_ARTIFACTS } from '../../packages/worker/src/napi-wasm-artifacts.generated.ts';
 import { PROJECTS, WRANGLER_OPTIONS } from '../fixtures/build-differential/projects.mjs';
 import { CASES, FILES, NODE_MODULES } from '../fixtures/prebundle-differential/packages.mjs';
@@ -229,11 +229,35 @@ try {
     await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(fromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });
     const deep = memoryFs('deep', { 'a.js': `const t = 1; export const x = ${Array.from({ length: 10_000 }, () => 't').join(' + ')};` });
     const fine = memoryFs('fine', { 'b.js': 'export const y = 2;' });
-    const within = (promise, what) => {
-      let timer;
-      const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} never settled`)), 20_000); });
-      return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+    // esbuild's builds of what a dead binding left, each counted while it runs.
+    let esbuildBuilds = 0;
+    const esbuildBuild = async (options, plugin) => {
+      esbuildBuilds++;
+      try {
+        return structuredClone(await buildWithEsbuild(esbuild, structuredClone(options), plugin));
+      } finally {
+        esbuildBuilds--;
+      }
     };
+    // A build is answered, or its answer is lost: it is still pending while
+    // nothing it could be waiting on is under way (no facet evaluated or
+    // called by these Durable Objects, no esbuild build), at two looks in a
+    // row. Not a deadline: load slows what is under way (a fresh facet's
+    // evaluation took 11 s of a 17 s build with eight copies of this file
+    // running), and only a lost answer leaves the build pending with nothing
+    // to wait for. A facet call that never returns is the harness's to
+    // prevent (each copy's own binding, lib/build-facet-harness.mjs).
+    const within = async (promise, what, ...objects) => {
+      const pending = Symbol('pending');
+      let idle = 0;
+      for (;;) {
+        const value = await Promise.race([promise, new Promise((resolve) => setTimeout(resolve, 10, pending))]);
+        if (value !== pending) return value;
+        idle = esbuildBuilds > 0 || objects.some((object) => object.busy()) ? 0 : idle + 1;
+        if (idle === 2) throw new Error(`${what} never settled, though nothing it waits on is under way`);
+      }
+    };
+    await assert.rejects(within(new Promise(() => {}), 'a dropped answer'), /a dropped answer never settled/, 'a build left pending with nothing under way is reported');
     const settled = (promise) => promise.then(({ outputFiles: [{ contents }] }) => ({ code: typeof contents === 'string' ? contents : new TextDecoder().decode(contents) }), (error) => ({ failure: error.message }));
     const warned = [];
     const warn = console.warn;
@@ -243,18 +267,19 @@ try {
       // Each loader id is a fresh evaluation of the facet module: a fresh isolate.
       // The sibling's answer arrives 50 ms after the deep build's: that first
       // crashed answer must not abort the facet while this one is on its way.
-      const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: siblingLate(50) });
+      const object = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: siblingLate(50) });
+      const { ctx, env, counts } = object;
       const fallbackBuilds = [];
       const fallback = async (options, plugin) => {
         fallbackBuilds.push(options.entryPoints[0]);
-        return structuredClone(await buildWithEsbuild(esbuild, structuredClone(options), plugin));
+        return esbuildBuild(options, plugin);
       };
       const host = rolldownBuildHost(ctx, env, withFallback ? fallback : undefined);
       const build = (fs, entry) => settled(new EsbuildService(fs, { buildHost: host }).build([entry], WRANGLER_OPTIONS));
       console.warn = (line) => warned.push(line);
       let outcomes;
       try {
-        outcomes = await within(Promise.all([build(deep, '/home/user/deep/a.js'), build(fine, '/home/user/fine/b.js')]), 'a build on the dead binding');
+        outcomes = await within(Promise.all([build(deep, '/home/user/deep/a.js'), build(fine, '/home/user/fine/b.js')]), 'a build on the dead binding', object);
       } finally {
         console.warn = warn;
       }
@@ -269,7 +294,7 @@ try {
         }
       }
       assert.ok(warned.splice(0).every((line) => /^\[build-facet\] rolldown's binding died building \/home\/user\/(deep\/a|fine\/b)\.js \(Maximum call stack size exceeded\.\); /.test(line)));
-      const later = await within(build(fine, '/home/user/fine/b.js'), 'the next build');
+      const later = await within(build(fine, '/home/user/fine/b.js'), 'the next build', object);
       assert.match(later.code, /const y = 2|var y = 2/, 'the next build runs');
       const [died, fresh] = counts.loaderIds.map((id) => Number(/:g(\d+)$/.exec(id)[1]));
       assert.equal(counts.loaderIds.length, 2);
@@ -279,20 +304,21 @@ try {
     // A call on the dead generation that gets an error instead of its answer
     // (here, its facet aborted under it) is that death too: esbuild builds it.
     {
-      const { ctx, env, counts } = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: siblingLate(2000) });
+      const object = durableObject(BuildFacet, async () => (await freshFacetClass()).BuildFacet, { deliveryDelayMs: siblingLate(2000) });
+      const { ctx, env, counts } = object;
       const fallbackBuilds = [];
       const host = rolldownBuildHost(ctx, env, async (options, plugin) => {
         fallbackBuilds.push(options.entryPoints[0]);
-        return structuredClone(await buildWithEsbuild(esbuild, structuredClone(options), plugin));
+        return esbuildBuild(options, plugin);
       });
       const build = (fs, entry) => settled(new EsbuildService(fs, { buildHost: host }).build([entry], WRANGLER_OPTIONS));
       console.warn = () => {};
       try {
         const sibling = build(fine, '/home/user/fine/b.js');
-        const first = await within(build(deep, '/home/user/deep/a.js'), 'the deep build');
+        const first = await within(build(deep, '/home/user/deep/a.js'), 'the deep build', object);
         assert.match(first.code, /var x = t \+ t/);
         ctx.facets.abort(counts.loaderIds[0], new Error('aborted under its call'));
-        assert.match((await within(sibling, 'the aborted sibling')).code, /var y = 2/, 'the aborted sibling is built by esbuild');
+        assert.match((await within(sibling, 'the aborted sibling', object)).code, /var y = 2/, 'the aborted sibling is built by esbuild');
       } finally {
         console.warn = warn;
       }
@@ -309,11 +335,29 @@ try {
       try {
         const long = settled(new EsbuildService(fine, { buildHost: hostA }).build(['/home/user/fine/b.js'], WRANGLER_OPTIONS));
         await new Promise((resolve) => setTimeout(resolve, 50));
-        assert.ok((await within(settled(new EsbuildService(deep, { buildHost: hostB }).build(['/home/user/deep/a.js'], WRANGLER_OPTIONS)), 'b')).failure);
-        const next = await within(settled(new EsbuildService(fine, { buildHost: hostA }).build(['/home/user/fine/b.js'], WRANGLER_OPTIONS)), 'a, again');
+        assert.ok((await within(settled(new EsbuildService(deep, { buildHost: hostB }).build(['/home/user/deep/a.js'], WRANGLER_OPTIONS)), 'b', a, b)).failure);
+        const next = await within(settled(new EsbuildService(fine, { buildHost: hostA }).build(['/home/user/fine/b.js'], WRANGLER_OPTIONS)), 'a, again', a, b);
         assert.match(next.code, /const y = 2|var y = 2/, 'the next build runs on the next generation');
-        assert.match((await within(long, 'a, in flight')).code, /const y = 2|var y = 2/, 'the build in flight on the retired generation still answers');
+        assert.match((await within(long, 'a, in flight', a, b)).code, /const y = 2|var y = 2/, 'the build in flight on the retired generation still answers');
         assert.equal(a.counts.aborted.length, 1, 'and its facet is aborted once it has');
+      } finally {
+        console.warn = warn;
+      }
+    }
+    // Two isolates loading at the same time each build on their own binding,
+    // so one's dying leaves the other building. Evaluated first, they load in
+    // the same turn, each binding made before either's rolldown has read one.
+    {
+      const [first, second] = await Promise.all([freshFacetClass(), freshFacetClass()]);
+      const a = durableObject(first.BuildFacet);
+      const b = durableObject(second.BuildFacet);
+      console.warn = () => {};
+      try {
+        await within(Promise.all([loadBuildFacet(a.ctx, a.env), loadBuildFacet(b.ctx, b.env)]), 'two loads at once', a, b);
+        const died = await within(settled(new EsbuildService(deep, { buildHost: rolldownBuildHost(b.ctx, b.env) }).build(['/home/user/deep/a.js'], WRANGLER_OPTIONS)), 'b', a, b);
+        assert.ok(died.failure, 'b\'s binding dies');
+        const built = await within(settled(new EsbuildService(fine, { buildHost: rolldownBuildHost(a.ctx, a.env) }).build(['/home/user/fine/b.js'], WRANGLER_OPTIONS)), 'a, beside b\'s dead binding', a, b);
+        assert.match(built.code, /const y = 2|var y = 2/, 'a builds on its own');
       } finally {
         console.warn = warn;
       }

@@ -95,8 +95,10 @@ export interface RuntimeRunOpts {
      * The program's code reads stdin synchronously (stdin-read.ts), which
      * cannot wait for bytes arriving after it runs: a one-shot runner reads up
      * to STDIN_SYNC_READ_BYTES of a pipe before starting it, or has the program
-     * read its `< file` whole first. Never set for a program that starts a
-     * server.
+     * read its `< file` whole first. Without `stdin` or `stdinFile`, the
+     * program's own live input channel is its stdin (a child_process child's,
+     * __nimbusBinSpawn.liveInput), and the program reads that ahead, to the
+     * same bound. Never set for a program that starts a server.
      */
     stdinReadsSync?: boolean;
     /**
