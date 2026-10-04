@@ -15,12 +15,13 @@ declare module 'node:worker_threads' {
     readonly port2: MessagePort;
   }
   export class Worker {
-    constructor(url: URL, options: { workerData: unknown; transferList: readonly MessagePort[] });
+    constructor(url: URL);
+    postMessage(value: unknown, transferList?: readonly MessagePort[]): void;
     on(event: 'error', listener: (error: Error) => void): this;
     once(event: 'exit', listener: (code: number) => void): this;
     terminate(): Promise<number>;
   }
-  export const workerData: unknown;
+  export const parentPort: MessagePort | null;
   export function receiveMessageOnPort(port: MessagePort): { message: unknown } | undefined;
   export type { MessagePort };
 }
@@ -28,6 +29,7 @@ declare module 'node:worker_threads' {
 declare module 'node:process' {
   interface RealmProcess {
     on(event: 'unhandledRejection' | 'uncaughtException', listener: (reason: unknown) => void): RealmProcess;
+    on(event: 'exit', listener: (code: number) => void): RealmProcess;
     exit(code: number): never;
   }
   const process: RealmProcess;

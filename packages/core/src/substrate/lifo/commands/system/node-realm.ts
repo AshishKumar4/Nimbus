@@ -24,6 +24,12 @@
  *   - asynchronous traffic, on `events`: its output, the requests its loopback
  *     clients make, the requests this side forwards to its servers, its exit.
  *
+ * The program shares its realm with the guest, so everything it sends is
+ * untrusted: the ports reach the guest by its first message, never through
+ * `workerData` a program can import, and this side answers only the calls it
+ * names below, with arguments of their kind, and never lets a message, an
+ * answer that cannot cross, or a failed request end the host.
+ *
  * Bun and Node both carry node:worker_threads, SharedArrayBuffer and
  * Atomics.wait in workers; workerd does not, and its sessions run their own
  * `node` (worker hosted/commands.ts).
@@ -36,22 +42,23 @@ import type { CommandContext, CommandOutputStream } from '../types.js';
 import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
+import { isVfsErrorCode, VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import type { NodeProgram } from './node.js';
 
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
 
+/** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
+export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
+
 /** A synchronous call the guest makes. */
 export type RealmCall =
-  | { readonly op: 'fs'; readonly method: FsMethod; readonly args: unknown[] }
+  | { readonly op: 'fs'; readonly method: FsMethod; readonly args: readonly unknown[] }
   | { readonly op: 'stdin' }
   | { readonly op: 'listen'; readonly port: number }
   | { readonly op: 'unlisten'; readonly port: number }
   | { readonly op: 'watch'; readonly on: boolean };
-
-/** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
-export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 
 /** A call's answer: its value, or the error it threw, as data. */
 export type RealmAnswer = { readonly value: unknown } | { readonly error: RealmError };
@@ -59,7 +66,7 @@ export type RealmAnswer = { readonly value: unknown } | { readonly error: RealmE
 export interface RealmError {
   readonly name: string;
   readonly message: string;
-  readonly properties: Record<string, unknown>;
+  readonly properties: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 /** A response, as data, either way across. */
@@ -82,7 +89,7 @@ export type HostEvent =
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
   | { readonly type: 'changed' };
 
-/** What the guest is started with. */
+/** The guest's first message: its program and its ports. */
 export interface RealmStart {
   readonly program: NodeProgram;
   readonly calls: MessagePort;
@@ -95,32 +102,25 @@ export interface RealmStart {
 // Each side receives a structured clone it must narrow: a guard per shape.
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
-
-export function isRealmCall(value: unknown): value is RealmCall {
-  if (!record(value)) return false;
-  switch (value.op) {
-    case 'fs': return typeof value.method === 'string' && Array.isArray(value.args);
-    case 'stdin': return true;
-    case 'listen': case 'unlisten': return typeof value.port === 'number';
-    case 'watch': return typeof value.on === 'boolean';
-    default: return false;
-  }
-}
+const stringRecord = (value: unknown): value is Record<string, string> =>
+  record(value) && Object.values(value).every((entry) => typeof entry === 'string');
 
 export function isRealmAnswer(value: unknown): value is RealmAnswer {
   return record(value) && ('value' in value || (record(value.error) && typeof value.error.message === 'string'));
 }
 
 const isResponse = (value: unknown): value is RealmResponse | null =>
-  value === null || (record(value) && typeof value.status === 'number' && record(value.headers) && typeof value.body === 'string');
+  value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers) && typeof value.body === 'string');
 
 export function isGuestEvent(value: unknown): value is GuestEvent {
   if (!record(value)) return false;
   switch (value.type) {
     case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
-    case 'fetch': return typeof value.id === 'number' && typeof value.port === 'number' && typeof value.url === 'string';
-    case 'served': return typeof value.id === 'number' && isResponse(value.response);
-    case 'exit': return typeof value.code === 'number';
+    case 'fetch':
+      return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
+        && typeof value.method === 'string' && stringRecord(value.headers) && (value.body === null || typeof value.body === 'string');
+    case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
+    case 'exit': return Number.isSafeInteger(value.code);
     default: return false;
   }
 }
@@ -148,16 +148,146 @@ export function isDirEntries(value: unknown): value is RuntimeVfsDirEntry[] {
   return Array.isArray(value) && value.every((entry) => record(entry) && typeof entry.name === 'string' && typeof entry.type === 'string');
 }
 
-/** An error as data: its class name, message and own properties (code, syscall, path, errno). */
+// ── Errors, either way across ──────────────────────────────────────────────
+
+/** An error as data: its class name, message and own primitive properties (code, syscall, path, errno, dest, detail). */
 export function realmError(error: unknown): RealmError {
   if (!(error instanceof Error)) return { name: 'Error', message: String(error), properties: {} };
-  const properties: Record<string, unknown> = {};
+  const properties: Record<string, string | number | boolean | null> = {};
   for (const key of Object.getOwnPropertyNames(error)) {
     if (key === 'message' || key === 'stack') continue;
     const value = Reflect.get(error, key);
-    if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) properties[key] = value;
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') properties[key] = value;
   }
   return { name: error.name, message: error.message, properties };
+}
+
+/**
+ * The error `error` was: a VfsError as a VfsError (node-compat's fs tells a
+ * filesystem refusal by its class, as `rm(..., { force: true })` of a missing
+ * path does), a standard class as itself, else an Error bearing its name; with
+ * its message and own properties.
+ */
+export function fromRealmError(error: RealmError): Error {
+  const text = (key: string): string | undefined => {
+    const value = error.properties[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+  const code = error.properties.code;
+  let rebuilt: Error;
+  if (error.name === 'VfsError' && isVfsErrorCode(code)) {
+    rebuilt = new VfsError(code, '', text('path'), { syscall: text('syscall'), dest: text('dest'), detail: text('detail') });
+  } else {
+    const Standard = error.name === 'TypeError' ? TypeError : error.name === 'RangeError' ? RangeError : error.name === 'SyntaxError' ? SyntaxError : Error;
+    rebuilt = new Standard(error.message);
+    if (rebuilt.name !== error.name) Object.defineProperty(rebuilt, 'name', { value: error.name, configurable: true, writable: true });
+  }
+  Object.defineProperty(rebuilt, 'message', { value: error.message, configurable: true, writable: true });
+  for (const [key, value] of Object.entries(error.properties)) {
+    if (key === 'name' || key === 'errno' || Object.hasOwn(rebuilt, key)) continue;
+    Object.defineProperty(rebuilt, key, { value, configurable: true, enumerable: true, writable: true });
+  }
+  return rebuilt;
+}
+
+// ── The calls this side answers ─────────────────────────────────────────────
+
+/** What a run's calls are answered from. */
+export interface RealmServices {
+  filesystem(): NodeFilesystem;
+  /** fd 0, read to its end, once; empty after. */
+  stdin(): Promise<Uint8Array>;
+  listen(port: number): void;
+  unlisten(port: number): void;
+  watch(on: boolean): void;
+}
+
+/** A call no method answers, or with arguments not of its kind. */
+function refused(what: string): VfsError {
+  return new VfsError('EINVAL', `the realm's host answers no ${what}`);
+}
+
+const pathArg = (value: unknown): string => {
+  if (typeof value !== 'string') throw refused('call without a path');
+  return value;
+};
+const dataArg = (value: unknown): string | Uint8Array => {
+  if (typeof value !== 'string' && !(value instanceof Uint8Array)) throw refused('write of anything but text or bytes');
+  return value;
+};
+const modeArg = (value: unknown): number => {
+  if (!Number.isSafeInteger(value) || typeof value !== 'number') throw refused('mode that is not a number');
+  return value;
+};
+const mkdirArg = (value: unknown): { recursive?: boolean; mode?: number } | undefined => {
+  if (value === undefined) return undefined;
+  if (!record(value)) throw refused('mkdir option that is not an object');
+  const recursive = value.recursive === undefined || typeof value.recursive === 'boolean' ? value.recursive : undefined;
+  if (value.recursive !== undefined && recursive === undefined) throw refused('mkdir option `recursive` that is not a boolean');
+  return { ...(recursive === undefined ? {} : { recursive }), ...(value.mode === undefined ? {} : { mode: modeArg(value.mode) }) };
+};
+const portArg = (value: unknown): number => {
+  if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0 || value > 65535) throw refused('port that is not one');
+  return value;
+};
+
+/** NodeFilesystem's `method` on `args`, each checked to be of its kind: only these, never one the object inherits. */
+function callFilesystem(fs: NodeFilesystem, method: unknown, args: readonly unknown[]): unknown {
+  const [a, b] = args;
+  switch (method) {
+    case 'readFile': return fs.readFile(pathArg(a));
+    case 'readFileString': return fs.readFileString(pathArg(a));
+    case 'writeFile': return fs.writeFile(pathArg(a), dataArg(b));
+    case 'appendFile': return fs.appendFile(pathArg(a), dataArg(b));
+    case 'exists': return fs.exists(pathArg(a));
+    case 'isFile': return fs.isFile(pathArg(a));
+    case 'isDirectory': return fs.isDirectory(pathArg(a));
+    case 'stat': return fs.stat(pathArg(a));
+    case 'lstat': return fs.lstat(pathArg(a));
+    case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
+    case 'readdir': return fs.readdir(pathArg(a));
+    case 'unlink': return fs.unlink(pathArg(a));
+    case 'rmdir': return fs.rmdir(pathArg(a));
+    case 'rmdirRecursive': return fs.rmdirRecursive(pathArg(a));
+    case 'rename': return fs.rename(pathArg(a), pathArg(b));
+    case 'copyFile': return fs.copyFile(pathArg(a), pathArg(b));
+    case 'chmod': return fs.chmod(pathArg(a), modeArg(b));
+    default: throw refused(`filesystem method ${JSON.stringify(String(method))}`);
+  }
+}
+
+async function performCall(call: unknown, services: RealmServices): Promise<unknown> {
+  if (!record(call)) throw refused('call that is not one');
+  switch (call.op) {
+    case 'fs': {
+      if (!Array.isArray(call.args)) throw refused('filesystem call without arguments');
+      return callFilesystem(services.filesystem(), call.method, call.args);
+    }
+    case 'stdin': return services.stdin();
+    case 'listen': return services.listen(portArg(call.port));
+    case 'unlisten': return services.unlisten(portArg(call.port));
+    case 'watch': {
+      if (typeof call.on !== 'boolean') throw refused('watch that is neither on nor off');
+      return services.watch(call.on);
+    }
+    default: throw refused(`call ${JSON.stringify(String(call.op))}`);
+  }
+}
+
+/**
+ * The answer to `call`, whatever the guest sent: the value of one of the calls
+ * above, or the error it raised; an error, too, for a call none answers and
+ * for a value that cannot cross to the guest. Never rejects.
+ */
+export async function serveRealmCall(call: unknown, services: RealmServices): Promise<RealmAnswer> {
+  try {
+    const value = await performCall(call, services);
+    // Proven to cross before it is posted: a value that cannot is an error.
+    structuredClone(value);
+    return { value };
+  } catch (error) {
+    return { error: realmError(error) };
+  }
 }
 
 /**
@@ -176,16 +306,25 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     await ctx.stderr.write('node: this host has no worker threads, which the inline node runs each program in (Bun and Node have them)\n');
     return 1;
   }
+  // An abort that came while the module loaded: nothing is started.
+  if (ctx.signal.aborted) return 130;
   const calls = new threads.MessageChannel();
   const events = new threads.MessageChannel();
   const wake = new SharedArrayBuffer(4);
   const flag = new Int32Array(wake);
   const filesystem = synchronousFilesystem(ctx.vfs);
+  const worker = new threads.Worker(new URL('./node-guest.js', import.meta.url));
+  // A kill or Ctrl-C ends the realm, even in a loop that never yields; the
+  // signal is checked again once the listener is on, so none is missed.
+  let aborted = false;
+  const abort = () => {
+    aborted = true;
+    void worker.terminate().catch(() => {});
+  };
+  ctx.signal.addEventListener('abort', abort, { once: true });
+  if (ctx.signal.aborted) abort();
   const start: RealmStart = { program, calls: calls.port2, events: events.port2, wake };
-  const worker = new threads.Worker(new URL('./node-guest.js', import.meta.url), {
-    workerData: start,
-    transferList: [calls.port2, events.port2],
-  });
+  worker.postMessage(start, [calls.port2, events.port2]);
 
   // Output in the order it was written, each write after the last.
   let written: Promise<void> = Promise.resolve();
@@ -196,11 +335,23 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       else await stream.write(new TextDecoder().decode(data));
     }).catch(() => {});
   };
-
+  // Posted, or the post's own failure posted; the guest is woken either way.
   const answer = (reply: RealmAnswer) => {
-    calls.port1.postMessage(reply);
+    try {
+      calls.port1.postMessage(reply);
+    } catch (error) {
+      try { calls.port1.postMessage({ error: realmError(error) }); } catch { /* the port is gone */ }
+    }
     Atomics.store(flag, 0, 1);
     Atomics.notify(flag, 0);
+  };
+  const post = (event: HostEvent): boolean => {
+    try {
+      events.port1.postMessage(event);
+      return true;
+    } catch {
+      return false;
+    }
   };
   const ports = new Set<number>();
   const pending = new Map<number, (response: RealmResponse | null) => void>();
@@ -216,48 +367,41 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       });
     });
     Object.assign(response, { _donePromise: done });
-    events.port1.postMessage({ type: 'serve', id, port, request } satisfies HostEvent);
+    if (!post({ type: 'serve', id, port, request })) {
+      pending.get(id)?.(null);
+      pending.delete(id);
+    }
   };
   let unwatch: (() => void) | undefined;
   let stdinTaken = false;
-
-  const call = async (request: RealmCall): Promise<unknown> => {
-    switch (request.op) {
-      case 'fs': {
-        const fs = filesystem();
-        return Reflect.apply(fs[request.method], fs, request.args);
-      }
-      case 'stdin': {
-        if (stdinTaken || !ctx.stdin || ctx.stdin === ctx.terminalStdin) return new Uint8Array(0);
-        stdinTaken = true;
-        return await readToEnd(ctx.stdin);
-      }
-      case 'listen':
-        if (!kernel) throw Object.assign(new Error(`listen EACCES: no ports on this host :${request.port}`), { code: 'EACCES' });
-        kernel.portRegistry.set(request.port, serveFromGuest(request.port));
-        ports.add(request.port);
-        return undefined;
-      case 'unlisten':
-        if (ports.delete(request.port)) kernel?.portRegistry.delete(request.port);
-        return undefined;
-      case 'watch': {
-        const fs = filesystem();
-        if (request.on) {
-          const listener = () => events.port1.postMessage({ type: 'changed' } satisfies HostEvent);
-          fs.onChange = listener;
-          unwatch = () => { if (fs.onChange === listener) fs.onChange = undefined; };
-        } else {
-          unwatch?.();
-          unwatch = undefined;
-        }
-        return undefined;
-      }
-    }
+  const services: RealmServices = {
+    filesystem,
+    stdin: async () => {
+      if (stdinTaken || !ctx.stdin || ctx.stdin === ctx.terminalStdin) return new Uint8Array(0);
+      stdinTaken = true;
+      return readToEnd(ctx.stdin);
+    },
+    listen: (port) => {
+      if (!kernel) throw new VfsError('EACCES', `listen: no ports on this host :${port}`);
+      kernel.portRegistry.set(port, serveFromGuest(port));
+      ports.add(port);
+    },
+    unlisten: (port) => {
+      if (ports.delete(port)) kernel?.portRegistry.delete(port);
+    },
+    watch: (on) => {
+      unwatch?.();
+      unwatch = undefined;
+      if (!on) return;
+      const fs = filesystem();
+      const listener = () => { post({ type: 'changed' }); };
+      fs.onChange = listener;
+      unwatch = () => { if (fs.onChange === listener) fs.onChange = undefined; };
+    },
   };
   calls.port1.on('message', (request) => {
-    if (!isRealmCall(request)) return;
     // Answered as soon as known; fd 0 waits for its end, holding the guest as Node's read does.
-    void call(request).then((value) => answer({ value }), (error: unknown) => answer({ error: realmError(error) }));
+    void serveRealmCall(request, services).then(answer);
   });
 
   let code: number | null = null;
@@ -276,20 +420,13 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
         return;
       case 'fetch':
         void fetchForGuest(kernel, event).then((response) => {
-          events.port1.postMessage({ type: 'fetched', id: event.id, response } satisfies HostEvent);
+          post({ type: 'fetched', id: event.id, response });
         });
         return;
     }
   };
   events.port1.on('message', onEvent);
 
-  // A kill or Ctrl-C ends the realm, even in a loop that never yields.
-  let aborted = false;
-  const abort = () => {
-    aborted = true;
-    void worker.terminate();
-  };
-  ctx.signal.addEventListener('abort', abort, { once: true });
   let failure: Error | null = null;
   worker.on('error', (error: Error) => { failure = error; });
   const exited = await new Promise<number>((resolve) => worker.once('exit', resolve));
@@ -330,18 +467,21 @@ async function readToEnd(stdin: NonNullable<CommandContext['stdin']>): Promise<U
   return all;
 }
 
-/** A loopback request of the guest's, served as the session serves its own: the kernel's ports, then its loopback router. */
+/**
+ * A loopback request of the guest's, served as the session serves its own:
+ * the kernel's ports, then its loopback router. Null when it cannot be made
+ * or answered, its body included: a failure is the guest's failed request.
+ */
 async function fetchForGuest(kernel: NodeRealmKernel | undefined, event: Extract<GuestEvent, { type: 'fetch' }>): Promise<RealmResponse | null> {
   if (!kernel) return null;
-  const request = new Request(event.url, { method: event.method, headers: event.headers, body: event.body });
-  let result;
   try {
-    result = await dispatchWorkspaceRequest(kernel, event.port, request);
+    const request = new Request(event.url, { method: event.method, headers: event.headers, body: event.body });
+    const result = await dispatchWorkspaceRequest(kernel, event.port, request);
+    if (result.kind !== 'response') return null;
+    const headers: Record<string, string> = {};
+    result.response.headers.forEach((value, key) => { headers[key] = value; });
+    return { status: result.response.status, headers, body: await result.response.text() };
   } catch {
     return null;
   }
-  if (result.kind !== 'response') return null;
-  const headers: Record<string, string> = {};
-  result.response.headers.forEach((value, key) => { headers[key] = value; });
-  return { status: result.response.status, headers, body: await result.response.text() };
 }

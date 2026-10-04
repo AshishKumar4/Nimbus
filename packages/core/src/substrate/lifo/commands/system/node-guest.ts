@@ -4,26 +4,32 @@
  * Everything the program reaches outside the realm goes through the host:
  * the filesystem and fd 0 by synchronous calls (the guest waits on `wake`
  * until the answer is on `calls`), its output and its network by messages on
- * `events`. Once its main script has run (and any servers it started have
- * closed), `events` stops holding the realm open, so the realm ends when its
- * event loop runs empty, as a Node process does.
+ * `events`. The ports come in the first message on parentPort, taken before
+ * the program runs, and live only in this module's closure.
+ *
+ * The realm lives as a Node process does: while its event loop has work. Its
+ * own timers hold it; so does `events` while a server it started listens and
+ * while a request it made is unanswered (its synchronous calls need no loop). A
+ * rejection or exception nothing handles is printed and ends it with 1, an
+ * ES module whose top-level await never settles with 13.
  */
 
 import realm from 'node:process';
-import { receiveMessageOnPort, workerData } from 'node:worker_threads';
+import { parentPort, receiveMessageOnPort } from 'node:worker_threads';
 import type { VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import {
-  isDirEntries, isHostEvent, isRealmAnswer, isRealmStart, isStat,
-  type GuestEvent, type RealmCall, type RealmError, type RealmResponse,
+  fromRealmError, isDirEntries, isHostEvent, isRealmAnswer, isRealmStart, isStat,
+  type GuestEvent, type RealmCall, type RealmResponse,
 } from './node-realm.js';
 
-if (!isRealmStart(workerData)) throw new Error('node-guest: started without a realm');
-const { calls, events, program } = workerData;
-const flag = new Int32Array(workerData.wake);
+const first = parentPort ? receiveMessageOnPort(parentPort) : undefined;
+if (!first || !isRealmStart(first.message)) throw new Error('node-guest: started without a realm');
+const { calls, events, program } = first.message;
+const flag = new Int32Array(first.message.wake);
 
 /** A synchronous call to the host: posted, then waited for. Its value is the host's answer, as cloned. */
 function call(request: RealmCall): unknown {
@@ -34,7 +40,7 @@ function call(request: RealmCall): unknown {
     const received = receiveMessageOnPort(calls);
     if (received && isRealmAnswer(received.message)) {
       const answer = received.message;
-      if ('error' in answer) throw rebuild(answer.error);
+      if ('error' in answer) throw fromRealmError(answer.error);
       return answer.value;
     }
   }
@@ -45,19 +51,30 @@ function malformed(method: string): never {
   throw new Error(`node: the host answered ${method} with something it does not return`);
 }
 
-/** The host's error as the program would have got it: its class, message and own properties. */
-function rebuild(error: RealmError): Error {
-  const Class = error.name === 'TypeError' ? TypeError : error.name === 'RangeError' ? RangeError : Error;
-  const rebuilt = new Class(error.message);
-  for (const [key, value] of Object.entries(error.properties)) Reflect.set(rebuilt, key, value);
-  return rebuilt;
-}
-
 function post(event: GuestEvent): void {
   events.postMessage(event);
 }
 
-// The host's filesystem, each method's answer narrowed to what it returns.
+// ── Liveness ────────────────────────────────────────────────────────────────
+
+let mainDone = false;
+let exiting = false;
+const fetched = new Map<number, (response: RealmResponse | null) => void>();
+/** `events` holds the realm open while anything of the program's waits on it. */
+function holdWhileBusy(): void {
+  if (fetched.size > 0 || ports.size > 0) events.ref();
+  else events.unref();
+}
+
+/** End the process now with `code`, as process.exit() and a fatal error do. */
+function exitNow(code: number): never {
+  exiting = true;
+  post({ type: 'exit', code });
+  return realm.exit(code);
+}
+
+// ── The filesystem, each method's answer narrowed to what it returns ───────
+
 const bytes = (value: unknown, method: string) => value instanceof Uint8Array ? value : malformed(method);
 const text = (value: unknown, method: string) => typeof value === 'string' ? value : malformed(method);
 const flagOf = (value: unknown, method: string) => typeof value === 'boolean' ? value : malformed(method);
@@ -96,30 +113,24 @@ const output = (fd: 1 | 2): CommandOutputStream => ({
   writeBytes: (data: Uint8Array) => post({ type: 'output', fd, data }),
 });
 
-/** The program's servers, as the session reaches them: listening is the host's to record. */
+/** The program's servers, as the session reaches them: listening is the host's to record, and holds the realm. */
 class RealmPorts extends Map<number, VirtualRequestHandler> {
   override set(port: number, handler: VirtualRequestHandler): this {
     call({ op: 'listen', port });
-    return super.set(port, handler);
+    super.set(port, handler);
+    holdWhileBusy();
+    return this;
   }
   override delete(port: number): boolean {
     if (super.has(port)) call({ op: 'unlisten', port });
-    return super.delete(port);
+    const deleted = super.delete(port);
+    holdWhileBusy();
+    return deleted;
   }
 }
 const ports = new RealmPorts();
 
-// While the main script runs, `events` holds the realm open; after it, only
-// what is still under way does: a request awaiting its answer, as a socket
-// holds a Node process.
-let mainDone = false;
-const holdWhileBusy = () => {
-  if (fetched.size > 0 || !mainDone) events.ref();
-  else events.unref();
-};
-
 let fetches = 0;
-const fetched = new Map<number, (response: RealmResponse | null) => void>();
 async function routeLoopback(port: number, request: Request): Promise<Response | null> {
   const id = ++fetches;
   const headers: Record<string, string> = {};
@@ -168,35 +179,24 @@ events.on('message', (event) => {
   }
 });
 
-const rejectionListeners = new Set<(reason: unknown) => void>();
-// A rejection nothing handled: the main script's own are reported to it; one
-// after it, as in Node, ends the process with 1 once it is printed.
-realm.on('unhandledRejection', (reason: unknown) => {
-  if (reason instanceof ProcessExitError) {
-    post({ type: 'exit', code: reason.exitCode });
-    realm.exit(reason.exitCode);
-  }
-  if (rejectionListeners.size > 0) {
-    for (const listener of rejectionListeners) listener(reason);
-    return;
-  }
+// ── Fatal errors, as Node ends a process on them ───────────────────────────
+
+const fatal = (reason: unknown): never => {
+  if (reason instanceof ProcessExitError) return exitNow(reason.exitCode);
   post({ type: 'output', fd: 2, data: `${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n` });
-  post({ type: 'exit', code: 1 });
-  realm.exit(1);
-});
-// An exception no code caught, after the main script ran (a timer's): as in
-// Node, it is printed and the process exits 1; process.exit() from a timer
-// exits with its code.
-realm.on('uncaughtException', (error: unknown) => {
-  if (error instanceof ProcessExitError) {
-    post({ type: 'exit', code: error.exitCode });
-    realm.exit(error.exitCode);
-  }
-  post({ type: 'output', fd: 2, data: `${error instanceof Error ? error.stack ?? error.message : String(error)}\n` });
-  post({ type: 'exit', code: 1 });
-  realm.exit(1);
+  return exitNow(1);
+};
+realm.on('unhandledRejection', fatal);
+realm.on('uncaughtException', fatal);
+// The loop ran empty with the main script still waiting: an ES module whose
+// top-level await never settled.
+realm.on('exit', () => {
+  if (exiting || mainDone) return;
+  post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n` });
+  post({ type: 'exit', code: 13 });
 });
 
+holdWhileBusy();
 const end = await runNodeProgram(program, {
   filesystem: () => filesystem,
   stdout: output(1),
@@ -204,15 +204,8 @@ const end = await runNodeProgram(program, {
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
   portRegistry: ports,
   routeLoopback,
-  onUnhandledRejection: (listener) => {
-    rejectionListeners.add(listener);
-    return () => rejectionListeners.delete(listener);
-  },
 });
+if (end.ended) exitNow(end.code);
 post({ type: 'exit', code: end.code });
-// process.exit() or an error the main script did not catch ends the process
-// at once, as in Node. Otherwise what the main script left (timers) runs on,
-// and the realm ends when nothing is left, as a Node process does.
-if (end.ended) realm.exit(end.code);
 mainDone = true;
 holdWhileBusy();
