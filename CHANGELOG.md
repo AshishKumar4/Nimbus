@@ -55,6 +55,16 @@ published independently in the `@nimbus-sh` npm scope.
   `code: null`, `signal`, `killed` and `cmd`, with Node's message
   (`Command failed: <cmd>` and the child's stderr), and a spawn's own error
   reaches their callback. The parent's view is compared with host node's.
+- Fixed: `process.exit()` in a `child_process` child whose stdin was still
+  open did not end it. The child had read its input and exited 0, but its
+  run then waited for its stdin pump, which ends only when the parent ends
+  the pipe: the child never closed, its Dynamic Worker stayed held, and
+  nine such children with their parent wedged the session (every later
+  launch waited for room). No input was lost: traced per child, the broker
+  queued 3 bytes, the child took 3 and printed them. A program that calls
+  `process.exit()` now ends at once, its stdin included. So does a parent
+  that calls it while a child it listens to still runs; it used to wait
+  for that child to close. Both are compared with host node.
 - Fixed: after `npm install` in a session, every later `child_process`
   child hung, even `console.log('x')`, while terminal one-shots ran. A
   launch too large for one Durable Object turn (the installed tree made

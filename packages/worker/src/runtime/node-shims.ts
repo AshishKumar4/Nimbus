@@ -6901,7 +6901,9 @@ const __childProcessMod = (() => {
     const _trackCloseInterest = (event) => {
       if ((event === "close" || event === "exit") && !child._closeTracked) {
         child._closeTracked = true;
-        __pendingIO.push(child._closePromise.catch(() => {}));
+        // Keeps this process until the child closes, or until it exits:
+        // Node's process.exit() does not wait for its children.
+        __pendingIO.push(Promise.race([child._closePromise, __nimbusProcessExitPromise]).catch(() => {}));
       }
     };
     const _childOn = child.on.bind(child);
@@ -7819,7 +7821,8 @@ function __makeProcessStdin() {
   }
   async function pumpLiveStdin() {
     let readFailures = 0;
-    while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
+    // Until stdin ends or the program exits: an exited program reads nothing.
+    while (liveChildPid && !__nimbusProgramStopped && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       let packet;
       try {
         // Unref'd: this long-poll runs for the whole life of an attached

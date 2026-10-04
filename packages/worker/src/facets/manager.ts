@@ -983,7 +983,11 @@ ${RESIDENCY_MISS_REPORT}
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
 
-      if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
+      // A program that ended on its own may still be reading stdin; one that
+      // called process.exit() has ended whatever it holds, its stdin included,
+      // as Node's does. Waiting for the pump there waited for a parent that
+      // keeps the pipe open to close it, which it need never do.
+      if (__nimbusLiveStdinPump && !__nimbusAttachedTty && __nimbusProcessExitCode === null) await __nimbusLiveStdinPump;
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
