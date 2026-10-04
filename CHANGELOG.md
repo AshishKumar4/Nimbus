@@ -17,9 +17,15 @@ published independently in the `@nimbus-sh` npm scope.
   `readFileSync(0)` waits for stdin to end, also when it arrives in pieces,
   where it threw; and timers the program leaves run before the command ends,
   where they were dropped (`process.exit()` in one exits with its code, and
-  a rejection nothing handles after the main script exits 1, as in Node).
-  It needs `node:worker_threads` (Bun and Node). Each run takes about 16 ms
-  more to start, and each synchronous filesystem call about 0.1 ms more.
+  a rejection nothing handles exits 1, as in Node, a server listening or
+  not; an ES module whose top-level await never settles exits 13). A
+  program lives as long as its event loop has work: its timers, a server it
+  listens with (a server a timer starts included), a request it is waiting
+  on; a trivial ES module no longer waits 150 ms, nor one that loads `http`
+  without serving up to 10 s. The host answers only the realm's own calls,
+  so a program cannot end it. It needs `node:worker_threads` (Bun and Node).
+  Each run takes about 16 ms more to start, and each synchronous filesystem
+  call about 0.1 ms more.
 
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
