@@ -63,7 +63,6 @@ import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-repl
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
-import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -97,25 +96,6 @@ import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.j
 export type SupervisorCacheStatEvent =
   | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
   | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
-
-/**
- * Drain the per-call event list captured by R2CacheClient during this
- * SupervisorRPC call.
- *
- * cache-obs-2 (the v2 fold-side flip):
- *   We RETURN the drained events to the facet so they propagate via
- *   the install-batch-facet result -> installer.ts fold -> DO
- *   singleton path. No recursion (return-value flow, not subrequest).
- *
- * The R2CacheClient instance lives only for the duration of one RPC
- * call (constructed fresh in _r2()). Draining its event list at the
- * end of the call is the natural lifecycle boundary.
- */
-function _drainCacheEvents(client: any): SupervisorCacheStatEvent[] {
-  const drained = (client && Array.isArray(client._cacheEvents)) ? client._cacheEvents : [];
-  if (client && Array.isArray(client._cacheEvents)) client._cacheEvents = [];
-  return drained;
-}
 
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
@@ -790,25 +770,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
   // to the facet without pinning a binding stub through the LOADER, we
   // proxy reads/writes through these RPC methods.
   //
-  // Counter increments live HERE (supervisor isolate, where diag-counters
-  // is module-scoped). The facet itself never sees the counter module.
+  // Reads and writes cross the session journal like every other operation.
+  // Cache-stat events still return to the calling facet for installer folding.
   //
   // Graceful-degrade: if NPM_TARBALL_CACHE / NPM_PACKUMENT_CACHE bindings
   // aren't configured (deploy without R2 buckets, or local dev), the
   // R2CacheClient falls through to null returns / no-op writes; the
   // facet sees null and uses its existing network-fetch path. No errors,
-
-  /**
-   * Build a fresh R2CacheClient bound to this request's env. Cheap to
-   * instantiate; does no async work. Called from each R2 RPC method to
-   * avoid keeping the client in instance state (the WorkerEntrypoint
-   * lifecycle is per-invocation and we want a clean closure each time).
-   */
-  private _r2(): R2CacheClient {
-    const tar = (this.env as any)?.NPM_TARBALL_CACHE ?? null;
-    const pkm = (this.env as any)?.NPM_PACKUMENT_CACHE ?? null;
-    return new R2CacheClient(tar, pkm);
-  }
 
   /**
    * Look up a tarball in the R2 cross-tenant cache by its content
@@ -830,13 +798,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async getCachedTarball(
     integrity: string,
   ): Promise<{ bytes: Uint8Array | null; events: SupervisorCacheStatEvent[] }> {
-    const r2 = this._r2();
-    const bytes = await r2.getTarball(integrity);
-    const events = _drainCacheEvents(r2);
-    if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
-      return { bytes, events };
-    }
-    return { bytes: null, events };
+    return this._call(this._op('getCachedTarball', [integrity]));
   }
 
   /**
@@ -854,8 +816,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // its own cacheStatEvents list before calling putCachedTarball.
     // This RPC remains a one-way write (returns bool); the L4 event
     // does NOT flow through this return path.
-    const r2 = this._r2();
-    return r2.putTarball(integrity, bytes);
+    return this._call(this._op('putCachedTarball', [integrity, bytes]));
   }
 
   /**
@@ -876,9 +837,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     name: string,
     options?: { retries?: number; timeoutMs?: number; registry?: string },
   ): Promise<PackumentReadThrough & { events: SupervisorCacheStatEvent[] }> {
-    const r2 = this._r2();
-    const result = await r2.readThroughPackument(name, options);
-    return { ...result, events: _drainCacheEvents(r2) };
+    return this._call(this._op('getPackument', [name, options]));
   }
 
   // ── Process I/O ───────────────────────────────────────────────────────
@@ -1002,6 +961,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async stdinFileRead(path: string, offset: number, length: number): Promise<{ data: Uint8Array; size: number }> {
     return this._call(this._op('stdinFileRead', [path, offset, length]));
   }
+  async stdinPrepared(): Promise<void> { return this._call(this._op('stdinPrepared')); }
 
   async netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown> {
     return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));

@@ -877,6 +877,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]> { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
   async _rpcReplayBoundary(pid?: number, run?: string): Promise<void> { return _rpc._rpcReplayBoundary(this as any, pid, run); }
+  async _rpcStdinPrepared(pid?: number, run?: string): Promise<void> { return _rpc._rpcStdinPrepared(this as any, pid, run); }
+  async _rpcGetCachedTarball(integrity: string, pid?: number, run?: string) { return _rpc._rpcGetCachedTarball(this as any, integrity, pid, run); }
+  async _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer) { return _rpc._rpcPutCachedTarball(this as any, integrity, bytes); }
+  async _rpcGetPackument(name: string, options?: { retries?: number; timeoutMs?: number; registry?: string }, pid?: number, run?: string) { return _rpc._rpcGetPackument(this as any, name, options, pid, run); }
   async _rpcStdinFileRead(path: string, offset: number, length: number, pid?: number): Promise<{ data: Uint8Array; size: number }> {
     return _rpc._rpcStdinFileRead(this as any, path, offset, length, pid);
   }

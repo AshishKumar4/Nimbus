@@ -193,6 +193,7 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
 
   // Only fd-0 preparation is input; ordinary reads of that path are observations.
   const i = make();
+  i.bindStdinFile({ path: '/home/user/w/lock.json', offset: 0, limit: 65536 });
   i.start('a');
   i.stopped();
   i.start('b');

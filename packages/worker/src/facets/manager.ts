@@ -6060,6 +6060,7 @@ export class FacetManager {
         this.outputGates.get(entry.pid)?.close();
         divergence.abort();
       }));
+      if (opts.stdinFile) this.journals.get(entry.pid)!.bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
     }
     if (inputChannel > 0) this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
     // Each run starts from the umask the process started with: a umask the
@@ -6362,6 +6363,12 @@ export class FacetManager {
     if (!journal || run === undefined || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
     return journal.handle(op, args, run, dispatch);
   }
+  /** Whether this bound run is still recording: cache reads must not fill shared stores. */
+  journalRecording(pid: number | undefined, run: string | undefined): boolean {
+    const journal = pid === undefined ? undefined : this.journals.get(pid);
+    return !!journal && journal.admits(run) && journal.recording;
+  }
+  stdinPrepared(pid: number, run: string | undefined): void { this.journals.get(pid)?.prepared(run); }
 
   /** The run after a stop reached the read the run before it stopped at. */
   async replayBoundary(pid: number, run: string | undefined): Promise<void> {

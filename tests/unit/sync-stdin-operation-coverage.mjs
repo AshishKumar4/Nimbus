@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import { SUPERVISOR_OPS } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { REPLAY_OPERATION_POLICY, operationPolicy } from '../../packages/worker/src/runtime/stop-replay-policy.ts';
 import { ReplayJournal, answerDigest } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
+import { mock } from 'bun:test';
+import { REPLAY_PUBLIC_METHOD_POLICY } from '../../packages/worker/src/runtime/stop-replay-policy.ts';
+mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {} }));
+const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+const publicMethods = Object.getOwnPropertyNames(SupervisorRPC.prototype).filter((name) => name !== 'constructor' && !name.startsWith('_'));
+function checkPublic(name, method) {
+  const explicit = REPLAY_PUBLIC_METHOD_POLICY[name];
+  if (explicit) return;
+  assert.ok(operationPolicy(name), 'unclassified public SupervisorRPC method: ' + name);
+  assert.match(String(method), /this\._(?:op|fsOp|fsRead|fsMutation|resent)\s*\(/, name + ' bypasses the session journal');
+}
+for (const name of publicMethods) checkPublic(name, SupervisorRPC.prototype[name]);
+assert.throws(() => checkPublic('futurePublicMethod', () => {}), /unclassified public/);
+assert.throws(() => checkPublic('getPackument', () => {}), /bypasses the session journal/);
 
 assert.deepEqual(Object.keys(REPLAY_OPERATION_POLICY).sort(), [...SUPERVISOR_OPS].sort(), 'every supervisor operation needs an explicit replay classification');
 const j = new ReplayJournal(() => {});
@@ -40,4 +54,4 @@ for (const original of [undefined, null, 0, false]) {
   failures.stopped(); failures.start('b');
   await assert.rejects(failures.handle('stat', ['/failure'], 'b', () => Promise.reject(String(original))), /answered differently/);
 }
-console.log(`sync-stdin-operation-coverage: ${SUPERVISOR_OPS.length}/${SUPERVISOR_OPS.length} classified; unknown operations fail closed`);
+console.log(`sync-stdin-operation-coverage: ${SUPERVISOR_OPS.length} ops and ${publicMethods.length} public RPC methods classified; new methods/ops fail closed`);

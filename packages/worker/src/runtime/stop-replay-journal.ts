@@ -127,13 +127,18 @@ export class ReplayJournal {
   private recordedBytes = 0;
   private boundaryWait: { release: () => void; fail: (e: Error) => void } | null = null;
   private effectsHeld: { what: string; release: () => void; fail: (e: Error) => void }[] = [];
+  private stdinFile: { path: string; offset: number; limit: number } | null = null;
+  private preparation: { run: string; at: number; remaining: number; pending: boolean } | null = null;
 
   constructor(private readonly onDiverge: DivergeHandler, private readonly stallMs: number = REPLAY_STALL_MS) {}
 
   /** A run begins: the writer identity its calls carry. */
   start(run: string): void {
     this.run = run;
+    this.preparation = this.stdinFile ? { run, at: this.stdinFile.offset, remaining: this.stdinFile.limit, pending: false } : null;
   }
+  bindStdinFile(file: { path: string; offset: number; limit: number }): void { this.stdinFile = { ...file }; }
+  prepared(run: string | undefined): void { if (this.admits(run)) this.preparation = null; }
 
   get unreplayable(): string | null {
     return this.disqualified ?? (this.bodies.size ? `received headers of ${this.bodies.values().next().value}, but its response body was still unfinished` : null);
@@ -248,6 +253,22 @@ export class ReplayJournal {
     }
     if (this.boundaryPassed && this.entries === null) return dispatch();
     const policy = operationPolicy(op)!;
+    if (op === 'stdinFileRead') {
+      const prep = this.preparation;
+      const [path, offset, length] = args ?? [];
+      const authorized = prep && prep.run === run && !prep.pending && path === this.stdinFile?.path && offset === prep.at
+        && typeof length === 'number' && Number.isSafeInteger(length) && length > 0 && length <= Math.min(65536, prep.remaining);
+      if (!authorized) return this.answer(callKey(op, args), describeCall(op, args), dispatch);
+      prep.pending = true;
+      return dispatch().then((value) => {
+        const reply = value as { data: Uint8Array; size: number };
+        if (!(reply.data instanceof Uint8Array) || reply.data.length > (length as number)) throw new Error('invalid stdin preparation reply');
+        prep.at += reply.data.length; prep.remaining -= reply.data.length; prep.pending = false;
+        if (prep.at >= reply.size || prep.remaining === 0) this.preparation = null;
+        this.protocolReplies.push(op + ' ' + answerDigest(value));
+        return value;
+      }, (error) => { prep.pending = false; throw error; });
+    }
     if (policy.kind === 'input' || policy.kind === 'output' || policy.kind === 'control') {
       // Input packets are checked by the session-owned stdin account and
       // read tape; output acknowledgements by the output-prefix protocol.
