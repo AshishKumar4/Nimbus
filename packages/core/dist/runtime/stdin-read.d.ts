@@ -69,9 +69,12 @@ export interface ReadAheadAccount {
 export declare class ReadAheadBudget {
     readonly capacity: number;
     private heldBytes;
+    private peakBytes;
     constructor(capacity: number);
     /** Bytes held now, across all launches. */
     get held(): number;
+    /** The most bytes held at once since the budget was made: never past its capacity. */
+    get peak(): number;
     /** An account for one launch's read ahead. */
     open(): ReadAheadAccount;
 }

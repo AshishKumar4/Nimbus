@@ -23,6 +23,7 @@ const _counters = {
     inFlightRpcPayloadBytes: 0,
     prefetchBundleBytes: 0,
     prefetchCacheBytes: 0,
+    supervisorAnsweredBytes: 0,
     installFacet: {
         tarballsCompleted: 0,
         cumulativeBytesDecoded: 0,
@@ -46,6 +47,10 @@ const _counters = {
 /** Read a snapshot — caller-side mutations don't affect the singleton. */
 export function readDiagCounters() {
     return { ..._counters };
+}
+/** Count `bytes` the session answered a process's supervisor call with. */
+export function recordSupervisorAnswer(bytes) {
+    _counters.supervisorAnsweredBytes += bytes;
 }
 /** Set the install phase. */
 export function setInstallPhase(p) {

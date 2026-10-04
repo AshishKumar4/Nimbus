@@ -63,12 +63,17 @@ export const STDIN_SYNC_READ_BYTES = 16 * 1024 * 1024;
 export class ReadAheadBudget {
     capacity;
     heldBytes = 0;
+    peakBytes = 0;
     constructor(capacity) {
         this.capacity = capacity;
     }
     /** Bytes held now, across all launches. */
     get held() {
         return this.heldBytes;
+    }
+    /** The most bytes held at once since the budget was made: never past its capacity. */
+    get peak() {
+        return this.peakBytes;
     }
     /** An account for one launch's read ahead. */
     open() {
@@ -78,6 +83,7 @@ export class ReadAheadBudget {
             take: (max) => {
                 const got = Math.max(0, Math.min(max, this.capacity - this.heldBytes));
                 this.heldBytes += got;
+                this.peakBytes = Math.max(this.peakBytes, this.heldBytes);
                 mine += got;
                 return got;
             },
