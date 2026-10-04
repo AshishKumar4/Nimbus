@@ -1,5 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText } from '../runtime/staged-source.js';
@@ -203,11 +203,14 @@ function abortFacet(ctx, facet) {
  * A call on `facet` began: it is counted until it is answered, on the
  * Durable Object's Dynamic Worker ledger under its generation's own worker
  * id, since a retired generation's call and the next one's can be in flight
- * at once as two workers.
+ * at once as two workers. It is admitted as a helper's call is
+ * (beginHelperFetch): a launch's build or prebundle is the launch's own
+ * worker, anything else waits its turn. Counted on the facet from the start,
+ * so a retirement while it waits does not abort the facet under it.
  */
-function beginCall(ctx, facet) {
-    const endFetch = beginLoaderFetch(ctx, generationId(facet.generation));
+async function beginCall(ctx, facet) {
     facet.calls++;
+    const endFetch = await beginHelperFetch(ctx, generationId(facet.generation));
     return () => {
         endFetch();
         facet.calls--;
@@ -242,7 +245,7 @@ export function prewarmBuildFacet(ctx, env) {
 export function rolldownBuildHost(ctx, env, fallback) {
     return async (options, plugin) => {
         const facet = sharedBuildFacet(ctx, env);
-        const endCall = beginCall(ctx, facet);
+        const endCall = await beginCall(ctx, facet);
         let outcome;
         try {
             outcome = await (await facet.stub).build(options, plugin);
@@ -299,7 +302,7 @@ function retireGeneration(ctx, facet) {
 export function buildFacetPrebundler(ctx, env) {
     return async (spec) => {
         const facet = sharedBuildFacet(ctx, env);
-        const endCall = beginCall(ctx, facet);
+        const endCall = await beginCall(ctx, facet);
         let result;
         try {
             result = await (await facet.stub).prebundle(spec);
@@ -332,7 +335,7 @@ export function buildFacetPrebundler(ctx, env) {
  */
 export async function loadBuildFacet(ctx, env) {
     const facet = sharedBuildFacet(ctx, env);
-    const endCall = beginCall(ctx, facet);
+    const endCall = await beginCall(ctx, facet);
     try {
         await (await facet.stub).warm();
     }

@@ -85,6 +85,14 @@ export class SessionProcessSupervisor {
     descendantsOf(pid) {
         return this.table.descendantsOf(pid);
     }
+    /** The pids `pid` descends from, nearest first, as each spawn recorded its parent. */
+    ancestorsOf(pid) {
+        const ancestors = [];
+        for (let at = this.table.get(pid)?.parentPid; at !== undefined && !ancestors.includes(at); at = this.table.get(at)?.parentPid) {
+            ancestors.push(at);
+        }
+        return ancestors;
+    }
     /**
      * Register how to stop the work behind `pid`. Background jobs started
      * through the programmatic API run as a promise held by this session, so

@@ -17,13 +17,16 @@
  * already has in flight — a resident process, the esbuild facet, a git
  * network op, another fan-out — keeps its slots. Work that would rather wait
  * than be refused waits on the ledger ({@link beginLoaderFetchWhenFree}) and
- * is let in, in the order it asked, by whichever release makes room.
+ * is let in, in the order it asked, by whichever release makes room. A wait
+ * no release can ever satisfy (every worker held by a process that waits on
+ * a descendant waiting here) is refused instead: {@link DynamicWorkerDeadlockError}.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
  * limit is per Durable Object, and dynamic workers die with the isolate that
  * loaded them, so a ledger that goes away with its host describes nothing
  * that still exists.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { hostWasmIdentity } from './host-wasm.js';
 /**
@@ -33,6 +36,34 @@ import { hostWasmIdentity } from './host-wasm.js';
  * https://developers.cloudflare.com/changelog/post/2026-08-28-durable-objects-dynamic-workers-limit/
  */
 export const DO_DYNAMIC_WORKER_LIMIT = 10;
+/**
+ * The refusal of a wait for a Dynamic Worker that no release can ever
+ * satisfy: every worker this Durable Object has in flight is held by a
+ * process that has a descendant waiting for one, so each holder is taken to
+ * be waiting on that descendant, and none will end to make room (nine
+ * children of a parent, each waiting on a grandchild of its own, fill the
+ * limit). The newest such wait is refused, as a spawn at a process limit is
+ * (EAGAIN): its program never runs, and the ancestor told so can end and
+ * give its worker back.
+ */
+export class DynamicWorkerDeadlockError extends Error {
+    pid;
+    holders;
+    code = 'EAGAIN';
+    errno = -11;
+    constructor(pid, holders) {
+        super(`Resource temporarily unavailable: every Dynamic Worker this Durable Object may have in flight `
+            + `(${DO_DYNAMIC_WORKER_LIMIT}) is held by a process waiting on a descendant that waits for one `
+            + `(holders ${holders.join(', ')}); process ${pid} cannot be started`);
+        this.pid = pid;
+        this.holders = holders;
+        this.name = 'DynamicWorkerDeadlockError';
+    }
+}
+/** Whether `error` is the ledger's refusal of a wait nothing can satisfy. */
+export function isDynamicWorkerDeadlock(error) {
+    return error instanceof DynamicWorkerDeadlockError;
+}
 /**
  * The first pause after a limit refusal, doubling while refusals continue,
  * up to {@link REFUSAL_PAUSE_MAX_MS}. A deployed Durable Object admitted a
@@ -46,7 +77,7 @@ function ledger(ctx) {
     let entry = ledgers.get(ctx);
     if (!entry) {
         entry = {
-            inFlight: new Map(), claims: new Set(), peak: 0,
+            inFlight: new Map(), holders: new Map(), claims: new Set(), peak: 0,
             waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
         };
         ledgers.set(ctx, entry);
@@ -86,11 +117,14 @@ function count(map, key, by) {
     else
         map.delete(key);
 }
-/** Take one hold; the caller admits waiters after. */
-function hold(entry, workerKey, claim) {
+/** Take one hold, for process `holder` if it is one's; the caller admits waiters after. */
+function hold(entry, workerKey, claim, holder) {
     count(entry.inFlight, workerKey, 1);
     if (claim)
         count(claim.keys, workerKey, 1);
+    const holders = entry.holders.get(workerKey) ?? [];
+    holders.push(holder);
+    entry.holders.set(workerKey, holders);
     entry.peak = Math.max(entry.peak, inUse(entry));
     const epoch = entry.epoch;
     let ended = false;
@@ -101,6 +135,9 @@ function hold(entry, workerKey, claim) {
         count(entry.inFlight, workerKey, -1);
         if (claim)
             count(claim.keys, workerKey, -1);
+        holders.splice(holders.indexOf(holder), 1);
+        if (holders.length === 0)
+            entry.holders.delete(workerKey);
         if (classifyError(failure) === 'dynamic_worker_cap')
             refused(entry, epoch);
         else if (epoch === entry.epoch && entry.pauseMs === 0)
@@ -156,10 +193,52 @@ function admitWaiters(entry) {
         }
         const joins = entry.inFlight.has(waiter.key);
         entry.waiters.splice(i, 1);
-        waiter.admit(hold(entry, waiter.key, waiter.claim));
+        waiter.admit(hold(entry, waiter.key, waiter.claim, waiter.process?.pid ?? null));
         if (!joins)
             i = 0;
     }
+    for (let stuck = deadlocked(entry); stuck !== undefined; stuck = deadlocked(entry)) {
+        entry.waiters.splice(entry.waiters.indexOf(stuck.waiter), 1);
+        stuck.waiter.refuse(new DynamicWorkerDeadlockError(stuck.waiter.process.pid, stuck.holders));
+    }
+}
+/**
+ * The wait no release can ever let in, with the processes holding the
+ * limit, or undefined while room may still come. Room comes when a hold
+ * ends or a fan-out's claim is released. A hold no process owns (a pool's
+ * call, a facet's) ends on its own. A process's hold is taken to end only
+ * once what it waits on has run, which it cannot while that is one of its
+ * own descendants waiting here. So at the limit, with no claim, and every
+ * hold a process's with a descendant among the waiters, nothing will make
+ * room: the newest of those descendants is the one refused. A wait any
+ * hold could still end for keeps waiting.
+ */
+function deadlocked(entry) {
+    if (entry.waiters.length === 0 || entry.claims.size > 0)
+        return undefined;
+    if (inUse(entry) < DO_DYNAMIC_WORKER_LIMIT)
+        return undefined;
+    const holders = new Set();
+    for (const owners of entry.holders.values()) {
+        for (const pid of owners) {
+            if (pid === null)
+                return undefined;
+            holders.add(pid);
+        }
+    }
+    const descends = (waiter, pid) => waiter.process?.ancestors?.includes(pid) === true;
+    for (const pid of holders) {
+        if (!entry.waiters.some((waiter) => descends(waiter, pid)))
+            return undefined;
+    }
+    for (let i = entry.waiters.length - 1; i >= 0; i--) {
+        const waiter = entry.waiters[i];
+        for (const pid of holders) {
+            if (descends(waiter, pid))
+                return { waiter, holders: [...holders] };
+        }
+    }
+    return undefined;
 }
 /**
  * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
@@ -168,7 +247,8 @@ function admitWaiters(entry) {
  * one ends, as the platform counts it. Under a `claim`, the hold counts
  * inside the claim's width. This never waits: it is for work the actor
  * starts regardless (a resident process); {@link beginLoaderFetchWhenFree}
- * waits for room.
+ * waits for room. `holder` is the process the hold is for, when it is one's
+ * (a resident's worker): see {@link DynamicWorkerDeadlockError}.
  *
  * A begin/end pair rather than a wrapper on purpose, and the shape is
  * load-bearing: wrapping the stub call in a ledger-owned async frame
@@ -181,9 +261,9 @@ function admitWaiters(entry) {
  * workers: an RPC stub call must stay a direct property call awaited by the
  * frame that made it, so the ledger only brackets it.
  */
-export function beginLoaderFetch(ctx, workerKey, claim) {
+export function beginLoaderFetch(ctx, workerKey, claim, holder) {
     const entry = ledger(ctx);
-    const end = hold(entry, workerKey, claimOf(ctx, claim));
+    const end = hold(entry, workerKey, claimOf(ctx, claim), holder ?? null);
     admitWaiters(entry);
     return end;
 }
@@ -208,6 +288,12 @@ export function beginLoaderFetch(ctx, workerKey, claim) {
  * room may never come (a resident process holds its worker for as long as
  * it runs).
  *
+ * `process` is the process the wait is for, and the ones it descends from;
+ * the hold it is let in on is that process's. A wait whose process descends
+ * from every holder of a full ledger, as each holder's own descendants do
+ * when each waits on one, can never be let in, and the newest is refused
+ * with {@link DynamicWorkerDeadlockError} (EAGAIN), holding nothing.
+ *
  *   const end = await beginLoaderFetchWhenFree(ctx, key, { signal });
  *   try { return await worker.getEntrypoint().run(); }
  *   catch (error) { end(error); throw error; }
@@ -231,15 +317,70 @@ export function beginLoaderFetchWhenFree(ctx, workerKey, options = {}) {
         const waiter = {
             key: workerKey,
             claim: claimOf(ctx, options.claim),
+            process: options.process,
             admit(end) {
                 signal?.removeEventListener('abort', abandon);
                 resolve(end);
+            },
+            refuse(error) {
+                signal?.removeEventListener('abort', abandon);
+                reject(error);
             },
         };
         entry.waiters.push(waiter);
         signal?.addEventListener('abort', abandon, { once: true });
         admitWaiters(entry);
     });
+}
+/**
+ * The admission of the launch whose async context this is. AsyncLocalStorage
+ * rather than a parameter, so a launch's helper calls (a transform, a build,
+ * a prebundle) find it however deep the call that makes them, and a
+ * concurrent launch's never do. Requires `nodejs_compat` (or `nodejs_als`).
+ */
+const launchAdmission = new AsyncLocalStorage();
+/**
+ * Run a launch admitted once on the ledger. It waits, as
+ * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
+ * Worker, and holds it until `body` settles. Everything the launch puts in
+ * flight in body's async context (its transform facet, its build facet, its
+ * own program) is that worker: a launch prepares and then runs, one of them
+ * at a time, so its preparation can never wait on room its own admission
+ * holds. (A helper call its program makes later, over RPC, is not in that
+ * context: a worker more, it waits its turn.) `signal` abandons the wait; a
+ * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
+ */
+export async function withLaunchAdmission(ctx, process, signal, body) {
+    const end = await beginLoaderFetchWhenFree(ctx, `launch:${process.pid}`, { signal, process });
+    try {
+        return await launchAdmission.run({ ctx, pid: process.pid }, body);
+    }
+    finally {
+        end();
+    }
+}
+/**
+ * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own
+ * worker: holds on one key nest and count once, so it costs nothing more,
+ * and a limit refusal it ends with still pauses the ledger. Undefined
+ * outside one, and for a run of a process `pid` other than the launch's
+ * (another program it starts is a worker of its own).
+ */
+export function beginAdmittedFetch(ctx, pid) {
+    const admission = launchAdmission.getStore();
+    if (admission?.ctx !== ctx || (pid !== undefined && pid !== admission.pid))
+        return undefined;
+    return beginLoaderFetch(ctx, `launch:${admission.pid}`, undefined, admission.pid);
+}
+/**
+ * The Dynamic Worker `workerKey` in flight for a helper's call (the
+ * transform facet, the esbuild facet, the build facet): within an admitted
+ * launch it is that launch's worker (beginAdmittedFetch); otherwise it waits
+ * its turn on the ledger, joining at once when that worker is already in
+ * flight. End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ */
+export async function beginHelperFetch(ctx, workerKey) {
+    return beginAdmittedFetch(ctx) ?? beginLoaderFetchWhenFree(ctx, workerKey);
 }
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit
@@ -278,6 +419,8 @@ export function loaderLedgerStats(ctx) {
     return {
         limit: DO_DYNAMIC_WORKER_LIMIT,
         inFlightWorkers: [...entry.inFlight.keys()],
+        holders: Object.fromEntries([...entry.holders].map(([key, owners]) => [key, [...owners]])),
+        waiters: entry.waiters.map((w) => ({ key: w.key, pid: w.process?.pid, ancestors: w.process?.ancestors })),
         claimed: claimedWidth(entry),
         headroom: headroom(entry),
         peak: entry.peak,

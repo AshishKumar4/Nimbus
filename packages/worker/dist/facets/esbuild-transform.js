@@ -2,7 +2,7 @@ import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js
 import { EsbuildService, generateEsbuildFacetRuntimeSource, generateTransformFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
-import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
@@ -148,11 +148,12 @@ function forgetEsbuildFacet(ctx, stub) {
 /**
  * One call on the shared facet; a call that throws drops the stub it used.
  * The facet's worker is one Dynamic Worker in flight on the ledger for the
- * call's duration — bracketed, never wrapped (see beginLoaderFetch).
+ * call's duration — bracketed, never wrapped (see beginLoaderFetch) — and
+ * admitted as a helper's is (beginHelperFetch).
  */
 async function onEsbuildFacet(ctx, env, call) {
     const stub = sharedEsbuildFacet(ctx, env);
-    const endFetch = beginLoaderFetch(ctx, ESBUILD_FACET_WORKER_ID);
+    const endFetch = await beginHelperFetch(ctx, ESBUILD_FACET_WORKER_ID);
     try {
         return await call(await stub);
     }

@@ -32,9 +32,10 @@
  * Lifecycle invariants:
  *   - exitCode is stamped exactly once (first writer wins). kill() and
  *     reportExit() race-free.
- *   - kill() ends the work behind the pid (its launch's terminator) before
- *     it stamps the exit, which wakes every pending waiter, so
- *     cpWait/cpReadOutput don't hang and nothing the child held outlives it.
+ *   - kill() runs the session's kill of the pid (its launch's terminator,
+ *     and the release of what it held) before it stamps the exit, which
+ *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
+ *     nothing the child held outlives it.
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -91,11 +92,20 @@ interface ChildEntry {
     exitCode: number | null;
     signal: string | null;
     killed: boolean;
-    exitWaiters: Array<(r: {
-        done: boolean;
-        exitCode: number | null;
-        signal: string | null;
-    }) => void>;
+    /** The errno code of a spawn that failed: the child never ran (EAGAIN: no room to start it). */
+    spawnError: string | null;
+    exitWaiters: Array<(r: ChildExitStatus) => void>;
+}
+/**
+ * How a child ended, as Node's ChildProcess reports it: an exit status and
+ * no signal, or the signal that ended it and no status. A spawn that failed
+ * has `spawnError` (its errno code) and the negative errno as its status.
+ */
+export interface ChildExitStatus {
+    done: boolean;
+    exitCode: number | null;
+    signal: string | null;
+    spawnError?: string;
 }
 export interface SpawnReq {
     command: string;
@@ -150,6 +160,13 @@ export interface FacetManagerLike {
         env?: Record<string, string>;
         argv?: string[];
     }, hooks: OutputHooks): Promise<number>;
+    /**
+     * The session's kill of `pid` by `signal` (a name without SIG): the work
+     * behind it ends (its launch's terminator), and what it held is released
+     * and its exit reported (ports, RPC resources, relayed sockets). False when
+     * it is not running.
+     */
+    kill(pid: number, signal: string): boolean;
 }
 /** Where a child runs from: its pid (whose credential it has), directory and environment. */
 export interface ChildOrigin {
@@ -240,6 +257,8 @@ export declare class FacetProcessManager {
     private _appendText;
     /** Whether this pid's descriptors belong to a child managed by this broker. */
     isChild(pid: number): boolean;
+    /** Whether this pid is a child of this broker that has not ended. */
+    isRunning(pid: number): boolean;
     /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
     routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): boolean;
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
@@ -257,18 +276,22 @@ export declare class FacetProcessManager {
     drainOutput(childPid: number): Promise<DrainResult>;
     /**
      * Synchronous kill. First-writer-wins on exit slot. The work behind the
-     * pid ends first: the session's process kill runs the terminator its launch
-     * registered, which aborts a facet program's run, so the Dynamic Worker
-     * it held goes back to the ledger now rather than when the program would
-     * have ended on its own. (`exit()`, which the stamp below calls, drops that
-     * terminator without running it.) Then the stamp wakes every waiter.
+     * pid ends first, through the session's own kill (FacetManagerLike.kill):
+     * the terminator its launch registered aborts a facet program's run, so
+     * the Dynamic Worker it held goes back to the ledger now rather than when
+     * the program would have ended on its own, and its ports, RPC resources
+     * and relayed sockets go with it. (`exit()`, which the stamp below calls,
+     * drops that terminator without running it.) Then the stamp wakes every
+     * waiter.
      */
-    kill(childPid: number, signal?: string): boolean;
+    kill(childPid: number, signal?: string | number): boolean;
     /**
      * Stamp the exit slot. Idempotent — first call wins.
      * Wakes all waiters (exit, output, stdin) so callers don't hang.
      */
     private _stampExit;
+    /** A stamped child's end, as Node reports it (ChildExitStatus). */
+    private _exitStatus;
     /**
      * Late-arriving reportExit from the facet. Idempotent; if kill() or
      * an earlier reportExit already stamped, this is a no-op.
@@ -278,11 +301,7 @@ export declare class FacetProcessManager {
      * Long-poll wait. Returns immediately if already exited; otherwise
      * registers a waiter that resolves on the next exit-slot stamp.
      */
-    wait(childPid: number, waitMs?: number): Promise<{
-        done: boolean;
-        exitCode: number | null;
-        signal: string | null;
-    }>;
+    wait(childPid: number, waitMs?: number): Promise<ChildExitStatus>;
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */
     reap(maxAgeMs?: number): number;
     get stats(): {

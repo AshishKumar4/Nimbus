@@ -488,6 +488,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         done: boolean;
         exitCode: number | null;
         signal: string | null;
+        spawnError?: string;
         acquired?: VfsDeliveredAcquire;
     }>;
 }

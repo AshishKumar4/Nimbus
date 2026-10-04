@@ -85,6 +85,8 @@ export declare class SessionProcessSupervisor {
     getAll(): ProcessEntry[];
     /** Every process spawned under `pid`, transitively, oldest first. */
     descendantsOf(pid: number): ProcessEntry[];
+    /** The pids `pid` descends from, nearest first, as each spawn recorded its parent. */
+    ancestorsOf(pid: number): number[];
     /**
      * Register how to stop the work behind `pid`. Background jobs started
      * through the programmatic API run as a promise held by this session, so

@@ -43,6 +43,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -5014,11 +5015,16 @@ export class FacetManager {
         const __bundleStart = diagOn ? Date.now() : 0;
         // Paced like a resident launch: a tree too large for one turn costs
         // turns, and the pacer's stillWanted check ends a build whose process was
-        // killed while it was suspended. The pacer is settled in the finally
-        // below and not before, because the invocation that granted the last
-        // chunk awaits `chunkEnded` (PacedWork.pump) and has to stay the one
-        // that owns the run: settling at the end of the build would release that
-        // turn with the facet still to load and run on it.
+        // killed while it was suspended. The invocation that granted the last
+        // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
+        // the pacer settles: once the program is loaded and about to be entered
+        // (_execViaLoader's onLoaded), as a resident launch settles once its
+        // process has booted, and in the finally below for a launch that ends
+        // sooner. Not at the end of the build, which would release that turn
+        // with the module map still to assemble and load on it; and not at the
+        // end of the run, which held the session's launch alarm for as long as
+        // the program ran, so a child it launched and waited on, needing a turn
+        // of its own, never got one.
         const pacer = this._launchPacer(entry.pid);
         let vfsState;
         try {
@@ -5112,6 +5118,15 @@ export class FacetManager {
             if (abortController.signal.aborted) {
                 this.processes.kill(entry.pid);
                 return { exitCode: 130, stdout: '', stderr: '' };
+            }
+            // The ledger refused to start it (EAGAIN): it never ran. That is its
+            // spawn failing, for whoever spawned it to report: a child_process
+            // parent as an 'error' event. A pid the caller allocated is the
+            // caller's to mark; one spawned here ends with status 1.
+            if (isDynamicWorkerDeadlock(err)) {
+                if (!opts.skipSpawn)
+                    this.processes.exit(entry.pid, 1);
+                throw err;
             }
             const exitCode = 1;
             const reason = `runtime worker error: ${errorMessage(err)}`;
@@ -5298,11 +5313,13 @@ export class FacetManager {
                     body,
                     signal,
                 }),
+                ancestors: this.processes.ancestorsOf(entry.pid),
                 onWriterActivated: (id) => {
                     this._activateProcessVfsWriter(entry.pid, id);
                     writerActivated = true;
                 },
                 onLoaded: () => {
+                    pacer.settle();
                     if (!diagSink)
                         return;
                     diagSink.loadMs = Date.now() - __loadStart;

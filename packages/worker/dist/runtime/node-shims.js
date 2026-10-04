@@ -6916,13 +6916,12 @@ const __childProcessMod = (() => {
     }
 
     child.kill = function(signal) {
-      // Node semantics: kill() returns true even on already-exited
-      // children (it's a best-effort syscall). Reserve false for "no
-      // pid known" (kill called before spawn settled and we have
-      // nothing to queue).
+      // Node semantics: a child that has exited has no handle to signal,
+      // so kill() returns false and \`killed\` stays as it was. Before the
+      // pid is known the kill is queued, and counts as sent.
       const sig = signal || "SIGTERM";
+      if (child._exitFired) return false;
       child.killed = true;
-      if (child._exitFired) return true;
       if (!child.pid) { child._pendingKill = { signal: sig }; return true; }
       if (!HAS_SUPERVISOR) return true;
       __pendingIO.push(
@@ -7036,8 +7035,13 @@ const __childProcessMod = (() => {
         );
         if (r && r.done) {
           await __nimbusInboundBarrier(r.acquired);
+          if (r.spawnError) {
+            _failSpawn(child, r.spawnError, r.exitCode);
+            break;
+          }
+          // Node's pair: a status and no signal, or the signal and no status.
           child.exitCode = r.exitCode;
-          child.signalCode = r.signal;
+          child.signalCode = r.signal || null;
           child._exitFired = true;
           try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
           _maybeFireClose(child);
@@ -7055,6 +7059,30 @@ const __childProcessMod = (() => {
   }
 
   /**
+   * The child never ran: its spawn failed with errno \`code\` (EAGAIN: the
+   * session had no room to start it, and never would). As Node reports a
+   * failed spawn: an 'error' event named for the file and the code, no
+   * 'exit', no pid, and 'close' with the negative errno as its status once
+   * the streams have ended.
+   */
+  function _failSpawn(child, code, errno) {
+    const err = new Error("spawn " + child.spawnfile + " " + code);
+    err.errno = errno;
+    err.code = code;
+    err.syscall = "spawn " + child.spawnfile;
+    err.path = child.spawnfile;
+    err.spawnargs = child.spawnargs.slice(1);
+    __cpChildren.delete(child.pid);
+    child.pid = undefined;
+    child.exitCode = errno;
+    child._exitFired = true;
+    try { child.emit("error", err); } catch {}
+    try { child._stdoutSink && child._stdoutSink.end(); } catch {}
+    try { child._stderrSink && child._stderrSink.end(); } catch {}
+    _maybeFireClose(child);
+  }
+
+  /**
    * Internal spawn primitive. Always returns a ChildProcess emitter;
    * any failure (no supervisor, bad cmd) surfaces via 'error' + 'exit'
    * events, never a synchronous throw.
@@ -7064,6 +7092,19 @@ const __childProcessMod = (() => {
     args = args || [];
     opts = opts || {};
     const child = _makeChild(opts);
+    child.spawnfile = String(cmd);
+    child.spawnargs = [String(cmd), ...args.map(String)];
+    // \`timeout\`: ended with \`killSignal\` once it has run that long, as Node's spawn does.
+    if (opts.timeout > 0) {
+      let timer = setTimeout(() => {
+        timer = null;
+        child._timedOut = true;
+        child.kill(opts.killSignal);
+      }, opts.timeout);
+      const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+      child.once("exit", clear);
+      child.once("error", clear);
+    }
 
     if (!HAS_SUPERVISOR) {
       queueMicrotask(() => {
@@ -7155,30 +7196,48 @@ const __childProcessMod = (() => {
   }
 
   /**
+   * The callback of exec and execFile, as Node's: once, with no error when
+   * the child exited 0, else an error saying how it ended (\`code\`, or
+   * \`signal\` and no code; \`killed\` when it was killed), and the spawn's
+   * own error when it never ran. \`cmd\` is the command line, as Node joins it.
+   */
+  function _execCallback(child, cmd, cb) {
+    let stdout = "", stderr = "";
+    if (child.stdout) child.stdout.on("data", (d) => { stdout += String(d); });
+    if (child.stderr) child.stderr.on("data", (d) => { stderr += String(d); });
+    let spawnError = null;
+    let done = false;
+    // Use 'close' (fires after exit AND both stdio streams ended) so all
+    // chunks have landed before cb resolves.
+    child.on("error", (e) => { spawnError = e; });
+    child.on("close", (code, signal) => {
+      if (done || !cb) return;
+      done = true;
+      if (spawnError) {
+        spawnError.cmd = cmd;
+        cb(spawnError, stdout, stderr);
+      } else if (code === 0 && signal === null) {
+        cb(null, stdout, stderr);
+      } else {
+        // stdout and stderr ride on it too, as util.promisify(exec)'s rejection carries them.
+        const err = Object.assign(new Error("Command failed: " + cmd + "\\n" + stderr), {
+          code, killed: child.killed, signal, cmd, stdout, stderr,
+        });
+        cb(err, stdout, stderr);
+      }
+    });
+  }
+
+  /**
    * exec(cmd, opts, cb) — Node semantics: passes cmd to a shell
-   * (we use 'sh -c'). Buffers stdout/stderr; cb fires once on exit.
+   * (we use 'sh -c'). Buffers stdout/stderr; cb fires once on close.
    */
   function exec(cmd, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = {}; }
     opts = opts || {};
     // Use sh -c so shell metacharacters work for husky/concurrently/etc.
     const child = _spawn("sh", ["-c", cmd], { ...opts, shell: true });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += String(d); });
-    child.stderr.on("data", (d) => { stderr += String(d); });
-    // Use 'close' (fires after exit AND both stdio streams ended) so all
-    // chunks have landed before cb resolves.
-    child.on("close", (code) => {
-      if (cb) {
-        if (code === 0) cb(null, stdout, stderr);
-        else {
-          const err = Object.assign(new Error("Command failed: " + cmd), {
-            code, cmd, stdout, stderr,
-          });
-          cb(err, stdout, stderr);
-        }
-      }
-    });
+    _execCallback(child, String(cmd), cb);
     return child;
   }
 
@@ -7189,21 +7248,9 @@ const __childProcessMod = (() => {
     if (typeof args === "function") { cb = args; args = []; opts = {}; }
     if (typeof opts === "function") { cb = opts; opts = {}; }
     opts = opts || {};
-    const child = _spawn(file, args || [], { ...opts, shell: false });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += String(d); });
-    child.stderr.on("data", (d) => { stderr += String(d); });
-    child.on("close", (code) => {
-      if (cb) {
-        if (code === 0) cb(null, stdout, stderr);
-        else {
-          const err = Object.assign(new Error("Command failed: " + file), {
-            code, stdout, stderr,
-          });
-          cb(err, stdout, stderr);
-        }
-      }
-    });
+    args = args || [];
+    const child = _spawn(file, args, { ...opts, shell: false });
+    _execCallback(child, [String(file), ...args.map(String)].join(" "), cb);
     return child;
   }
 
@@ -7239,14 +7286,38 @@ const __childProcessMod = (() => {
 
     const result = { pid: 0, stdout: "", stderr: "", status: null, signal: null, output: [null, "", ""] };
     let _done = false;
+    // A spawn that failed is the result's \`error\`, named for spawnSync, as Node's.
+    let spawnError = null;
+    child.on("error", (e) => {
+      spawnError = e;
+      e.syscall = "spawnSync " + child.spawnfile;
+      e.message = "spawnSync " + child.spawnfile + " " + e.code;
+    });
     result.__deferred = new Promise((resolve) => {
       child.on("close", (code, signal) => {
+        if (spawnError) {
+          result.error = spawnError;
+          result.output = null;
+          result.stdout = null;
+          result.stderr = null;
+          result.status = null;
+          _done = true;
+          resolve(result);
+          return;
+        }
         result.pid = child.pid;
         result.stdout = stdout;
         result.stderr = stderr;
         result.status = code;
         result.signal = signal;
         result.output = [null, stdout, stderr];
+        // \`timeout\` ended it: Node's spawnSync says so in \`error\` as well.
+        if (child._timedOut) {
+          result.error = Object.assign(new Error("spawnSync " + child.spawnfile + " ETIMEDOUT"), {
+            errno: -110, code: "ETIMEDOUT", syscall: "spawnSync " + child.spawnfile,
+            path: child.spawnfile, spawnargs: child.spawnargs.slice(1),
+          });
+        }
         _done = true;
         resolve(result);
       });

@@ -17,7 +17,9 @@
  * already has in flight — a resident process, the esbuild facet, a git
  * network op, another fan-out — keeps its slots. Work that would rather wait
  * than be refused waits on the ledger ({@link beginLoaderFetchWhenFree}) and
- * is let in, in the order it asked, by whichever release makes room.
+ * is let in, in the order it asked, by whichever release makes room. A wait
+ * no release can ever satisfy (every worker held by a process that waits on
+ * a descendant waiting here) is refused instead: {@link DynamicWorkerDeadlockError}.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
  * limit is per Durable Object, and dynamic workers die with the isolate that
@@ -47,13 +49,43 @@ export interface DynamicWorkerClaim {
     release(): void;
 }
 /**
+ * A process on the ledger: the one a hold or a wait is for, and, for a wait,
+ * the processes it descends from. With them the ledger can tell a wait that
+ * no release will ever satisfy (see {@link DynamicWorkerDeadlockError}).
+ */
+export interface LedgerProcess {
+    pid: number;
+    /** The pids it descends from, nearest first. */
+    ancestors?: readonly number[];
+}
+/**
+ * The refusal of a wait for a Dynamic Worker that no release can ever
+ * satisfy: every worker this Durable Object has in flight is held by a
+ * process that has a descendant waiting for one, so each holder is taken to
+ * be waiting on that descendant, and none will end to make room (nine
+ * children of a parent, each waiting on a grandchild of its own, fill the
+ * limit). The newest such wait is refused, as a spawn at a process limit is
+ * (EAGAIN): its program never runs, and the ancestor told so can end and
+ * give its worker back.
+ */
+export declare class DynamicWorkerDeadlockError extends Error {
+    readonly pid: number;
+    readonly holders: readonly number[];
+    readonly code = "EAGAIN";
+    readonly errno = -11;
+    constructor(pid: number, holders: readonly number[]);
+}
+/** Whether `error` is the ledger's refusal of a wait nothing can satisfy. */
+export declare function isDynamicWorkerDeadlock(error: unknown): error is DynamicWorkerDeadlockError;
+/**
  * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
  * returned function ends the hold (idempotently), from the caller's own
  * `finally`. Holds on one key nest: the worker counts once until the last
  * one ends, as the platform counts it. Under a `claim`, the hold counts
  * inside the claim's width. This never waits: it is for work the actor
  * starts regardless (a resident process); {@link beginLoaderFetchWhenFree}
- * waits for room.
+ * waits for room. `holder` is the process the hold is for, when it is one's
+ * (a resident's worker): see {@link DynamicWorkerDeadlockError}.
  *
  * A begin/end pair rather than a wrapper on purpose, and the shape is
  * load-bearing: wrapping the stub call in a ledger-owned async frame
@@ -66,7 +98,7 @@ export interface DynamicWorkerClaim {
  * workers: an RPC stub call must stay a direct property call awaited by the
  * frame that made it, so the ledger only brackets it.
  */
-export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?: DynamicWorkerClaim): EndLoaderFetch;
+export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?: DynamicWorkerClaim, holder?: number): EndLoaderFetch;
 /**
  * {@link beginLoaderFetch} once the ledger has room: resolves, holding
  * `workerKey`, as soon as that worker is already in flight (holds on it
@@ -88,6 +120,12 @@ export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?:
  * room may never come (a resident process holds its worker for as long as
  * it runs).
  *
+ * `process` is the process the wait is for, and the ones it descends from;
+ * the hold it is let in on is that process's. A wait whose process descends
+ * from every holder of a full ledger, as each holder's own descendants do
+ * when each waits on one, can never be let in, and the newest is refused
+ * with {@link DynamicWorkerDeadlockError} (EAGAIN), holding nothing.
+ *
  *   const end = await beginLoaderFetchWhenFree(ctx, key, { signal });
  *   try { return await worker.getEntrypoint().run(); }
  *   catch (error) { end(error); throw error; }
@@ -96,7 +134,36 @@ export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?:
 export declare function beginLoaderFetchWhenFree(ctx: object, workerKey: string, options?: {
     signal?: AbortSignal;
     claim?: DynamicWorkerClaim;
+    process?: LedgerProcess;
 }): Promise<EndLoaderFetch>;
+/**
+ * Run a launch admitted once on the ledger. It waits, as
+ * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
+ * Worker, and holds it until `body` settles. Everything the launch puts in
+ * flight in body's async context (its transform facet, its build facet, its
+ * own program) is that worker: a launch prepares and then runs, one of them
+ * at a time, so its preparation can never wait on room its own admission
+ * holds. (A helper call its program makes later, over RPC, is not in that
+ * context: a worker more, it waits its turn.) `signal` abandons the wait; a
+ * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
+ */
+export declare function withLaunchAdmission<T>(ctx: object, process: LedgerProcess, signal: AbortSignal | undefined, body: () => Promise<T>): Promise<T>;
+/**
+ * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own
+ * worker: holds on one key nest and count once, so it costs nothing more,
+ * and a limit refusal it ends with still pauses the ledger. Undefined
+ * outside one, and for a run of a process `pid` other than the launch's
+ * (another program it starts is a worker of its own).
+ */
+export declare function beginAdmittedFetch(ctx: object, pid?: number): EndLoaderFetch | undefined;
+/**
+ * The Dynamic Worker `workerKey` in flight for a helper's call (the
+ * transform facet, the esbuild facet, the build facet): within an admitted
+ * launch it is that launch's worker (beginAdmittedFetch); otherwise it waits
+ * its turn on the ledger, joining at once when that worker is already in
+ * flight. End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ */
+export declare function beginHelperFetch(ctx: object, workerKey: string): Promise<EndLoaderFetch>;
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit
  * less what is held and claimed right now, and none while a limit refusal's
@@ -121,6 +188,14 @@ export declare function loaderLedgerStats(ctx: object): {
     waiting: number;
     /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */
     pauseMs: number;
+    /** In-flight worker → the process each hold on it is for (null: no process's). */
+    holders: Record<string, Array<number | null>>;
+    /** Waits not yet admitted, in order: the worker each waits for, and the process it is for. */
+    waiters: Array<{
+        key: string;
+        pid?: number;
+        ancestors?: readonly number[];
+    }>;
 };
 /**
  * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"
