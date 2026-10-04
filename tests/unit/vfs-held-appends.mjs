@@ -67,7 +67,7 @@ const exec = (ws, line, options = {}) => ws.exec(line, { cwd: '/home/user', ...o
   assert.match(r.stdout, /^rc=1\n.*ENOSPC/s, `(1) a write past the storage limit fails its command (${JSON.stringify(r.stdout.slice(0, 200))}, ${r.stderr})`);
   assert.equal(r.exitCode, 0, '(1) and the shell goes on');
   await exec(ws, 'rm -f big err');
-  r = await exec(ws, 'printf x > /dev/full 2>/dev/null; echo rc=$?');
+  r = await exec(ws, 'echo x > /dev/full 2>/dev/null; echo rc=$?');
   assert.deepEqual([r.stdout, r.stderr], ['rc=1\n', ''], '(1) /dev/full: ENOSPC is the command\'s, on its stderr redirect');
 
   // When the command ends: what it appended is held, and the store refuses

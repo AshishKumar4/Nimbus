@@ -41,7 +41,7 @@ import { isPipeEnd, PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
-import { isBrokenPipe } from '../utils/bytes-io.js';
+import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
@@ -1057,29 +1057,42 @@ export class Interpreter {
           const builtin = this.config.builtins.get(name);
           if (builtin) {
             const builtinIo = this.createIoFromFds(io, fds);
-            exitCode = await builtin(args, stdout, stderr, stdin, {
-              vfs: builtinIo.vfs ?? this.config.vfs,
-              cwd: this.config.getCwd(),
-              stdin,
-              stdout,
-              stderr,
-              terminalStdin: io.terminalStdin,
-              terminalFds: {
-                stdin: fds.terminalInputFds.has(0),
-                stdout: fds.terminalOutputFds.has(1),
-                stderr: fds.terminalOutputFds.has(2),
-              },
-              scriptMode: io.scriptMode,
-              isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
-              getPositionals: () => this.readPositionals(builtinIo),
-              setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-              executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
-          declareLocal: (name) => this.declareLocal(name),
-          unsetFunction: (name) => this.functions.delete(name),
-          shell: this.config,
-          interactive: io.interactive,
-          getLastExitCode: () => this.lastExitCode,
-            });
+            try {
+              exitCode = await builtin(args, stdout, stderr, stdin, {
+                vfs: builtinIo.vfs ?? this.config.vfs,
+                cwd: this.config.getCwd(),
+                stdin,
+                stdout,
+                stderr,
+                terminalStdin: io.terminalStdin,
+                terminalFds: {
+                  stdin: fds.terminalInputFds.has(0),
+                  stdout: fds.terminalOutputFds.has(1),
+                  stderr: fds.terminalOutputFds.has(2),
+                },
+                scriptMode: io.scriptMode,
+                isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                getPositionals: () => this.readPositionals(builtinIo),
+                setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
+                executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
+            declareLocal: (name) => this.declareLocal(name),
+            unsetFunction: (name) => this.functions.delete(name),
+            shell: this.config,
+            interactive: io.interactive,
+            getLastExitCode: () => this.lastExitCode,
+              });
+            } catch (error) {
+              // A write the store or a device refused fails the builtin, as it
+              // fails a registered command (runCommand): its message on its
+              // stderr, status 1. A broken pipe and the shell's signals pass.
+              if (!isRefusedWrite(error)) throw error;
+              try {
+                await stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+              } catch {
+                // Its stderr may be what refused; the status still says so.
+              }
+              exitCode = 1;
+            }
           } else {
             // Check registry; a bare name not registered is searched for on the
             // PATH this command runs with, a `PATH=x cmd` prefix included.

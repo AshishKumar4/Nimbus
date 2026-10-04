@@ -180,6 +180,15 @@ export function isBrokenPipe(error: unknown): boolean {
   return (error as { code?: string })?.code === 'EPIPE';
 }
 
+/** The errors of a write the store or a device refused: out of room, too large, or lost. */
+const REFUSED_WRITE_CODES = new Set(['ENOSPC', 'EDQUOT', 'EFBIG', 'EIO']);
+
+/** Whether `error` is a write the store or a device refused (not a broken pipe: that is SIGPIPE's). */
+export function isRefusedWrite(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && typeof error.code === 'string' && REFUSED_WRITE_CODES.has(error.code);
+}
+
 /** Records split on `delim`: each without its delimiter; `terminated` says whether the last had one. */
 export function splitRecords(bytes: Uint8Array, delim: number): { records: Uint8Array[]; terminated: boolean } {
   const records: Uint8Array[] = [];
