@@ -1,6 +1,6 @@
 /**
- * A facet of the local facet host, inside the worker that is its realm
- * (local-facet-host.ts).
+ * A facet of the local facet host, inside the worker or process that is its
+ * realm (local-facet-host.ts).
  *
  * The scope a facet needs is built here, in the realm's own globals: the
  * wasm table filled with the modules the host compiled, the preamble
@@ -10,14 +10,15 @@
  *
  * The session capability crosses as calls (runtime/realm-guest.ts). On a
  * host that parks (JSPI) the supervisor's methods settle with the host's
- * answer, so a guest parks on them as on any syscall and this realm's loop
- * runs meanwhile. On one that cannot, they wait for the answer, holding this
- * thread, as the same-isolate supervisor answered at once; its synchronous
- * view's methods always wait.
+ * answer, so a guest parks on them as on any syscall (in a process realm the
+ * answer is waited for first, so the guest parks on a settled promise). On
+ * one that cannot, they wait for the answer, holding this thread, as the
+ * same-isolate supervisor answered at once; its synchronous view's methods
+ * always wait.
  */
 import { joinRealm } from './realm-guest.js';
 import { realmOutcome } from './realm.js';
-import { isFacetPayload, isFacetSubmit } from './local-facet-host.js';
+import { isFacetPayload, isFacetSubmit, wasmCompiler } from './local-facet-host.js';
 const isScopedFn = (value) => typeof value === 'function';
 const isEvaluator = (value) => typeof value === 'function';
 /**
@@ -90,7 +91,9 @@ async function scope() {
     return built;
 }
 async function run(submit) {
-    Object.assign(wasmTable, submit.modules);
+    for (const [name, module] of Object.entries(submit.modules)) {
+        wasmTable[name] = module instanceof WebAssembly.Module ? module : await wasmCompiler()(module);
+    }
     const evaluateIn = await scope();
     let fn = scoped.get(submit.source);
     if (!fn) {

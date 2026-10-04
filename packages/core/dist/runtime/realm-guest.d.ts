@@ -1,12 +1,15 @@
 /**
- * realm-guest.ts — the guest's side of a realm (realm.ts), inside its worker.
+ * realm-guest.ts — the guest's side of a realm (realm.ts), inside its worker
+ * thread or its process.
  *
- * The host's first message carries what the guest started with and its
- * ports; it is taken before anything of the program's runs and the ports live
- * only in the closure this answers, never in `workerData` a program can
- * import.
+ * What the host started the realm with is taken before anything of the
+ * program's runs, and the channels live only in the closure this answers,
+ * never in `workerData` a program can import.
  */
-import type { MessagePort } from 'node:worker_threads';
+/** Where the host's events arrive. */
+export interface RealmEvents {
+    on(event: 'message', listener: (value: unknown) => void): unknown;
+}
 export interface JoinedRealm {
     /** What the host started the realm with. */
     readonly payload: unknown;
@@ -16,9 +19,14 @@ export interface JoinedRealm {
     callAsync(request: unknown): Promise<unknown>;
     /** Posts an event to the host. */
     post(event: unknown): void;
-    /** Where the host's events arrive. Held by default: the realm lives while it is. */
-    readonly events: MessagePort;
+    readonly events: RealmEvents;
+    /**
+     * Whether waiting for the host's events keeps the realm alive, as it does
+     * by default. A process realm lives until its host ends it, whatever this
+     * says.
+     */
+    hold(on: boolean): void;
 }
-/** Joins the realm the host started this worker as. Throws in a worker no host started. */
+/** Joins the realm the host started this worker or process as. Throws in one no host started. */
 export declare function joinRealm(): Promise<JoinedRealm>;
 //# sourceMappingURL=realm-guest.d.ts.map

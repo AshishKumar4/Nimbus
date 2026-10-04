@@ -37,10 +37,7 @@ let exiting = false;
 const fetched = new Map();
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    if (fetched.size > 0 || ports.size > 0)
-        events.ref();
-    else
-        events.unref();
+    joined.hold(fetched.size > 0 || ports.size > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do. */
 function exitNow(code) {
