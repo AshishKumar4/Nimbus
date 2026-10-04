@@ -527,12 +527,13 @@ try {
         '})();',
       ].join('\n'),
       spawn: [
+        // A Node grandchild awaited here depends on the separate cp-concurrency fix.
         '(async () => {',
-        "  const c = require('child_process').spawn('node', ['-e', \"console.log('grandchild')\"]);",
-        "  c.stdout.on('data', (d) => process.stdout.write(d));",
-        "  await new Promise((r) => c.on('close', r));",
+        "  const c = require('child_process').spawn('true', []);",
+        "  await new Promise((r) => c.on('spawn', r));",
         "  console.log('child: READY');",
         "  try { require('fs').readFileSync(0); } catch (e) { console.log('caught ' + e.code + ' ' + /cpSpawn/.test(e.message)); }",
+        "  c.kill(); process.exit(0);",
         '})();',
       ].join('\n'),
       // Four bytes read into the middle of a buffer through a FileHandle;
@@ -589,7 +590,7 @@ try {
       `a stop record the program forges is no stop\n${JSON.stringify(review.forged)}`);
     check(review.tls?.out === 'child: READY\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
       `a TLS connection before the read: the read names it\n${JSON.stringify(review.tls)}`);
-    check(review.spawn?.out === 'grandchild\nchild: READY\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
+    check(review.spawn?.out === 'child: READY\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
       `a bound cpSpawn is an effect, performed once and named by the later read\n${JSON.stringify(review.spawn)}`);
     check(review.config && !/cfg v2/.test(review.config.out) && /did not retrace/.test(review.config.out),
       `a file read before the read changed while it waited: the run after the stop is ended, loudly\n${JSON.stringify(review.config)}`);

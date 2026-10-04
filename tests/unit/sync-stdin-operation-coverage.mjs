@@ -22,4 +22,10 @@ for (const op of ['fsAcquired', 'fsAcquire', 'fsList']) {
   assert.equal(p.kind, 'observation');
   assert.notEqual(answerDigest(p.answer({ value: { rev: 1 }, paths: [], entries: [] })), answerDigest(p.answer({ value: { rev: 2 }, paths: [], entries: [] })));
 }
+for (const field of ['resize', 'signal', 'acquired', 'futureMetadata']) {
+  const input = new ReplayJournal(() => {});
+  input.start('a');
+  await input.handle('cpReadStdin', [], 'a', async () => ({ data: new Uint8Array(), ended: false, [field]: {} }));
+  assert.equal(input.replayable, false, field + ' must not leak around the stdin tape');
+}
 console.log(`sync-stdin-operation-coverage: ${SUPERVISOR_OPS.length}/${SUPERVISOR_OPS.length} classified; unknown operations fail closed`);

@@ -6,6 +6,8 @@ export interface ReplayPolicy {
   /** Exact, operation-local rules; never strip a property by its name globally. */
   answer?: Projection;
   args?: (args: readonly unknown[]) => readonly unknown[];
+  /** Only these fields have a separate input-tape contract. */
+  inputFields?: readonly string[];
 }
 const omit = (value: unknown, keys: readonly string[]): unknown => {
   if (!value || typeof value !== 'object') return value;
@@ -28,7 +30,6 @@ const withAcquire = (value: unknown): unknown => {
 const read = { kind: 'observation' } as const;
 const effect = { kind: 'effect' } as const;
 const output = { kind: 'output' } as const;
-const input = { kind: 'input' } as const;
 const control = { kind: 'control' } as const;
 
 /**
@@ -65,7 +66,9 @@ export const REPLAY_OPERATION_POLICY = {
   registerPort: effect, allocatePort: effect, unregisterPort: effect,
   reportExit: output, routeLoopback: effect, transform: read,
   cpSpawn: effect, reportRuntimeCode: output, cpStdinWrite: effect,
-  cpStdinEnd: effect, cpReadStdin: input, stdinFileRead: input,
+  cpStdinEnd: effect,
+  cpReadStdin: { kind: 'input', inputFields: ['data', 'ended'] },
+  stdinFileRead: { kind: 'input', inputFields: ['data', 'size'] },
   cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
   cpDrainOutput: read, cpKill: effect,
   cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
