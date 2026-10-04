@@ -5,6 +5,21 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-03
+
+Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
+0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
+unchanged. The carets are minor-strict, so every range on core, worker,
+fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
+`WorkspaceFs`, no longer a `ProcessView`; and core's
+`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
+`defaultGemHome` give way to `pythonSitePackages(home)` and
+`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
+file, so a mount that cannot tell must answer `unknown`; and
+`NimbusWorkspace.exec` without a `shellId` is one-shot, so a caller that
+relies on `cd` or `export` persisting passes a `shellId`; as described
+below.
+
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),
   and `vite`'s "Root:" and "Config:" lines did too. They print the path
@@ -76,21 +91,6 @@ published independently in the `@nimbus-sh` npm scope.
   enter (`python3: can't enter working directory '/x': [Errno 44] No such
   file or directory`). It started in `/`, so `open("hello.txt")` at the
   prompt looked in the root.
-
-## 2026-10-03
-
-Published as core 0.15.0, worker 0.13.0, fabric 0.10.0, sdk 0.11.0, cli
-0.2.2, loom 0.2.2, react 0.2.2; platform 0.7.0 and config 0.2.3 are
-unchanged. The carets are minor-strict, so every range on core, worker,
-fabric and sdk moves. Breaking for embedders: `NimbusWorkspace.fs` is a
-`WorkspaceFs`, no longer a `ProcessView`; and core's
-`PYTHON_SITE_PACKAGES_ROOT`, `PYTHON_PYODIDE_PACKAGE_MANIFEST` and
-`defaultGemHome` give way to `pythonSitePackages(home)` and
-`gemHomeFor(home)`; and a mount's readdir type `file` now means a regular
-file, so a mount that cannot tell must answer `unknown`; and
-`NimbusWorkspace.exec` without a `shellId` is one-shot, so a caller that
-relies on `cd` or `export` persisting passes a `shellId`; as described
-below.
 
 - Fixed: a filesystem refusal kept its reason only in its `cause`. A
   confined principal's widening `chmod` reached the caller as "EPERM:
