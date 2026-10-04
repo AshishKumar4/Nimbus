@@ -1,5 +1,9 @@
 /** An argument as util.format writes it outside a specifier: a string as itself, anything else inspected. */
 const formatArg = (arg) => (typeof arg === 'string' ? arg : inspect(arg));
+/** A number as util.format writes it: -0 keeps its sign. */
+const formatNumber = (n) => (Object.is(n, -0) ? '-0' : String(n));
+/** %d and %i: a BigInt keeps its `n`, a Symbol is NaN, anything else parsed by `parse`. */
+const formatInteger = (arg, parse) => typeof arg === 'bigint' ? `${arg}n` : typeof arg === 'symbol' ? 'NaN' : formatNumber(parse(arg));
 export function format(fmt, ...args) {
     if (typeof fmt !== 'string') {
         return [fmt, ...args].map(formatArg).join(' ');
@@ -13,9 +17,9 @@ export function format(fmt, ...args) {
         const arg = args[i++];
         switch (type) {
             case 's': return typeof arg === 'string' ? arg : String(arg);
-            case 'd': return String(Number(arg));
-            case 'i': return String(parseInt(String(arg), 10));
-            case 'f': return String(parseFloat(String(arg)));
+            case 'd': return formatInteger(arg, Number);
+            case 'i': return formatInteger(arg, (value) => parseInt(String(value)));
+            case 'f': return typeof arg === 'symbol' ? 'NaN' : formatNumber(parseFloat(String(arg)));
             case 'j':
                 try {
                     return JSON.stringify(arg);

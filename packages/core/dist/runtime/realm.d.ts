@@ -47,7 +47,8 @@
  * the host: no answer that cannot cross, no failed call, no frame larger than
  * {@link MAX_FRAME_BYTES} (which ends the realm). A process realm is a process
  * group of its own: ending it ends every process the guest started that
- * stayed in it, and its end waits for none that left.
+ * stayed in it, and its end waits for none that left (one that called
+ * setsid left; only an OS sandbox contains that).
  *
  * Bun and Node both carry node:worker_threads, SharedArrayBuffer and
  * Atomics.wait in workers, and child processes; workerd has none, and
@@ -99,10 +100,11 @@ export declare const REALM_FDS: {
 };
 /**
  * The largest frame a process guest may send: the largest single value it
- * has reason to (a write, an answer), with room. A host holds one frame at a
- * time per realm, allocated once its length is known, so this bounds what a
- * guest can make it hold; a longer one ends the realm before a byte of it is
- * kept.
+ * has reason to (a write, an answer), with room. It bounds one frame, not a
+ * realm's memory: a frame is allocated once its length is known, a longer one
+ * ends the realm before a byte of it is kept, and decoding a full frame can
+ * cost a few times its size while the next arrives. A process guest shares
+ * the host machine with the host, so it is not a memory boundary either.
  */
 export declare const MAX_FRAME_BYTES: number;
 /** What a process realm's guest sends: a call, or an event. */

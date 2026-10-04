@@ -219,7 +219,8 @@ setInterval(check, 500);`, { eval: true });
 }
 async function joinProcessRealm() {
     const hostPid = Number(realmProcess.argv[realmProcess.argv.length - 1]);
-    if (!Number.isSafeInteger(hostPid) || hostPid <= 1)
+    // PID 1 is a host too (a container's entrypoint): its namespace ends with it.
+    if (!Number.isSafeInteger(hostPid) || hostPid < 1)
         throw new Error('realm: started without a realm');
     await watchHost(hostPid);
     let start;
