@@ -102,7 +102,7 @@ type RpcHost = any;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
-  'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug'
+  'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'
 >;
 
 const WriteBatchInodeSchema: z.ZodType<BatchInodeEntry> = z.object({
@@ -1188,6 +1188,10 @@ export async function _rpcReportExit(
     // also emits, so we dedupe on pid there. Include the command (when
     // available via ProcessTable) so the UI can surface a tab for pids
     // whose spawn event was suppressed (e.g. `node -e` short evals).
+    // A child_process child's end is its parent's to report, as its output
+    // is: the terminal hears nothing of it (the parent may not even read
+    // what it wrote, as a Node parent need not).
+    if (self.facetProcessManager?.isChild(pid)) return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
 
@@ -1450,11 +1454,21 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
   // facet calls cp* before the supervisor has initialized the broker
   // (e.g., immediately after DO hibernation wake-up).
 
+/**
+ * This reply's number among the news replies made for `pid` (fabric
+ * processNewsReply), on the session's Dynamic Worker ledger; 0 for a host
+ * with no Durable Object state, which has no ledger to keep reports on.
+ */
+function newsReply(self: RpcHost, pid: number): number {
+    if (!self.ctx || typeof self.ctx !== 'object' || !Number.isInteger(pid)) return 0;
+    return processNewsReply(self.ctx, pid);
+}
+
 export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number; news: number }> {
     const fpm = self._ensureFacetProcessManager();
     const spawned = await fpm.spawn(req);
     // A new child is news for its parent: its blocked report must name it.
-    return { ...spawned, news: processNewsReply(self.ctx, req.parentPid) };
+    return { ...spawned, news: newsReply(self, req.parentPid) };
 }
 
 /**
@@ -1542,7 +1556,7 @@ export async function _rpcCpReadOutput(
     const fpm = self._ensureFacetProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     const delivers = output.chunks.length > 0 || output.closed;
-    const reply = delivers && typeof pid === 'number' ? { ...output, news: processNewsReply(self.ctx, pid) } : output;
+    const reply = delivers && typeof pid === 'number' ? { ...output, news: newsReply(self, pid) } : output;
     return withDeliveredAcquire(self, reply, delivers, acquire, pid);
 }
 
@@ -1560,6 +1574,7 @@ export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string
 export async function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void> {
     if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running') return;
     const said = (report ?? {}) as { blocked?: unknown; seen?: unknown; waitsOn?: unknown };
+    if (!self.ctx || typeof self.ctx !== 'object') return;
     setProcessBlocked(self.ctx, pid, {
       blocked: said.blocked === true,
       seen: Number.isInteger(said.seen) ? said.seen as number : -1,
@@ -1571,7 +1586,7 @@ export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number
     const fpm = self._ensureFacetProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     const delivers = status.done || status.started === true;
-    const reply = delivers && typeof pid === 'number' ? { ...status, news: processNewsReply(self.ctx, pid) } : status;
+    const reply = delivers && typeof pid === 'number' ? { ...status, news: newsReply(self, pid) } : status;
     return withDeliveredAcquire(self, reply, status.done, acquire, pid);
 }
 

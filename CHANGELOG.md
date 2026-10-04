@@ -70,6 +70,20 @@ published independently in the `@nimbus-sh` npm scope.
   `code: null`, `signal`, `killed` and `cmd`, with Node's message
   (`Command failed: <cmd>` and the child's stderr), and a spawn's own error
   reaches their callback. The parent's view is compared with host node's.
+- Fixed: a child spawned right after its parent wrote a file could miss
+  the write. A synchronous write is parked in the parent until a write-back
+  carries it to the session; a child spawned at once could launch first and
+  fail `cannot find module` on the script its parent had just written (the
+  first of eight such children, every run). The parent's parked writes now
+  reach the session before a child is launched, and before anything is
+  written to a child's stdin, as they already did before a fetch or a
+  socket frame.
+- Fixed: a child whose output its parent never read exited but never
+  closed: its unread stderr (an error message) held 'close' back for good,
+  and a parent waiting for 'close' waited with it. Unread output is now
+  drained after 'exit', as Node's `flushStdio` does, and 'close' follows. A
+  failing child's exit no longer prints a dump of its output to the
+  terminal either: its output and its end are its parent's to report.
 - Fixed: `process.exit()` in a `child_process` child whose stdin was still
   open did not end it. The child had read its input and exited 0, but its
   run then waited for its stdin pump, which ends only when the parent ends

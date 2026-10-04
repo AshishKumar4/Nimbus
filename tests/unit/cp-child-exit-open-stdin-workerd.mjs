@@ -15,6 +15,15 @@
 //     still runs. Before, the parent's run waited for the child to close
 //     (its close listener was pending I/O), so the parent ended only when the
 //     child did.
+//   - written: a parent writes each child's script with writeFileSync and
+//     spawns it at once, eight times over, and tells each one "go" on stdin
+//     after writing the file it reads. The child sees both writes, as in
+//     Node: the parent's parked writes reach the authority before the launch
+//     and before the stdin write. Before, a child could fail `cannot find
+//     module` (seen 1 run in 5 with ES-module children).
+//   - unread: a child fails, writing its error to a stderr its parent never
+//     reads. Its parent still gets 'close', as Node's flushStdio gives it.
+//     Before, the unread stderr held 'close' back for good.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -40,6 +49,33 @@ for (let i = 0; i < N; i++) {
   });
 }
 `,
+  written: `
+const { spawn } = require('child_process');
+const fs = require('fs');
+const t0 = Date.now();
+const N = 8;
+const results = [];
+for (let i = 0; i < N; i++) {
+  fs.writeFileSync('/tmp/written-' + i + '.mjs', "import { readFileSync } from 'node:fs'; process.stdin.once('data', () => { console.log('" + i + " ' + readFileSync('/tmp/written-" + i + ".txt', 'utf8')); process.exit(0); });");
+  const c = spawn('node', ['/tmp/written-' + i + '.mjs']);
+  let out = '';
+  c.stdout.on('data', (d) => { out += d; });
+  c.stderr.on('data', (d) => { out += d; });
+  fs.writeFileSync('/tmp/written-' + i + '.txt', 'v' + i);
+  c.stdin.write('go\\n');
+  c.on('close', (code) => {
+    results.push(out.trim() + ' ; ' + code);
+    if (results.length === N) { console.log(results.sort().join('\\n')); console.log('T ' + (Date.now() - t0)); }
+  });
+}
+`,
+  unread: `
+const { spawn } = require('child_process');
+const t0 = Date.now();
+const c = spawn('node', ['-e', "console.error('boom'); process.exit(3)"]);
+c.on('exit', (code) => console.log('exit ' + code));
+c.on('close', (code) => { console.log('close ' + code); console.log('T ' + (Date.now() - t0)); });
+`,
   children: `
 const { spawn } = require('child_process');
 const t0 = Date.now();
@@ -60,6 +96,7 @@ for (const [name, source] of Object.entries(SCENARIOS)) {
   host[name] = { lines: lines(r.stdout), ms: Date.now() - started };
 }
 assert.ok(host.children.ms < 10_000, `host node's parent exits without waiting for its child (${host.children.ms} ms)`);
+assert.equal(host.written.lines.length, 8, host.written.lines.join('\n'));
 
 console.log('cp-child-exit-open-stdin-workerd: starting local workerd');
 const probe = await startLocalProbe({ runtimes: [] });
@@ -90,4 +127,4 @@ try {
   await probe.stop();
 }
 assert.deepEqual(failures, [], failures.join('\n\n'));
-console.log('ok - cp-child-exit-open-stdin-workerd (a child exits with its stdin open; a parent exits with a child running)');
+console.log('ok - cp-child-exit-open-stdin-workerd (a child exits with its stdin open; a parent exits with a child running; a child sees the writes before its spawn and its stdin; unread output still closes)');

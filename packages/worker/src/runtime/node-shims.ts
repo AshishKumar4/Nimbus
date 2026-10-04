@@ -6788,6 +6788,23 @@ const __childProcessMod = (() => {
     if (typeof chunk === "string") return new TextEncoder().encode(chunk);
     return new TextEncoder().encode(String(chunk));
   }
+  /**
+   * RELEASE ahead of what the child observes this process by: its launch
+   * (it reads the files this process wrote, its own script among them) and
+   * what this process writes to its stdin. A synchronous
+   * write is only parked; without the barrier a child spawned right after
+   * \`writeFileSync\` could read the file before the write-back reached the
+   * authority, and a child told "ready" on stdin could read the pre-write
+   * bytes. Measured: a parent that wrote its child's module and spawned it
+   * at once had the child fail \`cannot find module\` (1 run in 5).
+   */
+  async function _releaseToChild() {
+    const release = globalThis.__nimbusVfsReleaseBarrier;
+    // A write-back that fails is retained and reported at exit (the write
+    // ledger's contract); the child is not the operation to blame for it.
+    if (typeof release === "function") { try { await release(); } catch {} }
+  }
+
   function _queueStdinWrite(child, data) {
     if (!child._brokerPid) {
       child._pendingStdin = child._pendingStdin || [];
@@ -6796,7 +6813,7 @@ const __childProcessMod = (() => {
     }
     if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() =>
+    const next = prior.then(_releaseToChild).then(() =>
       __nimbusUseRpcResult(__supervisor.cpStdinWrite(child._brokerPid, data), () => undefined)
     );
     child._stdinChain = next.catch(() => {});
@@ -6808,7 +6825,7 @@ const __childProcessMod = (() => {
     if (!child._brokerPid) return Promise.resolve();
     if (!HAS_SUPERVISOR) return Promise.resolve();
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() =>
+    const next = prior.then(_releaseToChild).then(() =>
       __nimbusUseRpcResult(__supervisor.cpStdinEnd(child._brokerPid), () => undefined)
     );
     child._stdinChain = next.catch(() => {});
@@ -7121,6 +7138,24 @@ const __childProcessMod = (() => {
    * child is settled. Shared by the wait loop and the exit-time drain, so a
    * refusal is reported one way, whichever sees it.
    */
+  /**
+   * After 'exit', as Node's ChildProcess does (flushStdio): any stdio stream
+   * the program has not read is resumed, so its buffered output drains, it
+   * ends, and 'close' can follow. On the next turn, so an 'exit' listener
+   * still has its chance to start reading. Without it a child that wrote to
+   * a stream its parent never read (an error on stderr) exited and never
+   * closed, and its parent, waiting for 'close', waited for good.
+   */
+  function _flushStdio(child) {
+    queueMicrotask(() => {
+      for (const stream of [child.stdout, child.stderr]) {
+        if (!stream || stream.readableFlowing === true) continue;
+        if (typeof stream.listenerCount === "function" && stream.listenerCount("readable") > 0) continue;
+        try { stream.resume(); } catch {}
+      }
+    });
+  }
+
   function _applyWait(child, r) {
     // Settled already (both the wait loop and the exit-time drain can hear
     // of the same exit or refusal): nothing more to emit.
@@ -7137,6 +7172,7 @@ const __childProcessMod = (() => {
     child.signalCode = r.signal || null;
     child._exitFired = true;
     try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
+    _flushStdio(child);
     _maybeFireClose(child);
     return true;
   }
@@ -7161,6 +7197,7 @@ const __childProcessMod = (() => {
         child.exitCode = 1;
         child._exitFired = true;
         try { child.emit("exit", 1, null); } catch {}
+        _flushStdio(child);
         _maybeFireClose(child);
         break;
       }
@@ -7238,6 +7275,7 @@ const __childProcessMod = (() => {
     // callers can attach 'data' listeners before any chunk arrives.
     __pendingIO.push((async () => {
       try {
+        await _releaseToChild();
         const r = await __nimbusUseRpcResult(
           __supervisor.cpSpawn({
             command: cmd,
@@ -7261,6 +7299,7 @@ const __childProcessMod = (() => {
         // child.stdin.end() patterns.
         if (child._pendingStdin && child._pendingStdin.length > 0) {
           const pending = child._pendingStdin.splice(0);
+          await _releaseToChild();
           for (const d of pending) {
             await __nimbusUseRpcResult(
               __supervisor.cpStdinWrite(child._brokerPid, d),
@@ -7587,6 +7626,7 @@ const __childProcessMod = (() => {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
               child._exitFired = true;
               try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
+              _flushStdio(child);
             }
           }
           _maybeFireClose(child);

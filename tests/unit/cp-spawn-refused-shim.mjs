@@ -7,6 +7,10 @@
 // broker says it started, never before, and always before its first byte of
 // output, whichever reply brings that first.
 //
+// A child whose output its parent never reads still closes after it exits,
+// as Node's does (flushStdio resumes untouched streams): red on 84f4aba2f,
+// where the unread stderr held 'close' back for good.
+//
 // Two races, red on 34f5b1e0e: the wait loop and the exit-time drain both
 // hearing the same refusal emitted 'error' twice; output that arrived before
 // the wait loop heard of the start was forwarded before 'spawn', with
@@ -118,6 +122,26 @@ const supervisorFor = (answer) => ({
   child.stdout.on('data', (d) => events.push(['data', String(d), child.pid]));
   for (let i = 0; i < 200 && !events.some((e) => e[0] === 'data'); i++) await tick();
   assert.deepEqual(events, [['spawn', 77], ['data', 'hi\n', 77]], "'spawn', with the pid, before the first byte");
+}
+
+// ── output nobody reads: still 'close' after 'exit', as Node's flushStdio ──
+{
+  let polls = 0;
+  const supervisor = supervisorFor(() => (++polls < 3 ? { done: false, started: true } : { done: true, exitCode: 1, signal: null }));
+  let served = { 1: false, 2: false };
+  supervisor.cpReadOutput = async (_pid, fd) => {
+    await tick();
+    if (!served[fd]) { served[fd] = true; return { chunks: [{ seq: 1, data: new TextEncoder().encode(fd === 2 ? 'boom\n' : 'out\n') }], closed: true, maxSeq: 1 }; }
+    return { chunks: [], closed: true, maxSeq: 1 };
+  };
+  const { cp } = make(supervisor);
+  const child = cp.spawn('node', ['-e', 'throw 1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const events = [];
+  // The parent listens for the end, but never reads stdout or stderr.
+  child.on('exit', (code) => events.push(['exit', code]));
+  child.on('close', (code) => events.push(['close', code]));
+  for (let i = 0; i < 200 && !events.some((e) => e[0] === 'close'); i++) await tick();
+  assert.deepEqual(events, [['exit', 1], ['close', 1]], "unread output is drained after 'exit', and 'close' follows");
 }
 
 // ── started: the pid and 'spawn' come with the start, not before ───────────
