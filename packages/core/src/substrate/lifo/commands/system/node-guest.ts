@@ -26,10 +26,30 @@ import {
   type GuestEvent, type RealmCall, type RealmResponse,
 } from './node-realm.js';
 
-const first = parentPort ? receiveMessageOnPort(parentPort) : undefined;
-if (!first || !isRealmStart(first.message)) throw new Error('node-guest: started without a realm');
-const { calls, events, program } = first.message;
-const flag = new Int32Array(first.message.wake);
+/**
+ * The host's first message: taken at once when it is already there, else
+ * awaited. The worker can start before the host has posted it (a host
+ * descheduled between starting the worker and posting). The listener goes
+ * with it, so the program finds parentPort as it would in a worker of its own.
+ */
+async function realmStart(): Promise<unknown> {
+  if (!parentPort) return undefined;
+  const ready = receiveMessageOnPort(parentPort);
+  if (ready) return ready.message;
+  const port = parentPort;
+  return new Promise((resolve) => {
+    const take = (message: unknown) => {
+      port.off('message', take);
+      port.unref();
+      resolve(message);
+    };
+    port.on('message', take);
+  });
+}
+const start = await realmStart();
+if (!isRealmStart(start)) throw new Error('node-guest: started without a realm');
+const { calls, events, program } = start;
+const flag = new Int32Array(start.wake);
 
 /** A synchronous call to the host: posted, then waited for. Its value is the host's answer, as cloned. */
 function call(request: RealmCall): unknown {

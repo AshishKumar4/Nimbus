@@ -5,9 +5,11 @@
 // Each case runs in a child process of its own (CASE=<name>), so a case that
 // kills its host fails alone, and the next still runs:
 //
-//   port      a guest that reaches for the host's call port finds none, and
-//             one that posts a call no host method answers is refused, with
-//             the host up;
+//   start     a realm whose start message comes late still starts;
+//   port      a guest that reaches for the host's call port finds none in
+//             workerData, and one that takes the real port off its own posts
+//             and sends calls no host method answers is refused, with the
+//             host up;
 //   body      a loopback response whose body fails is answered to the guest
 //             as a failed request, with the host up;
 //   abort     an abort that arrives while the realm is still starting ends it;
@@ -16,15 +18,15 @@
 //             listening or not; an ES module whose top-level await never
 //             settles exits 13, as Node does;
 //   vfserror  a filesystem refusal keeps its class: rm({ force: true }) of a
-//             missing path succeeds;
-//   cost      a trivial ES module, and one that loads http without a server,
-//             end as soon as their event loop is empty.
+//             missing path succeeds; a plain error keeps its errno;
+//   cost      a trivial ES module, and CommonJS and ES modules that load http
+//             without a server, end as soon as their event loop is empty.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const CASES = ['port', 'body', 'abort', 'timer', 'rejection', 'vfserror', 'cost'];
+const CASES = ['start', 'port', 'body', 'abort', 'timer', 'rejection', 'vfserror', 'cost'];
 
 if (process.env.CASE === undefined) {
   const failed = [];
@@ -56,9 +58,42 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 process.on('unhandledRejection', (reason) => { console.log(`HOST unhandled rejection: ${reason?.stack ?? reason}`); process.exit(3); });
 
 switch (process.env.CASE) {
+  case 'start': {
+    // A host descheduled between starting the worker and posting its start:
+    // each start message is posted 100 ms late.
+    const { Worker } = await import('node:worker_threads');
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (...args) { setTimeout(() => post.apply(this, args), 100); };
+    const r = await within(run('node -e "console.log(\'started\')"'), 20_000, 'a late start message');
+    assert.equal(r.out, 'started\n', `a realm whose start comes late still starts: ${r.err}`);
+    Worker.prototype.postMessage = post;
+    break;
+  }
   case 'port': {
-    const reach = await run(`node -e "import('node:worker_threads').then(({ workerData }) => console.log('PORTS ' + JSON.stringify(Object.keys(workerData ?? {}))))"`);
+    // CommonJS, so the import() is the realm's own, not node-compat's.
+    const reach = await run(`node -e "const p = import('node:worker_threads'); p.then(({ workerData }) => console.log('PORTS ' + JSON.stringify(Object.keys(workerData ?? {}))))"`);
     assert.equal(reach.out, 'PORTS []\n', `the realm's workerData holds no port: ${reach.err}`);
+    // The real route: take the port off the guest's own next post, then send
+    // the host what no host method answers.
+    const escape = [
+      "const p = import('node:worker_threads');",
+      'p.then(({ MessagePort }) => {',
+      '  const post = MessagePort.prototype.postMessage;',
+      '  let taken = null;',
+      '  MessagePort.prototype.postMessage = function (...args) { if (!taken) taken = this; return post.apply(this, args); };',
+      "  require('fs').existsSync('/home/user');",
+      '  MessagePort.prototype.postMessage = post;',
+      "  for (const call of [{ op: 'fs', method: 'valueOf', args: [] }, { op: 'fs', method: 'constructor', args: [] }, { op: 'fs', method: 'exists', args: [{ toString() { return '/'; } }] }, { op: 'nope' }, null]) {",
+      '    try { taken.postMessage(call); } catch (e) { console.log(\'NOT SENT \' + e.message); }',
+      '  }',
+      "  console.log('SENT ' + (taken !== null));",
+      '  setTimeout(() => {}, 300);',
+      '});',
+    ].join(' ');
+    const escaped = await within(run(`node -e "${escape}"`), 20_000, 'a guest posting on the host\'s port');
+    assert.match(escaped.out, /^SENT true$/m, `the guest took a real port: ${escaped.out}${escaped.err}`);
+    await sleep(500);
+    assert.equal((await run('echo up')).out, 'up\n', 'the host is up');
     // A guest that does hold a port of the host's, whatever it posts, is answered or ignored.
     const { serveRealmCall } = await import('../../packages/core/src/substrate/lifo/commands/system/node-realm.ts');
     const services = { filesystem: () => ({ exists: () => true, readFile: () => new Uint8Array([1]), stat: () => ({ type: 'file', mode: 0o644, size: 1 }) }) };
@@ -159,6 +194,11 @@ switch (process.env.CASE) {
     assert.equal(r.out, 'RM ok\n', `rm({ force: true }) of a missing path succeeds: ${r.err}`);
     const code = await run(`node -e "try { require('fs').readFileSync('/home/user/nope'); } catch (e) { console.log(e.code + ' ' + e.syscall + ' ' + e.message) }"`);
     assert.equal(code.out, "ENOENT open ENOENT: no such file or directory, open '/home/user/nope'\n");
+    // A plain error, as a mounted backend raises one, keeps every field across.
+    const { fromRealmError, realmError } = await import('../../packages/core/src/substrate/lifo/commands/system/node-realm.ts');
+    const plain = Object.assign(new Error("EACCES: permission denied, open '/pc/x'"), { code: 'EACCES', errno: -13, syscall: 'open', path: '/pc/x' });
+    const rebuilt = fromRealmError(structuredClone(realmError(plain)));
+    assert.deepEqual([rebuilt.message, rebuilt.code, rebuilt.errno, rebuilt.syscall, rebuilt.path], [plain.message, 'EACCES', -13, 'open', '/pc/x'], 'a plain error keeps its errno');
     break;
   }
   case 'cost': {
@@ -175,11 +215,14 @@ switch (process.env.CASE) {
       }
       return times.sort((a, b) => a - b)[2];
     };
+    await ws.fs.writeFile('/home/user/m/http.mjs', "import 'http';\nconsole.log(1);\n");
     const trivial = await time('node m/one.mjs');
     const http = await time(`node -e "require('http'); console.log(1)"`);
-    console.log(`  a trivial ES module: ${trivial.toFixed(1)} ms; loading http without a server: ${http.toFixed(1)} ms`);
+    const esmHttp = await time('node m/http.mjs');
+    console.log(`  a trivial ES module: ${trivial.toFixed(1)} ms; loading http without a server: ${http.toFixed(1)} ms (CommonJS), ${esmHttp.toFixed(1)} ms (ES module)`);
     assert.ok(trivial < 100, `a trivial ES module ends as its event loop empties (${trivial.toFixed(0)} ms)`);
     assert.ok(http < 100, `loading http without a server ends as its event loop empties (${http.toFixed(0)} ms)`);
+    assert.ok(esmHttp < 100, `an ES module loading http without a server ends as its event loop empties (${esmHttp.toFixed(0)} ms)`);
     break;
   }
 }

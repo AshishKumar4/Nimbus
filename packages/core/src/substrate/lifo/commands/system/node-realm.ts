@@ -184,7 +184,7 @@ export function fromRealmError(error: RealmError): Error {
   }
   Object.defineProperty(rebuilt, 'message', { value: error.message, configurable: true, writable: true });
   for (const [key, value] of Object.entries(error.properties)) {
-    if (key === 'name' || key === 'errno' || Object.hasOwn(rebuilt, key)) continue;
+    if (key === 'name' || Object.hasOwn(rebuilt, key)) continue;
     Object.defineProperty(rebuilt, key, { value, configurable: true, enumerable: true, writable: true });
   }
   return rebuilt;

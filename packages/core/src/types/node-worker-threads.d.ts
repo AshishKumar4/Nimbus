@@ -6,6 +6,7 @@ declare module 'node:worker_threads' {
   interface MessagePort {
     postMessage(value: unknown, transferList?: readonly MessagePort[]): void;
     on(event: 'message', listener: (value: unknown) => void): this;
+    off(event: 'message', listener: (value: unknown) => void): this;
     close(): void;
     ref(): void;
     unref(): void;
