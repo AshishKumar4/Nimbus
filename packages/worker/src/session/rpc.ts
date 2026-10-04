@@ -32,7 +32,7 @@ import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom } from '@nimbus-sh/fabric/budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import {
   residentBootSpecSchema,
   type ResidentDiskReader,
@@ -1552,9 +1552,15 @@ export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string
     return fpm.kill(childPid, signal);
 }
 
-export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number) {
+/** Process `pid` says whether its only remaining work is waiting on its children (fabric setProcessBlocked). */
+export async function _rpcCpBlocked(self: RpcHost, pid: number, blocked: boolean): Promise<void> {
+    if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running') return;
+    setProcessBlocked(self.ctx, pid, blocked === true);
+}
+
+export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) {
     const fpm = self._ensureFacetProcessManager();
-    const status = await fpm.wait(childPid, waitMs);
+    const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
 

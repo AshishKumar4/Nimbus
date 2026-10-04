@@ -33,15 +33,23 @@ published independently in the `@nimbus-sh` npm scope.
   completes. Only a kill, Ctrl-C, or the ledger's refusal of a wait nothing
   can satisfy (below) ends the wait.
 - A wait for a Dynamic Worker that no release can satisfy is refused rather
-  than left to wait for good. When every worker in flight is held by a
-  process with a descendant waiting for one (nine children of a parent, each
-  waiting on a grandchild of its own, fill the limit), the newest such wait
-  is refused, and that child's spawn fails as Node's does at a process
-  limit: an 'error' event (`spawn node EAGAIN`, errno -11), no 'exit', no
-  pid, and 'close' with -11. Its program never runs; its parent can end and
-  make room, and the other grandchildren run. A wait that any holder could
-  still end for keeps waiting. The ledger tells the two apart from who holds
-  its workers and whom each waiter descends from, not by a timeout.
+  than left to wait for good. A process says when its only remaining work
+  is waiting on its own children (its event loop has no timer, socket,
+  server, stdin read or fetch of its own pending); when every worker in
+  flight is held by a process in that state, nothing will make room, and
+  the newest wait that descends from a holder is refused. That child's
+  spawn fails as Node's does at a process limit: an 'error' event (`spawn
+  node EAGAIN`, errno -11), no 'spawn', no 'exit', no pid, and 'close' with
+  -11. Its program never runs; its parent hears it and can go on. Nine
+  children each doing nothing but wait on a grandchild get one EAGAIN and
+  eight runs; the same nine with a `process.exit(0)` scheduled keep waiting
+  and complete; a `spawnSync` chain ten deep gets EAGAIN at the eleventh
+  level and unwinds. A process that does not say (a resident, a non-Node
+  runtime) is taken to end on its own.
+- A child's pid is published, and 'spawn' emitted, once the session has
+  admitted it, as Node publishes them only for a spawn that succeeded; a
+  refused child never has either, whichever of the parent's waits hears of
+  the refusal (the exit-time drain gave it an 'exit' with -11).
 - Fixed: a `child_process` child ended by a signal reported the shell's
   status to its parent. 'exit' and 'close' gave (143, 'SIGTERM') for every
   signal but SIGKILL (137), SIGINT included, and `exitCode` was 143. They
@@ -85,10 +93,13 @@ published independently in the `@nimbus-sh` npm scope.
 - A child's launch is admitted once on the Dynamic Worker ledger, before
   its preparation: its transform, its prebundle and its program are that
   one worker in turn, so its preparation never waits on room its own
-  admission holds. A transform, build or esbuild call outside a launch
-  waits its turn. Before, the transform facet of `node child.ts`, spawned
-  with the limit full, was an eleventh worker the platform refused, and the
-  child exited 1.
+  admission holds. The program claims the admission whatever pid its
+  runtime runs it as (Bun's runner allocates its own; a Python, Ruby or
+  wasm runtime dispatches to a pool), where a `bun -e` child taking the
+  tenth worker waited for room its own admission held. A transform, build
+  or esbuild call outside a launch waits its turn. Before, the transform
+  facet of `node child.ts`, spawned with the limit full, was an eleventh
+  worker the platform refused, and the child exited 1.
 - Killing a child runs the session's own kill of its pid before the broker
   stamps the exit: its ports, RPC resources and relayed sockets are
   released, and its exit reported to its parent rather than the terminal.

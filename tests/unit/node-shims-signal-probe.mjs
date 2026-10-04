@@ -19,9 +19,11 @@ assert.throws(()=>proc.kill(proc.pid+10000,0),(e)=>e.code==='ENOSYS'&&e.syscall=
   const supervisor = {
     cpSpawn: async () => ({ childPid: 77 }),
     cpKill: async (pid, signal) => { killed.push([pid, signal]); },
-    cpWait: async () => {
+    // The broker's answer: the start first, to a parent that has not heard of it, then the end.
+    cpWait: async (_pid, _waitMs, _acquire, knownStarted) => {
       await new Promise((resolve) => setTimeout(resolve, 5));
-      return killed.length > 0 ? { done: true, exitCode: null, signal: 'SIGTERM' } : { done: false };
+      if (killed.length > 0) return { done: true, exitCode: null, signal: 'SIGTERM' };
+      return knownStarted === false ? { done: false, started: true } : { done: false };
     },
     cpStdinEnd: async () => {},
   };

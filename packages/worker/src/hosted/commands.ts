@@ -408,10 +408,11 @@ const nodeSpec: RuntimeSpec = {
 //   - script-path flow with .ts/.tsx/.jsx auto-transform
 //   - BUN_SHIM_PREAMBLE prepend (handled inside runBunScript itself)
 //
-// Bun does NOT use binSpawn ctx propagation today (its runFresh
-// chain doesn't share PID state with the .bin handler — the .bin
-// handler always dispatches through `node`, not `bun`). So
-// supportsBinSpawn=false (default).
+// binSpawn ctx propagation (supportsBinSpawn): a .bin handler always
+// dispatches through `node`, but a child_process broker or a background
+// job hands Bun the pid it already allocated, as it hands Node's: the
+// program runs as that pid, so its output reaches the parent's queues and
+// it runs on that child's launch admission.
 /** `scripts` from the cwd's package.json, read as the command's own view; empty when there is none. */
 const readPackageScripts = async (vfs: ProcessView, cwd: string): Promise<Record<string, string>> => {
   try {
@@ -436,6 +437,7 @@ const bunSpec: RuntimeSpec = {
     'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
     'Execution via DO Facets (isolated V8 isolate per call).',
   run: (code, opts) => runBunScript(facetMgr, code, opts),
+  supportsBinSpawn: true,
   routesServers: true,
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).

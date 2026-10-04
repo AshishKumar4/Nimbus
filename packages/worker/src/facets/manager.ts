@@ -446,7 +446,7 @@ function __nimbusLiveHandles() {
     + __nimbusHandleCount("__nimbusOpenSockets");
 }
 
-async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {
+async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses, __onPass) {
   let __exited = false;
   if (__exitPromise && typeof __exitPromise.then === "function") {
     __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });
@@ -471,6 +471,7 @@ async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs,
     // spinning at 0ms would burn the isolate's CPU indefinitely.
     await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));
     __pass++;
+    if (__onPass) __onPass();
   }
   if (__deadline !== null) { try { __rawClearTimeout(__deadline); } catch {} }
   // \`pending\` is what the caller reports when it gives up: a one-shot program
@@ -491,11 +492,23 @@ async function __nimbusAwaitEntryEvaluation(__entryResult) {
   return __raced === __exit;
 }
 
+// Whether the program's only remaining work is waiting on its children (the
+// polls for their output and exit, __nimbusChildOps): no timer, socket,
+// server, stdin read or fetch of its own. Said to the session when it
+// changes (node-shims __nimbusReportBlocked), whose Dynamic Worker ledger
+// refuses a child's launch only when every worker is held by a process in
+// this state (fabric setProcessBlocked).
+function __nimbusReportBlockedState() {
+  const __children = __nimbusHandleCount("__nimbusChildOps");
+  const __blocked = __children > 0 && __nimbusLiveHandles() === __children;
+  if (typeof globalThis.__nimbusReportBlocked === "function") globalThis.__nimbusReportBlocked(__blocked);
+}
+
 // A one-shot facet's lifetime IS the loop: it runs the program until Node
 // would exit, or until the lifetime budget runs out.
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
   if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
-  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);
+  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
 }
 
 // Whether the program holds no live handle once a settling chain has had the

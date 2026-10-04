@@ -245,7 +245,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
             runtimeContext.ctx,
             { pid: payload.processPid, ancestors: self.processes.ancestorsOf(payload.processPid) },
             ac.signal,
-            () => cmd(ctx),
+            () => { hooks.onStarted?.(); return cmd(ctx); },
           );
           return typeof code === 'number' ? code : 0;
         } catch (e: any) {
