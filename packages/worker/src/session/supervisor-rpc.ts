@@ -935,7 +935,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
   }
 
-  async cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> {
+  async cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean; full?: boolean }> {
     return this._call(this._op('cpStdinWrite', [childPid, data]));
   }
 
@@ -957,7 +957,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
     signal?: string;
     acquired?: VfsDeliveredAcquire;
   }> {
-    return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+    // The run reading: a run of the process that has stopped takes nothing
+    // (worker runtime/stop-replay.ts StdinTaken).
+    const writerId = (this.ctx.props as { writerId?: unknown } | undefined)?.writerId;
+    return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], {
+      pid: this._reportingPid(),
+      ...(typeof writerId === 'string' && writerId.length > 0 ? { writerId } : {}),
+    }));
   }
 
   async cpReadOutput(

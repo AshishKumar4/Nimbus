@@ -290,7 +290,7 @@ export class SessionProcessSupervisor {
   }
 
   /** Queue input bytes exactly as given (a pipe or redirect). */
-  writeInputBytes(pid: number, data: Uint8Array): { ok: boolean } {
+  writeInputBytes(pid: number, data: Uint8Array): { ok: boolean; full?: boolean } {
     return this.input.writeBytes(pid, data);
   }
 

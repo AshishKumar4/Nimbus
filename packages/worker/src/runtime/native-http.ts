@@ -46,6 +46,9 @@ Object.defineProperty(builtins, "http", {
       Object.defineProperty(clientProto, clientPatch, { value: true });
       clientProto.end = function () {
         const started = !this.destroyed && !inFlight.has(this);
+        // A request is something a second run would send again
+        // (runtime/stop-replay.ts): counted before it leaves.
+        if (started) __nimbusReplay?.effect("http " + String(this.method || "GET") + " " + String(this.host || "") + String(this.path || ""));
         if (started) {
           inFlight.add(this);
           globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;

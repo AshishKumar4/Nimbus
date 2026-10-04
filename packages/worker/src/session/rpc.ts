@@ -1426,7 +1426,7 @@ export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: 
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{ ok: boolean }> {
+export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{ ok: boolean; full?: boolean }> {
     if (self.processes.hasInput(childPid)) {
       return self.processes.writeInputBytes(childPid, data);
     }
@@ -1459,7 +1459,7 @@ async function withDeliveredAcquire<T extends object>(
   return acquired ? { ...reply, acquired } : reply;
 }
 
-export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number) {
+export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string) {
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
@@ -1467,6 +1467,11 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
     if (isPriorGenerationPid(self, childPid)) {
       return { signal: 'SIGKILL', ended: true };
     }
+    // A process that can stop at a read of stdin: only its current run takes
+    // from the channel, and the session keeps what that run took
+    // (worker runtime/stop-replay.ts StdinTaken).
+    const taken = self.facetManager?.stdinTakenBy?.(childPid);
+    if (taken && !taken.admits(writerId)) return { data: new Uint8Array(0), ended: false };
     let packet: { data: Uint8Array; ended: boolean; resize?: { columns: number; rows: number }; signal?: string };
     if (self.processes.hasInput(childPid)) {
       // The input store holds typed text and piped bytes; the child's stdin
@@ -1477,6 +1482,18 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
     } else {
       const fpm = self._ensureFacetProcessManager();
       packet = await fpm.cpReadStdin(childPid, waitMs);
+    }
+    if (taken) {
+      // The run stopped while this read waited: what it would have taken goes
+      // back in front of the channel for the run after it.
+      if (!taken.admits(writerId)) {
+        if (packet.data.byteLength > 0) {
+          if (self.processes.hasInput(childPid)) self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
+          else self._ensureFacetProcessManager().unreadStdin(childPid, [packet.data]);
+        }
+        return { data: new Uint8Array(0), ended: false };
+      }
+      taken.note(packet.data);
     }
     const delivers = packet.ended || packet.signal !== undefined || packet.resize !== undefined
       || packet.data.byteLength > 0;

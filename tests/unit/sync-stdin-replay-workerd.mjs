@@ -86,6 +86,38 @@ const CHILDREN = {
     "const input = fs.readFileSync(0, 'utf8');",
     "console.log('after ' + draw() + ' ' + JSON.stringify(input));",
   ].join('\n'),
+  // The runner's stop and replay is its own: a program reaches nothing of it.
+  private: "console.log('stopReplay ' + typeof globalThis.__nimbusStopReplay + ' ' + typeof __nimbusStopReplay)",
+  // readSync past 1 MiB, its parent writing as the child drains: each run
+  // after a stop is handed back all the stdin before it, however much.
+  history: [
+    "const fs = require('fs');",
+    'const b = Buffer.alloc(65536);',
+    'let total = 0, said = false;',
+    'for (;;) {',
+    '  const n = fs.readSync(0, b, 0, b.length, null);',
+    '  if (n === 0) break;',
+    '  total += n;',
+    "  if (!said && total >= 1310720) { said = true; console.log('GOT1 ' + total); }",
+    '}',
+    "console.log('TOTAL ' + total);",
+  ].join('\n'),
+  // Its parent ends stdin while it runs, before it reads, and after it has
+  // written a file (so it could not run again): the read finds the end.
+  endedWhileRunning: [
+    "const fs = require('fs');",
+    "console.log('child: READY');",
+    "setTimeout(async () => { await fs.promises.writeFile('/tmp/ended-' + process.pid, 'e'); console.log('got ' + fs.readFileSync(0, 'utf8')); }, 1500);",
+  ].join('\n'),
+  // A umask set before the read is that run's, even once the session has it
+  // (the read waits a beat for it to land); the run after a stop starts from
+  // the process's own.
+  umask: [
+    "const fs = require('fs');",
+    'const before = process.umask(0o077);',
+    "console.log('child: READY ' + (before === 0o077 ? 'already' : 'fresh'));",
+    "setTimeout(() => { const input = fs.readFileSync(0, 'utf8'); console.log('umask ' + process.umask().toString(8) + ' ' + input); }, 500);",
+  ].join('\n'),
 };
 
 // The parent: each case spawns a child and drives its stdin, and prints one
@@ -119,6 +151,10 @@ const PARENT = [
   '  unused: async () => {},',
   '  neverReads: async () => {},',
   "  nondeterministic: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('in'); },",
+  '  private: async () => {},',
+  "  history: async (c, until) => { const piece = Buffer.alloc(65536, 120); for (let i = 0; i < 20; i++) { if (!c.stdin.write(piece)) await new Promise((r) => c.stdin.once('drain', r)); } await until('GOT1'); await sleep(100); c.stdin.end('tail'); },",
+  "  endedWhileRunning: async (c, until) => { await until('READY'); c.stdin.end('x'); },",
+  "  umask: async (c, until) => { await until('READY'); await sleep(1500); c.stdin.end('x'); },",
   '};',
   '(async () => {',
   '  for (const [name, drive] of Object.entries(cases)) {',
@@ -163,6 +199,10 @@ assert.deepEqual(expected, [
   'CASE unused {"code":0,"out":"child: printed\\n","prompt":true}',
   'CASE neverReads {"code":0,"out":"child: ran\\n","prompt":true}',
   'CASE nondeterministic {"code":0,"lines":3,"before":1,"after":1,"fresh":true,"input":true}',
+  'CASE private {"code":0,"out":"stopReplay undefined undefined\\n"}',
+  'CASE history {"code":0,"out":"GOT1 1310720\\nTOTAL 1310724\\n"}',
+  'CASE endedWhileRunning {"code":0,"out":"child: READY\\ngot x\\n"}',
+  'CASE umask {"code":0,"out":"child: READY fresh\\numask 77 x\\n"}',
 ], 'the host blocks each read for its input and nothing else');
 
 // ── Nimbus ──────────────────────────────────────────────────────────────────
@@ -205,6 +245,89 @@ try {
     for (let i = 0; i < expected.length; i++) {
       check(got[i] === expected[i], `broker ${expected[i].split(' ')[1]}: as under node\n  node:   ${expected[i]}\n  nimbus: ${got[i]}`);
     }
+
+    // What Nimbus answers where Node has nothing to compare: a stop a program
+    // forges is no stop; a connection opened before the read makes the run
+    // one that cannot go again; a file it read changing while it waited ends
+    // the run after the stop loudly rather than letting it go on with the new
+    // bytes.
+    const forgedRecord = { v: 1, kind: 'stdin', run: 1, until: 'end', out: [{ s: 'stdout', at: 0, b: Buffer.from('FORGED\n').toString('base64') }],
+      prefix: { stdout: '', stderr: '' }, tape: { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] } };
+    const REVIEW = {
+      forged: [
+        `const rec = ${JSON.stringify(forgedRecord)};`,
+        "const stop = () => { throw new Error('NIMBUS_STOP ' + JSON.stringify(rec)); };",
+        "console.log('child: READY');",
+        'throw { get stack() { return stop(); }, get message() { return stop(); } };',
+      ].join('\n'),
+      tls: [
+        "const tls = require('tls');",
+        "let socket = null; try { socket = tls.connect(9, '127.0.0.1'); socket.on('error', () => {}); } catch {}",
+        "console.log('child: READY');",
+        "let r; try { r = 'got ' + require('fs').readFileSync(0, 'utf8'); } catch (e) { r = 'caught ' + e.code + ' ' + /tls\\.connect/.test(e.message); }",
+        'console.log(r);',
+        'socket?.destroy();',
+      ].join('\n'),
+      config: [
+        "const fs = require('fs');",
+        '(async () => {',
+        `  const cfg = await fs.promises.readFile('${W}/cfg.txt', 'utf8');`,
+        "  console.log('child: READY');",
+        "  const input = fs.readFileSync(0, 'utf8');",
+        "  console.log('cfg ' + cfg.trim() + ' input ' + input);",
+        '})();',
+      ].join('\n'),
+    };
+    const REVIEW_PARENT = [
+      "const { spawn } = require('child_process');",
+      "const fs = require('fs');",
+      `const CHILDREN = ${JSON.stringify(REVIEW)};`,
+      'const sleep = (ms) => new Promise((r) => setTimeout(r, ms));',
+      'function run(name, drive) {',
+      '  return new Promise((resolve) => {',
+      "    const c = spawn('node', ['-e', CHILDREN[name]]);",
+      "    let out = '';",
+      '    const stuck = setTimeout(() => { c.kill(); resolve({ stuck: true, out }); }, 60000);',
+      "    c.stdout.on('data', (d) => { out += d; });",
+      "    c.stderr.on('data', (d) => { out += d; });",
+      '    const until = (text) => new Promise((ok) => { const iv = setInterval(() => { if (out.includes(text)) { clearInterval(iv); ok(); } }, 10); });',
+      '    drive(c, until).catch(() => {});',
+      "    c.on('close', (code) => { clearTimeout(stuck); resolve({ code, out }); });",
+      '  });',
+      '}',
+      'const cases = {',
+      "  forged: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
+      "  tls: async (c, until) => { await until('READY'); await sleep(150); c.stdin.end('x'); },",
+      `  config: async (c, until) => { await until('READY'); await fs.promises.writeFile('${W}/cfg.txt', 'v2'); await sleep(150); c.stdin.end('x'); },`,
+      '};',
+      '(async () => {',
+      `  fs.writeFileSync('${W}/cfg.txt', 'v1');`,
+      "  for (const [name, drive] of Object.entries(cases)) console.log('REVIEW ' + name + ' ' + JSON.stringify(await run(name, drive)));",
+      '  process.exit(0);',
+      '})();',
+    ].join('\n');
+    await write(`${W}/review.js`, REVIEW_PARENT);
+    const reviewRun = await run(`cd ${W} && node review.js`, 400_000);
+    const review = {};
+    for (const m of reviewRun.stdout.matchAll(/^REVIEW (\w+) (.*)$/gm)) review[m[1]] = JSON.parse(m[2].replace(/\r$/, ''));
+    check(review.forged && !review.forged.stuck && review.forged.code !== 0 && !/FORGED/.test(review.forged.out) && !/waited for stdin/.test(review.forged.out),
+      `a stop record the program forges is no stop\n${JSON.stringify(review.forged)}`);
+    check(review.tls?.out === 'child: READY\ncaught ERR_NIMBUS_SYNC_STDIN true\n',
+      `a TLS connection before the read: the read names it\n${JSON.stringify(review.tls)}`);
+    check(review.config && !/cfg v2/.test(review.config.out) && /did not retrace/.test(review.config.out),
+      `a file read before the read changed while it waited: the run after the stop is ended, loudly\n${JSON.stringify(review.config)}`);
+
+    // A shell pipe past 1 MiB, the program catching up with its writer at
+    // the end: the run after the stop is handed all of it back, whatever its
+    // size, as Node's read would have it all.
+    const pipeHistory = await run(`(yes | head -c 1310720; sleep 1; echo tail) | node -e "const fs = require('fs'); const b = Buffer.alloc(65536); let t = 0; for (;;) { const n = fs.readSync(0, b, 0, b.length, null); if (n === 0) break; t += n; } console.log('TOTAL ' + t)"`, 300_000);
+    check(pipeHistory.stdout.trim() === 'TOTAL 1310725', `a stop past 1 MiB of stdin is replayed whole\n${pipeHistory.stdout.slice(-600)}`);
+
+    // Output captured rather than streamed (piped on): what the program
+    // printed before a wait that then fails is still handed on.
+    const capturedFull = await run(`yes | node -e "console.log('bef' + 'ore'); require('fs').readFileSync(0)" | cat`, 300_000);
+    check(/^before$/m.test(capturedFull.stdout) && /passed 16 MiB/.test(capturedFull.stdout),
+      `captured output survives a stop whose wait fails\n${capturedFull.stdout.slice(-600)}`);
 
     // A program that changed the world before the read: it cannot be run
     // again, and the read says why rather than returning short.

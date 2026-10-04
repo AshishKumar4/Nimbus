@@ -15,7 +15,12 @@ published independently in the `@nimbus-sh` npm scope.
   waits for the input, and the program runs again from its start with it:
   the second run replays what the first drew (its random numbers, clock
   readings, random bytes and stdin reads) and the output it already
-  printed is checked and not shown twice. A program that never makes such
+  printed is checked and not shown twice. Every file read, stat, listing
+  and response body the first run saw is checked too: a file that changed
+  while it waited ends the second run loudly instead of letting it go on
+  with the new bytes, as does any other way the second run strays before
+  the read. Only Nimbus can stop a run this way: a program that forges a
+  stop is not believed. A program that never makes such
   a read, or finds its input there when it does, runs once and is never
   held: the guess about which programs read stdin, made from their code
   before they ran, is gone, and with it the read ahead of their pipe. So
@@ -25,9 +30,17 @@ published independently in the `@nimbus-sh` npm scope.
   something outside itself before the read (a file write that reached the
   session, a spawn, a request other than GET) cannot be run again, and the
   read fails with `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one
-  that read `process.stdin` as it arrived first. Ctrl-C during the wait
-  ends the program with 130; a pipe that passes 16 MiB without ending
-  fails the read naming the bound. Resident processes (servers, attached
+  that read `process.stdin` as it arrived first; opening a socket (TLS,
+  net, an http client request) counts as such a change. What arrives on
+  stdin while the program runs reaches a later synchronous read, its end
+  too, so a program its parent finishes writing to before it reads never
+  has to stop. Ctrl-C during the wait ends the program with 130; a pipe
+  that passes 16 MiB without ending fails the read naming the bound, and
+  output a piped program printed before such a failure is still handed on.
+- Fixed: bytes a parent wrote to a child's stdin faster than the child
+  read them were dropped past the child's 256 KiB queue, all of them when
+  written before the child had started. A write waits for room now, as a
+  full pipe holds its writer. Resident processes (servers, attached
   terminal programs) answer such a read with `ERR_NIMBUS_SYNC_STDIN`.
 - Fixed: `vite build` printed its entry as a storage key ("Entry:
   home/user/app/src/main.tsx", and the same in "Bundling" and its timeout),

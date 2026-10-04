@@ -86,6 +86,9 @@ const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map(
 
 export function generateShimsCode(): string {
   return `
+// The runner's stop and replay (runtime/stop-replay.ts), private to its
+// module: null in a runner without one.
+const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Format helper ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -463,11 +466,19 @@ function __nimbusWasmDigest(bytes) {
   const __barriered = async (input, init) => {
     // A request other than a read may change something a second run of the
     // program would change again (runtime/stop-replay.ts).
+    // A read is an observation: a run after a stop must get the same answer
+    // (its status here, its body where the body is read).
     const method = String((init && init.method) || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
-    if (method !== "GET" && method !== "HEAD") globalThis.__nimbusStopReplay?.effect(method + " " + __fetchUrl(input));
+    if (method !== "GET" && method !== "HEAD") __nimbusReplay?.effect(method + " " + __fetchUrl(input));
+    const seen = __nimbusReplay?.observeLater("fetch " + method + " " + __fetchUrl(input));
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    return __resumeCoherent(__dispatch(input, init));
+    const answered = __resumeCoherent(__dispatch(input, init));
+    if (!seen) return answered;
+    return answered.then(
+      (response) => { seen(String(response && response.status)); return response; },
+      (error) => { seen("error"); throw error; },
+    );
   };
   globalThis.fetch = function fetch(input, init) {
     return __nimbusTrackOp(__barriered(input, init));
@@ -483,7 +494,15 @@ function __nimbusWasmDigest(bytes) {
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
+        const read = __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
+        const seen = __nimbusReplay?.observeLater("response." + __name);
+        if (!seen) return read;
+        return read.then((value) => {
+          seen(value instanceof Blob ? [value.size, value.type]
+            : typeof FormData !== "undefined" && value instanceof FormData ? [...value.entries()].map(([k, v]) => [k, typeof v === "string" ? v : v.size])
+            : value);
+          return value;
+        }, (error) => { seen("error"); throw error; });
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -3581,8 +3600,10 @@ const __fsMod = (() => {
         throw __nimbusSyncStdinError("readFileSync", __nimbusStdinFileSource() !== null ? "" : __nimbusStopForStdin("end", "read"));
       }
       const state = __nimbusSyncStdinState();
-      const bytes = __BufferMod.from(state.bytes.subarray(state.pos));
-      state.pos = state.bytes.byteLength;
+      const all = state.source.bytes;
+      __nimbusReplay?.readAll(all.byteLength - state.pos);
+      const bytes = __BufferMod.from(all.subarray(state.pos));
+      state.pos = all.byteLength;
       const encoding = typeof opts === "string" ? opts : opts?.encoding;
       return encoding ? bytes.toString(encoding) : bytes;
     }
@@ -6582,7 +6603,15 @@ const __tlsMod = (() => {
   // A socket tls.connect opens holds the program until it closes or is
   // unref'd, as in Node. Held once the socket exists: arguments tls.connect
   // refuses (a bad port) throw first, and a caught throw holds nothing.
+  // Opening a socket is something a second run would do again
+  // (runtime/stop-replay.ts): counted before any I/O.
+  const describe = (args) => {
+    const first = args[0], second = args[1];
+    if (first !== null && typeof first === "object") return String(first.host || first.servername || "") + ":" + String(first.port ?? "");
+    return (typeof second === "string" ? second : "") + ":" + String(first ?? "");
+  };
   const connect = (...args) => {
+    __nimbusReplay?.effect("tls.connect " + describe(args));
     const socket = real.connect(...args);
     let closed = false;
     let hold = null;
@@ -6599,6 +6628,11 @@ const __tlsMod = (() => {
     };
     return socket;
   };
+  // Anything else node:tls exports that is called or constructed (a
+  // TLSSocket, a server) may open a connection: counted too, all but the
+  // helpers that only compute.
+  const pure = { createSecureContext: true, getCiphers: true, checkServerIdentity: true, convertALPNProtocols: true };
+  const counted = new Map();
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
@@ -6611,7 +6645,18 @@ const __tlsMod = (() => {
           throw e;
         };
       }
-      return t[p];
+      const value = t[p];
+      if (typeof value !== 'function' || typeof p !== 'string' || Object.hasOwn(pure, p)) return value;
+      if (!counted.has(p)) {
+        counted.set(p, new Proxy(value, {
+          apply(target, self, args) { __nimbusReplay?.effect('tls.' + p); return Reflect.apply(target, self, args); },
+          construct(target, args, newTarget) {
+            __nimbusReplay?.effect('new tls.' + p);
+            return Reflect.construct(target, args, newTarget === counted.get(p) ? target : newTarget);
+          },
+        }));
+      }
+      return counted.get(p);
     }
   });
 })();
@@ -6778,12 +6823,22 @@ const __childProcessMod = (() => {
     }
     if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() =>
-      __nimbusUseRpcResult(__supervisor.cpStdinWrite(child.pid, data), () => undefined)
-    );
+    const next = prior.then(() => _writeStdinWhenRoom(child, data));
     child._stdinChain = next.catch(() => {});
     __pendingIO.push(next.catch(() => {}));
     return next;
+  }
+  // A write the child's queue has no room for waits and goes again, as a
+  // full pipe holds its writer; it used to be dropped, so a parent that wrote
+  // faster than its child read lost the bytes in between. One the child no
+  // longer reads is dropped, as before, and so is one still waiting when this
+  // program has ended.
+  async function _writeStdinWhenRoom(child, data) {
+    for (let wait = 10; ; wait = Math.min(wait * 2, 250)) {
+      const answer = await __nimbusUseRpcResult(__supervisor.cpStdinWrite(child.pid, data), (result) => result);
+      if (!answer || answer.ok || !answer.full || __nimbusProgramStopped) return;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
   }
   function _queueStdinEnd(child) {
     child._pendingStdinEnd = true;
@@ -7126,21 +7181,21 @@ const __childProcessMod = (() => {
 
         // Flush any stdin written before pid was known, preserving
         // write-before-end ordering for common child.stdin.write();
-        // child.stdin.end() patterns.
-        if (child._pendingStdin && child._pendingStdin.length > 0) {
-          const pending = child._pendingStdin.splice(0);
-          for (const d of pending) {
-            await __nimbusUseRpcResult(
-              __supervisor.cpStdinWrite(child.pid, d),
-              () => undefined,
-            ).catch(() => {});
-          }
-        }
-        if (child._pendingStdinEnd) {
-          await __nimbusUseRpcResult(
-            __supervisor.cpStdinEnd(child.pid),
-            () => undefined,
-          ).catch(() => {});
+        // child.stdin.end() patterns. It heads the stdin chain, so what is
+        // written once the pid is known goes after it, and each write waits
+        // for room in the child's queue rather than being dropped. Not
+        // awaited here: the child's output is not held behind a slow reader.
+        const pendingStdin = child._pendingStdin ? child._pendingStdin.splice(0) : [];
+        const endBeforePid = child._pendingStdinEnd === true;
+        if (pendingStdin.length > 0 || endBeforePid) {
+          const flushed = (async () => {
+            for (const d of pendingStdin) await _writeStdinWhenRoom(child, d).catch(() => {});
+            if (endBeforePid) {
+              await __nimbusUseRpcResult(__supervisor.cpStdinEnd(child.pid), () => undefined).catch(() => {});
+            }
+          })();
+          child._stdinChain = flushed;
+          __pendingIO.push(flushed);
         }
 
         // Flush a queued kill if .kill() was called before pid landed.
@@ -7559,13 +7614,24 @@ function __nimbusStdinFileSource() {
 }
 // What fd 0 holds before the program reads it, taken once by process.stdin's
 // first consumer or a synchronous read of fd 0, whichever comes first (the
-// two share one fd in Node): the launch's own stdin text; for a pipe
-// streaming through the live channel (facets/manager.ts, _pumpStdinPipe),
-// what __nimbusPrepareStdin took before the entry ran (all of it when the
-// pipe ended within the read ahead); for a \`< file\`, the file from its
-// offset. \`ended\` says nothing more will follow.
+// two share one fd in Node): the launch's own stdin text; for a live channel
+// (a pipe streaming through it, facets/manager.ts _pumpStdinPipe, or a
+// child_process child's), what __nimbusPrepareStdin took before the entry ran
+// and what __nimbusFollowStdin has taken since; for a \`< file\`, the file from
+// its offset. \`ended\` says nothing more will follow.
 let __nimbusStdinTaken = false;
 let __nimbusQueuedStdin = null;
+// A growing fd 0: pieces as they arrive, joined when a read looks.
+function __nimbusStdinBuffer() {
+  return {
+    parts: [], length: 0, flat: null, ended: false,
+    get bytes() {
+      if (this.flat === null) { this.flat = __BufferMod.concat(this.parts, this.length); this.parts = [this.flat]; }
+      return this.flat;
+    },
+    append(piece) { this.parts.push(piece); this.length += piece.byteLength; this.flat = null; },
+  };
+}
 function __nimbusStdinEnded() {
   // A \`< file\` preloaded up to the read ahead ends there only when the file
   // does; one not preloaded is read whole by path when a synchronous read
@@ -7574,11 +7640,13 @@ function __nimbusStdinEnded() {
   if (!__nimbusLiveInputChannel()) return true;
   return __nimbusQueuedStdin !== null && __nimbusQueuedStdin.ended;
 }
+// What fd 0 held, once: \`source\` is what reads go on reading (the live
+// buffer, still growing, for a live channel).
 function __nimbusTakeStdin() {
   const ended = __nimbusStdinEnded();
-  if (__nimbusStdinTaken) return { bytes: __BufferMod.alloc(0), ended };
+  if (__nimbusStdinTaken) return { source: { bytes: __BufferMod.alloc(0) }, ended };
   __nimbusStdinTaken = true;
-  if (__nimbusQueuedStdin !== null) return { bytes: __nimbusQueuedStdin.bytes, ended };
+  if (__nimbusQueuedStdin !== null) return { source: __nimbusQueuedStdin, ended };
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     // Not read before the entry ran: the file as the process's own
@@ -7586,14 +7654,17 @@ function __nimbusTakeStdin() {
     // the next run reads it ahead (FacetManager.exec); a run that cannot stop
     // answers as any unstaged read does.
     try {
-      return { bytes: __fsMod.readFileSync(file.path).subarray(file.offset), ended };
+      return { source: { bytes: __fsMod.readFileSync(file.path).subarray(file.offset) }, ended };
     } catch (err) {
       if (err && err.code === "EAGAIN") __nimbusStopForStdin("end", "read");
       throw err;
     }
   }
-  if (__nimbusLiveInputChannel()) return { bytes: __BufferMod.alloc(0), ended };
-  return { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : ""), ended };
+  if (__nimbusLiveInputChannel()) {
+    __nimbusQueuedStdin = __nimbusStdinBuffer();
+    return { source: __nimbusQueuedStdin, ended };
+  }
+  return { source: { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : "") }, ended };
 }
 // The paths that name fd 0.
 const __NIMBUS_STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
@@ -7602,15 +7673,18 @@ const __NIMBUS_STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/
 // from it (__nimbusStdinRemainder).
 let __nimbusSyncStdin = null;
 function __nimbusSyncStdinState() {
-  if (__nimbusSyncStdin === null) __nimbusSyncStdin = { bytes: __nimbusTakeStdin().bytes, pos: 0 };
+  if (__nimbusSyncStdin === null) __nimbusSyncStdin = { source: __nimbusTakeStdin().source, pos: 0 };
   return __nimbusSyncStdin;
 }
 // What process.stdin delivers first: what synchronous reads left of fd 0, or
-// all it held when none read it.
+// all it held when none read it. From here process.stdin reads the channel,
+// and the follower hands it whatever it takes after.
 function __nimbusStdinRemainder() {
-  if (__nimbusSyncStdin === null) return __nimbusTakeStdin().bytes;
-  const rest = __nimbusSyncStdin.bytes.subarray(__nimbusSyncStdin.pos);
-  __nimbusSyncStdin.pos = __nimbusSyncStdin.bytes.byteLength;
+  __nimbusStdinFollower?.handOver();
+  if (__nimbusSyncStdin === null) return __nimbusTakeStdin().source.bytes;
+  const bytes = __nimbusSyncStdin.source.bytes;
+  const rest = bytes.subarray(__nimbusSyncStdin.pos);
+  __nimbusSyncStdin.pos = bytes.byteLength;
   return rest;
 }
 // Whether a read of fd 0 could find it short of what it needs, which makes
@@ -7628,15 +7702,11 @@ function __nimbusStdinCanStop() {
 // returns: ctx.abort ends the isolate's JavaScript, so no catch or finally of
 // the program runs. It returns why the run cannot stop.
 function __nimbusStopForStdin(until, syscall) {
-  const replay = globalThis.__nimbusStopReplay;
-  if (!replay || !replay.armed) return "had not started";
+  if (!__nimbusReplay || !__nimbusReplay.armed) return "had not started";
   // process.stdin's pump takes input off the channel as it arrives, which a
   // second run could not be handed back.
   if (__nimbusLiveStdinPump !== null) return "read process.stdin as it arrived first, which a second run could not be handed back";
-  // What this run took from its channel before it started: the next run gets
-  // it back first.
-  const taken = __nimbusLiveInputChannel() && __nimbusQueuedStdin !== null ? __nimbusQueuedStdin.bytes : null;
-  return replay.stop(until, syscall, taken);
+  return __nimbusReplay.block(until, syscall);
 }
 function __nimbusSyncStdinError(api, why) {
   // The whole message before the Error is built: its stack, which is what an
@@ -7659,34 +7729,53 @@ function __nimbusReadStdinInto(target, offset, length, syscall) {
   const at = Number.isInteger(offset) ? offset : 0;
   const room = Math.max(0, view.byteLength - at);
   const want = Math.min(Number.isInteger(length) ? length : room, room);
-  let n = Math.min(want, state.bytes.byteLength - state.pos);
-  if (n === 0 && want > 0 && !__nimbusStdinEnded()) {
-    throw __nimbusSyncStdinError("readSync", __nimbusStopForStdin("data", syscall));
-  }
-  if (globalThis.__nimbusStopReplay) n = globalThis.__nimbusStopReplay.read(n);
+  if (want === 0) return 0;
+  const bytes = state.source.bytes;
+  const available = Math.min(want, bytes.byteLength - state.pos);
+  const ended = __nimbusStdinEnded();
+  const n = __nimbusReplay ? __nimbusReplay.readSome(available, ended) : (available > 0 || ended ? available : -1);
+  if (n < 0) throw __nimbusSyncStdinError("readSync", __nimbusStopForStdin("data", syscall));
   if (n > 0) {
-    view.set(state.bytes.subarray(state.pos, state.pos + n), at);
+    view.set(bytes.subarray(state.pos, state.pos + n), at);
     state.pos += n;
   }
   return n;
 }
+// A live channel's packet as fd 0 takes it: its bytes into \`buffer\`, its
+// end, and a terminating signal ends the program as Node's default action
+// does (a handler the program installed takes it instead).
+function __nimbusStdinPacket(packet, buffer, beforeEntry) {
+  if (packet.data && packet.data.byteLength > 0) buffer.append(__BufferMod.from(packet.data));
+  if (packet.signal) {
+    const sig = String(packet.signal);
+    let handled = false;
+    if (!beforeEntry) { try { handled = __processEvents.emit(sig); } catch {} }
+    if (!handled && (sig === "SIGINT" || sig === "SIGTERM" || sig === "SIGKILL")) {
+      const code = sig === "SIGINT" ? 130 : sig === "SIGKILL" ? 137 : 143;
+      __nimbusReportProcessExit(code, sig);
+      throw new __ProcessExit(code);
+    }
+  }
+  if (packet.ended) buffer.ended = true;
+}
 // Read from the live channel before the entry runs: all of it when it has
 // ended (\`whole\`, __nimbusStdinWhole: a run after a stop that waited for the
-// end of stdin); else what the channel holds now, without waiting, up to a
-// bound (an endless writer refills the channel as fast as it is read).
+// end of stdin); else at least \`atLeast\` bytes (__nimbusStdinAtLeast: the
+// stdin a run after a stop is handed back, however much that is), then what
+// the channel holds now, without waiting, up to a bound (an endless writer
+// refills the channel as fast as it is read).
 const __NIMBUS_QUEUED_STDIN_MAX_BYTES = 1024 * 1024;
-async function __nimbusTakeQueuedStdin(whole) {
+async function __nimbusTakeQueuedStdin(whole, atLeast) {
   const pid = __nimbusLiveInputChannel();
   if (!pid || !__supervisor || typeof __supervisor.cpReadStdin !== "function") return;
-  const chunks = [];
-  let ended = false;
-  let bytes = 0;
+  const buffer = __nimbusStdinBuffer();
   let failures = 0;
-  while (whole || bytes < __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
+  while (whole || buffer.length < atLeast + __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
+    const waits = whole || buffer.length < atLeast;
     let packet;
     try {
       packet = await __nimbusUseRpcResult(
-        __supervisor.cpReadStdin(pid, whole ? 1000 : 0, __nimbusVfsAcquireArgs()),
+        __supervisor.cpReadStdin(pid, waits ? 1000 : 0, __nimbusVfsAcquireArgs()),
         (result) => result,
       );
       failures = 0;
@@ -7700,23 +7789,58 @@ async function __nimbusTakeQueuedStdin(whole) {
     if (!packet) break;
     const hasData = !!(packet.data && packet.data.byteLength > 0);
     if (hasData || packet.ended || packet.signal) await __nimbusInboundBarrier(packet.acquired);
-    if (hasData) { chunks.push(__BufferMod.from(packet.data)); bytes += packet.data.byteLength; }
-    if (packet.signal) {
-      const sig = String(packet.signal);
-      if (sig === "SIGINT" || sig === "SIGTERM" || sig === "SIGKILL") {
-        const code = sig === "SIGINT" ? 130 : sig === "SIGKILL" ? 137 : 143;
-        __nimbusReportProcessExit(code, sig);
-        throw new __ProcessExit(code);
-      }
-    }
-    if (packet.ended) { ended = true; break; }
-    if (!whole && !hasData && !packet.signal) break;
+    __nimbusStdinPacket(packet, buffer, true);
+    if (buffer.ended) break;
+    if (!waits && !hasData && !packet.signal) break;
   }
-  __nimbusQueuedStdin = { bytes: __BufferMod.concat(chunks), ended };
+  __nimbusQueuedStdin = buffer;
+}
+// While the program runs, its live channel's input and end keep arriving in
+// fd 0 (a long poll, never holding the program open), so a synchronous read
+// finds what its writer has written by then, and its end: Node's would.
+// Bounded: past __NIMBUS_QUEUED_STDIN_MAX_BYTES more it stops taking, and the
+// writer waits for the reader, as a full pipe makes it. Once process.stdin
+// reads the channel itself (handOver), what the follower took last is
+// process.stdin's.
+let __nimbusStdinFollower = null;
+function __nimbusFollowStdin(pid) {
+  const buffer = __nimbusQueuedStdin;
+  const start = buffer.length;
+  let handedOver = false;
+  const late = [];
+  const follow = async () => {
+    let failures = 0;
+    while (!handedOver && !buffer.ended && !__nimbusProgramStopped && buffer.length - start < __NIMBUS_QUEUED_STDIN_MAX_BYTES) {
+      let packet;
+      try {
+        // Unref'd, as process.stdin's pump is: the program is not held open
+        // for a stdin it may never read.
+        packet = await __nimbusUseRpcResultUnref(__supervisor.cpReadStdin(pid, 1000, __nimbusVfsAcquireArgs()), (result) => result);
+        failures = 0;
+      } catch {
+        if (++failures > 10) return;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      if (!packet) return;
+      const delivers = !!(packet.data && packet.data.byteLength > 0) || packet.ended || packet.signal;
+      if (delivers) await __nimbusInboundBarrier(packet.acquired);
+      if (handedOver) { if (delivers) late.push(packet); return; }
+      try { __nimbusStdinPacket(packet, buffer, false); }
+      catch (err) { if (err instanceof __ProcessExit) return; throw err; }
+    }
+  };
+  const done = follow().catch(() => {});
+  return {
+    handOver() { handedOver = true; },
+    // What it took after the hand-over, once its last poll is in.
+    async late() { await done; return late; },
+  };
 }
 // Before the entry runs: what its synchronous reads of fd 0 have in hand.
-// A pipe: what the channel holds (all of it when it has ended). A \`< file\`
-// a run that stopped read synchronously (\`syncRead\`): the file from its
+// A live channel: what it holds (all of it when it has ended, and at least
+// what a run after a stop is handed back), then the follower. A \`< file\` a
+// run that stopped read synchronously (\`syncRead\`): the file from its
 // offset up to the read ahead, read in ranges into one buffer; a larger file
 // is never held whole, and process.stdin streams on from there. Any other
 // file is read as the program reads it.
@@ -7743,8 +7867,148 @@ async function __nimbusPrepareStdin() {
     __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= size, from: file.offset + got };
     return;
   }
-  if (__nimbusLiveInputChannel()) {
-    await __nimbusTakeQueuedStdin(typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true);
+  const pid = __nimbusLiveInputChannel();
+  if (pid) {
+    await __nimbusTakeQueuedStdin(
+      typeof __nimbusStdinWhole !== "undefined" && __nimbusStdinWhole === true,
+      typeof __nimbusStdinAtLeast === "number" ? __nimbusStdinAtLeast : 0,
+    );
+    if (__nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended) __nimbusStdinFollower = __nimbusFollowStdin(pid);
+  }
+}
+// What a run that can stop, or one replaying a run that stopped, sees of the
+// filesystem is an observation (runtime/stop-replay.ts): each read, stat,
+// listing and link the program asks for is hashed, in the order it asked, so
+// a run after a stop that finds a file changed while it waited is ended
+// loudly instead of going on with the new bytes. Installed on the fs module
+// the program is handed, once armed and only then: a run that cannot stop
+// pays nothing.
+function __nimbusObservedView(value) {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value !== "object" || value instanceof Uint8Array) return value;
+  if (typeof value.isDirectory === "function" && "size" in value) {
+    // A stat, without its access time: reading a file is not a change to it.
+    return [Number(value.size), Number(value.mode), Number(value.mtimeMs), Number(value.ctimeMs), Number(value.ino), Number(value.nlink),
+      value.isDirectory() ? "d" : value.isSymbolicLink() ? "l" : "f"];
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => entry !== null && typeof entry === "object" && typeof entry.isDirectory === "function"
+      ? [String(entry.name), entry.isDirectory() ? "d" : entry.isSymbolicLink() ? "l" : "f"]
+      : entry instanceof Uint8Array ? __BufferMod.from(entry).toString("latin1") : entry);
+  }
+  return value;
+}
+function __nimbusObserveFs() {
+  const replay = __nimbusReplay;
+  if (!replay || !replay.observing) return;
+  const fs = __fsMod;
+  const view = __nimbusObservedView;
+  const failed = (error) => "error:" + String((error && error.code) || "?");
+  const isStdin = (p) => p === 0 || __NIMBUS_STDIN_PATHS.has(p);
+  // A directory opened to walk is observed as what it holds when opened.
+  const listing = fs.readdirSync;
+  // The bytes a read put in \`buffer\`: readSync/read take an offset, or an options object.
+  const readBytes = (buffer, rest, n) => {
+    const options = rest[0] !== null && typeof rest[0] === "object" ? rest[0] : null;
+    const offset = Number((options ? options.offset : rest[0]) || 0);
+    return new Uint8Array(buffer.buffer, buffer.byteOffset + offset, Math.max(0, Number(n) || 0));
+  };
+  for (const name of ["readFileSync", "statSync", "lstatSync", "fstatSync", "existsSync", "readdirSync", "readlinkSync", "realpathSync", "accessSync", "opendirSync"]) {
+    const original = fs[name];
+    if (typeof original !== "function") continue;
+    const observed = function (...args) {
+      if (name === "readFileSync" && isStdin(args[0])) return Reflect.apply(original, this, args);
+      let value;
+      try { value = Reflect.apply(original, this, args); }
+      catch (error) { replay.observe(name, failed(error)); throw error; }
+      // A directory opened to walk: what it holds, as a listing would show it.
+      replay.observe(name, view(name === "opendirSync" ? Reflect.apply(listing, fs, [args[0]]) : value));
+      return value;
+    };
+    if (typeof original.native === "function") observed.native = observed;
+    fs[name] = observed;
+  }
+  const readSync = fs.readSync;
+  fs.readSync = function (fd, buffer, ...rest) {
+    if (Number(fd) === 0) return Reflect.apply(readSync, this, [fd, buffer, ...rest]);
+    let n;
+    try { n = Reflect.apply(readSync, this, [fd, buffer, ...rest]); }
+    catch (error) { replay.observe("readSync", failed(error)); throw error; }
+    replay.observe("readSync", readBytes(buffer, rest, n));
+    return n;
+  };
+  for (const name of ["readFile", "stat", "lstat", "fstat", "exists", "readdir", "readlink", "realpath", "access", "read"]) {
+    const original = fs[name];
+    if (typeof original !== "function") continue;
+    fs[name] = function (...args) {
+      const callback = args[args.length - 1];
+      if (typeof callback !== "function" || (name === "readFile" && isStdin(args[0])) || (name === "read" && Number(args[0]) === 0)) {
+        return Reflect.apply(original, this, args);
+      }
+      const seen = replay.observeLater(name);
+      args[args.length - 1] = name === "exists"
+        ? (present) => { seen?.(present); callback(present); }
+        : name === "read"
+          ? (error, n, buffer) => { seen?.(error ? failed(error) : readBytes(buffer, args.slice(2, -1), n)); callback(error, n, buffer); }
+          : (error, value) => { seen?.(error ? failed(error) : view(value)); callback(error, value); };
+      return Reflect.apply(original, this, args);
+    };
+  }
+  const promises = fs.promises;
+  const observePromise = (kind, pending) => {
+    const seen = replay.observeLater(kind);
+    return pending.then((value) => { seen?.(view(value)); return value; }, (error) => { seen?.(failed(error)); throw error; });
+  };
+  for (const name of ["readFile", "stat", "lstat", "readdir", "readlink", "realpath", "access"]) {
+    const original = promises && promises[name];
+    if (typeof original !== "function") continue;
+    promises[name] = function (...args) {
+      if (name === "readFile" && isStdin(args[0])) return Reflect.apply(original, this, args);
+      return observePromise("promises." + name, Reflect.apply(original, this, args));
+    };
+  }
+  // A FileHandle's reads are the file's.
+  const open = promises && promises.open;
+  if (typeof open === "function") {
+    promises.open = async function (...args) {
+      const handle = await Reflect.apply(open, this, args);
+      for (const name of ["read", "readFile", "stat"]) {
+        const method = handle[name];
+        if (typeof method !== "function") continue;
+        handle[name] = function (...callArgs) {
+          const pending = Reflect.apply(method, this, callArgs);
+          if (name !== "read") return observePromise("handle." + name, pending);
+          const seen = replay.observeLater("handle.read");
+          return pending.then((result) => {
+            seen?.(result && result.buffer ? new Uint8Array(result.buffer.buffer, result.buffer.byteOffset, result.bytesRead) : result);
+            return result;
+          }, (error) => { seen?.(failed(error)); throw error; });
+        };
+      }
+      return handle;
+    };
+  }
+  // A read stream, piece by piece as it is produced. Its push and emit are
+  // wrapped rather than listened to: a 'data' listener would set it flowing
+  // under the program, and an 'error' listener would swallow its errors.
+  const createReadStream = fs.createReadStream;
+  if (typeof createReadStream === "function") {
+    fs.createReadStream = function (...args) {
+      const stream = Reflect.apply(createReadStream, this, args);
+      const seen = replay.observeStream("createReadStream");
+      if (!seen) return stream;
+      const push = stream.push, emit = stream.emit;
+      stream.push = function (chunk, encoding) {
+        if (chunk !== null && chunk !== undefined) seen.add(typeof chunk === "string" ? __BufferMod.from(chunk, encoding) : chunk);
+        return Reflect.apply(push, this, arguments);
+      };
+      stream.emit = function (event, payload) {
+        if (event === "end") seen.end();
+        else if (event === "error") seen.end(failed(payload));
+        return Reflect.apply(emit, this, arguments);
+      };
+      return stream;
+    };
   }
 }
 function __makeProcessStdin() {
@@ -7792,13 +8056,16 @@ function __makeProcessStdin() {
   }
   async function pumpLiveStdin() {
     let readFailures = 0;
+    // What fd 0's follower took after process.stdin took the channel over
+    // comes first (__nimbusFollowStdin).
+    const handedOver = __nimbusStdinFollower !== null ? await __nimbusStdinFollower.late() : [];
     while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       let packet;
       try {
         // Unref'd: this long-poll runs for the whole life of an attached
         // facet, so counting it as in-flight work would mean the entry drain
         // never sees the program finish.
-        packet = await __nimbusUseRpcResultUnref(
+        packet = handedOver.length > 0 ? handedOver.shift() : await __nimbusUseRpcResultUnref(
           __supervisor.cpReadStdin(liveChildPid, 1000, __nimbusVfsAcquireArgs()),
           (result) => result,
         );
@@ -8321,6 +8588,9 @@ builtins.net = (() => {
     }
     connect(port, host, cb) {
       if (typeof host === "function") { cb = host; host = "127.0.0.1"; }
+      // Opening a socket is something a second run would do again
+      // (runtime/stop-replay.ts), however it ends.
+      __nimbusReplay?.effect("net.connect " + String(host || "127.0.0.1") + ":" + String(port));
       this.remoteAddress = host || "127.0.0.1";
       this.remotePort = port;
       const self = this;
