@@ -391,7 +391,8 @@ async function writeClonePhaseProgress(supervisor, diagnostic) {
         const status = diagnostic.outcome === 'success' ? 'complete' : diagnostic.outcome;
         const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(`\n[git] ${diagnostic.phase} ${status} ` +
             `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
-            `w7=${diagnostic.w7Waves} rpc=${rpcCount})\n`));
+            `w7=${diagnostic.w7Waves} rpc=${rpcCount})` +
+            (diagnostic.outcome === 'success' || !diagnostic.error ? '' : `: ${diagnostic.error}`) + '\n'));
         disposeRpcResource(result);
     }
     catch {
@@ -445,11 +446,27 @@ async function runPool(items, concurrency, run) {
     if (failure !== null)
         throw failure;
 }
+/**
+ * Attempts at a batch or history piece whose request failed in transit (a
+ * server that stopped sending: measured once on react's batches, a 240 s
+ * hang). Each piece is a fresh request for the same objects, so a retry is
+ * the same piece again.
+ */
+const CLONE_PIECE_ATTEMPTS = 3;
 /** One fast-clone facet invocation after prepare; its failure is the clone's. */
 async function invokeClonePhase(entrypoint, phase, opts, run) {
-    const invocation = await invokeFacet(entrypoint, phase, crypto.randomUUID(), opts, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);
-    run.phases.push(invocation.diagnostic);
-    run.accountResult(invocation.result);
+    let invocation;
+    for (let attempt = 1; attempt <= CLONE_PIECE_ATTEMPTS; attempt++) {
+        invocation = await invokeFacet(entrypoint, phase, crypto.randomUUID(), { ...opts, attempt }, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);
+        run.phases.push(invocation.diagnostic);
+        run.accountResult(invocation.result);
+        const error = typeof invocation.result.error === 'string' ? invocation.result.error : '';
+        if (invocation.result.success === true || phase === 'clone-finish' || !error.startsWith('git upload-pack: '))
+            break;
+        if (run.progress) {
+            await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
+        }
+    }
     if (invocation.result.success !== true) {
         throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic);
     }
@@ -2196,7 +2213,7 @@ export default {
         mutated = true;
         if (phase === 'clone-batch') {
           const batch = await __nimbusGitPack.cloneBatch(context, {
-            jobId: opts.jobId,
+            jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
             index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
             batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
             capabilities: opts.capabilities,
@@ -2217,7 +2234,7 @@ export default {
             step = await __nimbusGitPack.historyResume(context, { ...history, budgetUnits: opts.historyBudgetUnits });
           } else {
             step = await __nimbusGitPack.historyStep(context, {
-              jobId: opts.jobId,
+              jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
               kind: history.kind,
               piece: history.piece,
               head: history.head,

@@ -87,6 +87,8 @@ export interface GitNetworkOpts {
     historyCommitsPerChunk?: number;
     /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
     historyBudgetUnits?: number;
+    /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
+    attempt?: number;
     /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
     oids?: string[];
     /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
