@@ -48,7 +48,7 @@ export async function createFacetSession(work) {
   let owner;
   const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
   const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
-  const requests = { fetchObjects: 0, phases: [] };
+  const requests = { fetchObjects: 0, phases: [], attempts: [] };
   const supervisor = {
     async stat(path) { try { return bridge.stat(path); } catch { return null; } },
     async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
@@ -81,6 +81,7 @@ export async function createFacetSession(work) {
                 const body = await request.clone().json().catch(() => ({}));
                 if (body.op === 'fetch-objects') requests.fetchObjects++;
                 requests.phases.push(body.phase === 'clone-history' ? 'clone-history:' + body.history?.step : body.phase ?? body.op);
+                if (body.attempt !== undefined) requests.attempts.push(body.attempt);
                 return facet.default.fetch(request, { SUPERVISOR: supervisor });
               },
             };

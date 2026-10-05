@@ -11,7 +11,7 @@
 //   - the same objects as host git's clone, and git fsck --full clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
-//   - the requests: discover + commits + trees + blobs, one each.
+//   - one blobs request broken off mid-pack is retried as a fresh piece.
 
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -65,6 +65,22 @@ try {
   const host = join(work, 'host');
   hostGit(work, ['clone', '-q', '--single-branch', 'file://' + join(served, 'repo.git'), host]);
 
+  // The fourth upload-pack POST after the clone starts breaks off after its first bytes, once.
+  const realFetch = globalThis.fetch;
+  let posts = 0;
+  globalThis.fetch = async (input, init) => {
+    const response = await realFetch(input, init);
+    if (init?.method !== 'POST' || ++posts !== 4) return response;
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    void reader.cancel();
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(first.value);
+        queueMicrotask(() => controller.error(new Error('connection reset')));
+      },
+    }), { status: response.status, headers: response.headers });
+  };
   try {
     const cloned = await session.git('/home/user', ['clone', '--no-shallow', server.url + '/repo.git', 'repo'], {
       NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK: '7',
@@ -77,6 +93,9 @@ try {
     assert.ok(count('clone-history:piece') > 5, 'history ran in pieces: ' + phases.join(','));
     assert.ok(count('clone-history:resume') > 5, 'pieces resumed from their stored packs: ' + phases.join(','));
     assert.equal(count('clone-history:plan'), 1);
+    assert.equal(posts > 4, true);
+    const attempts = session.requests.attempts;
+    assert.ok(attempts.some((attempt) => attempt === 2), 'a broken piece was attempted again');
 
     const out = session.materialize('home/user/repo', join(work, 'out'));
     assert.deepEqual(hostObjects(out), hostObjects(host), 'the objects git clone holds');
@@ -103,6 +122,7 @@ try {
     }
     assert.equal(hostGit(out, ['log', '-p', '--format=%H']), hostGit(host, ['log', '-p', '--format=%H']), 'log -p, every blob of history');
   } finally {
+    globalThis.fetch = realFetch;
     server.stop();
   }
   console.log('git-history-clone: ok');
