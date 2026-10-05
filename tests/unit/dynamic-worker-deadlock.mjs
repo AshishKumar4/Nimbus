@@ -33,7 +33,12 @@
 //       its parent's grandchild is refused; a shell with work of its own
 //       (a builtin running) is not stuck;
 //   (9) a change to the graph (a shell's work ending) lets the ledger tell a
-//       deadlock it could not before.
+//       deadlock it could not before;
+//  (10) never on the synchronous path of that change: the refusal is decided
+//       on a later turn, on the ledger as it is then. A shell whose command
+//       ended and whose next began in the same turn (wait-only for an
+//       instant) is not refused; one still wait-only on the later turn is.
+//       Before, the refusal was committed inside the change, in that instant.
 //
 // Before: every such wait waited for good; then a refusal was told from
 // ancestry, then from guest-named pids and a news count a late report
@@ -338,6 +343,37 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   procs.awaits(30, [10]);
   await tick();
   assert.deepEqual(log, ['refused 110'], "every shell awaits only its program, and every program is stuck: one's grandchild is refused");
+  await release(holds, waits);
+}
+
+// ── (10) decided on a later turn, on the state then ──────────────────────────
+{
+  const { ctx, procs } = freshCtx();
+  procs.spawn(1, 0);
+  const holds = new Map([[1, beginLoaderFetch(ctx, 'run-1', undefined, 1)]]);
+  for (let k = 2; k <= 10; k++) {
+    procs.spawn(20 + k, 1);
+    procs.spawn(k, 20 + k);
+    procs.awaits(20 + k, [k]);
+    holds.set(k, beginLoaderFetch(ctx, `run-${k}`, undefined, k));
+  }
+  const log = [];
+  const waits = [];
+  for (let k = 2; k <= 10; k++) waits.push(grandchild(ctx, procs, k, log));
+  procs.awaits(30, null); // shell 30 runs `sleep`
+  for (let k = 1; k <= 10; k++) report(ctx, k);
+  await tick();
+  // `sleep` ends, and `kill` begins in the same turn.
+  procs.awaits(30, [10]);
+  assert.equal(loaderLedgerStats(ctx).waiting, 9, 'nothing is refused on the synchronous path of the change');
+  procs.awaits(30, null);
+  await tick();
+  assert.deepEqual(log, [], 'on the later turn shell 30 has work again: nothing is refused');
+  // `kill` ends, and nothing follows it: still wait-only on the later turn.
+  procs.awaits(30, [10]);
+  assert.equal(loaderLedgerStats(ctx).waiting, 9, 'not on the synchronous path');
+  await tick();
+  assert.deepEqual(log, ['refused 110'], 'still stuck on the later turn: refused then');
   await release(holds, waits);
 }
 

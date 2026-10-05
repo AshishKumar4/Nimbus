@@ -19,8 +19,8 @@
  * than be refused waits on the ledger ({@link beginLoaderFetchWhenFree}) and
  * is let in, in the order it asked, by whichever release makes room. A wait
  * no release can ever satisfy (every worker held by a process stuck on its
- * own children, which wait here or are stuck too) is refused instead:
- * {@link DynamicWorkerDeadlockError}.
+ * own children, which wait here or are stuck too) is refused instead, on a
+ * later turn than the change that showed it: {@link DynamicWorkerDeadlockError}.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
  * limit is per Durable Object, and dynamic workers die with the isolate that
@@ -119,6 +119,9 @@ interface LoaderLedger {
   news: Map<number, ProcessNews>;
   /** The session's processes and what each waits on (bindProcessWaitGraph); none, no refusals. */
   graph: ProcessWaitGraph | undefined;
+  /** How a refusal is put off to a later turn (bindProcessWaitGraph); a decision is pending while set. */
+  schedule: (decide: () => void) => void;
+  deciding: boolean;
   /** Claims not yet released. */
   claims: Set<ClaimEntry>;
   /** The most distinct workers (holds plus claims) ever counted at once. */
@@ -150,6 +153,7 @@ function ledger(ctx: object): LoaderLedger {
   if (!entry) {
     entry = {
       inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
+      schedule: decideOnALaterTurn, deciding: false,
       claims: new Set(), peak: 0,
       waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
     };
@@ -267,14 +271,37 @@ function admitWaiters(entry: LoaderLedger): void {
     waiter.admit(hold(entry, waiter.key, waiter.claim, waiter.process?.pid ?? null));
     if (!joins) i = 0;
   }
-  const stuck = deadlocked(entry);
-  if (stuck !== undefined) {
-    // Refused, it is no longer queued: whoever waits on it is no longer
-    // stuck (its wait will end, with this error), so one refusal answers one
-    // deadlock.
-    entry.waiters.splice(entry.waiters.indexOf(stuck.waiter), 1);
-    stuck.waiter.refuse(new DynamicWorkerDeadlockError(stuck.waiter.process!.pid, stuck.holders));
+  // A wait that looks unsatisfiable is never refused on the synchronous path
+  // of the change that made it look so: that change may be one half of a
+  // step whose other half has not run yet (a shell's command ending, its next
+  // one about to begin). The decision is put off to a later turn, after the
+  // continuations pending now have run, and taken on the state as it is then.
+  if (!entry.deciding && deadlocked(entry) !== undefined) {
+    entry.deciding = true;
+    entry.schedule(() => {
+      entry.deciding = false;
+      decide(entry);
+    });
   }
+}
+
+/** The default schedule for a refusal's decision: a later turn of the event loop. */
+function decideOnALaterTurn(decide: () => void): void {
+  setTimeout(decide, 0);
+}
+
+/**
+ * A refusal put off by admitWaiters, decided on the ledger as it stands now:
+ * the newest wait no release can satisfy is refused, if there still is one.
+ */
+function decide(entry: LoaderLedger): void {
+  const stuck = deadlocked(entry);
+  if (stuck === undefined) return;
+  // Refused, it is no longer queued: whoever waits on it is no longer stuck
+  // (its wait will end, with this error), so one refusal answers one
+  // deadlock.
+  entry.waiters.splice(entry.waiters.indexOf(stuck.waiter), 1);
+  stuck.waiter.refuse(new DynamicWorkerDeadlockError(stuck.waiter.process!.pid, stuck.holders));
 }
 
 /**
@@ -300,7 +327,7 @@ function admitWaiters(entry: LoaderLedger): void {
  * still in the set, until nothing changes (a closed cycle stays stuck). At
  * the limit, with no claim, and every worker in flight held by a stuck
  * process, nothing will make room: the newest queued process a stuck process
- * waits on is refused.
+ * waits on is refused, on a later turn, if it still is (admitWaiters).
  */
 function deadlocked(entry: LoaderLedger): { waiter: Waiter; holders: number[] } | undefined {
   const graph = entry.graph;
@@ -364,9 +391,19 @@ export interface ProcessWaitGraph {
   awaits(pid: number): readonly number[] | null;
 }
 
-/** The session's process account for `ctx`'s ledger (ProcessWaitGraph). Without one, nothing is refused. */
-export function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGraph): void {
-  ledger(ctx).graph = graph;
+/**
+ * The session's process account for `ctx`'s ledger (ProcessWaitGraph).
+ * Without one, nothing is refused. `schedule` runs a refusal's decision on
+ * a later turn (by default the event loop's next); a test drives it.
+ */
+export function bindProcessWaitGraph(
+  ctx: object,
+  graph: ProcessWaitGraph,
+  schedule: (decide: () => void) => void = decideOnALaterTurn,
+): void {
+  const entry = ledger(ctx);
+  entry.graph = graph;
+  entry.schedule = schedule;
 }
 
 /**
@@ -378,8 +415,9 @@ export function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGraph): void
 export function bindProcessTable(
   ctx: object,
   processes: { waitGraph(): ProcessWaitGraph; setOnWaitChange(cb: (() => void) | null): void },
+  schedule?: (decide: () => void) => void,
 ): void {
-  bindProcessWaitGraph(ctx, processes.waitGraph());
+  bindProcessWaitGraph(ctx, processes.waitGraph(), schedule);
   processes.setOnWaitChange(() => processWaitGraphChanged(ctx));
 }
 
