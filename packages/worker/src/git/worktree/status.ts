@@ -142,7 +142,7 @@ export async function collectStatus(
   dc: DirCache,
   head: string,
   options: StatusOptions,
-): Promise<{ changes: StatusChange[]; untracked: string[] }> {
+): Promise<{ changes: StatusChange[]; untracked: string[]; errors: string[] }> {
   const changes = new Map<string, StatusChange>();
   const change = (path: string) => {
     let found = changes.get(path);
@@ -196,6 +196,8 @@ export async function collectStatus(
   return {
     changes: [...changes.values()].sort((a, b) => comparePaths(a.path, b.path)),
     untracked: scan.untracked.sort(comparePaths),
+    // diff-files reports first, then read_directory.
+    errors: [...scan.errors.tracked, ...scan.errors.untracked],
   };
 }
 

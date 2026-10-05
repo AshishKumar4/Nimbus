@@ -53,6 +53,11 @@ export interface IndexFs {
         mtime: number;
     };
 }
+/** An index extension: its 4-byte signature and its data (gitformat-index.txt, "Extensions"). */
+export interface IndexExtension {
+    signature: string;
+    bytes: Uint8Array;
+}
 /** git's name order: the bytes of the path. */
 export declare function compareBytes(a: Uint8Array, b: Uint8Array): number;
 /** A path's bytes as a string: ASCII without the decoder's cost. */
@@ -78,6 +83,8 @@ export declare class DirCache {
     private readonly uptodate;
     /** A stat refresh happened: the index is worth writing. */
     refreshed: boolean;
+    /** The checksum the file read ended with (null: there was none): what a revision check compares. */
+    readonly trailer: Uint8Array | null;
     /** The TREE extension's bytes as read, or as set; null for none. */
     private treeBytes;
     /** Those bytes read (undefined until asked for); null when there are none git would read. */
@@ -115,6 +122,8 @@ export declare class DirCache {
     size(i: number): number;
     /** The first entry at or after `key` (path bytes) in [lo, hi). */
     lowerBound(key: Uint8Array, lo?: number, hi?: number): number;
+    /** The paths with unmerged entries (stages 1-3), each once, in index order. */
+    unmergedPaths(): string[];
     /** The first entry at `path` (its lowest stage), or -1. */
     find(path: string): number;
     /** [lo, hi): the entries below directory `dir` ('' is the whole index). */
@@ -139,4 +148,23 @@ export declare class DirCache {
      */
     encode(edit?: IndexEdit, smudged?: ReadonlySet<number>): Uint8Array;
 }
+/** Entries in version 2/3 layout laid back to back (a clone batch's share of the index), one by one. */
+export declare function splitIndexEntries(bytes: Uint8Array): Uint8Array[];
+/**
+ * An index file of `entries` (encodeIndexEntry's, in any order; one path
+ * twice at one stage is refused), then `extensions`: version 2, or 3 when an
+ * entry has the second flags word. How a clone writes the index it checked
+ * out; DirCache.encode writes every later one.
+ */
+export declare function encodeIndexFile(entries: readonly Uint8Array[], extensions?: readonly IndexExtension[]): Uint8Array;
+/**
+ * One entry in version 2/3 layout: its stat (all zero when null, as for an
+ * entry never checked out or a gitlink), mode, id, flags, then its name and
+ * 1-8 NULs to a multiple of 8. A skip-worktree entry takes the second flags
+ * word, which makes the file version 3.
+ */
+export declare function encodeIndexEntry(path: string | Uint8Array, mode: number, oid: string | Uint8Array, stat: EntryStat | null, { stage, skipWorktree }?: {
+    stage?: number;
+    skipWorktree?: boolean;
+}): Uint8Array;
 //# sourceMappingURL=dircache.d.ts.map

@@ -9,10 +9,11 @@
  */
 
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
-import { DirCache, objectId, type IndexEdit } from './dircache.js';
+import { DirCache, compareBytes, objectId, type IndexEdit } from './dircache.js';
 import { Excludes, parsePatternList, type PatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf, type ObjectStore } from './tree.js';
 import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
@@ -31,6 +32,12 @@ export interface GitFs {
   promises: Record<string, unknown> & { readFile(path: string, options?: unknown): Promise<Uint8Array | string> };
 }
 
+/** ENOENT or ENOTDIR: the path is not there, which is an answer; anything else is a failure. */
+function isAbsent(error: unknown): boolean {
+  return isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')
+    || (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'));
+}
+
 /** git_config_bool's spellings. */
 export function configBool(value: unknown): boolean | undefined {
   if (typeof value === 'boolean') return value;
@@ -41,7 +48,17 @@ export function configBool(value: unknown): boolean | undefined {
   return undefined;
 }
 
+/**
+ * The index's lock, one per repository across the session's processes (git's
+ * index.lock): a command that reads the index to change it holds it from the
+ * read to the write, so two writers never write over each other.
+ */
+const indexLocks = new Map<string, Promise<void>>();
+
 export class WorktreeRepo {
+  /** This command holds its repository's index lock. */
+  private locked = false;
+
   readonly store: ObjectStore;
   readonly fs: WorktreeFs;
   private readonly cache = {};
@@ -61,7 +78,8 @@ export class WorktreeRepo {
     this.fs = {
       list: async (dir) => {
         let entries: Awaited<ReturnType<ProjectFs['readdir']>>;
-        try { entries = await vfs.readdir(at(dir)); } catch { return []; }
+        // Nothing there is no listing; any other failure (EACCES, EIO) is the caller's to report.
+        try { entries = await vfs.readdir(at(dir)); } catch (error) { if (isAbsent(error)) return []; throw error; }
         const out: Array<{ name: string; type: WorktreeType }> = [];
         for (const { name, type } of entries) {
           if (type === 'file' || type === 'directory' || type === 'symlink') out.push({ name, type });
@@ -72,7 +90,7 @@ export class WorktreeRepo {
       },
       lstat: async (path) => {
         let st: Awaited<ReturnType<ProjectFs['lstat']>>;
-        try { st = await vfs.lstat(at(path)); } catch { return null; }
+        try { st = await vfs.lstat(at(path)); } catch (error) { if (isAbsent(error)) return null; throw error; }
         const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
         return {
           type, mode: st.mode, size: st.size, mtimeMs: st.mtime, ctimeMs: st.ctime,
@@ -185,7 +203,7 @@ export class WorktreeRepo {
         if (i < 0 || !dc.skipWorktree(i)) return null;
         return (await this.store.read(dc.oid(i))).data;
       }
-    }, fileLists);
+    }, fileLists, configBool(await this.config('core.ignorecase')) === true);
   }
 
   /**
@@ -198,24 +216,66 @@ export class WorktreeRepo {
     for (let i = 0; i < dc.count; i++) {
       if (dc.isUptodate(i) || !dc.isRacy(i) || dc.stage(i) !== 0 || dc.skipWorktree(i) || edit.removed?.has(i)) continue;
       const path = dc.path(i);
-      const st = await this.fs.lstat(path);
-      // Gone, or already stat-dirty: the next look reads it anyway.
+      let st: WorktreeStat | null;
+      try { st = await this.fs.lstat(path); } catch { continue; }
+      // Gone, unreadable, or already stat-dirty: the next look reads it anyway.
       if (st === null || matchStat(dc, i, st, tree.filemode) !== 0) continue;
       if (await worktreeBlobId(tree, path, st) !== dc.oid(i)) smudged.add(i);
     }
     return smudged;
   }
 
-  /** write_locked_index: `dc` with `edit` applied, its racily clean entries smudged. */
+  /**
+   * Run `fn` holding the repository's index lock: the index read in it is
+   * the one its write replaces. A command that changes the index reads and
+   * writes it in here; others wait their turn.
+   */
+  async withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.locked) return await fn();
+    const previous = indexLocks.get(this.gitdir) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
+    indexLocks.set(this.gitdir, tail);
+    await previous;
+    this.locked = true;
+    try {
+      return await fn();
+    } finally {
+      this.locked = false;
+      release();
+      if (indexLocks.get(this.gitdir) === tail) indexLocks.delete(this.gitdir);
+    }
+  }
+
+  /** write_locked_index: `dc` with `edit` applied, its racily clean entries smudged. Only under the lock. */
   async writeIndex(dc: DirCache, edit: IndexEdit = {}): Promise<void> {
+    if (!this.locked) throw new Error('internal error: the index is written only under its lock');
     const bytes = dc.encode(edit, await this.racilySmudged(dc, edit));
     await this.vfs.writeFile(`${this.gitdir}/index`, bytes);
   }
 
-  /** repo_update_index_if_able: a status or diff writes back what it refreshed, or an index with racy entries. */
+  /** The checksum the index file ends with now, null when there is none. */
+  private async currentTrailer(): Promise<Uint8Array | null> {
+    const path = `${this.gitdir}/index`;
+    let size: number;
+    try { size = (await this.vfs.lstat(path)).size; } catch (error) { if (isAbsent(error)) return null; throw error; }
+    return size < 20 ? null : await this.vfs.readRangeUncached(path, size - 20, 20);
+  }
+
+  /**
+   * repo_update_index_if_able: a status or diff, which read the index without
+   * the lock, writes back what it refreshed (or an index with racy entries)
+   * only if the index is still the one it read; a writer that came between
+   * wins, and the refresh is simply not kept.
+   */
   async updateIndexIfAble(dc: DirCache): Promise<void> {
     let racy = false;
     for (let i = 0; i < dc.count && !racy; i++) racy = dc.isRacy(i);
-    if (dc.refreshed || dc.cacheTreeChanged || racy) await this.writeIndex(dc);
+    if (!dc.refreshed && !dc.cacheTreeChanged && !racy) return;
+    await this.withIndexLock(async () => {
+      const now = await this.currentTrailer();
+      const same = now === null || dc.trailer === null ? now === dc.trailer : compareBytes(now, dc.trailer) === 0;
+      if (same) await this.writeIndex(dc);
+    });
   }
 }

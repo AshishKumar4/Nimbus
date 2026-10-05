@@ -51,6 +51,7 @@ export interface StatusOptions {
 export declare function collectStatus(store: ObjectStore, tree: Worktree, dc: DirCache, head: string, options: StatusOptions): Promise<{
     changes: StatusChange[];
     untracked: string[];
+    errors: string[];
 }>;
 /**
  * path.c relative_path: `path` as seen from `prefix` (which ends in '/'),

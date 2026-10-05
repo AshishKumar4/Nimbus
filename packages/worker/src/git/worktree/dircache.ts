@@ -76,7 +76,8 @@ export interface IndexFs {
   lstat(path: string): Promise<{ mtime: number }> | { mtime: number };
 }
 
-interface Extension {
+/** An index extension: its 4-byte signature and its data (gitformat-index.txt, "Extensions"). */
+export interface IndexExtension {
   signature: string;
   bytes: Uint8Array;
 }
@@ -153,6 +154,8 @@ export class DirCache {
   private readonly uptodate: Uint8Array;
   /** A stat refresh happened: the index is worth writing. */
   refreshed = false;
+  /** The checksum the file read ended with (null: there was none): what a revision check compares. */
+  readonly trailer: Uint8Array | null;
   /** The TREE extension's bytes as read, or as set; null for none. */
   private treeBytes: Uint8Array | null;
   /** Those bytes read (undefined until asked for); null when there are none git would read. */
@@ -166,9 +169,11 @@ export class DirCache {
     private readonly offsets: Uint32Array,
     readonly version: number,
     readonly timestamp: number,
-    private readonly extensions: Extension[],
+    private readonly extensions: IndexExtension[],
+    trailer: Uint8Array | null,
   ) {
     this.uptodate = new Uint8Array(offsets.length);
+    this.trailer = trailer;
     this.treeBytes = extensions.find(({ signature }) => signature === 'TREE')?.bytes ?? null;
   }
 
@@ -178,7 +183,7 @@ export class DirCache {
 
   /** A repository's index before anything is added: no file yet. */
   static empty(): DirCache {
-    return new DirCache(new Uint8Array(0), new Uint32Array(0), 2, 0, []);
+    return new DirCache(new Uint8Array(0), new Uint32Array(0), 2, 0, [], null);
   }
 
   /** The index at `file`, empty when there is none. */
@@ -254,7 +259,7 @@ export class DirCache {
         at += paddedLength(extended, length);
       }
     }
-    const extensions: Extension[] = [];
+    const extensions: IndexExtension[] = [];
     while (at + 8 <= end) {
       const signature = decodePath(bytes.subarray(at, at + 4));
       const size = view.getUint32(at + 4);
@@ -267,7 +272,7 @@ export class DirCache {
       }
       extensions.push({ signature, bytes: data });
     }
-    return new DirCache(entries, offsets, version, timestamp, extensions);
+    return new DirCache(entries, offsets, version, timestamp, extensions, bytes.slice(end));
   }
 
   private u32(i: number, field: number): number {
@@ -346,6 +351,17 @@ export class DirCache {
       else hi = mid;
     }
     return lo;
+  }
+
+  /** The paths with unmerged entries (stages 1-3), each once, in index order. */
+  unmergedPaths(): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < this.count; i++) {
+      if (this.stage(i) === 0) continue;
+      const path = this.path(i);
+      if (out[out.length - 1] !== path) out.push(path);
+    }
+    return out;
   }
 
   /** The first entry at `path` (its lowest stage), or -1. */
@@ -427,7 +443,7 @@ export class DirCache {
       while (a < added.length && (key === null || compareBytes(added[a].key, key) <= 0)) {
         const { entry, key: name, stage } = added[a++];
         extended ||= entry.skipWorktree === true;
-        pieces.push(encodeEntry(entry, name, stage));
+        pieces.push(encodeIndexEntry(name, entry.mode, entry.oid, entry.stat, { stage, skipWorktree: entry.skipWorktree }));
         runEnd = -1;
         count++;
       }
@@ -462,29 +478,74 @@ export class DirCache {
     ];
     // Version 3 demotes to 2 when no entry needs the second flags word (do_write_index).
     const version = this.version === 4 ? 4 : extended ? 3 : 2;
-    const body = version === 4 ? toVersion4(pieces) : pieces;
-    let size = HEADER_BYTES + OID_BYTES;
-    for (const piece of body) size += piece.length;
-    for (const ext of extensions) size += 8 + ext.bytes.length;
-    const out = new Uint8Array(size);
-    const view = new DataView(out.buffer);
-    out.set(encoder.encode('DIRC'));
-    view.setUint32(4, version);
-    view.setUint32(8, count);
-    let at = HEADER_BYTES;
-    for (const piece of body) {
-      out.set(piece, at);
-      at += piece.length;
-    }
-    for (const ext of extensions) {
-      out.set(encoder.encode(ext.signature), at);
-      view.setUint32(at + 4, ext.bytes.length);
-      out.set(ext.bytes, at + 8);
-      at += 8 + ext.bytes.length;
-    }
-    out.set(createHash('sha1').update(out.subarray(0, at)).digest(), at);
-    return out;
+    return writeIndexFile(version, count, version === 4 ? toVersion4(pieces) : pieces, extensions);
   }
+}
+
+/** The file: header, the entries as given, the extensions, the checksum. */
+function writeIndexFile(version: number, count: number, body: readonly Uint8Array[], extensions: readonly IndexExtension[]): Uint8Array {
+  let size = HEADER_BYTES + OID_BYTES;
+  for (const piece of body) size += piece.length;
+  for (const ext of extensions) size += 8 + ext.bytes.length;
+  const out = new Uint8Array(size);
+  const view = new DataView(out.buffer);
+  out.set(encoder.encode('DIRC'));
+  view.setUint32(4, version);
+  view.setUint32(8, count);
+  let at = HEADER_BYTES;
+  for (const piece of body) {
+    out.set(piece, at);
+    at += piece.length;
+  }
+  for (const ext of extensions) {
+    out.set(encoder.encode(ext.signature), at);
+    view.setUint32(at + 4, ext.bytes.length);
+    out.set(ext.bytes, at + 8);
+    at += 8 + ext.bytes.length;
+  }
+  out.set(createHash('sha1').update(out.subarray(0, at)).digest(), at);
+  return out;
+}
+
+/** An entry's name bytes, in version 2/3 layout. */
+function entryName(entry: Uint8Array): Uint8Array {
+  const flags = (entry[FLAGS_AT] << 8) | entry[FLAGS_AT + 1];
+  const nameAt = FIXED_BYTES + (flags & EXTENDED ? 2 : 0);
+  const length = flags & NAME_MASK;
+  return entry.subarray(nameAt, length < NAME_MASK ? nameAt + length : entry.indexOf(0, nameAt));
+}
+
+/** Entries in version 2/3 layout laid back to back (a clone batch's share of the index), one by one. */
+export function splitIndexEntries(bytes: Uint8Array): Uint8Array[] {
+  const entries: Uint8Array[] = [];
+  for (let at = 0; at < bytes.length;) {
+    const entry = bytes.subarray(at);
+    const extended = (entry[FLAGS_AT] & (EXTENDED >> 8)) !== 0;
+    const length = paddedLength(extended, entryName(entry).length);
+    entries.push(bytes.subarray(at, at + length));
+    at += length;
+  }
+  return entries;
+}
+
+/**
+ * An index file of `entries` (encodeIndexEntry's, in any order; one path
+ * twice at one stage is refused), then `extensions`: version 2, or 3 when an
+ * entry has the second flags word. How a clone writes the index it checked
+ * out; DirCache.encode writes every later one.
+ */
+export function encodeIndexFile(entries: readonly Uint8Array[], extensions: readonly IndexExtension[] = []): Uint8Array {
+  const stageOf = (entry: Uint8Array) => (entry[FLAGS_AT] >> 4) & 3;
+  const keyed = entries.map((entry) => ({ entry, name: entryName(entry), stage: stageOf(entry) }));
+  keyed.sort((a, b) => compareBytes(a.name, b.name) || a.stage - b.stage);
+  let extended = false;
+  for (let i = 0; i < keyed.length; i++) {
+    if (i > 0 && compareBytes(keyed[i - 1].name, keyed[i].name) === 0 && keyed[i - 1].stage === keyed[i].stage) {
+      throw new IndexFormatError(`index: ${decodePath(keyed[i].name)} appears twice`);
+    }
+    extended ||= (keyed[i].entry[FLAGS_AT] & (EXTENDED >> 8)) !== 0;
+  }
+  return writeIndexFile(extended ? 3 : 2, keyed.length, keyed.map(({ entry }) => entry), extensions);
 }
 
 function writeStat(bytes: Uint8Array, at: number, stat: EntryStat): void {
@@ -501,17 +562,25 @@ function writeStat(bytes: Uint8Array, at: number, stat: EntryStat): void {
   u32(36, stat.size);
 }
 
-/** A new entry in version 2/3 layout. */
-function encodeEntry(entry: NewEntry, name: Uint8Array, stage: number): Uint8Array {
-  const extended = entry.skipWorktree === true;
-  const out = new Uint8Array(paddedLength(extended, name.length));
-  if (entry.stat) writeStat(out, 0, entry.stat);
+/**
+ * One entry in version 2/3 layout: its stat (all zero when null, as for an
+ * entry never checked out or a gitlink), mode, id, flags, then its name and
+ * 1-8 NULs to a multiple of 8. A skip-worktree entry takes the second flags
+ * word, which makes the file version 3.
+ */
+export function encodeIndexEntry(
+  path: string | Uint8Array, mode: number, oid: string | Uint8Array, stat: EntryStat | null,
+  { stage = 0, skipWorktree = false }: { stage?: number; skipWorktree?: boolean } = {},
+): Uint8Array {
+  const name = typeof path === 'string' ? encoder.encode(path) : path;
+  const out = new Uint8Array(paddedLength(skipWorktree, name.length));
+  if (stat) writeStat(out, 0, stat);
   const view = new DataView(out.buffer);
-  view.setUint32(24, entry.mode);
-  out.set(oidFromHex(entry.oid), 40);
-  view.setUint16(FLAGS_AT, (extended ? EXTENDED : 0) | (stage << 12) | Math.min(name.length, NAME_MASK));
-  if (extended) view.setUint16(FIXED_BYTES, SKIP_WORKTREE);
-  out.set(name, FIXED_BYTES + (extended ? 2 : 0));
+  view.setUint32(24, mode);
+  out.set(typeof oid === 'string' ? oidFromHex(oid) : oid.subarray(0, OID_BYTES), 40);
+  view.setUint16(FLAGS_AT, (skipWorktree ? EXTENDED : 0) | (stage << 12) | Math.min(name.length, NAME_MASK));
+  if (skipWorktree) view.setUint16(FIXED_BYTES, SKIP_WORKTREE);
+  out.set(name, FIXED_BYTES + (skipWorktree ? 2 : 0));
   return out;
 }
 

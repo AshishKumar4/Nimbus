@@ -19,7 +19,7 @@ import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_S
 import { encodeIdxV2, ENTRY_BYTES, entryOffset } from './idx.js';
 import { ByteLru } from './byte-lru.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
-import { encodeIndex, encodeIndexEntry, splitIndexEntries } from './index-file.js';
+import { encodeIndexEntry, encodeIndexFile, splitIndexEntries } from '../worktree/dircache.js';
 import { encodeNode } from '../worktree/cachetree.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor } from './processor.js';
@@ -555,9 +555,9 @@ export async function cloneFinish(context, request) {
     if (wait > 0)
         await new Promise((resolve) => setTimeout(resolve, wait));
     const extensions = request.cacheTreeBytes
-        ? [{ signature: 'TREE', data: await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/cache-tree'), 0, request.cacheTreeBytes) }]
+        ? [{ signature: 'TREE', bytes: await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/cache-tree'), 0, request.cacheTreeBytes) }]
         : [];
-    const index = encodeIndex(entries, extensions);
+    const index = encodeIndexFile(entries, extensions);
     const indexBytes = index.byteLength;
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);

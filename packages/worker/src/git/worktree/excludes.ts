@@ -10,7 +10,7 @@
  * being checked, so a walk holds the lists of one branch of the tree.
  */
 
-import { WM_PATHNAME, wildmatch } from './wildmatch.js';
+import { WM_CASEFOLD, WM_PATHNAME, wildmatch } from './wildmatch.js';
 
 const NEGATIVE = 1;
 const MUSTBEDIR = 2;
@@ -98,26 +98,35 @@ export function parsePatternList(bytes: Uint8Array, base: string): PatternList {
   return list;
 }
 
-function equalBytes(a: Uint8Array, aFrom: number, b: Uint8Array, bFrom: number, length: number): boolean {
-  for (let i = 0; i < length; i++) if (a[aFrom + i] !== b[bFrom + i]) return false;
+/** fspathncmp: bytes equal, ASCII letters either case under core.ignorecase. */
+function equalBytes(a: Uint8Array, aFrom: number, b: Uint8Array, bFrom: number, length: number, fold: boolean): boolean {
+  for (let i = 0; i < length; i++) {
+    let x = a[aFrom + i];
+    let y = b[bFrom + i];
+    if (fold) {
+      if (x >= 0x41 && x <= 0x5a) x += 0x20;
+      if (y >= 0x41 && y <= 0x5a) y += 0x20;
+    }
+    if (x !== y) return false;
+  }
   return true;
 }
 
 /** match_basename. */
-function matchBasename(path: Uint8Array, basename: number, p: PathPattern): boolean {
+function matchBasename(path: Uint8Array, basename: number, p: PathPattern, fold: boolean): boolean {
   const length = path.length - basename;
   const { pattern } = p;
   if (p.nowildcard === pattern.length) {
-    return pattern.length === length && equalBytes(pattern, 0, path, basename, length);
+    return pattern.length === length && equalBytes(pattern, 0, path, basename, length, fold);
   }
   if (p.flags & ENDSWITH) {
-    return pattern.length - 1 <= length && equalBytes(pattern, 1, path, path.length - (pattern.length - 1), pattern.length - 1);
+    return pattern.length - 1 <= length && equalBytes(pattern, 1, path, path.length - (pattern.length - 1), pattern.length - 1, fold);
   }
-  return wildmatch(pattern, path.subarray(basename));
+  return wildmatch(pattern, path.subarray(basename), fold ? WM_CASEFOLD : 0);
 }
 
 /** match_pathname: the pattern, anchored at its file's directory, against the whole path. */
-function matchPathname(path: Uint8Array, p: PathPattern): boolean {
+function matchPathname(path: Uint8Array, p: PathPattern, fold: boolean): boolean {
   let pattern = p.pattern;
   let prefix = p.nowildcard;
   if (pattern[0] === SLASH) {
@@ -125,27 +134,27 @@ function matchPathname(path: Uint8Array, p: PathPattern): boolean {
     prefix--;
   }
   const baseLength = p.base.length ? p.base.length - 1 : 0;
-  if (path.length < baseLength + 1 || (baseLength && path[baseLength] !== SLASH) || !equalBytes(path, 0, p.base, 0, baseLength)) {
+  if (path.length < baseLength + 1 || (baseLength && path[baseLength] !== SLASH) || !equalBytes(path, 0, p.base, 0, baseLength, fold)) {
     return false;
   }
   let name = path.subarray(baseLength ? baseLength + 1 : 0);
   if (prefix) {
-    if (prefix > name.length || !equalBytes(pattern, 0, name, 0, prefix)) return false;
+    if (prefix > name.length || !equalBytes(pattern, 0, name, 0, prefix, fold)) return false;
     if (pattern.length === prefix && name.length === prefix) return true;
     // One byte of the prefix stays, so wildmatch sees where a component starts.
     prefix--;
     pattern = pattern.subarray(prefix);
     name = name.subarray(prefix);
   }
-  return wildmatch(pattern, name, WM_PATHNAME);
+  return wildmatch(pattern, name, WM_PATHNAME | (fold ? WM_CASEFOLD : 0));
 }
 
 /** last_matching_pattern_from_list: the list's last pattern that matches, or null. */
-function lastMatching(list: PatternList, path: Uint8Array, basename: number, isDir: boolean): PathPattern | null {
+function lastMatching(list: PatternList, path: Uint8Array, basename: number, isDir: boolean, fold: boolean): PathPattern | null {
   for (let i = list.length - 1; i >= 0; i--) {
     const p = list[i];
     if ((p.flags & MUSTBEDIR) && !isDir) continue;
-    if (p.flags & NODIR ? matchBasename(path, basename, p) : matchPathname(path, p)) return p;
+    if (p.flags & NODIR ? matchBasename(path, basename, p, fold) : matchPathname(path, p, fold)) return p;
   }
   return null;
 }
@@ -163,7 +172,8 @@ interface Level {
  * The exclude rules of one worktree. `readGitignore(dir)` answers the bytes
  * of `<dir>/.gitignore` (dir repo-relative, '' the top), or null when there
  * is none. `fileLists` are core.excludesFile's patterns then info/exclude's;
- * the later one wins, as git checks info/exclude first.
+ * the later one wins, as git checks info/exclude first. `ignoreCase` is
+ * core.ignorecase: letters match either case.
  */
 export class Excludes {
   private readonly stack: Level[] = [];
@@ -171,6 +181,7 @@ export class Excludes {
   constructor(
     private readonly readGitignore: (dir: string) => Promise<Uint8Array | null>,
     private readonly fileLists: readonly PatternList[],
+    private readonly ignoreCase = false,
   ) {}
 
   /** is_excluded: whether git ignores `path` (repo-relative), a directory when `isDir`. */
@@ -186,11 +197,11 @@ export class Excludes {
   private lastMatchingInLists(path: Uint8Array, basename: number, isDir: boolean): PathPattern | null {
     for (let i = this.stack.length - 1; i >= 0; i--) {
       const list = this.stack[i].list;
-      const match = list && lastMatching(list, path, basename, isDir);
+      const match = list && lastMatching(list, path, basename, isDir, this.ignoreCase);
       if (match) return match;
     }
     for (let i = this.fileLists.length - 1; i >= 0; i--) {
-      const match = lastMatching(this.fileLists[i], path, basename, isDir);
+      const match = lastMatching(this.fileLists[i], path, basename, isDir, this.ignoreCase);
       if (match) return match;
     }
     return null;

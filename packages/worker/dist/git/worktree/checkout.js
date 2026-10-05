@@ -24,11 +24,41 @@ import { S_IFGITLINK, S_IFMT, comparePaths } from './dircache.js';
 import { diffTrees } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
 import { compareEntry, scanWorktree } from './walk.js';
+/** unpack-trees.c's unpack_plumbing_errors: the paths of each kind, then "Aborting". */
+function refusalMessage({ local, directories, untracked }, operation) {
+    const list = (paths) => paths.map((path) => `\t${path}\n`).join('');
+    const action = operation === 'merge' ? 'merge' : 'switch branches';
+    let text = '';
+    if (local.length > 0) {
+        text += `error: Your local changes to the following files would be overwritten by ${operation}:\n${list(local)}`
+            + `Please commit your changes or stash them before you ${action}.\n`;
+    }
+    if (directories.length > 0)
+        text += `error: Updating the following directories would lose untracked files in them:\n${list(directories)}\n`;
+    if (untracked.length > 0) {
+        text += `error: The following untracked working tree files would be overwritten by ${operation}:\n${list(untracked)}`
+            + `Please move or remove them before you ${action}.\n`;
+    }
+    return `${text}Aborting\n`;
+}
+/** A refusal, git's message its own: nothing was written. */
 export class CheckoutRefused extends Error {
     refusal;
-    constructor(refusal) {
-        super('checkout refused');
+    constructor(refusal, operation) {
+        super(refusalMessage(refusal, operation));
         this.refusal = refusal;
+    }
+}
+/**
+ * A branch switch over an index with unmerged entries: git refuses before
+ * looking at anything else, the refusal on stderr and each `<path>: needs
+ * merge` on stdout.
+ */
+export class UnmergedIndex extends Error {
+    paths;
+    constructor(paths) {
+        super('error: you need to resolve your current index first\n');
+        this.paths = paths;
     }
 }
 /** A small binary heap of paths in git's order: parents come out before what is below them. */
@@ -81,6 +111,11 @@ const parentOf = (path) => path.slice(0, Math.max(0, path.lastIndexOf('/')));
  */
 export async function switchTrees(ctx, head, target, force) {
     const { store, tree, dc, excludes, root, writer } = ctx;
+    if (!force) {
+        const unmerged = dc.unmergedPaths();
+        if (unmerged.length > 0)
+            throw new UnmergedIndex(unmerged);
+    }
     /** What the target holds at a path, and HEAD's leaf there (the trees differ at it). */
     const targetAt = new Map();
     const headAt = new Map();
@@ -173,6 +208,12 @@ export async function switchTrees(ctx, head, target, force) {
         const stageType = entry >= 0 ? kindOfMode(dc.mode(entry)) : belowEnd > below ? 'tree' : null;
         const st = await lstat(path);
         const workType = st === null ? null : st.type === 'directory' ? 'tree' : 'blob';
+        // reset --hard: an unmerged path the target lacks goes, its stages and its file (oneway_merge's
+        // deleted_entry); one the target has is written over below, its stages replaced.
+        if (force && at >= 0 && dc.stage(at) !== 0 && commitType === null) {
+            ops.push({ method: workType === 'blob' ? 'delete' : 'delete-index', path });
+            continue;
+        }
         const oldBlob = force ? undefined : headAt.get(path);
         const leaf = target !== null && target !== 'tree' ? target : null;
         const sameAsIndex = (other) => entry >= 0 && dc.oid(entry) === other.oid && dc.mode(entry) === other.mode;
@@ -308,7 +349,7 @@ export async function switchTrees(ctx, head, target, force) {
             local: [...new Set(refusal.local)],
             directories: [...new Set(refusal.directories)],
             untracked: [...new Set(refusal.untracked)],
-        });
+        }, ctx.operation);
     }
     const removed = new Set();
     const unindex = (path) => {

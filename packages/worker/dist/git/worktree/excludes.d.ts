@@ -30,13 +30,15 @@ export declare function parsePatternList(bytes: Uint8Array, base: string): Patte
  * The exclude rules of one worktree. `readGitignore(dir)` answers the bytes
  * of `<dir>/.gitignore` (dir repo-relative, '' the top), or null when there
  * is none. `fileLists` are core.excludesFile's patterns then info/exclude's;
- * the later one wins, as git checks info/exclude first.
+ * the later one wins, as git checks info/exclude first. `ignoreCase` is
+ * core.ignorecase: letters match either case.
  */
 export declare class Excludes {
     private readonly readGitignore;
     private readonly fileLists;
+    private readonly ignoreCase;
     private readonly stack;
-    constructor(readGitignore: (dir: string) => Promise<Uint8Array | null>, fileLists: readonly PatternList[]);
+    constructor(readGitignore: (dir: string) => Promise<Uint8Array | null>, fileLists: readonly PatternList[], ignoreCase?: boolean);
     /** is_excluded: whether git ignores `path` (repo-relative), a directory when `isDir`. */
     isExcluded(path: string, isDir: boolean): Promise<boolean>;
     private lastMatchingInLists;

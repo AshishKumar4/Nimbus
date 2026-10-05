@@ -15,6 +15,7 @@
  * memory follows the tree's depth and its widest directory, not its size.
  */
 import { createHash } from 'node:crypto';
+import { strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId } from './dircache.js';
 export function newCounters() {
@@ -156,16 +157,38 @@ export async function scanWorktree(tree, dc, options) {
     const specs = (options.specs ?? []).includes('') ? [] : options.specs ?? [];
     const inScope = (path) => specs.length === 0 || specs.some((spec) => path === spec || path.startsWith(`${spec}/`));
     const onTheWay = (dir) => specs.some((spec) => spec.startsWith(`${dir}/`));
-    const result = { dirty: new Map(), untracked: [] };
+    const result = { dirty: new Map(), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
     const join = (dir, name) => (dir ? `${dir}/${name}` : name);
     const list = async (dir) => {
         tree.counters.readdirs++;
         return await tree.fs.list(dir);
     };
+    /** A directory's listing, or null when it cannot be read: the untracked scan warns, as read_directory does. */
+    const listOrWarn = async (dir) => {
+        try {
+            return await list(dir);
+        }
+        catch (error) {
+            if (options.untracked !== 'no')
+                result.errors.untracked.push(`warning: could not open directory '${dir}/': ${strerror(error)}`);
+            return null;
+        }
+    };
+    /** An entry's lstat; a failure other than absence is reported (`<path>: <strerror>`) and the entry left alone. */
+    const lstat = async (path) => {
+        tree.counters.lstats++;
+        try {
+            return await tree.fs.lstat(path);
+        }
+        catch (error) {
+            result.errors.tracked.push(`${path}: ${strerror(error)}`);
+            return undefined;
+        }
+    };
     const excluded = async (path, isDir) => options.excludes !== null && await options.excludes.isExcluded(path, isDir);
     /** -unormal's probe: anything untracked and not ignored below `dir`, a nested repository included. */
     const holdsUntracked = async (dir) => {
-        for (const { name, type } of await list(dir)) {
+        for (const { name, type } of await listOrWarn(dir) ?? []) {
             if (name === '.git')
                 continue;
             const path = join(dir, name);
@@ -176,7 +199,7 @@ export async function scanWorktree(tree, dc, options) {
             }
             if (await excluded(path, true))
                 continue;
-            if ((await list(path)).some((entry) => entry.name === '.git') || await holdsUntracked(path))
+            if ((await listOrWarn(path) ?? []).some((entry) => entry.name === '.git') || await holdsUntracked(path))
                 return true;
         }
         return false;
@@ -198,7 +221,7 @@ export async function scanWorktree(tree, dc, options) {
             return;
         }
         // A nested repository is listed as its directory, never entered.
-        const entries = await list(path);
+        const entries = await listOrWarn(path) ?? [];
         if (entries.some((entry) => entry.name === '.git')) {
             if (inScope(path) && !shadowed)
                 result.untracked.push(`${path}/`);
@@ -225,11 +248,25 @@ export async function scanWorktree(tree, dc, options) {
                 result.dirty.set(i, { change: 'D', stat: null });
         }
     };
+    /** Entries [lo, hi) below a directory the walk could not reach: each one's lstat failed as the directory's did. */
+    const unreachable = (lo, hi, error) => {
+        for (let i = lo; i < hi; i++) {
+            if (dc.stage(i) !== 0 || dc.skipWorktree(i) || dc.assumeValid(i) || !inScope(dc.path(i)))
+                continue;
+            result.errors.tracked.push(`${dc.path(i)}: ${error}`);
+        }
+    };
     const walk = async (dir, lo, hi) => {
-        const listing = new Map();
-        for (const { name, type } of await list(dir))
-            if (name !== '.git')
-                listing.set(name, type);
+        // A directory that cannot be listed (chmod 111) still holds its tracked entries: each is looked at by its
+        // lstat, as git's diff-files looks, and nothing in it is untracked.
+        let listing = new Map();
+        const entries = await listOrWarn(dir);
+        if (entries === null)
+            listing = null;
+        else
+            for (const { name, type } of entries)
+                if (name !== '.git')
+                    listing.set(name, type);
         const tracked = new Map();
         const skip = dir ? encoder.encode(dir).length + 1 : 0;
         for (let i = lo; i < hi;) {
@@ -242,7 +279,19 @@ export async function scanWorktree(tree, dc, options) {
                 const [, end] = dc.rangeUnder(path, i, hi);
                 tracked.set(name, (tracked.get(name) ?? 0) | TRACKED_DIR);
                 if (inScope(path) || onTheWay(path)) {
-                    if (listing.get(name) === 'directory')
+                    let type = listing?.get(name);
+                    if (listing === null) {
+                        tree.counters.lstats++;
+                        try {
+                            type = (await tree.fs.lstat(path))?.type;
+                        }
+                        catch (error) {
+                            unreachable(i, end, strerror(error));
+                            i = end;
+                            continue;
+                        }
+                    }
+                    if (type === 'directory')
                         await walk(path, i, end);
                     else
                         deleted(i, end);
@@ -257,22 +306,33 @@ export async function scanWorktree(tree, dc, options) {
             let next = i + 1;
             while (next < hi && dc.stage(next) !== 0 && dc.path(next) === dc.path(i))
                 next++;
-            if (dc.stage(i) === 0 && !dc.skipWorktree(i) && !dc.assumeValid(i) && inScope(path)) {
-                const type = listing.get(name);
-                if (type === undefined || (type === 'directory' && !gitlink)) {
+            if (dc.stage(i) !== 0) {
+                if (options.unmerged && inScope(path)) {
+                    const type = listing === null ? undefined : listing.get(name);
+                    const st = listing !== null && type === undefined ? null : await lstat(path);
+                    if (st !== undefined)
+                        result.unmerged.push({ path, lo: i, hi: next, stat: st });
+                }
+            }
+            else if (!dc.skipWorktree(i) && !dc.assumeValid(i) && inScope(path)) {
+                const type = listing === null ? undefined : listing.get(name);
+                if (listing !== null && (type === undefined || (type === 'directory' && !gitlink))) {
                     result.dirty.set(i, type === undefined ? { change: 'D', stat: null } : { change: 'D', stat: null, directory: true });
                 }
                 else {
-                    tree.counters.lstats++;
-                    const st = await tree.fs.lstat(path);
-                    const dirty = st === null ? { change: 'D', stat: null } : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
-                    if (dirty)
-                        result.dirty.set(i, dirty);
+                    const st = await lstat(path);
+                    if (st !== undefined) {
+                        const dirty = st === null ? { change: 'D', stat: null }
+                            : st.type === 'directory' && !gitlink ? { change: 'D', stat: null, directory: true }
+                                : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
+                        if (dirty)
+                            result.dirty.set(i, dirty);
+                    }
                 }
             }
             i = next;
         }
-        if (options.untracked === 'no')
+        if (options.untracked === 'no' || listing === null)
             return;
         for (const [name, type] of listing) {
             const kinds = tracked.get(name) ?? 0;
