@@ -161,7 +161,9 @@ export interface Dirty {
  * (its stat refreshed in `dc` when the content had to decide), else how it
  * differs.
  */
-export async function compareEntry(tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat): Promise<Dirty | null> {
+export async function compareEntry(
+  tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty = false,
+): Promise<Dirty | null> {
   const changed = matchStat(dc, i, st, tree.filemode);
   if (changed & TYPE) return { change: 'T', stat: st };
   if (changed & MODE) return { change: 'M', stat: st };
@@ -174,8 +176,9 @@ export async function compareEntry(tree: Worktree, dc: DirCache, i: number, path
     dc.markUptodate(i);
     return null;
   }
-  // The size moved on an entry that recorded one: modified, with nothing read.
-  if ((changed & DATA) && dc.size(i) !== 0) return { change: 'M', stat: st };
+  // The size moved on an entry that recorded one: modified, with nothing read. And, for git add,
+  // any entry whose stat does not prove it clean: add_files_to_cache (DIFF_RACY_IS_MODIFIED) adds it again.
+  if (((changed & DATA) && dc.size(i) !== 0) || uncleanIsDirty) return { change: 'M', stat: st };
   const oid = await worktreeBlobId(tree, path, st);
   if (oid !== dc.oid(i)) return { change: 'M', stat: st, oid: oid || undefined };
   dc.refresh(i, st);
@@ -191,6 +194,12 @@ export interface ScanOptions {
   excludes: Excludes | null;
   /** Ignored files are untracked too, each one (add -f). */
   ignoredToo?: boolean;
+  /**
+   * An entry whose stat does not prove it clean (stat moved, or racily clean)
+   * is 'M' unhashed, for the caller to add again, as git add and commit -a
+   * do: the entry takes fresh stat and its directories' cache trees go.
+   */
+  uncleanIsDirty?: boolean;
 }
 
 export interface ScanResult {
@@ -311,7 +320,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
         } else {
           tree.counters.lstats++;
           const st = await tree.fs.lstat(path);
-          const dirty = st === null ? { change: 'D' as const, stat: null } : await compareEntry(tree, dc, i, path, st);
+          const dirty = st === null ? { change: 'D' as const, stat: null } : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
           if (dirty) result.dirty.set(i, dirty);
         }
       }

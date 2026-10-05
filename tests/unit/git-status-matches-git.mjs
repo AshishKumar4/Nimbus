@@ -175,11 +175,14 @@ function indexShape(bytes) {
   }
   const previous = at;
   const extensions = [];
+  let tree = null;
   for (let ext = previous; ext + 8 <= bytes.length - 20;) {
-    extensions.push(Buffer.from(bytes.subarray(ext, ext + 4)).toString('latin1'));
+    const signature = Buffer.from(bytes.subarray(ext, ext + 4)).toString('latin1');
+    extensions.push(signature);
+    if (signature === 'TREE') tree = Buffer.from(bytes.subarray(ext + 8, ext + 8 + view.getUint32(ext + 4))).toString('latin1');
     ext += 8 + view.getUint32(ext + 4);
   }
-  return { listed, entries: out.subarray(0, previous).toString('hex'), extensions };
+  return { listed, entries: out.subarray(0, previous).toString('hex'), extensions, tree };
 }
 
 /** After `args` in both, the same index entries (stat aside); Nimbus keeps no extension git would not. */
@@ -190,6 +193,8 @@ async function sameIndexAfter(label, repo, args) {
   assert.deepEqual(ours.listed, real.listed, `${label}: index entries`);
   assert.equal(ours.entries, real.entries, `${label}: index entry bytes`);
   for (const ext of ours.extensions) assert.ok(real.extensions.includes(ext), `${label}: extension ${ext} git does not write`);
+  // The cache tree, where both keep one, records the same trees (what git invalidated is invalid here too).
+  if (ours.tree !== null && real.tree !== null) assert.equal(ours.tree, real.tree, `${label}: cache tree`);
   checks++;
 }
 
@@ -367,7 +372,7 @@ try {
   await sameIndexAfter('add -u', everything, ['add', '-u']);
   await sameIndexAfter('add -A', everything, ['add', '-A']);
   await statusAgrees('everything, staged', everything, { subs: ['sub'] });
-  await both(everything, ['commit', '-q', '-m', 'all of it']);
+  await sameIndexAfter('commit', everything, ['commit', '-q', '-m', 'all of it']);
   // The same tree, parent and identities: the same commit.
   await same('everything: the commit', everything, ['rev-parse', 'HEAD']);
   await statusAgrees('everything, committed', everything);

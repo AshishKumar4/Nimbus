@@ -13,6 +13,7 @@
 import { createHash } from 'node:crypto';
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { encodeCacheTree, invalidatePath, parseCacheTree, type CacheTree } from './cachetree.js';
 
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
@@ -149,6 +150,10 @@ export class DirCache {
   private readonly uptodate: Uint8Array;
   /** A stat refresh happened: the index is worth writing. */
   refreshed = false;
+  /** The TREE extension as read (undefined until asked for), or as set. */
+  private tree: CacheTree | null | undefined;
+  /** The cache tree changed: written, it saves the next command reading trees. */
+  cacheTreeChanged = false;
 
   /** `bytes` are this index's own: a refresh patches them. */
   private constructor(
@@ -354,6 +359,24 @@ export class DirCache {
     return [first, this.lowerBound(key, first, hi)];
   }
 
+  /** The index's cache tree (its TREE extension), or null when it has none git would read. */
+  cacheTree(): CacheTree | null {
+    if (this.tree === undefined) {
+      const ext = this.extensions.find(({ signature }) => signature === 'TREE');
+      this.tree = ext ? parseCacheTree(ext.bytes) : null;
+    }
+    return this.tree;
+  }
+
+  /** Record `tree` as the index's cache tree, when it says something the one held does not. */
+  setCacheTree(tree: CacheTree): void {
+    const held = this.cacheTree();
+    const bytes = encodeCacheTree(tree);
+    if (held !== null && compareBytes(encodeCacheTree(held), bytes) === 0) return;
+    this.tree = tree;
+    this.cacheTreeChanged = true;
+  }
+
   /** Mark entry `i` checked against the worktree by this command. */
   markUptodate(i: number): void {
     this.uptodate[i] = 1;
@@ -428,9 +451,16 @@ export class DirCache {
       runEnd = end;
       count++;
     }
-    const changed = removed.size > 0 || added.length > 0;
-    const extensions = this.extensions.filter(({ signature }) =>
-      signature === 'REUC' || (signature === 'TREE' && !changed));
+    // The cache tree loses the directories a changed entry is in (cache_tree_invalidate_path); the rest holds.
+    const tree = this.cacheTree();
+    if (tree !== null) {
+      for (const i of removed) invalidatePath(tree, this.path(i));
+      for (const { entry } of added) invalidatePath(tree, entry.path);
+    }
+    const extensions = [
+      ...(tree === null ? [] : [{ signature: 'TREE', bytes: encodeCacheTree(tree) }]),
+      ...this.extensions.filter(({ signature }) => signature === 'REUC'),
+    ];
     // Version 3 demotes to 2 when no entry needs the second flags word (do_write_index).
     const version = this.version === 4 ? 4 : extended ? 3 : 2;
     const body = version === 4 ? toVersion4(pieces) : pieces;

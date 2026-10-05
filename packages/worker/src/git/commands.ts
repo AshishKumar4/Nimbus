@@ -536,7 +536,7 @@ async function indexEntryFor(wrepo: WorktreeRepo, git: CfGit, dc: DirCache, path
  */
 async function stageTracked(wrepo: WorktreeRepo, git: CfGit): Promise<void> {
   const dc = await wrepo.readIndex();
-  const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null });
+  const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null, uncleanIsDirty: true });
   const removed = new Set<number>();
   const added: NewEntry[] = [];
   for (const [i, dirty] of scan.dirty) {
@@ -814,7 +814,9 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
   const dc = await wrepo.readIndex();
   const excludes = await wrepo.excludes(dc);
   // -u updates what the index holds and nothing else; -f takes the ignored files below each pathspec as well.
-  const scan = await scanWorktree(await wrepo.worktree(), dc, { specs, untracked: update ? 'no' : 'all', excludes, ignoredToo: force });
+  const scan = await scanWorktree(await wrepo.worktree(), dc, {
+    specs, untracked: update ? 'no' : 'all', excludes, ignoredToo: force, uncleanIsDirty: true,
+  });
   // A nested repository stays 'dir/' here, as git prints it; it is added as a gitlink.
   const untracked = scan.untracked.sort(comparePaths);
   const ignored: string[] = [];
@@ -860,10 +862,23 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
   const show = dryRun || verbose;
   const removed = new Set<number>();
   const added: NewEntry[] = [];
+  const tree = await wrepo.worktree();
   for (const [i, action] of tracked) {
-    if (show) out += `${action} '${dc.path(i)}'\n`;
-    if (dryRun) continue;
-    const entry = action === 'add' ? await indexEntryFor(wrepo, git, dc, dc.path(i)) : null;
+    const path = dc.path(i);
+    if (action === 'remove') {
+      if (show) out += `remove '${path}'\n`;
+      if (!dryRun) removed.add(i);
+      continue;
+    }
+    // Added again with what it already held, an entry is not named (add_to_index's was_same).
+    const st = scan.dirty.get(i)!.stat!;
+    if (dryRun) {
+      const same = modeFromStat(st, dc.mode(i), tree.filemode) === dc.mode(i) && await worktreeBlobId(tree, path, st) === dc.oid(i);
+      if (show && !same) out += `add '${path}'\n`;
+      continue;
+    }
+    const entry = await indexEntryFor(wrepo, git, dc, path);
+    if (show && !(entry && entry.oid === dc.oid(i) && entry.mode === dc.mode(i))) out += `add '${path}'\n`;
     if (entry) added.push(entry);
     else removed.add(i);
   }
@@ -2055,13 +2070,16 @@ async function commitIndex(
       + 'fatal: Exiting because of an unresolved conflict.\n');
     return null;
   }
-  const tree = await writeTreeFromIndex(wrepo.store, dc);
+  const { oid: tree, cacheTree } = await writeTreeFromIndex(wrepo.store, dc);
   let parent = '';
   try { parent = `parent ${await git.resolveRef({ fs: wrepo.gitFs, gitdir: wrepo.gitdir, ref: 'HEAD' })}\n`; } catch { /* the first commit */ }
   const object = `tree ${tree}\n${parent}author ${identLine(idents.author)}\ncommitter ${identLine(idents.committer)}\n\n${message}`;
   const oid = await wrepo.store.write('commit', enc.encode(object));
   const branch = await git.currentBranch({ fs: wrepo.gitFs, gitdir: wrepo.gitdir, fullname: true });
   await git.writeRef({ fs: wrepo.gitFs, dir: wrepo.root, ref: branch ?? 'HEAD', value: oid, force: true });
+  // The index keeps the trees it was written as (update_main_cache_tree), as git's commit writes it.
+  dc.setCacheTree(cacheTree);
+  if (dc.cacheTreeChanged) await wrepo.writeIndex(dc);
   return oid;
 }
 

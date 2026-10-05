@@ -216,6 +216,6 @@ export class WorktreeRepo {
   async updateIndexIfAble(dc: DirCache): Promise<void> {
     let racy = false;
     for (let i = 0; i < dc.count && !racy; i++) racy = dc.isRacy(i);
-    if (dc.refreshed || racy) await this.writeIndex(dc);
+    if (dc.refreshed || dc.cacheTreeChanged || racy) await this.writeIndex(dc);
   }
 }

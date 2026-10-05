@@ -9,6 +9,7 @@
  */
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { addSubtree, type CacheTree } from './cachetree.js';
 import { DirCache, S_IFMT, comparePaths, decodePath } from './dircache.js';
 
 export const S_IFDIR = 0o040000;
@@ -97,24 +98,6 @@ export async function* treeLeaves(
   }
 }
 
-/** A cursor over an async sequence: the next item is looked at before it is taken. */
-export class Peekable<T> {
-  private head: IteratorResult<T> | null = null;
-
-  constructor(private readonly source: AsyncIterator<T>) {}
-
-  async peek(): Promise<T | null> {
-    this.head ??= await this.source.next();
-    return this.head.done ? null : this.head.value;
-  }
-
-  async take(): Promise<T | null> {
-    const value = await this.peek();
-    this.head = null;
-    return value;
-  }
-}
-
 /** git's tree order: a directory sorts as its name with a '/' after it. */
 function treeKey(entry: TreeEntry): string {
   return isTree(entry.mode) ? `${entry.name}/` : entry.name;
@@ -164,10 +147,11 @@ export async function diffTrees(
   }
 }
 
-/** One open directory of the tree being written: its entries so far, encoded. */
+/** One open directory of the tree being written: its entries so far, encoded, and its cache-tree node. */
 interface Frame {
   dir: string;
   parts: Uint8Array[];
+  node: CacheTree;
 }
 
 function treeLine(mode: number, name: string, oid: Uint8Array): Uint8Array {
@@ -191,17 +175,26 @@ function concat(parts: readonly Uint8Array[]): Uint8Array {
 }
 
 /**
- * write-tree: the index's stage-0 entries as trees, root first in the
- * returned id. Entries come in index order, which within one directory is
- * tree order, so each tree is complete the moment the walk leaves it.
+ * write-tree: the index's stage-0 entries as trees, and the cache tree that
+ * records them (every node valid). Entries come in index order, which
+ * within one directory is tree order, so each tree is complete the moment
+ * the walk leaves it.
  */
-export async function writeTreeFromIndex(store: ObjectStore, dc: DirCache): Promise<string> {
-  const frames: Frame[] = [{ dir: '', parts: [] }];
+export async function writeTreeFromIndex(store: ObjectStore, dc: DirCache): Promise<{ oid: string; cacheTree: CacheTree }> {
+  const open = (dir: string): Frame => ({ dir, parts: [], node: { count: 0, oid: null, subtrees: [] } });
+  const frames: Frame[] = [open('')];
+  const finish = async (frame: Frame): Promise<string> => {
+    frame.node.oid = await store.write('tree', concat(frame.parts));
+    return frame.node.oid;
+  };
   const close = async (): Promise<void> => {
     const frame = frames.pop()!;
-    const oid = await store.write('tree', concat(frame.parts));
+    const oid = await finish(frame);
     const parent = frames[frames.length - 1];
-    parent.parts.push(treeLine(S_IFDIR, frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0), oidFromHex(oid)));
+    const name = frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0);
+    parent.parts.push(treeLine(S_IFDIR, name, oidFromHex(oid)));
+    parent.node.count += frame.node.count;
+    addSubtree(parent.node, name, frame.node);
   };
   for (let i = 0; i < dc.count; i++) {
     if (dc.stage(i) !== 0 || dc.intentToAdd(i)) continue;
@@ -214,10 +207,13 @@ export async function writeTreeFromIndex(store: ObjectStore, dc: DirCache): Prom
     for (let top = frames[frames.length - 1].dir; top !== dir;) {
       const next = dir.indexOf('/', top ? top.length + 1 : 0);
       top = next < 0 ? dir : dir.slice(0, next);
-      frames.push({ dir: top, parts: [] });
+      frames.push(open(top));
     }
-    frames[frames.length - 1].parts.push(treeLine(dc.mode(i), path.slice(cut + 1), dc.oidBytes(i).slice()));
+    const frame = frames[frames.length - 1];
+    frame.parts.push(treeLine(dc.mode(i), path.slice(cut + 1), dc.oidBytes(i).slice()));
+    frame.node.count++;
   }
   while (frames.length > 1) await close();
-  return await store.write('tree', concat(frames[0].parts));
+  const root = frames[0];
+  return { oid: await finish(root), cacheTree: root.node };
 }
