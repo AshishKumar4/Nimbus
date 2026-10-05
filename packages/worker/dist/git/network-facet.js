@@ -569,7 +569,8 @@ async function runCloneHistory(entrypoint, facetOpts, identity, fast, run) {
     const roots = await piece('commits', 'commits', { head: fast.commit });
     const blobLists = [];
     const commitsPerChunk = positiveSafeInteger(facetOpts.historyCommitsPerChunk, COMMITS_PER_CHUNK, 'history commits per chunk');
-    await runPool(treeSlices(roots, commitsPerChunk), CLONE_HISTORY_CONCURRENCY, async (source, index) => {
+    const concurrency = positiveSafeInteger(facetOpts.historyConcurrency, CLONE_HISTORY_CONCURRENCY, 'history concurrency');
+    await runPool(treeSlices(roots, commitsPerChunk), concurrency, async (source, index) => {
         blobLists.push(...await piece('trees', 'trees-' + index, { source }));
     });
     const plan = await invokeClonePhase(entrypoint, 'clone-history', {
@@ -577,7 +578,7 @@ async function runCloneHistory(entrypoint, facetOpts, identity, fast, run) {
         history: { step: 'plan', lists: blobLists, present: fast.batches.map((batch) => ({ name: 'batch-' + batch.index, bytes: batch.bytes })) },
     }, run);
     const batches = plan.result.history?.batches ?? [];
-    await runPool(batches, CLONE_HISTORY_CONCURRENCY, async (source, index) => {
+    await runPool(batches, concurrency, async (source, index) => {
         await piece('blobs', 'blobs-' + index, { source });
     });
     if (run.progress) {
@@ -585,8 +586,8 @@ async function runCloneHistory(entrypoint, facetOpts, identity, fast, run) {
     }
 }
 /** The index from the shares; a full clone's shallow file goes; then the marker. */
-async function runCloneFinish(entrypoint, facetOpts, identity, shares, full, run) {
-    const finish = await invokeClonePhase(entrypoint, 'clone-finish', { ...facetOpts, ...identity, shares, full }, run);
+async function runCloneFinish(entrypoint, facetOpts, identity, shares, full, cacheTreeBytes, run) {
+    const finish = await invokeClonePhase(entrypoint, 'clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes }, run);
     if (run.progress)
         await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
@@ -722,7 +723,7 @@ export async function execGitNetwork(ctx, env, opts) {
                         const full = facetOpts.depth === undefined;
                         if (full)
                             await runCloneHistory(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
-                        await runCloneFinish(entrypoint, facetOpts, { jobId, optionsHash }, shares, full, run);
+                        await runCloneFinish(entrypoint, facetOpts, { jobId, optionsHash }, shares, full, fast.cacheTreeBytes, run);
                         return {
                             success: true,
                             elapsed: Date.now() - start,
@@ -2343,7 +2344,11 @@ export default {
           }
           return respond(true, { history: step, metadataOverlay: emptyMetadataOverlayStats() });
         }
-        const finished = await __nimbusGitPack.cloneFinish(context, { shares: opts.shares, full: opts.full === true });
+        const finished = await __nimbusGitPack.cloneFinish(context, {
+          shares: opts.shares,
+          full: opts.full === true,
+          cacheTreeBytes: opts.cacheTreeBytes,
+        });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();
         await writer.remove('.git/' + CLONE_JOB_MARKER);

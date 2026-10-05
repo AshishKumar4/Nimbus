@@ -87,6 +87,8 @@ export interface GitNetworkOpts {
     historyBlobsPerBatch?: number;
     /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
     historyCommitsPerChunk?: number;
+    /** Fast clone, full history: pieces in flight at once (tuning; CLONE_HISTORY_CONCURRENCY). */
+    historyConcurrency?: number;
     /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
     historyBudgetUnits?: number;
     /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */

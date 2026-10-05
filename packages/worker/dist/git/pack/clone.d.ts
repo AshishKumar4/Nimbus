@@ -87,6 +87,8 @@ export interface ClonePrepared {
         name: string;
         bytes: number;
     }[];
+    /** The index's TREE extension, staged as STAGE_DIR/cache-tree. */
+    cacheTreeBytes: number;
     /** A partial clone (--filter): every pack it stores is a promisor pack. */
     partial: boolean;
     packs: PackSummary[];
@@ -174,6 +176,7 @@ export declare function cloneFinish(context: CloneContext, request: {
         bytes: number;
     }[];
     full?: boolean;
+    cacheTreeBytes?: number;
 }): Promise<{
     indexEntries: number;
     indexBytes: number;

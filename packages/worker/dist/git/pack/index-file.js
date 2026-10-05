@@ -50,8 +50,11 @@ function comparePaths(a, b) {
             return a[i] - b[i];
     return a.byteLength - b.byteLength;
 }
-/** The index file for `entries` (encodeIndexEntry's), in any order; a repeated path is refused. */
-export function encodeIndex(entries) {
+/**
+ * The index file for `entries` (encodeIndexEntry's), in any order; a repeated
+ * path is refused. `extensions` follow the entries, before the checksum.
+ */
+export function encodeIndex(entries, extensions = []) {
     const keyed = entries.map((entry) => ({ entry, path: entryPath(entry) }));
     keyed.sort((a, b) => comparePaths(a.path, b.path));
     let size = 12;
@@ -61,6 +64,8 @@ export function encodeIndex(entries) {
         }
         size += keyed[i].entry.byteLength;
     }
+    for (const extension of extensions)
+        size += 8 + extension.data.byteLength;
     const out = new Uint8Array(size + OID_BYTES);
     const view = new DataView(out.buffer);
     out.set(encoder.encode('DIRC'));
@@ -70,6 +75,12 @@ export function encodeIndex(entries) {
     for (const { entry } of keyed) {
         out.set(entry, at);
         at += entry.byteLength;
+    }
+    for (const extension of extensions) {
+        out.set(encoder.encode(extension.signature), at);
+        view.setUint32(at + 4, extension.data.byteLength);
+        out.set(extension.data, at + 8);
+        at += 8 + extension.data.byteLength;
     }
     out.set(createHash('sha1').update(out.subarray(0, size)).digest(), size);
     return out;

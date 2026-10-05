@@ -20,8 +20,16 @@ export interface IndexStat {
  * never compares.
  */
 export declare function encodeIndexEntry(path: string, mode: number, oid: Uint8Array, stat: IndexStat | null): Uint8Array;
-/** The index file for `entries` (encodeIndexEntry's), in any order; a repeated path is refused. */
-export declare function encodeIndex(entries: Uint8Array[]): Uint8Array;
+/** An index extension: a 4-byte signature and its data (gitformat-index.txt, "Extensions"). */
+export interface IndexExtension {
+    signature: string;
+    data: Uint8Array;
+}
+/**
+ * The index file for `entries` (encodeIndexEntry's), in any order; a repeated
+ * path is refused. `extensions` follow the entries, before the checksum.
+ */
+export declare function encodeIndex(entries: Uint8Array[], extensions?: readonly IndexExtension[]): Uint8Array;
 /** Concatenated entries, as a batch stores its share of the index until the last batch lands. */
 export declare function splitIndexEntries(bytes: Uint8Array): Uint8Array[];
 //# sourceMappingURL=index-file.d.ts.map
