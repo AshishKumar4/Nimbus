@@ -284,6 +284,20 @@ export interface WriteBatchStreamProgress {
     committedPathCount: number;
     inodes: number;
     chunks: number;
+    /** Each published file and link, by the path the stream named, as stat will report it. */
+    receipts: WriteStreamReceipt[];
+}
+/** A streamed file's stat as published: what a producer's git index entry records. */
+export interface WriteStreamReceipt {
+    path: string;
+    ino: number;
+    mode: number;
+    size: number;
+    mtimeMs: number;
+    ctimeMs: number;
+    uid: number;
+    gid: number;
+    dev: number;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
@@ -988,7 +1002,8 @@ export declare class SqliteVFS {
     releaseExclusiveMutation(owner: string): void;
     hasExclusiveMutation(): boolean;
     private withMutationOwner;
-    assertMutationAllowed(path: string): void;
+    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
+    assertMutationAllowed(path: string, owner?: string): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease

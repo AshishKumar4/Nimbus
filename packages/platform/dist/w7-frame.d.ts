@@ -24,12 +24,23 @@ export interface BatchChunkEntry {
     chunkId: number;
     data: Uint8Array;
 }
+/**
+ * A file whose bytes are read from `source` while the stream is drained, never
+ * held whole: its inode (in `inodes`) carries the size, and the source must
+ * yield exactly that many bytes, in pieces of any size.
+ */
+export interface BatchStreamEntry {
+    path: string;
+    source: AsyncIterable<Uint8Array>;
+}
 /** Payload for writeBatch() — all inodes + chunks written in ONE transactionSync(). */
 export interface BatchWritePayload {
     inodes: BatchInodeEntry[];
     chunks: BatchChunkEntry[];
     /** Paths to delete before writing (for clean reinstall). */
     deletePaths?: string[];
+    /** Files streamed from a source rather than given as chunks; encoder only. */
+    streams?: BatchStreamEntry[];
 }
 export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
 export declare const W7_MAX_PATHS_PER_BATCH = 128;

@@ -80,6 +80,9 @@ export interface GitSupervisorRpcCounters {
     readdir: number;
     readFile: number;
     fsReadRange: number;
+    /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
+    fsWriteRange: number;
+    rename: number;
     writeBatchStream: number;
     readlink: number;
     symlink: number;
@@ -92,7 +95,7 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-checkout' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-finish' | 'clone-checkout' | 'clone-abort';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
@@ -112,6 +115,20 @@ export interface GitNetworkPhaseDiagnostic {
     supervisorRpc: GitSupervisorRpcCounters;
     /** Whether clone-checkout started without module-local job state. */
     cold?: boolean;
+    /** The invocation's wave writer: what it published and how long it waited. */
+    waves?: GitWaveDiagnostic;
+}
+/** The facet's wave writer counters (git/wave-writer.ts WaveStats). */
+export interface GitWaveDiagnostic {
+    waves: number;
+    files: number;
+    bytes: number;
+    rpcWallMs: number;
+    maxRpcWallMs: number;
+    producerWaitMs: number;
+    ownershipVisits: number;
+    maxWavePaths: number;
+    maxWaveBytes: number;
 }
 export type GitNetworkErrorCode = 'GitCloneBudgetExceeded' | 'FreshCheckoutDirectoryLimitError';
 export interface GitNetworkResult {

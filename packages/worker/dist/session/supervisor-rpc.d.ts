@@ -136,6 +136,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * span, under the RPC span of the attempt that reached it.
      */
     private _resent;
+    private _mutationOwner;
     private _hostIncarnation;
     private _reportingPid;
     private _call;

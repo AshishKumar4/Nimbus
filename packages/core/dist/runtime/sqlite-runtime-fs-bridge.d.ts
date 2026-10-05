@@ -1,6 +1,6 @@
 import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { type CompositeVFS } from '../vfs/composite.js';
-import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
     node: VfsOpenDescription;
@@ -92,12 +92,14 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;
-    }): VfsMutationReceipt;
+    } & RuntimeMutationOwner): VfsMutationReceipt;
+    /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
+    private owned;
     appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
     acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
-    }): VfsMutationReceipt;
+    } & RuntimeMutationOwner): VfsMutationReceipt;
     utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
@@ -119,7 +121,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): void;
     unlink(path: RuntimeFsPath): void;
     rmdir(path: RuntimeFsPath): void;
-    rename(from: RuntimeFsPath, to: RuntimeFsPath): void;
+    rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     readlink(path: RuntimeFsPath): string | null;
     symlink(target: string, path: RuntimeFsPath): void;
     fsync(handleId?: number): void;

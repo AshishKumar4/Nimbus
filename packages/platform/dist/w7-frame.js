@@ -33,7 +33,7 @@ export function encodeWriteBatchStream(payload) {
     let magicEmitted = false;
     const source = {
         type: 'bytes',
-        pull(controller) {
+        async pull(controller) {
             if (closed)
                 return;
             try {
@@ -42,7 +42,7 @@ export function encodeWriteBatchStream(payload) {
                     controller.enqueue(W7_MAGIC.slice());
                     return;
                 }
-                const next = iterator.next();
+                const next = await iterator.next();
                 if (next.done) {
                     closed = true;
                     controller.close();
@@ -314,7 +314,7 @@ async function* decodeRecords(stream, reader, buffer, options, initialCheck) {
         }
     }
 }
-function* encodeRecords(batchId, deletes, directories, files) {
+async function* encodeRecords(batchId, deletes, directories, files) {
     const state = {
         batchCheck: 0,
         summary: {
@@ -352,13 +352,14 @@ function* encodeRecords(batchId, deletes, directories, files) {
             chunkCount: file.inode.chunkCount,
         }, state);
         let fileCheck = 0;
-        for (const chunk of file.chunks) {
-            const data = chunk.data;
+        let chunkId = 0;
+        const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
+        for await (const data of pieces) {
             const contentBytes = new TextEncoder().encode(file.contentId);
             const prefix = new Uint8Array(4 + contentBytes.length + 8);
             writeU32LE(prefix, 0, contentBytes.length);
             prefix.set(contentBytes, 4);
-            writeU32LE(prefix, 4 + contentBytes.length, chunk.chunkId);
+            writeU32LE(prefix, 4 + contentBytes.length, chunkId++);
             writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
             const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
             state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
@@ -381,6 +382,43 @@ function* encodeRecords(batchId, deletes, directories, files) {
     };
     yield encodeMetadataRecord(RecordTag.BatchEnd, end);
 }
+/** Each chunk's bytes, read as the encoder reaches it (a producer's `data` may copy on access). */
+function* givenChunks(chunks) {
+    for (const chunk of chunks)
+        yield chunk.data;
+}
+/**
+ * A streamed file's bytes as the wire's positional chunks: CHUNK_SIZE each but
+ * the last, every one over its own buffer (the stream transfers what it
+ * enqueues). The source must yield exactly the inode's size.
+ */
+async function* fixedChunks(inode, source) {
+    let pending = new Uint8Array(Math.min(CHUNK_SIZE, inode.size));
+    let filled = 0;
+    let total = 0;
+    for await (const part of source) {
+        if (!(part instanceof Uint8Array))
+            throw new Error(`w7-frame: ${inode.path}: streamed piece is not bytes`);
+        if (total + part.byteLength > inode.size) {
+            throw new Error(`w7-frame: ${inode.path}: streamed source exceeds its ${inode.size} bytes`);
+        }
+        total += part.byteLength;
+        for (let offset = 0; offset < part.byteLength;) {
+            const take = Math.min(pending.byteLength - filled, part.byteLength - offset);
+            pending.set(part.subarray(offset, offset + take), filled);
+            filled += take;
+            offset += take;
+            if (filled === pending.byteLength) {
+                yield pending;
+                pending = new Uint8Array(Math.min(CHUNK_SIZE, inode.size - total + (part.byteLength - offset)));
+                filled = 0;
+            }
+        }
+    }
+    if (total !== inode.size) {
+        throw new Error(`w7-frame: ${inode.path}: streamed source ended at ${total} of ${inode.size} bytes`);
+    }
+}
 function encodeMetadataRecord(tag, value, state) {
     const payload = new TextEncoder().encode(JSON.stringify(value));
     if (payload.byteLength > MAX_METADATA_BYTES) {
@@ -401,6 +439,13 @@ function preparePayload(payload, batchId) {
     const deletes = [...(payload.deletePaths ?? [])];
     for (const path of deletes)
         claimPath(ownedPaths, canonicalPath(path, 'delete path'));
+    const streamsByPath = new Map();
+    for (const stream of payload.streams ?? []) {
+        const path = canonicalPath(stream.path, 'stream path');
+        if (streamsByPath.has(path))
+            throw new Error(`w7-frame: duplicate stream for ${path}`);
+        streamsByPath.set(path, stream.source);
+    }
     const chunksByPath = new Map();
     for (const chunk of payload.chunks) {
         const path = canonicalPath(chunk.path, 'chunk path');
@@ -420,23 +465,32 @@ function preparePayload(payload, batchId) {
         claimPath(ownedPaths, path);
         const normalizedInode = normalizeInode(inode);
         const fileChunks = chunksByPath.get(path) ?? [];
+        const streamed = streamsByPath.get(path) ?? null;
         if (normalizedInode.kind === 'directory') {
-            if (fileChunks.length > 0)
+            if (fileChunks.length > 0 || streamed !== null)
                 throw new Error(`w7-frame: directory ${path} has chunks`);
             directories.push(normalizedInode);
         }
         else {
-            validateChunks(normalizedInode, fileChunks);
+            if (streamed === null)
+                validateChunks(normalizedInode, fileChunks);
+            else if (fileChunks.length > 0)
+                throw new Error(`w7-frame: streamed file ${path} also has chunks`);
             files.push({
                 inode: normalizedInode,
                 contentId: `${batchId}:${fileIndex++}`,
                 chunks: fileChunks,
+                source: streamed,
             });
         }
         chunksByPath.delete(path);
+        streamsByPath.delete(path);
     }
     if (chunksByPath.size > 0) {
         throw new Error(`w7-frame: chunk has no inode: ${chunksByPath.keys().next().value}`);
+    }
+    if (streamsByPath.size > 0) {
+        throw new Error(`w7-frame: stream has no inode: ${streamsByPath.keys().next().value}`);
     }
     return { deletes, directories, files };
 }

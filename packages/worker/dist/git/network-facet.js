@@ -33,7 +33,24 @@ import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '@nimbus-sh/platform/w7-frame.js';
+import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
+import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
+const WAVE_DIAGNOSTIC_FIELDS = [
+    'waves', 'files', 'bytes', 'rpcWallMs', 'maxRpcWallMs', 'producerWaitMs',
+    'ownershipVisits', 'maxWavePaths', 'maxWaveBytes',
+];
+function parseWaveDiagnostic(value) {
+    if (!value || typeof value !== 'object')
+        return undefined;
+    const parsed = {
+        waves: 0, files: 0, bytes: 0, rpcWallMs: 0, maxRpcWallMs: 0, producerWaitMs: 0,
+        ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0,
+    };
+    for (const field of WAVE_DIAGNOSTIC_FIELDS) {
+        parsed[field] = nonNegativeCounter(Reflect.get(value, field));
+    }
+    return parsed;
+}
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const CLONE_ABORT_TIMEOUT_MS = 30_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
@@ -47,6 +64,8 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS = {
     readdir: 0,
     readFile: 0,
     fsReadRange: 0,
+    fsWriteRange: 0,
+    rename: 0,
     writeBatchStream: 0,
     readlink: 0,
     symlink: 0,
@@ -115,6 +134,8 @@ function parseSupervisorRpcCounters(value) {
         readdir: nonNegativeCounter(counters.readdir),
         readFile: nonNegativeCounter(counters.readFile),
         fsReadRange: nonNegativeCounter(counters.fsReadRange),
+        fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
+        rename: nonNegativeCounter(counters.rename),
         writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
         readlink: nonNegativeCounter(counters.readlink),
         symlink: nonNegativeCounter(counters.symlink),
@@ -156,6 +177,8 @@ function parsePhaseDiagnostic(value, fallback, result) {
         ? value
         : {};
     const phase = diagnostic.phase === 'clone-prepare' ||
+        diagnostic.phase === 'clone-batch' ||
+        diagnostic.phase === 'clone-finish' ||
         diagnostic.phase === 'clone-checkout' ||
         diagnostic.phase === 'clone-abort' ||
         diagnostic.phase === 'operation'
@@ -193,6 +216,7 @@ function parsePhaseDiagnostic(value, fallback, result) {
             : typeof result.cold === 'boolean'
                 ? result.cold
                 : undefined,
+        waves: parseWaveDiagnostic(diagnostic.waves),
     };
 }
 class GitClonePhaseError extends Error {
@@ -382,6 +406,70 @@ async function writeCloneChunkProgress(supervisor, diagnostic, chunk, progress) 
     }
 }
 /**
+ * Batches of a fast clone that run at once. Facets loaded by one session
+ * share its thread (measured: four 4.2 s CPU burners took 18.8 s), so more
+ * at once buy only overlapping network waits, and each holds its own
+ * buffers: ~15 MB with a 4 MiB base cache.
+ */
+const CLONE_BATCH_CONCURRENCY = 4;
+/**
+ * The fast clone after prepare: its blob batches, CLONE_BATCH_CONCURRENCY at
+ * a time, then finish. A failed batch stops new ones; those in flight are
+ * awaited before the failure is thrown, so an abort never races a writer.
+ */
+async function runCloneBatches(entrypoint, facetOpts, identity, fast, run) {
+    const shares = [{ name: 'index-gitlinks', bytes: fast.gitlinkIndexBytes }];
+    const queue = [...fast.batches];
+    let failure = null;
+    let completed = 0;
+    const worker = async () => {
+        while (failure === null) {
+            const batch = queue.shift();
+            if (batch === undefined)
+                return;
+            try {
+                const invocation = await invokeFacet(entrypoint, 'clone-batch', crypto.randomUUID(), { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities }, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);
+                run.phases.push(invocation.diagnostic);
+                run.accountResult(invocation.result);
+                const result = invocation.result.batch;
+                if (invocation.result.success !== true || result === undefined) {
+                    throw new GitClonePhaseError('clone-batch', typeof invocation.result.error === 'string' ? invocation.result.error : 'clone-batch failed', invocation.diagnostic);
+                }
+                shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
+                completed++;
+                run.budgetContext.processedEntries += result.files;
+                if (run.progress) {
+                    await writeCloneProgressLine(run.progress, `\n[git] clone-batch ${completed}/${fast.batches.length} complete (blobs=${result.blobs} files=${result.files} ` +
+                        `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB wall=${invocation.diagnostic.elapsed}ms ` +
+                        `w7=${invocation.diagnostic.w7Waves})\n`);
+                }
+            }
+            catch (error) {
+                failure ??= error;
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(CLONE_BATCH_CONCURRENCY, queue.length) }, worker));
+    if (failure !== null)
+        throw failure;
+    const finish = await invokeFacet(entrypoint, 'clone-finish', crypto.randomUUID(), { ...facetOpts, ...identity, shares }, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);
+    run.phases.push(finish.diagnostic);
+    run.accountResult(finish.result);
+    if (finish.result.success !== true) {
+        throw new GitClonePhaseError('clone-finish', typeof finish.result.error === 'string' ? finish.result.error : 'clone-finish failed', finish.diagnostic);
+    }
+    if (run.progress)
+        await writeClonePhaseProgress(run.progress, finish.diagnostic);
+}
+async function writeCloneProgressLine(supervisor, line) {
+    try {
+        disposeRpcResource(await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(line)));
+    }
+    catch {
+        // Terminal progress is best-effort; the batch result remains authoritative.
+    }
+}
+/**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export async function execGitNetwork(ctx, env, opts) {
@@ -492,6 +580,25 @@ export async function execGitNetwork(ctx, env, opts) {
                     }
                     if (!opts.quiet)
                         await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
+                    const fast = prepare.result.prepared.fast;
+                    if (fast !== undefined) {
+                        await runCloneBatches(entrypoint, facetOpts, { jobId, optionsHash }, fast, {
+                            outerDeadline,
+                            budgetContext,
+                            phases,
+                            accountResult,
+                            progress: opts.quiet ? null : supervisorBinding,
+                        });
+                        return {
+                            success: true,
+                            elapsed: Date.now() - start,
+                            filesWritten,
+                            bytesWritten,
+                            supervisorRpc,
+                            metadataOverlay,
+                            phases,
+                        };
+                    }
                     let checkoutCursor = null;
                     let checkoutChunk = 0;
                     do {
@@ -735,20 +842,14 @@ export function createRetryingGitHttp(baseHttp, opts) {
  * fs adapter, and flushes writes through W7 v3.
  */
 export function assembleGitNetworkFacetSource() {
-    return W7_FRAME_PREAMBLE + '\n' + generateGitNetworkFacetCode();
+    return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + GIT_WAVE_WRITER_SRC + '\n' + GIT_PACK_SRC + '\n' +
+        generateGitNetworkFacetCode();
 }
 function generateGitNetworkFacetCode() {
     return `
 // Must precede the .toString() embeds below, whose bodies call __name(...).
 ${ESBUILD_NAME_GLOBAL_SHIM}
 
-// CHUNK_SIZE is provided by the W7 frame preamble (from constants.ts),
-// prepended to this facet worker — do not redeclare it here.
-const WAVE_PATHS = ${W7_MAX_PATHS_PER_BATCH - 8};
-const W7_PATH_LIMIT = ${W7_MAX_PATHS_PER_BATCH};
-const WAVE_PATH_BYTES = ${W7_MAX_OWNED_PATH_BYTES - 4 * 1024};
-const W7_PATH_BYTES_LIMIT = ${W7_MAX_OWNED_PATH_BYTES};
-const WAVE_BYTES = 4 * 1024 * 1024; // or every 4MB
 const WHOLE_FILE_RPC_SAFE_BYTES = ${MAX_RPC_SAFE_PAYLOAD_BYTES};
 const READ_RANGE_BYTES = 4 * 1024 * 1024;
 const METADATA_MAX_ENTRIES = 100_000;
@@ -1050,18 +1151,6 @@ async function useRpcResult(promise, use) {
   finally { disposeRpcResult(value); }
 }
 
-function requireWriteBatchStreamSuccess(result) {
-  if (result && result.ok === true) return result;
-  const progress = result
-    ? ' after group ' + result.committedGroupSequence +
-      ' (' + result.committedPathCount + ' committed paths)'
-    : '';
-  const detail = result && result.error && result.error.message
-    ? result.error.message
-    : 'missing writeBatchStream result';
-  throw new Error('writeBatchStream failed' + progress + ': ' + detail);
-}
-
 // normalizePath is provided by the W7 frame preamble (from _shared/w7-frame.ts),
 // prepended to this facet worker — semantically identical, do not redeclare.
 
@@ -1179,7 +1268,7 @@ function metadataFromSupervisorStat(st) {
 function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
-    fsReadRange: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
+    fsReadRange: 0, fsWriteRange: 0, rename: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
     legacySymlinkSubtree: 0, stdout: 0,
   };
 }
@@ -1194,120 +1283,57 @@ function emptyMetadataOverlayStats() {
 }
 
 /**
- * Build a BatchWritePayload from the current write buffer.
- * Files + all their parent directories become inodes; file content is
- * chunked at CHUNK_SIZE boundaries to match sqlite-vfs.
+ * What git/pack/clone.ts needs of this facet: the supervisor's ranged writes
+ * (under the clone's lease, which the binding presents), and wave writers
+ * rooted at the clone that report each published wave's receipts.
  */
-function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritativeRoot, worktreeRoot) {
-  const inodes = [];
-  const chunks = [];
-  const dirs = new Set();
-  const mtime = Date.now();
-
-  // Collect all parent directories for files.
-  for (const [path] of writeBuffer) {
-    collectDirectoryPaths(dirs, parentOf(path), authoritativeRoot, worktreeRoot);
-  }
-  // Explicit mkdir entries
-  for (const d of dirBuffer) {
-    if (!d) continue;
-    collectDirectoryPaths(dirs, d, authoritativeRoot, worktreeRoot);
-  }
-
-  const orderedDirs = [...dirs].sort((left, right) => {
-    const depth = left.split('/').length - right.split('/').length;
-    return depth || left.localeCompare(right);
-  });
-  for (const dir of orderedDirs) {
-    const entry = metadata.get(dir);
-    if (entry && entry.kind === 'dir') {
-      entry.atimeMs = mtime;
-      entry.mtimeMs = mtime;
-      entry.ctimeMs = mtime;
-    }
-    inodes.push({
-      path: dir, parentPath: parentOf(dir), kind: 'directory', isDir: true,
-      size: 0,
-      mtime,
-      mode: entry && entry.kind === 'dir' ? entry.mode : 0o755,
-      chunkCount: 0,
-    });
-  }
-
-  for (const [path, data] of writeBuffer) {
-    const size = data.length;
-    const chunkCount = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
-    const entry = metadata.get(path);
-    if (entry && (entry.kind === 'file' || entry.kind === 'symlink')) {
-      entry.atimeMs = mtime;
-      entry.mtimeMs = mtime;
-      entry.ctimeMs = mtime;
-    }
-    inodes.push({
-      path, parentPath: parentOf(path),
-      kind: entry && entry.kind === 'symlink' ? 'symlink' : 'file',
-      isDir: false,
-      size,
-      mtime,
-      mode: entry && (entry.kind === 'file' || entry.kind === 'symlink')
-        ? entry.mode
-        : 0o644,
-      chunkCount,
-    });
-    if (size === 0) continue;
-    if (size <= CHUNK_SIZE) {
-      chunks.push({ path, chunkId: 0, data });
-    } else {
-      // Each chunk record must hand the W7 encoder a Uint8Array over its own
-      // dedicated ArrayBuffer: the encoder enqueues chunk.data into the
-      // type:'bytes' RPC stream and workerd transfers the underlying buffer,
-      // so a subarray view would detach the parent every other chunk shares
-      // (the detached-ArrayBuffer failure class documented at the writeFile
-      // ingress). That copy is materialized LAZILY, one access at a time: an
-      // eager data.slice() per chunk held a second full copy of the file
-      // beside the writeBuffer original, and for an oversize single-file
-      // wave — a packfile — that transient 2× was the facet's peak
-      // allocation. With the getter, W7 validation and encoding each
-      // materialize one chunk-sized copy that is discarded (validation) or
-      // transferred (encode) before the next exists, so peak stays ~1× wave
-      // bytes + one chunk.
-      for (let i = 0; i < chunkCount; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(size, start + CHUNK_SIZE);
-        chunks.push({
-          path, chunkId: i,
-          get data() { return data.slice(start, end); },
-        });
-      }
-    }
-  }
-
-  const deletePaths = deleteSet && deleteSet.size > 0 ? [...deleteSet] : undefined;
-  return { inodes, chunks, deletePaths };
-}
-
-// A clone publishes the directories it creates, up to and including its
-// authoritative root. An operation in an existing worktree (worktreeRoot)
-// publishes only directories below its top: the top and everything above it
-// already exist, are followed as git follows them, and are not the worktree's
-// to rewrite — republishing home is EACCES for the session user, and would
-// replace a linked ancestor with an empty directory.
-function collectDirectoryPaths(paths, path, authoritativeRoot, worktreeRoot = null) {
-  let current = path;
-  while (current) {
-    if (authoritativeRoot &&
-        current !== authoritativeRoot &&
-        !current.startsWith(authoritativeRoot + '/')) break;
-    if (worktreeRoot !== null && !current.startsWith(worktreeRoot + '/')) break;
-    paths.add(current);
-    if (current === authoritativeRoot) break;
-    current = parentOf(current);
-  }
+function gitPackContext(supervisor, stats, opts, root, deadline, log) {
+  const dir = normalizePath(opts.dir);
+  const counted = (name, call) => {
+    stats.supervisorRpc[name]++;
+    return useRpcResult(call(), (result) => result);
+  };
+  return {
+    supervisor: {
+      fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(path, offset, bytes)),
+      fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(path, size)),
+      fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRange(path, offset, length)),
+      rename: (from, to) => counted('rename', () => supervisor.rename(from, to)),
+    },
+    writer(onReceipts) {
+      return __nimbusGitWaveWriter.createWaveWriter({
+        supervisor: {
+          writeBatchStream(stream) {
+            stats.supervisorRpc.writeBatchStream++;
+            return supervisor.writeBatchStream(stream);
+          },
+        },
+        root,
+        base: dir,
+        deadline,
+        onWave(report) {
+          stats.filesWritten += report.files;
+          stats.bytesWritten += report.bytes;
+          if (onReceipts) onReceipts(report.receipts);
+        },
+      });
+    },
+    dir,
+    url: opts.url,
+    auth: opts.auth,
+    marker: { path: '.git/' + CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
+    onProgress: (text) => log(text),
+  };
 }
 
 /**
  * Create the buffered fs adapter isomorphic-git will use.
  * Writes buffer in-memory; reads check buffer then fall back to supervisor.
+ *
+ * Every write is a record for the wave writer (__nimbusGitWaveWriter, from
+ * src/git/wave-writer.ts), which publishes them in W7 waves, one in flight
+ * while the next buffers. The adapter keeps the closed-world metadata
+ * overlay a clone reads back; the writer keeps the buffered bytes.
  *
  * With a worktreeRoot (fetch, pull, push in an existing repository) the
  * adapter writes that worktree the way git's checkout does (entry.c
@@ -1329,38 +1355,80 @@ function createBufferedFs(
   authoritativeFallbackRoots = [],
   worktreeRoot = null,
 ) {
-  const writeBuffer = new Map(); // path → Uint8Array (insertion ordered = FIFO)
-  const pendingWriteMetadata = new Map();
-  const dirBuffer = new Set();
-  const deleteBuffer = new Set();
   const metadata = new Map();
   const children = new Map();
   const textEncoder = new TextEncoder();
   let metadataAccountedBytes = 0;
-  let bufferBytes = 0;
-  let flushInFlight = null;
-  let flushFailure = null;
+  let overlayFailure = null;
   let mutationQueue = Promise.resolve();
-  let pinnedFile = null;
   const fallbackPaths = new Set(authoritativeFallbackPaths.map(normalizePath));
   const fallbackRoots = authoritativeFallbackRoots.map(normalizePath);
 
+  function stampEntry(entry, mtimeMs) {
+    entry.atimeMs = mtimeMs;
+    entry.mtimeMs = mtimeMs;
+    entry.ctimeMs = mtimeMs;
+  }
+
+  // Each record carries its overlay metadata (fetch and pull have no other
+  // record of a buffered file); a cut stamps the wave's mtime on it, so the
+  // overlay's stat agrees with what the wave publishes.
+  const writer = __nimbusGitWaveWriter.createWaveWriter({
+    supervisor: {
+      writeBatchStream(stream) {
+        stats.supervisorRpc.writeBatchStream++;
+        return supervisor.writeBatchStream(stream);
+      },
+    },
+    root: authoritativeRoot,
+    worktreeRoot,
+    deadline: phaseDeadline,
+    directoryMode(path) {
+      const entry = metadata.get(path);
+      return entry && entry.kind === 'dir' ? entry.mode : undefined;
+    },
+    onCut(cut) {
+      for (const dir of cut.directories) {
+        const entry = metadata.get(dir);
+        if (entry && entry.kind === 'dir') stampEntry(entry, cut.mtimeMs);
+      }
+      for (const file of cut.files) {
+        const entry = file.meta || metadata.get(file.path);
+        if (entry && (entry.kind === 'file' || entry.kind === 'symlink')) stampEntry(entry, cut.mtimeMs);
+      }
+    },
+    onWave(report) {
+      stats.filesWritten += report.files;
+      stats.bytesWritten += report.bytes;
+    },
+  });
+
   function assertFlushHealthy() {
-    if (flushFailure) throw flushFailure;
+    if (overlayFailure) throw overlayFailure;
+    writer.assertHealthy();
   }
 
   async function awaitPendingFlush() {
-    if (flushInFlight) await flushInFlight;
+    await writer.settled();
     assertFlushHealthy();
   }
 
-  async function awaitReadableOverlay() {
-    for (const entry of pendingWriteMetadata.values()) {
-      if (entry.kind !== 'symlink') continue;
-      await flushWave();
-      return;
-    }
+  // No read reports a link, or resolves through one, before the link is
+  // durable: a read waits out every link written and not yet published.
+  async function awaitPublishedSymlinks() {
+    if (writer.hasUnpublishedSymlinks) await flushWave();
+  }
+
+  // A read the overlay cannot answer goes to the supervisor, which must
+  // already hold every write the adapter has made.
+  async function awaitSupervisorReadable() {
+    await awaitPublishedSymlinks();
     await awaitPendingFlush();
+  }
+
+  async function flushWave() {
+    if (overlayFailure) throw overlayFailure;
+    await writer.flush();
   }
 
   function isAuthoritativePath(path) {
@@ -1409,7 +1477,7 @@ function createBufferedFs(
         'git clone metadata overlay exceeded its bound (' + nextEntries + ' entries, ' +
         nextBytes + ' accounted bytes)',
       );
-      flushFailure = error;
+      overlayFailure = error;
       throw error;
     }
     metadata.set(path, entry);
@@ -1516,233 +1584,68 @@ function createBufferedFs(
   for (const [path, entry] of initialMetadata) setMetadata(path, entry);
   for (const path of initialDirectories) recordDirectory(path);
 
-  function bufferedOwnership(extraPath, includeParents = true) {
-    const paths = new Set(deleteBuffer);
-    for (const path of dirBuffer) {
-      if (!path) continue;
-      collectDirectoryPaths(paths, path, authoritativeRoot, worktreeRoot);
-    }
-    for (const path of writeBuffer.keys()) {
-      paths.add(path);
-      collectDirectoryPaths(paths, parentOf(path), authoritativeRoot, worktreeRoot);
-    }
-    if (extraPath) {
-      paths.add(extraPath);
-      if (includeParents) {
-        collectDirectoryPaths(paths, parentOf(extraPath), authoritativeRoot, worktreeRoot);
-      }
-    }
-    let pathBytes = 0;
-    for (const path of paths) pathBytes += textEncoder.encode(path).byteLength;
-    return { pathCount: paths.size, pathBytes };
-  }
-
-  function hasBufferedMutations() {
-    return writeBuffer.size > 0 || dirBuffer.size > 0 || deleteBuffer.size > 0;
-  }
-
   // alreadyDurable records that these exact bytes are known to be durably
   // published at path (the caller read them back), so waves can assert the
   // pin's presence without ever re-writing unchanged content.
   function pinFile(path, data, alreadyDurable = false) {
-    pinnedFile = {
-      path: normalizePath(path),
-      bytes: textEncoder.encode(data),
-      durable: alreadyDurable,
-    };
+    writer.setPin(normalizePath(path), data, alreadyDurable);
   }
 
   function unpinFile(path) {
-    if (pinnedFile && pinnedFile.path === normalizePath(path)) pinnedFile = null;
+    writer.clearPin(normalizePath(path));
   }
 
-  function bufferPinnedFile() {
-    if (!pinnedFile) return;
-    const { path, bytes, durable } = pinnedFile;
-    // A durable pin asserts presence, not content churn: re-writing identical
-    // marker bytes every wave re-arms receiver-side content GC for no durable
-    // state change. Re-buffer only when a buffered mutation claims the path.
-    if (durable && !writeBuffer.has(path) && !deleteBuffer.has(path)) return;
-    if (writeBuffer.has(path)) bufferBytes -= writeBuffer.get(path).length;
-    const copy = bytes.slice();
-    writeBuffer.set(path, copy);
-    bufferBytes += copy.length;
-    deleteBuffer.delete(path);
-    const now = Date.now();
-    ensureMetadataParents(path, now);
-    const entry = {
-      kind: 'file', size: copy.length, mode: 0o644,
-      mtimeMs: now, ctimeMs: now, atimeMs: now,
-    };
-    setMetadata(path, entry);
-    pendingWriteMetadata.set(path, entry);
-  }
-
-  // The supervisor's RPC class exposes the required W7
-  // writeBatchStream() protocol.
-  // encodeWriteBatchStream is a top-level function in the W7 frame
-  // preamble that's been prepended to this worker's main module
-  // source (see the modules map at the top of execGitNetwork).
-  // It's a module-local identifier — referenced as a bare name
-  // exactly like the npm install-batch-facet does at
-  // src/npm/install-batch-facet.ts:429.
-  //
-  // Producer waves are an optimization: they pre-flush before 4 MiB or the
-  // headroom threshold and serialize RPCs. Oversize single files are permitted;
-  // receiver-side weighted credit and transaction limits are the hard bound.
-  async function doFlushWave() {
-    assertFlushHealthy();
-    // Parent directory records in W7 are independently published before file
-    // records. Re-assert the marker pin so every completed clone wave leaves
-    // the durable proof in place; an already-durable unchanged pin is not
-    // re-written (idempotent — see bufferPinnedFile).
-    bufferPinnedFile();
-    if (writeBuffer.size === 0 && dirBuffer.size === 0 && deleteBuffer.size === 0) return;
-    const flushedPin = pinnedFile;
-    // This stops a timed-out facet from starting another durable wave after
-    // the supervisor has moved on to clone-abort. A writeBatchStream RPC that
-    // started before the deadline can still finish afterward; if live evidence
-    // shows that residual race, rotate the mutation lease between phases so a
-    // zombie invocation can no longer publish under the old owner.
-    if (phaseDeadline !== null && Date.now() >= phaseDeadline) {
-      throw new Error('git clone phase deadline reached before starting a new write wave');
-    }
-    try {
-      const waveMetadataEntries = [...pendingWriteMetadata];
-      const waveMetadata = new Map(metadata);
-      for (const [path, entry] of waveMetadataEntries) waveMetadata.set(path, entry);
-      const payload = buildPayload(
-        writeBuffer,
-        dirBuffer,
-        deleteBuffer,
-        waveMetadata,
-        authoritativeRoot,
-        worktreeRoot,
-      );
-    // Snapshot stats counters BEFORE clearing the buffers so the increments
-    // below see the wave's true size, not zero.
-    const wavefilesWritten = writeBuffer.size;
-    const wavebytesWritten = bufferBytes;
-    // Release facet-side buffer references BEFORE awaiting the RPC.
-    //
-    // After buildPayload, payload.chunks references each writeBuffer entry's
-    // bytes — small files alias the entry's Uint8Array directly; files over
-    // CHUNK_SIZE are lazy chunk records whose getters copy one chunk at a
-    // time out of the entry (see buildPayload). payload is the only consumer
-    // that needs those bytes for the duration of the await. Holding them in
-    // writeBuffer too just doubles facet-side residency during the await.
-    //
-    // Empirically (Q4 prod verification at probe-prod-post-fix-2026-05-09T14-54-31Z.txt)
-    // the facet OOMs around the third long-clone wave on a real repo
-    // with the buffers retained. Releasing them here means the writeBuffer
-    // Map drops to size 0, the underlying Uint8Array entries are reachable
-    // ONLY through payload.chunks (directly, or via the lazy chunk-record
-    // closures), and as the W7 encoder advances past each chunk the JS
-    // engine can collect the consumed entries. Net facet-side residency
-    // during the await drops from ~2× wave bytes to ~1× wave bytes.
-    //
-    // Safety: if the await throws, the outer fetch handler calls flushWave()
-    // again best-effort. writeBuffer is already empty, so that is a no-op.
-    // The typed result reports any path groups durably published before the
-    // failure; replaying the git operation safely replaces those paths again.
-    writeBuffer.clear();
-    pendingWriteMetadata.clear();
-    dirBuffer.clear();
-    deleteBuffer.clear();
-    bufferBytes = 0;
-    // W7 streaming path. encodeWriteBatchStream is a top-level
-    // function in the prepended W7_FRAME_PREAMBLE source. The pre-W7
-    // structured-clone fallback (writeBatch) was deleted in the
-    // legacy-cleanup wave — all live supervisors carry the streaming
-    // RPC since 2026-05-09 (commit 89a64ef9).
-    // @ts-ignore — preamble symbol injected at module-prepend time.
-    const stream = encodeWriteBatchStream(payload);
-    stats.supervisorRpc.writeBatchStream++;
-      await useRpcResult(
-        supervisor.writeBatchStream(stream),
-        result => requireWriteBatchStreamSuccess(result),
-      );
-      if (flushedPin !== null && pinnedFile === flushedPin) flushedPin.durable = true;
-      for (const [path, entry] of waveMetadataEntries) setMetadata(path, entry);
-      stats.filesWritten += wavefilesWritten;
-      stats.bytesWritten += wavebytesWritten;
-    } catch (error) {
-      flushFailure = error;
-      throw error;
-    }
-  }
-
-  async function flushWave() {
-    const prior = flushInFlight;
-    const current = (async () => {
-      if (prior) {
-        try { await prior; } catch { /* this caller still drains its own wave */ }
-      }
-      await doFlushWave();
-    })();
-    flushInFlight = current;
-    try { await current; }
-    finally {
-      if (flushInFlight === current) flushInFlight = null;
-    }
-  }
-
-  async function maybeFlush() {
-    const ownership = bufferedOwnership();
-    if (ownership.pathCount >= WAVE_PATHS ||
-        ownership.pathBytes >= WAVE_PATH_BYTES ||
-        bufferBytes >= WAVE_BYTES) {
-      await flushWave();
-    }
-  }
-
-  function bufferMutation(path, nextBytes, includeParents, mutate) {
+  // Mutations apply in call order: each waits for the one before it, and the
+  // writer admits its record (cutting a wave first when it would not fit).
+  function bufferMutation(mutate) {
     const operation = mutationQueue.then(async () => {
       assertFlushHealthy();
-      while (hasBufferedMutations()) {
-        const ownership = bufferedOwnership(path, includeParents);
-        const replacedBytes = writeBuffer.get(path)?.length || 0;
-        if (bufferBytes - replacedBytes + nextBytes <= WAVE_BYTES &&
-            ownership.pathCount < WAVE_PATHS &&
-            ownership.pathBytes < WAVE_PATH_BYTES) break;
-        await flushWave();
-      }
-      const ownership = bufferedOwnership(path, includeParents);
-      if (ownership.pathCount > W7_PATH_LIMIT) {
-        throw new Error('git write wave exceeds ' + W7_PATH_LIMIT + ' owned paths');
-      }
-      if (ownership.pathBytes > W7_PATH_BYTES_LIMIT) {
-        throw new Error(
-          'git write wave exceeds ' + W7_PATH_BYTES_LIMIT + ' owned path bytes',
-        );
-      }
       return mutate();
     });
     mutationQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
+  // A file the writer holds, or a stat of one, for a path no wave has published.
+  function bufferedStat(path, followSymlink) {
+    const buffered = writer.bufferedRecord(path);
+    if (!buffered) return null;
+    const now = Date.now();
+    return statObj(buffered.meta || {
+      kind: buffered.kind, size: buffered.size, mode: 0o644,
+      mtimeMs: now, ctimeMs: now, atimeMs: now,
+    }, followSymlink);
+  }
+
+  function bufferedDirectoryStat(followSymlink) {
+    const now = Date.now();
+    return statObj({
+      kind: 'dir', size: 0, mode: 0o755,
+      mtimeMs: now, ctimeMs: now, atimeMs: now,
+    }, followSymlink);
+  }
+
+  function readBuffered(path, opts) {
+    const data = writer.buffered(path);
+    if (data === undefined) return undefined;
+    return wantsUtf8(opts) ? new TextDecoder().decode(data) : data;
+  }
+
   const fs = {
     promises: {
       async readFile(filepath, opts) {
         assertFlushHealthy();
-        await awaitReadableOverlay();
+        await awaitPublishedSymlinks();
         const p = normalizePath(filepath);
-        // Check buffer first (FIFO insertion order preserves what git wrote)
-        if (writeBuffer.has(p)) {
-          const data = writeBuffer.get(p);
-          if (wantsUtf8(opts)) return new TextDecoder().decode(data);
-          return data;
-        }
-        if (deleteBuffer.has(p)) {
-          throw enoent(filepath);
-        }
+        // Check buffer first (insertion order preserves what git wrote)
+        const buffered = readBuffered(p, opts);
+        if (buffered !== undefined) return buffered;
+        if (writer.isBufferedDelete(p)) throw enoent(filepath);
         const resolved = resolveMetadataPath(p);
         const durablePath = resolved.path;
-        if (durablePath !== p && writeBuffer.has(durablePath)) {
-          const data = writeBuffer.get(durablePath);
-          if (wantsUtf8(opts)) return new TextDecoder().decode(data);
-          return data;
+        if (durablePath !== p) {
+          const target = readBuffered(durablePath, opts);
+          if (target !== undefined) return target;
         }
         if (resolved.entry && resolved.entry.kind === 'dir') throw enoent(filepath);
         if (!resolved.entry && isAuthoritativePath(durablePath) &&
@@ -1753,7 +1656,7 @@ function createBufferedFs(
         // existing bounded range RPC instead of sending one oversized value.
         // This is intentionally size-based rather than pack-path-specific: it
         // preserves the fs.readFile contract for every large binary file.
-        if (resolved.entry && flushInFlight) await flushInFlight;
+        await awaitSupervisorReadable();
         let size = resolved.entry && resolved.entry.kind === 'file'
           ? resolved.entry.size
           : null;
@@ -1810,76 +1713,20 @@ function createBufferedFs(
       async writeFile(filepath, data, opts) {
         assertFlushHealthy();
         const p = normalizePath(filepath);
-        // Single-ownership at ingress (fetch-once-consume-once).
-        //
-        // The W7 streaming path (writeBatchStream) enqueues each chunk's
-        // Uint8Array into a type:'bytes' ReadableStream that traverses the
-        // RPC boundary; workerd transfers each enqueued buffer's underlying
-        // ArrayBuffer to the receiver. If ANY other live reference to that
-        // ArrayBuffer (or any view over it) exists when transfer happens,
-        // the next operation that constructs a typed-array view over the
-        // detached buffer throws
-        //   "Cannot perform Construct on a detached ArrayBuffer"
-        // inside the byte-stream RPC machinery — the prod-only failure
-        // (pre-fix prod d185e0d1).
-        //
-        // Aliasing sources observed (Q4-A first-deploy verification at
-        // probe-prod-post-fix-2026-05-09T14-54-31Z.txt = OK,
-        // Q4-B refined-fix verification at
-        // probe-prod-post-fix-2026-05-09T15-04-00Z.txt = REGRESSED back
-        // to detached-AB at 2 s):
-        //   - isomorphic-git's pack indexer passes subarray() views of a
-        //     packfile-sized parent ArrayBuffer to writeFile. Different
-        //     paths share the same parent. Caught by a subarray-only
-        //     copy strategy.
-        //   - SAME parent ArrayBuffer can also be passed as a WHOLE-view
-        //     Uint8Array (byteOffset=0, length=buffer.byteLength) by
-        //     pako's inflate output reuse pattern (pako pools its output
-        //     buffers). Two consecutive writeFile calls can then share
-        //     a parent without ANY of them being a "subarray" by the
-        //     isolated-view test. NOT caught by subarray-only copy —
-        //     the Q4-B regression confirms this empirically.
-        //
-        // Fix: UNCONDITIONAL copy on the Uint8Array path. ONE invariant
-        // at ONE ingress point: every writeBuffer entry has its own
-        // dedicated ArrayBuffer, no shared parent with anything the
-        // caller owns. Memory cost is real (one O(N) byte copy per
-        // writeFile) but correctness is mandatory.
-        //
-        // Companion fix: flushWave above releases writeBuffer references
-        // BEFORE awaiting the writeBatchStream RPC. Without that, the
-        // copies here would double facet-side residency during the await
-        // and surface a separate latent wrapper-isolate OOM during long
-        // checkouts. Together, the writeFile copy + flushWave clear-
-        // before-await keep the facet's heap bounded by ~1× wave bytes
-        // (the live payload variable), not 2×.
-        //
-        // Q4 prod e2e verification:
-        //   - probe-prod-post-fix-2026-05-09T14-54-31Z.txt: copy WITHOUT
-        //     clear-before-await → OOM at frame 1450/1601, 46 568 ms wall.
-        //     Same 1450 stop-point as the original P3-era freeze, but
-        //     a different cause (now memory, not the OOM-on-stat dead-
-        //     lock the original P3 fix addressed).
-        //   - probe-prod-post-fix-2026-05-09T15-09-30Z.txt: copy WITH
-        //     clear-before-await → CLONE PASS in 11.1 s, 1609 files,
-        //     final frame 1601/1601 (loaded === total).
+        // Every buffered record owns its ArrayBuffer: the W7 stream transfers
+        // what it enqueues, and isomorphic-git hands writeFile subarray views
+        // of a pack-sized parent, and pako's pooled output as whole views of
+        // a shared buffer (both detached a later wave in production). So the
+        // bytes are copied here, once, unconditionally.
         let buf;
         if (typeof data === 'string') {
           buf = new TextEncoder().encode(data); // fresh ArrayBuffer
-        } else if (data instanceof Uint8Array) {
-          // new Uint8Array(N) + .set(data) allocates a fresh ArrayBuffer
-          // of length N and copies bytes from data. The result has zero
-          // aliasing relation to data.buffer.
-          buf = new Uint8Array(data.length);
-          buf.set(data);
         } else {
-          // ArrayBuffer (or ArrayBufferView w/o Uint8Array). Construct a
-          // Uint8Array over a fresh ArrayBuffer, copy bytes in.
-          const src = new Uint8Array(data);
+          const src = data instanceof Uint8Array ? data : new Uint8Array(data);
           buf = new Uint8Array(src.length);
           buf.set(src);
         }
-        return bufferMutation(p, buf.length, true, async () => {
+        return bufferMutation(async () => {
           const now = Date.now();
           ensureMetadataParents(p, now);
           const mode = opts && (Number(opts.mode) & 0o111) ? 0o755 : 0o644;
@@ -1888,16 +1735,7 @@ function createBufferedFs(
             mtimeMs: now, ctimeMs: now, atimeMs: now,
           };
           setMetadata(p, fileMetadata);
-          pendingWriteMetadata.set(p, fileMetadata);
-          // Remove from deleteBuffer if previously deleted
-          deleteBuffer.delete(p);
-          // Replace in writeBuffer (size delta tracked)
-          if (writeBuffer.has(p)) {
-            bufferBytes -= writeBuffer.get(p).length;
-          }
-          writeBuffer.set(p, buf);
-          bufferBytes += buf.length;
-          await maybeFlush();
+          await writer.file(p, mode, buf, fileMetadata);
         });
       },
 
@@ -1909,21 +1747,15 @@ function createBufferedFs(
         assertFlushHealthy();
         const p = normalizePath(filepath);
         if ((await fs.promises.lstat(filepath)).isDirectory()) throw eisdir(filepath);
-        return bufferMutation(p, 0, false, async () => {
-          if (writeBuffer.has(p)) {
-            bufferBytes -= writeBuffer.get(p).length;
-            writeBuffer.delete(p);
-          }
-          pendingWriteMetadata.delete(p);
-          deleteBuffer.add(p);
+        return bufferMutation(async () => {
           removeMetadata(p, false);
-          await maybeFlush();
+          await writer.remove(p);
         });
       },
 
       async readdir(filepath) {
         assertFlushHealthy();
-        await awaitReadableOverlay();
+        await awaitPublishedSymlinks();
         const p = normalizePath(filepath);
         const resolved = resolveMetadataPath(p);
         const local = resolved.entry;
@@ -1932,6 +1764,7 @@ function createBufferedFs(
           if (local.kind !== 'dir') throw enotdir(filepath);
           return [...(children.get(resolved.path) || [])];
         }
+        await awaitSupervisorReadable();
         // Start with supervisor's view
         let names = [];
         stats.supervisorRpc.readdir++;
@@ -1940,22 +1773,18 @@ function createBufferedFs(
         const set = new Set(names);
         // Add buffered children: anything whose parent == p
         const prefix = resolved.path ? resolved.path + '/' : '';
-        for (const [bp] of writeBuffer) {
-          if (!bp.startsWith(prefix)) continue;
-          const rest = bp.slice(prefix.length);
-          if (!rest) continue;
-          const firstSeg = rest.split('/')[0];
-          if (firstSeg) set.add(firstSeg);
-        }
-        for (const bd of dirBuffer) {
-          if (!bd.startsWith(prefix)) continue;
-          const rest = bd.slice(prefix.length);
-          if (!rest) continue;
-          const firstSeg = rest.split('/')[0];
-          if (firstSeg) set.add(firstSeg);
+        const buffered = writer.bufferedPaths();
+        for (const paths of [buffered.files, buffered.directories]) {
+          for (const bp of paths) {
+            if (!bp.startsWith(prefix)) continue;
+            const rest = bp.slice(prefix.length);
+            if (!rest) continue;
+            const firstSeg = rest.split('/')[0];
+            if (firstSeg) set.add(firstSeg);
+          }
         }
         // Remove deleted
-        for (const dp of deleteBuffer) {
+        for (const dp of buffered.deletes) {
           if (!dp.startsWith(prefix)) continue;
           const rest = dp.slice(prefix.length);
           if (rest.indexOf('/') < 0) set.delete(rest);
@@ -1967,20 +1796,9 @@ function createBufferedFs(
         assertFlushHealthy();
         const p = normalizePath(filepath);
         if (!p) return;
-        return bufferMutation(p, 0, true, async () => {
+        return bufferMutation(async () => {
           recordDirectory(p);
-          dirBuffer.add(p);
-          deleteBuffer.delete(p);
-          // Also add all ancestors
-          const parts = p.split('/');
-          for (let i = 1; i < parts.length; i++) {
-            const anc = parts.slice(0, i).join('/');
-            if (anc) {
-              dirBuffer.add(anc);
-              recordDirectory(anc);
-            }
-          }
-          await maybeFlush();
+          await writer.directory(p);
         });
       },
 
@@ -1991,51 +1809,36 @@ function createBufferedFs(
           if (!(await fs.promises.lstat(filepath)).isDirectory()) throw enotdir(filepath);
           if ((await fs.promises.readdir(filepath)).length > 0) throw enotempty(filepath);
         }
-        return bufferMutation(p, 0, false, async () => {
-          dirBuffer.delete(p);
-          deleteBuffer.add(p);
+        return bufferMutation(async () => {
           removeMetadata(p, true);
-          await maybeFlush();
+          await writer.remove(p, true);
         });
       },
 
       async rm(filepath) {
         assertFlushHealthy();
         const p = normalizePath(filepath);
-        return bufferMutation(p, 0, false, async () => {
-          dirBuffer.delete(p);
-          deleteBuffer.add(p);
+        return bufferMutation(async () => {
           removeMetadata(p, true);
-          await maybeFlush();
+          await writer.remove(p, true);
         });
       },
 
       async stat(filepath) {
         assertFlushHealthy();
-        await awaitReadableOverlay();
+        await awaitPublishedSymlinks();
         const p = normalizePath(filepath);
         const resolved = resolveMetadataPath(p);
         if (resolved.entry) return statObj(resolved.entry, true);
         if (isAuthoritativePath(resolved.path) && !canFallThrough(resolved.path)) {
           throw enoent(filepath);
         }
-        const now = Date.now();
-        if (writeBuffer.has(p)) {
-          const pending = pendingWriteMetadata.get(p);
-          return statObj(pending || {
-            kind: 'file', size: writeBuffer.get(p).length, mode: 0o644,
-            mtimeMs: now, ctimeMs: now, atimeMs: now,
-          }, true);
-        }
-        if (dirBuffer.has(p)) return statObj({
-          kind: 'dir', size: 0, mode: 0o755,
-          mtimeMs: now, ctimeMs: now, atimeMs: now,
-        }, true);
-        if (deleteBuffer.has(p)) throw enoent(filepath);
-        if (!p) return statObj({
-          kind: 'dir', size: 0, mode: 0o755,
-          mtimeMs: now, ctimeMs: now, atimeMs: now,
-        }, true);
+        const buffered = bufferedStat(p, true);
+        if (buffered) return buffered;
+        if (writer.isBufferedDirectory(p)) return bufferedDirectoryStat(true);
+        if (writer.isBufferedDelete(p)) throw enoent(filepath);
+        if (!p) return bufferedDirectoryStat(true);
+        await awaitSupervisorReadable();
         stats.supervisorRpc.stat++;
         const st = await useRpcResult(supervisor.stat(resolved.path), (result) => result);
         if (!st) throw enoent(filepath);
@@ -2044,7 +1847,7 @@ function createBufferedFs(
 
       async lstat(filepath) {
         assertFlushHealthy();
-        await awaitReadableOverlay();
+        await awaitPublishedSymlinks();
         const p = normalizePath(filepath);
         const resolved = resolveMetadataPath(p, false);
         const local = resolved.entry;
@@ -2052,23 +1855,12 @@ function createBufferedFs(
         if (isAuthoritativePath(resolved.path) && !canFallThrough(resolved.path)) {
           throw enoent(filepath);
         }
-        const now = Date.now();
-        if (writeBuffer.has(resolved.path)) {
-          const pending = pendingWriteMetadata.get(resolved.path);
-          return statObj(pending || {
-            kind: 'file', size: writeBuffer.get(resolved.path).length, mode: 0o644,
-            mtimeMs: now, ctimeMs: now, atimeMs: now,
-          }, false);
-        }
-        if (dirBuffer.has(resolved.path)) return statObj({
-          kind: 'dir', size: 0, mode: 0o755,
-          mtimeMs: now, ctimeMs: now, atimeMs: now,
-        }, false);
-        if (deleteBuffer.has(resolved.path)) throw enoent(filepath);
-        if (!resolved.path) return statObj({
-          kind: 'dir', size: 0, mode: 0o755,
-          mtimeMs: now, ctimeMs: now, atimeMs: now,
-        }, false);
+        const buffered = bufferedStat(resolved.path, false);
+        if (buffered) return buffered;
+        if (writer.isBufferedDirectory(resolved.path)) return bufferedDirectoryStat(false);
+        if (writer.isBufferedDelete(resolved.path)) throw enoent(filepath);
+        if (!resolved.path) return bufferedDirectoryStat(false);
+        await awaitSupervisorReadable();
         stats.supervisorRpc.lstat++;
         const st = await useRpcResult(supervisor.lstat(resolved.path), (result) => result);
         if (!st) throw enoent(filepath);
@@ -2080,34 +1872,29 @@ function createBufferedFs(
         assertFlushHealthy();
         const p = normalizePath(filepath);
         const value = String(target);
-        const data = textEncoder.encode(value);
-        return bufferMutation(p, data.length, true, async () => {
+        return bufferMutation(async () => {
           const now = Date.now();
           ensureMetadataParents(p, now);
           const linkMetadata = {
             kind: 'symlink', target: value,
-            size: data.byteLength,
+            size: textEncoder.encode(value).byteLength,
             mode: 0o777,
             mtimeMs: now, ctimeMs: now, atimeMs: now,
           };
           setMetadata(p, linkMetadata);
-          pendingWriteMetadata.set(p, linkMetadata);
-          deleteBuffer.delete(p);
-          if (writeBuffer.has(p)) bufferBytes -= writeBuffer.get(p).length;
-          writeBuffer.set(p, data);
-          bufferBytes += data.byteLength;
-          await maybeFlush();
+          await writer.symlink(p, value, linkMetadata);
         });
       },
       async readlink(filepath) {
         assertFlushHealthy();
-        await awaitReadableOverlay();
+        await awaitPublishedSymlinks();
         const p = normalizePath(filepath);
         const resolved = resolveMetadataPath(p, false);
         const local = resolved.entry;
         if (local && local.kind === 'symlink') return local.target;
         if (local) throw einval(filepath);
         if (isAuthoritativePath(resolved.path)) throw enoent(filepath);
+        await awaitSupervisorReadable();
         stats.supervisorRpc.readlink++;
         return useRpcResult(supervisor.readlink(resolved.path), result => {
           if (result === null || result === undefined) throw enoent(filepath);
@@ -2117,7 +1904,15 @@ function createBufferedFs(
     },
   };
 
-  return { fs, flushWave, overlayStats, metadataSnapshot, pinFile, unpinFile };
+  return {
+    fs,
+    flushWave,
+    overlayStats,
+    metadataSnapshot,
+    pinFile,
+    unpinFile,
+    waveStats: () => writer.stats(),
+  };
 }
 
 function preparedPackManifest(metadata, cloneRoot) {
@@ -2182,6 +1977,8 @@ export default {
     }
 
     const phase = opts.phase === 'clone-prepare' ||
+        opts.phase === 'clone-batch' ||
+        opts.phase === 'clone-finish' ||
         opts.phase === 'clone-checkout' ||
         opts.phase === 'clone-abort'
       ? opts.phase
@@ -2225,6 +2022,7 @@ export default {
           w7Waves: stats.supervisorRpc.writeBatchStream,
           supervisorRpc: stats.supervisorRpc,
           cold: phase === 'clone-checkout' ? cold : undefined,
+          waves: waveStats(),
         },
       }, { status });
     };
@@ -2292,6 +2090,7 @@ export default {
 
     let flushWave = async () => {};
     let overlayStats = emptyMetadataOverlayStats;
+    let waveStats = () => undefined;
     try {
       if (typeof opts.dir !== 'string') throw new Error('git ' + opts.op + ': dir required');
       let authoritativeRoot = null;
@@ -2303,6 +2102,30 @@ export default {
       const phaseDeadline = phase === 'operation'
         ? null
         : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
+      if (phase === 'clone-batch' || phase === 'clone-finish') {
+        if (opts.op !== 'clone') throw protocolError(phase + ' requires clone operation');
+        requireProtocolString(opts.jobId, 'job id', 128);
+        requireProtocolString(opts.optionsHash, 'options hash', 128);
+        if (opts.exclusiveDestination !== true) throw protocolError(phase + ' requires an exclusive destination');
+        const root = normalizePath(opts.exclusiveMutationRoot || opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, root, phaseDeadline, log);
+        mutated = true;
+        if (phase === 'clone-batch') {
+          const batch = await __nimbusGitPack.cloneBatch(context, {
+            jobId: opts.jobId,
+            index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
+            batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
+            capabilities: opts.capabilities,
+          });
+          return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
+        }
+        const finished = await __nimbusGitPack.cloneFinish(context, { shares: opts.shares });
+        // The marker goes last: until it does, a failure leaves the clone abortable.
+        const writer = context.writer();
+        await writer.remove('.git/' + CLONE_JOB_MARKER);
+        await writer.flush();
+        return respond(true, { finished, metadataOverlay: emptyMetadataOverlayStats() });
+      }
       if (phase === 'clone-prepare') {
         if (opts.op !== 'clone') throw protocolError('prepare requires clone operation');
         requireProtocolString(opts.jobId, 'job id', 128);
@@ -2435,6 +2258,7 @@ export default {
       const fs = bufferedFs.fs;
       flushWave = bufferedFs.flushWave;
       overlayStats = bufferedFs.overlayStats;
+      waveStats = bufferedFs.waveStats;
       const metadataSnapshot = bufferedFs.metadataSnapshot;
 
       if (phase === 'clone-prepare') {
@@ -2451,6 +2275,32 @@ export default {
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
         await flushWave();
+        if (opts.depth !== undefined && opts.exclusiveDestination === true) {
+          const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
+          const fast = await __nimbusGitPack.cloneFast(context, {
+            ref: opts.ref || undefined,
+            depth: opts.depth,
+            jobId: opts.jobId,
+            blobsPerBatch: opts.blobsPerBatch,
+          });
+          if (!fast.unsupported) {
+            const cloneRoot = normalizePath(opts.dir);
+            prepared = {
+              jobId: opts.jobId,
+              optionsHash: opts.optionsHash,
+              dir: cloneRoot,
+              commit: fast.commit,
+              tree: fast.tree,
+              headRef: fast.headRef,
+              packs: [],
+              packOnlyObjectStore: true,
+              metadata: [],
+              fast,
+            };
+            return respond(true, { prepared, metadataOverlay: overlayStats() });
+          }
+          log('\\n[git] ' + fast.unsupported + ': one stream\\n');
+        }
         const cache = {};
         await git.clone({
           fs, http, cache,
@@ -2637,7 +2487,15 @@ export default {
         }
         mutated = true;
         cloneJobs.delete(opts.jobId);
-        await fs.promises.rmdir(normalizePath(opts.dir) + '/.git', { recursive: true });
+        // Everything in the destination is the clone's: it was missing or
+        // empty when prepare took it. The worktree goes first and .git, with
+        // the marker that proves ownership, last.
+        const cloneRoot = normalizePath(opts.dir);
+        for (const name of await fs.promises.readdir(cloneRoot)) {
+          if (name !== '.git') await fs.promises.rm(cloneRoot + '/' + name);
+        }
+        await flushWave();
+        await fs.promises.rmdir(cloneRoot + '/.git', { recursive: true });
         await flushWave();
       } else if (opts.op === 'fetch') {
         await git.fetch({
