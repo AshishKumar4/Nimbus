@@ -1,0 +1,3380 @@
+{
+  "generator": "tests/reference/record-vite.mjs",
+  "root": "/home/user/app",
+  "versions": {
+    "vite5": {
+      "vite": "5.4.21",
+      "@vitejs/plugin-react": "4.7.0",
+      "@preact/preset-vite": "2.10.6",
+      "tsconfck": "3.1.6",
+      "esbuild": "0.21.5",
+      "node": "v22.21.1"
+    },
+    "vite6": {
+      "vite": "6.4.3",
+      "@vitejs/plugin-react": "4.7.0",
+      "@preact/preset-vite": "2.10.6",
+      "tsconfck": "3.1.6",
+      "esbuild": "0.25.12",
+      "node": "v22.21.1"
+    },
+    "vite7": {
+      "vite": "7.3.6",
+      "@vitejs/plugin-react": "4.7.0",
+      "@preact/preset-vite": "2.10.6",
+      "tsconfck": "3.1.6",
+      "esbuild": "0.28.2",
+      "node": "v22.21.1"
+    }
+  },
+  "cases": {
+    "create-vite react-ts": {
+      "digest": "b1b0da7ea657ec675bcd44207bf1afc1",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "create-vite preact-ts": {
+      "digest": "938e19ad4922b8186e0ed30ac33ccc97",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic",
+          "jsxImportSource": "preact"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nimport { createElement } from \"preact\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/app.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/app.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "paths": {
+                    "react": [
+                      "./node_modules/preact/compat/"
+                    ],
+                    "react-dom": [
+                      "./node_modules/preact/compat/"
+                    ]
+                  },
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "paths": {
+                    "react": [
+                      "./node_modules/preact/compat/"
+                    ],
+                    "react-dom": [
+                      "./node_modules/preact/compat/"
+                    ]
+                  },
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic",
+          "jsxImportSource": "preact"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nimport { createElement } from \"preact\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/app.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/app.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "paths": {
+                    "react": [
+                      "./node_modules/preact/compat/"
+                    ],
+                    "react-dom": [
+                      "./node_modules/preact/compat/"
+                    ]
+                  },
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "paths": {
+                    "react": [
+                      "./node_modules/preact/compat/"
+                    ],
+                    "react-dom": [
+                      "./node_modules/preact/compat/"
+                    ]
+                  },
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic",
+          "jsxImportSource": "preact"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nimport { createElement } from \"preact\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/app.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/app.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "paths": {
+                    "react": [
+                      "./node_modules/preact/compat/"
+                    ],
+                    "react-dom": [
+                      "./node_modules/preact/compat/"
+                    ]
+                  },
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "module": "ESNext",
+                  "skipLibCheck": true,
+                  "paths": {
+                    "react": [
+                      "./node_modules/preact/compat/"
+                    ],
+                    "react-dom": [
+                      "./node_modules/preact/compat/"
+                    ]
+                  },
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "create-vite vanilla-ts": {
+      "digest": "199a25da0358474dfa488338771fffd1",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "useDefineForClassFields": true,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "create-vite lit-ts": {
+      "digest": "59b1be7caeb250a6763127f8de9d29f0",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none"
+        },
+        "modules": {
+          "src/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020",
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false,
+                  "module": "ESNext",
+                  "lib": [
+                    "ES2020",
+                    "DOM",
+                    "DOM.Iterable"
+                  ],
+                  "skipLibCheck": true,
+                  "moduleResolution": "bundler",
+                  "allowImportingTsExtensions": true,
+                  "verbatimModuleSyntax": true,
+                  "moduleDetection": "force",
+                  "noEmit": true,
+                  "strict": true,
+                  "noUnusedLocals": true,
+                  "noUnusedParameters": true,
+                  "erasableSyntaxOnly": true,
+                  "noFallthroughCasesInSwitch": true,
+                  "noUncheckedSideEffectImports": true
+                },
+                "include": [
+                  "src"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "no tsconfig: useDefineForClassFields false": {
+      "digest": "17ee627f74c0fabe2a188960bddcefb7",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          },
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          },
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          },
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "tsconfig target ES2020 alone": {
+      "digest": "00cbc04bec7f2ef0d711c57dd1b45725",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ES2020"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tsconfig target ESNext alone": {
+      "digest": "fc5a6c141b694b57d5f5aa1f7b67c1a6",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ESNext"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ESNext"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "target": "ESNext"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tsconfig extends a package subpath": {
+      "digest": "3987459ec1749f3a9c170e6cd1409d9b",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig/preact.json",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig/preact.json",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig/preact.json",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig/preact.json",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig/preact.json",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig/preact.json",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tsconfig extends a package by name": {
+      "digest": "7e78b0fbe515981e17f6a22bfa0cc1b1",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig-base",
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "verbatimModuleSyntax": true
+                }
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig-base",
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "verbatimModuleSyntax": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig-base",
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "verbatimModuleSyntax": true
+                }
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig-base",
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "verbatimModuleSyntax": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig-base",
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "verbatimModuleSyntax": true
+                }
+              }
+            }
+          },
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/tsconfig-base",
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "verbatimModuleSyntax": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tsconfig extends an array, the later winning": {
+      "digest": "5c29256ba7c7c725bf0af846251e6534",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": [
+                  "./base.json",
+                  "./jsx"
+                ],
+                "compilerOptions": {
+                  "useDefineForClassFields": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "jsxFactory": "h"
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": [
+                  "./base.json",
+                  "./jsx"
+                ],
+                "compilerOptions": {
+                  "useDefineForClassFields": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "jsxFactory": "h"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": [
+                  "./base.json",
+                  "./jsx"
+                ],
+                "compilerOptions": {
+                  "useDefineForClassFields": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "jsxFactory": "h"
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": [
+                  "./base.json",
+                  "./jsx"
+                ],
+                "compilerOptions": {
+                  "useDefineForClassFields": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "jsxFactory": "h"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": [
+                  "./base.json",
+                  "./jsx"
+                ],
+                "compilerOptions": {
+                  "useDefineForClassFields": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "jsxFactory": "h"
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": [
+                  "./base.json",
+                  "./jsx"
+                ],
+                "compilerOptions": {
+                  "useDefineForClassFields": true,
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact",
+                  "jsxFactory": "h"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "a solution whose reference includes ${configDir}": {
+      "digest": "3f3a9a59c298208e8f9abe9679b718a4",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/config/tsconfig.app.json",
+              "tsconfig": {
+                "extends": "../tsconfig.shared.json",
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "include": [
+                  "/home/user/app/config/../src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/config/tsconfig.app.json",
+              "tsconfig": {
+                "extends": "../tsconfig.shared.json",
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "include": [
+                  "/home/user/app/config/../src"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/config/tsconfig.app.json",
+              "tsconfig": {
+                "extends": "../tsconfig.shared.json",
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "include": [
+                  "/home/user/app/config/../src"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "a nested tsconfig for its directory": {
+      "digest": "4d1e3e978a1a4dd101d8dd279e7ac1c0",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "useDefineForClassFields": true
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "useDefineForClassFields": true
+                }
+              }
+            }
+          },
+          "src/legacy/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/src/legacy/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          },
+          "src/legacy/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/src/legacy/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "useDefineForClassFields": true
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "useDefineForClassFields": true
+                }
+              }
+            }
+          },
+          "src/legacy/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/src/legacy/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          },
+          "src/legacy/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/src/legacy/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nimport { createElement } from \"react\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nconst rest = { id: \"r\" };\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ createElement(\"div\", { className: \"a\", ...rest, key: \"k\" }, \"text\"),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.tsx\",\n    lineNumber: 8,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.tsx\",\n  lineNumber: 6,\n  columnNumber: 3\n}, this);\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "useDefineForClassFields": true
+                }
+              }
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  x = 1;\n  static s = 2;\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "useDefineForClassFields": true
+                }
+              }
+            }
+          },
+          "src/legacy/my-element.ts": {
+            "code": "var __defProp = Object.defineProperty;\nvar __getOwnPropDesc = Object.getOwnPropertyDescriptor;\nvar __decorateClass = (decorators, target, key, kind) => {\n  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;\n  for (var i = decorators.length - 1, decorator; i >= 0; i--)\n    if (decorator = decorators[i])\n      result = (kind ? decorator(target, key, result) : decorator(result)) || result;\n  if (kind && result) __defProp(target, key, result);\n  return result;\n};\nconst order = [];\nfunction d(name) {\n  return (_target, key) => {\n    order.push(name + \":\" + (key ?? \"class\"));\n  };\n}\nexport let Element = class {\n  constructor() {\n    this.field = 1;\n  }\n  method() {\n  }\n};\n__decorateClass([\n  d(\"field\")\n], Element.prototype, \"field\", 2);\n__decorateClass([\n  d(\"method\")\n], Element.prototype, \"method\", 1);\nElement = __decorateClass([\n  d(\"class\")\n], Element);\nexport const made = typeof Element;\nexport { order };\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/src/legacy/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          },
+          "src/legacy/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/src/legacy/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "experimentalDecorators": true,
+                  "useDefineForClassFields": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "a solution with files and exclude": {
+      "digest": "a97bdb6fd46a18490303af0e928d4a4d",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/root/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/root/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/root/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                },
+                "references": [
+                  {
+                    "path": "./tsconfig.listed.json"
+                  },
+                  {
+                    "path": "./tsconfig.rest.json"
+                  }
+                ],
+                "include": [
+                  "src/root"
+                ]
+              }
+            }
+          },
+          "src/listed.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/listed.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/listed.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.listed.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "files": [
+                  "src/listed.tsx"
+                ]
+              }
+            }
+          },
+          "src/other.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/other.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/other.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.rest.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "@emotion/react"
+                },
+                "include": [
+                  "src/**/*"
+                ],
+                "exclude": [
+                  "src/skipped*"
+                ]
+              }
+            }
+          },
+          "src/skipped.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/skipped.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/skipped.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                },
+                "references": [
+                  {
+                    "path": "./tsconfig.listed.json"
+                  },
+                  {
+                    "path": "./tsconfig.rest.json"
+                  }
+                ],
+                "include": [
+                  "src/root"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/root/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/root/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/root/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                },
+                "references": [
+                  {
+                    "path": "./tsconfig.listed.json"
+                  },
+                  {
+                    "path": "./tsconfig.rest.json"
+                  }
+                ],
+                "include": [
+                  "src/root"
+                ]
+              }
+            }
+          },
+          "src/listed.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/listed.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/listed.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.listed.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "files": [
+                  "src/listed.tsx"
+                ]
+              }
+            }
+          },
+          "src/other.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/other.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/other.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.rest.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "@emotion/react"
+                },
+                "include": [
+                  "src/**/*"
+                ],
+                "exclude": [
+                  "src/skipped*"
+                ]
+              }
+            }
+          },
+          "src/skipped.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/skipped.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/skipped.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                },
+                "references": [
+                  {
+                    "path": "./tsconfig.listed.json"
+                  },
+                  {
+                    "path": "./tsconfig.rest.json"
+                  }
+                ],
+                "include": [
+                  "src/root"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/root/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/root/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/root/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                },
+                "references": [
+                  {
+                    "path": "./tsconfig.listed.json"
+                  },
+                  {
+                    "path": "./tsconfig.rest.json"
+                  }
+                ],
+                "include": [
+                  "src/root"
+                ]
+              }
+            }
+          },
+          "src/listed.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/listed.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/listed.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.listed.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "files": [
+                  "src/listed.tsx"
+                ]
+              }
+            }
+          },
+          "src/other.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/other.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/other.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.rest.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "@emotion/react"
+                },
+                "include": [
+                  "src/**/*"
+                ],
+                "exclude": [
+                  "src/skipped*"
+                ]
+              }
+            }
+          },
+          "src/skipped.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/skipped.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/skipped.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                },
+                "references": [
+                  {
+                    "path": "./tsconfig.listed.json"
+                  },
+                  {
+                    "path": "./tsconfig.rest.json"
+                  }
+                ],
+                "include": [
+                  "src/root"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "tsconfig extends a package whose exports conditions come in order": {
+      "digest": "a3cc4c8062bbfa5a7e53ef06046f3d7d",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/cond",
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/cond",
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "extends": "@nimbus-test/cond",
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "a solution's reference extends '.'": {
+      "digest": "5a2eaf078a0bb97835df7d1a7fa5a8c6",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/app.tsx": {
+            "error": "failed to resolve \"extends\":\".\" in /home/user/app/tsconfig.app.json",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "extends": ".",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "files": []
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/app.tsx": {
+            "error": "failed to resolve \"extends\":\".\" in /home/user/app/tsconfig.app.json",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "extends": ".",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "files": []
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.app.json",
+              "tsconfig": {
+                "extends": ".",
+                "include": [
+                  "src"
+                ],
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                },
+                "files": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "esbuild.tsconfigRaw as a string, beside a tsconfig that cannot be read": {
+      "digest": "185fa63fc6ed19c1350044c8a8d76ca8",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "tsconfigRaw": "{\"compilerOptions\":{\"jsx\":\"react-jsx\",\"jsxImportSource\":\"preact\"}}"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json"
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "tsconfigRaw": "{\"compilerOptions\":{\"jsx\":\"react-jsx\",\"jsxImportSource\":\"preact\"}}"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json"
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "tsconfigRaw": "{\"compilerOptions\":{\"jsx\":\"react-jsx\",\"jsxImportSource\":\"preact\"}}"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json"
+            }
+          }
+        }
+      }
+    },
+    "a jsconfig.json is not a tsconfig": {
+      "digest": "c633a1c2601da4aa2847110111a2e2cc",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "tsconfig extends what does not resolve": {
+      "digest": "d034d1638cfc24a5f6f6d6d9816c0cd0",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json",
+            "warnings": [],
+            "tsconfck": {
+              "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json"
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json",
+            "warnings": [],
+            "tsconfck": {
+              "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json"
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/model.ts": {
+            "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json",
+            "warnings": [],
+            "tsconfck": {
+              "error": "failed to resolve \"extends\":\"@nimbus-test/missing/tsconfig.json\" in /home/user/app/tsconfig.json"
+            }
+          }
+        }
+      }
+    },
+    "preserveValueImports and importsNotUsedAsValues": {
+      "digest": "c9e82010e4a0d3698758eaed5897818e",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "preserveValueImports": true,
+                  "importsNotUsedAsValues": "error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "preserveValueImports": true,
+                  "importsNotUsedAsValues": "error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/imports.ts": {
+            "code": "import { used, unused } from \"dep\";\nimport { other } from \"dep\";\nexport const value = used;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "preserveValueImports": true,
+                  "importsNotUsedAsValues": "error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "a .jsx module reads no tsconfig": {
+      "digest": "804cc4a43fd546beadfb52c30316d1d2",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.jsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ jsxDEV(\"div\", { className: \"a\", children: \"text\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 6,\n    columnNumber: 5\n  }, this),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 7,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.jsx\",\n  lineNumber: 5,\n  columnNumber: 3\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          },
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.jsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ jsxDEV(\"div\", { className: \"a\", children: \"text\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 6,\n    columnNumber: 5\n  }, this),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 7,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.jsx\",\n  lineNumber: 5,\n  columnNumber: 3\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          },
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/App.jsx": {
+            "code": "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\nfunction Item(props) {\n  return /* @__PURE__ */ jsxDEV(\"li\", { children: props.label }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 2,\n    columnNumber: 10\n  }, this);\n}\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ jsxDEV(\"div\", { className: \"a\", children: \"text\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 6,\n    columnNumber: 5\n  }, this),\n  /* @__PURE__ */ jsxDEV(Item, { label: \"x\" }, void 0, false, {\n    fileName: \"/home/user/app/src/App.jsx\",\n    lineNumber: 7,\n    columnNumber: 5\n  }, this)\n] }, void 0, true, {\n  fileName: \"/home/user/app/src/App.jsx\",\n  lineNumber: 5,\n  columnNumber: 3\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          },
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "esbuild JSX options win over the tsconfig's": {
+      "digest": "4ad1747bad4da411677a97874f971a27",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "transform",
+          "jsxFactory": "h",
+          "jsxFragment": "Fragment"
+        },
+        "modules": {
+          "src/view.tsx": {
+            "code": "import { h, Fragment } from \"preact\";\nexport const tree = /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h(\"b\", null, \"hi\"));\nexport const scope = [typeof h, typeof Fragment];\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "transform",
+          "jsxFactory": "h",
+          "jsxFragment": "Fragment"
+        },
+        "modules": {
+          "src/view.tsx": {
+            "code": "import { h, Fragment } from \"preact\";\nexport const tree = /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h(\"b\", null, \"hi\"));\nexport const scope = [typeof h, typeof Fragment];\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "transform",
+          "jsxFactory": "h",
+          "jsxFragment": "Fragment"
+        },
+        "modules": {
+          "src/view.tsx": {
+            "code": "import { h, Fragment } from \"preact\";\nexport const tree = /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h(\"b\", null, \"hi\"));\nexport const scope = [typeof h, typeof Fragment];\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx",
+                  "jsxImportSource": "preact"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "esbuild jsxInject": {
+      "digest": "b5ea22861152a1af0d01ba099b958c0b",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsxInject": "import React from 'react'",
+          "jsx": "transform"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from 'react';export const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"b\", null, \"hi\"));\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsxInject": "import React from 'react'",
+          "jsx": "transform"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from 'react';export const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"b\", null, \"hi\"));\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsxInject": "import React from 'react'",
+          "jsx": "transform"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from 'react';export const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"b\", null, \"hi\"));\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          },
+          "src/model.ts": {
+            "code": "const log = [];\nclass Base {\n  set x(v) {\n    log.push(\"set \" + v);\n  }\n}\nexport class Model extends Base {\n  constructor() {\n    super(...arguments);\n    this.x = 1;\n  }\n  static {\n    this.s = 2;\n  }\n}\nexport const keys = Object.keys(new Model());\nexport { log };\nexport const statics = Model.s;\nexport const meta = typeof import.meta.url;\nexport const loaded = await import(\"dep\").then((m) => m.name, (e) => \"failed: \" + e.constructor.name);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "esbuild define": {
+      "digest": "6a4169eb3ae1f2f23e89ee969e92471d",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "define": {
+            "__FLAG__": "\"on\""
+          },
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/flag.ts": {
+            "code": "export const flag = \"on\";\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "define": {
+            "__FLAG__": "\"on\""
+          },
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/flag.ts": {
+            "code": "export const flag = \"on\";\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "define": {
+            "__FLAG__": "\"on\""
+          },
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/flag.ts": {
+            "code": "export const flag = \"on\";\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "esbuild jsxDev false": {
+      "digest": "42acf524ae78e437a792634adc104993",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": false,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsx } from \"react/jsx-runtime\";\nexport const tree = /* @__PURE__ */ jsx(Fragment, { children: /* @__PURE__ */ jsx(\"b\", { children: \"hi\" }) });\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": false,
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsx } from \"react/jsx-runtime\";\nexport const tree = /* @__PURE__ */ jsx(Fragment, { children: /* @__PURE__ */ jsx(\"b\", { children: \"hi\" }) });\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": false,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsx } from \"react/jsx-runtime\";\nexport const tree = /* @__PURE__ */ jsx(Fragment, { children: /* @__PURE__ */ jsx(\"b\", { children: \"hi\" }) });\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "esbuild jsxImportSource beside plugin-react": {
+      "digest": "8c0d89d39c1a47933479026a4d91afcc",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsxImportSource": "@emotion/react",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsxImportSource": "@emotion/react",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsxImportSource": "@emotion/react",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "plugin-react jsxImportSource": {
+      "digest": "e06411a3448c09419c78f6961d6be96c",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic",
+          "jsxImportSource": "@emotion/react"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "automatic",
+          "jsxImportSource": "@emotion/react"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "automatic",
+          "jsxImportSource": "@emotion/react"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"@emotion/react/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "plugin-react classic runtime": {
+      "digest": "84ac256a1b4663dd5d3687bd85b026df",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "transform"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from \"react\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"div\", { id: \"a\" }, \"x\"));\nexport const scope = typeof React;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsx": "transform"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from \"react\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"div\", { id: \"a\" }, \"x\"));\nexport const scope = typeof React;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsx": "transform"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from \"react\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"div\", { id: \"a\" }, \"x\"));\nexport const scope = typeof React;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "jsx": "react-jsx"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "no vite.config, no plugin": {
+      "digest": "07b2213ed8771ed502897e6d3b19d0be",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from \"react\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"div\", { id: \"a\" }, \"x\"));\nexport const scope = typeof React;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "strict": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from \"react\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"div\", { id: \"a\" }, \"x\"));\nexport const scope = typeof React;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "strict": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import React from \"react\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"div\", { id: \"a\" }, \"x\"));\nexport const scope = typeof React;\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": "/home/user/app/tsconfig.json",
+              "tsconfig": {
+                "compilerOptions": {
+                  "strict": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "no vite.config, a module importing preact": {
+      "digest": "7b146ff9fd577b3f56b695fcc6a5c189",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/view.tsx": {
+            "code": "import { h, Fragment } from \"preact\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"b\", null, \"hi\"));\nexport const scope = [typeof h, typeof Fragment];\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true
+        },
+        "modules": {
+          "src/view.tsx": {
+            "code": "import { h, Fragment } from \"preact\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"b\", null, \"hi\"));\nexport const scope = [typeof h, typeof Fragment];\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none"
+        },
+        "modules": {
+          "src/view.tsx": {
+            "code": "import { h, Fragment } from \"preact\";\nexport const tree = /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(\"b\", null, \"hi\"));\nexport const scope = [typeof h, typeof Fragment];\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    },
+    "a computed esbuild value": {
+      "digest": "6acce3757041488bbd962626d2c25728",
+      "vite5": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsxImportSource": "preact",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite6": {
+        "esbuild": {
+          "jsxDev": true,
+          "jsxImportSource": "preact",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      },
+      "vite7": {
+        "esbuild": {
+          "jsxDev": true,
+          "charset": "utf8",
+          "legalComments": "none",
+          "jsxImportSource": "preact",
+          "jsx": "automatic"
+        },
+        "modules": {
+          "src/app.tsx": {
+            "code": "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\nexport const tree = /* @__PURE__ */ jsxDEV(Fragment, { children: /* @__PURE__ */ jsxDEV(\"b\", { children: \"hi\" }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 23\n}, this) }, void 0, false, {\n  fileName: \"/home/user/app/src/app.tsx\",\n  lineNumber: 1,\n  columnNumber: 21\n}, this);\n",
+            "warnings": [],
+            "tsconfck": {
+              "tsconfigFile": null,
+              "tsconfig": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -5,9 +5,98 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
+- Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
+- The Vite dev server's persistent caches answer only the request that
+  made a row. A transformed module (user_module_transforms) is keyed on
+  the whole request: the transform's options with vite.config's `define`,
+  the router basename injected, and what the import rewrite reads (the
+  aliases, the base, `package.json#imports`), beside the engines. Before,
+  a row made under one `define` or `resolve.alias` was served after the
+  config changed. A pre-bundle (pkg_esm_bundles) is keyed on its build
+  options, externals and every manifest its build consulted (each
+  package's package.json, the closest one to each file it bundled, a
+  nested or workspace package's too): a dependency reinstalled at another
+  version was served (and skipped by the installer) as its old bundle.
+  What a row is keyed on is what it was made from, read once: a module's
+  `#` imports resolve against the package.json read when its request was
+  made, not one edited during its transform; a build's manifests are
+  recorded as it reads its files, absences included (a nested
+  package.json that is not there yet would be the closer scope), and a
+  bundle whose manifests changed while it was built (a reinstall, a
+  package.json that appeared or went), or that the build itself read as
+  other than recorded, is served but not stored. The installer
+  and the dev server pre-bundle with one define (core `PREBUNDLE_DEFINE`),
+  so either's row is the other's; the installer's had none, and the dev
+  server's carried vite.config's `define`, which a pre-bundle no longer
+  takes, as Vite's dependency optimizer takes none of it. Its
+  `process.env.NODE_ENV` ("development") is what Vite's optimizer defines;
+  its `global` (globalThis) and `import.meta.env` values (DEV, PROD, MODE,
+  SSR, BASE_URL "/") are Nimbus's own, kept from the dev server's
+  pre-bundles (worker `npm/cache-keys.ts`). A `#` import whose target file
+  is missing is now rewritten to its URL (a 404 in the browser), where the
+  specifier was left as written.
+- An edit of vite.config takes effect in the dev server `vite` started, as
+  Vite restarts on one: the server reads the config again (its
+  `resolve.alias`, `define` and `nimbusInjectBasename`), drops every module
+  it made under the old one, reloads the browser, and keeps the new config
+  for a restore after hibernation; a config that cannot be read leaves it
+  on the one it has, and root, base, port and outDir still take a new
+  `vite`. An edit of a tsconfig (`tsconfig*.json`, `jsconfig.json`) drops
+  every transformed module and reloads, as Vite does. A module a request
+  began making under the old config is not remembered. Before, the config
+  was read once at `vite`, and a tsconfig edit reloaded the browser onto
+  the same modules (worker `facets/vite-config-file.ts`). A server
+  restored after hibernation sends its reloads to the session terminal, as
+  the server `vite` started did; before, it sent them nowhere, and the
+  browser never reloaded on an edit.
+- The built-in Vite dev server compiles a module as Vite 7's esbuild plugin
+  does. A .ts or .tsx module's tsconfig is found and read as tsconfck 3.1.6
+  reads it for Vite 7 (the closest `tsconfig.json`; a solution's reference
+  that includes the module; `extends` of a path, of `.` or `..` (the
+  tsconfig.json there), of a package (its `exports` conditions matched in
+  their order, as Node's require.resolve matches them) or of an array;
+  `${configDir}`; comments and dangling commas), unless vite.config's
+  `esbuild.tsconfigRaw` is a string (then none is read, as in Vite), and
+  its eleven compiler options Vite reads reach the transform:
+  `jsx`, `jsxFactory`, `jsxFragmentFactory`, `jsxImportSource`,
+  `experimentalDecorators`, `useDefineForClassFields` (false where neither
+  it nor `target` is set, as in Vite), `target`, `verbatimModuleSyntax`,
+  `preserveValueImports`, `importsNotUsedAsValues`, `alwaysStrict`.
+  vite.config's `esbuild` (read statically: a computed value is warned
+  about once and left out) and what @vitejs/plugin-react and
+  @preact/preset-vite set in it apply over the tsconfig's JSX settings, as
+  in Vite, with `jsxDev` on: React and Preact modules import the dev JSX
+  runtimes, as in Vite. `esbuild.define`, `supported`, `tsconfigRaw` and
+  `jsxInject` are honoured (a `#` import a jsxInject names resolves in the
+  module's package scope); options the server cannot (`target` other than
+  esnext, `include`, `exclude`, and the rest) are warned about once. Before,
+  every module compiled with the automatic React runtime (or h and Fragment
+  for one importing preact) and no tsconfig. With no vite.config and no
+  tsconfig JSX setting, the server keeps those defaults (Vite would compile
+  React.createElement).
+- A module's `import()` and `import.meta` are kept as written, as Vite
+  keeps them. Before, the transform made `import()` a `require()`, which
+  the browser has not (a lazy route failed), and emptied `import.meta`
+  (`import.meta.url` and `import.meta.hot` were undefined). And the import
+  rewrite of a dynamic `import("pkg")` replaced the whole call with the
+  module's URL, unquoted; it now rewrites the specifier.
+
+Checks: `vite-esbuild-differential` serves 47 modules of 30 projects
+(create-vite's react-ts, preact-ts, vanilla-ts and lit-ts templates as
+they are, and a project per setting) and compares each, run, with what
+real Vite 7.3.6 (esbuild 0.28.2) made of it, and Vite 6.4.3 (esbuild
+0.25.12) and 5.4.21 (esbuild 0.21.5) beside it, recorded by
+`tests/reference/record-vite.mjs` (which installs the pinned Vite,
+plugin-react, preset-vite and tsconfck outside the repository) in
+`tests/fixtures/vite-esbuild-reference.json`, and each module's tsconfig
+with what tsconfck 3.1.6 read. Vite 5 or 6 differs from Vite 7 in two
+projects, each with its reason: Vite 5.4.21 bundles a tsconfck that
+replaces `${configDir}` only in the config it finds, and Vite 5.4.21 and
+6.4.3 bundle one that resolves an `extends` of `.` as a directory (the
+module fails). On the server before this change 39 of the first 44
+modules differ.
 loom moves only its fabric range.
 
 - `experimentalDecorators` and `useDefineForClassFields: false` (or a

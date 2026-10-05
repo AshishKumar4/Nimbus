@@ -37,6 +37,47 @@ export interface SlicedDir {
 }
 export type SliceEntry = SlicedFile | SlicedDir;
 
+/**
+ * What a Vite dev server's modules read of their environment, as Vite's dev
+ * values: `process.env.NODE_ENV` so React's CommonJS (and every other
+ * package's `NODE_ENV` guard) takes its development branch, and `global` for
+ * packages written for Node. `import.meta.env.BASE_URL` is per mount, so not
+ * here.
+ */
+export const VITE_DEV_DEFINE: Readonly<Record<string, string>> = Object.freeze({
+  'import.meta.env.DEV': 'true',
+  'import.meta.env.PROD': 'false',
+  'import.meta.env.MODE': '"development"',
+  'import.meta.env.SSR': 'false',
+  'process.env.NODE_ENV': '"development"',
+  'global': 'globalThis',
+});
+
+/**
+ * Every pre-bundle's define, the installer's and the Vite dev server's
+ * alike, so either's row is the other's: Vite's dev values, base-neutral
+ * (`BASE_URL` is `/`; a bundle is persisted once and served under every
+ * mount). A project's vite.config `define` is not in it, as Vite's
+ * dependency optimizer applies none of it either.
+ */
+export const PREBUNDLE_DEFINE: Readonly<Record<string, string>> = Object.freeze({
+  ...VITE_DEV_DEFINE,
+  'import.meta.env.BASE_URL': '"/"',
+});
+
+/** A pre-bundle's build options, but its entry: what its output is a function of, beside its slice and externals. */
+export function prebundleBuildOptions(define: Readonly<Record<string, string>> | undefined) {
+  return {
+    bundle: true,
+    format: 'esm' as const,
+    target: 'esnext',
+    platform: 'browser' as const,
+    conditions: ESM_CONDITIONS,
+    mainFields: ['module', 'browser', 'main'],
+    define: define && Object.keys(define).length > 0 ? { ...define } : undefined,
+  };
+}
+
 /** The files a slice holds: everything a bundle built from it can have read. */
 export function sliceSources(slice: readonly SliceEntry[]): string[] {
   return slice.flatMap((entry) => (entry.isDir ? [] : [entry.path]));
@@ -58,13 +99,10 @@ export interface PrebundleSpec {
    *     NOT marked external by `externals`.
    */
   slice: SliceEntry[];
-  /** Stamp written into pkg_esm_bundles.bundle_hash; matches BUNDLER_VERSION. */
+  /** Stamp written into pkg_esm_bundles.bundle_hash (worker npm/cache-keys.ts). */
   bundlerVersion: string;
-  /** Optional `define` map. Used by the on-demand bundler path
-   *  (vite-dev-server) to inject process.env.NODE_ENV, import.meta.env.*,
-   *  global → globalThis, etc. The pre-bundle path leaves this undefined
-   *  (browser-target build needs no define replacement). */
-  define?: Record<string, string>;
+  /** The `define` map: PREBUNDLE_DEFINE, from the installer and the Vite dev server alike. */
+  define?: Readonly<Record<string, string>>;
 }
 
 /** What a pre-bundle returns. */
@@ -250,16 +288,7 @@ export async function prebundleSlice(spec: PrebundleSpec, build: PrebundleBuild)
     },
   };
 
-  const outcome = await build({
-    entryPoints: [norm(spec.entryPath)],
-    bundle: true,
-    format: 'esm',
-    target: 'esnext',
-    platform: 'browser',
-    conditions: ESM_CONDITIONS,
-    mainFields: ['module', 'browser', 'main'],
-    define: spec.define && Object.keys(spec.define).length > 0 ? spec.define : undefined,
-  }, plugin);
+  const outcome = await build({ entryPoints: [norm(spec.entryPath)], ...prebundleBuildOptions(spec.define) }, plugin);
   if (outcome.failure) return failed(outcome.errors[0]?.text || outcome.failure);
   const script = outcome.outputFiles.find((file) => !file.path.endsWith('.css')) ?? outcome.outputFiles[0];
   if (!script) return failed('no output produced');

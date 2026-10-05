@@ -210,4 +210,45 @@ import assert from 'node:assert/strict';
   assert.deepEqual(unhandledVitePlugins(config), []);
 }
 
+{
+  // `esbuild`, as far as it is literal, and each imported plugin factory's
+  // options: what the dev server passes Vite's esbuild settings from
+  // (vite-esbuild-options.ts). A computed value is named and left out.
+  const config = parseViteConfigSource(`
+    import react from '@vitejs/plugin-react';
+    import preact from '@preact/preset-vite';
+    import { defineConfig } from 'vite';
+    export default defineConfig({
+      plugins: [react({ jsxRuntime: 'classic', babel: { plugins: [] }, include: /x/ }), preact(), legacy()],
+      esbuild: {
+        jsxFactory: 'h',
+        jsxInject: \`import { h } from 'preact'\`,
+        define: { __A__: '"a"', __N__: '-1' },
+        supported: { 'top-level-await': true },
+        jsxImportSource: process.env.SOURCE ?? 'preact',
+        ...extra,
+        target: -1,
+      },
+    });
+  `);
+  assert.deepEqual(config.esbuild, {
+    jsxFactory: 'h', jsxInject: "import { h } from 'preact'", define: { __A__: '"a"', __N__: '-1' },
+    supported: { 'top-level-await': true }, target: -1,
+  });
+  assert.deepEqual(config.esbuildComputed, ['esbuild.jsxImportSource', 'esbuild (a spread or computed key)']);
+  assert.deepEqual(config.pluginCalls, [
+    { specifier: '@vitejs/plugin-react', options: { jsxRuntime: 'classic', babel: { plugins: [] } }, computed: ['options.include'] },
+    { specifier: '@preact/preset-vite', options: {}, computed: [] },
+  ]);
+}
+
+{
+  // `esbuild: false` turns Vite's esbuild plugin off; a computed `esbuild` is named whole.
+  assert.equal(parseViteConfigSource('export default { esbuild: false };').esbuild, false);
+  const computed = parseViteConfigSource('export default { esbuild: options() };');
+  assert.equal(computed.esbuild, undefined);
+  assert.deepEqual(computed.esbuildComputed, ['esbuild']);
+  assert.equal(parseViteConfigSource('export default { server: {} };').esbuild, undefined);
+}
+
 console.log('vite-config-parser: ok');

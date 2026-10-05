@@ -93,6 +93,15 @@ export interface EsbuildTransformOptions {
     tsconfigRaw?: string | esbuild.TsconfigRaw;
     define?: Record<string, string>;
     /**
+     * esbuild's `supported`, over what the options below decide: Vite's dev
+     * server keeps `import()` and `import.meta` as written (`{ 'dynamic-import':
+     * true, 'import-meta': true }`), where an ES module transform otherwise
+     * empties `import.meta` and makes `import()` a `require`.
+     */
+    supported?: Record<string, boolean>;
+    /** The module's name in diagnostics, source maps and jsxDEV's `fileName`. */
+    sourcefile?: string;
+    /**
      * The URL of the module being transformed, when its dynamic `import()`
      * calls are the process's (dynamic-import-rewrite.ts): esbuild keeps them
      * as written and each becomes a call of the process's ESM loader with this

@@ -17,6 +17,24 @@ export interface ParsedViteConfig {
      * a non-empty array always means "this config runs plugins".
      */
     plugins?: string[];
+    /**
+     * `esbuild`, as far as it is literal: false (Vite's esbuild plugin off),
+     * or its statically readable values. Read for the dev server's transform
+     * (vite-esbuild-options.ts).
+     */
+    esbuild?: Record<string, unknown> | false;
+    /** The names under `esbuild` whose values are computed, left out of it (`esbuild` itself where it is). */
+    esbuildComputed?: string[];
+    /**
+     * Each `plugins` entry that calls an imported factory: its import's
+     * specifier, the statically readable values of its first argument, and the
+     * names of those computed (left out).
+     */
+    pluginCalls?: Array<{
+        specifier: string;
+        options: Record<string, unknown>;
+        computed: string[];
+    }>;
 }
 /**
  * Read a `vite.config.ts` without a TypeScript transform where the transform

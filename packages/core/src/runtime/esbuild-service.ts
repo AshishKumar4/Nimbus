@@ -652,6 +652,15 @@ export interface EsbuildTransformOptions {
   tsconfigRaw?: string | esbuild.TsconfigRaw;
   define?: Record<string, string>;
   /**
+   * esbuild's `supported`, over what the options below decide: Vite's dev
+   * server keeps `import()` and `import.meta` as written (`{ 'dynamic-import':
+   * true, 'import-meta': true }`), where an ES module transform otherwise
+   * empties `import.meta` and makes `import()` a `require`.
+   */
+  supported?: Record<string, boolean>;
+  /** The module's name in diagnostics, source maps and jsxDEV's `fileName`. */
+  sourcefile?: string;
+  /**
    * The URL of the module being transformed, when its dynamic `import()`
    * calls are the process's (dynamic-import-rewrite.ts): esbuild keeps them
    * as written and each becomes a call of the process's ESM loader with this
@@ -706,6 +715,15 @@ async function transformWithEsbuild(
   options: EsbuildTransformOptions | undefined,
   lower: (esm: string) => string,
 ): Promise<TransformResult> {
+  // What esbuild may keep as written: `import()` where the process's loader
+  // takes it, `import.meta` where it is bound; the caller's `supported` over
+  // that. (No helper function: this one is serialized into the transform
+  // facet, where a bundler's name-keeping wrapper is not defined.)
+  const supported = {
+    'dynamic-import': options?.dynamicImportParent !== undefined,
+    'import-meta': options?.moduleMetadata === true,
+    ...options?.supported,
+  };
   const format = options?.format || 'esm';
   const loader = options?.loader || 'ts';
 
@@ -724,7 +742,8 @@ async function transformWithEsbuild(
         jsxDev: options?.jsxDev,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+        supported,
+        sourcefile: options?.sourcefile,
       });
       return {
         code: direct.code,
@@ -758,7 +777,8 @@ async function transformWithEsbuild(
       jsxDev: options?.jsxDev,
       tsconfigRaw: options?.tsconfigRaw,
       define: options?.define,
-      supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+      supported,
+      sourcefile: options?.sourcefile,
     });
     return {
       code: lower(esm.code),
@@ -783,7 +803,8 @@ async function transformWithEsbuild(
     jsxDev: options?.jsxDev,
     tsconfigRaw: options?.tsconfigRaw,
     define: options?.define,
-    supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+    supported,
+    sourcefile: options?.sourcefile,
   });
 
   return {

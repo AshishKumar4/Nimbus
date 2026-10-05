@@ -24,7 +24,9 @@
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type ViteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import type { BundlePoolProvider } from './prebundle-pool.js';
+import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 export interface ViteDevServerOptions {
     vfs: SqliteVFS;
     /**
@@ -79,6 +81,22 @@ export interface ViteDevServerOptions {
     processes?: {
         appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void;
     };
+    /**
+     * The directory whose vite.config `aliases`, `define` and `injectBasename`
+     * were read from (vite-config-file.ts), as a VFS path: when one there is
+     * added, changed or removed, the server reads it again and drops what it
+     * made under the old one, as Vite restarts on an edit of its config.
+     * Absent: the options are the caller's own (/api/start-vite), never re-read.
+     */
+    configDir?: string;
+    /** Told each config the server reads again (null: no vite.config there now), so a restore after hibernation starts from it. */
+    onConfigChange?: (config: ParsedViteConfig | null) => void;
+    /**
+     * What the project's vite.config sets for Vite's esbuild plugin
+     * (core vite-esbuild-options.ts's viteEsbuildSettings of the config `vite`
+     * read). Absent: no vite.config, Vite's defaults and the server's own JSX.
+     */
+    viteEsbuild?: ViteEsbuildSettings;
 }
 /**
  * esbuild, when bundling CJS source with `external` specifiers, leaves the
@@ -149,23 +167,29 @@ export declare function rewriteExternalRequires(code: string, basePath: string):
  */
 export declare function synthesizeCjsNamedExports(code: string): string;
 /**
+ * The package scope of an importing file, read once: the first package.json
+ * up from it (Node's rule: the first one wins, `imports` or not) and its
+ * `imports`. A `#X` specifier resolves against this snapshot alone, so what
+ * a module's imports are rewritten to is a function of what was read when
+ * its request was made, which its cache key carries (npm/cache-keys.ts).
+ */
+interface PackageScope {
+    /** VFS path of the directory holding the package.json. */
+    dir: string;
+    /** Its `imports`, or null (none, or an unreadable package.json). */
+    imports: unknown;
+}
+/**
  * Importer context for `#X` subpath-import resolution. The dev-server
  * passes this through `rewriteAllImports` whenever it knows the source
- * file the imports came from (transformed user TS files; cached
- * pre-bundles via the package they belong to).
+ * file the imports came from (transformed user TS files, user JS).
  */
 interface HashImportCtx {
-    /** VFS path of the importing file (e.g. `home/user/example-app/src/foo.ts`). */
-    importerVfsPath: string;
     /** Project root (e.g. `home/user/example-app`). Used to clip the resolved
      *  target to a /preview-relative URL. */
     root: string;
-    /** VFS readers — kept narrow so callers don't have to expose the
-     *  full SqliteVFS surface. */
-    vfs: {
-        exists(p: string): boolean;
-        readFileString(p: string): string;
-    };
+    /** The importing file's package scope (packageScopeOf), or null where it has none. */
+    scope: PackageScope | null;
 }
 /**
  * Rewrite all bare import/export specifiers in JS code.
@@ -235,6 +259,25 @@ export declare class ViteDevServer {
      */
     private logPid;
     private logSink;
+    /** The vite.config directory the server re-reads (ViteDevServerOptions.configDir), or null. */
+    private configDir;
+    private onConfigChange;
+    /**
+     * Bumped each time the config the served modules depend on changes (a
+     * vite.config read again, a tsconfig edited): a module a request began
+     * making under an older one is served to that request, not remembered.
+     */
+    private configGeneration;
+    /** The config re-read in flight, so edits in a burst read it once more, in order. */
+    private configReload;
+    /** What the project's vite.config sets for Vite's esbuild plugin. */
+    private viteEsbuild;
+    /** Each ts or tsx module's tsconfig, as tsconfck found it; forgotten with the modules. */
+    private tsconfigs;
+    /** Every config file the tsconfigs were read from: an edit of one changes how modules compile. */
+    private tsconfigFiles;
+    /** What has been said once (warnOnce). */
+    private warned;
     constructor(opts: ViteDevServerOptions);
     /**
      * The session's pre-bundle pool for on-demand bundling of
@@ -245,9 +288,12 @@ export declare class ViteDevServer {
      */
     private ensureOnDemandPool;
     /**
-     * The bundle_hash of a pre-bundle row the code serving this server made
+     * The bundle_hash a pre-bundle of `specifier` from `sources` has when the
+     * code serving this server made it for this server's request
      * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
-     * path below), or by the service's build with no pool.
+     * path below), or by the service's build with no pool. The manifests
+     * among `sources` are read now: a row built before a reinstall is not
+     * this one's.
      */
     private bundleKeys;
     /** Detect TailwindCSS usage in the project */
@@ -264,6 +310,8 @@ export declare class ViteDevServer {
     /** esbuild define set for a request served under `base`. */
     private defineFor;
     /** Whether this server's principal may read `path`. */
+    /** `path`'s text, or null where this server cannot read it. */
+    private readText;
     private mayRead;
     /**
      * Module-cache key for `key` under mount base `base`. The transformed text
@@ -309,6 +357,33 @@ export declare class ViteDevServer {
      * oriented (the Process-tab UI splits on `\n`).
      */
     private log;
+    /**
+     * Drop every module this server made (in memory; persisted rows are keyed
+     * on their request) and move to a new config generation, so a request
+     * still in flight under the old one does not put its module back.
+     */
+    private forgetModules;
+    /** Log `message` as a warning, the first time only. */
+    private warnOnce;
+    /** The tsconfig the module `id` (an absolute VFS path) compiles under, as tsconfck finds it for Vite. */
+    private tsconfigFor;
+    /** moduleCache.set, unless the config changed since `generation` (the module was made under the old one). */
+    private cacheModule;
+    /**
+     * Read the vite.config in configDir again (after the read in flight) and
+     * take its aliases, define and injectBasename, as `vite` read them at
+     * start; then forget every module and tell the browser to reload. A config
+     * that cannot be read leaves the server on the one it has, as Vite keeps
+     * running when a restart fails. What only a new `vite` takes (root, base,
+     * port, outDir) is named in the log.
+     */
+    private reloadConfig;
+    /**
+     * reloadConfig, for a caller that knows the config may have changed
+     * unseen (a server restored after hibernation, when no edit was watched):
+     * settled once the config is read.
+     */
+    readConfigAgain(): Promise<void>;
     /** Handle VFS change events → trigger HMR. */
     private handleVfsEvents;
     /** Normalize and sanitize a preview pathname to prevent traversal. */
@@ -399,6 +474,18 @@ export declare class ViteDevServer {
      */
     private isModuleRequest;
     private serveFile;
+    /** A module that shows `e`, the transform's error, in the page's overlay, as Vite's does. */
+    private transformErrorModule;
+    /**
+     * Everything a served .ts/.tsx/.jsx module is a function of, beside its
+     * text and the engines: the transform's options (with the define, the
+     * mount's BASE_URL folded in), the mount base a router basename is
+     * injected with (null: none), and what the import rewrite reads (null: an
+     * importmap leaves imports alone) — the aliases, the base, and the
+     * `imports` of the package.json a `#name` resolves in. The persisted row
+     * is keyed on it whole (npm/cache-keys.ts).
+     */
+    private transformRequest;
     private serveTransformed;
     get stats(): {
         running: boolean;

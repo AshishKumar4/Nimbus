@@ -21,9 +21,11 @@
  * HMR: VFS events → ViteDevServer detects changes → sends {type:'hmr'}
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
+import { parseTsconfig } from '@nimbus-sh/core/runtime/tsconfck.js';
+import { viteEsbuildPluginOptions, viteEsbuildSettings, viteTransformOptions, withJsxInject, } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { prebundleCacheKey, serviceBuildCacheKey, userModuleTransformCacheKey } from '../npm/cache-keys.js';
-import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { manifestsOf, prebundleCacheKey, prebundleRequest, recordingManifests, serviceBuildCacheKey, sliceManifests, stillCurrent, userModuleTransformCacheKey, } from '../npm/cache-keys.js';
+import { PREBUNDLE_DEFINE, VITE_DEV_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
@@ -35,6 +37,7 @@ import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScope
 import { resolvePackageEntry, resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { injectRouterBasename, shouldProcessForRouter } from '@nimbus-sh/core/runtime/router-basename.js';
 import { devStylesheet } from './dev-stylesheet.js';
+import { isViteConfigPath, readViteConfigFile } from './vite-config-file.js';
 import { rewriteJavaScriptModuleSource } from '@nimbus-sh/core/runtime/module-source-rewriter.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { getTailwindPlayBundle, TAILWIND_PLAY_VERSION, } from '../tailwind-play.generated.js';
@@ -478,52 +481,44 @@ function resolveBareSpecifier(specifier, aliases, basePath, importerCtx) {
         return null;
     return makeModuleUrl(basePath, specifier);
 }
-/**
- * Walk up from `importerCtx.importerVfsPath` looking for a
- * `package.json` with an `imports` field that exposes `specifier`.
- * Returns a VFS path to the resolved target, or null if no
- * `package.json#imports` covers it. First package.json wins per Node
- * spec — even if it has no `imports` field, we stop walking (the
- * specifier is unresolved against the importing module's package).
- *
- * Conditions: ESM browser default order
- * (`import` > `module` > `browser` > `default`) — matches what
- * `serveTransformed` is doing (we're serving for the browser).
- */
-function resolveHashImportFromImporter(specifier, ctx) {
-    let dir = ctx.importerVfsPath;
-    const lastSlash = dir.lastIndexOf('/');
-    if (lastSlash <= 0)
-        return null;
-    dir = dir.substring(0, lastSlash);
-    const visited = new Set();
-    while (dir && !visited.has(dir)) {
-        visited.add(dir);
+/** The package scope of `importerVfsPath`, read now from `vfs`. */
+function packageScopeOf(importerVfsPath, vfs) {
+    for (let dir = importerVfsPath.slice(0, Math.max(0, importerVfsPath.lastIndexOf('/'))); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
         const pkgJsonPath = dir + '/package.json';
-        if (ctx.vfs.exists(pkgJsonPath)) {
-            try {
-                const pkg = JSON.parse(ctx.vfs.readFileString(pkgJsonPath));
-                if (pkg && pkg.imports) {
-                    const target = resolveExports(pkg.imports, specifier);
-                    if (target) {
-                        const rel = target.replace(/^\.\//, '');
-                        const candidate = dir + '/' + rel;
-                        if (ctx.vfs.exists(candidate))
-                            return candidate;
-                    }
-                }
-            }
-            catch { /* malformed package.json — keep walking is wrong per
-                        spec; first package.json wins. Fall through to break. */
-            }
-            return null;
+        if (!vfs.exists(pkgJsonPath))
+            continue;
+        try {
+            const imports = JSON.parse(vfs.readFileString(pkgJsonPath))?.imports;
+            return { dir, imports: imports ?? null };
         }
-        const lastSlashDir = dir.lastIndexOf('/');
-        if (lastSlashDir <= 0)
-            break;
-        dir = dir.substring(0, lastSlashDir);
+        catch {
+            // Malformed: the first package.json still wins; it maps nothing.
+            return { dir, imports: null };
+        }
     }
     return null;
+}
+/**
+ * What `specifier` maps to in the importer's package scope: a VFS path, or
+ * null where its `imports` maps nothing for it. Conditions: ESM browser
+ * default order (`import` > `module` > `browser` > `default`), as
+ * `serveTransformed` serves for the browser. Whether the target exists is
+ * the browser's to find (a 404), as for any other import.
+ */
+function resolveHashImportFromImporter(specifier, ctx) {
+    const imports = ctx.scope?.imports;
+    if (!ctx.scope || !imports)
+        return null;
+    const target = resolveExports(imports, specifier);
+    return target ? ctx.scope.dir + '/' + target.replace(/^\.\//, '') : null;
+}
+/**
+ * Whether `path` names a TypeScript project config outside node_modules
+ * (`tsconfig.json`, `tsconfig.app.json`, ...; `jsconfig.json`): an edit of
+ * one may change how every TypeScript module compiles.
+ */
+function isTsconfigPath(path) {
+    return !/(^|\/)node_modules\//.test(path) && /(^|\/)(tsconfig[^/]*|jsconfig)\.json$/.test(path);
 }
 /**
  * Rewrite all bare import/export specifiers in JS code.
@@ -545,7 +540,8 @@ export function rewriteAllImports(code, aliases, basePath, importerCtx) {
             const cssSideEffect = cssSideEffectModuleSpecifier(candidate, context);
             return cssSideEffect === specifier ? undefined : cssSideEffect || resolved || undefined;
         },
-        dynamicImport(specifier) {
+        // The specifier only: `import(x)` itself stays the browser's.
+        dynamicImportSpecifier(specifier) {
             return resolveBareSpecifier(specifier, aliases, basePath, importerCtx) || undefined;
         },
     });
@@ -1146,6 +1142,32 @@ function unwrapLayerBlocks(css) {
     return result;
 }
 // ── ViteDevServer ───────────────────────────────────────────────────────
+/**
+ * The esbuild options of vite.config the built-in server honours (the rest are
+ * warned about once): the JSX settings, the tsconfig, define, `supported`,
+ * jsxInject; target, include and exclude are warned about where set
+ * otherwise; what Vite itself forces off (minification, keepNames,
+ * treeShaking), charset and legalComments change nothing that runs.
+ */
+const HONOURED_ESBUILD_OPTIONS = new Set([
+    'jsx', 'jsxFactory', 'jsxFragment', 'jsxImportSource', 'jsxDev', 'tsconfigRaw', 'define', 'supported', 'jsxInject',
+    'target', 'include', 'exclude', 'charset', 'legalComments', 'minify', 'minifyIdentifiers', 'minifySyntax', 'minifyWhitespace',
+    'keepNames', 'treeShaking', 'sourcemap', 'loader',
+]);
+/** A tsconfig's JSX settings: where one is set, the project decides its JSX. */
+const TSCONFIG_JSX_FIELDS = ['jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource'];
+const isStringRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every((v) => typeof v === 'string');
+/**
+ * The options a pre-bundle is built with through the service's build(), the
+ * path with no bundle pool: the installer's define, as the pooled build's.
+ */
+const SERVICE_PREBUNDLE_OPTIONS = Object.freeze({
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'esnext',
+    define: PREBUNDLE_DEFINE,
+});
 export class ViteDevServer {
     vfs;
     vfsEvents;
@@ -1201,8 +1223,30 @@ export class ViteDevServer {
      */
     logPid = null;
     logSink = null;
+    /** The vite.config directory the server re-reads (ViteDevServerOptions.configDir), or null. */
+    configDir;
+    onConfigChange;
+    /**
+     * Bumped each time the config the served modules depend on changes (a
+     * vite.config read again, a tsconfig edited): a module a request began
+     * making under an older one is served to that request, not remembered.
+     */
+    configGeneration = 0;
+    /** The config re-read in flight, so edits in a burst read it once more, in order. */
+    configReload = Promise.resolve();
+    /** What the project's vite.config sets for Vite's esbuild plugin. */
+    viteEsbuild;
+    /** Each ts or tsx module's tsconfig, as tsconfck found it; forgotten with the modules. */
+    tsconfigs = new Map();
+    /** Every config file the tsconfigs were read from: an edit of one changes how modules compile. */
+    tsconfigFiles = new Set();
+    /** What has been said once (warnOnce). */
+    warned = new Set();
     constructor(opts) {
         this.vfs = opts.vfs.as(opts.cred);
+        this.configDir = opts.configDir ? opts.configDir.replace(/^\/+|\/+$/g, '') : null;
+        this.onConfigChange = opts.onConfigChange ?? null;
+        this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
         this.vfsEvents = opts.vfs.events;
         this.esbuild = opts.esbuild;
         this.injectBasename = opts.injectBasename !== false;
@@ -1234,15 +1278,7 @@ export class ViteDevServer {
         // (the `/s/<sid>/preview/` path vs the root of a `<port>--<sid>` host).
         // It is folded into the define set per request via `defineFor(base)`; the
         // rest of the defines are base-independent and computed once.
-        this.define = {
-            'import.meta.env.DEV': 'true',
-            'import.meta.env.PROD': 'false',
-            'import.meta.env.MODE': '"development"',
-            'import.meta.env.SSR': 'false',
-            'process.env.NODE_ENV': '"development"',
-            'global': 'globalThis',
-            ...(opts.define || {}),
-        };
+        this.define = { ...VITE_DEV_DEFINE, ...(opts.define || {}) };
         this.detectTailwind();
     }
     /**
@@ -1258,12 +1294,19 @@ export class ViteDevServer {
         return this.bundlePool.acquire();
     }
     /**
-     * The bundle_hash of a pre-bundle row the code serving this server made
+     * The bundle_hash a pre-bundle of `specifier` from `sources` has when the
+     * code serving this server made it for this server's request
      * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
-     * path below), or by the service's build with no pool.
+     * path below), or by the service's build with no pool. The manifests
+     * among `sources` are read now: a row built before a reinstall is not
+     * this one's.
      */
-    bundleKeys() {
-        return Promise.all([prebundleCacheKey(), serviceBuildCacheKey(this.esbuild.transformHostId)]);
+    bundleKeys(specifier, sources) {
+        const pooled = prebundleRequest(specifier, manifestsOf(sources, (path) => this.readText(path)));
+        return Promise.all([
+            prebundleCacheKey(pooled),
+            serviceBuildCacheKey(this.esbuild.transformHostId, { ...pooled, options: SERVICE_PREBUNDLE_OPTIONS }),
+        ]);
     }
     /** Detect TailwindCSS usage in the project */
     detectTailwind() {
@@ -1322,6 +1365,15 @@ export class ViteDevServer {
         return { ...this.define, 'import.meta.env.BASE_URL': this.baseUrlValue(base) };
     }
     /** Whether this server's principal may read `path`. */
+    /** `path`'s text, or null where this server cannot read it. */
+    readText(path) {
+        try {
+            return this.vfs.readFileString(path);
+        }
+        catch {
+            return null;
+        }
+    }
     mayRead(path) {
         try {
             this.vfs.access(path, R_OK);
@@ -1359,6 +1411,8 @@ export class ViteDevServer {
             return;
         this.running = true;
         this.moduleCache.clear();
+        for (const message of this.viteEsbuild.unread)
+            this.warnOnce(message);
         // Subscribe to VFS events for HMR
         this.unsubVfs = this.vfsEvents.on((events) => {
             this.handleVfsEvents(events);
@@ -1418,6 +1472,106 @@ export class ViteDevServer {
             catch { }
         }
     }
+    /**
+     * Drop every module this server made (in memory; persisted rows are keyed
+     * on their request) and move to a new config generation, so a request
+     * still in flight under the old one does not put its module back.
+     */
+    forgetModules() {
+        this.configGeneration++;
+        this.moduleCache.clear();
+        this.tsconfigs.clear();
+        this.tsconfigFiles.clear();
+    }
+    /** Log `message` as a warning, the first time only. */
+    warnOnce(message) {
+        if (this.warned.has(message))
+            return;
+        this.warned.add(message);
+        this.log('warn', `[vite-dev] ${message}`);
+    }
+    /** The tsconfig the module `id` (an absolute VFS path) compiles under, as tsconfck finds it for Vite. */
+    tsconfigFor(id) {
+        let result = this.tsconfigs.get(id);
+        if (!result) {
+            const files = [];
+            try {
+                result = parseTsconfig(id, {
+                    isFile: (path) => {
+                        try {
+                            return this.vfs.isFile(path);
+                        }
+                        catch {
+                            return false;
+                        }
+                    },
+                    readFileString: (path) => {
+                        files.push(path);
+                        return this.vfs.readFileString(path);
+                    },
+                });
+            }
+            finally {
+                // A config that failed to read is watched too: an edit may mend it.
+                for (const file of files)
+                    this.tsconfigFiles.add(file.replace(/^\/+/, ''));
+            }
+            this.tsconfigs.set(id, result);
+        }
+        return result;
+    }
+    /** moduleCache.set, unless the config changed since `generation` (the module was made under the old one). */
+    cacheModule(generation, key, entry) {
+        if (generation === this.configGeneration)
+            this.moduleCache.set(key, entry);
+    }
+    /**
+     * Read the vite.config in configDir again (after the read in flight) and
+     * take its aliases, define and injectBasename, as `vite` read them at
+     * start; then forget every module and tell the browser to reload. A config
+     * that cannot be read leaves the server on the one it has, as Vite keeps
+     * running when a restart fails. What only a new `vite` takes (root, base,
+     * port, outDir) is named in the log.
+     */
+    reloadConfig() {
+        void this.readConfigAgain();
+    }
+    /**
+     * reloadConfig, for a caller that knows the config may have changed
+     * unseen (a server restored after hibernation, when no edit was watched):
+     * settled once the config is read.
+     */
+    readConfigAgain() {
+        const dir = this.configDir;
+        if (dir === null)
+            return Promise.resolve();
+        return this.configReload = this.configReload.then(async () => {
+            const read = await readViteConfigFile(this.vfs, dir, async (source) => (await this.esbuild.transform(source, { loader: 'ts', format: 'esm' })).code);
+            if (!this.running)
+                return;
+            if (read.error) {
+                this.log('error', `[vite-dev] ${read.error}; serving with the config read before`);
+                return;
+            }
+            const config = read.config;
+            this.aliases = config.alias || {};
+            this.define = { ...VITE_DEV_DEFINE, ...(config.define || {}) };
+            this.injectBasename = config.injectBasename !== false;
+            this.viteEsbuild = viteEsbuildSettings(read.path ? config : null);
+            for (const message of this.viteEsbuild.unread)
+                this.warnOnce(message);
+            this.forgetModules();
+            this.log('info', `[vite-dev] ${read.path ?? `no vite.config in /${dir}`}: read again (aliases, define, esbuild, plugins, nimbusInjectBasename); `
+                + 'root, base, port and outDir take a new `vite`');
+            try {
+                this.onConfigChange?.(read.path ? config : null);
+            }
+            catch { /* persistence is the caller's */ }
+            this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
+        }).catch((e) => {
+            this.log('error', `[vite-dev] reading the vite.config again failed: ${e?.message || e}`);
+        });
+    }
     /** Handle VFS change events → trigger HMR. */
     handleVfsEvents(events) {
         if (!this.running)
@@ -1425,10 +1579,17 @@ export class ViteDevServer {
         let needsReload = false;
         let cssOnly = true;
         let nodeModulesChanged = false;
+        let configChanged = false;
+        let tsconfigChanged = false;
         for (const event of events) {
             if (event.type === 'addDir' || event.type === 'unlinkDir')
                 continue;
             const path = event.path;
+            const touched = event.type === 'rename' && event.oldPath ? [path, event.oldPath] : [path];
+            if (this.configDir !== null && touched.some((p) => isViteConfigPath(p, this.configDir)))
+                configChanged = true;
+            if (touched.some((p) => isTsconfigPath(p) || this.tsconfigFiles.has(p.replace(/^\/+/, ''))))
+                tsconfigChanged = true;
             // Cache keys are base-qualified (`<base>\x00<path>`), so a changed file
             // must be dropped across every base it was served under. Match on the
             // path suffix after the NUL separator.
@@ -1473,6 +1634,20 @@ export class ViteDevServer {
             }
             for (const k of toDelete)
                 this.moduleCache.delete(k);
+        }
+        if (configChanged) {
+            // Vite restarts on an edit of its config: the server reads it again,
+            // and drops what it made under the old one when it has (a full reload
+            // goes out then, not before).
+            this.reloadConfig();
+            return;
+        }
+        if (tsconfigChanged) {
+            // A tsconfig decides how TypeScript compiles (Vite clears its cache and
+            // reloads): nothing transformed under the old one is served again.
+            this.forgetModules();
+            cssOnly = false;
+            needsReload = true;
         }
         if (needsReload) {
             if (cssOnly) {
@@ -1695,6 +1870,7 @@ export class ViteDevServer {
     }
     async serveModule(specifier, headers, base) {
         const JS_CT = 'application/javascript; charset=utf-8';
+        const generation = this.configGeneration;
         const cacheKey = this.ck(base, `@modules/${specifier}`);
         const barrelInfo = this.getBarrelModuleCacheInfo(specifier);
         // 1. In-memory cache (hot path — already bundled)
@@ -1715,19 +1891,18 @@ export class ViteDevServer {
         //    exports if the bundle only exports default (CJS-only packages).
         if (this.npmCache) {
             const esmBundle = this.npmCache.getEsmBundle(specifier);
-            // Only use cached bundles built by the code serving now (bundleKeys).
-            // Stale bundles (from older bundlers or engines) are treated as missing
-            // and re-bundled on the cold path.
-            const bundleKeys = await this.bundleKeys();
             // The cache is the workspace's, shared by every server whoever started
             // it: a bundle is served only to a principal who may read everything it
             // was built from, so one that names nothing it was built from is never
-            // served. Otherwise this server builds its own, as itself.
+            // served. Otherwise this server builds its own, as itself. And only a
+            // bundle the code serving now made for this request (bundleKeys):
+            // another's (an older engine, another define, a package since
+            // reinstalled) is treated as missing and re-bundled on the cold path.
             if (esmBundle &&
-                bundleKeys.includes(esmBundle.bundleHash) &&
                 this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo) &&
                 esmBundle.sources.length > 0 &&
-                esmBundle.sources.every((path) => this.mayRead(path))) {
+                esmBundle.sources.every((path) => this.mayRead(path)) &&
+                (await this.bundleKeys(specifier, esmBundle.sources)).includes(esmBundle.bundleHash)) {
                 let code = esmBundle.esmCode;
                 // The persisted bundle is base-independent raw esbuild output; the
                 // base-dependent rewrites (module URLs) are applied here, per request.
@@ -1736,7 +1911,7 @@ export class ViteDevServer {
                 code = rewriteExternalRequires(code, base);
                 code = rewriteAllImports(code, this.aliases, base);
                 code = synthesizeCjsNamedExports(code);
-                this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
+                this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
                 return new Response(code, {
                     headers: { ...headers, 'Content-Type': JS_CT },
                 });
@@ -1778,6 +1953,7 @@ export class ViteDevServer {
     async serveModuleCold(specifier, headers, base, knownBarrelInfo = null) {
         const JS_CT = 'application/javascript; charset=utf-8';
         const cacheKey = this.ck(base, `@modules/${specifier}`);
+        const generation = this.configGeneration;
         // 3. On-demand bundle (cold path — resolve from node_modules, bundle via esbuild)
         //
         // Architecture: this used to call this.esbuild.build(...) in the
@@ -1816,8 +1992,14 @@ export class ViteDevServer {
             // A module its principal may not read is refused (403), not bundled
             // from whatever of its package the principal can see.
             this.vfs.access(resolved, R_OK);
-            // What the bundle was built from, recorded with it in the shared cache.
+            // What the bundle was built from, recorded with it in the shared cache,
+            // and its key there (bundleKeys): what built it, for which request.
             let bundledSources = [];
+            let bundledHash = '';
+            // The manifests it was built from, as the build read them: checked still current before it is stored.
+            let bundledManifests = [];
+            // Whether the build read a manifest as other than recorded (recordingManifests).
+            let bundledMoved = false;
             let synthetic = false;
             let syntheticReferencedFiles = null;
             if (isBarrel) {
@@ -1948,16 +2130,19 @@ export class ViteDevServer {
                             // commit 40cfc01); the lease above keeps every other budget
                             // owner from allocating beside it until the Response exists.
                             const sources = sliceSources(slice.slice);
+                            // The installer's define (base-neutral: the @modules bundle is
+                            // persisted raw and shared across mounts, module URLs get the
+                            // per-request base at serve time), so either's row is the
+                            // other's; its manifests as the slice read them.
+                            const request = prebundleRequest(specifier, sliceManifests(slice.slice, (path) => this.readText(path)));
+                            const bundleHash = await prebundleCacheKey(request);
                             let spec = {
                                 specifier,
                                 entryPath: bundleEntryPath,
-                                externals,
+                                externals: [...request.externals],
                                 slice: slice.slice,
-                                bundlerVersion: await prebundleCacheKey(),
-                                // Base-neutral: the @modules bundle is persisted raw and shared
-                                // across mounts, so BASE_URL is fixed to '/' here (module URLs
-                                // get the per-request base applied at serve time, not baked in).
-                                define: this.defineFor(''),
+                                bundlerVersion: bundleHash,
+                                define: PREBUNDLE_DEFINE,
                             };
                             slice = null;
                             let result = null;
@@ -1970,6 +2155,8 @@ export class ViteDevServer {
                             if (result && result.ok && result.esmCode) {
                                 bundled = result.esmCode;
                                 bundledSources = sources;
+                                bundledHash = bundleHash;
+                                bundledManifests = request.manifests;
                             }
                             else if (result && result.errorText) {
                                 this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
@@ -1988,19 +2175,39 @@ export class ViteDevServer {
                     // Fallback — the EsbuildService's build (its build host). Used
                     // only when no bundle pool was provided.
                     try {
+                        // The build reads through `fs`, which records each source's
+                        // manifests as it reads it: the bundle is keyed on what it was
+                        // built from, not on what they read as once it is done.
+                        const recording = recordingManifests((path) => this.readText(path));
+                        const vfs = this.vfs;
+                        const fs = {
+                            exists: (path) => vfs.exists(path),
+                            isDirectory: (path) => vfs.isDirectory(path),
+                            readFile: (path) => {
+                                const bytes = vfs.readFile(path);
+                                recording.saw(path, path.endsWith('/package.json') ? new TextDecoder().decode(bytes) : undefined);
+                                return bytes;
+                            },
+                            readFileString: (path) => {
+                                const text = vfs.readFileString(path);
+                                recording.saw(path, text);
+                                return text;
+                            },
+                        };
                         const result = await this.esbuild.build([bundleEntryPath], {
-                            bundle: true,
-                            format: 'esm',
-                            platform: 'browser',
-                            target: 'esnext',
-                            // Base-neutral (see the pooled build above).
-                            define: this.defineFor(''),
+                            ...SERVICE_PREBUNDLE_OPTIONS,
+                            define: { ...SERVICE_PREBUNDLE_OPTIONS.define },
                             external: externals.length > 0 ? externals : undefined,
-                            fs: this.vfs,
+                            fs,
                         });
                         if (result.outputFiles?.length) {
                             bundled = result.outputFiles[0].contents;
                             bundledSources = vfsBuildInputs(result.metafile);
+                            bundledManifests = recording.manifests(bundledSources);
+                            bundledMoved = recording.moved();
+                            bundledHash = await serviceBuildCacheKey(this.esbuild.transformHostId, {
+                                ...prebundleRequest(specifier, bundledManifests), options: SERVICE_PREBUNDLE_OPTIONS,
+                            });
                         }
                     }
                     catch (e) {
@@ -2016,12 +2223,18 @@ export class ViteDevServer {
                     // built it first and 404 the other. Cache ONLY successful bundles;
                     // a failed build left `bundled` null and never reaches here.
                     // A bundle whose sources are unknown would never be served from the cache.
-                    if (this.npmCache && bundledSources.length > 0) {
+                    // One whose manifests moved under the build (a reinstall while it
+                    // ran) is served to this request, not stored under them.
+                    const current = !bundledMoved && stillCurrent(bundledManifests, (path) => this.readText(path));
+                    if (!current)
+                        this.log('warn', `[vite-dev] ${specifier} changed while it was bundled: served, not cached`);
+                    if (this.npmCache && bundledSources.length > 0 && current) {
                         try {
                             this.npmCache.putEsmBundle({
                                 specifier,
-                                // Keyed by what built it: the pool's build facet, or the service.
-                                bundleHash: (await this.bundleKeys())[onDemandPool ? 0 : 1],
+                                // Keyed by what built it (the pool's build facet, or the
+                                // service), for which request.
+                                bundleHash: bundledHash,
                                 esmCode: bundled,
                                 builtAt: Date.now(),
                                 inputHash: barrelInfo?.inputHash ?? '',
@@ -2042,7 +2255,7 @@ export class ViteDevServer {
                     // scan the bundled source for CJS export patterns and synthesize
                     // named exports.
                     code = synthesizeCjsNamedExports(code);
-                    this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
+                    this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
                     return new Response(code, {
                         headers: { ...headers, 'Content-Type': JS_CT },
                     });
@@ -2094,7 +2307,7 @@ export class ViteDevServer {
                 `export default undefined;\n` +
                 `export const __nimbus_optional_dep_stub = true;\n`;
             // Cache so repeated transitive references don't re-walk + re-warn.
-            this.moduleCache.set(cacheKey, { code: stubCode, timestamp: Date.now() });
+            this.cacheModule(generation, cacheKey, { code: stubCode, timestamp: Date.now() });
             return new Response(stubCode, {
                 headers: { ...headers, 'Content-Type': JS_CT },
             });
@@ -2517,11 +2730,7 @@ export class ViteDevServer {
             if (!this.hasImportmap) {
                 // Pass importer context so `#X` subpath imports in this user JS
                 // file resolve against its owning package.json.
-                const importerCtx = {
-                    importerVfsPath: vfsPath,
-                    root: this.root,
-                    vfs: this.vfs,
-                };
+                const importerCtx = { root: this.root, scope: packageScopeOf(vfsPath, this.vfs) };
                 code = rewriteAllImports(code, this.aliases, base, importerCtx);
             }
             this.moduleCache.set(jsKey, { code, timestamp: Date.now() });
@@ -2542,6 +2751,104 @@ export class ViteDevServer {
         return new Response(data, { headers: { ...headers, 'Content-Type': contentType } });
     }
     // ── TS/TSX/JSX transform ──────────────────────────────────────────────
+    /** A module that shows `e`, the transform's error, in the page's overlay, as Vite's does. */
+    transformErrorModule(e, headers) {
+        const errMsg = (e?.message || String(e)).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+        const code = `
+console.error(\`[nimbus-vite] Transform error:\\n${errMsg}\`);
+if (!document.getElementById('nimbus-error-overlay')) {
+  const d = document.createElement('div');
+  d.id = 'nimbus-error-overlay';
+  d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);color:#ff6b6b;font-family:monospace;padding:32px;overflow:auto;white-space:pre-wrap;font-size:14px;line-height:1.6';
+  d.innerHTML = '<div style="max-width:800px;margin:0 auto"><h2 style="color:#ff6b6b;margin-bottom:16px">Transform Error</h2><pre style="color:#e4e4e7;background:#1a1a2e;padding:16px;border-radius:8px;overflow-x:auto">' + \`${errMsg}\`.replace(/</g,'&lt;') + '</pre><p style="color:#666;margin-top:16px">Fix the error and save. The page will reload.</p></div>';
+  d.onclick = () => d.remove();
+  document.body.appendChild(d);
+}\n`;
+        return new Response(code, {
+            headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
+        });
+    }
+    /**
+     * Everything a served .ts/.tsx/.jsx module is a function of, beside its
+     * text and the engines: the transform's options (with the define, the
+     * mount's BASE_URL folded in), the mount base a router basename is
+     * injected with (null: none), and what the import rewrite reads (null: an
+     * importmap leaves imports alone) — the aliases, the base, and the
+     * `imports` of the package.json a `#name` resolves in. The persisted row
+     * is keyed on it whole (npm/cache-keys.ts).
+     */
+    transformRequest(vfsPath, ext, base, code) {
+        const id = '/' + vfsPath.replace(/^\/+/, '');
+        const settings = this.viteEsbuild;
+        if (settings.esbuild === false) {
+            this.warnOnce('vite.config sets `esbuild: false`: Vite would leave TypeScript and JSX to a plugin; the built-in dev server compiles them with Vite\'s esbuild defaults');
+        }
+        const esbuild = settings.esbuild === false ? { jsxDev: true } : settings.esbuild;
+        for (const key of Object.keys(esbuild)) {
+            if (!HONOURED_ESBUILD_OPTIONS.has(key))
+                this.warnOnce(`vite.config's esbuild.${key} is not honoured by the built-in dev server`);
+        }
+        if ('include' in esbuild || 'exclude' in esbuild) {
+            this.warnOnce('vite.config\'s esbuild.include and esbuild.exclude are not honoured: the built-in dev server transforms every .ts, .tsx, .jsx, .mts and .cts module');
+        }
+        const pluginOptions = viteEsbuildPluginOptions(esbuild);
+        if (pluginOptions.target !== 'esnext') {
+            this.warnOnce(`vite.config's esbuild.target ${JSON.stringify(pluginOptions.target)} is not honoured: the built-in dev server compiles for esnext`);
+        }
+        const loader = ext === '.tsx' ? 'tsx' : ext === '.jsx' ? 'jsx' : 'ts';
+        // A ts or tsx module's tsconfig, as tsconfck finds it for Vite: throws a
+        // TsconfckParseError where it cannot be read, as Vite fails the module.
+        // Not read where esbuild.tsconfigRaw is a string: Vite then reads none (transformWithEsbuild).
+        const tsconfig = loader === 'jsx' || typeof pluginOptions.tsconfigRaw === 'string' ? undefined : this.tsconfigFor(id).tsconfig.compilerOptions;
+        const vite = viteTransformOptions(id, { ...pluginOptions, loader }, tsconfig);
+        // An object, or vite.config's own string, given to esbuild as it is.
+        const tsconfigRaw = vite.tsconfigRaw;
+        const compilerOptions = typeof tsconfigRaw === 'string' ? {} : tsconfigRaw.compilerOptions;
+        // Of esbuild's `supported`, the transform takes import() and import.meta (what Vite sets).
+        const supported = {};
+        for (const [feature, value] of Object.entries(vite.supported)) {
+            if ((feature === 'dynamic-import' || feature === 'import-meta') && typeof value === 'boolean')
+                supported[feature] = value;
+            else
+                this.warnOnce(`vite.config's esbuild.supported[${JSON.stringify(feature)}] is not honoured by the built-in dev server`);
+        }
+        const pick = (key) => (vite[key] === undefined ? {} : { [key]: vite[key] });
+        let jsx = { ...pick('jsx'), ...pick('jsxFactory'), ...pick('jsxFragment'), ...pick('jsxImportSource'), ...pick('jsxDev') };
+        // The built-in server's own JSX defaults, where nothing of the project's
+        // decides (no vite.config, no tsconfig JSX setting): the automatic React
+        // runtime, or h and Fragment for a module importing preact. Vite would
+        // compile React.createElement there (decided 2026-10-05).
+        if (!settings.hasConfig && !TSCONFIG_JSX_FIELDS.some((field) => field in compilerOptions)) {
+            const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
+            jsx = hasPreact
+                ? { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment', ...pick('jsxDev') }
+                : { jsx: 'automatic', ...pick('jsxDev') };
+        }
+        return {
+            transform: {
+                loader,
+                format: 'esm',
+                target: 'esnext',
+                ...jsx,
+                tsconfigRaw,
+                // esbuild's define is applied before Vite's own define: it wins.
+                define: { ...this.defineFor(base), ...(isStringRecord(esbuild.define) ? esbuild.define : {}) },
+                supported,
+                sourcefile: id,
+                sourcemap: 'inline',
+            },
+            jsxInject: typeof esbuild.jsxInject === 'string' ? esbuild.jsxInject : null,
+            basename: this.injectBasename && shouldProcessForRouter(vfsPath) ? base : null,
+            rewrite: this.hasImportmap ? null : {
+                aliases: this.aliases,
+                base,
+                // Read only by a `#name` specifier, which the text (or the jsxInject
+                // put before it) names in quotes: read now, and what the rewrite
+                // resolves `#` against after the transform.
+                scope: /["']#/.test(withJsxInject(code, id, esbuild.jsxInject)) ? packageScopeOf(vfsPath, this.vfs) : null,
+            },
+        };
+    }
     async serveTransformed(vfsPath, ext, headers, base) {
         const memKey = this.ck(base, vfsPath);
         const cached = this.moduleCache.get(memKey);
@@ -2550,20 +2857,30 @@ export class ViteDevServer {
                 headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
             });
         }
+        const generation = this.configGeneration;
         let code = this.vfs.readFileString(vfsPath);
+        let request;
+        try {
+            request = this.transformRequest(vfsPath, ext, base, code);
+        }
+        catch (e) {
+            // A tsconfig that cannot be read fails the module, as in Vite.
+            return this.transformErrorModule(e, headers);
+        }
         // Persistent transform cache (survives DO hibernation; content-hashed
         // so a write whose VFS event was missed still invalidates). Keyed on
-        // (vfsPath, base, contentHash, the code's key) — the transform bakes the
+        // (vfsPath, base, contentHash, the key) — the transform bakes the
         // mount base (router basename, BASE_URL, module URLs), so each base gets
         // its own row. On hit, repopulate the in-memory cache and serve without
         // re-running esbuild.
         const contentHash = this.npmCache ? await sha256Base64Url(code) : null;
-        // The code that transforms (npm/cache-keys.ts): a row another build of it made is not this one's.
-        const transformKey = await userModuleTransformCacheKey(this.esbuild.transformHostId);
+        // The code that transforms and the whole request (npm/cache-keys.ts): a
+        // row another build of it, or another configuration, made is not this one's.
+        const transformKey = await userModuleTransformCacheKey(this.esbuild.transformHostId, request);
         if (this.npmCache && contentHash) {
             const persisted = this.npmCache.getUserModuleTransform(vfsPath, base, contentHash, transformKey);
             if (persisted) {
-                this.moduleCache.set(memKey, { code: persisted.code, timestamp: Date.now() });
+                this.cacheModule(generation, memKey, { code: persisted.code, timestamp: Date.now() });
                 return new Response(persisted.code, {
                     headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
                 });
@@ -2574,61 +2891,36 @@ export class ViteDevServer {
         // no-op if the file doesn't reference createBrowserRouter/<BrowserRouter>
         // or the user has opted out (explicit basename / line-leading comment /
         // vite.config.ts nimbusInjectBasename: false).
-        if (this.injectBasename && shouldProcessForRouter(vfsPath)) {
+        if (request.basename !== null) {
             try {
-                code = injectRouterBasename(code, base);
+                code = injectRouterBasename(code, request.basename);
             }
             catch (e) {
                 // Never let the transform break serving — log and continue with original.
                 console.warn('[vite-dev] basename injection skipped for', vfsPath, ':', e?.message);
             }
         }
-        const loader = ext === '.tsx' ? 'tsx' : ext === '.jsx' ? 'jsx' : 'ts';
         try {
-            const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
-            const jsxOpts = hasPreact
-                ? { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment' }
-                : { jsx: 'automatic' };
             const result = await this.esbuild.transform(code, {
-                loader,
-                format: 'esm',
-                target: 'esnext',
-                ...jsxOpts,
-                define: this.defineFor(base),
-                sourcemap: 'inline',
+                ...request.transform,
+                define: { ...request.transform.define },
+                supported: { ...request.transform.supported },
             });
-            code = result.code;
+            code = withJsxInject(result.code, '/' + vfsPath, request.jsxInject);
         }
         catch (e) {
-            const errMsg = (e?.message || String(e)).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
-            code = `
-console.error(\`[nimbus-vite] Transform error:\\n${errMsg}\`);
-if (!document.getElementById('nimbus-error-overlay')) {
-  const d = document.createElement('div');
-  d.id = 'nimbus-error-overlay';
-  d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);color:#ff6b6b;font-family:monospace;padding:32px;overflow:auto;white-space:pre-wrap;font-size:14px;line-height:1.6';
-  d.innerHTML = '<div style="max-width:800px;margin:0 auto"><h2 style="color:#ff6b6b;margin-bottom:16px">Transform Error</h2><pre style="color:#e4e4e7;background:#1a1a2e;padding:16px;border-radius:8px;overflow-x:auto">' + \`${errMsg}\`.replace(/</g,'&lt;') + '</pre><p style="color:#666;margin-top:16px">Fix the error and save. The page will reload.</p></div>';
-  d.onclick = () => d.remove();
-  document.body.appendChild(d);
-}\n`;
-            return new Response(code, {
-                headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
-            });
+            return this.transformErrorModule(e, headers);
         }
         // Rewrite all imports: CSS ?import, aliases, bare → /@modules/,
         // dynamic, AND `package.json#imports` (subpath imports `#X`).
         // Pass the importer context so `#X` resolves against the user's
         // owning package.json — the rare-but-real case where a user .ts/
         // .tsx file directly uses a Node subpath import.
-        if (!this.hasImportmap) {
-            const importerCtx = {
-                importerVfsPath: vfsPath,
-                root: this.root,
-                vfs: this.vfs,
-            };
-            code = rewriteAllImports(code, this.aliases, base, importerCtx);
+        if (request.rewrite) {
+            const importerCtx = { root: this.root, scope: request.rewrite.scope };
+            code = rewriteAllImports(code, request.rewrite.aliases, request.rewrite.base, importerCtx);
         }
-        this.moduleCache.set(memKey, { code, timestamp: Date.now() });
+        this.cacheModule(generation, memKey, { code, timestamp: Date.now() });
         if (this.npmCache && contentHash) {
             try {
                 this.npmCache.putUserModuleTransform({

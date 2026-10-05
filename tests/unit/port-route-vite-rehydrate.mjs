@@ -15,7 +15,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 // `session/routes.ts` reaches `cloudflare:workers` through its bindings
 // module, which bun cannot resolve outside workerd. Same stub-and-bundle
@@ -56,6 +58,8 @@ function makeVfs() {
   const files = new Map([
     [`${ROOT}/index.html`, INDEX_HTML],
     [`${ROOT}/package.json`, JSON.stringify({ name: 'app', dependencies: {} })],
+    // Read again by a restored server `vite` started (case 9).
+    [`${ROOT}/vite.config.js`, "import react from '@vitejs/plugin-react';\nexport default { plugins: [react({ jsxImportSource: 'preact' })] };\n"],
   ]);
   const view = {
     exists: (p) => files.has(p),
@@ -224,6 +228,70 @@ function request(path) {
   assert.equal(response.status, 502, 'nothing serves the port');
   assert.equal(self.viteDevServer, null, 'and no server was started for it');
   console.log('  [8] a config that names no credential is not restored');
+}
+
+// 9. A server `vite` started starts from what was kept of its vite.config
+//    (its esbuild settings too), reads it again after the restore (it may
+//    have changed unwatched), and what it reads is what the next restore
+//    starts from; one the config of which came with the request (no
+//    configDir) never re-reads.
+{
+  // Kept, with no directory to read again: the restored server compiles as it says.
+  const kept = { esbuild: { jsxDev: true, jsx: 'transform' }, hasConfig: true, unread: [] };
+  const plainKept = makeWokenSession({ 'vite-config': { ...HIBERNATED['vite-config'], viteEsbuild: kept } });
+  await handleFetch(plainKept, request('/preview/'));
+  assert.deepEqual(plainKept.viteDevServer.viteEsbuild, kept, 'the restored server compiles as the kept vite.config said');
+
+  const persisted = { ...HIBERNATED['vite-config'], configDir: ROOT, define: { __APP__: '"one"' }, viteEsbuild: kept };
+  const self = makeWokenSession({ 'vite-config': persisted });
+  const response = await handleFetch(self, request('/preview/'));
+  assert.equal(response.status, 200);
+  const server = self.viteDevServer;
+  assert.equal(server.configDir, ROOT, 'the restored server re-reads the vite.config it was started from');
+  // The re-read after the restore: the project's vite.config says preact now.
+  await server.readConfigAgain();
+  const reread = { esbuild: { jsxDev: true, charset: 'utf8', legalComments: 'none', jsx: 'automatic', jsxImportSource: 'preact' }, hasConfig: true, unread: [] };
+  assert.deepEqual(server.viteEsbuild, reread, 'the restored server reads its vite.config again');
+  assert.deepEqual(self.store.get('vite-config').viteEsbuild, reread, 'and what it read is kept');
+  server.onConfigChange({ alias: { '@': './src' }, define: { __APP__: '"two"' }, injectBasename: false });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const stored = self.store.get('vite-config');
+  assert.deepEqual([stored.define, stored.aliases, stored.injectBasename], [{ __APP__: '"two"' }, { '@': './src' }, false], 'the config read again is kept');
+  assert.equal(stored.configDir, ROOT);
+  assert.deepEqual(stored.identity, persisted.identity, 'with the rest of what a restore needs');
+
+  const plain = makeWokenSession(HIBERNATED);
+  await handleFetch(plain, request('/preview/'));
+  assert.equal(plain.viteDevServer.configDir, null, 'a config with no directory is never read again');
+  console.log('  [9] a restored server reads its vite.config again, and keeps what it reads');
+}
+
+// 10. A restored server's reloads reach the browser: an edit of a file after
+//     the restore sends the session terminal's socket a full reload, as the
+//     server `vite` started did. Before, a restored server sent them nowhere.
+{
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = vfs.as(CRED_KERNEL);
+  const write = (path, content) => {
+    kernel.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
+    kernel.writeFile(path, new TextEncoder().encode(content), { mode: 0o644 });
+  };
+  write(`${ROOT}/index.html`, INDEX_HTML);
+  write(`${ROOT}/package.json`, JSON.stringify({ name: 'app' }));
+  write(`${ROOT}/src/main.ts`, 'export const a = 1;\n');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const self = makeWokenSession(HIBERNATED);
+  self.sqliteFs = vfs;
+  const sent = [];
+  self.terminal = { ws: { send: (message) => sent.push(JSON.parse(message)) } };
+  const response = await handleFetch(self, request('/preview/'));
+  assert.equal(response.status, 200);
+  write(`${ROOT}/src/main.ts`, 'export const a = 2;\n');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(sent.filter((m) => m.type === 'hmr').map((m) => m.data.event), ['full-reload'], `an edit after the restore reloads the browser: ${JSON.stringify(sent)}`);
+  self.viteDevServer.stop();
+  console.log('  [10] a restored server\'s reloads reach the session terminal');
 }
 
 await rm(outputDir, { recursive: true, force: true });

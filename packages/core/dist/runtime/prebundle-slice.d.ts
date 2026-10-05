@@ -32,6 +32,34 @@ export interface SlicedDir {
     isDir: true;
 }
 export type SliceEntry = SlicedFile | SlicedDir;
+/**
+ * What a Vite dev server's modules read of their environment, as Vite's dev
+ * values: `process.env.NODE_ENV` so React's CommonJS (and every other
+ * package's `NODE_ENV` guard) takes its development branch, and `global` for
+ * packages written for Node. `import.meta.env.BASE_URL` is per mount, so not
+ * here.
+ */
+export declare const VITE_DEV_DEFINE: Readonly<Record<string, string>>;
+/**
+ * Every pre-bundle's define, the installer's and the Vite dev server's
+ * alike, so either's row is the other's: Vite's dev values, base-neutral
+ * (`BASE_URL` is `/`; a bundle is persisted once and served under every
+ * mount). A project's vite.config `define` is not in it, as Vite's
+ * dependency optimizer applies none of it either.
+ */
+export declare const PREBUNDLE_DEFINE: Readonly<Record<string, string>>;
+/** A pre-bundle's build options, but its entry: what its output is a function of, beside its slice and externals. */
+export declare function prebundleBuildOptions(define: Readonly<Record<string, string>> | undefined): {
+    bundle: boolean;
+    format: "esm";
+    target: string;
+    platform: "browser";
+    conditions: string[];
+    mainFields: string[];
+    define: {
+        [x: string]: string;
+    } | undefined;
+};
 /** The files a slice holds: everything a bundle built from it can have read. */
 export declare function sliceSources(slice: readonly SliceEntry[]): string[];
 /** What the supervisor sends per pre-bundle. */
@@ -50,13 +78,10 @@ export interface PrebundleSpec {
      *     NOT marked external by `externals`.
      */
     slice: SliceEntry[];
-    /** Stamp written into pkg_esm_bundles.bundle_hash; matches BUNDLER_VERSION. */
+    /** Stamp written into pkg_esm_bundles.bundle_hash (worker npm/cache-keys.ts). */
     bundlerVersion: string;
-    /** Optional `define` map. Used by the on-demand bundler path
-     *  (vite-dev-server) to inject process.env.NODE_ENV, import.meta.env.*,
-     *  global → globalThis, etc. The pre-bundle path leaves this undefined
-     *  (browser-target build needs no define replacement). */
-    define?: Record<string, string>;
+    /** The `define` map: PREBUNDLE_DEFINE, from the installer and the Vite dev server alike. */
+    define?: Readonly<Record<string, string>>;
 }
 /** What a pre-bundle returns. */
 export interface PrebundleResult {

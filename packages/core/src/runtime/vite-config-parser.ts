@@ -31,6 +31,20 @@ export interface ParsedViteConfig {
    * a non-empty array always means "this config runs plugins".
    */
   plugins?: string[];
+  /**
+   * `esbuild`, as far as it is literal: false (Vite's esbuild plugin off),
+   * or its statically readable values. Read for the dev server's transform
+   * (vite-esbuild-options.ts).
+   */
+  esbuild?: Record<string, unknown> | false;
+  /** The names under `esbuild` whose values are computed, left out of it (`esbuild` itself where it is). */
+  esbuildComputed?: string[];
+  /**
+   * Each `plugins` entry that calls an imported factory: its import's
+   * specifier, the statically readable values of its first argument, and the
+   * names of those computed (left out).
+   */
+  pluginCalls?: Array<{ specifier: string; options: Record<string, unknown>; computed: string[] }>;
 }
 
 /**
@@ -191,6 +205,16 @@ function readViteConfig(ast: AstNode): ParsedViteConfig {
         }
       }
       if (pluginNames.length > 0) config.plugins = pluginNames;
+      const calls = pluginCalls(plugins, importSpecifiers);
+      if (calls.length > 0) config.pluginCalls = calls;
+    }
+    const esbuild = getObjectProperty(configObject, 'esbuild');
+    if (esbuild) {
+      const computed: string[] = [];
+      const value = staticValue(esbuild, 'esbuild', computed);
+      if (value === false || isPlainObject(value)) config.esbuild = value;
+      else computed.splice(0, computed.length, 'esbuild');
+      if (computed.length > 0) config.esbuildComputed = computed;
     }
     if (parsedDefine && Object.keys(parsedDefine).length > 0) config.define = parsedDefine;
   }
@@ -368,6 +392,80 @@ function defineValue(node: AstNode | undefined): string | undefined {
     if (arg?.type === 'Literal') return JSON.stringify(arg.value);
   }
   return undefined;
+}
+
+/** What `staticValue` gives a value it cannot read. */
+const COMPUTED = Symbol('computed');
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * A literal value: strings, numbers, booleans, null, template literals with
+ * nothing substituted, negated numbers, arrays and objects of them. An
+ * object keeps what it can read; each name it cannot (a computed value, a
+ * spread, a method, a computed key) is pushed on `computed` as
+ * `<path>.<name>`. Anything else is COMPUTED, its path pushed.
+ */
+function staticValue(node: AstNode | undefined, path: string, computed: string[]): unknown {
+  if (!node) return COMPUTED;
+  switch (node.type) {
+    case 'Literal':
+      if ('regex' in node && node.regex) break;
+      return node.value;
+    case 'TemplateLiteral':
+      if (nodeList(node, 'expressions').length === 0) {
+        const quasi: unknown = nodeList(node, 'quasis')[0];
+        const value = quasi !== null && typeof quasi === 'object' && 'value' in quasi ? quasi.value : undefined;
+        const cooked = value !== null && typeof value === 'object' && 'cooked' in value ? value.cooked : undefined;
+        if (typeof cooked === 'string') return cooked;
+      }
+      break;
+    case 'UnaryExpression': {
+      const argument = nodeProp(node, 'argument');
+      if (node.operator === '-' && argument?.type === 'Literal' && typeof argument.value === 'number') return -argument.value;
+      break;
+    }
+    case 'Identifier':
+      if (stringField(node, 'name') === 'undefined') return undefined;
+      break;
+    case 'ArrayExpression': {
+      const items = nodeList(node, 'elements').map((element, i) => staticValue(element, `${path}[${i}]`, []));
+      if (items.every((item) => item !== COMPUTED)) return items;
+      break;
+    }
+    case 'ObjectExpression': {
+      const out: Record<string, unknown> = {};
+      for (const property of nodeList(node, 'properties')) {
+        const name = property.type === 'Property' && !booleanField(property, 'computed') ? propertyKeyName(nodeProp(property, 'key')) : undefined;
+        if (!name || property.type !== 'Property' || property.kind !== 'init' || booleanField(property, 'method')) {
+          computed.push(name ? `${path}.${name}` : `${path} (a spread or computed key)`);
+          continue;
+        }
+        const value = staticValue(nodeProp(property, 'value'), `${path}.${name}`, computed);
+        if (value !== COMPUTED) out[name] = value;
+      }
+      return out;
+    }
+  }
+  computed.push(path);
+  return COMPUTED;
+}
+
+/** The `plugins` entries that call an imported factory, with their options as far as they are literal. */
+function pluginCalls(plugins: AstNode, imports: Map<string, string>): NonNullable<ParsedViteConfig['pluginCalls']> {
+  const calls: NonNullable<ParsedViteConfig['pluginCalls']> = [];
+  for (const element of nodeList(plugins, 'elements')) {
+    if (element?.type !== 'CallExpression') continue;
+    const callee = nodeProp(element, 'callee');
+    const specifier = callee?.type === 'Identifier' ? imports.get(stringField(callee, 'name') || '') : undefined;
+    if (!specifier) continue;
+    const argument = nodeList(element, 'arguments')[0];
+    const computed: string[] = [];
+    const options = argument ? staticValue(argument, 'options', computed) : {};
+    calls.push({ specifier, options: isPlainObject(options) ? options : {}, computed: isPlainObject(options) || !argument ? computed : ['options'] });
+  }
+  return calls;
 }
 
 function importsVitePlugin(ast: AstNode): boolean {
