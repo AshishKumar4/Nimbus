@@ -8,7 +8,8 @@
  * only the trees no store already holds.
  */
 
-import { DirCache, S_IFMT, bytesOfHex, comparePaths, decodePath, hexOf } from './dircache.js';
+import { oidFromHex, oidToHex } from '../pack/format.js';
+import { DirCache, S_IFMT, comparePaths, decodePath } from './dircache.js';
 
 export const S_IFDIR = 0o040000;
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -45,7 +46,7 @@ export function parseTree(data: Uint8Array): TreeEntry[] {
     const nul = data.indexOf(0, space);
     let mode = 0;
     for (let i = at; i < space; i++) mode = mode * 8 + (data[i] - 0x30);
-    entries.push({ name: decodePath(data.subarray(space + 1, nul)), mode, oid: hexOf(data.subarray(nul + 1, nul + 21)) });
+    entries.push({ name: decodePath(data.subarray(space + 1, nul)), mode, oid: oidToHex(data, nul + 1) });
     at = nul + 21;
   }
   return entries;
@@ -198,7 +199,7 @@ export async function writeTreeFromIndex(store: ObjectStore, dc: DirCache): Prom
     const frame = frames.pop()!;
     const oid = await store.write('tree', concat(frame.parts));
     const parent = frames[frames.length - 1];
-    parent.parts.push(treeLine(S_IFDIR, frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0), bytesOfHex(oid)));
+    parent.parts.push(treeLine(S_IFDIR, frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0), oidFromHex(oid)));
   };
   for (let i = 0; i < dc.count; i++) {
     if (dc.stage(i) !== 0 || dc.intentToAdd(i)) continue;

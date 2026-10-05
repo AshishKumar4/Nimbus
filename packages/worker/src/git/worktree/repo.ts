@@ -82,12 +82,18 @@ export class WorktreeRepo {
       readFile: async (path) => await vfs.readFile(at(path)),
       readlink: async (path) => await vfs.readlink(at(path)),
     };
+    const loose = (oid: string) => `${gitdir}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
     this.store = {
+      // A loose object through cf-git; a packed one straight from the ranged store (a miss there costs no exception).
       read: async (oid) => {
+        if (!await vfs.exists(loose(oid))) {
+          const packed = await gitFs.packs.read(gitdir, oid);
+          if (packed) return { type: packed.type, data: packed.data };
+        }
         const { type, object } = await git.readObject({ fs: gitFs, dir: root, oid, cache: this.cache, format: 'content' });
         return { type, data: object as Uint8Array };
       },
-      has: async (oid) => await vfs.exists(`${gitdir}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`) || await gitFs.packs.has(gitdir, oid),
+      has: async (oid) => await vfs.exists(loose(oid)) || await gitFs.packs.has(gitdir, oid),
       write: async (type, data) => {
         const oid = objectId(type, data);
         if (await this.store.has(oid)) return oid;

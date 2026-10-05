@@ -12,6 +12,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { oidFromHex, oidToHex } from '../pack/format.js';
+
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
 export const S_IFLNK = 0o120000;
@@ -106,18 +108,6 @@ export function comparePaths(a: string, b: string): number {
   return a.length - b.length;
 }
 
-export function hexOf(bytes: Uint8Array): string {
-  let hex = '';
-  for (const byte of bytes) hex += (byte < 16 ? '0' : '') + byte.toString(16);
-  return hex;
-}
-
-export function bytesOfHex(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
 /** An entry's length in version 2/3 layout: the name and 1-8 NULs to a multiple of 8. */
 function paddedLength(extended: boolean, nameLength: number): number {
   return (FIXED_BYTES + (extended ? 2 : 0) + nameLength + 8) & ~7;
@@ -143,7 +133,7 @@ function encodeVarint(value: number): number[] {
 
 /** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
 export function objectId(type: string, data: Uint8Array): string {
-  return hexOf(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
+  return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
 }
 
 export class IndexFormatError extends Error {}
@@ -310,7 +300,7 @@ export class DirCache {
   }
 
   oid(i: number): string {
-    return hexOf(this.oidBytes(i));
+    return oidToHex(this.bytes, this.offsets[i] + 40);
   }
 
   stage(i: number): number {
@@ -482,7 +472,7 @@ function encodeEntry(entry: NewEntry, name: Uint8Array, stage: number): Uint8Arr
   if (entry.stat) writeStat(out, 0, entry.stat);
   const view = new DataView(out.buffer);
   view.setUint32(24, entry.mode);
-  out.set(bytesOfHex(entry.oid), 40);
+  out.set(oidFromHex(entry.oid), 40);
   view.setUint16(FLAGS_AT, (extended ? EXTENDED : 0) | (stage << 12) | Math.min(name.length, NAME_MASK));
   if (extended) view.setUint16(FIXED_BYTES, SKIP_WORKTREE);
   out.set(name, FIXED_BYTES + (extended ? 2 : 0));
