@@ -206,6 +206,50 @@ async function bundleGitWaveWriter() {
 }
 
 /**
+ * The git pack layer (src/git/pack/facet.ts) as an IIFE bound to the
+ * module-local `__nimbusGitPack`, spliced into the git network facet beside
+ * the wave writer. Its node:crypto and node:zlib imports resolve to the
+ * facet module's own namespace imports of them (GIT_PACK_NODE_IMPORTS),
+ * which an IIFE cannot make itself.
+ */
+async function bundleGitPack() {
+  const builtins = {
+    'node:crypto': ['__nimbusNodeCrypto', ['createHash']],
+    'node:zlib': ['__nimbusNodeZlib', ['inflateSync', 'deflateSync', 'crc32']],
+  };
+  const result = await build({
+    entryPoints: [join(root, 'src', 'git', 'pack', 'facet.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusGitPack',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+    plugins: [{
+      name: 'facet-node-builtins',
+      setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /^node:(crypto|zlib)$/ }, (args) => ({ path: args.path, namespace: 'facet-node-builtin' }));
+        pluginBuild.onLoad({ filter: /.*/, namespace: 'facet-node-builtin' }, (args) => {
+          const [binding, names] = builtins[args.path];
+          return { contents: names.map((name) => `export const ${name} = ${binding}.${name};`).join('\n'), loader: 'js' };
+        });
+      },
+    }],
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/git-pack] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/^var __nimbusGitPack = /m.test(src)) {
+    throw new Error('[bundle-facet-workers/git-pack] the bundle no longer binds __nimbusGitPack');
+  }
+  return src;
+}
+
+/**
  * The answering supervisor client as a self-contained IIFE that installs
  * globalThis.__nimbusAnsweringSupervisor, so a facet body that is generated
  * text runs the one implementation the bundled facets import.
@@ -764,6 +808,27 @@ async function main() {
     ' */',
     '',
     `export const GIT_WAVE_WRITER_SRC: string = ${JSON.stringify(waveWriterSrc)};`,
+    '',
+  ].join('\n'));
+
+  const gitPackSrc = await bundleGitPack();
+  const gitPackOutPath = join(root, 'src', 'git', 'pack', 'facet.generated.ts');
+  writeFileSync(gitPackOutPath, [
+    '/**',
+    ' * facet.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - src/git/pack/facet.ts',
+    ' *',
+    ' * An IIFE binding `__nimbusGitPack` in the module that splices it, the git',
+    ' * network facet, after GIT_PACK_NODE_IMPORTS.',
+    ' *',
+    ` * Size: ${(gitPackSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    "export const GIT_PACK_NODE_IMPORTS: string = \"import * as __nimbusNodeCrypto from 'node:crypto';\\nimport * as __nimbusNodeZlib from 'node:zlib';\";",
+    '',
+    `export const GIT_PACK_SRC: string = ${JSON.stringify(gitPackSrc)};`,
     '',
   ].join('\n'));
 

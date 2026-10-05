@@ -420,6 +420,8 @@ export const git = {
     readdir: [],
     readFile: 0,
     fsReadRange: 0,
+    fsWriteRange: 0,
+    rename: 0,
     writeBatchStream: 0,
     legacySymlinkSubtree: 0,
     stdout: 0,
@@ -740,6 +742,8 @@ export const git = {
     readdir: 1,
     readFile: 0,
     fsReadRange: 0,
+    fsWriteRange: 0,
+    rename: 0,
     writeBatchStream: 0,
     readlink: 0,
     symlink: 0,
@@ -1136,14 +1140,18 @@ export const git = {
 
   for (const failurePoint of ['before', 'during', 'after']) {
     const dir = `chunk-failure-${failurePoint}`;
+    // The chunk's wave fails once; the abort that follows (whose deletes
+    // name the same path) goes through.
+    let injected = false;
     const failingSupervisor = {
       ...supervisor,
       async writeBatchStream(stream) {
         const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
         const paths = await drainWave(byteStream(bytes.slice()));
-        if (!paths.includes(`${dir}/second.txt`)) {
+        if (injected || !paths.includes(`${dir}/second.txt`)) {
           return vfs.writeStream(byteStream(bytes.slice()));
         }
+        injected = true;
         if (failurePoint === 'before') {
           throw new Error('injected before-flush failure');
         }
@@ -1164,8 +1172,10 @@ export const git = {
     assert.equal(failedChunk.success, false, `${failurePoint} flush failure reported success`);
     assert.equal(failedChunk.errorPhase, 'clone-checkout');
     assert.match(failedChunk.error, new RegExp(`injected ${failurePoint}`));
-    assert.equal(vfs.readFileString(`${dir}/first.txt`), 'first',
-      `${failurePoint} flush failure lost the prior durable chunk`);
+    // As git clone removes the work tree it made: the owned abort takes the
+    // durable chunk's files with .git.
+    assert.equal(vfs.exists(`${dir}/first.txt`), false,
+      `${failurePoint} flush failure left the prior chunk's files`);
     assert.equal(vfs.exists(`${dir}/.git`), false,
       `${failurePoint} flush failure did not run the owned abort`);
   }

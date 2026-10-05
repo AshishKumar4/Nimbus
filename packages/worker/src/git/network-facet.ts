@@ -35,6 +35,8 @@ import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
+import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
+import type { CloneBatchResult, ClonePrepared } from './pack/clone.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 
@@ -81,6 +83,9 @@ export interface GitSupervisorRpcCounters {
   readdir: number;
   readFile: number;
   fsReadRange: number;
+  /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
+  fsWriteRange: number;
+  rename: number;
   writeBatchStream: number;
   readlink: number;
   symlink: number;
@@ -97,6 +102,8 @@ export interface GitMetadataOverlayStats {
 
 export type GitCloneInvocationPhase =
   | 'clone-prepare'
+  | 'clone-batch'
+  | 'clone-finish'
   | 'clone-checkout'
   | 'clone-abort';
 
@@ -242,6 +249,8 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
   readdir: 0,
   readFile: 0,
   fsReadRange: 0,
+  fsWriteRange: 0,
+  rename: 0,
   writeBatchStream: 0,
   readlink: 0,
   symlink: 0,
@@ -341,6 +350,8 @@ function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
     readdir: nonNegativeCounter(counters.readdir),
     readFile: nonNegativeCounter(counters.readFile),
     fsReadRange: nonNegativeCounter(counters.fsReadRange),
+    fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
+    rename: nonNegativeCounter(counters.rename),
     writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
     readlink: nonNegativeCounter(counters.readlink),
     symlink: nonNegativeCounter(counters.symlink),
@@ -393,6 +404,8 @@ function parsePhaseDiagnostic(
     ? value as Record<string, unknown>
     : {};
   const phase = diagnostic.phase === 'clone-prepare' ||
+      diagnostic.phase === 'clone-batch' ||
+      diagnostic.phase === 'clone-finish' ||
       diagnostic.phase === 'clone-checkout' ||
       diagnostic.phase === 'clone-abort' ||
       diagnostic.phase === 'operation'
@@ -692,6 +705,107 @@ async function writeCloneChunkProgress(
 }
 
 /**
+ * Batches of a fast clone that run at once. Facets loaded by one session
+ * share its thread (measured: four 4.2 s CPU burners took 18.8 s), so more
+ * at once buy only overlapping network waits, and each holds its own
+ * buffers: ~15 MB with a 4 MiB base cache.
+ */
+const CLONE_BATCH_CONCURRENCY = 4;
+
+interface CloneBatchRun {
+  outerDeadline: number;
+  budgetContext: GitCloneBudgetContext;
+  phases: GitNetworkPhaseDiagnostic[];
+  accountResult(result: FacetInvocationResult): void;
+  progress: GitSupervisorStub | null;
+}
+
+/**
+ * The fast clone after prepare: its blob batches, CLONE_BATCH_CONCURRENCY at
+ * a time, then finish. A failed batch stops new ones; those in flight are
+ * awaited before the failure is thrown, so an abort never races a writer.
+ */
+async function runCloneBatches(
+  entrypoint: GitFacetEntrypoint,
+  facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
+  identity: { jobId: string; optionsHash: string },
+  fast: ClonePrepared,
+  run: CloneBatchRun,
+): Promise<void> {
+  const shares: { name: string; bytes: number }[] = [{ name: 'index-gitlinks', bytes: fast.gitlinkIndexBytes }];
+  const queue = [...fast.batches];
+  let failure: unknown = null;
+  let completed = 0;
+  const worker = async (): Promise<void> => {
+    while (failure === null) {
+      const batch = queue.shift();
+      if (batch === undefined) return;
+      try {
+        const invocation = await invokeFacet(
+          entrypoint,
+          'clone-batch',
+          crypto.randomUUID(),
+          { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities },
+          run.outerDeadline,
+          CLONE_PHASE_TIMEOUT_MS,
+          run.budgetContext,
+        );
+        run.phases.push(invocation.diagnostic);
+        run.accountResult(invocation.result);
+        const result = (invocation.result as { batch?: CloneBatchResult }).batch;
+        if (invocation.result.success !== true || result === undefined) {
+          throw new GitClonePhaseError(
+            'clone-batch',
+            typeof invocation.result.error === 'string' ? invocation.result.error : 'clone-batch failed',
+            invocation.diagnostic,
+          );
+        }
+        shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
+        completed++;
+        run.budgetContext.processedEntries += result.files;
+        if (run.progress) {
+          await writeCloneProgressLine(run.progress,
+            `\n[git] clone-batch ${completed}/${fast.batches.length} complete (blobs=${result.blobs} files=${result.files} ` +
+            `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB wall=${invocation.diagnostic.elapsed}ms ` +
+            `w7=${invocation.diagnostic.w7Waves})\n`);
+        }
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CLONE_BATCH_CONCURRENCY, queue.length) }, worker));
+  if (failure !== null) throw failure;
+  const finish = await invokeFacet(
+    entrypoint,
+    'clone-finish',
+    crypto.randomUUID(),
+    { ...facetOpts, ...identity, shares },
+    run.outerDeadline,
+    CLONE_PHASE_TIMEOUT_MS,
+    run.budgetContext,
+  );
+  run.phases.push(finish.diagnostic);
+  run.accountResult(finish.result);
+  if (finish.result.success !== true) {
+    throw new GitClonePhaseError(
+      'clone-finish',
+      typeof finish.result.error === 'string' ? finish.result.error : 'clone-finish failed',
+      finish.diagnostic,
+    );
+  }
+  if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
+}
+
+async function writeCloneProgressLine(supervisor: GitSupervisorStub, line: string): Promise<void> {
+  try {
+    disposeRpcResource(await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(line)));
+  } catch {
+    // Terminal progress is best-effort; the batch result remains authoritative.
+  }
+}
+
+/**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export async function execGitNetwork(
@@ -822,6 +936,26 @@ export async function execGitNetwork(
             );
           }
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
+
+          const fast = (prepare.result.prepared as { fast?: ClonePrepared }).fast;
+          if (fast !== undefined) {
+            await runCloneBatches(entrypoint, facetOpts, { jobId, optionsHash }, fast, {
+              outerDeadline,
+              budgetContext,
+              phases,
+              accountResult,
+              progress: opts.quiet ? null : supervisorBinding,
+            });
+            return {
+              success: true,
+              elapsed: Date.now() - start,
+              filesWritten,
+              bytesWritten,
+              supervisorRpc,
+              metadataOverlay,
+              phases,
+            };
+          }
 
           let checkoutCursor: Record<string, unknown> | null = null;
           let checkoutChunk = 0;
@@ -1099,7 +1233,8 @@ export function createRetryingGitHttp(
  * fs adapter, and flushes writes through W7 v3.
  */
 export function assembleGitNetworkFacetSource(): string {
-  return W7_FRAME_PREAMBLE + '\n' + GIT_WAVE_WRITER_SRC + '\n' + generateGitNetworkFacetCode();
+  return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + GIT_WAVE_WRITER_SRC + '\n' + GIT_PACK_SRC + '\n' +
+    generateGitNetworkFacetCode();
 }
 
 function generateGitNetworkFacetCode(): string {
@@ -1525,7 +1660,7 @@ function metadataFromSupervisorStat(st) {
 function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
-    fsReadRange: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
+    fsReadRange: 0, fsWriteRange: 0, rename: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
     legacySymlinkSubtree: 0, stdout: 0,
   };
 }
@@ -1536,6 +1671,50 @@ function emptyMetadataOverlayStats() {
     accountedBytes: 0,
     maxEntries: METADATA_MAX_ENTRIES,
     maxAccountedBytes: METADATA_MAX_ACCOUNTED_BYTES,
+  };
+}
+
+/**
+ * What git/pack/clone.ts needs of this facet: the supervisor's ranged writes
+ * (under the clone's lease, which the binding presents), and wave writers
+ * rooted at the clone that report each published wave's receipts.
+ */
+function gitPackContext(supervisor, stats, opts, root, deadline, log) {
+  const dir = normalizePath(opts.dir);
+  const counted = (name, call) => {
+    stats.supervisorRpc[name]++;
+    return useRpcResult(call(), (result) => result);
+  };
+  return {
+    supervisor: {
+      fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(path, offset, bytes)),
+      fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(path, size)),
+      fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRange(path, offset, length)),
+      rename: (from, to) => counted('rename', () => supervisor.rename(from, to)),
+    },
+    writer(onReceipts) {
+      return __nimbusGitWaveWriter.createWaveWriter({
+        supervisor: {
+          writeBatchStream(stream) {
+            stats.supervisorRpc.writeBatchStream++;
+            return supervisor.writeBatchStream(stream);
+          },
+        },
+        root,
+        base: dir,
+        deadline,
+        onWave(report) {
+          stats.filesWritten += report.files;
+          stats.bytesWritten += report.bytes;
+          if (onReceipts) onReceipts(report.receipts);
+        },
+      });
+    },
+    dir,
+    url: opts.url,
+    auth: opts.auth,
+    marker: { path: '.git/' + CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
+    onProgress: (text) => log(text),
   };
 }
 
@@ -2190,6 +2369,8 @@ export default {
     }
 
     const phase = opts.phase === 'clone-prepare' ||
+        opts.phase === 'clone-batch' ||
+        opts.phase === 'clone-finish' ||
         opts.phase === 'clone-checkout' ||
         opts.phase === 'clone-abort'
       ? opts.phase
@@ -2313,6 +2494,30 @@ export default {
       const phaseDeadline = phase === 'operation'
         ? null
         : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
+      if (phase === 'clone-batch' || phase === 'clone-finish') {
+        if (opts.op !== 'clone') throw protocolError(phase + ' requires clone operation');
+        requireProtocolString(opts.jobId, 'job id', 128);
+        requireProtocolString(opts.optionsHash, 'options hash', 128);
+        if (opts.exclusiveDestination !== true) throw protocolError(phase + ' requires an exclusive destination');
+        const root = normalizePath(opts.exclusiveMutationRoot || opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, root, phaseDeadline, log);
+        mutated = true;
+        if (phase === 'clone-batch') {
+          const batch = await __nimbusGitPack.cloneBatch(context, {
+            jobId: opts.jobId,
+            index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
+            batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
+            capabilities: opts.capabilities,
+          });
+          return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
+        }
+        const finished = await __nimbusGitPack.cloneFinish(context, { shares: opts.shares });
+        // The marker goes last: until it does, a failure leaves the clone abortable.
+        const writer = context.writer();
+        await writer.remove('.git/' + CLONE_JOB_MARKER);
+        await writer.flush();
+        return respond(true, { finished, metadataOverlay: emptyMetadataOverlayStats() });
+      }
       if (phase === 'clone-prepare') {
         if (opts.op !== 'clone') throw protocolError('prepare requires clone operation');
         requireProtocolString(opts.jobId, 'job id', 128);
@@ -2462,6 +2667,32 @@ export default {
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
         await flushWave();
+        if (opts.depth !== undefined && opts.exclusiveDestination === true) {
+          const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
+          const fast = await __nimbusGitPack.cloneFast(context, {
+            ref: opts.ref || undefined,
+            depth: opts.depth,
+            jobId: opts.jobId,
+            blobsPerBatch: opts.blobsPerBatch,
+          });
+          if (!fast.unsupported) {
+            const cloneRoot = normalizePath(opts.dir);
+            prepared = {
+              jobId: opts.jobId,
+              optionsHash: opts.optionsHash,
+              dir: cloneRoot,
+              commit: fast.commit,
+              tree: fast.tree,
+              headRef: fast.headRef,
+              packs: [],
+              packOnlyObjectStore: true,
+              metadata: [],
+              fast,
+            };
+            return respond(true, { prepared, metadataOverlay: overlayStats() });
+          }
+          log('\\n[git] ' + fast.unsupported + ': one stream\\n');
+        }
         const cache = {};
         await git.clone({
           fs, http, cache,
@@ -2648,7 +2879,15 @@ export default {
         }
         mutated = true;
         cloneJobs.delete(opts.jobId);
-        await fs.promises.rmdir(normalizePath(opts.dir) + '/.git', { recursive: true });
+        // Everything in the destination is the clone's: it was missing or
+        // empty when prepare took it. The worktree goes first and .git, with
+        // the marker that proves ownership, last.
+        const cloneRoot = normalizePath(opts.dir);
+        for (const name of await fs.promises.readdir(cloneRoot)) {
+          if (name !== '.git') await fs.promises.rm(cloneRoot + '/' + name);
+        }
+        await flushWave();
+        await fs.promises.rmdir(cloneRoot + '/.git', { recursive: true });
         await flushWave();
       } else if (opts.op === 'fetch') {
         await git.fetch({

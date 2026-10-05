@@ -71,6 +71,8 @@ export interface CloneBatchPlan {
   index: number;
   blobs: number;
   paths: number;
+  /** Its batch file's length (STAGE_DIR/batch-<index>). */
+  bytes: number;
 }
 
 export interface ClonePrepared {
@@ -289,8 +291,14 @@ export async function cloneFast(context: CloneContext, request: CloneRequest): P
   const batches = plan.batches(Math.min(MAX_BATCHES, Math.ceil(plan.count / (request.blobsPerBatch ?? BLOBS_PER_BATCH))));
   const batchPlans: CloneBatchPlan[] = [];
   for (const batch of batches) {
-    await writer.file(STAGE_DIR + '/batch-' + batch.index, 0o644, encodeBatch(plan, batch));
-    batchPlans.push({ index: batch.index, blobs: batch.blobs.length, paths: batch.blobs.reduce((n, blob) => n + blob.entries.length, 0) });
+    const encoded = encodeBatch(plan, batch);
+    await writer.file(STAGE_DIR + '/batch-' + batch.index, 0o644, encoded);
+    batchPlans.push({
+      index: batch.index,
+      blobs: batch.blobs.length,
+      paths: batch.blobs.reduce((n, blob) => n + blob.entries.length, 0),
+      bytes: encoded.byteLength,
+    });
   }
   // Gitlinks are checked out as empty directories and indexed with no stat.
   const gitlinks: Uint8Array[] = [];
