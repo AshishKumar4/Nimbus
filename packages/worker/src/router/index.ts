@@ -36,6 +36,7 @@ import {
   generateSessionId,
   isValidSessionId,
 } from '../_shared/session-id.js';
+import { doUnavailableError } from './do-errors.js';
 import {
   buildPreviewHost,
   isPreviewHostSafeSid,
@@ -634,11 +635,25 @@ export function createNimbusHandler(
     async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
       try {
         return await route(request, env, ctx);
-      } catch (e: any) {
+      } catch (e: unknown) {
         // With `run_worker_first`, this handler is the entry point for the
         // marketing site and the docs as well as the app, so an uncaught
         // throw would take the whole public surface down.
-        console.error('[nimbus] unhandled router error:', e?.stack || e);
+        console.error('[nimbus] unhandled router error:', e instanceof Error ? e.stack || e : e);
+        const unavailable = doUnavailableError(e);
+        if (unavailable) {
+          return Response.json({
+            ok: false,
+            error: unavailable.error,
+            code: unavailable.code,
+          }, {
+            status: 503,
+            headers: {
+              'Cache-Control': 'no-store',
+              'Retry-After': unavailable.retryAfter,
+            },
+          });
+        }
         return new Response('Internal error', {
           status: 500,
           headers: { 'Cache-Control': 'no-store' },

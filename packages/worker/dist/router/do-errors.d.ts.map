@@ -1,0 +1,1 @@
+{"version":3,"file":"do-errors.d.ts","sourceRoot":"","sources":["../../src/router/do-errors.ts"],"names":[],"mappings":"AAEA,UAAU,kBAAkB;IAC1B,KAAK,EAAE,MAAM,CAAC;IACd,IAAI,EAAE,wBAAwB,GAAG,0BAA0B,CAAC;IAC5D,UAAU,EAAE,MAAM,CAAC;CACpB;AAED;;;GAGG;AACH,wBAAgB,kBAAkB,CAAC,KAAK,EAAE,OAAO,GAAG,kBAAkB,GAAG,IAAI,CAe5E"}
