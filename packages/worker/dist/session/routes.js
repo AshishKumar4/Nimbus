@@ -926,11 +926,14 @@ async function routeFetch(self, request) {
             const body = await parseJsonBody(request, W7BenchBodySchema);
             const entry = self.processes.spawn('_test:w7-bench', ['_test'], '/');
             try {
-                const result = await runWaveBench(self.ctx, self.env, {
-                    pid: entry.pid,
-                    root: `home/user/w7-bench-${Date.now()}`,
-                    ...body,
-                });
+                // The producers publish below a directory their process owns, in a
+                // session no terminal may have set up.
+                const root = `home/user/w7-bench-${Date.now()}`;
+                const cred = self.processes.cred(entry.pid);
+                const kernel = self.ensureSqliteFs().as(CRED_KERNEL);
+                kernel.mkdir(root, { recursive: true, mode: 0o755 });
+                kernel.chown(root, cred.uid, cred.gid);
+                const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body });
                 return Response.json({ ...result, vfs: self.ensureSqliteFs().getStats().sql.phases });
             }
             catch (e) {
