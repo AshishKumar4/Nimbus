@@ -521,6 +521,57 @@ try {
       assert.equal(realGit(at, ['merge', '-q', 'side']).code, 1, 'the merge conflicts');
     });
     await statusAgrees('unmerged', repo);
+    // git add of a resolved path replaces all its stages with one entry; -A resolves the rest, deletions too.
+    const resolve = (path, content) => {
+      writeFileSync(join(repo.disk, path), content);
+      user.writeFile(`${repo.virtual.slice(1)}/${path}`, content);
+    };
+    resolve('both', 'resolved\n');
+    await sameWithStderr('add of a resolved path', repo, ['add', '-v', 'both']);
+    await same('add of a resolved path: the index', repo, ['ls-files', '-s']);
+    await statusAgrees('one path resolved', repo);
+    rmSync(join(repo.disk, 'ours-deletes'));
+    user.unlink(`${repo.virtual.slice(1)}/ours-deletes`);
+    await sameIndexAfter('add -A of the rest', repo, ['add', '-A']);
+    await statusAgrees('all resolved', repo);
+  }
+
+  // ── Unmerged entries with no merge in progress: commit -a resolves them; reset --hard clears them ──
+  for (const how of ['commit -a', 'reset --hard']) {
+    const repo = scenario(({ put, git, at }) => {
+      put('kept', 'k\n');
+      put('both', 'base\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'base');
+      git('branch', 'other');
+      const blob = (text) => spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: at, input: text, env: GIT_ENV }).stdout.toString().trim();
+      const [base, ours, theirs] = [blob('base\n'), blob('ours\n'), blob('theirs\n')];
+      // Stages 1-3 at a tracked path, and stages 2-3 at one HEAD lacks (added by both).
+      const info = `0 ${'0'.repeat(40)}\tboth\n100644 ${base} 1\tboth\n100644 ${ours} 2\tboth\n100644 ${theirs} 3\tboth\n`
+        + `100644 ${ours} 2\tadded\n100644 ${theirs} 3\tadded\n`;
+      assert.equal(spawnSync('git', ['update-index', '--index-info'], { cwd: at, input: info, env: GIT_ENV }).status, 0);
+      put('both', 'merged by hand\n');
+      put('added', 'both added it\n');
+    });
+    await statusAgrees(`unmerged, before ${how}`, repo);
+    if (how === 'commit -a') {
+      await sameWithStderr('commit -a with unmerged entries', repo, ['commit', '-q', '-a', '-m', 'resolved']);
+      await same('commit -a with unmerged entries: the commit', repo, ['rev-parse', 'HEAD']);
+    } else {
+      // A branch switch and a merge refuse an unmerged index, before anything else.
+      await sameWithStderr('checkout with unmerged entries', repo, ['checkout', '-q', 'other']);
+      await sameWithStderr('merge with unmerged entries', repo, ['merge', 'other']);
+      await sameWithStderr('reset --hard with unmerged entries', repo, ['reset', '-q', '--hard']);
+      await same('reset --hard with unmerged entries: the index', repo, ['ls-files', '-s']);
+      for (const path of ['both', 'added']) {
+        let ours = null;
+        try { ours = new TextDecoder().decode(user.readFile(`${repo.virtual.slice(1)}/${path}`)); } catch { /* gone */ }
+        let theirs = null;
+        try { theirs = readFileSync(join(repo.disk, path), 'utf8'); } catch { /* gone */ }
+        assert.equal(ours, theirs, `reset --hard with unmerged entries: ${path} in the worktree`);
+      }
+    }
+    await statusAgrees(`unmerged, after ${how}`, repo);
   }
 
   // ── reset --hard restores what the worktree changed where the index already holds the target's ──
@@ -556,6 +607,38 @@ try {
     await sameWithStderr('reset (mixed)', repo, ['reset']);
     await statusAgrees('after reset', repo);
     await sameWithStderr('reset -- a path', repo, ['reset', '--', 'edited']);
+  }
+
+  // ── A tracked directory that cannot be listed (chmod 111): its files are still there ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('d/f', 'f\n');
+      put('d/e/g', 'g\n');
+      put('top', 'top\n');
+      git('add', 'd');
+      git('commit', '-q', '-m', 'c');
+      put('d/new', 'untracked, unseen\n');
+    });
+    const lock = (mode) => {
+      chmodSync(join(repo.disk, 'd'), mode);
+      user.chmod(`${repo.virtual.slice(1)}/d`, mode);
+    };
+    lock(0o111);
+    try {
+      await sameWithStderr('unlistable directory: status', repo, ['status', '--porcelain']);
+      await sameWithStderr('unlistable directory: diff', repo, ['diff', '--name-status']);
+      await sameIndexAfter('unlistable directory: add -A', repo, ['add', '-A']);
+      await sameWithStderr('unlistable directory: commit -a', repo, ['commit', '-q', '-a', '-m', 'x']);
+      await same('unlistable directory: the commit', repo, ['rev-parse', 'HEAD']);
+      // Closed entirely (chmod 000): its entries cannot even be lstat'd, and each says so; none is deleted.
+      lock(0o000);
+      await sameWithStderr('closed directory: status', repo, ['status', '--porcelain']);
+      await sameWithStderr('closed directory: diff', repo, ['diff', '--name-status']);
+      await sameWithStderr('closed directory: add -A', repo, ['add', '-A']);
+      await same('closed directory: the index', repo, ['ls-files', '-s']);
+    } finally {
+      lock(0o755);
+    }
   }
 
   console.log(`git-status-matches-git: ${checks} commands byte-identical to ${realGit(scratch, ['--version']).stdout.toString().trim()}`);

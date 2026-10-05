@@ -153,6 +153,8 @@ export class DirCache {
   private readonly uptodate: Uint8Array;
   /** A stat refresh happened: the index is worth writing. */
   refreshed = false;
+  /** The checksum the file read ended with (null: there was none): what a revision check compares. */
+  readonly trailer: Uint8Array | null;
   /** The TREE extension's bytes as read, or as set; null for none. */
   private treeBytes: Uint8Array | null;
   /** Those bytes read (undefined until asked for); null when there are none git would read. */
@@ -167,8 +169,10 @@ export class DirCache {
     readonly version: number,
     readonly timestamp: number,
     private readonly extensions: Extension[],
+    trailer: Uint8Array | null,
   ) {
     this.uptodate = new Uint8Array(offsets.length);
+    this.trailer = trailer;
     this.treeBytes = extensions.find(({ signature }) => signature === 'TREE')?.bytes ?? null;
   }
 
@@ -178,7 +182,7 @@ export class DirCache {
 
   /** A repository's index before anything is added: no file yet. */
   static empty(): DirCache {
-    return new DirCache(new Uint8Array(0), new Uint32Array(0), 2, 0, []);
+    return new DirCache(new Uint8Array(0), new Uint32Array(0), 2, 0, [], null);
   }
 
   /** The index at `file`, empty when there is none. */
@@ -267,7 +271,7 @@ export class DirCache {
       }
       extensions.push({ signature, bytes: data });
     }
-    return new DirCache(entries, offsets, version, timestamp, extensions);
+    return new DirCache(entries, offsets, version, timestamp, extensions, bytes.slice(end));
   }
 
   private u32(i: number, field: number): number {
@@ -346,6 +350,17 @@ export class DirCache {
       else hi = mid;
     }
     return lo;
+  }
+
+  /** The paths with unmerged entries (stages 1-3), each once, in index order. */
+  unmergedPaths(): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < this.count; i++) {
+      if (this.stage(i) === 0) continue;
+      const path = this.path(i);
+      if (out[out.length - 1] !== path) out.push(path);
+    }
+    return out;
   }
 
   /** The first entry at `path` (its lowest stage), or -1. */

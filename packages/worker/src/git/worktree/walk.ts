@@ -17,6 +17,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
+
 import { oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId, type DirCache, type EntryStat } from './dircache.js';
 import type { Excludes } from './excludes.js';
@@ -207,6 +209,16 @@ export interface ScanOptions {
    * do: the entry takes fresh stat and its directories' cache trees go.
    */
   uncleanIsDirty?: boolean;
+  /** Unmerged paths too, with what the worktree holds at each (add and commit -a resolve them). */
+  unmerged?: boolean;
+}
+
+/** An unmerged path: its stages, entries [lo, hi), and the worktree's lstat there (null: nothing). */
+export interface Unmerged {
+  path: string;
+  lo: number;
+  hi: number;
+  stat: WorktreeStat | null;
 }
 
 export interface ScanResult {
@@ -214,6 +226,15 @@ export interface ScanResult {
   dirty: Map<number, Dirty>;
   /** Untracked paths in walk order; a directory ends in '/'. */
   untracked: string[];
+  /** With `unmerged`, the unmerged paths in index order. */
+  unmerged: Unmerged[];
+  /**
+   * What could not be read, as git reports it on stderr: an entry's lstat
+   * (`<path>: <strerror>`, diff-files'), and a directory the untracked scan
+   * could not open (read_directory's warning). Each command prints the two
+   * in its own order.
+   */
+  errors: { tracked: string[]; untracked: string[] };
 }
 
 /** One listing name's tracked kinds: a file entry, a directory of entries, a gitlink. */
@@ -231,7 +252,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
   const specs = (options.specs ?? []).includes('') ? [] : options.specs ?? [];
   const inScope = (path: string) => specs.length === 0 || specs.some((spec) => path === spec || path.startsWith(`${spec}/`));
   const onTheWay = (dir: string) => specs.some((spec) => spec.startsWith(`${dir}/`));
-  const result: ScanResult = { dirty: new Map(), untracked: [] };
+  const result: ScanResult = { dirty: new Map(), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
   const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
   const list = async (dir: string) => {
@@ -239,11 +260,32 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
     return await tree.fs.list(dir);
   };
 
+  /** A directory's listing, or null when it cannot be read: the untracked scan warns, as read_directory does. */
+  const listOrWarn = async (dir: string) => {
+    try {
+      return await list(dir);
+    } catch (error) {
+      if (options.untracked !== 'no') result.errors.untracked.push(`warning: could not open directory '${dir}/': ${strerror(error)}`);
+      return null;
+    }
+  };
+
+  /** An entry's lstat; a failure other than absence is reported (`<path>: <strerror>`) and the entry left alone. */
+  const lstat = async (path: string): Promise<WorktreeStat | null | undefined> => {
+    tree.counters.lstats++;
+    try {
+      return await tree.fs.lstat(path);
+    } catch (error) {
+      result.errors.tracked.push(`${path}: ${strerror(error)}`);
+      return undefined;
+    }
+  };
+
   const excluded = async (path: string, isDir: boolean) => options.excludes !== null && await options.excludes.isExcluded(path, isDir);
 
   /** -unormal's probe: anything untracked and not ignored below `dir`, a nested repository included. */
   const holdsUntracked = async (dir: string): Promise<boolean> => {
-    for (const { name, type } of await list(dir)) {
+    for (const { name, type } of await listOrWarn(dir) ?? []) {
       if (name === '.git') continue;
       const path = join(dir, name);
       if (type !== 'directory') {
@@ -251,7 +293,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
         continue;
       }
       if (await excluded(path, true)) continue;
-      if ((await list(path)).some((entry) => entry.name === '.git') || await holdsUntracked(path)) return true;
+      if ((await listOrWarn(path) ?? []).some((entry) => entry.name === '.git') || await holdsUntracked(path)) return true;
     }
     return false;
   };
@@ -270,7 +312,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
       return;
     }
     // A nested repository is listed as its directory, never entered.
-    const entries = await list(path);
+    const entries = await listOrWarn(path) ?? [];
     if (entries.some((entry) => entry.name === '.git')) {
       if (inScope(path) && !shadowed) result.untracked.push(`${path}/`);
       return;
@@ -293,9 +335,21 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
     }
   };
 
+  /** Entries [lo, hi) below a directory the walk could not reach: each one's lstat failed as the directory's did. */
+  const unreachable = (lo: number, hi: number, error: string) => {
+    for (let i = lo; i < hi; i++) {
+      if (dc.stage(i) !== 0 || dc.skipWorktree(i) || dc.assumeValid(i) || !inScope(dc.path(i))) continue;
+      result.errors.tracked.push(`${dc.path(i)}: ${error}`);
+    }
+  };
+
   const walk = async (dir: string, lo: number, hi: number): Promise<void> => {
-    const listing = new Map<string, WorktreeType>();
-    for (const { name, type } of await list(dir)) if (name !== '.git') listing.set(name, type);
+    // A directory that cannot be listed (chmod 111) still holds its tracked entries: each is looked at by its
+    // lstat, as git's diff-files looks, and nothing in it is untracked.
+    let listing: Map<string, WorktreeType> | null = new Map();
+    const entries = await listOrWarn(dir);
+    if (entries === null) listing = null;
+    else for (const { name, type } of entries) if (name !== '.git') listing.set(name, type);
     const tracked = new Map<string, number>();
     const skip = dir ? encoder.encode(dir).length + 1 : 0;
     for (let i = lo; i < hi;) {
@@ -308,7 +362,18 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
         const [, end] = dc.rangeUnder(path, i, hi);
         tracked.set(name, (tracked.get(name) ?? 0) | TRACKED_DIR);
         if (inScope(path) || onTheWay(path)) {
-          if (listing.get(name) === 'directory') await walk(path, i, end);
+          let type = listing?.get(name);
+          if (listing === null) {
+            tree.counters.lstats++;
+            try {
+              type = (await tree.fs.lstat(path))?.type;
+            } catch (error) {
+              unreachable(i, end, strerror(error));
+              i = end;
+              continue;
+            }
+          }
+          if (type === 'directory') await walk(path, i, end);
           else deleted(i, end);
         }
         i = end;
@@ -320,20 +385,29 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
       tracked.set(name, (tracked.get(name) ?? 0) | (gitlink ? TRACKED_GITLINK : TRACKED_FILE));
       let next = i + 1;
       while (next < hi && dc.stage(next) !== 0 && dc.path(next) === dc.path(i)) next++;
-      if (dc.stage(i) === 0 && !dc.skipWorktree(i) && !dc.assumeValid(i) && inScope(path)) {
-        const type = listing.get(name);
-        if (type === undefined || (type === 'directory' && !gitlink)) {
+      if (dc.stage(i) !== 0) {
+        if (options.unmerged && inScope(path)) {
+          const type = listing === null ? undefined : listing.get(name);
+          const st = listing !== null && type === undefined ? null : await lstat(path);
+          if (st !== undefined) result.unmerged.push({ path, lo: i, hi: next, stat: st });
+        }
+      } else if (!dc.skipWorktree(i) && !dc.assumeValid(i) && inScope(path)) {
+        const type = listing === null ? undefined : listing.get(name);
+        if (listing !== null && (type === undefined || (type === 'directory' && !gitlink))) {
           result.dirty.set(i, type === undefined ? { change: 'D', stat: null } : { change: 'D', stat: null, directory: true });
         } else {
-          tree.counters.lstats++;
-          const st = await tree.fs.lstat(path);
-          const dirty = st === null ? { change: 'D' as const, stat: null } : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
-          if (dirty) result.dirty.set(i, dirty);
+          const st = await lstat(path);
+          if (st !== undefined) {
+            const dirty = st === null ? { change: 'D' as const, stat: null }
+              : st.type === 'directory' && !gitlink ? { change: 'D' as const, stat: null, directory: true }
+              : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
+            if (dirty) result.dirty.set(i, dirty);
+          }
         }
       }
       i = next;
     }
-    if (options.untracked === 'no') return;
+    if (options.untracked === 'no' || listing === null) return;
     for (const [name, type] of listing) {
       const kinds = tracked.get(name) ?? 0;
       // A gitlink owns whatever is at its path; a file entry a non-directory, a directory of entries a directory.
