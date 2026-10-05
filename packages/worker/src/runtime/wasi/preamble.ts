@@ -39,6 +39,7 @@ import type {
   WasiSupervisorStub,
   WasiSyscallFn,
   WasiThreadScheduler,
+  WasiCred,
   WriteU32LE,
 } from '@nimbus-sh/core/runtime/wasi/types.js';
 
@@ -48,8 +49,25 @@ import {
   WASI_LISTEN_PATH_PREFIX,
   WASI_TCP_PATH_PREFIX,
 } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
-import { supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
+import {
+  residentFilesystem,
+  type ResidentEntry,
+  type ResidentFilesystem,
+  type ResidentFilesystemStats,
+  type ResidentNamespace,
+} from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
+
+// The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
+// spliced ahead of this body by scripts/bundle-facet-workers.mjs: the one store a node
+// process reads its synchronous calls from, here listed on demand.
+declare function __residentBindInMemory(budget: number): unknown;
+declare function __residentSetStorage(storage: undefined, supervisor: unknown): void;
+declare function __residentBootLazy(supervisor: unknown): Promise<boolean>;
+declare function __residentNamespaceView(supervisor: unknown, device: number, cred: WasiCred): ResidentNamespace;
 
 // errno constants
 const __WASI_ESUCCESS       = 0;
@@ -160,7 +178,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS(): WasiFsState {
-  return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES };
+  return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null };
 }
 let __wasiFS: WasiFsState = __wasiEmptyFS();
 let __wasiPreopens: Array<{ fd: number; wasiPath: string; vfsPath: string }> = [];
@@ -182,6 +200,74 @@ let __wasiThreads: WasiThreadScheduler | null = null;
 // compute-only instances) the guest has stdio, sockets and clocks but no
 // files, and a file syscall answers EBADF.
 let __wasiSup: WasiSupervisorStub | null = null;
+
+// ── The process's own copy of the namespace ──────────────────────────────
+//
+// A filesystem syscall is a round trip to the session (5.9-12.7 ms for one
+// os.stat from Python, throwaway 2026-10-05). A process that knows its
+// credential answers lookups, stats, listings and read-only opens from the
+// resident store instead (runtime/wasi/resident-filesystem.ts); the session
+// still answers every change. Its namespace is listed on demand, so a short
+// run pays for the directories it looks in, not for the session's tree.
+// `inbound()` is called wherever input from outside enters the guest (a
+// socket's bytes, an accepted connection, a poll wakeup): the next answer then
+// takes the ACQUIRE barrier first, the causal rule a node process keeps.
+let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem } | null = null;
+
+/** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
+function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentFilesystem {
+  const supervisor = answeringSupervisor(sup);
+  const authority = supervisorFilesystem(sup);
+  __residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+  __residentSetStorage(undefined, supervisor);
+  let view: ResidentNamespace | null = null;
+  void (async () => {
+    // The session's own filesystem is the one the store answers for: its root reports its device.
+    const root = await authority.stat('/');
+    if (root === null || !(await __residentBootLazy(supervisor))) return;
+    view = __residentNamespaceView(supervisor, root.dev, cred);
+  })().catch(() => { view = null; });
+  const booting: ResidentNamespace = {
+    get device() { return view === null ? -1 : view.device; },
+    cred,
+    ready: () => view !== null && view.ready(),
+    entry: (key: string): ResidentEntry | null | undefined => (view === null ? undefined : view.entry(key)),
+    children: (key: string): RuntimeVfsDirEntry[] | undefined => (view === null ? undefined : view.children(key)),
+    list: (key: string) => (view === null ? Promise.resolve(false) : view.list(key)),
+    lookup: (keys: string[], content: boolean) => (view === null ? Promise.resolve(false) : view.lookup(keys, content)),
+    listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
+    content: (key: string) => (view === null ? undefined : view.content(key)),
+    fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+    barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+  };
+  return residentFilesystem(authority, booting);
+}
+
+/** The filesystem the codec answers from: the process's resident one over the adopted supervisor, else the session's. */
+function __wasiFilesystem(parking: WasiMakeImportsOptions['parking']): RuntimeFsBridge | null {
+  const sup = __wasiSup;
+  if (!sup) return null;
+  // A guest that cannot park cannot wait for a listing or a fill: it reads the session's synchronous view.
+  if (parking === 'none') return supervisorFilesystem(sup, sup.synchronous);
+  const cred = __wasiFS.cred;
+  if (cred === null) return supervisorFilesystem(sup);
+  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };
+  return __wasiResident.fs;
+}
+
+/** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
+export function __wasiFsStats(): ResidentFilesystemStats | null {
+  return __wasiResident === null ? null : __wasiResident.fs.stats();
+}
+
+/** Input from outside entered the guest: its next filesystem answer takes the barrier first. */
+function __wasiInbound<T>(result: T): T {
+  if (result instanceof Promise) {
+    return result.then((value) => { __wasiResident?.fs.inbound(); return value; }) as T;
+  }
+  __wasiResident?.fs.inbound();
+  return result;
+}
 
 // Adopting is idempotent and never downgrades. A resident process re-enters
 // through routed fetch/handleHttpRequest hops that resolve the entrypoint
@@ -215,7 +301,10 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
     root: __wasiCanonicalize(opts.root || ''),
     // Largest regular file the codec answers from a resident copy.
     residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
+    cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
   };
+  // A new process holds nothing of the last one's filesystem.
+  __wasiResident = null;
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   // Emptied rather than replaced: the authority codec and the socket helpers
   // are handed this Map, and a swap would leave half of them writing into a
@@ -661,7 +750,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       // Reading a listening socket is accept(2); the Suspending wrapper awaits
       // the returned Promise, so the guest's accept loop simply blocks.
       if (entry.kind === 'listener') {
-        return __wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8);
+        return __wasiInbound(__wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8));
       }
       if (entry.kind === 'preopen') return __WASI_EISDIR;
       return __WASI_EBADF;
@@ -1482,7 +1571,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   };
 
   installAuthorityFilesystem(imports, {
-    fs: () => __wasiSup ? supervisorFilesystem(__wasiSup, opts.parking === 'none' ? __wasiSup.synchronous : undefined) : null,
+    fs: () => __wasiFilesystem(opts.parking),
     memory: opts.getMemory,
     fds: fdTable,
     allocateFd: __wasiAllocateFd,
@@ -1490,6 +1579,17 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     synchronous: opts.parking === 'none',
     residentBytes: __wasiFS.residentFileCap,
   });
+
+  // Where input from outside enters the guest: a socket's bytes, an accepted
+  // connection, a poll that woke. What the guest reads after one may follow
+  // from a change it caused elsewhere, so its next filesystem answer takes
+  // the barrier first (__wasiInbound). Before the raw capture below, so a
+  // socket read through fd_read is the same entry point.
+  for (const name of ['poll_oneoff', 'sock_recv', 'sock_accept'] as const) {
+    const body: WasiSyscallFn = imports[name];
+    if (typeof body !== 'function') continue;
+    (imports as WasiParkableTable)[name] = function inbound(this: unknown, ...args: never[]) { return __wasiInbound(body.apply(this, args)); };
+  }
 
   // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
   // fd_write can route socket fds through them (wasi-libc maps read(2)/

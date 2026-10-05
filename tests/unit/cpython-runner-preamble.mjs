@@ -73,7 +73,9 @@ assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   // 3. The interpreter sees the whole session at '/': there is nothing to
   //    seed, and a preamble that still carried a seed would be carrying a
   //    filesystem nobody reads.
-  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\]\s*\}\)/.test(preamble),
+  //    The credential rides along: it is what the interpreter's own copy of
+  //    the namespace is read as (wasi/resident-filesystem.ts), not a mount.
+  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\],\s*cred:\s*args\.cred\s*\}\)/.test(preamble),
     'the boot must init the session root as the only preopen, and nothing else');
   assert.ok(!/fsSnapshot|__wasiDrainPersist|__wasiRevalidateFS/.test(preamble),
     'the boot must not carry a seed or a persist queue');
