@@ -12,18 +12,20 @@
  * seam); Nimbus's filesystems always do.
  */
 import { ByteLru } from './byte-lru.js';
-import { OID_BYTES, PACK_TRAILER_BYTES, compareOids, oidFromHex, oidToHex, PackFormatError } from './format.js';
+import { OID_BYTES, compareOids, oidFromHex, oidToHex, PackFormatError } from './format.js';
 import { IDX_HEADER_BYTES, idxLayout, parseIdxHeader } from './idx.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 const PAGE_BYTES = 64 * 1024;
 const DEFAULT_CACHE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_PAGE_CACHE_BYTES = 4 * 1024 * 1024;
+/** Pack bytes are read in pages this long, PACK_PAGE_CACHE_BYTES of them kept. */
+const PACK_PAGE_BYTES = 1024 * 1024;
+const PACK_PAGE_CACHE_BYTES = 8 * 1024 * 1024;
 class PackHandle {
     name;
     idxPath;
     packPath;
     fanout = null;
-    packBytes = 0;
     resolver = null;
     constructor(name, idxPath, packPath) {
         this.name = name;
@@ -40,6 +42,7 @@ export class PackObjectStore {
     packs = null;
     cache;
     pages;
+    packPages = new ByteLru(PACK_PAGE_CACHE_BYTES);
     constructor(fs, gitdir, options = {}) {
         this.fs = fs;
         this.gitdir = gitdir;
@@ -84,20 +87,21 @@ export class PackObjectStore {
         if (this.packs !== null)
             return this.packs;
         const dir = this.gitdir + '/objects/pack';
-        const names = (await this.fs.readdir(dir)).filter((name) => name.startsWith('pack-') && name.endsWith('.idx')).sort();
+        const listed = await this.fs.readdir(dir);
+        const present = new Set(listed);
         const packs = [];
-        for (const idxName of names) {
+        for (const idxName of listed.filter((name) => name.startsWith('pack-') && name.endsWith('.idx')).sort()) {
             const name = idxName.slice(0, -4);
-            const pack = new PackHandle(name, dir + '/' + idxName, dir + '/' + name + '.pack');
-            const packBytes = await this.fs.size(pack.packPath);
             // An idx without its pack is a fetch caught between the two; git skips it too.
-            if (packBytes === null)
+            if (!present.has(name + '.pack'))
                 continue;
+            const pack = new PackHandle(name, dir + '/' + idxName, dir + '/' + name + '.pack');
             pack.fanout = parseIdxHeader(await runAsync(this.page(pack.idxPath, 0, IDX_HEADER_BYTES), (range) => this.fetch(range)));
-            pack.packBytes = packBytes;
             pack.resolver = new PackObjectResolver({
                 file: pack.packPath,
-                dataEnd: packBytes - PACK_TRAILER_BYTES,
+                // The pack's length is not asked for (a stat apiece): a read past
+                // its end comes back short, and an entry cut short fails to inflate.
+                dataEnd: Number.MAX_SAFE_INTEGER,
                 cache: new CacheView(this.cache, pack.name),
                 refBase: (base) => this.refBase(pack, base),
             });
@@ -170,12 +174,44 @@ export class PackObjectStore {
         return out;
     }
     async fetch(range) {
-        const bytes = await this.fs.readRange(range.file, range.offset, range.length);
-        // An idx page may end early: the file does, and page() checks what it uses.
-        if (bytes.byteLength < range.length && !range.file.endsWith('.idx')) {
-            throw new PackFormatError(range.file + ': ' + range.length + ' bytes at ' + range.offset + ' came back as ' + bytes.byteLength);
+        if (range.file.endsWith('.pack') && range.length <= PACK_PAGE_BYTES)
+            return await this.fromPackPages(range);
+        // A read may end early where the file does: page() checks what an idx
+        // read uses, and an entry cut short fails to inflate.
+        return await this.fs.readRange(range.file, range.offset, range.length);
+    }
+    /**
+     * A short pack range from cached PACK_PAGE_BYTES pages: objects a command
+     * reads together sit together in a pack (a checkout reads in tree order,
+     * which git writes in), so a page serves many of them. Where every read is
+     * an RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
+     * not one per object.
+     */
+    async fromPackPages(range) {
+        const first = Math.floor(range.offset / PACK_PAGE_BYTES);
+        const last = Math.floor((range.offset + range.length - 1) / PACK_PAGE_BYTES);
+        const out = first === last ? null : new Uint8Array(range.length);
+        let filled = 0;
+        for (let p = first; p <= last; p++) {
+            const key = range.file + '@' + p;
+            let page = this.packPages.get(key);
+            if (page === undefined) {
+                const bytes = await this.fs.readRange(range.file, p * PACK_PAGE_BYTES, PACK_PAGE_BYTES);
+                page = { bytes, byteLength: bytes.byteLength };
+                this.packPages.set(key, page);
+            }
+            const from = Math.max(range.offset, p * PACK_PAGE_BYTES) - p * PACK_PAGE_BYTES;
+            const to = Math.min(range.offset + range.length, (p + 1) * PACK_PAGE_BYTES) - p * PACK_PAGE_BYTES;
+            // A range clipped by the pack's end comes back short, as from the file.
+            const piece = page.bytes.subarray(from, Math.min(to, page.byteLength));
+            if (out === null)
+                return piece;
+            out.set(piece, filled);
+            filled += piece.byteLength;
+            if (piece.byteLength < to - from)
+                return out.subarray(0, filled);
         }
-        return bytes;
+        return out;
     }
     /** A ref-delta's base in a stored pack: in the same pack, which on disk is self-contained. */
     *refBase(pack, oid) {
@@ -233,5 +269,6 @@ export function packsSeam(fs, options = {}) {
                     missing.push(oid);
             await fetchMissing(gitdir, missing);
         },
+        refresh: (gitdir) => store(gitdir).refresh(),
     };
 }

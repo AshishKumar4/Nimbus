@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -38,7 +38,16 @@ export function hostObjects(home, dir) {
   return hostGit(home, dir, ['cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype)']).trim().split('\n').sort();
 }
 
-export async function createFacetSession(work) {
+/** The staged cf-git bundle, as the facet loads it in production. */
+function stagedGitBundle() {
+  const dir = new URL('../../../packages/worker/public/_assets/runtime/', import.meta.url);
+  const name = readdirSync(dir).find((file) => /^git-[0-9a-f]+\.js$/.test(file));
+  assert.ok(name, 'no staged git bundle: run bundle-git.mjs');
+  return readFileSync(new URL(name, dir), 'utf8');
+}
+
+/** `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub. */
+export async function createFacetSession(work, { realGit = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
@@ -48,7 +57,7 @@ export async function createFacetSession(work) {
   let owner;
   const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
   const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
-  const requests = { fetchObjects: 0, phases: [], attempts: [] };
+  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeWrites: [] };
   const supervisor = {
     async stat(path) { try { return bridge.stat(path); } catch { return null; } },
     async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
@@ -56,9 +65,13 @@ export async function createFacetSession(work) {
     async readdir(path) { return bridge.readdir(path); },
     async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
     async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
-    async fsWriteRange(path, offset, bytes) { return bridge.writeRange(path, offset, bytes, { createParents: true, ...lease() }); },
+    async fsWriteRange(path, offset, bytes) {
+      requests.rangeWrites.push({ path, offset, bytes: bytes.byteLength });
+      return bridge.writeRange(path, offset, bytes, { createParents: true, ...lease() });
+    },
     async fsTruncate(path, size) { return bridge.truncate(path, size, lease()); },
     async rename(from, to) { return bridge.rename(from, to, lease()); },
+    async unlink(path) { return bridge.unlink(path); },
     async writeBatchStream(stream) { return kernel.writeStream(stream, lease()); },
     async stdout() {},
   };
@@ -67,7 +80,7 @@ export async function createFacetSession(work) {
 
   const tempDir = mkdtempSync(join(work, 'facet-'));
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-  writeFileSync(join(tempDir, 'git-bundle.js'), 'export const git = {}; export const gitHttp = {};');
+  writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
   const doCtx = { id: { toString: () => 'facet-session-do' } };
   const doEnv = {

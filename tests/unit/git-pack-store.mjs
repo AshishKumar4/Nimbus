@@ -40,7 +40,6 @@ function nodeFs() {
         return out;
       } finally { closeSync(fd); }
     },
-    async size(path) { try { return statSync(path).size; } catch { return null; } },
     async readdir(dir) { try { return readdirSync(dir); } catch { return []; } },
   };
 }
@@ -83,9 +82,9 @@ async function compareAll(repo, gitdir) {
   const prefix = ids[0].slice(0, 3);
   const expected = ids.map((line) => line.split(' ')[0]).filter((oid) => oid.startsWith(prefix)).sort();
   assert.deepEqual((await store.expand(prefix)).sort(), expected, 'expand ' + prefix);
-  // A pack is read an entry at a time: a 16 KiB probe, or one entry's deflate bound.
+  // A pack is read a 1 MiB page at a time, or one large entry's deflate bound: never whole.
   const maxRead = Math.max(...fs.reads);
-  assert.ok(maxRead <= Math.max(16 * 1024, deflateBound(largest) + 32), `largest pack read ${maxRead}, largest object ${largest}`);
+  assert.ok(maxRead <= Math.max(1 << 20, deflateBound(largest) + 32), `largest pack read ${maxRead}, largest object ${largest}`);
   return ids.length;
 }
 

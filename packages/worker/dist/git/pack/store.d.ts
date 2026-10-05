@@ -16,7 +16,6 @@ import { type ResolvedObject } from './reader.js';
 export interface PackStoreFs {
     /** Bytes [offset, offset + length) of `path`, clipped to its end. */
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
-    size(path: string): Promise<number | null>;
     /** Names in `dir`, or [] when it is absent. */
     readdir(dir: string): Promise<string[]>;
 }
@@ -36,6 +35,7 @@ export declare class PackObjectStore {
     private packs;
     private readonly cache;
     private readonly pages;
+    private readonly packPages;
     constructor(fs: PackStoreFs, gitdir: string, options?: PackStoreOptions);
     /** Whether some pack holds `oid`; no rescan on a miss (a prefetch asks of many it lacks). */
     has(oid: string): Promise<boolean>;
@@ -52,6 +52,14 @@ export declare class PackObjectStore {
     /** `length` bytes at `at` of `path`, from whole cached pages (a range spans at most two). */
     private page;
     private fetch;
+    /**
+     * A short pack range from cached PACK_PAGE_BYTES pages: objects a command
+     * reads together sit together in a pack (a checkout reads in tree order,
+     * which git writes in), so a page serves many of them. Where every read is
+     * an RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
+     * not one per object.
+     */
+    private fromPackPages;
     /** A ref-delta's base in a stored pack: in the same pack, which on disk is self-contained. */
     private refBase;
 }
@@ -66,6 +74,8 @@ export interface GitPacksSeam {
      * the repository has no promisor remote.
      */
     prefetch(gitdir: string, oids: Iterable<string>): Promise<void>;
+    /** Forget `gitdir`'s pack list: a pack was added. */
+    refresh(gitdir: string): void;
 }
 /**
  * A partial clone's promisor remote: fetches `oids` into a new pack, or

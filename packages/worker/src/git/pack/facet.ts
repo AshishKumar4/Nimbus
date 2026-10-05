@@ -15,3 +15,4 @@ export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneFast, cloneBatch, cloneFinish, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
+export { facetPacks } from './facet-packs.js';

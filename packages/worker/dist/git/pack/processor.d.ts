@@ -73,8 +73,16 @@ export interface PackProcessorOptions {
     cacheBytes?: number;
     /** Newest stored bytes kept readable without a store read (DEFAULT_RECENT_BYTES). */
     recentBytes?: number;
+    /** A continuation reads the stored pack ahead in windows this long (READ_AHEAD_BYTES). */
+    readAheadBytes?: number;
     /** Decode no more than this many work units; the rest of the stream is only stored. */
     budgetUnits?: number;
+    /**
+     * Stop decoding, as at the work budget, once this many reads have reached
+     * the store: where each is an RPC, an invocation's subrequests are bounded
+     * (a react history batch, unbounded, passed the Workers limit).
+     */
+    maxStoreReads?: number;
 }
 /** Decoding stopped before the pack's end; a continuation picks up here. */
 export interface PackCheckpoint {
@@ -103,6 +111,8 @@ export interface PackProcessResult {
 }
 export interface WorkTally {
     units: number;
+    /** Reads that reached the store. */
+    storeReads?: number;
     inflatedBytes: number;
     hashedBytes: number;
     deltaBytes: number;
@@ -120,6 +130,7 @@ export declare class PackStreamProcessor {
     private readonly cache;
     private readonly work;
     private readonly budget;
+    private readonly maxStoreReads;
     private records;
     /** In-pack ids → offsets, built the first time a ref-delta asks. */
     private byOid;
@@ -132,6 +143,8 @@ export declare class PackStreamProcessor {
     run(source: AsyncIterable<Uint8Array>): Promise<PackProcessResult>;
     /** Continue decoding a stored pack of `packBytes` bytes from a checkpoint. */
     resume(checkpoint: PackCheckpoint, packBytes: number): Promise<PackProcessResult>;
+    /** The invocation's budget is spent: its work units, or its store reads. */
+    private spent;
     private result;
     private makeResolver;
     /** Wait until the next entry's zlib stream is whole in the buffer, and inflate it. */

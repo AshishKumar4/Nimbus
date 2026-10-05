@@ -45,14 +45,24 @@ async function send(options, path, init) {
     for (let attempt = 0;; attempt++) {
         const last = attempt >= RETRY_BACKOFF_MS.length;
         let response;
+        // Headers that do not come within the stall time are a stall too.
+        const stallMs = options.stallMs ?? STALL_MS;
+        let timer = null;
         try {
-            response = await doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal });
+            const stalled = new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
+            });
+            response = await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
         }
         catch (error) {
             if (last)
-                throw error;
+                throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
             await backoff(attempt);
             continue;
+        }
+        finally {
+            if (timer !== null)
+                clearTimeout(timer);
         }
         if (!TRANSIENT_STATUSES[response.status] || last)
             return response;

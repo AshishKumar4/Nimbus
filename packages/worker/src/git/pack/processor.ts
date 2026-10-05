@@ -112,8 +112,16 @@ export interface PackProcessorOptions {
   cacheBytes?: number;
   /** Newest stored bytes kept readable without a store read (DEFAULT_RECENT_BYTES). */
   recentBytes?: number;
+  /** A continuation reads the stored pack ahead in windows this long (READ_AHEAD_BYTES). */
+  readAheadBytes?: number;
   /** Decode no more than this many work units; the rest of the stream is only stored. */
   budgetUnits?: number;
+  /**
+   * Stop decoding, as at the work budget, once this many reads have reached
+   * the store: where each is an RPC, an invocation's subrequests are bounded
+   * (a react history batch, unbounded, passed the Workers limit).
+   */
+  maxStoreReads?: number;
 }
 
 /** Decoding stopped before the pack's end; a continuation picks up here. */
@@ -145,6 +153,8 @@ export interface PackProcessResult {
 
 export interface WorkTally {
   units: number;
+  /** Reads that reached the store. */
+  storeReads?: number;
   inflatedBytes: number;
   hashedBytes: number;
   deltaBytes: number;
@@ -227,11 +237,18 @@ class PackOutput {
   private inFlight: Promise<void> | null = null;
   /** Bytes handed over so far, the piece being filled included. */
   written: number;
+  /** Reads that reached the store (each one a subrequest where the store is remote). */
+  storeReads = 0;
   /** Recently sent pieces, oldest first, with their pack offsets. */
   private readonly sent: { offset: number; bytes: Uint8Array }[] = [];
   private window: { offset: number; bytes: Uint8Array } | null = null;
 
-  constructor(private readonly store: PackStore, written = 0, private readonly recentBytes = DEFAULT_RECENT_BYTES) {
+  constructor(
+    private readonly store: PackStore,
+    written = 0,
+    private readonly recentBytes = DEFAULT_RECENT_BYTES,
+    private readonly readAheadBytes = READ_AHEAD_BYTES,
+  ) {
     this.written = written;
   }
 
@@ -279,6 +296,7 @@ class PackOutput {
       return window.bytes.subarray(offset - window.offset, offset - window.offset + length);
     }
     await this.flush();
+    this.storeReads++;
     return await this.store.read(offset, length);
   }
 
@@ -286,7 +304,8 @@ class PackOutput {
   async readAhead(offset: number, length: number, end: number): Promise<Uint8Array> {
     const window = this.window;
     if (window === null || offset < window.offset || offset + length > window.offset + window.bytes.byteLength) {
-      const span = Math.min(Math.max(length, READ_AHEAD_BYTES), end - offset);
+      const span = Math.min(Math.max(length, this.readAheadBytes), end - offset);
+      this.storeReads++;
       this.window = { offset, bytes: await this.store.read(offset, span) };
     }
     return this.window!.bytes.subarray(offset - this.window!.offset, offset - this.window!.offset + length);
@@ -392,6 +411,7 @@ export class PackStreamProcessor {
   private readonly cache: ByteLru<number, CachedObject>;
   private readonly work = new WorkCounter();
   private readonly budget: number;
+  private readonly maxStoreReads: number;
   private records = new RecordList(null, 1);
   /** In-pack ids → offsets, built the first time a ref-delta asks. */
   private byOid: Map<string, number> | null = null;
@@ -404,6 +424,7 @@ export class PackStreamProcessor {
     const cacheBytes = options.cacheBytes ?? DEFAULT_CACHE_BYTES;
     this.cache = new ByteLru(cacheBytes, Math.floor(cacheBytes / 2));
     this.budget = options.budgetUnits ?? WORK_BUDGET_UNITS;
+    this.maxStoreReads = options.maxStoreReads ?? Number.POSITIVE_INFINITY;
   }
 
   /** Consume a whole pack stream: decode within budget, store all of it. */
@@ -449,7 +470,7 @@ export class PackStreamProcessor {
       if (writing !== undefined) await writing;
       buffer.consume(packedBytes);
       offset += packedBytes;
-      if (this.work.units >= this.budget && index + 1 < objects) {
+      if (this.spent() && index + 1 < objects) {
         checkpoint = {
           offset,
           decoded: index + 1,
@@ -495,7 +516,7 @@ export class PackStreamProcessor {
 
   /** Continue decoding a stored pack of `packBytes` bytes from a checkpoint. */
   async resume(checkpoint: PackCheckpoint, packBytes: number): Promise<PackProcessResult> {
-    this.output = new PackOutput(this.options.store, packBytes, this.options.recentBytes);
+    this.output = new PackOutput(this.options.store, packBytes, this.options.recentBytes, this.options.readAheadBytes);
     const dataEnd = packBytes - PACK_TRAILER_BYTES;
     const { objects } = parsePackHeader(await this.options.store.read(0, PACK_HEADER_BYTES));
     this.records = new RecordList(checkpoint.records, objects);
@@ -512,7 +533,7 @@ export class PackStreamProcessor {
       this.work.inflated(entry.payload.byteLength);
       await this.decode(entry.header, entry.packed, entry.payload, offset);
       offset += entry.packed.byteLength;
-      if (this.work.units >= this.budget && index + 1 < objects) {
+      if (this.spent() && index + 1 < objects) {
         next = { offset, decoded: index + 1, records: this.records.view().slice(), externalBases: [...this.externalBases.keys()] };
         break;
       }
@@ -520,11 +541,16 @@ export class PackStreamProcessor {
     if (next === null && offset !== dataEnd) throw new PackFormatError('entries end at ' + offset + ', the trailer starts at ' + dataEnd);
     if (next === null && this.externalBases.size > 0) {
       await this.options.store.truncate(dataEnd);
-      this.output = new PackOutput(this.options.store, dataEnd, this.options.recentBytes);
+      this.output = new PackOutput(this.options.store, dataEnd, this.options.recentBytes, this.options.readAheadBytes);
       return await this.completeThin(objects, dataEnd);
     }
     const packSha = await this.options.store.read(dataEnd, PACK_TRAILER_BYTES);
     return this.result(packSha, objects, packBytes, next, 0);
+  }
+
+  /** The invocation's budget is spent: its work units, or its store reads. */
+  private spent(): boolean {
+    return this.work.units >= this.budget || this.output.storeReads >= this.maxStoreReads;
   }
 
   private result(
@@ -540,7 +566,7 @@ export class PackStreamProcessor {
       packBytes,
       entries: checkpoint === null ? sortEntries(this.records.view()) : null,
       checkpoint,
-      work: this.work.tally(),
+      work: { ...this.work.tally(), storeReads: this.output.storeReads },
       appendedBases,
     };
   }
