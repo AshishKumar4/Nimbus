@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { decodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '../../packages/platform/src/w7-frame.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 
 const FILES = 3_000;
@@ -121,7 +121,7 @@ export const git = {
     assert.equal(files.get('pipelined/src/d5/e5/file-5.txt')?.toString(), 'content of file 5\n');
     assert.equal(files.get(`pipelined/src/d${(FILES - 1) % 37}/e${(FILES - 1) % 11}/file-${FILES - 1}.txt`)?.toString(),
       `content of file ${FILES - 1}\n`);
-    assert.ok(record.calls > 10, `fixture crossed only ${record.calls} waves`);
+    assert.ok(record.calls > 3, `fixture crossed only ${record.calls} waves`);
     assert.equal(record.maxInFlight, 1, 'two waves were in flight at once');
     assert.ok(record.writesDuringFlight > FILES / 4,
       `only ${record.writesDuringFlight} of ${FILES} writes completed while a wave was in flight: waves are not pipelined`);
@@ -132,7 +132,7 @@ export const git = {
     // already owns: a handful each. Recounting the wave would be ~100 each.
     assert.ok(waves.ownershipVisits <= 12 * (FILES + 10),
       `ownership accounting probed ${waves.ownershipVisits} paths for ${FILES} writes: it recounts the wave`);
-    assert.ok(waves.maxWavePaths <= 128, `a wave owned ${waves.maxWavePaths} paths`);
+    assert.ok(waves.maxWavePaths <= W7_MAX_PATHS_PER_BATCH, `a wave owned ${waves.maxWavePaths} paths`);
   }
 
   // ── A failed wave is the last one sent, and it is named ────────────────

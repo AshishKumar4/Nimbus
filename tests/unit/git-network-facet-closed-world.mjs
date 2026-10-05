@@ -245,8 +245,9 @@ export const git = {
     }
 
     if (root === 'repo') {
+      // Enough long names to cross the owned-path-bytes bound: a wave closes on it.
       const longPrefix = 'x'.repeat(590);
-      for (let index = 0; index < 110; index++) {
+      for (let index = 0; index < ${Math.ceil(W7_MAX_OWNED_PATH_BYTES / 600) + 10}; index++) {
         await fs.promises.writeFile(
           root + '/long/' + longPrefix + '-' + index,
           enc.encode('long-' + index),

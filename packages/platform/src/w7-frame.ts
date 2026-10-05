@@ -58,12 +58,19 @@ export interface BatchWritePayload {
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 
 const ENCODER_QUEUE_HWM = 0;
+/** What one stream read asks for when a record's small fields are wanted. */
+const READ_AHEAD_BYTES = 64 * 1024;
 const MAX_METADATA_BYTES = 64 * 1024;
 const MAX_PATH_BYTES = 64 * 1024;
 const MAX_BATCH_ID_BYTES = 128;
 const MAX_CONTENT_ID_BYTES = 256;
-export const W7_MAX_PATHS_PER_BATCH = 128;
-export const W7_MAX_OWNED_PATH_BYTES = 64 * 1024;
+/**
+ * A batch's owned paths. Each stream costs the receiver a round trip and a
+ * publication's fixed work, so a batch is as wide as its byte budget allows;
+ * ownership is a set of names, small beside the bytes.
+ */
+export const W7_MAX_PATHS_PER_BATCH = 1024;
+export const W7_MAX_OWNED_PATH_BYTES = 256 * 1024;
 export const W7_MAX_RECORD_BYTES = 5 + 4 + MAX_CONTENT_ID_BYTES + 8 + CHUNK_SIZE;
 
 const enum RecordTag {
@@ -1044,8 +1051,17 @@ async function cancelReader(
   try { reader.releaseLock(); } catch { /* already released */ }
 }
 
+/**
+ * Exact reads over a byte stream, served from a block read ahead of them: a
+ * stream read is an await through the stream machinery (and, across RPC, its
+ * pump), so the small reads a record's header and metadata take come out of
+ * one READ_AHEAD_BYTES block instead of one read each. A read larger than
+ * the block (a chunk's data) fills its own buffer directly.
+ */
 class ExactByteReader {
   private done = false;
+  private block: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  private offset = 0;
 
   constructor(private readonly reader: ReadableStreamBYOBReader, private readonly signal?: AbortSignal) {}
 
@@ -1062,30 +1078,89 @@ class ExactByteReader {
     }
   }
 
+  /** One stream read into `view`; zero bytes at the end of the stream. */
+  private async fill(view: Uint8Array): Promise<Uint8Array> {
+    const next = await this.read(
+      () => this.reader.read(view),
+      () => this.reader.cancel(this.signal?.reason),
+    );
+    if (next.done) {
+      this.done = true;
+      return new Uint8Array(0);
+    }
+    return next.value;
+  }
+
   async readExact(length: number, label: string): Promise<Uint8Array> {
     if (length === 0) return new Uint8Array(0);
+    const buffered = this.block.byteLength - this.offset;
+    if (buffered >= length) {
+      const out = this.block.slice(this.offset, this.offset + length);
+      this.offset += length;
+      return out;
+    }
     const output = new Uint8Array(length);
-    let offset = 0;
-    while (offset < length) {
+    let filled = 0;
+    if (buffered > 0) {
+      output.set(this.block.subarray(this.offset), 0);
+      filled = buffered;
+    }
+    this.offset = this.block.byteLength;
+    while (filled < length) {
       if (this.done) {
         throw new Error(
-          `w7-frame: stream ended ${offset} bytes into expected ${length}-byte ${label}`,
+          `w7-frame: stream ended ${filled} bytes into expected ${length}-byte ${label}`,
         );
       }
-      const next = await this.read(
-        () => this.reader.read(new Uint8Array(length - offset)),
-        () => this.reader.cancel(this.signal?.reason),
-      );
-      if (next.done) this.done = true;
-      else if (next.value.byteLength > 0) {
-        output.set(next.value, offset);
-        offset += next.value.byteLength;
+      const remaining = length - filled;
+      if (remaining >= READ_AHEAD_BYTES) {
+        const got = await this.fill(output.subarray(filled));
+        filled += got.byteLength;
+        // The read took output's buffer and handed it back under a new view.
+        if (got.byteLength > 0) return this.finish(got, length);
+        continue;
       }
+      // A BYOB read transfers the buffer it fills and returns it: the block's
+      // storage is reused from read to read, never reallocated.
+      const got = await this.fill(new Uint8Array(this.spare(), 0, READ_AHEAD_BYTES));
+      const take = Math.min(remaining, got.byteLength);
+      output.set(got.subarray(0, take), filled);
+      filled += take;
+      this.block = got;
+      this.offset = take;
     }
     return output;
   }
 
+  /** The read-ahead storage, taken back from the block once it is drained. */
+  private spare(): ArrayBufferLike {
+    const storage = this.block.buffer;
+    return storage.byteLength >= READ_AHEAD_BYTES ? storage : new ArrayBuffer(READ_AHEAD_BYTES);
+  }
+
+  /**
+   * A large read lands in place: what one read returned is a view over the
+   * output's own (transferred) buffer, so the remainder fills the same one.
+   */
+  private async finish(view: Uint8Array, length: number): Promise<Uint8Array> {
+    let filled = view.byteOffset + view.byteLength;
+    let buffer = view.buffer;
+    while (filled < length) {
+      if (this.done) {
+        throw new Error(`w7-frame: stream ended ${filled} bytes into expected ${length}-byte file-chunk data`);
+      }
+      const got = await this.fill(new Uint8Array(buffer, filled, length - filled));
+      buffer = got.buffer;
+      filled += got.byteLength;
+    }
+    return new Uint8Array(buffer, 0, length);
+  }
+
   async ensureEof(stream: ReadableStream<Uint8Array>): Promise<void> {
+    if (this.offset < this.block.byteLength) {
+      await this.reader.cancel(new Error('w7-frame: trailing bytes after batch-end'));
+      throw new Error('w7-frame: trailing bytes after batch-end');
+    }
     if (this.done) return;
     this.reader.releaseLock();
     const reader = stream.getReader();

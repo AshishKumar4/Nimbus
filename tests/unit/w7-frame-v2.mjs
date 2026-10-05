@@ -223,7 +223,7 @@ async function expectDecodeFailure(value, pattern) {
     deletePaths: Array.from({ length: W7_MAX_PATHS_PER_BATCH + 1 }, (_, index) => `p-${index}`),
     inodes: [],
     chunks: [],
-  }), /batch exceeds 128 owned paths/);
+  }), new RegExp(`batch exceeds ${W7_MAX_PATHS_PER_BATCH} owned paths`));
 
   assert.throws(() => encodeWriteBatchStream({
     inodes: [{ ...inode('integer-bound.bin', new Uint8Array()), chunkCount: 0x1_0000_0000 }],
