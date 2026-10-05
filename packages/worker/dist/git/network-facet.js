@@ -448,15 +448,24 @@ async function runPool(items, concurrency, run) {
 }
 /**
  * Attempts at a batch or history piece that failed in transit: its request
- * (UploadPackError), its writes to the session ("Network connection lost":
- * Linux depth 1, twice, the session itself healthy by GraphQL), or the
- * piece as a whole, hung (react's first batch, three times in five clones,
- * with no stall from its request). A piece writes the same files and a pack
- * under its own name each time, so a retry is the same piece again.
+ * to the git server (UploadPackError); its write waves to the session
+ * ("Network connection lost": the batch facet's writeBatchStream through
+ * SupervisorRPC to the session's Durable Object, seen live on Linux,
+ * TypeScript and vscode, while the session stayed up, since the clone it
+ * orchestrates carried on and GraphQL counts no reset: an infrastructure
+ * network error, which the Durable Objects docs say to retry, with backoff,
+ * when the request is idempotent); or the piece as a whole, hung (react's
+ * first batch, three times in five clones, with no stall from its request).
+ * Objects are addressed by content: a piece run again writes the same files
+ * and the same pack, its earlier attempt's temporary pack discarded first.
  */
 const CLONE_PIECE_ATTEMPTS = 3;
+const CLONE_PIECE_BACKOFF_MS = [1_000, 3_000];
 /** A piece takes seconds (Linux's batches ~17 s, react's largest history piece 51 s): one hung this long is retried. */
 const CLONE_PIECE_TIMEOUT_MS = 150_000;
+function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 function transientPieceFailure(diagnostic, error) {
     return diagnostic.outcome === 'timeout' ||
         error.startsWith('git upload-pack: ') ||
@@ -482,6 +491,7 @@ async function invokeClonePhase(entrypoint, phase, opts, run) {
             if (run.progress) {
                 await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
             }
+            await sleepMs(CLONE_PIECE_BACKOFF_MS[attempt - 1]);
             continue;
         }
         run.phases.push(invocation.diagnostic);
@@ -492,6 +502,8 @@ async function invokeClonePhase(entrypoint, phase, opts, run) {
         if (run.progress) {
             await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
         }
+        if (attempt < CLONE_PIECE_ATTEMPTS)
+            await sleepMs(CLONE_PIECE_BACKOFF_MS[attempt - 1]);
     }
     if (invocation.result.success !== true) {
         throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic);
@@ -1407,6 +1419,22 @@ function emptyMetadataOverlayStats() {
   };
 }
 
+/**
+ * A piece's earlier attempts may have left a partial temporary pack (each
+ * attempt names its own): it goes before the piece runs again. What the
+ * failed attempt published otherwise (files, a named pack) is the same
+ * content addressed by the same names, which this attempt rewrites.
+ */
+async function discardEarlierAttempts(context, opts, prefix, suffix) {
+  if (!(opts.attempt > 1)) return;
+  const writer = context.writer();
+  writer.setPin(context.marker.path, context.marker.text, true);
+  for (let attempt = 1; attempt < opts.attempt; attempt++) {
+    await writer.remove('.git/objects/pack/' + prefix + opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix);
+  }
+  await writer.flush();
+}
+
 /** The supervisor's ranged calls, counted, as git/pack/facet-packs.ts takes them. */
 function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
   // Paths reach the supervisor as this facet's fs sends them: normalized.
@@ -2280,6 +2308,7 @@ export default {
         const context = gitPackContext(supervisor, stats, opts, root, phaseDeadline, log);
         mutated = true;
         if (phase === 'clone-batch') {
+          await discardEarlierAttempts(context, opts, 'tmp_pack_', '_' + (opts.batch && opts.batch.index));
           const batch = await __nimbusGitPack.cloneBatch(context, {
             jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
             index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
@@ -2301,6 +2330,7 @@ export default {
           } else if (history.step === 'resume') {
             step = await __nimbusGitPack.historyResume(context, { ...history, budgetUnits: opts.historyBudgetUnits });
           } else {
+            await discardEarlierAttempts(context, opts, 'tmp_pack_', '_' + history.piece);
             step = await __nimbusGitPack.historyStep(context, {
               jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
               kind: history.kind,
