@@ -407,6 +407,71 @@ export function esbuildFailureText(errors) {
 function refuse(text) {
     throw new BuildError([message(text)]);
 }
+/** `text` with each range (UTF-16 offsets) blanked: its characters but line terminators become spaces, so no position moves. */
+function blank(text, ranges) {
+    let out = '';
+    let at = 0;
+    for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+        const from = Math.max(start, at);
+        if (end <= from)
+            continue;
+        out += text.slice(at, from) + text.slice(from, end).replace(/[^\n\r\u2028\u2029]/g, ' ');
+        at = end;
+    }
+    return out + text.slice(at);
+}
+/**
+ * The automatic runtime falls back to `createElement` for a key after a
+ * spread; in development Oxc gives that call `__self` and `__source` props,
+ * where esbuild passes the props alone. They are blanked out of `code` (the
+ * Oxc crate's strip_dev_fallback_props, on rolldown's transform output).
+ */
+function stripDevFallbackProps(parse, code, importSource) {
+    if (!/__source|__self/.test(code))
+        return code;
+    let program;
+    try {
+        program = parse(code, { lang: 'js' });
+    }
+    catch {
+        return code;
+    }
+    let local = null;
+    for (const node of (program.body ?? [])) {
+        if (node.type !== 'ImportDeclaration' || node.source.value !== importSource)
+            continue;
+        for (const specifier of (node.specifiers ?? [])) {
+            if (specifier.type === 'ImportSpecifier' && specifier.imported?.name === 'createElement')
+                local = specifier.local?.name ?? null;
+        }
+    }
+    if (!local)
+        return code;
+    const ranges = [];
+    const visit = (node) => {
+        if (node === null || typeof node !== 'object')
+            return;
+        if (Array.isArray(node))
+            return node.forEach(visit);
+        const n = node;
+        const callee = n.callee;
+        const props = n.arguments?.[1];
+        if (n.type === 'CallExpression' && callee?.type === 'Identifier' && callee.name === local && props?.type === 'ObjectExpression') {
+            const list = props.properties;
+            list.forEach((p, i) => {
+                const key = p.key;
+                if (p.type !== 'Property' || (key?.name !== '__self' && key?.name !== '__source'))
+                    return;
+                ranges.push(i + 1 < list.length ? [p.start, list[i + 1].start] : i > 0 ? [list[i - 1].end, p.end] : [p.start, p.end]);
+            });
+        }
+        for (const key of Object.keys(n))
+            if (key !== 'parent')
+                visit(n[key]);
+    };
+    visit(program);
+    return ranges.length ? blank(code, ranges) : code;
+}
 /**
  * The first decorator or class field in a TypeScript module that the build's
  * tsconfig refuses (tsconfig-raw.ts, TsSettings.refuse), with the refusal:
@@ -463,42 +528,115 @@ function spanLocation(file, source, start, end) {
 /** The build failed with imports that did not resolve: they are placed once its bundle is closed. */
 class UnresolvedImports extends Error {
 }
-/** rolldown's (Oxc's) JSX and TypeScript options for the settings, for its own transform and `devJsx`'s alike. */
-function jsxAndTypescriptOf({ jsx, preserveValueImports }) {
+/**
+ * rolldown's (Oxc's) JSX and TypeScript options for the settings, for its own
+ * transform and `ownJsx`'s alike; `fragment` names the classic fragment in
+ * place of the settings' own (a constant's placeholder).
+ */
+function jsxAndTypescriptOf({ jsx, keepValues }, fragment = jsx.fragment) {
     const classic = !jsx.preserve && !jsx.automatic;
     return {
         jsx: jsx.preserve
             ? 'preserve'
             : jsx.automatic
                 ? { runtime: 'automatic', importSource: jsx.importSource ?? 'react', development: jsx.development }
-                : { runtime: 'classic', pragma: jsx.factory ?? 'React.createElement', pragmaFrag: jsx.fragment ?? 'React.Fragment' },
+                : { runtime: 'classic', pragma: jsx.factory ?? 'React.createElement', pragmaFrag: fragment ?? 'React.Fragment' },
         typescript: {
             // The import the classic factory keeps for the JSX that calls it. The
             // automatic runtime and preserved JSX call nothing the file imports,
             // so (as for esbuild) an import of React they leave unused is
             // dropped: an empty pragma names no import.
             jsxPragma: classic ? jsx.factory ?? 'React.createElement' : '',
-            jsxPragmaFrag: classic ? jsx.fragment ?? 'React.Fragment' : '',
-            onlyRemoveTypeImports: preserveValueImports,
+            jsxPragmaFrag: classic ? fragment ?? 'React.Fragment' : '',
+            // esbuild's KeepValues; KeepStmt apart from it is `keepImports`'.
+            onlyRemoveTypeImports: keepValues,
         },
     };
 }
 /**
- * A JSX module under the automatic runtime's development variant, transformed
- * before rolldown sees it: jsxDEV's `fileName` is the path its transform is
- * given, and rolldown gives its own transform the module's id relative to its
- * cwd (`home/user/…`), where this one is given the module's absolute path
- * (esbuild wrote its namespace before it, `nimbus-vfs:/home/user/…`). The
- * same options, so the output is otherwise rolldown's; a module that does not
- * parse is left to rolldown to report. Null for every other module.
+ * esbuild's unused-import flags (tsconfig-raw.ts), where rolldown has one
+ * option for KeepValues (onlyRemoveTypeImports, which keeps statements too)
+ * and its own elision keeps `import {} from "x"`: the TypeScript module's
+ * text is edited before rolldown reads it, every edit on the lines it
+ * touches so no position moves. Without KeepStmt, an import with a clause
+ * the elision leaves empty (`{}`; under KeepValues, every specifier a type)
+ * is blanked out. KeepStmt without KeepValues (importsNotUsedAsValues
+ * `preserve`) adds `import "x"` after each value import with a clause, so
+ * the module runs though nothing of it is used. Only a module whose text
+ * has such an import is parsed for it.
  */
-function devJsx(api, settings, path, text, loader, sourcemap) {
-    if (!settings.jsx.automatic || !settings.jsx.development || (loader !== 'jsx' && loader !== 'tsx'))
+function keepImports(parse, text, lang, { keepValues, keepStatements }) {
+    if (keepValues && keepStatements)
+        return text;
+    const candidate = keepStatements ? /\bimport\b/ : keepValues ? /\bimport\s*\{/ : /\bimport\s*\{\s*\}/;
+    if (!candidate.test(text))
+        return text;
+    let program;
+    try {
+        program = parse(text, { lang, astType: 'ts' });
+    }
+    catch {
+        return text;
+    }
+    const edits = [];
+    for (const node of program.body ?? []) {
+        if (node.type !== 'ImportDeclaration' || node.importKind === 'type')
+            continue;
+        const specifiers = node.specifiers ?? [];
+        const clause = specifiers.length > 0 || text.slice(node.start, node.source.start).includes('{');
+        if (!clause)
+            continue;
+        if (keepStatements) {
+            edits.push({ start: node.end, end: node.end, replacement: `;import ${JSON.stringify(node.source.value)};` });
+        }
+        else if (specifiers.length === 0 || (keepValues && specifiers.every((s) => s.type === 'ImportSpecifier' && s.importKind === 'type'))) {
+            edits.push({ start: node.start, end: node.end, replacement: blank(text.slice(node.start, node.end), [[0, node.end - node.start]]) });
+        }
+    }
+    let out = text;
+    for (const { start, end, replacement } of edits.reverse())
+        out = out.slice(0, start) + replacement + out.slice(end);
+    return out;
+}
+/**
+ * A JSX module whose JSX rolldown's own transform cannot make as esbuild did,
+ * transformed before rolldown sees it, with the same options otherwise, so
+ * the output is otherwise rolldown's; a module that does not parse is left to
+ * rolldown to report. Null for every other module.
+ *
+ * - The automatic runtime's development variant: jsxDEV's `fileName` is the
+ *   path the transform is given, and rolldown gives its own the module's id
+ *   relative to its cwd (`home/user/…`), where this one is given the module's
+ *   absolute path (esbuild wrote its namespace before it, `nimbus-vfs:/…`).
+ * - A constant fragment (`jsxFragment: '"frag"'`), which Oxc's pragma cannot
+ *   name: a placeholder identifier names it, then the constant takes its
+ *   place, padded to the placeholder's length so no position moves.
+ */
+function ownJsx(api, parse, settings, path, text, loader, sourcemap) {
+    const { jsx } = settings;
+    const classic = !jsx.preserve && !jsx.automatic;
+    const constant = classic && jsx.fragmentConstant ? jsx.fragmentConstant.value : undefined;
+    if (loader !== 'jsx' && loader !== 'tsx')
+        return null;
+    if (!(jsx.automatic && jsx.development) && constant === undefined)
         return null;
     if (!api.transformSync)
-        throw new Error('Nimbus\'s bundler has no transform of its own for jsxDev');
-    const out = api.transformSync(path, text, { lang: loader, sourceType: 'unambiguous', sourcemap, ...jsxAndTypescriptOf(settings) });
-    return out.errors.length ? null : { code: out.code, map: sourcemap ? out.map : undefined };
+        throw new Error('Nimbus\'s bundler has no transform of its own for this JSX');
+    let placeholder;
+    let constantText = '';
+    if (constant !== undefined) {
+        constantText = typeof constant === 'string' ? JSON.stringify(constant) : Object.is(constant, -0) ? '-0' : String(constant);
+        placeholder = '__nimbusJsxFragment'.padEnd(constantText.length, '_');
+        while (text.includes(placeholder))
+            placeholder += '_';
+    }
+    const out = api.transformSync(path, text, { lang: loader, sourceType: 'unambiguous', sourcemap, ...jsxAndTypescriptOf(settings, placeholder) });
+    if (out.errors.length)
+        return null;
+    let code = placeholder ? out.code.split(placeholder).join(constantText.padEnd(placeholder.length)) : out.code;
+    if (jsx.automatic && jsx.development)
+        code = stripDevFallbackProps(parse, code, jsx.importSource ?? 'react');
+    return { code, map: sourcemap ? out.map : undefined };
 }
 /**
  * The input options a build and its placement pass give rolldown alike:
@@ -846,9 +984,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 if (found)
                     raise(found.text, '', spanLocation(fileOf({ namespace, path }), text, found.start, found.end));
             }
+            const code = loader === 'ts' || loader === 'tsx' ? keepImports(this.parse, text, loader, settings) : text;
             let transformed = null;
             try {
-                transformed = devJsx(api, settings, path, text, loader, options.sourcemap !== undefined && options.sourcemap !== false);
+                transformed = ownJsx(api, this.parse, settings, path, code, loader, options.sourcemap !== undefined && options.sourcemap !== false);
             }
             catch (error) {
                 raise(error instanceof Error ? error.message : String(error));
@@ -858,7 +997,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)
                 raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`);
-            return { code: text, moduleType };
+            return { code, moduleType };
         },
     };
     const bundle = await api.rolldown({

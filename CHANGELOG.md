@@ -21,22 +21,38 @@ published independently in the `@nimbus-sh` npm scope.
   over the options, as esbuild applies them, except that nothing undoes
   `jsx: 'preserve'`; `preserve`, `react-native` and unknown values are
   ignored, as esbuild ignores them; an import source and development only
-  apply to the automatic runtime, a factory only to the classic one. The
+  apply to the automatic runtime, a factory only to the classic one; the
+  own `jsxFragment` may be a constant (`0`, `'"frag"'`, `null`) and the own
+  factory may not be a keyword, as esbuild's validateJSXExpr reads them. The
   automatic runtime and preserved JSX no longer keep a TypeScript file's
-  unused `import React`, as esbuild drops it. Of the other fields esbuild
-  reads: `verbatimModuleSyntax` and `preserveValueImports` keep every value
-  import; `alwaysStrict` (else `strict`) puts `"use strict"` first in
-  CommonJS and IIFE output; `target` decides `useDefineForClassFields`;
-  `baseUrl` and `paths` are ignored, as esbuild ignored them here (the
-  build's plugin resolves every import), and `extends` is ignored by a
-  transform. Refused by name, and only where esbuild's output would differ:
-  `experimentalDecorators: true` for a TypeScript file with a decorator,
-  `useDefineForClassFields: false` (or a `target` below es2022 that implies
-  it) for a TypeScript class with a public or static field, each placed at
-  that decorator or field; `importsNotUsedAsValues` `preserve` and `error`;
-  and `extends` in a build (esbuild failed reading the file). esbuild's
+  unused `import React`, as esbuild drops it; in development the automatic
+  runtime's `createElement` fallback (a key after a spread) gets the props
+  alone, without Oxc's `__self` and `__source`. A tsconfig's comments end
+  where esbuild's do (a `//` comment at any line terminator; an unterminated
+  `/*` is esbuild's error). Of the other fields esbuild reads:
+  `preserveValueImports` (KeepValues) keeps unused value imports;
+  `importsNotUsedAsValues` `preserve` and `error` (KeepStmt) keep an import
+  statement as `import "x"` though nothing of it is used;
+  `verbatimModuleSyntax` does both; without KeepStmt, an import left with an
+  empty clause (`import {} from "x"`, or every specifier a type) is dropped,
+  also with no tsconfig, as esbuild drops it (Oxc and rolldown kept it).
+  `alwaysStrict` (else `strict`) makes every file strict code: what only a
+  sloppy script may contain (`with`, a legacy octal, `delete x`, ...) is an
+  error in a transform, as in esbuild, and CommonJS and IIFE output begins
+  with `"use strict"`. `target` decides `useDefineForClassFields`; `baseUrl`
+  and `paths` are ignored, as esbuild ignored them here (the build's plugin
+  resolves every import), and `extends` is ignored by a transform, and by a
+  build when it names no file (`[]`, `null`). Refused by name, and only
+  where esbuild's output would differ: `experimentalDecorators: true` for a
+  TypeScript file with a decorator, `useDefineForClassFields: false` (or a
+  `target` below es2022 that implies it) for a TypeScript class with a
+  public or static field, each placed at that decorator or field; and
+  `extends` naming a file in a build (esbuild failed reading it). esbuild's
   warnings about a tsconfig (a misplaced option, an invalid factory, an
-  unknown target) are reported, without their place in it.
+  unknown target) are reported, without their place in it. Known gap: in a
+  build under `alwaysStrict`, sloppy-only syntax in a CommonJS module is not
+  a build error, as it was in esbuild: rolldown's parser reports none of
+  those errors, so the bundle (strict, as esbuild's) fails when loaded.
 - In a build, the development runtime's `jsxDEV` names each file by its
   absolute path (`fileName: "/home/user/app/src/App.tsx"`): rolldown gave it
   relative to its working directory (`home/user/…`), and 0.14.0's esbuild
@@ -45,15 +61,18 @@ published independently in the `@nimbus-sh` npm scope.
   the absolute path; its source map is unchanged. A transform has no path,
   and names the file `<stdin>`, as esbuild did.
 - The worker's Oxc transform (`scripts/oxc-wasm`) takes an import source,
-  the development runtime, `preserveValueImports`, `alwaysStrict` and the
-  two refusals; rebuilt through its pinned recipe, 2,296,353 bytes (was
-  2,276,933).
+  the development runtime, esbuild's KeepValues and KeepStmt, a constant
+  fragment, `alwaysStrict` and the two refusals; rebuilt through its pinned
+  recipe, 2,335,230 bytes (was 2,276,933).
 
-Checks: `tsconfig-jsx-differential` compares 365 cases (every JSX mode and
-source and their precedence, tsx and jsx; each other field on a source that
-shows it; transform ESM and CommonJS, build ESM, CommonJS and IIFE) against
-esbuild-wasm 0.24.2 on the imports emitted and the calls the output makes:
-311 differed on 0.15.0, none now, 24 of them refused by field name.
+Checks: `tsconfig-jsx-differential` runs 523 cases against esbuild-wasm
+0.24.2: every JSX mode and source and their precedence (tsx and jsx), each
+other field on a source that shows it, through transform (ESM, CommonJS)
+and build (ESM, CommonJS, IIFE). 470 must compile, run and record the
+same imports and calls as esbuild's output (two outputs that fail alike are
+no pass); 16 are refused by field name where esbuild's output runs; 37 must
+fail where esbuild fails. 0.15.0's code fails most of them; HEAD before the
+review fixes failed 169.
 `facet-host-tsconfig-jsx` runs Kinu's repro through `supervisorEsbuildService`
 from the `facet-host` entry with both facets as production loads them.
 

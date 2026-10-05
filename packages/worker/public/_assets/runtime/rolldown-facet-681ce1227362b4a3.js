@@ -14278,9 +14278,66 @@ var TsconfigRefusal = class extends Error {
 };
 var REFUSED = {
   experimentalDecorators: "TypeScript's experimental decorators compile to calls of runtime helpers that Nimbus does not serve",
-  useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments",
-  importsNotUsedAsValues: 'keeping an unused import as a bare `import "x"` is not something Nimbus\'s engines do'
+  useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments"
 };
+var KEYWORDS = /* @__PURE__ */ new Set([
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "new",
+  "null",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with"
+]);
+function jsxExpression(text) {
+  const parts = text.split(".");
+  const first = parts[0];
+  if (parts.every(isIdentifier) && (!KEYWORDS.has(first) || first === "null" || first === "this" || first === "import" && parts[1] === "meta")) {
+    return { chain: text };
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    const single = /^\s*'((?:[^'\\]|\\.)*)'\s*$/.exec(text);
+    if (!single) return null;
+    try {
+      value = JSON.parse(`"${single[1].replace(/\\'/g, "'").replace(/"/g, '\\"')}"`);
+    } catch {
+      return null;
+    }
+  }
+  return value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string" ? { constant: value } : null;
+}
 function isIdentifier(text) {
   return /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u.test(text);
 }
@@ -14290,6 +14347,7 @@ function memberExpression(text, warnings) {
   warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
   return null;
 }
+var LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 function parseJsonc(text) {
   let out = "";
   for (let i2 = 0; i2 < text.length; i2++) {
@@ -14299,11 +14357,12 @@ function parseJsonc(text) {
       for (i2++; i2 < text.length && text[i2] !== '"'; i2++) if (text[i2] === "\\") i2++;
       out += text.slice(start, i2 + 1);
     } else if (c3 === "/" && text[i2 + 1] === "/") {
-      while (i2 < text.length && text[i2] !== "\n") i2++;
+      while (i2 < text.length && !LINE_TERMINATOR.test(text[i2])) i2++;
       out += "\n";
     } else if (c3 === "/" && text[i2 + 1] === "*") {
       const end = text.indexOf("*/", i2 + 2);
-      i2 = end < 0 ? text.length : end + 1;
+      if (end < 0) throw new Error('Expected "*/" to terminate multi-line comment');
+      i2 = end + 1;
       out += " ";
     } else {
       out += c3;
@@ -14340,22 +14399,28 @@ function resolveTsSettings(inputs, call) {
   if (jsxMode !== "transform" && jsxMode !== "automatic" && jsxMode !== "preserve") {
     throw new Error(`Invalid JSX mode: ${JSON.stringify(jsxMode)}`);
   }
-  const ownExpression = (text, what) => {
+  const own = (text, what) => {
     if (text === void 0 || text === "") return null;
-    if (!text.split(".").every(isIdentifier)) throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
-    return text;
+    const expression = jsxExpression(text);
+    if (!expression || "constant" in expression && what !== "fragment") throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
+    if (what === "fragment" && "chain" in expression && expression.chain === "null") return { constant: null };
+    return expression;
   };
+  const ownFactory = own(inputs.jsxFactory, "factory");
+  const ownFragment = own(inputs.jsxFragment, "fragment");
   const jsx = {
     preserve: jsxMode === "preserve",
     automatic: jsxMode === "automatic",
-    factory: ownExpression(inputs.jsxFactory, "factory"),
-    fragment: ownExpression(inputs.jsxFragment, "fragment"),
+    factory: ownFactory && "chain" in ownFactory ? ownFactory.chain : null,
+    fragment: ownFragment && "chain" in ownFragment ? ownFragment.chain : null,
+    fragmentConstant: ownFragment && "constant" in ownFragment ? { value: ownFragment.constant } : null,
     importSource: inputs.jsxImportSource || null,
     development: inputs.jsxDev === true
   };
   const settings = {
     jsx,
-    preserveValueImports: false,
+    keepValues: false,
+    keepStatements: false,
     alwaysStrict: false,
     refuse: { decorators: null, classFields: null },
     warnings
@@ -14379,7 +14444,8 @@ function resolveTsSettings(inputs, call) {
       break;
     }
   }
-  if (call === "build" && config.extends !== void 0) {
+  const extendsFiles = typeof config.extends === "string" || Array.isArray(config.extends) && config.extends.some((e3) => typeof e3 === "string");
+  if (call === "build" && extendsFiles) {
     throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
   }
   const options = config.compilerOptions;
@@ -14403,8 +14469,12 @@ function resolveTsSettings(inputs, call) {
   }
   const factory = string2("jsxFactory");
   if (factory !== void 0) jsx.factory = memberExpression(factory, warnings) ?? jsx.factory;
-  const fragment = string2("jsxFragmentFactory");
-  if (fragment !== void 0) jsx.fragment = memberExpression(fragment, warnings) ?? jsx.fragment;
+  const fragmentFactory = string2("jsxFragmentFactory");
+  const fragment = fragmentFactory === void 0 ? null : memberExpression(fragmentFactory, warnings);
+  if (fragment !== null) {
+    jsx.fragment = fragment;
+    jsx.fragmentConstant = null;
+  }
   const importSource = string2("jsxImportSource");
   if (importSource !== void 0) jsx.importSource = importSource;
   if (boolean2("experimentalDecorators") === true) {
@@ -14425,12 +14495,17 @@ function resolveTsSettings(inputs, call) {
   if (useDefine === void 0 && targetBelowEs2022 === true) {
     settings.refuse.classFields = `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
   }
-  if (boolean2("verbatimModuleSyntax") === true || boolean2("preserveValueImports") === true) settings.preserveValueImports = true;
   const notUsed = string2("importsNotUsedAsValues");
-  if (notUsed === "preserve" || notUsed === "error") {
-    throw new TsconfigRefusal(`tsconfigRaw compilerOptions.importsNotUsedAsValues ${JSON.stringify(notUsed)} is not supported: ${REFUSED.importsNotUsedAsValues}`);
+  if (notUsed !== void 0 && notUsed !== "remove" && notUsed !== "preserve" && notUsed !== "error") {
+    warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
   }
-  if (notUsed !== void 0 && notUsed !== "remove") warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
+  if (boolean2("verbatimModuleSyntax") === true) {
+    settings.keepValues = true;
+    settings.keepStatements = true;
+  } else {
+    settings.keepValues = boolean2("preserveValueImports") === true;
+    settings.keepStatements = notUsed === "preserve" || notUsed === "error";
+  }
   settings.alwaysStrict = boolean2("alwaysStrict") ?? boolean2("strict") ?? false;
   return finish(settings);
 }
@@ -14794,6 +14869,53 @@ ${lines.join("\n")}`;
 function refuse(text) {
   throw new BuildError([message(text)]);
 }
+function blank(text, ranges) {
+  let out = "";
+  let at = 0;
+  for (const [start, end] of ranges.sort((a2, b2) => a2[0] - b2[0])) {
+    const from = Math.max(start, at);
+    if (end <= from) continue;
+    out += text.slice(at, from) + text.slice(from, end).replace(/[^\n\r\u2028\u2029]/g, " ");
+    at = end;
+  }
+  return out + text.slice(at);
+}
+function stripDevFallbackProps(parse51, code3, importSource) {
+  if (!/__source|__self/.test(code3)) return code3;
+  let program;
+  try {
+    program = parse51(code3, { lang: "js" });
+  } catch {
+    return code3;
+  }
+  let local = null;
+  for (const node of program.body ?? []) {
+    if (node.type !== "ImportDeclaration" || node.source.value !== importSource) continue;
+    for (const specifier of node.specifiers ?? []) {
+      if (specifier.type === "ImportSpecifier" && specifier.imported?.name === "createElement") local = specifier.local?.name ?? null;
+    }
+  }
+  if (!local) return code3;
+  const ranges = [];
+  const visit = (node) => {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) return node.forEach(visit);
+    const n5 = node;
+    const callee = n5.callee;
+    const props = n5.arguments?.[1];
+    if (n5.type === "CallExpression" && callee?.type === "Identifier" && callee.name === local && props?.type === "ObjectExpression") {
+      const list = props.properties;
+      list.forEach((p, i2) => {
+        const key = p.key;
+        if (p.type !== "Property" || key?.name !== "__self" && key?.name !== "__source") return;
+        ranges.push(i2 + 1 < list.length ? [p.start, list[i2 + 1].start] : i2 > 0 ? [list[i2 - 1].end, p.end] : [p.start, p.end]);
+      });
+    }
+    for (const key of Object.keys(n5)) if (key !== "parent") visit(n5[key]);
+  };
+  visit(program);
+  return ranges.length ? blank(code3, ranges) : code3;
+}
 function refusedIn(parse51, text, lang, refuse2) {
   const decorators = refuse2.decorators && text.includes("@") ? refuse2.decorators : null;
   const classFields = refuse2.classFields && /\bclass\b/.test(text) ? refuse2.classFields : null;
@@ -14834,26 +14956,67 @@ function spanLocation(file, source, start, end) {
 }
 var UnresolvedImports = class extends Error {
 };
-function jsxAndTypescriptOf({ jsx, preserveValueImports }) {
+function jsxAndTypescriptOf({ jsx, keepValues }, fragment = jsx.fragment) {
   const classic = !jsx.preserve && !jsx.automatic;
   return {
-    jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: jsx.fragment ?? "React.Fragment" },
+    jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: fragment ?? "React.Fragment" },
     typescript: {
       // The import the classic factory keeps for the JSX that calls it. The
       // automatic runtime and preserved JSX call nothing the file imports,
       // so (as for esbuild) an import of React they leave unused is
       // dropped: an empty pragma names no import.
       jsxPragma: classic ? jsx.factory ?? "React.createElement" : "",
-      jsxPragmaFrag: classic ? jsx.fragment ?? "React.Fragment" : "",
-      onlyRemoveTypeImports: preserveValueImports
+      jsxPragmaFrag: classic ? fragment ?? "React.Fragment" : "",
+      // esbuild's KeepValues; KeepStmt apart from it is `keepImports`'.
+      onlyRemoveTypeImports: keepValues
     }
   };
 }
-function devJsx(api, settings, path3, text, loader, sourcemap) {
-  if (!settings.jsx.automatic || !settings.jsx.development || loader !== "jsx" && loader !== "tsx") return null;
-  if (!api.transformSync) throw new Error("Nimbus's bundler has no transform of its own for jsxDev");
-  const out = api.transformSync(path3, text, { lang: loader, sourceType: "unambiguous", sourcemap, ...jsxAndTypescriptOf(settings) });
-  return out.errors.length ? null : { code: out.code, map: sourcemap ? out.map : void 0 };
+function keepImports(parse51, text, lang, { keepValues, keepStatements }) {
+  if (keepValues && keepStatements) return text;
+  const candidate = keepStatements ? /\bimport\b/ : keepValues ? /\bimport\s*\{/ : /\bimport\s*\{\s*\}/;
+  if (!candidate.test(text)) return text;
+  let program;
+  try {
+    program = parse51(text, { lang, astType: "ts" });
+  } catch {
+    return text;
+  }
+  const edits = [];
+  for (const node of program.body ?? []) {
+    if (node.type !== "ImportDeclaration" || node.importKind === "type") continue;
+    const specifiers = node.specifiers ?? [];
+    const clause = specifiers.length > 0 || text.slice(node.start, node.source.start).includes("{");
+    if (!clause) continue;
+    if (keepStatements) {
+      edits.push({ start: node.end, end: node.end, replacement: `;import ${JSON.stringify(node.source.value)};` });
+    } else if (specifiers.length === 0 || keepValues && specifiers.every((s2) => s2.type === "ImportSpecifier" && s2.importKind === "type")) {
+      edits.push({ start: node.start, end: node.end, replacement: blank(text.slice(node.start, node.end), [[0, node.end - node.start]]) });
+    }
+  }
+  let out = text;
+  for (const { start, end, replacement } of edits.reverse()) out = out.slice(0, start) + replacement + out.slice(end);
+  return out;
+}
+function ownJsx(api, parse51, settings, path3, text, loader, sourcemap) {
+  const { jsx } = settings;
+  const classic = !jsx.preserve && !jsx.automatic;
+  const constant = classic && jsx.fragmentConstant ? jsx.fragmentConstant.value : void 0;
+  if (loader !== "jsx" && loader !== "tsx") return null;
+  if (!(jsx.automatic && jsx.development) && constant === void 0) return null;
+  if (!api.transformSync) throw new Error("Nimbus's bundler has no transform of its own for this JSX");
+  let placeholder;
+  let constantText = "";
+  if (constant !== void 0) {
+    constantText = typeof constant === "string" ? JSON.stringify(constant) : Object.is(constant, -0) ? "-0" : String(constant);
+    placeholder = "__nimbusJsxFragment".padEnd(constantText.length, "_");
+    while (text.includes(placeholder)) placeholder += "_";
+  }
+  const out = api.transformSync(path3, text, { lang: loader, sourceType: "unambiguous", sourcemap, ...jsxAndTypescriptOf(settings, placeholder) });
+  if (out.errors.length) return null;
+  let code3 = placeholder ? out.code.split(placeholder).join(constantText.padEnd(placeholder.length)) : out.code;
+  if (jsx.automatic && jsx.development) code3 = stripDevFallbackProps(parse51, code3, jsx.importSource ?? "react");
+  return { code: code3, map: sourcemap ? out.map : void 0 };
 }
 function inputOptionsOf(options, settings = resolveTsSettings(options, "build")) {
   return {
@@ -15110,16 +15273,17 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         const found = refusedIn(this.parse, text, loader, settings.refuse);
         if (found) raise(found.text, "", spanLocation(fileOf2({ namespace, path: path3 }), text, found.start, found.end));
       }
+      const code3 = loader === "ts" || loader === "tsx" ? keepImports(this.parse, text, loader, settings) : text;
       let transformed = null;
       try {
-        transformed = devJsx(api, settings, path3, text, loader, options.sourcemap !== void 0 && options.sourcemap !== false);
+        transformed = ownJsx(api, this.parse, settings, path3, code3, loader, options.sourcemap !== void 0 && options.sourcemap !== false);
       } catch (error2) {
         raise(error2 instanceof Error ? error2.message : String(error2));
       }
       if (transformed) return { ...transformed, moduleType: "js" };
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
-      return { code: text, moduleType: moduleType2 };
+      return { code: code3, moduleType: moduleType2 };
     }
   };
   const bundle = await api.rolldown({

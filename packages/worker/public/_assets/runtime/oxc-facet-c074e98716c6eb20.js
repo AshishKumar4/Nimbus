@@ -4,9 +4,66 @@
   };
   var REFUSED = {
     experimentalDecorators: "TypeScript's experimental decorators compile to calls of runtime helpers that Nimbus does not serve",
-    useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments",
-    importsNotUsedAsValues: 'keeping an unused import as a bare `import "x"` is not something Nimbus\'s engines do'
+    useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments"
   };
+  var KEYWORDS =   new Set([
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with"
+  ]);
+  function jsxExpression(text) {
+    const parts = text.split(".");
+    const first = parts[0];
+    if (parts.every(isIdentifier) && (!KEYWORDS.has(first) || first === "null" || first === "this" || first === "import" && parts[1] === "meta")) {
+      return { chain: text };
+    }
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      const single = /^\s*'((?:[^'\\]|\\.)*)'\s*$/.exec(text);
+      if (!single) return null;
+      try {
+        value = JSON.parse(`"${single[1].replace(/\\'/g, "'").replace(/"/g, '\\"')}"`);
+      } catch {
+        return null;
+      }
+    }
+    return value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string" ? { constant: value } : null;
+  }
   function isIdentifier(text) {
     return /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u.test(text);
   }
@@ -16,6 +73,7 @@
     warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
     return null;
   }
+  var LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
   function parseJsonc(text) {
     let out = "";
     for (let i = 0; i < text.length; i++) {
@@ -25,11 +83,12 @@
         for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
         out += text.slice(start, i + 1);
       } else if (c === "/" && text[i + 1] === "/") {
-        while (i < text.length && text[i] !== "\n") i++;
+        while (i < text.length && !LINE_TERMINATOR.test(text[i])) i++;
         out += "\n";
       } else if (c === "/" && text[i + 1] === "*") {
         const end = text.indexOf("*/", i + 2);
-        i = end < 0 ? text.length : end + 1;
+        if (end < 0) throw new Error('Expected "*/" to terminate multi-line comment');
+        i = end + 1;
         out += " ";
       } else {
         out += c;
@@ -66,22 +125,28 @@
     if (jsxMode !== "transform" && jsxMode !== "automatic" && jsxMode !== "preserve") {
       throw new Error(`Invalid JSX mode: ${JSON.stringify(jsxMode)}`);
     }
-    const ownExpression = (text, what) => {
+    const own = (text, what) => {
       if (text === void 0 || text === "") return null;
-      if (!text.split(".").every(isIdentifier)) throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
-      return text;
+      const expression = jsxExpression(text);
+      if (!expression || "constant" in expression && what !== "fragment") throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
+      if (what === "fragment" && "chain" in expression && expression.chain === "null") return { constant: null };
+      return expression;
     };
+    const ownFactory = own(inputs.jsxFactory, "factory");
+    const ownFragment = own(inputs.jsxFragment, "fragment");
     const jsx = {
       preserve: jsxMode === "preserve",
       automatic: jsxMode === "automatic",
-      factory: ownExpression(inputs.jsxFactory, "factory"),
-      fragment: ownExpression(inputs.jsxFragment, "fragment"),
+      factory: ownFactory && "chain" in ownFactory ? ownFactory.chain : null,
+      fragment: ownFragment && "chain" in ownFragment ? ownFragment.chain : null,
+      fragmentConstant: ownFragment && "constant" in ownFragment ? { value: ownFragment.constant } : null,
       importSource: inputs.jsxImportSource || null,
       development: inputs.jsxDev === true
     };
     const settings = {
       jsx,
-      preserveValueImports: false,
+      keepValues: false,
+      keepStatements: false,
       alwaysStrict: false,
       refuse: { decorators: null, classFields: null },
       warnings
@@ -105,7 +170,8 @@
         break;
       }
     }
-    if (call === "build" && config.extends !== void 0) {
+    const extendsFiles = typeof config.extends === "string" || Array.isArray(config.extends) && config.extends.some((e) => typeof e === "string");
+    if (call === "build" && extendsFiles) {
       throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
     }
     const options = config.compilerOptions;
@@ -129,8 +195,12 @@
     }
     const factory = string("jsxFactory");
     if (factory !== void 0) jsx.factory = memberExpression(factory, warnings) ?? jsx.factory;
-    const fragment = string("jsxFragmentFactory");
-    if (fragment !== void 0) jsx.fragment = memberExpression(fragment, warnings) ?? jsx.fragment;
+    const fragmentFactory = string("jsxFragmentFactory");
+    const fragment = fragmentFactory === void 0 ? null : memberExpression(fragmentFactory, warnings);
+    if (fragment !== null) {
+      jsx.fragment = fragment;
+      jsx.fragmentConstant = null;
+    }
     const importSource = string("jsxImportSource");
     if (importSource !== void 0) jsx.importSource = importSource;
     if (boolean("experimentalDecorators") === true) {
@@ -151,12 +221,17 @@
     if (useDefine === void 0 && targetBelowEs2022 === true) {
       settings.refuse.classFields = `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
     }
-    if (boolean("verbatimModuleSyntax") === true || boolean("preserveValueImports") === true) settings.preserveValueImports = true;
     const notUsed = string("importsNotUsedAsValues");
-    if (notUsed === "preserve" || notUsed === "error") {
-      throw new TsconfigRefusal(`tsconfigRaw compilerOptions.importsNotUsedAsValues ${JSON.stringify(notUsed)} is not supported: ${REFUSED.importsNotUsedAsValues}`);
+    if (notUsed !== void 0 && notUsed !== "remove" && notUsed !== "preserve" && notUsed !== "error") {
+      warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
     }
-    if (notUsed !== void 0 && notUsed !== "remove") warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
+    if (boolean("verbatimModuleSyntax") === true) {
+      settings.keepValues = true;
+      settings.keepStatements = true;
+    } else {
+      settings.keepValues = boolean("preserveValueImports") === true;
+      settings.keepStatements = notUsed === "preserve" || notUsed === "error";
+    }
     settings.alwaysStrict = boolean("alwaysStrict") ?? boolean("strict") ?? false;
     return finish(settings);
   }
@@ -239,9 +314,14 @@
       const fields = ["loader", loader, "format", format, "jsx", jsx, "sourcemap", sourcemap];
       if (jsx === "transform" && jsxSettings.factory) fields.push("jsxFactory", jsxSettings.factory);
       if (jsx === "transform" && jsxSettings.fragment) fields.push("jsxFragment", jsxSettings.fragment);
+      if (jsx === "transform" && jsxSettings.fragmentConstant) {
+        const { value } = jsxSettings.fragmentConstant;
+        fields.push("jsxFragmentConstant", typeof value === "number" ? `n:${Object.is(value, -0) ? "-0" : value}` : typeof value === "string" ? `s:${value}` : String(value));
+      }
       if (jsx === "automatic" && jsxSettings.importSource) fields.push("jsxImportSource", jsxSettings.importSource);
       if (jsx === "automatic" && jsxSettings.development) fields.push("jsxDev", "1");
-      if (settings.preserveValueImports) fields.push("preserveValueImports", "1");
+      if (settings.keepValues) fields.push("keepValues", "1");
+      if (settings.keepStatements) fields.push("keepStatements", "1");
       if (settings.alwaysStrict) fields.push("alwaysStrict", "1");
       if (settings.refuse.decorators) fields.push("refuseDecorators", settings.refuse.decorators);
       if (settings.refuse.classFields) fields.push("refuseClassFields", settings.refuse.classFields);

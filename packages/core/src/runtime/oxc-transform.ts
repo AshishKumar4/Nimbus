@@ -164,9 +164,14 @@ export function createOxcTransform(
     const fields = ['loader', loader, 'format', format, 'jsx', jsx, 'sourcemap', sourcemap];
     if (jsx === 'transform' && jsxSettings.factory) fields.push('jsxFactory', jsxSettings.factory);
     if (jsx === 'transform' && jsxSettings.fragment) fields.push('jsxFragment', jsxSettings.fragment);
+    if (jsx === 'transform' && jsxSettings.fragmentConstant) {
+      const { value } = jsxSettings.fragmentConstant;
+      fields.push('jsxFragmentConstant', typeof value === 'number' ? `n:${Object.is(value, -0) ? '-0' : value}` : typeof value === 'string' ? `s:${value}` : String(value));
+    }
     if (jsx === 'automatic' && jsxSettings.importSource) fields.push('jsxImportSource', jsxSettings.importSource);
     if (jsx === 'automatic' && jsxSettings.development) fields.push('jsxDev', '1');
-    if (settings.preserveValueImports) fields.push('preserveValueImports', '1');
+    if (settings.keepValues) fields.push('keepValues', '1');
+    if (settings.keepStatements) fields.push('keepStatements', '1');
     if (settings.alwaysStrict) fields.push('alwaysStrict', '1');
     if (settings.refuse.decorators) fields.push('refuseDecorators', settings.refuse.decorators);
     if (settings.refuse.classFields) fields.push('refuseClassFields', settings.refuse.classFields);

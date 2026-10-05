@@ -16,7 +16,8 @@
  * `"react-native"` and anything else are ignored (esbuild preserves JSX only
  * for its own `jsx: 'preserve'`, which no tsconfig undoes). An import source
  * and development apply only to the automatic runtime, a factory and
- * fragment only to the classic one.
+ * fragment only to the classic one. esbuild's own `jsxFragment` may also be
+ * a primitive constant (`0`, `"frag"`, `null`), its own factory not.
  *
  * Every other field is honoured where the engines can produce esbuild's
  * output, refused by name where they cannot, and ignored where esbuild
@@ -25,7 +26,10 @@
  * the output: `experimentalDecorators` for a TypeScript file with a
  * decorator, `useDefineForClassFields: false` (or a `target` that implies
  * it) for a TypeScript class with a public field. Those two the engines
- * refuse as they meet such a file (TsSettings.refuse).
+ * refuse as they meet such a file (TsSettings.refuse). `alwaysStrict` (else
+ * `strict`) makes every file strict code, as esbuild parses it: what only a
+ * sloppy script may contain is an error, and CommonJS and IIFE output begins
+ * with `"use strict"`.
  */
 /** The esbuild options this module reads. */
 export interface TsconfigInputs {
@@ -46,13 +50,25 @@ export interface TsSettings {
         /** The classic runtime's element and fragment expressions, when not React's. */
         factory: string | null;
         fragment: string | null;
+        /** esbuild's own `jsxFragment` as a primitive constant (`0`, `"frag"`, `null`), which it allows. */
+        fragmentConstant: {
+            value: null | boolean | number | string;
+        } | null;
         /** The automatic runtime's package, when not `react`. */
         importSource: string | null;
         /** The automatic runtime's development variant (`jsxDEV`, with source locations). */
         development: boolean;
     };
-    /** `verbatimModuleSyntax` or `preserveValueImports`: an import is dropped only when it is type-only. */
-    preserveValueImports: boolean;
+    /**
+     * esbuild's unused-import flags (TSConfig.UnusedImportFlags). KeepValues
+     * (`preserveValueImports`, `verbatimModuleSyntax`): a value import stays
+     * though unused. KeepStmt (`verbatimModuleSyntax`, `importsNotUsedAsValues`
+     * `preserve` or `error`): an import statement stays, as `import "x"`, though
+     * nothing of it is left; without it, one left with an empty clause
+     * (`import {} from "x"`, every specifier a type) goes.
+     */
+    keepValues: boolean;
+    keepStatements: boolean;
     /** `alwaysStrict` (else `strict`): `"use strict"` begins CommonJS and IIFE output. */
     alwaysStrict: boolean;
     /**

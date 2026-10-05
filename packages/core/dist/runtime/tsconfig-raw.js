@@ -16,7 +16,8 @@
  * `"react-native"` and anything else are ignored (esbuild preserves JSX only
  * for its own `jsx: 'preserve'`, which no tsconfig undoes). An import source
  * and development apply only to the automatic runtime, a factory and
- * fragment only to the classic one.
+ * fragment only to the classic one. esbuild's own `jsxFragment` may also be
+ * a primitive constant (`0`, `"frag"`, `null`), its own factory not.
  *
  * Every other field is honoured where the engines can produce esbuild's
  * output, refused by name where they cannot, and ignored where esbuild
@@ -25,7 +26,10 @@
  * the output: `experimentalDecorators` for a TypeScript file with a
  * decorator, `useDefineForClassFields: false` (or a `target` that implies
  * it) for a TypeScript class with a public field. Those two the engines
- * refuse as they meet such a file (TsSettings.refuse).
+ * refuse as they meet such a file (TsSettings.refuse). `alwaysStrict` (else
+ * `strict`) makes every file strict code, as esbuild parses it: what only a
+ * sloppy script may contain is an error, and CommonJS and IIFE output begins
+ * with `"use strict"`.
  */
 /** A tsconfig field the engine cannot honour; its message names the field. */
 export class TsconfigRefusal extends Error {
@@ -38,8 +42,43 @@ export class TsconfigRefusal extends Error {
 const REFUSED = {
     experimentalDecorators: 'TypeScript\'s experimental decorators compile to calls of runtime helpers that Nimbus does not serve',
     useDefineForClassFields: 'Nimbus\'s engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments',
-    importsNotUsedAsValues: 'keeping an unused import as a bare `import "x"` is not something Nimbus\'s engines do',
 };
+/** esbuild's js_lexer.Keywords: none may begin a JSX expression but `null`, `this` and `import.meta`. */
+const KEYWORDS = new Set([
+    'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum',
+    'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'new', 'null',
+    'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with',
+]);
+/**
+ * esbuild's ParseDefineExprOrJSON, as validateJSXExpr reads its own
+ * `jsxFactory` and `jsxFragment`: a property chain whose first part is no
+ * keyword but `null`, `this` or `import` (of `import.meta`), else a JSON
+ * primitive (single quotes allowed, as esbuild's JSON reader recovers from
+ * them), which only a fragment may be. Null when it is neither.
+ */
+function jsxExpression(text) {
+    const parts = text.split('.');
+    const first = parts[0];
+    if (parts.every(isIdentifier) && (!KEYWORDS.has(first) || first === 'null' || first === 'this' || (first === 'import' && parts[1] === 'meta'))) {
+        return { chain: text };
+    }
+    let value;
+    try {
+        value = JSON.parse(text);
+    }
+    catch {
+        const single = /^\s*'((?:[^'\\]|\\.)*)'\s*$/.exec(text);
+        if (!single)
+            return null;
+        try {
+            value = JSON.parse(`"${single[1].replace(/\\'/g, "'").replace(/"/g, '\\"')}"`);
+        }
+        catch {
+            return null;
+        }
+    }
+    return value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string' ? { constant: value } : null;
+}
 /** esbuild's js_ast.IsIdentifier for one part of a JSX member expression. */
 function isIdentifier(text) {
     return /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u.test(text);
@@ -53,9 +92,12 @@ function memberExpression(text, warnings) {
     warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
     return null;
 }
+/** What ends a `//` comment, as esbuild's lexer reads one: any line terminator. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 /**
  * JSON as esbuild reads a tsconfig: comments and trailing commas allowed.
- * Strings are walked so neither is looked for inside one.
+ * Strings are walked so neither is looked for inside one. A block comment
+ * left open is esbuild's error, in its words.
  */
 function parseJsonc(text) {
     let out = '';
@@ -69,13 +111,15 @@ function parseJsonc(text) {
             out += text.slice(start, i + 1);
         }
         else if (c === '/' && text[i + 1] === '/') {
-            while (i < text.length && text[i] !== '\n')
+            while (i < text.length && !LINE_TERMINATOR.test(text[i]))
                 i++;
             out += '\n';
         }
         else if (c === '/' && text[i + 1] === '*') {
             const end = text.indexOf('*/', i + 2);
-            i = end < 0 ? text.length : end + 1;
+            if (end < 0)
+                throw new Error('Expected "*/" to terminate multi-line comment');
+            i = end + 1;
             out += ' ';
         }
         else {
@@ -113,23 +157,30 @@ export function resolveTsSettings(inputs, call) {
         throw new Error(`Invalid JSX mode: ${JSON.stringify(jsxMode)}`);
     }
     // esbuild's own options first (validateJSXExpr: an invalid one is an error).
-    const ownExpression = (text, what) => {
+    const own = (text, what) => {
         if (text === undefined || text === '')
             return null;
-        if (!text.split('.').every(isIdentifier))
+        const expression = jsxExpression(text);
+        if (!expression || ('constant' in expression && what !== 'fragment'))
             throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
-        return text;
+        // A fragment named `null` is the constant: what esbuild prints for it.
+        if (what === 'fragment' && 'chain' in expression && expression.chain === 'null')
+            return { constant: null };
+        return expression;
     };
+    const ownFactory = own(inputs.jsxFactory, 'factory');
+    const ownFragment = own(inputs.jsxFragment, 'fragment');
     const jsx = {
         preserve: jsxMode === 'preserve',
         automatic: jsxMode === 'automatic',
-        factory: ownExpression(inputs.jsxFactory, 'factory'),
-        fragment: ownExpression(inputs.jsxFragment, 'fragment'),
+        factory: ownFactory && 'chain' in ownFactory ? ownFactory.chain : null,
+        fragment: ownFragment && 'chain' in ownFragment ? ownFragment.chain : null,
+        fragmentConstant: ownFragment && 'constant' in ownFragment ? { value: ownFragment.constant } : null,
         importSource: inputs.jsxImportSource || null,
         development: inputs.jsxDev === true,
     };
     const settings = {
-        jsx, preserveValueImports: false, alwaysStrict: false, refuse: { decorators: null, classFields: null }, warnings,
+        jsx, keepValues: false, keepStatements: false, alwaysStrict: false, refuse: { decorators: null, classFields: null }, warnings,
     };
     const raw = inputs.tsconfigRaw;
     if (raw === undefined || raw === '')
@@ -154,9 +205,11 @@ export function resolveTsSettings(inputs, call) {
             break;
         }
     }
-    // `extends` names a file: esbuild's transform never reads one, and its
-    // build could not (esbuild-wasm has no file system: the build failed).
-    if (call === 'build' && config.extends !== undefined) {
+    // `extends` names files (a string, or an array's strings): esbuild's
+    // transform never reads one, and its build could not (esbuild-wasm has no
+    // file system: the build failed). Anything else names none (`[]`, `null`).
+    const extendsFiles = typeof config.extends === 'string' || (Array.isArray(config.extends) && config.extends.some((e) => typeof e === 'string'));
+    if (call === 'build' && extendsFiles) {
         throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
     }
     const options = config.compilerOptions;
@@ -184,9 +237,12 @@ export function resolveTsSettings(inputs, call) {
     const factory = string('jsxFactory');
     if (factory !== undefined)
         jsx.factory = memberExpression(factory, warnings) ?? jsx.factory;
-    const fragment = string('jsxFragmentFactory');
-    if (fragment !== undefined)
-        jsx.fragment = memberExpression(fragment, warnings) ?? jsx.fragment;
+    const fragmentFactory = string('jsxFragmentFactory');
+    const fragment = fragmentFactory === undefined ? null : memberExpression(fragmentFactory, warnings);
+    if (fragment !== null) {
+        jsx.fragment = fragment;
+        jsx.fragmentConstant = null;
+    }
     const importSource = string('jsxImportSource');
     if (importSource !== undefined)
         jsx.importSource = importSource;
@@ -218,16 +274,19 @@ export function resolveTsSettings(inputs, call) {
             `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes ` +
                 `useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
     }
-    // Imports: verbatimModuleSyntax and preserveValueImports keep every value
-    // import; importsNotUsedAsValues "preserve" and "error" keep unused ones bare.
-    if (boolean('verbatimModuleSyntax') === true || boolean('preserveValueImports') === true)
-        settings.preserveValueImports = true;
+    // Imports: esbuild's UnusedImportFlags, KeepStmt and KeepValues apart.
     const notUsed = string('importsNotUsedAsValues');
-    if (notUsed === 'preserve' || notUsed === 'error') {
-        throw new TsconfigRefusal(`tsconfigRaw compilerOptions.importsNotUsedAsValues ${JSON.stringify(notUsed)} is not supported: ${REFUSED.importsNotUsedAsValues}`);
-    }
-    if (notUsed !== undefined && notUsed !== 'remove')
+    if (notUsed !== undefined && notUsed !== 'remove' && notUsed !== 'preserve' && notUsed !== 'error') {
         warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
+    }
+    if (boolean('verbatimModuleSyntax') === true) {
+        settings.keepValues = true;
+        settings.keepStatements = true;
+    }
+    else {
+        settings.keepValues = boolean('preserveValueImports') === true;
+        settings.keepStatements = notUsed === 'preserve' || notUsed === 'error';
+    }
     // Strictness: alwaysStrict, else strict.
     settings.alwaysStrict = boolean('alwaysStrict') ?? boolean('strict') ?? false;
     // baseUrl and paths: a transform resolves nothing, and a build's every

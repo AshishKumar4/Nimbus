@@ -215,10 +215,10 @@ try {
     const { ctx, env } = durableObject(BuildFacet);
     const project = PROJECTS['worker-routes'];
     const service = new EsbuildService(memoryFs('worker-routes', project.files), { buildHost: rolldownBuildHost(ctx, env) });
-    // tsconfigRaw is read as esbuild reads it (tsconfig-jsx-differential); a field it cannot honour is refused by name.
+    // tsconfigRaw is read as esbuild reads it (tsconfig-jsx-differential); what the bundler cannot honour is refused by name.
     await assert.rejects(service.build([`/home/user/worker-routes/${project.entry}`], {
-      ...project.options, tsconfigRaw: '{"compilerOptions":{"jsx":"react-jsx","importsNotUsedAsValues":"preserve"}}',
-    }), /tsconfigRaw compilerOptions\.importsNotUsedAsValues "preserve" is not supported/);
+      ...project.options, tsconfigRaw: '{"extends":"./tsconfig.base.json","compilerOptions":{"jsx":"react-jsx"}}',
+    }), /tsconfigRaw "extends" is not supported/);
     console.log('  ok  a tsconfig field the bundler does not implement is refused by name');
   }
 

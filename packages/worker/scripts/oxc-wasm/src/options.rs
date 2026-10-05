@@ -41,6 +41,29 @@ pub enum SourceMapMode {
     Inline,
 }
 
+/// A primitive constant, on the wire as `null`, `true`, `false`, `n:<number>`
+/// or `s:<string>`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Constant {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+}
+
+impl Constant {
+    fn decode(wire: &str) -> Result<Self, String> {
+        match wire {
+            "null" => Ok(Self::Null),
+            "true" => Ok(Self::Bool(true)),
+            "false" => Ok(Self::Bool(false)),
+            _ if wire.starts_with("n:") => wire[2..].parse().map(Self::Number).map_err(|_| format!("invalid number constant {wire:?}")),
+            _ if wire.starts_with("s:") => Ok(Self::String(wire[2..].to_string())),
+            other => Err(format!("invalid constant {other:?}")),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub loader: Loader,
@@ -52,9 +75,16 @@ pub struct Options {
     pub jsx_import_source: Option<String>,
     /// The automatic runtime's development variant: `jsxDEV`, with source locations.
     pub jsx_dev: bool,
-    /// TypeScript's `verbatimModuleSyntax` / `preserveValueImports`: an
-    /// import is removed only when it is type-only, not when it is unused.
-    pub preserve_value_imports: bool,
+    /// esbuild's KeepValues (`preserveValueImports`, `verbatimModuleSyntax`):
+    /// an import is removed only when it is type-only, not when it is unused.
+    pub keep_values: bool,
+    /// esbuild's KeepStmt (`verbatimModuleSyntax`): an import statement its
+    /// elision leaves without specifiers (`import {} from "x"`, or every one
+    /// a type) stays, as `import "x"`; otherwise it goes.
+    pub keep_statements: bool,
+    /// esbuild's `jsxFragment` as a constant (`0`, `"frag"`, `null`, ...),
+    /// which Oxc's pragma cannot name: the classic runtime's fragment.
+    pub jsx_fragment_constant: Option<Constant>,
     /// TypeScript's `alwaysStrict`: CommonJS output begins with `"use strict"`.
     pub always_strict: bool,
     /// The error for a decorator in a TypeScript file (`experimentalDecorators`,
@@ -84,7 +114,9 @@ impl Default for Options {
             jsx_fragment: None,
             jsx_import_source: None,
             jsx_dev: false,
-            preserve_value_imports: false,
+            keep_values: false,
+            keep_statements: false,
+            jsx_fragment_constant: None,
             always_strict: false,
             refuse_decorators: None,
             refuse_class_fields: None,
@@ -137,7 +169,9 @@ impl Options {
                 "jsxFragment" => options.jsx_fragment = Some(value()?.to_string()),
                 "jsxImportSource" => options.jsx_import_source = Some(value()?.to_string()),
                 "jsxDev" => options.jsx_dev = flag(value()?)?,
-                "preserveValueImports" => options.preserve_value_imports = flag(value()?)?,
+                "keepValues" => options.keep_values = flag(value()?)?,
+                "keepStatements" => options.keep_statements = flag(value()?)?,
+                "jsxFragmentConstant" => options.jsx_fragment_constant = Some(Constant::decode(value()?)?),
                 "alwaysStrict" => options.always_strict = flag(value()?)?,
                 "refuseDecorators" => options.refuse_decorators = Some(value()?.to_string()),
                 "refuseClassFields" => options.refuse_class_fields = Some(value()?.to_string()),
