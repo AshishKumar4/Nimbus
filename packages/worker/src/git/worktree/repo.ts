@@ -203,7 +203,7 @@ export class WorktreeRepo {
         if (i < 0 || !dc.skipWorktree(i)) return null;
         return (await this.store.read(dc.oid(i))).data;
       }
-    }, fileLists);
+    }, fileLists, configBool(await this.config('core.ignorecase')) === true);
   }
 
   /**

@@ -609,6 +609,21 @@ try {
     await sameWithStderr('reset -- a path', repo, ['reset', '--', 'edited']);
   }
 
+  // ── core.ignorecase reaches the exclude rules: *.LOG ignores a.log ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('.gitignore', '*.LOG\nBuild/\n');
+      git('add', '.gitignore');
+      git('commit', '-q', '-m', 'c');
+      git('config', 'core.ignorecase', 'true');
+      put('a.log', 'l\n');
+      put('build/out', 'o\n');
+      put('kept.txt', 'k\n');
+    });
+    await statusAgrees('core.ignorecase', repo);
+    await sameIndexAfter('core.ignorecase: add -A', repo, ['add', '-A']);
+  }
+
   // ── A tracked directory that cannot be listed (chmod 111): its files are still there ──
   {
     const repo = scenario(({ put, git }) => {
