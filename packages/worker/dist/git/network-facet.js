@@ -237,7 +237,7 @@ async function hashCloneOptions(opts) {
         url: opts.url,
         remote: opts.remote ?? 'origin',
         ref: opts.ref ?? null,
-        depth: opts.depth ?? 1,
+        depth: opts.depth ?? null,
         exclusiveDestination: opts.exclusiveDestination === true,
         exclusiveMutationRoot: opts.exclusiveMutationRoot ?? null,
     });
@@ -2458,7 +2458,7 @@ export default {
           url: opts.url,
           ref: opts.ref || undefined,
           singleBranch: true,
-          depth: opts.depth || 1,
+          depth: opts.depth,
           noCheckout: true,
           nonBlocking: true,
           batchSize: 50,

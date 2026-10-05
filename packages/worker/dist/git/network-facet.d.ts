@@ -39,7 +39,7 @@ export interface GitNetworkOpts {
     remote?: string;
     /** For clone: branch to clone (default remote HEAD); for pull: branch name (default current) */
     ref?: string;
-    /** Shallow depth; default 1 for clone */
+    /** Shallow depth; omitted means the whole history (`git clone --no-shallow`). */
     depth?: number;
     /** Username + password/token */
     auth?: {
