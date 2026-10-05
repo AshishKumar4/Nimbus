@@ -180,13 +180,15 @@ function assertBounded(stats) {
     inodes: [fileInode('stream.bin', data.length)],
     chunks: entries,
   }));
-  assert.deepEqual(result, {
+  const { receipts, ...progress } = result;
+  assert.deepEqual(progress, {
     ok: true,
     committedGroupSequence: 1,
     committedPathCount: 1,
     inodes: 1,
     chunks: entries.length,
   });
+  assert.deepEqual(receipts.map((receipt) => [receipt.path, receipt.size]), [['stream.bin', data.length]]);
   // The blob bound alone forces one commit per megabyte of payload; the
   // publication rides the last of them rather than adding its own.
   assert.ok(
