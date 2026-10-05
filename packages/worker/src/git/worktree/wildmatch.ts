@@ -48,7 +48,9 @@ const CLASSES: Record<string, (c: number) => boolean> = {
 function dowild(pat: Uint8Array, p: number, text: Uint8Array, t: number, flags: number): number {
   const at = (bytes: Uint8Array, i: number) => (i < bytes.length ? bytes[i] : 0);
   const pattern = p;
-  for (let pCh: number; (pCh = at(pat, p)) !== 0; t++, p++) {
+  for (; ; t++, p++) {
+    let pCh = at(pat, p);
+    if (pCh === 0) break;
     let matched: number;
     let matchSlash: boolean;
     let tCh = at(text, t);
@@ -97,13 +99,11 @@ function dowild(pat: Uint8Array, p: number, text: Uint8Array, t: number, flags: 
           // A literal after the '*': skip ahead to where it next occurs.
           pCh = at(pat, p);
           if (pCh !== STAR && pCh !== QUESTION && pCh !== OPEN && pCh !== BACKSLASH) {
-            while ((tCh = at(text, t)) !== 0 && (matchSlash || tCh !== SLASH)) {
-              if (tCh === pCh) break;
-              t++;
-            }
+            for (tCh = at(text, t); tCh !== 0 && (matchSlash || tCh !== SLASH) && tCh !== pCh; tCh = at(text, ++t)) { /* skip */ }
             if (tCh !== pCh) return matchSlash ? WM_ABORT_ALL : WM_ABORT_TO_STARSTAR;
           }
-          if ((matched = dowild(pat, p, text, t, flags)) !== WM_NOMATCH) {
+          matched = dowild(pat, p, text, t, flags);
+          if (matched !== WM_NOMATCH) {
             if (!matchSlash || matched !== WM_ABORT_TO_STARSTAR) return matched;
           } else if (!matchSlash && tCh === SLASH) {
             return WM_ABORT_TO_STARSTAR;
@@ -136,7 +136,7 @@ function dowild(pat: Uint8Array, p: number, text: Uint8Array, t: number, flags: 
           } else if (pCh === OPEN && at(pat, p + 1) === COLON) {
             p += 2;
             const s = p;
-            while ((pCh = at(pat, p)) && pCh !== CLOSE) p++;
+            for (pCh = at(pat, p); pCh && pCh !== CLOSE; pCh = at(pat, ++p)) { /* to the ']' */ }
             if (!pCh) return WM_ABORT_ALL;
             const length = p - s - 1;
             if (length < 0 || at(pat, p - 1) !== COLON) {

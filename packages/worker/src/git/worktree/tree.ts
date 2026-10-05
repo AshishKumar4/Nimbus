@@ -10,7 +10,7 @@
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
 import { addSubtree, type CacheTree } from './cachetree.js';
-import { DirCache, S_IFMT, comparePaths, decodePath } from './dircache.js';
+import { S_IFMT, comparePaths, decodePath, type DirCache } from './dircache.js';
 
 export const S_IFDIR = 0o040000;
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';

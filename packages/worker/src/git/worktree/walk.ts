@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto';
 
 import { oidToHex } from '../pack/format.js';
-import { DirCache, EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId, type EntryStat } from './dircache.js';
+import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId, type DirCache, type EntryStat } from './dircache.js';
 import type { Excludes } from './excludes.js';
 
 /** What a worktree lstat says (the VFS's stat, times in ms). */

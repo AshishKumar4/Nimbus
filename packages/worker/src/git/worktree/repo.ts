@@ -60,7 +60,7 @@ export class WorktreeRepo {
     const at = (path: string) => (path ? `${root}/${path}` : root);
     this.fs = {
       list: async (dir) => {
-        let entries;
+        let entries: Awaited<ReturnType<ProjectFs['readdir']>>;
         try { entries = await vfs.readdir(at(dir)); } catch { return []; }
         const out: Array<{ name: string; type: WorktreeType }> = [];
         for (const { name, type } of entries) {
@@ -71,7 +71,7 @@ export class WorktreeRepo {
         return out;
       },
       lstat: async (path) => {
-        let st;
+        let st: Awaited<ReturnType<ProjectFs['lstat']>>;
         try { st = await vfs.lstat(at(path)); } catch { return null; }
         const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
         return {

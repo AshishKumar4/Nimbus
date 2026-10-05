@@ -10,7 +10,7 @@
 
 import { detectRenames, quotePath, type QueuedPair } from '../unified-diff.js';
 import { addSubtree, cacheSubtree, type CacheTree } from './cachetree.js';
-import { DirCache, comparePaths, compareBytes, decodePath, S_IFMT } from './dircache.js';
+import { comparePaths, compareBytes, decodePath, S_IFMT, type DirCache } from './dircache.js';
 import { S_IFDIR, readTree, type Leaf, type ObjectStore } from './tree.js';
 import { scanWorktree, type ScanOptions, type Worktree } from './walk.js';
 
@@ -142,7 +142,10 @@ export async function collectStatus(
   const changes = new Map<string, StatusChange>();
   const change = (path: string) => {
     let found = changes.get(path);
-    if (!found) changes.set(path, found = { path, index: ' ', worktree: ' ' });
+    if (!found) {
+      found = { path, index: ' ', worktree: ' ' };
+      changes.set(path, found);
+    }
     return found;
   };
   // diff-index --cached HEAD, adds and deletes queued for rename detection.

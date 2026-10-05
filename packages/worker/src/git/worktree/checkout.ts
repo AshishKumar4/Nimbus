@@ -21,7 +21,7 @@
  * files come, and the index is written once.
  */
 
-import { DirCache, S_IFGITLINK, S_IFMT, comparePaths, type IndexEdit, type NewEntry } from './dircache.js';
+import { S_IFGITLINK, S_IFMT, comparePaths, type DirCache, type IndexEdit, type NewEntry } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { diffTrees, type Leaf, type ObjectStore } from './tree.js';
 import { walkTreeAndIndex } from './status.js';

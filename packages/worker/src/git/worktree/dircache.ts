@@ -129,7 +129,10 @@ function decodeVarint(bytes: Uint8Array, at: number): [value: number, next: numb
 
 function encodeVarint(value: number): number[] {
   const out = [value & 127];
-  while ((value = Math.floor(value / 128))) out.unshift(128 | (--value & 127));
+  for (let rest = Math.floor(value / 128); rest; rest = Math.floor(rest / 128)) {
+    rest--;
+    out.unshift(128 | (rest & 127));
+  }
   return out;
 }
 
