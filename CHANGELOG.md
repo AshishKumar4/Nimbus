@@ -5,6 +5,65 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-05: core 0.15.2, worker 0.13.4
+
+- `experimentalDecorators` and `useDefineForClassFields: false` (or a
+  `target` below es2022 that implies it) are honoured in `transform()` and
+  `build()`, where 0.15.1 refused them by name for a TypeScript file with a
+  decorator or a class field; 0.14.0's esbuild honoured them. As in esbuild,
+  they change TypeScript files only. Legacy decorators are applied in tsc's
+  order (instance members, then static members, then the constructor's
+  parameters and the class), where Oxc's transform applies them in source
+  order; class fields are assigned (static ones after the class, a static
+  block still between them), and one without an initializer goes. The
+  helpers they call (TypeScript's `__decorate`, Babel's private-field
+  helpers) a build bundles from rolldown's own copy of @oxc-project/runtime,
+  and a transform carries inline, from @oxc-project/runtime 0.152.0 (MIT),
+  as esbuild's output carried its own. A build transforms such a module
+  itself (rolldown's transform options are its whole build's), moving the
+  source map's lines with the decorator calls it moves (core's
+  `runtime/rolldown-compat.ts`).
+- A TypeScript class's parameter properties (`constructor(public q)`) no
+  longer get a field declaration ahead of its other fields, so its objects'
+  own keys are in esbuild's order (the fields', then the parameter
+  properties'); Oxc declares one, as tsc does under useDefineForClassFields,
+  since 0.15.0. A field the class writes of the same name stays where it is.
+- A module binding named as a global the inlined helpers or the class-field
+  lowering read (`const Object = 0` beside a decorated class, a namespace or
+  enum of that name, a parameter or a pattern) is renamed (`Object2`, its
+  export name kept), as esbuild renames it, rather than taking the helpers'
+  `Object`. The transform renames it by its symbol before lowering anything,
+  so what the lowering generates for it (a namespace's `Object || (Object =
+  {})`, `export = Object`, a parameter property's assignment) follows it; an
+  ambient declaration (`declare const WeakMap`) is the global and keeps its
+  name. A build refuses, by name, a TypeScript module whose own `WeakMap` or
+  `WeakSet` (a declaration, a pattern, a parameter, a catch clause, an
+  import) is in scope where the lowering of a class's private members
+  creates one (rolldown's transform output does not tell its references
+  from the module's); a binding elsewhere (a function's parameter beside a
+  top-level class, a block's, a class expression's own name) is left alone,
+  and types and ambient declarations bind nothing. An import of an
+  @oxc-project/runtime helper that the module writes itself stays an import;
+  only the transformer's are inlined.
+- A decorated class inside a decorator factory's callback keeps every
+  class's decorators in tsc's order, and their source map, in a build.
+- The worker's Oxc transform is rebuilt through its pinned recipe:
+  2,430,868 bytes (was 2,333,997). The worker's cache keys (0.13.3) change
+  with it, so warm sessions transform and pre-bundle again.
+
+Checks: `tsconfig-jsx-differential` gains decorated classes (every kind of
+legacy decorator, what each is called with and returns, tsc's order alone),
+parameter properties, and field initialisers (an inherited setter, private,
+computed and static fields, a static block, `this` in an initializer) under
+each setting, TypeScript and JavaScript, through transform (ESM, CommonJS)
+and build (ESM, CommonJS), and the reviews' cases (helper imports, shadowed
+globals in every binding position, in and apart from the lowered class's
+scope, namespaces and enums, nested decorator runs, written fields): 929
+cases, 829 compiling, running and recording the same as esbuild 0.24.2, 63
+refused by name, 37 failing where it fails; 165 of them differ on 0.15.1.
+`build-decorators-sourcemap` checks the moved calls, flat and nested, still
+map to their decorators.
+
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.
