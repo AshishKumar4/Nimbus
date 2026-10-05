@@ -57,8 +57,9 @@ export interface PrebundleRequest {
 }
 /**
  * The package manifests a pre-bundle built from `sources` answers to, in
- * order, each with its text as `read` gives it (null where it has none):
- * manifestPathsOf each source. A reinstall at another version, or an edit of
+ * order, each with its text as `read` gives it (null where it has none, a
+ * place a nested one would be the closer scope): manifestPathsOf each
+ * source. A reinstall at another version, or an edit of
  * a package's `imports`, `exports` or `type`, changes one; a row records its
  * sources, so the same manifests are read back to check it.
  */
@@ -70,14 +71,19 @@ export declare function manifestsOf(sources: readonly string[], read: (path: str
  */
 export declare function sliceManifests(slice: readonly SliceEntry[], read: (path: string) => string | null): Array<[string, string | null]>;
 /**
- * What a build read its sources' manifests as: `saw(path)`, as the build
- * reads each file, records the text of every manifest that file answers to
- * (manifestPathsOf), at that moment; `manifests(sources)` is manifestsOf the
- * sources as recorded (as `read` gives it now, for one never seen).
+ * What a build read its sources' manifests as: `saw(path, text)`, as the
+ * build reads each file, records the text of every manifest that file
+ * answers to (manifestPathsOf), at that moment, absences included;
+ * `manifests(sources)` is manifestsOf the sources as recorded (as `read`
+ * gives it now, for one never seen). `moved()`: the build itself read a
+ * manifest as other than recorded (one that appeared, changed or went while
+ * it ran), so what it made answers to no one moment's manifests: it is
+ * served, never stored.
  */
 export declare function recordingManifests(read: (path: string) => string | null): {
-    saw(path: string): void;
+    saw(path: string, text?: string): void;
     manifests(sources: readonly string[]): Array<[string, string | null]>;
+    moved(): boolean;
 };
 /** Whether every manifest still reads as it was recorded: a build whose inputs moved under it is not stored. */
 export declare function stillCurrent(manifests: ReadonlyArray<readonly [string, string | null]>, read: (path: string) => string | null): boolean;

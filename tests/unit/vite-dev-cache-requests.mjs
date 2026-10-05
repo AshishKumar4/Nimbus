@@ -51,7 +51,8 @@ function session(files, links = {}) {
     kernel.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true, mode: 0o755 });
     kernel.symlink(target, at);
   }
-  return { harness, vfs, write };
+  const remove = (path) => kernel.unlink(`${root}/${path}`);
+  return { harness, vfs, write, remove };
 }
 
 /** What a dev server started with `config` serves for `path`, on the session's cache (`esbuild`: the service it transforms and builds with). */
@@ -225,6 +226,71 @@ try {
       reader: {},
       path: '/@modules/ui',
     });
+    // A nested package.json that appears while the build runs: after the
+    // build loaded the source below it (and found none there), before the
+    // source's `#impl` resolves, so the build reads the new map. It goes
+    // again after the build (the first case), or while the build still runs,
+    // once the module it mapped to is read (the second: then only what the
+    // build read can tell).
+    for (const goes of ['after the build', 'during the build']) {
+      const files = {
+        'package.json': PACKAGE,
+        'node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', version: '1.0.0', type: 'module', main: 'index.js', imports: { '#impl': './impl-a.js' } }),
+        'node_modules/pkg/index.js': "export { v } from './part/x.js';\n",
+        'node_modules/pkg/part/x.js': "export { v } from '#impl';\n",
+        'node_modules/pkg/impl-a.js': "export const v = 'root a';\n",
+        'node_modules/pkg/part/impl-b.js': "export const v = 'part b';\n",
+      };
+      const nested = 'node_modules/pkg/part/package.json';
+      const warm = session(files);
+      // The view the server reads through: the first time anything asks
+      // whether the nested package.json exists (the build's resolver of
+      // `#impl`, after x.js loaded), it is written first.
+      let appeared = false;
+      let gone = false;
+      const at = (path) => path.replace(/^\/+/, '');
+      const appearing = {
+        events: warm.vfs.events,
+        as(cred) {
+          const view = warm.vfs.as(cred);
+          return new Proxy(view, {
+            get(target, prop) {
+              if (prop === 'exists') {
+                return (path) => {
+                  if (!appeared && at(path) === `${root}/${nested}`) {
+                    appeared = true;
+                    warm.write(nested, JSON.stringify({ type: 'module', imports: { '#impl': './impl-b.js' } }));
+                  }
+                  return target.exists(path);
+                };
+              }
+              if (prop === 'readFileString' && goes === 'during the build') {
+                return (path) => {
+                  const text = target.readFileString(path);
+                  if (appeared && !gone && at(path) === `${root}/node_modules/pkg/part/impl-b.js`) {
+                    gone = true;
+                    warm.remove(nested);
+                  }
+                  return text;
+                };
+              }
+              const value = Reflect.get(target, prop);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        },
+      };
+      const during = await serve({ harness: warm.harness, vfs: appearing }, {}, '/@modules/pkg');
+      assert.ok(appeared && during.includes('part b'), `the build read the map that appeared: ${during.slice(0, 300)}`);
+      if (goes === 'after the build') warm.remove(nested);
+      else assert.ok(gone, 'it went while the build ran');
+      const served = await serve(warm, {}, '/@modules/pkg');
+      const cold = await serve(session(files), {}, '/@modules/pkg');
+      const ok = served === cold;
+      const name = `a nested package.json that appeared during the build, and went ${goes}`;
+      if (!ok) failures.push(`${name}: served the row built from it\n    served: ${served.slice(0, 300)}\n    own:    ${cold.slice(0, 300)}`);
+      console.log(`  ${ok ? 'ok ' : 'RED'} ${name}`);
+    }
     await sameAsCold('a pre-bundle after a nested package.json its build read changed', {
       files: nested('./impl-b.js'),
       writerFiles: nested('./impl-a.js'),

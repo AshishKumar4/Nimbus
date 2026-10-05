@@ -2105,6 +2105,8 @@ export class ViteDevServer {
       let bundledHash = '';
       // The manifests it was built from, as the build read them: checked still current before it is stored.
       let bundledManifests: ReadonlyArray<readonly [string, string | null]> = [];
+      // Whether the build read a manifest as other than recorded (recordingManifests).
+      let bundledMoved = false;
       let synthetic = false;
       let syntheticReferencedFiles: string[] | null = null;
       if (isBarrel) {
@@ -2299,12 +2301,12 @@ export class ViteDevServer {
               isDirectory: (path: string) => vfs.isDirectory(path),
               readFile: (path: string) => {
                 const bytes = vfs.readFile(path);
-                recording.saw(path);
+                recording.saw(path, path.endsWith('/package.json') ? new TextDecoder().decode(bytes) : undefined);
                 return bytes;
               },
               readFileString: (path: string) => {
                 const text = vfs.readFileString(path);
-                recording.saw(path);
+                recording.saw(path, text);
                 return text;
               },
             };
@@ -2318,6 +2320,7 @@ export class ViteDevServer {
               bundled = result.outputFiles[0].contents;
               bundledSources = vfsBuildInputs(result.metafile);
               bundledManifests = recording.manifests(bundledSources);
+              bundledMoved = recording.moved();
               bundledHash = await serviceBuildCacheKey(this.esbuild.transformHostId, {
                 ...prebundleRequest(specifier, bundledManifests), options: SERVICE_PREBUNDLE_OPTIONS,
               });
@@ -2338,7 +2341,7 @@ export class ViteDevServer {
           // A bundle whose sources are unknown would never be served from the cache.
           // One whose manifests moved under the build (a reinstall while it
           // ran) is served to this request, not stored under them.
-          const current = stillCurrent(bundledManifests, (path) => this.readText(path));
+          const current = !bundledMoved && stillCurrent(bundledManifests, (path) => this.readText(path));
           if (!current) this.log('warn', `[vite-dev] ${specifier} changed while it was bundled: served, not cached`);
           if (this.npmCache && bundledSources.length > 0 && current) {
             try {

@@ -19,8 +19,11 @@ published independently in the `@nimbus-sh` npm scope.
   What a row is keyed on is what it was made from, read once: a module's
   `#` imports resolve against the package.json read when its request was
   made, not one edited during its transform; a build's manifests are
-  recorded as it reads its files, and a bundle whose manifests changed
-  while it was built (a reinstall) is served but not stored. The installer
+  recorded as it reads its files, absences included (a nested
+  package.json that is not there yet would be the closer scope), and a
+  bundle whose manifests changed while it was built (a reinstall, a
+  package.json that appeared or went), or that the build itself read as
+  other than recorded, is served but not stored. The installer
   and the dev server pre-bundle with one define (core `PREBUNDLE_DEFINE`),
   so either's row is the other's; the installer's had none, and the dev
   server's carried vite.config's `define`, which a pre-bundle no longer
