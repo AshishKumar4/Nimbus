@@ -114,6 +114,7 @@ export interface StorePackOptions {
     cacheBytes?: number;
     recentBytes?: number;
     budgetUnits?: number;
+    maxStoreReads?: number;
     onObject?: ConstructorParameters<typeof PackStreamProcessor>[0]['onObject'];
     promisor?: string;
 }

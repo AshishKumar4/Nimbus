@@ -113,17 +113,21 @@ class StreamBuffer {
 class PackOutput {
     store;
     recentBytes;
+    readAheadBytes;
     piece = new Uint8Array(APPEND_PIECE_BYTES);
     filled = 0;
     inFlight = null;
     /** Bytes handed over so far, the piece being filled included. */
     written;
+    /** Reads that reached the store (each one a subrequest where the store is remote). */
+    storeReads = 0;
     /** Recently sent pieces, oldest first, with their pack offsets. */
     sent = [];
     window = null;
-    constructor(store, written = 0, recentBytes = DEFAULT_RECENT_BYTES) {
+    constructor(store, written = 0, recentBytes = DEFAULT_RECENT_BYTES, readAheadBytes = READ_AHEAD_BYTES) {
         this.store = store;
         this.recentBytes = recentBytes;
+        this.readAheadBytes = readAheadBytes;
         this.written = written;
     }
     /** Copy `bytes` out; a promise only when a full piece must wait for the one in flight. */
@@ -171,13 +175,15 @@ class PackOutput {
             return window.bytes.subarray(offset - window.offset, offset - window.offset + length);
         }
         await this.flush();
+        this.storeReads++;
         return await this.store.read(offset, length);
     }
     /** Sequential access, for a continuation's walk: read ahead a window at a time. */
     async readAhead(offset, length, end) {
         const window = this.window;
         if (window === null || offset < window.offset || offset + length > window.offset + window.bytes.byteLength) {
-            const span = Math.min(Math.max(length, READ_AHEAD_BYTES), end - offset);
+            const span = Math.min(Math.max(length, this.readAheadBytes), end - offset);
+            this.storeReads++;
             this.window = { offset, bytes: await this.store.read(offset, span) };
         }
         return this.window.bytes.subarray(offset - this.window.offset, offset - this.window.offset + length);
@@ -270,6 +276,7 @@ export class PackStreamProcessor {
     cache;
     work = new WorkCounter();
     budget;
+    maxStoreReads;
     records = new RecordList(null, 1);
     /** In-pack ids → offsets, built the first time a ref-delta asks. */
     byOid = null;
@@ -282,6 +289,7 @@ export class PackStreamProcessor {
         const cacheBytes = options.cacheBytes ?? DEFAULT_CACHE_BYTES;
         this.cache = new ByteLru(cacheBytes, Math.floor(cacheBytes / 2));
         this.budget = options.budgetUnits ?? WORK_BUDGET_UNITS;
+        this.maxStoreReads = options.maxStoreReads ?? Number.POSITIVE_INFINITY;
     }
     /** Consume a whole pack stream: decode within budget, store all of it. */
     async run(source) {
@@ -326,7 +334,7 @@ export class PackStreamProcessor {
                 await writing;
             buffer.consume(packedBytes);
             offset += packedBytes;
-            if (this.work.units >= this.budget && index + 1 < objects) {
+            if (this.spent() && index + 1 < objects) {
                 checkpoint = {
                     offset,
                     decoded: index + 1,
@@ -372,7 +380,7 @@ export class PackStreamProcessor {
     }
     /** Continue decoding a stored pack of `packBytes` bytes from a checkpoint. */
     async resume(checkpoint, packBytes) {
-        this.output = new PackOutput(this.options.store, packBytes, this.options.recentBytes);
+        this.output = new PackOutput(this.options.store, packBytes, this.options.recentBytes, this.options.readAheadBytes);
         const dataEnd = packBytes - PACK_TRAILER_BYTES;
         const { objects } = parsePackHeader(await this.options.store.read(0, PACK_HEADER_BYTES));
         this.records = new RecordList(checkpoint.records, objects);
@@ -390,7 +398,7 @@ export class PackStreamProcessor {
             this.work.inflated(entry.payload.byteLength);
             await this.decode(entry.header, entry.packed, entry.payload, offset);
             offset += entry.packed.byteLength;
-            if (this.work.units >= this.budget && index + 1 < objects) {
+            if (this.spent() && index + 1 < objects) {
                 next = { offset, decoded: index + 1, records: this.records.view().slice(), externalBases: [...this.externalBases.keys()] };
                 break;
             }
@@ -399,11 +407,15 @@ export class PackStreamProcessor {
             throw new PackFormatError('entries end at ' + offset + ', the trailer starts at ' + dataEnd);
         if (next === null && this.externalBases.size > 0) {
             await this.options.store.truncate(dataEnd);
-            this.output = new PackOutput(this.options.store, dataEnd, this.options.recentBytes);
+            this.output = new PackOutput(this.options.store, dataEnd, this.options.recentBytes, this.options.readAheadBytes);
             return await this.completeThin(objects, dataEnd);
         }
         const packSha = await this.options.store.read(dataEnd, PACK_TRAILER_BYTES);
         return this.result(packSha, objects, packBytes, next, 0);
+    }
+    /** The invocation's budget is spent: its work units, or its store reads. */
+    spent() {
+        return this.work.units >= this.budget || this.output.storeReads >= this.maxStoreReads;
     }
     result(packSha, objects, packBytes, checkpoint, appendedBases) {
         return {
@@ -412,7 +424,7 @@ export class PackStreamProcessor {
             packBytes,
             entries: checkpoint === null ? sortEntries(this.records.view()) : null,
             checkpoint,
-            work: this.work.tally(),
+            work: { ...this.work.tally(), storeReads: this.output.storeReads },
             appendedBases,
         };
     }

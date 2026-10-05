@@ -1381,6 +1381,37 @@ function emptyMetadataOverlayStats() {
   };
 }
 
+/** The supervisor's ranged calls, counted, as git/pack/facet-packs.ts takes them. */
+function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
+  // Paths reach the supervisor as this facet's fs sends them: normalized.
+  const counted = (name, call) => {
+    stats.supervisorRpc[name]++;
+    return useRpcResult(call(), (result) => result);
+  };
+  return {
+    fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRange(normalizePath(path), offset, length)),
+    fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(normalizePath(path), offset, bytes)),
+    fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(normalizePath(path), size)),
+    rename: (from, to) => counted('rename', () => supervisor.rename(normalizePath(from), normalizePath(to))),
+    unlink: (path) => counted('rename', () => supervisor.unlink(normalizePath(path))),
+    ensureDirectory,
+    async size(path) {
+      stats.supervisorRpc.stat++;
+      const stat = await useRpcResult(supervisor.stat(normalizePath(path)), (result) => result);
+      return stat && stat.type === 'file' ? stat.size : null;
+    },
+    async readdir(path) {
+      stats.supervisorRpc.readdir++;
+      try {
+        const entries = await useRpcResult(supervisor.readdir(normalizePath(path)), (result) => result);
+        return entries.map((entry) => typeof entry === 'string' ? entry : entry.name);
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
 /**
  * What git/pack/clone.ts needs of this facet: the supervisor's ranged writes
  * (under the clone's lease, which the binding presents), and wave writers
@@ -2382,6 +2413,12 @@ export default {
         phase === 'operation' ? normalizePath(opts.dir) : null,
       );
       const fs = bufferedFs.fs;
+      // cf-git reads packed objects by range and stores a fetched pack as it arrives (git/pack/facet-packs.ts).
+      fs.packs = __nimbusGitPack.facetPacks(facetPacksSupervisor(supervisor, stats, async (dir) => {
+        // A clone's objects/pack may exist only in this fs's pending writes: publish it first.
+        await fs.promises.mkdir(dir);
+        await bufferedFs.flushWave();
+      }));
       flushWave = bufferedFs.flushWave;
       overlayStats = bufferedFs.overlayStats;
       waveStats = bufferedFs.waveStats;
@@ -2618,15 +2655,7 @@ export default {
         }
         mutated = true;
         cloneJobs.delete(opts.jobId);
-        // Everything in the destination is the clone's: it was missing or
-        // empty when prepare took it. The worktree goes first and .git, with
-        // the marker that proves ownership, last.
-        const cloneRoot = normalizePath(opts.dir);
-        for (const name of await fs.promises.readdir(cloneRoot)) {
-          if (name !== '.git') await fs.promises.rm(cloneRoot + '/' + name);
-        }
-        await flushWave();
-        await fs.promises.rmdir(cloneRoot + '/.git', { recursive: true });
+        await fs.promises.rmdir(normalizePath(opts.dir) + '/.git', { recursive: true });
         await flushWave();
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
