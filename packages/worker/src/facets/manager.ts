@@ -6303,7 +6303,7 @@ export class FacetManager {
     const before = taken ? taken.take() : { chunks: [], bytes: 0 };
     const full = `node: fs.readFileSync(0) waits for the end of stdin, and stdin passed ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB `
       + '(the most a synchronous read holds, one budget across the session) without ending. Read process.stdin, '
-      + 'which takes it as it arrives.';
+      + 'which takes it as it arrives, or redirect a file (< file), which a synchronous read takes whole.';
     if (before === null) return fail(full);
     const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes);
     if ('aborted' in input) {

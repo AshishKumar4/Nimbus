@@ -105,10 +105,12 @@ try {
   // A pipe: a partial synchronous read leaves the rest to process.stdin.
   const mixed = (await t.run(`echo hi | node -e 'const b = Buffer.alloc(2); const n = require("fs").readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("MIX " + JSON.stringify([b.subarray(0, n).toString(), s])))'`, 90_000)).output;
   a.check('a pipe: readSync then process.stdin continue at one position', line(mixed, 'MIX') === 'MIX ["hi","\\n"]', mixed.slice(-400));
-  // Past the read ahead, a synchronous read of a pipe names the bound and the redirect.
+  // Past the bound, a synchronous read of a pipe that never ends names the bound
+  // and both ways round it: process.stdin, and a `< file` redirect.
   let over;
   try { over = (await t.run(`yes | node -e 'require("fs").readFileSync(0)'`, 120_000)).output; } catch (e) { over = `TIMEOUT ${String(e.message).slice(-300)}`; t.send('\x03'); }
-  a.check('a pipe past the read ahead fails naming the bound and < file', /first \d+ MiB[\s\S]*< file/.test(over), over.slice(-600));
+  a.check('a pipe past the bound fails naming the bound, process.stdin and < file',
+    /passed \d+ MiB[\s\S]*process\.stdin[\s\S]*< file/.test(over), over.slice(-600));
   const lines = (await t.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 90_000)).output;
   a.check('yes | head -3 streams three lines to for-await', line(lines, 'LINES') === 'LINES "y\\ny\\ny\\n"', lines.slice(-400));
 } finally {
