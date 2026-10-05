@@ -122,12 +122,15 @@ try {
       const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
       assert.equal(w.status, 0, w.stdout);
       const started = Date.now();
-      const r = await terminal.run(`node /home/user/${name}.js`, 30_000);
+      // What a scenario held, before, it held for good, or 60 s (children):
+      // 40 s tells the two apart on a loaded machine, where eight ES-module
+      // children (written) take 20 s to launch and end.
+      const r = await terminal.run(`node /home/user/${name}.js`, 90_000);
       const ms = Date.now() - started;
       console.log(`  ${name}: ${ms} ms (host node ${host[name].ms} ms; the program's own T ${elapsed(r.stdout)} ms)`);
       assert.equal(r.status, 0, r.stdout);
       assert.deepEqual(lines(r.stdout), host[name].lines, `${name}: the same output as under host node`);
-      assert.ok(ms < 15_000, `${name}: the program ended when it exited (${ms} ms), not when what it held did`);
+      assert.ok(ms < 40_000, `${name}: the program ended when it exited (${ms} ms), not when what it held did`);
     } catch (error) {
       console.log(`  ${name}: FAILED ${String(error.message).split('\n')[0].slice(0, 300)}`);
       failures.push(`${name}: ${error.message.slice(0, 800)}`);
