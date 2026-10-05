@@ -60,7 +60,12 @@ function fakeSession() {
   const writer = (base, onReceipts) => ({
     async file(path, mode, bytes) {
       const key = strip(base + '/' + path);
-      files.set(key, bytes);
+      // The writer owns what it is given: W7 transfers it, detaching the
+      // buffer. A caller still holding it (a cached delta base, a blob's
+      // other path) would then hold a detached buffer.
+      assert.equal(bytes.buffer.detached, false, path + ': handed a detached buffer');
+      files.set(key, bytes.slice());
+      if (bytes.buffer.byteLength > 0) structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
       stats.set(key, { ino: ino++, mode, size: bytes.byteLength, mtimeMs: 1_790_000_000_123, ctimeMs: 1_790_000_000_456, uid: 1000, gid: 1000, dev: 7 });
       this.pending.push(key);
     },

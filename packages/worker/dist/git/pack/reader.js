@@ -59,7 +59,8 @@ export class PackObjectResolver {
         }
         return {
             header,
-            payload: inflated.buffer,
+            // A plain view: zlib's Buffer would make every later slice() a view too.
+            payload: new Uint8Array(inflated.buffer.buffer, inflated.buffer.byteOffset, inflated.buffer.byteLength),
             packed: bytes.subarray(0, header.headerBytes + inflated.engine.bytesWritten),
         };
     }

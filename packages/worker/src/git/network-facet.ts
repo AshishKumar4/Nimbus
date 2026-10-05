@@ -1714,7 +1714,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log) {
     url: opts.url,
     auth: opts.auth,
     marker: { path: '.git/' + CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
-    onProgress: (text) => log(text),
+    onProgress: (line) => log('remote: ' + line + '\\n'),
   };
 }
 

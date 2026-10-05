@@ -19,8 +19,12 @@ export interface GitTransportAuth {
 export interface UploadPackOptions {
   url: string;
   auth?: GitTransportAuth;
-  /** Progress text from the server (side-band 2), as it arrives. */
-  onProgress?(text: string): void;
+  /**
+   * The server's progress (side-band 2), a finished line at a time: a
+   * phase's last line ("Compressing objects: 100% (42/42), done.") and its
+   * summary ("Total ..."), not every percentage step it redraws over.
+   */
+  onProgress?(line: string): void;
   /** For tests: the fetch to use. */
   fetch?: typeof fetch;
   signal?: AbortSignal;
@@ -281,8 +285,16 @@ export async function requestPack(options: UploadPackOptions, advertised: Set<st
 }
 
 /** Band 1 of side-band-64k, pulled packet by packet; band 2 is progress, band 3 a fatal error. */
-async function* sideBandPack(reader: PktReader, onProgress?: (text: string) => void): AsyncGenerator<Uint8Array> {
+async function* sideBandPack(reader: PktReader, onProgress?: (line: string) => void): AsyncGenerator<Uint8Array> {
   let finished = false;
+  let partial = '';
+  const progress = (text: string): void => {
+    if (!onProgress) return;
+    // A redraw ends in \r, a finished line in \n.
+    const lines = (partial + text).split(/\r|\n/);
+    partial = lines.pop() ?? '';
+    for (const line of lines) if (/, done\.$|^Total /.test(line)) onProgress(line);
+  };
   try {
     for (;;) {
       const payload = await reader.next();
@@ -292,7 +304,7 @@ async function* sideBandPack(reader: PktReader, onProgress?: (text: string) => v
       }
       const band = payload[0];
       if (band === 1) yield payload.subarray(1);
-      else if (band === 2) onProgress?.(decoder.decode(payload.subarray(1)));
+      else if (band === 2) progress(decoder.decode(payload.subarray(1)));
       else if (band === 3) throw new UploadPackError('remote error: ' + decoder.decode(payload.subarray(1)).trim());
       else throw new PackFormatError('side-band packet on unknown band ' + band);
     }

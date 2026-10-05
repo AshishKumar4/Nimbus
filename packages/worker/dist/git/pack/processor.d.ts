@@ -107,6 +107,12 @@ export interface WorkTally {
     objects: number;
     baseRereads: number;
 }
+/**
+ * zlib hands back a Node Buffer, whose slice() is a view: a copy taken from
+ * one (for the wave writer, which takes ownership and may transfer it) would
+ * share the cached base's memory. A plain Uint8Array's slice() copies.
+ */
+export declare function plainBytes(bytes: Uint8Array): Uint8Array;
 export declare class PackStreamProcessor {
     private readonly options;
     private readonly cache;

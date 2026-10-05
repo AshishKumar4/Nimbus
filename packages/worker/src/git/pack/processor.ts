@@ -364,6 +364,15 @@ class RecordList {
   }
 }
 
+/**
+ * zlib hands back a Node Buffer, whose slice() is a view: a copy taken from
+ * one (for the wave writer, which takes ownership and may transfer it) would
+ * share the cached base's memory. A plain Uint8Array's slice() copies.
+ */
+export function plainBytes(bytes: Uint8Array): Uint8Array {
+  return Object.getPrototypeOf(bytes) === Uint8Array.prototype ? bytes : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
 function hashObject(type: GitObjectType, data: Uint8Array): Uint8Array {
   return createHash('sha1').update(objectIdPrefix(type, data.byteLength)).update(data).digest();
 }
@@ -567,7 +576,7 @@ export class PackStreamProcessor {
         throw new PackFormatError('entry at ' + offset + ' inflates to ' + inflated.buffer.byteLength + ' bytes, its header says ' + header.size);
       }
       this.work.inflated(header.size);
-      return { header, packed: buffer.view(0, header.headerBytes + inflated.engine.bytesWritten), payload: inflated.buffer };
+      return { header, packed: buffer.view(0, header.headerBytes + inflated.engine.bytesWritten), payload: plainBytes(inflated.buffer) };
     }
   }
 

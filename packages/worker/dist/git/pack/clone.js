@@ -196,14 +196,15 @@ export async function cloneFast(context, request) {
     const batches = plan.batches(Math.min(MAX_BATCHES, Math.ceil(plan.count / (request.blobsPerBatch ?? BLOBS_PER_BATCH))));
     const batchPlans = [];
     for (const batch of batches) {
+        // The writer takes the bytes (W7 may detach them): measure first.
         const encoded = encodeBatch(plan, batch);
-        await writer.file(STAGE_DIR + '/batch-' + batch.index, 0o644, encoded);
         batchPlans.push({
             index: batch.index,
             blobs: batch.blobs.length,
             paths: batch.blobs.reduce((n, blob) => n + blob.entries.length, 0),
             bytes: encoded.byteLength,
         });
+        await writer.file(STAGE_DIR + '/batch-' + batch.index, 0o644, encoded);
     }
     // Gitlinks are checked out as empty directories and indexed with no stat.
     const gitlinks = [];
@@ -214,6 +215,7 @@ export async function cloneFast(context, request) {
         gitlinks.push(encodeIndexEntry(plan.path(i), MODE_GITLINK, plan.oid(i), null));
     }
     const gitlinkShare = concat(gitlinks);
+    const gitlinkIndexBytes = gitlinkShare.byteLength;
     await writer.file(STAGE_DIR + '/index-gitlinks', 0o644, gitlinkShare);
     const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
     await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(context.url, fullRef)));
@@ -238,7 +240,7 @@ export async function cloneFast(context, request) {
         batches: batchPlans,
         planEntries: plan.count,
         planBytes: plan.byteLength,
-        gitlinkIndexBytes: gitlinkShare.byteLength,
+        gitlinkIndexBytes,
         pack: summary,
     };
 }
@@ -302,9 +304,10 @@ export async function cloneBatch(context, request) {
         return encodeIndexEntry(path, mode, oid, stat);
     });
     const share = concat(entries);
+    const indexBytes = share.byteLength;
     await writer.file(STAGE_DIR + '/index-' + request.index, 0o644, share);
     await writer.flush();
-    return { index: request.index, blobs: resolved, files, indexBytes: share.byteLength, pack: summary };
+    return { index: request.index, blobs: resolved, files, indexBytes, pack: summary };
 }
 /** The index, from the batches' shares; then the staging directory goes. */
 export async function cloneFinish(context, request) {
@@ -315,11 +318,12 @@ export async function cloneFinish(context, request) {
         entries.push(...splitIndexEntries(await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + share.name), 0, share.bytes)));
     }
     const index = encodeIndex(entries);
+    const indexBytes = index.byteLength;
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
     await writer.file('.git/index', 0o644, index);
     await writer.remove(STAGE_DIR, true);
     await writer.flush();
-    return { indexEntries: entries.length, indexBytes: index.byteLength };
+    return { indexEntries: entries.length, indexBytes };
 }
 export { oidFromHex };

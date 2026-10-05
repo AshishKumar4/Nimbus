@@ -258,6 +258,17 @@ export async function requestPack(options, advertised, request) {
 /** Band 1 of side-band-64k, pulled packet by packet; band 2 is progress, band 3 a fatal error. */
 async function* sideBandPack(reader, onProgress) {
     let finished = false;
+    let partial = '';
+    const progress = (text) => {
+        if (!onProgress)
+            return;
+        // A redraw ends in \r, a finished line in \n.
+        const lines = (partial + text).split(/\r|\n/);
+        partial = lines.pop() ?? '';
+        for (const line of lines)
+            if (/, done\.$|^Total /.test(line))
+                onProgress(line);
+    };
     try {
         for (;;) {
             const payload = await reader.next();
@@ -269,7 +280,7 @@ async function* sideBandPack(reader, onProgress) {
             if (band === 1)
                 yield payload.subarray(1);
             else if (band === 2)
-                onProgress?.(decoder.decode(payload.subarray(1)));
+                progress(decoder.decode(payload.subarray(1)));
             else if (band === 3)
                 throw new UploadPackError('remote error: ' + decoder.decode(payload.subarray(1)).trim());
             else

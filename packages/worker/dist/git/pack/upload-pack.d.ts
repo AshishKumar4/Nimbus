@@ -15,8 +15,12 @@ export interface GitTransportAuth {
 export interface UploadPackOptions {
     url: string;
     auth?: GitTransportAuth;
-    /** Progress text from the server (side-band 2), as it arrives. */
-    onProgress?(text: string): void;
+    /**
+     * The server's progress (side-band 2), a finished line at a time: a
+     * phase's last line ("Compressing objects: 100% (42/42), done.") and its
+     * summary ("Total ..."), not every percentage step it redraws over.
+     */
+    onProgress?(line: string): void;
     /** For tests: the fetch to use. */
     fetch?: typeof fetch;
     signal?: AbortSignal;
