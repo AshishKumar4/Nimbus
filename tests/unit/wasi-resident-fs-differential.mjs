@@ -259,6 +259,49 @@ await compareAll('own-writes');
 }
 await compareAll('held-writes');
 
+// A run that ends without closing what it wrote still leaves it in the session
+// (settle, which the runtime calls at every run's end and before a send).
+{
+  const open = await adapter.open(beneath('unclosed.txt'), { write: true, create: true, truncate: true });
+  await adapter.write(open.id, null, enc.encode('kept'));
+  assert.equal(adapter.holding(), true);
+  assert.deepEqual(await adapter.settle(), [], 'nothing refused');
+  assert.equal(adapter.holding(), false);
+  assert.deepEqual(await authority.readFile(beneath('unclosed.txt')), enc.encode('kept'), 'settled bytes are in the session');
+  await adapter.write(open.id, null, enc.encode('+more'));
+  await adapter.close(open.id);
+  assert.deepEqual(await authority.readFile(beneath('unclosed.txt')), enc.encode('kept+more'), 'and writes after it go straight through');
+  PATHS.push('unclosed.txt');
+}
+
+// A write the session refuses is never lost silently: the close reports it,
+// or, for a file the run never closed, the run's settle does.
+{
+  const enospc = () => Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  const refusing = new Proxy(authority, {
+    get(target, name) {
+      if (name === 'write') return () => { throw enospc(); };
+      const value = Reflect.get(target, name);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const full = residentFilesystem(refusing, store.__residentNamespaceView(supervisor, device, USER));
+  const a = await full.open(beneath('full-a.txt'), { write: true, create: true, truncate: true });
+  await full.write(a.id, null, enc.encode('lost'));
+  await assert.rejects(async () => full.close(a.id), { code: 'ENOSPC' }, 'close reports the refused write');
+  await assert.rejects(async () => authority.fstat(a.id), { code: 'EBADF' }, 'and the descriptor is closed anyway');
+  const b = await full.open(beneath('full-b.txt'), { write: true, create: true, truncate: true });
+  await full.write(b.id, null, enc.encode('lost too'));
+  const failures = await full.settle();
+  assert.equal(failures.length, 1, 'the run reports the file it never closed');
+  assert.equal(failures[0].path, `${ROOT}/full-b.txt`);
+  assert.equal(failures[0].error.code, 'ENOSPC');
+  // Reported once: its close afterwards succeeds.
+  await full.close(b.id);
+  PATHS.push('full-a.txt', 'full-b.txt');
+}
+await compareAll('settled-writes');
+
 // A peer changes things, then input arrives: the barrier brings them in.
 await kernel.writeFile(k('ext.txt'), enc.encode('external'));
 await kernel.writeFile(k('a2.txt'), enc.encode('rewritten by a peer'));
@@ -268,4 +311,4 @@ await kernel.chown(k('empty'), 2000, 2000);
 adapter.inbound();
 await compareAll('peer-writes');
 
-console.log(`wasi-resident-fs-differential: ${compared} answers agree with the authority across cold, warm, own-write, held-write and peer-write phases`);
+console.log(`wasi-resident-fs-differential: ${compared} answers agree with the authority across cold, warm, own-write, held-write, settled-write and peer-write phases`);

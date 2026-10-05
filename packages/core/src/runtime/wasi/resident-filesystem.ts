@@ -92,8 +92,23 @@ export interface ResidentNamespace {
 export interface ResidentFilesystem extends RuntimeFsBridge {
   /** Input from outside the process arrived: the barrier is owed before the next answer. */
   inbound(): void;
+  /** Whether writes are held that the session does not have yet. */
+  holding(): boolean;
+  /**
+   * Send every held write to the session: before anything leaves the process
+   * (a socket send) and when its run ends, so what it did is in the session
+   * before anyone can learn it happened. Returns the files whose bytes did not
+   * all arrive, none reported before (by their close or fsync).
+   */
+  settle(): Promise<UnsettledWrite[]>;
   /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
   stats(): ResidentFilesystemStats;
+}
+
+/** A held file the session refused part of: what a run reports, naming the file. */
+export interface UnsettledWrite {
+  path: string;
+  error: unknown;
 }
 
 /** Counts since the process started. Every `delegated` call is a round trip to the session. */
@@ -243,6 +258,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** Writes held for the session's descriptors, by descriptor; and their total, against FACET_OWN_WRITE_MEMORY_BYTES. */
   const writes = new Map<number, HeldWrite>();
   let heldBytes = 0;
+  /** Held writes the session refused, by descriptor, until reported. */
+  const unsettled = new Map<number, UnsettledWrite>();
 
   /** The latest held write of `key`, if this process is writing it. */
   const heldAt = (key: string): HeldWrite | undefined => {
@@ -268,11 +285,26 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const release = async (held: HeldWrite): Promise<void> => {
     writes.delete(held.id);
     heldBytes -= held.bytes.byteLength;
-    for (let at = 0; at < held.length; at += WRITE_PIECE_BYTES) {
-      await authority.write(held.id, at, held.bytes.slice(at, Math.min(held.length, at + WRITE_PIECE_BYTES)));
+    try {
+      for (let at = 0; at < held.length; at += WRITE_PIECE_BYTES) {
+        await authority.write(held.id, at, held.bytes.slice(at, Math.min(held.length, at + WRITE_PIECE_BYTES)));
+      }
+      if (held.position !== 0) await authority.seek(held.id, held.position, 'set');
+    } catch (error) {
+      // Reported once: by this descriptor's close or fsync, or by the run's end.
+      unsettled.set(held.id, { path: held.path, error });
+      throw error;
+    } finally {
+      owed = true;
     }
-    if (held.position !== 0) await authority.seek(held.id, held.position, 'set');
-    owed = true;
+  };
+
+  /** A failure an earlier release left on `handleId`, now reported (and forgotten). */
+  const takeUnsettled = (handleId: number): unknown => {
+    const failure = unsettled.get(handleId);
+    if (failure === undefined) return undefined;
+    unsettled.delete(handleId);
+    return failure.error;
   };
 
   /**
@@ -424,6 +456,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   Reflect.set(fs, 'synchronous', authority.synchronous);
 
   fs.inbound = () => { owed = true; };
+  fs.holding = () => writes.size > 0;
+  fs.settle = async () => {
+    for (const held of [...writes.values()]) {
+      try { await release(held); } catch { /* recorded in unsettled */ }
+    }
+    const failures = [...unsettled.values()];
+    unsettled.clear();
+    return failures;
+  };
   fs.stats = () => ({ ...counts, delegated: { ...counts.delegated } });
 
   fs.stat = (path, options = {}) => answer<RuntimeVfsStat | null>('stat', () => {
@@ -600,7 +641,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   fs.close = (handleId) => {
     const held = writes.get(handleId);
-    if (held !== undefined) return release(held).then(() => changing('close', () => authority.close(handleId)));
+    // The descriptor closes either way; a write the session refused is the close's error, as on a network filesystem.
+    const closing = () => after(changing('close', () => authority.close(handleId)), () => {
+      const failure = takeUnsettled(handleId);
+      if (failure !== undefined) throw failure;
+    });
+    if (held !== undefined) return release(held).then(closing, closing);
+    if (unsettled.has(handleId)) return closing();
     const handle = local(handleId);
     if (handle === undefined) return changing('close', () => authority.close(handleId));
     handle.closed = true;
@@ -628,8 +675,19 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.fsync = (handleId) => {
     if (handleId !== undefined && local(handleId) !== undefined) return;
     // Synced means in the session: what is held goes now, and the descriptor writes through after.
-    const held = handleId === undefined ? undefined : writes.get(handleId);
-    if (held !== undefined) return release(held).then(() => authority.fsync(handleId));
+    if (handleId === undefined) {
+      return fs.settle().then((failures) => {
+        if (failures.length > 0) throw failures[0].error;
+        return authority.fsync();
+      });
+    }
+    const held = writes.get(handleId);
+    const reported = (): void => {
+      const failure = takeUnsettled(handleId);
+      if (failure !== undefined) throw failure;
+    };
+    if (held !== undefined) return release(held).then(() => { reported(); return authority.fsync(handleId); }, () => reported());
+    reported();
     delegated('fsync');
     return authority.fsync(handleId);
   };

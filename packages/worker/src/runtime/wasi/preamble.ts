@@ -260,6 +260,27 @@ export function __wasiFsStats(): ResidentFilesystemStats | null {
   return __wasiResident === null ? null : __wasiResident.fs.stats();
 }
 
+/**
+ * Send what the process holds to the session, at the end of a run: null, or
+ * what to report, naming each file whose bytes did not all arrive. A run that
+ * reports one did not do what it said it did, and exits non-zero.
+ */
+export async function __wasiSettleWrites(): Promise<string | null> {
+  if (__wasiResident === null) return null;
+  const failures = await __wasiResident.fs.settle();
+  if (failures.length === 0) return null;
+  return failures
+    .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+    .join('; ');
+}
+
+/** Anything about to leave the process waits until what it wrote is in the session. */
+function __wasiSettleFirst(body: () => SyscallResult): SyscallResult {
+  const resident = __wasiResident;
+  if (resident === null || !resident.fs.holding()) return body();
+  return resident.fs.settle().then(() => body());
+}
+
 /** Input from outside entered the guest: its next filesystem answer takes the barrier first. */
 function __wasiInbound<T>(result: T): T {
   if (result instanceof Promise) {
@@ -303,7 +324,10 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
     residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
     cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
   };
-  // A new process holds nothing of the last one's filesystem.
+  // A new process holds nothing of the last one's filesystem. Its run settled
+  // what it held (__wasiSettleWrites); anything still held goes to the session
+  // it belongs to rather than nowhere.
+  if (__wasiResident !== null && __wasiResident.fs.holding()) void __wasiResident.fs.settle();
   __wasiResident = null;
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   // Emptied rather than replaced: the authority codec and the socket helpers
@@ -1590,6 +1614,15 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     if (typeof body !== 'function') continue;
     (imports as WasiParkableTable)[name] = function inbound(this: unknown, ...args: never[]) { return __wasiInbound(body.apply(this, args)); };
   }
+  // And where something leaves it: a socket's bytes (fd_write on a socket
+  // comes here too, through the raw capture below). A peer that hears from
+  // the guest then finds what the guest wrote before it spoke.
+  const send: WasiSyscallFn = imports.sock_send;
+  if (typeof send === 'function') {
+    (imports as WasiParkableTable).sock_send = function outbound(this: unknown, ...args: never[]) {
+      return __wasiSettleFirst(() => send.apply(this, args));
+    };
+  }
 
   // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
   // fd_write can route socket fds through them (wasi-libc maps read(2)/
@@ -1751,17 +1784,27 @@ export async function __wasiRunStartAsync(instance: WasiStartInstance, ctx?: unk
     } else {
       start();
     }
-    return { exitCode: 0 };
+    return await __wasiSettled({ exitCode: 0 });
   } catch (e) {
     if (e && (e as object).constructor && (e as object).constructor.name === '__WasiExit') {
-      return { exitCode: (e as __WasiExit).code };
+      return await __wasiSettled({ exitCode: (e as __WasiExit).code });
     }
-    return { exitCode: 1, error: ((e as Error) && (e as Error).message) ? (e as Error).message : String(e) };
+    return await __wasiSettled({ exitCode: 1, error: ((e as Error) && (e as Error).message) ? (e as Error).message : String(e) });
   }
+}
+
+/** A run's result once what it wrote is in the session: a write the session refused fails the run. */
+async function __wasiSettled(result: WasiRunResult): Promise<WasiRunResult> {
+  let failed: string | null;
+  try { failed = await __wasiSettleWrites(); }
+  catch (e) { failed = (e as Error)?.message ?? String(e); }
+  if (failed === null) return result;
+  return { exitCode: result.exitCode || 1, error: result.error ? `${result.error}; ${failed}` : failed };
 }
 // A serialized facet body is evaluated in this module's scope, but runners
 // reach helpers through globalThis (the convention __rubyRun and __clangRun
 // already follow) because a direct reference to a preamble-only symbol will
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
+globalThis.__wasiSettleWrites = __wasiSettleWrites;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

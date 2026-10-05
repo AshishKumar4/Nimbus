@@ -127,7 +127,15 @@ async function __nimbusPyBoot(args) {
   return {
     instance,
     run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),
-    flush: () => __nimbusEnterVm(exports.nimbus_py_flush)(),
+    // Python's buffers, then what the process wrote and still holds
+    // (wasi/resident-filesystem.ts): every run ends here, so the session has
+    // it before the run's result says it happened. A file it could not take
+    // fails the run, named.
+    flush: async () => {
+      await __nimbusEnterVm(exports.nimbus_py_flush)();
+      const failed = typeof globalThis.__wasiSettleWrites === 'function' ? await globalThis.__wasiSettleWrites() : null;
+      if (failed !== null) throw new Error(failed);
+    },
   };
 }
 
