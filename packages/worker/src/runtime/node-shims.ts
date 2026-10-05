@@ -42,6 +42,7 @@
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
+import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE } from '../loaders/generated-workers.js';
@@ -496,40 +497,26 @@ function __nimbusEmitExit(code) {
   __nimbusExitEmitted = true;
   try { __processEvents.emit("exit", code); } catch {}
 }
-// The news of this process's children (a child's start, its output, the
-// end of a stream, its exit) is numbered by the session as it is produced,
-// and the reply that delivers a piece carries its number. Once a reply's
-// effect is applied (the bytes written, 'exit' emitted), its numbers are
-// applied too (__nimbusApplyNews); the frontier is the contiguous run of
-// numbers applied from 1, whatever order the replies came in.
-let __nimbusNewsFrontier = 0;
-const __nimbusNewsAhead = new Set();
-globalThis.__nimbusApplyNews = (numbers) => {
-  if (!Array.isArray(numbers)) return;
-  for (const n of numbers) if (typeof n === "number" && n > __nimbusNewsFrontier) __nimbusNewsAhead.add(n);
-  while (__nimbusNewsAhead.delete(__nimbusNewsFrontier + 1)) __nimbusNewsFrontier++;
-};
-// Said to the session as it changes (facets/manager.ts
-// __nimbusReportBlockedState): whether this process's only remaining work is
-// waiting on its children, and its frontier. A blocked program runs again
-// only on news of a child (it has no timer, socket or read of its own), so
-// the session takes the report only while the frontier is all the news it
-// issued (fabric budgets.ts setProcessBlocked). Numbered, so a late one is
-// dropped. Unref'd, in order: saying it is not work, and must not make the
-// program look busy.
-let __nimbusBlockedSaid = "";
-let __nimbusReportSeq = 0;
+// The news of this process's children, applied as each reply's effect is
+// (__nimbusApplyNews), and what it says of itself to the session as that
+// changes (facets/manager.ts __nimbusReportBlockedState): whether its only
+// remaining work is waiting on its children, at which frontier (child-news.ts).
+// A blocked program runs again only on news of a child (it has no timer,
+// socket or read of its own), so the session takes the report only while
+// the frontier is all the news it issued (fabric budgets.ts
+// setProcessBlocked). Sent unref'd, in order: saying it is not work, and
+// must not make the program look busy.
 let __nimbusBlockedChain = Promise.resolve();
-globalThis.__nimbusReportBlocked = (blocked) => {
-  if (__nimbusProgramStopped) return;
-  if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
-  const key = blocked ? "blocked@" + __nimbusNewsFrontier : "running";
-  if (key === __nimbusBlockedSaid || (!blocked && __nimbusBlockedSaid === "")) return;
-  __nimbusBlockedSaid = key;
-  const report = { blocked, frontier: __nimbusNewsFrontier, seq: ++__nimbusReportSeq };
+const __nimbusChildNews = (${CHILD_NEWS_SOURCE})((report) => {
   __nimbusBlockedChain = __nimbusBlockedChain
     .then(() => __nimbusUseRpcResultUnref(__supervisor.cpBlocked(report), () => undefined))
     .catch(() => {});
+});
+globalThis.__nimbusApplyNews = (numbers) => __nimbusChildNews.apply(numbers);
+globalThis.__nimbusReportBlocked = (blocked) => {
+  if (__nimbusProgramStopped) return;
+  if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
+  __nimbusChildNews.say(blocked);
 };
 let __nimbusProcessExitResolve = null;
 let __nimbusProcessExitCode = null;
