@@ -1300,7 +1300,7 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, arg
   return 0;
 }
 
-const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-o | --others] [-m | --modified] [-d | --deleted] '
+const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-s | --stage] [-o | --others] [-m | --modified] [-d | --deleted] '
   + '[--exclude-standard] [-z] [--] [<path>...]\n';
 
 async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly string[]): Promise<number> {
@@ -1309,6 +1309,7 @@ async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly stri
   let modified = false;
   let deleted = false;
   let excludeStandard = false;
+  let stage = false;
   let z = false;
   let dashdash = false;
   const pathArgs: string[] = [];
@@ -1329,14 +1330,15 @@ async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly stri
         case '-d': case '--deleted': deleted = true; break;
         case '-z': z = true; break;
         case '--exclude-standard': excludeStandard = true; break;
+        case '-s': case '--stage': stage = true; break;
         default:
           await ctx.stderr.write(`error: unknown option '${flag.replace(/^-+/, '')}'\n${LS_FILES_USAGE}`);
           return 129;
       }
     }
   }
-  // With no selection ls-files shows the index.
-  if (!others && !modified && !deleted) cached = true;
+  // With no selection ls-files shows the index; --stage shows it with each entry's mode, id and stage.
+  if (!others && !modified && !deleted && !stage) cached = true;
   const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -1367,12 +1369,13 @@ async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly stri
   let previous: string | null = null;
   for (const i of entriesInSpecs(dc, specs)) {
     const path = dc.path(i);
-    // A path once, however many stages it has.
+    const line = pathLine(relativeTo(path, repo.prefix), z);
+    if (stage) out += `${dc.mode(i).toString(8).padStart(6, '0')} ${dc.oid(i)} ${dc.stage(i)}\t${line}`;
+    // Otherwise a path once, however many stages it has.
     if (path === previous) continue;
     previous = path;
     const dirty = scan?.dirty.get(i);
-    const line = pathLine(relativeTo(path, repo.prefix), z);
-    if (cached) out += line;
+    if (cached && !stage) out += line;
     // A directory where the file was is modified, not deleted: lstat finds something there.
     if (deleted && dirty?.change === 'D' && !dirty.directory) out += line;
     if (modified && dirty) out += line;

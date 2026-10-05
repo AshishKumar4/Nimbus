@@ -499,6 +499,41 @@ try {
     await statusAgrees('unmerged', repo);
   }
 
+  // ── reset --hard restores what the worktree changed where the index already holds the target's ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('kept', 'k\n');
+      put('edited', 'e\n');
+      put('removed', 'r\n');
+      put('d/staged', 's\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+    });
+    const change = (path, content) => {
+      writeFileSync(join(repo.disk, path), content);
+      user.writeFile(`${repo.virtual.slice(1)}/${path}`, content);
+    };
+    change('edited', 'edited, and longer\n');
+    change('d/staged', 'staged\n');
+    await both(repo, ['add', 'd/staged']);
+    rmSync(join(repo.disk, 'removed'));
+    user.unlink(`${repo.virtual.slice(1)}/removed`);
+    change('new', 'untracked, stays\n');
+    await statusAgrees('before reset --hard', repo);
+    await both(repo, ['reset', '-q', '--hard']);
+    await statusAgrees('after reset --hard', repo);
+    await same('reset --hard: the index', repo, ['ls-files', '-s']);
+    for (const path of ['edited', 'removed', 'd/staged']) {
+      assert.equal(new TextDecoder().decode(user.readFile(`${repo.virtual.slice(1)}/${path}`)), readFileSync(join(repo.disk, path), 'utf8'), path);
+    }
+    // A mixed reset of a staged change keeps the worktree, and says what is left unstaged.
+    change('edited', 'again\n');
+    await both(repo, ['add', 'edited']);
+    await sameWithStderr('reset (mixed)', repo, ['reset']);
+    await statusAgrees('after reset', repo);
+    await sameWithStderr('reset -- a path', repo, ['reset', '--', 'edited']);
+  }
+
   console.log(`git-status-matches-git: ${checks} commands byte-identical to ${realGit(scratch, ['--version']).stdout.toString().trim()}`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });

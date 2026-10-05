@@ -145,7 +145,12 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
       if (leaf) targetDirs(path);
     });
     const scan = await scanWorktree(tree, dc, { untracked: 'no', excludes: null });
-    for (const i of scan.dirty.keys()) queue.push(dc.path(i));
+    for (const i of scan.dirty.keys()) {
+      const path = dc.path(i);
+      // The index agrees with the target here (or the walk above said otherwise): the target holds the index's entry.
+      if (!targetAt.has(path)) targetAt.set(path, { path, mode: dc.mode(i), oid: dc.oid(i) });
+      queue.push(path);
+    }
   }
 
   // The worktree's view of a path, as a walk from the top sees it: nothing below a link or a file.
