@@ -17,119 +17,18 @@
 //     is missing, as git reports it.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
-import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { fetchMissingObjects } from '../../packages/worker/src/git/promisor.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
-import { stagedAssets } from './lib/staged-assets.mjs';
+import { createFacetSession, hostGit as hostGitIn, hostObjects as hostObjectsIn } from './lib/facet-session.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-promisor-'));
-const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', HOME: work, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z' };
-function hostGit(cwd, args) {
-  const result = spawnSync('git', args, { cwd, env, maxBuffer: 1 << 26 });
-  assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
-  return result.stdout.toString();
-}
-
-// The session: SQLite, a user home, a supervisor the facet writes through.
-const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-const kernel = vfs.as(CRED_KERNEL);
-kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
-kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-const files = new ProcessFiles(vfs);
-let owner;
-// The supervisor as the session serves it: the runtime bridge, writes
-// presenting the lease the binding carries.
-const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
-const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
-const requests = { fetchObjects: 0 };
-const supervisor = {
-  async stat(path) { try { return bridge.stat(path); } catch { return null; } },
-  async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
-  async hasLegacySymlinkUnder() { return false; },
-  async readdir(path) { return bridge.readdir(path); },
-  async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
-  async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
-  async fsWriteRange(path, offset, bytes) { return bridge.writeRange(path, offset, bytes, { createParents: true, ...lease() }); },
-  async fsTruncate(path, size) { return bridge.truncate(path, size, lease()); },
-  async rename(from, to) { return bridge.rename(from, to, lease()); },
-  async writeBatchStream(stream) { return kernel.writeStream(stream, lease()); },
-  async stdout() {},
-};
-// Each execGitNetwork mints its binding with the lease it holds (a clone's), as SupervisorRPC props carry it.
-adoptCtxExports({ SupervisorRPC: ({ props }) => { owner = props.mutationOwner; return supervisor; } });
-
-const tempDir = mkdtempSync(join(work, 'facet-'));
-writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-writeFileSync(join(tempDir, 'git-bundle.js'), 'export const git = {}; export const gitHttp = {};');
-const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
-const doCtx = { id: { toString: () => 'promisor-do' } };
-const doEnv = {
-  ASSETS: stagedAssets,
-  LOADER: {
-    load() {
-      return {
-        getEntrypoint() {
-          return {
-            async fetch(request) {
-              const body = await request.clone().json().catch(() => ({}));
-              if (body.op === 'fetch-objects') requests.fetchObjects++;
-              return facet.default.fetch(request, { SUPERVISOR: supervisor });
-            },
-          };
-        },
-      };
-    },
-  },
-};
-
-async function git(cwd, args) {
-  let stdout = '';
-  let stderr = '';
-  const code = await runGitCommand({
-    pid: 7,
-    cred: CRED_SESSION_USER,
-    args,
-    cwd,
-    env: { USER: 'a' },
-    stdout: { write(s) { stdout += s; } },
-    stderr: { write(s) { stderr += s; } },
-    vfs: files.view({ pid: 7, cred: CRED_SESSION_USER }),
-  }, vfs, doCtx, doEnv);
-  return { code, stdout: stdout.replace(/\x1b\[[0-9;]*m/g, ''), stderr };
-}
-
-/** The session repository's objects, by host git: materialize .git and ask. */
-function sessionObjects(root) {
-  const out = mkdtempSync(join(work, 'objects-'));
-  const copy = (key) => {
-    for (const entry of kernel.readdir(key)) {
-      const child = key + '/' + (typeof entry === 'string' ? entry : entry.name);
-      const target = join(out, child.slice(root.length));
-      if (kernel.stat(child).type === 'directory') { mkdirSync(target, { recursive: true }); copy(child); }
-      else writeFileSync(target, kernel.readFile(child));
-    }
-  };
-  mkdirSync(join(out, '.git'), { recursive: true });
-  copy(root + '/.git');
-  return { dir: out, objects: hostObjects(out) };
-}
-function hostObjects(dir) {
-  return hostGit(dir, ['cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype)']).trim().split('\n').sort();
-}
+const hostGit = (cwd, args) => hostGitIn(work, cwd, args);
+const hostObjects = (dir) => hostObjectsIn(work, dir);
+const { kernel, git, requests, doCtx, doEnv, sessionObjects } = await createFacetSession(work);
 
 try {
   const source = join(work, 'source');

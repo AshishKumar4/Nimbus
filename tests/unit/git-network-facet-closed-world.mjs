@@ -21,6 +21,10 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { answerPlainDiscovery } from './lib/plain-git-server.mjs';
+
+// The clones here take the single-stream path: their server offers no filter.
+answerPlainDiscovery();
 
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-closed-world-'));
 

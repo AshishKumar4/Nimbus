@@ -11,6 +11,10 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { answerPlainDiscovery } from './lib/plain-git-server.mjs';
+
+// The clones here take the single-stream path: their server offers no filter.
+answerPlainDiscovery();
 
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
 // second full copy of the file beside the writeBuffer original: chunk-record
