@@ -52,15 +52,16 @@ for (const path of SAMPLES) {
     `ours ${JSON.stringify(got.slice(-120))}, github cksum ${local.join(' ')}`);
 }
 
-// 4. Every indexed path is in the worktree.
+// 4. The worktree holds exactly the indexed paths (counted: ls-files quotes
+//    unusual names, as git does, so names are not compared one by one).
 {
   const out = stripAnsi((await t.run(
-    `echo INDEXED=$(git ls-files | wc -l) PRESENT=$(git ls-files | while read -r p; do [ -e "$p" ] || [ -L "$p" ] || echo missing; done | wc -l)`,
+    `echo INDEXED=$(git ls-files | wc -l) PRESENT=$(find . -path ./.git -prune -o \\( -type f -o -type l \\) -print | wc -l)`,
     STATUS_BOUND_MS)).output);
-  const indexed = Number((out.match(/INDEXED=(\d+)/) ?? [])[1]);
-  const missing = Number((out.match(/PRESENT=(\d+)/) ?? [])[1]);
+  const indexed = Number((out.match(/INDEXED=\s*(\d+)/) ?? [])[1]);
+  const present = Number((out.match(/PRESENT=\s*(\d+)/) ?? [])[1]);
   a.check('the index lists the tree (over 20,000 paths)', indexed > 20_000, out.slice(-200));
-  a.check('every indexed path exists', missing === 0, `${missing} missing`);
+  a.check('the worktree holds exactly the indexed files', present === indexed, `indexed ${indexed}, present ${present}`);
 }
 
 // 5. git status is clean, bounded, and the session survives it.
