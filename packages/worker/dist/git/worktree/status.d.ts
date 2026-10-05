@@ -31,7 +31,7 @@ export declare function holdsSpec(specs: readonly string[], dir: string): boolea
 export declare function walkTreeAndIndex(store: ObjectStore, tree: string, dc: DirCache, specs: readonly string[], visit: (path: string, leaf: Leaf | null, lo: number, hi: number) => Promise<void> | void, { cacheTree, build }?: {
     cacheTree?: CacheTree | null;
     build?: boolean;
-}): Promise<CacheTree | null>;
+}): Promise<Uint8Array | null>;
 /** One path's line: its two columns (or its unmerged code) and, for a rename, where it came from. */
 export interface StatusChange {
     path: string;

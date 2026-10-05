@@ -8,7 +8,7 @@
  * once at the end as git's string lists sort them.
  */
 import { detectRenames, quotePath } from '../unified-diff.js';
-import { addSubtree, cacheSubtree } from './cachetree.js';
+import { encodeNode } from './cachetree.js';
 import { comparePaths, compareBytes, decodePath, S_IFMT } from './dircache.js';
 import { S_IFDIR, readTree } from './tree.js';
 import { scanWorktree } from './walk.js';
@@ -37,13 +37,18 @@ export function holdsSpec(specs, dir) {
 export async function walkTreeAndIndex(store, tree, dc, specs, visit, { cacheTree = null, build = false } = {}) {
     const join = (dir, name) => (dir ? `${dir}/${name}` : name);
     const entered = (dir) => inSpecs(specs, dir) || holdsSpec(specs, dir);
-    /** One directory: `treeOid` (null for none) against the index's [lo, hi) below it. */
+    /**
+     * One directory: `treeOid` (null for none) against the index's [lo, hi)
+     * below it, `node` its cache-tree node (-1 for none). With `build`, the
+     * directory's cache-tree node as written, when it has one.
+     */
     const walk = async (dir, treeOid, lo, hi, node) => {
-        if (treeOid !== null && node !== null && node.count >= 0 && node.oid === treeOid && node.count === hi - lo) {
-            return { same: true, built: node };
+        if (cacheTree !== null && node >= 0 && treeOid !== null && cacheTree.count(node) === hi - lo && cacheTree.oid(node) === treeOid) {
+            return { same: true, built: build ? cacheTree.nodeBytes(node) : null };
         }
         const entries = treeOid === null ? [] : await readTree(store, treeOid);
-        const built = build ? { count: -1, oid: null, subtrees: [] } : null;
+        const subtrees = cacheTree !== null && node >= 0 ? cacheTree.subtrees(node) : null;
+        const built = build ? [] : null;
         let same = treeOid !== null;
         const skip = dir ? encoder.encode(dir).length + 1 : 0;
         let t = 0;
@@ -85,10 +90,11 @@ export async function walkTreeAndIndex(store, tree, dc, specs, visit, { cacheTre
                     same = false;
                     continue;
                 }
-                const sub = await walk(path, subtree ? entry.oid : null, indexLo, indexHi, subtree && order === 0 ? cacheSubtree(node, name) : null);
+                const child = subtree && order === 0 ? subtrees?.get(name) ?? -1 : -1;
+                const sub = await walk(path, subtree ? entry.oid : null, indexLo, indexHi, child);
                 same &&= sub.same && order === 0;
                 if (built && sub.built)
-                    addSubtree(built, name, sub.built);
+                    built.push(sub.built);
                 continue;
             }
             const leaf = order <= 0 ? { path, mode: entry.mode, oid: entry.oid } : null;
@@ -97,13 +103,12 @@ export async function walkTreeAndIndex(store, tree, dc, specs, visit, { cacheTre
             if (inSpecs(specs, path))
                 await visit(path, leaf, indexLo, indexHi);
         }
-        if (built && same && treeOid !== null) {
-            built.count = hi - lo;
-            built.oid = treeOid;
-        }
-        return { same, built: built && (built.count >= 0 || built.subtrees.length) ? built : null };
+        if (!built || (!(same && treeOid !== null) && built.length === 0))
+            return { same, built: null };
+        const valid = same && treeOid !== null;
+        return { same, built: encodeNode(dir.slice(dir.lastIndexOf('/') + 1), valid ? hi - lo : -1, valid ? treeOid : null, built) };
     };
-    return (await walk('', tree, 0, dc.count, cacheTree)).built;
+    return (await walk('', tree, 0, dc.count, cacheTree === null ? -1 : cacheTree.root)).built?.bytes ?? null;
 }
 const UNMERGED = ['', 'DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'];
 /** wt_status_collect: every changed path, then the untracked ones, each list in git's order. */
