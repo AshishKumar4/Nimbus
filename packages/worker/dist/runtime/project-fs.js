@@ -44,6 +44,9 @@ export function projectFs(view) {
         lstat: (key) => statOf(key, false),
         readFile: (key) => view.readFile(at(key)),
         readFileString: (key) => view.readFileString(at(key)),
+        // A pack is read a range at a time, past the content cache: a clone's
+        // packs would evict the session's working set.
+        readRangeUncached: (key, offset, length) => view.readRangeUncached(at(key), offset, length),
         readdir: (key) => view.readdir(at(key)),
         writeFile: (key, content, options) => view.writeFile(at(key), content, options),
         mkdir: (key, options) => view.mkdir(at(key), options),

@@ -25,6 +25,12 @@
  * in the PR that introduced this file.
  */
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
+/**
+ * The clone's job marker, in its git directory from prepare until the clone
+ * is whole: the proof an abort needs that the destination is the clone's,
+ * and what tells every other git command the repository is not yet one.
+ */
+export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
 export interface GitNetworkOpts {
     op: GitNetworkOp;
     /** Invoking process identity used to bind every supervisor filesystem RPC. */

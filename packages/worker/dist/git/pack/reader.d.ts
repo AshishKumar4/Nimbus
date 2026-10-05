@@ -9,7 +9,6 @@
  * object costs its entry's bytes, the deltas of its chain, and the
  * delta-base cache's budget.
  */
-import { ByteLru } from './byte-lru.js';
 import { type GitObjectType, type ObjectHeader } from './format.js';
 /** A range of a file's bytes; the answer is exactly those bytes, clipped to the file's end. */
 export interface PackRange {
@@ -33,6 +32,11 @@ export interface PackEntry {
     /** The entry's bytes in the pack, header included (what its CRC covers). */
     packed: Uint8Array;
 }
+/** Resolved objects of one pack, by offset (a ByteLru, or a view of one shared by several packs). */
+export interface BaseCache {
+    get(offset: number): CachedObject | undefined;
+    set(offset: number, object: CachedObject): void;
+}
 /** A ref-delta's base is not in this pack and nothing else supplied it. */
 export declare class MissingBaseError extends Error {
     readonly baseOid: Uint8Array;
@@ -50,7 +54,7 @@ export interface PackObjectResolverOptions {
     /** Offset of the pack's trailer: where object data ends. */
     dataEnd: number;
     /** Resolved objects by pack offset, shared by every read of this pack. */
-    cache: ByteLru<number, CachedObject>;
+    cache: BaseCache;
     /** A ref-delta's base, by id; MissingBaseError when there is none. */
     refBase(oid: Uint8Array): PackRead<RefBase>;
 }
