@@ -513,10 +513,13 @@ export class Shell {
     const cred = overrides?.['cred'];
     const setUmask = overrides?.['setUmask'];
     const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
-    const accountWork = this.commandIdentity.accountWork;
+    const base = this.commandIdentity;
+    const accountWork = base.accountWork;
     return {
       pid: resolvedPid,
-      cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
+      // Read when used, as the shell's own identity is: the process's
+      // credentials can change while a line runs.
+      get cred() { return isVfsCred(cred) ? cred : base.cred; },
       setUmask: typeof setUmask === 'function'
         ? (mask) => setUmask(mask)
         : this.commandIdentity.setUmask,
