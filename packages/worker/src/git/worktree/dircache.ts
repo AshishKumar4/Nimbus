@@ -69,7 +69,8 @@ export interface IndexEdit {
 
 /** The filesystem calls reading and writing the index make (ProjectFs's). */
 export interface IndexFs {
-  readFile(path: string): Promise<Uint8Array> | Uint8Array;
+  /** The file's bytes, a buffer of the caller's own, past the content cache. */
+  readFileUncached(path: string): Promise<Uint8Array> | Uint8Array;
   writeFile(path: string, content: Uint8Array): Promise<void> | void;
   lstat(path: string): Promise<{ mtime: number }> | { mtime: number };
 }
@@ -146,13 +147,12 @@ export class IndexFormatError extends Error {}
 export class DirCache {
   /** Entries verified against the worktree by this command: never smudged (CE_UPTODATE). */
   private readonly uptodate: Uint8Array;
-  /** The bytes are this object's own (a refresh patches them). */
-  private owned = false;
   /** A stat refresh happened: the index is worth writing. */
   refreshed = false;
 
+  /** `bytes` are this index's own: a refresh patches them. */
   private constructor(
-    private bytes: Uint8Array,
+    private readonly bytes: Uint8Array,
     private readonly offsets: Uint32Array,
     readonly version: number,
     readonly timestamp: number,
@@ -176,7 +176,7 @@ export class DirCache {
     let mtime: number;
     try {
       mtime = (await fs.lstat(file)).mtime;
-      bytes = await fs.readFile(file);
+      bytes = await fs.readFileUncached(file);
     } catch {
       return DirCache.empty();
     }
@@ -370,10 +370,6 @@ export class DirCache {
 
   /** fill_stat_cache_info: entry `i` takes the file's fresh stat, its content having matched. */
   refresh(i: number, stat: EntryStat): void {
-    if (!this.owned) {
-      this.bytes = this.bytes.slice();
-      this.owned = true;
-    }
     writeStat(this.bytes, this.offsets[i], stat);
     this.uptodate[i] = 1;
     this.refreshed = true;
@@ -398,14 +394,17 @@ export class DirCache {
     const pieces: Uint8Array[] = [];
     let extended = false;
     let a = 0;
+    let count = 0;
+    let runEnd = -1;
     for (let i = 0; i <= this.count; i++) {
       const key = i < this.count ? this.pathBytes(i) : null;
       // New entries before this one; one at its path replaces it.
       while (a < added.length && (key === null || compareBytes(added[a].key, key) <= 0)) {
         const { entry, key: name, stage } = added[a++];
-        const piece = encodeEntry(entry, name, stage);
         extended ||= entry.skipWorktree === true;
-        pieces.push(piece);
+        pieces.push(encodeEntry(entry, name, stage));
+        runEnd = -1;
+        count++;
       }
       if (key === null) break;
       if (removed.has(i)) continue;
@@ -419,7 +418,15 @@ export class DirCache {
       }
       // An entry is copied in its own layout: one with the second flags word keeps the file at version 3.
       extended ||= (this.flags(i) & EXTENDED) !== 0;
-      pieces.push(piece);
+      // Entries kept one after another are copied as one run (version 4 re-encodes each name, so it keeps them apart).
+      const last = pieces[pieces.length - 1];
+      if (this.version !== 4 && last !== undefined && runEnd === start && last.buffer === piece.buffer && piece.byteOffset === last.byteOffset + last.length) {
+        pieces[pieces.length - 1] = this.bytes.subarray(start - last.length, end);
+      } else {
+        pieces.push(piece);
+      }
+      runEnd = end;
+      count++;
     }
     const changed = removed.size > 0 || added.length > 0;
     const extensions = this.extensions.filter(({ signature }) =>
@@ -434,7 +441,7 @@ export class DirCache {
     const view = new DataView(out.buffer);
     out.set(encoder.encode('DIRC'));
     view.setUint32(4, version);
-    view.setUint32(8, pieces.length);
+    view.setUint32(8, count);
     let at = HEADER_BYTES;
     for (const piece of body) {
       out.set(piece, at);

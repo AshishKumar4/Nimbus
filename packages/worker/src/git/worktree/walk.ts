@@ -15,6 +15,9 @@
  * memory follows the tree's depth and its widest directory, not its size.
  */
 
+import { createHash } from 'node:crypto';
+
+import { oidToHex } from '../pack/format.js';
 import { DirCache, EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId, type EntryStat } from './dircache.js';
 import type { Excludes } from './excludes.js';
 
@@ -32,6 +35,8 @@ export interface WorktreeFs {
   list(dir: string): Promise<Array<{ name: string; type: WorktreeType }>>;
   lstat(path: string): Promise<WorktreeStat | null>;
   readFile(path: string): Promise<Uint8Array>;
+  /** Bytes [offset, offset + length), clipped to the file's end. */
+  readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
   readlink(path: string): Promise<string>;
 }
 
@@ -75,6 +80,27 @@ export async function worktreeBlob(tree: Worktree, path: string, type: WorktreeT
   } catch {
     return data;
   }
+}
+
+/** A file is hashed this many bytes at a time, past this size: a big file is never held whole to be compared. */
+const HASH_CHUNK = 1 << 20;
+
+/** The id of the blob git would store for the file or link at `path`, `st` its lstat. */
+export async function worktreeBlobId(tree: Worktree, path: string, st: WorktreeStat): Promise<string> {
+  if (st.type !== 'file' || tree.autocrlf || st.size <= HASH_CHUNK) {
+    return objectId('blob', await worktreeBlob(tree, path, st.type));
+  }
+  tree.counters.filesRead++;
+  const hash = createHash('sha1').update(encoder.encode(`blob ${st.size}\0`));
+  for (let offset = 0; offset < st.size;) {
+    const chunk = await tree.fs.readRange(path, offset, Math.min(HASH_CHUNK, st.size - offset));
+    // Shorter than its stat said: the file changed under the read, and so is not the blob.
+    if (chunk.length === 0) return '';
+    hash.update(chunk);
+    offset += chunk.length;
+    tree.counters.bytesRead += chunk.length;
+  }
+  return oidToHex(hash.digest());
 }
 
 /** The index mode of a worktree file (ce_mode_from_stat): without a trusted exec bit a file keeps `indexMode`. */
@@ -150,8 +176,8 @@ export async function compareEntry(tree: Worktree, dc: DirCache, i: number, path
   }
   // The size moved on an entry that recorded one: modified, with nothing read.
   if ((changed & DATA) && dc.size(i) !== 0) return { change: 'M', stat: st };
-  const oid = objectId('blob', await worktreeBlob(tree, path, st.type));
-  if (oid !== dc.oid(i)) return { change: 'M', stat: st, oid };
+  const oid = await worktreeBlobId(tree, path, st);
+  if (oid !== dc.oid(i)) return { change: 'M', stat: st, oid: oid || undefined };
   dc.refresh(i, st);
   return null;
 }

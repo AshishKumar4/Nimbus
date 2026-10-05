@@ -15,7 +15,7 @@ import type { GitPacksSeam } from '../pack/store.js';
 import { DirCache, objectId, type IndexEdit } from './dircache.js';
 import { Excludes, parsePatternList, type PatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf, type ObjectStore } from './tree.js';
-import { matchStat, newCounters, worktreeBlob, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
+import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
 
 /** The cf-git calls a repository makes. */
 export interface RepoGit {
@@ -79,7 +79,9 @@ export class WorktreeRepo {
           dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid,
         } satisfies WorktreeStat;
       },
-      readFile: async (path) => await vfs.readFile(at(path)),
+      // Read once to be hashed or stored: past the content cache, which keeps the session's working set.
+      readFile: async (path) => await vfs.readFileUncached(at(path)),
+      readRange: async (path, offset, length) => await vfs.readRangeUncached(at(path), offset, length),
       readlink: async (path) => await vfs.readlink(at(path)),
     };
     const loose = (oid: string) => `${gitdir}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
@@ -199,7 +201,7 @@ export class WorktreeRepo {
       const st = await this.fs.lstat(path);
       // Gone, or already stat-dirty: the next look reads it anyway.
       if (st === null || matchStat(dc, i, st, tree.filemode) !== 0) continue;
-      if (objectId('blob', await worktreeBlob(tree, path, st.type)) !== dc.oid(i)) smudged.add(i);
+      if (await worktreeBlobId(tree, path, st) !== dc.oid(i)) smudged.add(i);
     }
     return smudged;
   }

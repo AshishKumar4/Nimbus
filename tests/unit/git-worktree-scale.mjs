@@ -128,7 +128,7 @@ async function run(count) {
       if (typeof value !== 'function') return value;
       return (...args) => {
         sample();
-        if ((key === 'readFile' || key === 'readRange') && typeof args[0] === 'string'
+        if (/^read(File|Range)(Uncached)?$/.test(String(key)) && typeof args[0] === 'string'
           && args[0].startsWith(`${virtual}/`) && !args[0].includes('/.git/') && !args[0].endsWith('/.gitignore')) reads++;
         return value.apply(target, args);
       };

@@ -38,11 +38,11 @@ import {
   type StatFile,
 } from './unified-diff.js';
 import { CheckoutRefused, switchTrees, type CheckoutWriter } from './worktree/checkout.js';
-import { DirCache, comparePaths, objectId, type IndexEdit, type NewEntry } from './worktree/dircache.js';
+import { DirCache, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
 import { collectStatus, formatShortStatus, inSpecs, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
-import { modeFromStat, newCounters, scanWorktree, worktreeBlob, type Dirty, type WalkCounters } from './worktree/walk.js';
+import { modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, type Dirty, type WalkCounters } from './worktree/walk.js';
 
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,
@@ -1668,7 +1668,7 @@ async function changedPairs(wrepo: WorktreeRepo, dc: DirCache, base: DiffBase, s
     // A missing file, or a directory where the file was, is a deletion.
     if (st === null || st.type === 'directory' || st.type === 'other') return null;
     const path = dc.path(i);
-    const oid = dirty.oid ?? objectId('blob', await worktreeBlob(tree, path, st.type));
+    const oid = dirty.oid ?? await worktreeBlobId(tree, path, st);
     return { path, oid, mode: modeFromStat(st, dc.mode(i), tree.filemode), worktree: true };
   };
   const dirty = base.kind === 'tree' && base.cached
