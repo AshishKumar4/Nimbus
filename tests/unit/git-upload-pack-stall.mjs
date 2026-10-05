@@ -42,4 +42,13 @@ function respondWith(start) {
   }, (error) => error instanceof UploadPackError && /broke off: connection reset/.test(error.message));
 }
 
+{
+  // No response at all: the request gives up after the stall time, each of its attempts.
+  const fetch = () => new Promise(() => {});
+  const started = Date.now();
+  await assert.rejects(requestPack({ url: 'https://example.invalid/r.git', fetch, stallMs: 100 }, advertised, { wants }),
+    (error) => error instanceof UploadPackError && /no response for/.test(error.message));
+  assert.ok(Date.now() - started < 5000);
+}
+
 console.log('git-upload-pack-stall: ok');
