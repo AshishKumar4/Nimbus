@@ -5,6 +5,158 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's `child_process` children ran one at a time. Every
+  spawn was relayed through a Worker Loader pool of one slot, and the
+  relay's call stayed open for the child's whole life, so a child that does
+  not exit (a dev server, a watcher, a language server) held back every
+  later spawn. A parent that spawned A (`setTimeout(…, 15000)`) and then B
+  (`console.log`) saw B at 15.9 s on a local workerd, where host node
+  prints it at 37 ms. Killing A freed nothing: its program ran on to its
+  own end, holding the slot and its Dynamic Worker. A child that spawned a
+  grandchild and waited for it deadlocked. A child still running at 120 s
+  was reported closed, status 1, with `spawn-pool: Task exceeded 120000ms
+  deadline` on its stderr, while it ran on. Children now run beside each
+  other, dispatched from the session itself: B prints at 1.2 s, about the
+  time a child takes alone; a child spawned after a kill runs at once; a
+  nested spawn finishes; a child runs as long as it runs. On a deployed
+  Worker, B printed at 218 ms beside a live 20 s A (a child alone: 260 ms),
+  where it had waited 20.5 s. A kill ends the work behind the child's pid
+  (its run is aborted, its Dynamic Worker given back), and the process
+  table records it `killed`. The relay's supervisor RPC,
+  `cpDispatchInline`, is gone with it; it ran a command as whatever pid
+  its caller named.
+- A one-shot program (`node -e`, a `child_process` child, a shell job) is
+  let in by the Dynamic Worker ledger. While the Durable Object has its 10
+  Dynamic Workers in flight, the program waits for a release to make room,
+  before its module map is assembled, where it used to start anyway and be
+  refused by the platform. A burst of 14 children runs 10 wide and
+  completes. Only a kill, Ctrl-C, or the ledger's refusal of a wait nothing
+  can satisfy (below) ends the wait.
+- A wait for a Dynamic Worker that no release can satisfy is refused rather
+  than left to wait for good. Who waits on whom is the session's own
+  account, never pids a guest names: a guest holding a worker waits on its
+  running children in the process table; a shell line running in the
+  session (`sh -c 'node x'`, an npm script under `npm run`, a command run
+  as another user) waits on the programs it started, when awaiting them is
+  all its commands are doing. Every command counts as work for the pid it
+  runs as, whichever shell runs it, and an npm script runs on a shell of
+  its own under its wrapper's pid, which its `npm run` awaits (before, nine
+  `sh -c 'npm run build'` children, each awaiting a queued grandchild,
+  hung with the limit full). Between two commands, a line is the shell's
+  own work: each thread of a line (the line, an element of a pipeline, a
+  background job) holds a unit whenever none of its commands runs, handed
+  to the next command before it is let go, so the count never dips while a
+  step is still to run, whichever turn it starts on (before, in
+  `node x | (sleep 10; kill $(cat x.pid))` the line looked wait-only the
+  instant `sleep` ended, and the ledger refused a grandchild the `kill`
+  was about to make room for). A guest says when its only remaining
+  work is waiting on its children (its event loop, top-level `await`
+  included, has no timer, socket, server, stdin read or fetch of its own
+  pending). The session numbers each piece of news of a guest's children as
+  it is produced (a start, output, the end of a stream, an exit, a refused
+  spawn); the reply that delivers it carries the number, and the guest
+  acknowledges the contiguous run it has applied, whatever order the
+  replies came in. Its report counts only while that run is everything
+  issued, and a report older than the last taken is dropped. A process is
+  stuck when it is in that state and each process it waits on is queued for
+  a worker or stuck too; a builtin running (`sleep`) never is. When every
+  worker in flight is held by a stuck process, the newest queued process a
+  stuck one waits on is refused, never on the synchronous path of the
+  change that showed it: the decision is taken on a later turn, on the
+  ledger as it is then. That child's spawn fails as Node's does at
+  a process limit: an 'error' event (`spawn node EAGAIN`, errno -11), no
+  'spawn', no 'exit', no pid, and 'close' with -11. Its program never runs;
+  whoever waits on it hears it and can go on. Nine children each doing
+  nothing but wait on a grandchild (in a callback, a top-level `await`, or
+  under `sh -c`) get one EAGAIN and eight runs; the same nine with a
+  `process.exit(0)` scheduled keep waiting and complete; two `spawnSync`
+  chains that fill the limit get one EAGAIN and both finish. A process that
+  does not say (a resident, a non-Node runtime) is taken to end on its own.
+  The protocol is checked over every interleaving of reports, news (sent and
+  delivered out of order), exits, admissions and refusals for small
+  families, wired to production: the real ledger, the session's process
+  table and its work and await accounting, and the guest's news tracker
+  from the very source the shims embed (`dynamic-worker-protocol-model*`);
+  mutants of each are caught.
+- A child's pid is published, and 'spawn' emitted, once the session has
+  admitted it or its first output arrives, as Node publishes them only for
+  a spawn that succeeded and always before the child's output; a refused
+  child never has either, and has one 'error', whichever of the parent's
+  waits hears of the refusal, or both (the exit-time drain gave it an
+  'exit' with -11, and both hearing it gave two 'error's).
+- Fixed: a `child_process` child ended by a signal reported the shell's
+  status to its parent. 'exit' and 'close' gave (143, 'SIGTERM') for every
+  signal but SIGKILL (137), SIGINT included, and `exitCode` was 143. They
+  now give Node's (null, signal) for `kill()`, `kill('SIGKILL')`,
+  `kill('SIGINT')` and any other terminating signal, by name or number;
+  `exitCode` is null and `signalCode` names the signal. The process table
+  keeps the status, 128+signo. `kill()` on a child that has exited returns
+  false, as Node's does. spawn, spawnSync, exec and execFile take `timeout`
+  and `killSignal`: spawnSync's result is then `status: null` with the
+  signal and an ETIMEDOUT `error`. execFile's and exec's error carries
+  `code: null`, `signal`, `killed` and `cmd`, with Node's message
+  (`Command failed: <cmd>` and the child's stderr), and a spawn's own error
+  reaches their callback. The parent's view is compared with host node's.
+- Fixed: a child spawned right after its parent wrote a file could miss
+  the write. A synchronous write is parked in the parent until a write-back
+  carries it to the session; a child spawned at once could launch first and
+  fail `cannot find module` on the script its parent had just written (the
+  first of eight such children, every run). The parent's parked writes now
+  reach the session before a child is launched, and before anything is
+  written to a child's stdin, as they already did before a fetch or a
+  socket frame.
+- Fixed: a child whose output its parent never read exited but never
+  closed: its unread stderr (an error message) held 'close' back for good,
+  and a parent waiting for 'close' waited with it. Unread output is now
+  drained after 'exit', as Node's `flushStdio` does, and 'close' follows; a
+  stream a consumer reads in readable mode (an async iterator until it
+  completes, a 'readable' listener while one is attached) is left to it,
+  as Node leaves one; once the last 'readable' listener is removed, it is
+  drained again. A failing child's
+  exit no longer prints a dump of its output to the terminal either: its
+  output and its end are its parent's to report.
+- Fixed: `process.exit()` in a `child_process` child whose stdin was still
+  open did not end it. The child had read its input and exited 0, but its
+  run then waited for its stdin pump, which ends only when the parent ends
+  the pipe: the child never closed, its Dynamic Worker stayed held, and
+  nine such children with their parent wedged the session (every later
+  launch waited for room). No input was lost: traced per child, the broker
+  queued 3 bytes, the child took 3 and printed them. A program that calls
+  `process.exit()` now ends at once, its stdin included. So does a parent
+  that calls it while a child it listens to still runs; it used to wait
+  for that child to close. Both are compared with host node.
+- Fixed: after `npm install` in a session, every later `child_process`
+  child hung, even `console.log('x')`, while terminal one-shots ran. A
+  launch too large for one Durable Object turn (the installed tree made
+  every launch in it one) is paced across turns, and the turn that granted
+  its last chunk was held until the program ended: the session's launch
+  alarm was held for the parent's whole run, and the child, whose launch
+  needed a turn of its own, never got one. The turn is released once the
+  program is loaded and entered, as a resident launch's is once it has
+  booted. On a local workerd the child printed in 1.75 s after
+  `npm install ioredis`, where it was still waiting at 90 s.
+- Fixed: a `sh` child (`spawn('sh', ...)`, `exec`) ran on the session's own
+  shell, which saved and restored its cwd and variables around the line.
+  With children running at once, two of them read and restored each
+  other's state (one's `$TAG` and `pwd` were the other's), and the eleventh
+  at once was refused as recursion. Each now runs on a shell of its own
+  (`NimbusWorkspace.shellFor`), from its own cwd and environment, whose
+  descriptors close as it ends.
+- A child's launch is admitted once on the Dynamic Worker ledger, before
+  its preparation: its transform, its prebundle and its program are that
+  one worker in turn, so its preparation never waits on room its own
+  admission holds. The program claims the admission whatever pid its
+  runtime runs it as (Bun's runner allocates its own; a Python, Ruby or
+  wasm runtime dispatches to a pool), where a `bun -e` child taking the
+  tenth worker waited for room its own admission held. A transform, build
+  or esbuild call outside a launch waits its turn. Before, the transform
+  facet of `node child.ts`, spawned with the limit full, was an eleventh
+  worker the platform refused, and the child exited 1.
+- Killing a child runs the session's own kill of its pid before the broker
+  stamps the exit: its ports, RPC resources and relayed sockets are
+  released, and its exit reported to its parent rather than the terminal.
+  A child killed before its program started never starts it.
+
 ## 2026-10-05: core 0.15.1, worker 0.13.2
 
 - Fixed: `build()` and `transform()` refused any `tsconfigRaw` (Kinu ask),

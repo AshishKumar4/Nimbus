@@ -100,6 +100,13 @@ export interface ShellCommandIdentity {
   cred: VfsCred;
   setUmask(mask: number): void;
   runAs?: CommandRunAsHost;
+  /**
+   * A unit of process `pid`'s own work, while a command runs as it
+   * (interpreter CommandIdentity.beginWork; SessionProcessSupervisor.beginWork).
+   * Session-wide: every command counts for the pid it runs as, whichever
+   * shell runs it, so no command of a process goes uncounted.
+   */
+  accountWork?(pid: number): () => void;
 }
 
 export class Shell {
@@ -501,17 +508,25 @@ export class Shell {
     }
   }
 
-  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity {
+  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity & { beginWork?(): () => void } {
     const pid = overrides?.['pid'];
     const cred = overrides?.['cred'];
     const setUmask = overrides?.['setUmask'];
+    const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
+    const base = this.commandIdentity;
+    const accountWork = base.accountWork;
     return {
-      pid: typeof pid === 'number' ? pid : this.commandIdentity.pid,
-      cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
+      pid: resolvedPid,
+      // Read when used, as the shell's own identity is: the process's
+      // credentials can change while a line runs.
+      get cred() { return isVfsCred(cred) ? cred : base.cred; },
       setUmask: typeof setUmask === 'function'
         ? (mask) => setUmask(mask)
         : this.commandIdentity.setUmask,
       runAs: this.commandIdentity.runAs,
+      accountWork,
+      // Counted for the pid the command runs as, whichever it is.
+      ...(accountWork ? { beginWork: () => accountWork(resolvedPid) } : {}),
     };
   }
 
@@ -1114,7 +1129,7 @@ export class Shell {
     try {
       await this.interpreter.executeLine(actualLine, this.terminalStdin, {
         interactive: true,
-        commandIdentity: this.commandIdentity,
+        commandIdentity: this.resolveCommandIdentity(undefined),
         runAs: this.commandIdentity.runAs,
         signal: this.abortController.signal,
       });

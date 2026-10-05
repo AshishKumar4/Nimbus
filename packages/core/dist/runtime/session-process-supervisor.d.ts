@@ -85,6 +85,46 @@ export declare class SessionProcessSupervisor {
     getAll(): ProcessEntry[];
     /** Every process spawned under `pid`, transitively, oldest first. */
     descendantsOf(pid: number): ProcessEntry[];
+    /** `pid`'s running children, oldest first. */
+    childrenOf(pid: number): number[];
+    /** `pid` → its units of in-flight work. */
+    private readonly works;
+    /** `pid` → the children it awaits, with how many awaits on each. */
+    private readonly awaiting;
+    /** Fires when what a process waits on may have changed; see setOnWaitChange. */
+    private onWaitChange;
+    /** Told when what a process waits on may have changed (a work or an await ended, a process ended). */
+    setOnWaitChange(cb: (() => void) | null): void;
+    /** `pid` has a unit of in-flight work of its own until the returned function is called. */
+    beginWork(pid: number): () => void;
+    /**
+     * `pid` awaits its child `child`'s end, as one unit of its work, until
+     * the returned function is called or either process ends.
+     */
+    beginAwait(pid: number, child: number): () => void;
+    /**
+     * This table as the Dynamic Worker ledger reads it (fabric
+     * ProcessWaitGraph, bindProcessWaitGraph): a process's running children,
+     * and what a process holding no worker awaits. Paired with
+     * setOnWaitChange(processWaitGraphChanged). One binding for the session
+     * and for the ledger's protocol model, so the model reads the accounting
+     * the session keeps.
+     */
+    waitGraph(): {
+        children(pid: number): number[];
+        awaits(pid: number): number[] | null;
+    };
+    /**
+     * The children `pid` awaits, when awaiting them is every unit of its own
+     * in-flight work; null when it has other work, or none.
+     */
+    awaitsOnly(pid: number): number[] | null;
+    /**
+     * An ended process awaits nothing, and nothing awaits it any more; and it
+     * is no longer among its parent's running children. Told as a change even
+     * when it awaited nothing: the children are part of what the ledger reads.
+     */
+    private forgetWaits;
     /**
      * Register how to stop the work behind `pid`. Background jobs started
      * through the programmatic API run as a promise held by this session, so

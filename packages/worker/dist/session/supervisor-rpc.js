@@ -796,18 +796,20 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async cpKill(childPid, signal) {
         return this._call(this._op('cpKill', [childPid, signal]));
     }
-    async cpWait(childPid, waitMs, acquire) {
-        return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+    /**
+     * The child's end; with `knownStarted` false, also its start, as soon as
+     * it comes (`started`), for a parent that emits 'spawn' on it.
+     */
+    async cpWait(childPid, waitMs, acquire, knownStarted) {
+        return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this._reportingPid() }));
     }
     /**
-     * child-process isolation gap #1: dispatch a single cp.spawn request inline using
-     * the existing pure-builtin / facet-direct logic, returning final
-     * stdout/stderr/exitCode (NOT streamed via hooks). Called from
-     * spawn-facet.ts:runSpawnInIsolate inside a fresh Worker Loader
-     * isolate to delegate the actual command execution back to the
-     * supervisor while keeping the dispatch envelope in a fresh isolate.
+     * This process says whether its only remaining work is waiting on its own
+     * children, and the contiguous run of news numbers it has applied (the
+     * session's Dynamic Worker ledger tells a wait no release can satisfy by
+     * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
      */
-    async cpDispatchInline(req, kind) {
-        return this._call(this._op('cpDispatchInline', [req, kind]));
+    async cpBlocked(report) {
+        return this._call(this._op('cpBlocked', [report], { pid: this._pid() }));
     }
 }

@@ -133,6 +133,115 @@ export class SessionProcessSupervisor {
     return this.table.descendantsOf(pid);
   }
 
+  /** `pid`'s running children, oldest first. */
+  childrenOf(pid: number): number[] {
+    return this.table.getRunning()
+      .filter((entry) => entry.parentPid === pid)
+      .sort((a, b) => a.startTime - b.startTime)
+      .map((entry) => entry.pid);
+  }
+
+  // ── What a process waits on ───────────────────────────────────────────
+  //
+  // A process running in the session (a shell line) holds no worker and
+  // reports nothing of itself; what it waits on is told here. Each unit of
+  // its own in-flight work (a command executing) is counted (beginWork), and
+  // so is each child it awaits (beginAwait, by whoever runs the child for
+  // it). When every unit of its work is such an await, it is doing nothing
+  // but wait on those children (awaitsOnly), and the Dynamic Worker ledger
+  // can tell whether that wait can ever end.
+
+  /** `pid` → its units of in-flight work. */
+  private readonly works = new Map<number, number>();
+  /** `pid` → the children it awaits, with how many awaits on each. */
+  private readonly awaiting = new Map<number, Map<number, number>>();
+  /** Fires when what a process waits on may have changed; see setOnWaitChange. */
+  private onWaitChange: (() => void) | null = null;
+
+  /** Told when what a process waits on may have changed (a work or an await ended, a process ended). */
+  setOnWaitChange(cb: (() => void) | null): void {
+    this.onWaitChange = cb;
+  }
+
+  /** `pid` has a unit of in-flight work of its own until the returned function is called. */
+  beginWork(pid: number): () => void {
+    this.works.set(pid, (this.works.get(pid) ?? 0) + 1);
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      const left = (this.works.get(pid) ?? 1) - 1;
+      if (left > 0) this.works.set(pid, left);
+      else this.works.delete(pid);
+      this.onWaitChange?.();
+    };
+  }
+
+  /**
+   * `pid` awaits its child `child`'s end, as one unit of its work, until
+   * the returned function is called or either process ends.
+   */
+  beginAwait(pid: number, child: number): () => void {
+    let children = this.awaiting.get(pid);
+    if (!children) this.awaiting.set(pid, children = new Map());
+    children.set(child, (children.get(child) ?? 0) + 1);
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      const now = this.awaiting.get(pid);
+      const left = (now?.get(child) ?? 1) - 1;
+      if (now && left > 0) now.set(child, left);
+      else if (now) {
+        now.delete(child);
+        if (now.size === 0) this.awaiting.delete(pid);
+      }
+      this.onWaitChange?.();
+    };
+  }
+
+  /**
+   * This table as the Dynamic Worker ledger reads it (fabric
+   * ProcessWaitGraph, bindProcessWaitGraph): a process's running children,
+   * and what a process holding no worker awaits. Paired with
+   * setOnWaitChange(processWaitGraphChanged). One binding for the session
+   * and for the ledger's protocol model, so the model reads the accounting
+   * the session keeps.
+   */
+  waitGraph(): { children(pid: number): number[]; awaits(pid: number): number[] | null } {
+    return {
+      children: (pid) => this.childrenOf(pid),
+      awaits: (pid) => this.awaitsOnly(pid),
+    };
+  }
+
+  /**
+   * The children `pid` awaits, when awaiting them is every unit of its own
+   * in-flight work; null when it has other work, or none.
+   */
+  awaitsOnly(pid: number): number[] | null {
+    const works = this.works.get(pid) ?? 0;
+    const children = this.awaiting.get(pid);
+    if (works === 0 || !children) return null;
+    let awaits = 0;
+    for (const count of children.values()) awaits += count;
+    return awaits === works ? [...children.keys()] : null;
+  }
+
+  /**
+   * An ended process awaits nothing, and nothing awaits it any more; and it
+   * is no longer among its parent's running children. Told as a change even
+   * when it awaited nothing: the children are part of what the ledger reads.
+   */
+  private forgetWaits(pid: number): void {
+    this.works.delete(pid);
+    this.awaiting.delete(pid);
+    for (const [parent, children] of this.awaiting) {
+      if (children.delete(pid) && children.size === 0) this.awaiting.delete(parent);
+    }
+    this.onWaitChange?.();
+  }
+
   /**
    * Register how to stop the work behind `pid`. Background jobs started
    * through the programmatic API run as a promise held by this session, so
@@ -174,8 +283,9 @@ export class SessionProcessSupervisor {
   }
 
   private fireTerminal(pid: number, wasRunning: boolean): void {
-    if (!wasRunning || !this.onTerminalCb) return;
-    if (this.table.get(pid)?.state === 'running') return;
+    if (!wasRunning || this.table.get(pid)?.state === 'running') return;
+    this.forgetWaits(pid);
+    if (!this.onTerminalCb) return;
     try { this.onTerminalCb(pid); } catch { /* the process is gone regardless */ }
   }
 

@@ -1,7 +1,7 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { generateTransformFacetRuntimeSource, transformSlices, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
@@ -147,8 +147,10 @@ export function oxcTransformHost(ctx, env, stackFallback, { fallbackDeadlineMs =
         let facet = null;
         const outcomes = [];
         // The facet's worker is in flight for the whole batch, bracketed rather
-        // than wrapped (see beginLoaderFetch).
-        const endFetch = beginLoaderFetch(ctx, OXC_FACET_WORKER_ID);
+        // than wrapped (see beginLoaderFetch). Admitted on the ledger: the
+        // launch's own worker when a launch's preparation transforms, else its
+        // turn (beginHelperFetch).
+        const endFetch = await beginHelperFetch(ctx, OXC_FACET_WORKER_ID);
         try {
             for (const slice of transformSlices(requests, (request) => request.code.length)) {
                 let answered = null;

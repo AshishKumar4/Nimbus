@@ -397,13 +397,21 @@ export class Shell {
         const pid = overrides?.['pid'];
         const cred = overrides?.['cred'];
         const setUmask = overrides?.['setUmask'];
+        const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
+        const base = this.commandIdentity;
+        const accountWork = base.accountWork;
         return {
-            pid: typeof pid === 'number' ? pid : this.commandIdentity.pid,
-            cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
+            pid: resolvedPid,
+            // Read when used, as the shell's own identity is: the process's
+            // credentials can change while a line runs.
+            get cred() { return isVfsCred(cred) ? cred : base.cred; },
             setUmask: typeof setUmask === 'function'
                 ? (mask) => setUmask(mask)
                 : this.commandIdentity.setUmask,
             runAs: this.commandIdentity.runAs,
+            accountWork,
+            // Counted for the pid the command runs as, whichever it is.
+            ...(accountWork ? { beginWork: () => accountWork(resolvedPid) } : {}),
         };
     }
     /**
@@ -970,7 +978,7 @@ export class Shell {
         try {
             await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
-                commandIdentity: this.commandIdentity,
+                commandIdentity: this.resolveCommandIdentity(undefined),
                 runAs: this.commandIdentity.runAs,
                 signal: this.abortController.signal,
             });

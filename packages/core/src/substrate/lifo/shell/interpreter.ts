@@ -49,6 +49,7 @@ import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
+import { WorkThread } from './work-thread.js';
 
 // ─── Signal classes for control flow ───
 
@@ -206,6 +207,8 @@ type ExecutionIo = {
   /** Host-supplied fields merged into each command's CommandContext. */
   commandContext?: Record<string, unknown>;
   commandIdentity?: CommandIdentity;
+  /** The thread of control this runs on, as its process's work (WorkThread). */
+  workThread?: WorkThread;
   runAs?: CommandRunAsHost;
   vfs?: ProcessView;
   /** The terminal's own shell (bash -i): job notices are printed. */
@@ -222,6 +225,12 @@ export interface CommandIdentity {
   readonly pid: number;
   readonly cred: VfsCred;
   setUmask(mask: number): void;
+  /**
+   * The process has a unit of in-flight work while a command of its runs,
+   * until the returned function is called: how its session tells a shell
+   * doing nothing but await its children (SessionProcessSupervisor.beginWork).
+   */
+  beginWork?(): () => void;
 }
 
 /** What a program started by runProgram runs with: its identity, directory, environment and inherited streams. */
@@ -448,6 +457,10 @@ export class Interpreter {
     if (io.commandIdentity) io.vfs = bindProcessView(this.config.filesystem, {
       pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
     });
+    // The line is a thread of its process's work, from its first word to its
+    // last: between its commands it is the shell's own (WorkThread).
+    const beginWork = io.commandIdentity?.beginWork?.bind(io.commandIdentity);
+    if (beginWork) io.workThread = new WorkThread(beginWork);
     try {
       const tokens = lex(input);
       const script = parse(tokens);
@@ -469,6 +482,8 @@ export class Interpreter {
       const exitCode = e instanceof ExpansionError ? 1 : 2;
       this.lastExitCode = exitCode;
       return exitCode;
+    } finally {
+      io.workThread?.close();
     }
   }
 
@@ -483,10 +498,16 @@ export class Interpreter {
       backgroundIo.signal = abortController.signal;
       backgroundIo.registerProcess = false;
       backgroundIo.positionals = this.forkPositionals(io);
+      // A job runs beside the line that started it, as work of its own.
+      backgroundIo.workThread = io.workThread?.sibling();
 
       const child = this.fork();
       const promise = (async (): Promise<number> => {
-        return await child.finishChild(async () => (await child.executeListEntries(list.entries, backgroundIo)), backgroundIo);
+        try {
+          return await child.finishChild(async () => (await child.executeListEntries(list.entries, backgroundIo)), backgroundIo);
+        } finally {
+          backgroundIo.workThread?.close();
+        }
       })();
 
       const pid = this.config.processRegistry.spawn({
@@ -627,6 +648,8 @@ export class Interpreter {
         };
         cmdIo.signal = pipelineAbortController.signal;
         cmdIo.positionals = this.forkPositionals(io);
+        // Each element is a thread of its own, which the pipeline's waits on.
+        cmdIo.workThread = io.workThread?.fork();
         // Each element runs in a child shell (bash forks every one).
         const element = this.fork();
         const cmdPromise = (async (): Promise<number> => {
@@ -641,6 +664,7 @@ export class Interpreter {
             if ((e as { code?: string })?.code === 'EPIPE') return 141;
             throw e;
           } finally {
+            cmdIo.workThread?.close();
             // Only the closed pipe reaches the other elements: each goes on
             // until it writes to a pipe nobody reads (bash; no abort here).
             if (i > 0) pipes[i - 1].cancel();
@@ -1057,6 +1081,9 @@ export class Interpreter {
           const builtin = this.config.builtins.get(name);
           if (builtin) {
             const builtinIo = this.createIoFromFds(io, fds);
+            // A builtin is work of the shell's own (a `sleep`, a `read`, a
+            // `wait`), never an await of a child; its thread lends it its unit.
+            const endWork = io.workThread ? io.workThread.beginWork() : io.commandIdentity?.beginWork?.();
             try {
               exitCode = await builtin(args, stdout, stderr, stdin, {
                 vfs: builtinIo.vfs ?? this.config.vfs,
@@ -1092,6 +1119,8 @@ export class Interpreter {
                 // Its stderr may be what refused; the status still says so.
               }
               exitCode = 1;
+            } finally {
+              endWork?.();
             }
           } else {
             // Check registry; a bare name not registered is searched for on the
@@ -1103,23 +1132,32 @@ export class Interpreter {
             } else {
               const identity = io.commandIdentity;
               if (!identity) throw new Error('shell command identity is unavailable');
-              const ended = await this.runCommand(command, name, args, {
-                commandContext: io.commandContext,
-                identity,
-                cwd: this.config.getCwd(),
-                env: { ...this.config.env },
-                vfs: io.vfs ?? this.config.vfs,
-                stdout,
-                stderr,
-                stdin,
-                terminalStdin: io.terminalStdin,
-                isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
-                isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
-                signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
-                runAs: io.runAs,
-                register: io.registerProcess !== false,
-                shellBuiltin: BASH_BUILTINS.has(name),
-              });
+              // A command is a unit of the process's work; one that runs a
+              // program as a child of its own counts that as its await. Its
+              // thread lends it its unit while it runs.
+              const endWork = io.workThread ? io.workThread.beginWork() : identity.beginWork?.();
+              let ended: ChildExit;
+              try {
+                ended = await this.runCommand(command, name, args, {
+                  commandContext: io.commandContext,
+                  identity,
+                  cwd: this.config.getCwd(),
+                  env: { ...this.config.env },
+                  vfs: io.vfs ?? this.config.vfs,
+                  stdout,
+                  stderr,
+                  stdin,
+                  terminalStdin: io.terminalStdin,
+                  isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
+                  isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
+                  signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+                  runAs: io.runAs,
+                  register: io.registerProcess !== false,
+                  shellBuiltin: BASH_BUILTINS.has(name),
+                });
+              } finally {
+                endWork?.();
+              }
               exitCode = ended.status;
 
               // A signalled command reports the SIGNAL's status, not whatever
@@ -1487,6 +1525,7 @@ export class Interpreter {
     if (io.positionals) next.positionals = io.positionals;
     if (io.commandContext) next.commandContext = io.commandContext;
     if (io.commandIdentity) next.commandIdentity = io.commandIdentity;
+    if (io.workThread) next.workThread = io.workThread;
     if (io.runAs) next.runAs = io.runAs;
     if (io.vfs) next.vfs = io.vfs;
     if (io.interactive) next.interactive = true;

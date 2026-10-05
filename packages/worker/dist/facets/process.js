@@ -24,19 +24,24 @@
  * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
  * parent's exit path so unawaited children don't lose output.
  *
+ * Children run concurrently, as Node's do: each is dispatched on its own,
+ * and nothing here waits for one child before starting the next. What a
+ * child spends of the session's shared budgets it spends where it is spent
+ * (a facet program's Dynamic Worker is admitted by the fabric's ledger).
+ *
  * Lifecycle invariants:
  *   - exitCode is stamped exactly once (first writer wins). kill() and
  *     reportExit() race-free.
- *   - kill() resolves all pending waiters BEFORE invoking facets.abort,
- *     so cpWait/cpReadOutput don't hang on a torn-down facet.
- *   - facets.delete is deferred to a microtask after abort to give any
- *     in-flight reportExit RPC a chance to land (and be no-op'd by the
- *     idempotent guard).
+ *   - kill() runs the session's kill of the pid (its launch's terminator,
+ *     and the release of what it held) before it stamps the exit, which
+ *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
+ *     nothing the child held outlives it.
  */
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseShellInvocation } from '@nimbus-sh/core/shell/shell-invocation.js';
-import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
-import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
 /** A text producer's edge onto the byte hooks. */
 export function textBytes(text) {
     return enc.encode(text);
@@ -74,6 +79,15 @@ const READ_OUTPUT_DEFAULT_WAIT_MS = 250;
  * polls by the caller.
  */
 const WAIT_MAX_MS = 30_000;
+/** A spawn's stdio as the parent's ChildProcess reads it (node-shims _normalizeStdio): a mode per descriptor. */
+function normalizeStdio(stdio) {
+    const mode = (v) => (v === 'ignore' || v === 'inherit' ? v : 'pipe');
+    if (typeof stdio === 'string')
+        return [mode(stdio), mode(stdio), mode(stdio)];
+    if (!Array.isArray(stdio))
+        return ['pipe', 'pipe', 'pipe'];
+    return [mode(stdio[0]), mode(stdio[1]), mode(stdio[2])];
+}
 function basenameOfCommand(command) {
     const text = String(command || '').trim();
     if (!text)
@@ -146,17 +160,19 @@ export class FacetProcessManager {
     }
     // ── spawn ───────────────────────────────────────────────────────────────
     /**
-     * Allocate a child PID, classify the command, dispatch to inline runner
-     * or facet-direct runner. Returns immediately with the child PID; the
-     * actual command executes asynchronously and pushes output via the
+     * Allocate a child PID, classify the command, dispatch it to its runner.
+     * Returns immediately with the child PID; the actual command executes
+     * asynchronously, beside any other child, and pushes output via the
      * per-child hooks.
      */
     async spawn(req) {
         // Recursion-depth cap (env-propagated).
         const depthIn = parseInt(req.env?.NIMBUS_CP_DEPTH || '0', 10) || 0;
         if (depthIn >= CHILD_PROCESS_MAX_DEPTH) {
-            throw new Error(`EAGAIN: child_process spawn depth ${depthIn} exceeds ` +
-                `CHILD_PROCESS_MAX_DEPTH=${CHILD_PROCESS_MAX_DEPTH}`);
+            // A spawn at a process limit: the parent's ChildProcess reports it as
+            // Node does (code and errno ride across RPC).
+            throw Object.assign(new Error(`EAGAIN: child_process spawn depth ${depthIn} exceeds ` +
+                `CHILD_PROCESS_MAX_DEPTH=${CHILD_PROCESS_MAX_DEPTH}`), { code: 'EAGAIN', errno: -11 });
         }
         const childEnv = {
             ...req.env,
@@ -168,14 +184,14 @@ export class FacetProcessManager {
         const commandLine = `${req.command} ${req.args.join(' ')}`.trim();
         const processEntry = this.deps.processes.spawn(commandLine, req.args, req.cwd, { parentPid: req.parentPid });
         const pid = processEntry.pid;
-        const facetName = `cp-proc-${pid}`;
         const child = {
             pid,
+            parentPid: req.parentPid,
+            stdio: normalizeStdio(req.stdio),
             command: req.command,
             args: req.args || [],
             cwd: req.cwd,
             env: childEnv,
-            facetName,
             startedAt: Date.now(),
             endedAt: null,
             stdinChunks: [],
@@ -188,8 +204,13 @@ export class FacetProcessManager {
             exitCode: null,
             signal: null,
             killed: false,
+            spawnError: null,
+            started: false,
+            startWaiters: [],
+            startNews: 0,
+            exitNews: 0,
+            closedNews: { 1: 0, 2: 0 },
             exitWaiters: [],
-            facetSlot: null,
         };
         this.children.set(pid, child);
         const shellPlan = this._shellPlanFor(req);
@@ -217,9 +238,21 @@ export class FacetProcessManager {
         }, 0);
         return { childPid: pid };
     }
-    /** Dispatch by kind. */
+    /**
+     * Run the child to its end and stamp its exit. A facet program or a shell
+     * line reads live stdin (NIMBUS_CP_CHILD_PID, cpReadStdin), as a Node
+     * child_process pipe does; a pure builtin takes the stdin the parent queued
+     * as one string. Output goes straight to the child's queues while it runs,
+     * so a prompt reaches the parent before the child waits for an answer.
+     *
+     * Runs in this isolate, on its own: a child that never exits holds nothing
+     * a later child needs. (It used to be relayed through a single-slot Worker
+     * Loader pool whose call stayed open for the child's life, so every later
+     * spawn queued behind it, a kill included.)
+     */
     async _dispatch(child, kind, req) {
         if (kind === 'unknown') {
+            this._markStarted(child);
             this._appendText(child, 2, `${req.command}: command not found\n`);
             this._stampExit(child, 127, null);
             return;
@@ -227,56 +260,18 @@ export class FacetProcessManager {
         const hooks = {
             onStdout: (d) => this._appendOutput(child, 1, d),
             onStderr: (d) => this._appendOutput(child, 2, d),
+            onStarted: () => this._markStarted(child),
         };
-        // When configured, the pool moves the dispatch envelope into a Worker
-        // Loader isolate and delegates command execution through supervisor RPC.
-        if (this.deps.spawnPool) {
-            const liveStdin = kind === 'facet-direct' || kind === 'shell-direct';
-            // Pure builtins consume stdin from the request payload. Facet-direct
-            // commands receive live stdin through NIMBUS_CP_CHILD_PID and
-            // supervisor cpReadStdin, which matches Node child_process pipes.
-            const stdin = liveStdin ? '' : await this._drainStdinForBuiltin(child);
-            // Single-ownership: build a fresh request payload (not a reference
-            // to the caller's req) at the boundary.
-            const reqCopy = {
-                command: String(req.command),
-                args: Array.isArray(req.args) ? [...req.args] : [],
-                env: liveStdin
-                    ? { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) }
-                    : { ...child.env },
-                cwd: String(req.cwd),
-                stdio: req.stdio,
-                detached: !!req.detached,
-                shell: req.shell ?? false,
-                stdin,
-                processPid: child.pid,
-            };
-            // Register the facet-slot so kill() can find the abort handle.
-            child.facetSlot = { abort: undefined, killed: false };
-            try {
-                const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks);
-                this._stampExit(child, code, null);
-            }
-            catch (e) {
-                this._appendText(child, 2, `spawn-pool error: ${e?.message || String(e)}\n`);
-                this._stampExit(child, 1, null);
-            }
-            return;
-        }
-        // ── Legacy in-supervisor dispatch (unit-test path) ─────────────
-        if (kind === 'shell-direct') {
-            await this._dispatchShell(child, req, hooks);
-            return;
-        }
+        const cwd = String(req.cwd || '/home/user');
+        // A builtin or a shell line starts as it is dispatched; a facet program
+        // once its launch is let in (hooks.onStarted).
+        if (kind !== 'facet-direct')
+            this._markStarted(child);
         if (kind === 'pure-builtin') {
-            // Drain stdin synchronously — pure builtins are sync-style; they
-            // expect a complete stdin string. The parent must call stdinEnd()
-            // before this resolves. If the parent hasn't ended, we wait up to
-            // 50ms for stdin then proceed with whatever's queued.
             const stdin = await this._drainStdinForBuiltin(child);
             try {
-                const code = await this.deps.commandRegistry.runPureBuiltin(child.pid, req.command, req.args, child.env, req.cwd, stdin, hooks);
-                this._stampExit(child, code, null);
+                const code = await this.deps.commandRegistry.runPureBuiltin(child.pid, req.command, req.args, { ...child.env }, cwd, stdin, hooks);
+                this._stampExit(child, typeof code === 'number' ? code : 0, null);
             }
             catch (e) {
                 this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
@@ -284,126 +279,53 @@ export class FacetProcessManager {
             }
             return;
         }
-        // facet-direct: ship a payload to the FacetManager.execStream that
-        // describes the command. In production execStream wraps a generated
-        // facet template that imports node:child_process internally; in the
-        // unit-test mock the payload is interpreted by the test interpreter.
-        const payload = JSON.stringify({
-            command: req.command,
-            args: req.args,
-            env: { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) },
-            cwd: req.cwd,
-            stdin: '',
-            processPid: child.pid,
-        });
-        // Register the facet-slot so kill() can find the abort handle.
-        child.facetSlot = { abort: undefined, killed: false };
-        try {
-            const code = await this.deps.facetMgr.execStream(payload, { facetName: child.facetName, cwd: req.cwd, env: child.env, argv: req.args }, hooks);
-            this._stampExit(child, code, null);
-        }
-        catch (e) {
-            this._appendText(child, 2, `facet error: ${e?.message || String(e)}\n`);
-            this._stampExit(child, 1, null);
-        }
-    }
-    /**
-     * child-process isolation gap #1: inline dispatch — runs the existing
-     * pure-builtin / facet-direct logic with string-collecting hooks
-     * and returns the final {exitCode, stdout, stderr} envelope.
-     *
-     * Called by _rpcCpDispatchInline (src/session/rpc.ts) which is in
-     * turn called by the spawn-facet running inside a fresh Worker
-     * Loader isolate. The dispatch envelope is in a fresh isolate; the
-     * actual command logic still uses the existing registry paths.
-     *
-     * A managed child streams to its existing output queue while it runs;
-     * otherwise the inline caller receives captured text in the result.
-     */
-    async dispatchInline(req, kind) {
-        if (kind === 'unknown') {
-            return { exitCode: 127, stdout: '', stderr: `${req.command}: command not found\n` };
-        }
-        // A managed spawn already has byte queues for the parent to poll. Do
-        // not buffer a prompt until the child exits: it may be waiting for the
-        // parent's input. Return only output not already queued, so the spawn
-        // pool's result relay cannot duplicate it. Direct inline calls without
-        // a child retain their captured-text contract.
-        const child = req.processPid === undefined ? undefined : this.children.get(req.processPid);
-        let stdoutBuf = '';
-        let stderrBuf = '';
-        const decoders = new StreamTextDecoders();
-        const hooks = child ? {
-            onStdout: (d) => this._appendOutput(child, 1, d),
-            onStderr: (d) => this._appendOutput(child, 2, d),
-        } : {
-            onStdout: (d) => { stdoutBuf += decoders.decode(1, d); },
-            onStderr: (d) => { stderrBuf += decoders.decode(2, d); },
-        };
-        const childEnv = {
-            ...(req.env || {}),
-        };
+        const env = { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) };
         if (kind === 'shell-direct') {
-            if (typeof req.processPid !== 'number' || !Number.isInteger(req.processPid) || req.processPid <= 0) {
-                return {
-                    exitCode: 1,
-                    stdout: '',
-                    stderr: 'child_process: inline dispatch requires a broker-assigned process pid\n',
-                };
-            }
             try {
                 const plan = this._shellPlanFor(req);
                 if (!plan) {
-                    return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
+                    this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
+                    this._stampExit(child, 127, null);
+                    return;
                 }
-                const stdin = typeof req.stdin === 'string' ? req.stdin : '';
-                const commandLine = await this._shellCommandLineForPlan(plan, String(req.cwd || '/home/user'), stdin, hooks, shellNameForCommand(req.command), req.processPid);
-                if (commandLine === null)
-                    return { exitCode: 127, stdout: stdoutBuf, stderr: stderrBuf };
-                const code = await this._runShellLine(req.processPid, commandLine, childEnv, String(req.cwd || '/home/user'), stdin, hooks);
-                return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
+                const commandLine = await this._shellCommandLineForPlan(plan, cwd, '', hooks, shellNameForCommand(req.command), child.pid);
+                if (commandLine === null) {
+                    this._stampExit(child, 127, null);
+                    return;
+                }
+                const code = await this._runShellLine(child.pid, commandLine, env, cwd, '', hooks);
+                this._stampExit(child, typeof code === 'number' ? code : 0, null);
             }
             catch (e) {
-                stderrBuf += `shell error: ${e?.message || String(e)}\n`;
-                return { exitCode: 1, stdout: stdoutBuf, stderr: stderrBuf };
+                this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
+                this._stampExit(child, 1, null);
             }
+            return;
         }
-        if (kind === 'pure-builtin') {
-            if (typeof req.processPid !== 'number' || !Number.isInteger(req.processPid) || req.processPid <= 0) {
-                return {
-                    exitCode: 1,
-                    stdout: '',
-                    stderr: 'child_process: inline dispatch requires a broker-assigned process pid\n',
-                };
-            }
-            try {
-                const code = await this.deps.commandRegistry.runPureBuiltin(req.processPid, req.command, req.args, childEnv, String(req.cwd || '/home/user'), typeof req.stdin === 'string' ? req.stdin : '', hooks);
-                return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
-            }
-            catch (e) {
-                stderrBuf += `Error: ${e?.message || String(e)}\n`;
-                return { exitCode: 1, stdout: stdoutBuf, stderr: stderrBuf };
-            }
-        }
-        // facet-direct
+        // facet-direct: the program runs as this child's pid, in its own facet.
         const payload = JSON.stringify({
             command: req.command,
             args: req.args,
-            env: childEnv,
-            cwd: String(req.cwd || '/home/user'),
+            env,
+            cwd,
             stdin: '',
-            processPid: req.processPid,
+            processPid: child.pid,
         });
         try {
-            const code = await this.deps.facetMgr.execStream(payload, 
-            // facetName: synthetic identity so adapter callers that key off
-            // it don't collide; not used by the inline path.
-            { facetName: `cp-inline-${Date.now().toString(36)}`, cwd: req.cwd, env: childEnv, argv: req.args }, hooks);
-            return { exitCode: typeof code === 'number' ? code : 0, stdout: stdoutBuf, stderr: stderrBuf };
+            const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args }, hooks);
+            this._stampExit(child, typeof code === 'number' ? code : 0, null);
         }
         catch (e) {
-            stderrBuf += `facet error: ${e?.message || String(e)}\n`;
-            return { exitCode: 1, stdout: stdoutBuf, stderr: stderrBuf };
+            // Refused a Dynamic Worker for good (every one held by a process
+            // waiting on a descendant that waits for one): the program never ran,
+            // and its spawn fails as one at a process limit does.
+            if (isDynamicWorkerDeadlock(e)) {
+                child.spawnError = e.code;
+                this._stampExit(child, e.errno, null);
+                return;
+            }
+            this._appendText(child, 2, `facet error: ${e?.message || String(e)}\n`);
+            this._stampExit(child, 1, null);
         }
     }
     /**
@@ -450,38 +372,6 @@ export class FacetProcessManager {
         if (!isShellCommand(req.command))
             return null;
         return parseShellCommandArgs(req.command, args);
-    }
-    async _dispatchShell(child, req, hooks) {
-        const plan = this._shellPlanFor(req);
-        if (!plan) {
-            this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
-            this._stampExit(child, 127, null);
-            return;
-        }
-        try {
-            const stdin = await this._drainStdinForShell(child);
-            const commandLine = await this._shellCommandLineForPlan(plan, req.cwd, stdin, hooks, shellNameForCommand(req.command), child.pid);
-            if (commandLine === null) {
-                this._stampExit(child, 127, null);
-                return;
-            }
-            const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
-            this._stampExit(child, typeof code === 'number' ? code : 0, null);
-        }
-        catch (e) {
-            this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
-            this._stampExit(child, 1, null);
-        }
-    }
-    async _drainStdinForShell(child) {
-        if (!child.stdinClosed && child.stdinChunks.length === 0) {
-            await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
-        }
-        if (!child.stdinClosed && child.stdinChunks.length > 0) {
-            await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
-        }
-        // A shell line's stdin is text; the queue holds bytes.
-        return dec.decode(concatBytes(child.stdinChunks));
     }
     async _shellCommandLineForPlan(plan, cwd, stdin, hooks, shellName, processPid) {
         if (plan.kind === 'command')
@@ -579,6 +469,8 @@ export class FacetProcessManager {
     }
     /** Whether this pid's descriptors belong to a child managed by this broker. */
     isChild(pid) { return this.children.has(pid); }
+    /** Whether this pid is a child of this broker that has not ended. */
+    isRunning(pid) { return this.children.get(pid)?.exitCode === null; }
     /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
     routeOutput(pid, fd, bytes) {
         const child = this.children.get(pid);
@@ -593,7 +485,8 @@ export class FacetProcessManager {
         if (data.byteLength === 0)
             return;
         child.outputSeq[fd]++;
-        const chunk = { seq: child.outputSeq[fd], data };
+        const news = child.stdio[fd] !== 'ignore' ? this._news(child) : 0;
+        const chunk = { seq: child.outputSeq[fd], data, news };
         child.outputs[fd].push(chunk);
         // Tee to the process supervisor's log ring for `logs <pid>` parity
         // with facet processes; the ring decodes at its own edge.
@@ -606,16 +499,32 @@ export class FacetProcessManager {
             const w = child.outputWaiters[i];
             if (w.fd !== fd)
                 continue;
-            const fresh = child.outputs[fd].filter((c) => c.seq > w.sinceSeq);
-            if (fresh.length > 0) {
+            if (child.outputs[fd].some((c) => c.seq > w.sinceSeq)) {
                 child.outputWaiters.splice(i, 1);
-                w.resolve({
-                    chunks: fresh,
-                    closed: child.exitCode !== null,
-                    maxSeq: child.outputSeq[fd],
-                });
+                w.resolve(this._readResult(child, fd, w.sinceSeq));
             }
         }
+    }
+    /**
+     * A read's answer: the chunks past `sinceSeq`, whether the stream has
+     * ended, and the parent's news it delivers: each chunk's, the child's
+     * start (its output says it started), and the stream's end.
+     */
+    _readResult(child, fd, sinceSeq) {
+        const fresh = child.outputs[fd].filter((c) => c.seq > sinceSeq);
+        const closed = child.exitCode !== null;
+        const news = fresh.map((c) => c.news);
+        if (fresh.length > 0)
+            news.push(child.startNews);
+        if (closed)
+            news.push(child.closedNews[fd]);
+        const numbers = news.filter((n) => n > 0);
+        return {
+            chunks: fresh.map(({ seq, data }) => ({ seq, data })),
+            closed,
+            maxSeq: child.outputSeq[fd],
+            ...(numbers.length > 0 ? { news: numbers } : {}),
+        };
     }
     /**
      * Long-poll read for fd 1 or 2.  Returns immediately if there are
@@ -626,13 +535,8 @@ export class FacetProcessManager {
         if (!child) {
             return { chunks: [], closed: true, maxSeq: 0 };
         }
-        const fresh = child.outputs[fd].filter((c) => c.seq > sinceSeq);
-        if (fresh.length > 0 || child.exitCode !== null) {
-            return {
-                chunks: fresh,
-                closed: child.exitCode !== null,
-                maxSeq: child.outputSeq[fd],
-            };
+        if (child.exitCode !== null || child.outputs[fd].some((c) => c.seq > sinceSeq)) {
+            return this._readResult(child, fd, sinceSeq);
         }
         return new Promise((resolve) => {
             const expiresAt = Date.now() + Math.min(waitMs, 5000);
@@ -650,12 +554,7 @@ export class FacetProcessManager {
                 if (idx >= 0)
                     child.outputWaiters.splice(idx, 1);
                 // Re-snapshot at resolution time
-                const fresh2 = child.outputs[fd].filter((c) => c.seq > sinceSeq);
-                resolve({
-                    chunks: fresh2,
-                    closed: child.exitCode !== null,
-                    maxSeq: child.outputSeq[fd],
-                });
+                resolve(this._readResult(child, fd, sinceSeq));
             }, expiresAt - Date.now());
             child.outputWaiters.push(waiter);
         });
@@ -686,44 +585,28 @@ export class FacetProcessManager {
     }
     // ── kill / wait / reportExit ────────────────────────────────────────────
     /**
-     * Synchronous kill. First-writer-wins on exit slot. Resolves all
-     * pending waiters BEFORE invoking facets.abort so cpWait/cpReadOutput
-     * don't hang on a torn-down facet.
+     * Synchronous kill. First-writer-wins on exit slot. The work behind the
+     * pid ends first, through the session's own kill (FacetManagerLike.kill):
+     * the terminator its launch registered aborts a facet program's run, so
+     * the Dynamic Worker it held goes back to the ledger now rather than when
+     * the program would have ended on its own, and its ports, RPC resources
+     * and relayed sockets go with it. (`exit()`, which the stamp below calls,
+     * drops that terminator without running it.) Then the stamp wakes every
+     * waiter.
      */
     kill(childPid, signal = 'SIGTERM') {
         const child = this.children.get(childPid);
         if (!child || child.exitCode !== null)
             return false;
-        const exitCode = signal === 'SIGKILL' ? 137 : 143; // POSIX 128+9 / 128+15
-        child.signal = signal;
+        // A name with or without SIG, or a number. One whose default action
+        // does not end a process (SIGCHLD, SIGSTOP), the probe 0, or a name no
+        // signal has ends nothing here.
+        const name = parseSignalName(String(signal));
+        if (name === null || name === '0' || signalDisposition(name) !== 'terminate')
+            return false;
         child.killed = true;
-        // Stamp + wake waiters atomically.
-        this._stampExit(child, exitCode, signal);
-        // Tell the facet runtime to abort, best-effort. The mock FacetManager
-        // and real FacetManager both expose an `abort(name)` method.
-        try {
-            if (this.deps.facetMgr.abort) {
-                this.deps.facetMgr.abort(child.facetName, signal);
-            }
-            // Also try the ctx.facets path used by FacetManager.kill (for
-            // production where facets are actual DO facets).
-            if (this.deps.ctx?.facets?.abort) {
-                this.deps.ctx.facets.abort(child.facetName, new Error(signal));
-            }
-        }
-        catch { /* best-effort */ }
-        // Defer delete by a microtask so any in-flight reportExit RPC lands
-        // and is no-op'd by the idempotent guard in _stampExit.
-        queueMicrotask(() => {
-            try {
-                if (this.deps.ctx?.facets?.delete) {
-                    this.deps.ctx.facets.delete(child.facetName);
-                    if (this.deps.ctx.storage?.sql)
-                        forgetFacetStorage(this.deps.ctx.storage.sql, child.facetName);
-                }
-            }
-            catch { /* best-effort */ }
-        });
+        this.deps.facetMgr.kill(child.pid, name);
+        this._stampExit(child, exitCodeForSignal(name), `SIG${name}`); // 128+signo, as the shell reports it
         return true;
     }
     /**
@@ -736,6 +619,15 @@ export class FacetProcessManager {
         child.exitCode = exitCode;
         child.signal = signal;
         child.endedAt = Date.now();
+        // Numbered before the process table hears of the exit, so the parent's
+        // report is stale before its child is gone from the table. A refused
+        // spawn's streams carry nothing: its parent ends them itself.
+        child.exitNews = this._news(child);
+        if (child.spawnError === null) {
+            for (const fd of [1, 2])
+                if (child.stdio[fd] !== 'ignore')
+                    child.closedNews[fd] = this._news(child);
+        }
         // Tell the process supervisor so `ps` and `logs <pid>` line up.
         try {
             this.deps.processes.exit(child.pid, exitCode);
@@ -746,17 +638,23 @@ export class FacetProcessManager {
         }
         catch { }
         // Wake exit waiters.
-        for (const w of child.exitWaiters.splice(0)) {
-            w({ done: true, exitCode, signal });
-        }
+        const status = this._exitStatus(child);
+        for (const w of child.exitWaiters.splice(0))
+            w(status);
         // Wake output waiters with closed=true so polling parents stop.
-        for (const w of child.outputWaiters.splice(0)) {
-            const fresh = child.outputs[w.fd].filter((c) => c.seq > w.sinceSeq);
-            w.resolve({ chunks: fresh, closed: true, maxSeq: child.outputSeq[w.fd] });
-        }
+        for (const w of child.outputWaiters.splice(0))
+            w.resolve(this._readResult(child, w.fd, w.sinceSeq));
         // A child blocked on cpReadStdin is told stdin ended, and exits cleanly.
         for (const w of child.stdinWaiters.splice(0))
             w();
+    }
+    /** A stamped child's end, as Node reports it (ChildExitStatus), with the news it delivers. */
+    _exitStatus(child) {
+        const numbers = [child.startNews, child.exitNews].filter((n) => n > 0);
+        const news = numbers.length > 0 ? { news: numbers } : {};
+        if (child.spawnError !== null)
+            return { done: true, exitCode: child.exitCode, signal: null, spawnError: child.spawnError, ...news };
+        return { done: true, exitCode: child.signal === null ? child.exitCode : null, signal: child.signal, ...news };
     }
     /**
      * Late-arriving reportExit from the facet. Idempotent; if kill() or
@@ -772,27 +670,57 @@ export class FacetProcessManager {
      * Long-poll wait. Returns immediately if already exited; otherwise
      * registers a waiter that resolves on the next exit-slot stamp.
      */
-    async wait(childPid, waitMs = WAIT_MAX_MS) {
+    async wait(childPid, waitMs = WAIT_MAX_MS, knownStarted = true) {
         const child = this.children.get(childPid);
         if (!child) {
             return { done: true, exitCode: 1, signal: null };
         }
-        if (child.exitCode !== null) {
-            return { done: true, exitCode: child.exitCode, signal: child.signal };
-        }
+        if (child.exitCode !== null)
+            return this._exitStatus(child);
+        // A caller that has not heard of the start (a parent's ChildProcess,
+        // which emits 'spawn' on it) is told of it as soon as it comes.
+        const startNews = () => ({
+            done: false, exitCode: null, signal: null, started: true, ...(child.startNews > 0 ? { news: [child.startNews] } : {}),
+        });
+        if (!knownStarted && child.started)
+            return startNews();
         return new Promise((resolve) => {
-            const timer = setTimeout(() => {
-                const idx = child.exitWaiters.indexOf(wrapped);
-                if (idx >= 0)
-                    child.exitWaiters.splice(idx, 1);
-                resolve({ done: false, exitCode: null, signal: null });
-            }, Math.min(waitMs, WAIT_MAX_MS));
-            const wrapped = (r) => {
+            const settle = (r) => {
                 clearTimeout(timer);
+                const at = child.exitWaiters.indexOf(onExit);
+                if (at >= 0)
+                    child.exitWaiters.splice(at, 1);
+                const started = child.startWaiters.indexOf(onStart);
+                if (started >= 0)
+                    child.startWaiters.splice(started, 1);
                 resolve(r);
             };
-            child.exitWaiters.push(wrapped);
+            const timer = setTimeout(() => settle({ done: false, exitCode: null, signal: null }), Math.min(waitMs, WAIT_MAX_MS));
+            const onExit = (r) => settle(r);
+            const onStart = () => { if (child.exitCode === null)
+                settle(startNews()); };
+            child.exitWaiters.push(onExit);
+            if (!knownStarted)
+                child.startWaiters.push(onStart);
         });
+    }
+    /** The child has started (ChildEntry.started): wake whoever waits to hear of it. */
+    _markStarted(child) {
+        if (child.started)
+            return;
+        child.started = true;
+        child.startNews = this._news(child);
+        for (const w of child.startWaiters.splice(0))
+            w();
+    }
+    /** A piece of news of `child` for its parent, numbered (FacetProcessManagerDeps.issueNews). */
+    _news(child) {
+        try {
+            return this.deps.issueNews?.(child.parentPid) ?? 0;
+        }
+        catch {
+            return 0;
+        }
     }
     // ── housekeeping ────────────────────────────────────────────────────────
     /** Reap entries older than maxAgeMs whose exit slot is stamped. */

@@ -140,7 +140,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
   assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
     'a binding routed to another actor named this instance');
 
-  // A pid-0 pool (esbuild pre-bundle, npm resolve, cp-spawn) can deliver
+  // A pid-0 pool (esbuild pre-bundle, npm resolve) can deliver
   // nothing — SupervisorRPC refuses every filesystem mutation of pid 0 — so
   // its binding names no instance and its warm isolate survives a restart.
   loaderIds.length = 0;

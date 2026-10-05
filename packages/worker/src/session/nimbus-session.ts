@@ -940,9 +940,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs, acquire, pid); }
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
-  async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid); }
-  // child-process isolation gap #1: per-spawn fresh-isolate dispatch.
-  async _rpcCpDispatchInline(req: any, kind: string) { return _rpc._rpcCpDispatchInline(this as any, req, kind); }
+  async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid, knownStarted); }
+  async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: _programmatic.ProgrammaticReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }

@@ -28,7 +28,7 @@ import { supervisorEntrypoint } from './composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { beginLoaderFetch, beginLoaderFetchWhenFree, withDynamicWorkerCapNamed, } from './budgets.js';
+import { beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -537,7 +537,9 @@ export class IsolatePool {
             //
             // The hold comes first, so it ends whatever setup throws: a retry's
             // was taken when the ledger let it in.
-            const endFetch = admitted ?? beginLoaderFetch(this.ctx, id, this.claim);
+            // Inside an admitted launch (a child's python, ruby or wasm runtime
+            // dispatching here), the first dispatch is the launch's own worker.
+            const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
             admitted = undefined;
             try {
                 const stub = this.loader.get(id, async () => code);

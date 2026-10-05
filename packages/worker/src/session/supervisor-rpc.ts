@@ -964,7 +964,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     sinceSeq: number,
     waitMs: number,
     acquire?: FsAcquireArgs,
-  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number; acquired?: VfsDeliveredAcquire }> {
+  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number; news?: number[]; acquired?: VfsDeliveredAcquire }> {
     return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));
   }
 
@@ -976,25 +976,26 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._op('cpKill', [childPid, signal]));
   }
 
+  /**
+   * The child's end; with `knownStarted` false, also its start, as soon as
+   * it comes (`started`), for a parent that emits 'spawn' on it.
+   */
   async cpWait(
     childPid: number,
     waitMs: number,
     acquire?: FsAcquireArgs,
-  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; acquired?: VfsDeliveredAcquire }> {
-    return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+    knownStarted?: boolean,
+  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; spawnError?: string; started?: boolean; news?: number[]; acquired?: VfsDeliveredAcquire }> {
+    return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this._reportingPid() }));
   }
 
   /**
-   * child-process isolation gap #1: dispatch a single cp.spawn request inline using
-   * the existing pure-builtin / facet-direct logic, returning final
-   * stdout/stderr/exitCode (NOT streamed via hooks). Called from
-   * spawn-facet.ts:runSpawnInIsolate inside a fresh Worker Loader
-   * isolate to delegate the actual command execution back to the
-   * supervisor while keeping the dispatch envelope in a fresh isolate.
+   * This process says whether its only remaining work is waiting on its own
+   * children, and the contiguous run of news numbers it has applied (the
+   * session's Dynamic Worker ledger tells a wait no release can satisfy by
+   * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
    */
-  async cpDispatchInline(req: any, kind: string): Promise<{
-    exitCode: number; stdout: string; stderr: string;
-  }> {
-    return this._call(this._op('cpDispatchInline', [req, kind]));
+  async cpBlocked(report: { blocked: boolean; frontier: number; seq: number }): Promise<void> {
+    return this._call(this._op('cpBlocked', [report], { pid: this._pid() }));
   }
 }

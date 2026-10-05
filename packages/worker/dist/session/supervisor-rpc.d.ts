@@ -475,6 +475,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         }[];
         closed: boolean;
         maxSeq: number;
+        news?: number[];
         acquired?: VfsDeliveredAcquire;
     }>;
     cpDrainOutput(childPid: number): Promise<{
@@ -484,24 +485,29 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         stderrClosed: boolean;
     }>;
     cpKill(childPid: number, signal: string): Promise<boolean>;
-    cpWait(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
+    /**
+     * The child's end; with `knownStarted` false, also its start, as soon as
+     * it comes (`started`), for a parent that emits 'spawn' on it.
+     */
+    cpWait(childPid: number, waitMs: number, acquire?: FsAcquireArgs, knownStarted?: boolean): Promise<{
         done: boolean;
         exitCode: number | null;
         signal: string | null;
+        spawnError?: string;
+        started?: boolean;
+        news?: number[];
         acquired?: VfsDeliveredAcquire;
     }>;
     /**
-     * child-process isolation gap #1: dispatch a single cp.spawn request inline using
-     * the existing pure-builtin / facet-direct logic, returning final
-     * stdout/stderr/exitCode (NOT streamed via hooks). Called from
-     * spawn-facet.ts:runSpawnInIsolate inside a fresh Worker Loader
-     * isolate to delegate the actual command execution back to the
-     * supervisor while keeping the dispatch envelope in a fresh isolate.
+     * This process says whether its only remaining work is waiting on its own
+     * children, and the contiguous run of news numbers it has applied (the
+     * session's Dynamic Worker ledger tells a wait no release can satisfy by
+     * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
      */
-    cpDispatchInline(req: any, kind: string): Promise<{
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-    }>;
+    cpBlocked(report: {
+        blocked: boolean;
+        frontier: number;
+        seq: number;
+    }): Promise<void>;
 }
 //# sourceMappingURL=supervisor-rpc.d.ts.map

@@ -34,7 +34,7 @@ import type { HmrEvent } from '../facets/real-vite-hmr.js';
 type RpcHost = any;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
-type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug'>;
+type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**
@@ -431,24 +431,13 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
-export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 /**
- * child-process isolation gap #1: dispatch a single cp.spawn request inline using the
- * existing pure-builtin / facet-direct logic, returning final stdout/
- * stderr/exitCode rather than streaming via hooks. Called by
- * spawn-facet.ts:runSpawnInIsolate from inside a fresh Worker Loader
- * isolate (the per-spawn fresh-isolate envelope).
- *
- * The fpm exposes a `dispatchInline(req, kind)` that adapts the
- * existing _dispatch path (originally hook-based) into a string-result
- * shape. That adapter is responsible for ensuring stdout/stderr are
- * accumulated inline rather than streamed.
+ * Process `pid` says whether its only remaining work is waiting on its
+ * children, and how far it has applied its news (fabric setProcessBlocked).
+ * Who its children are is the session's to know, not its.
  */
-export declare function _rpcCpDispatchInline(self: RpcHost, req: any, kind: string): Promise<{
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-}>;
+export declare function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void>;
+export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
 /** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
 export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
 /** RPC: Read a file as string. Returns string or null. */

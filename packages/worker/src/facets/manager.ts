@@ -80,6 +80,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
 import {
   FencedWork,
   FENCED_WORK_KEY_PREFIX,
@@ -445,7 +446,7 @@ function __nimbusLiveHandles() {
     + __nimbusHandleCount("__nimbusOpenSockets");
 }
 
-async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {
+async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses, __onPass) {
   let __exited = false;
   if (__exitPromise && typeof __exitPromise.then === "function") {
     __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });
@@ -470,6 +471,7 @@ async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs,
     // spinning at 0ms would burn the isolate's CPU indefinitely.
     await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));
     __pass++;
+    if (__onPass) __onPass();
   }
   if (__deadline !== null) { try { __rawClearTimeout(__deadline); } catch {} }
   // \`pending\` is what the caller reports when it gives up: a one-shot program
@@ -477,24 +479,45 @@ async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs,
   return { passes: __pass, pending: __exited ? 0 : __countHandles() };
 }
 
-// An ESM entry's own evaluation promise (top-level await) is the one promise
-// that IS a handle — the module has not finished loading until it settles.
-// Answers true when process.exit won the race instead.
-async function __nimbusAwaitEntryEvaluation(__entryResult) {
-  if (!__entryResult || typeof __entryResult.then !== "function") return false;
-  const __exit = {};
-  const __raced = await Promise.race([
-    __entryResult.then(() => null),
-    __nimbusProcessExitPromise.then(() => __exit, () => __exit),
-  ]);
-  return __raced === __exit;
+// Whether the program's only remaining work is waiting on its children (the
+// polls for their output and exit, __nimbusChildOps): no timer, socket,
+// server, stdin read or fetch of its own. Said to the session when it
+// changes (node-shims __nimbusReportBlocked), whose Dynamic Worker ledger
+// refuses a child's launch only when every worker is held by a process in
+// this state (fabric setProcessBlocked).
+function __nimbusReportBlockedState() {
+  const __children = __nimbusHandleCount("__nimbusChildOps");
+  const __blocked = __children > 0 && __nimbusLiveHandles() === __children;
+  if (typeof globalThis.__nimbusReportBlocked === "function") globalThis.__nimbusReportBlocked(__blocked);
 }
 
 // A one-shot facet's lifetime IS the loop: it runs the program until Node
-// would exit, or until the lifetime budget runs out.
+// would exit, or until the lifetime budget runs out. One loop from the
+// start, with the entry's evaluation (top-level await) counted as a handle
+// while it is pending, so the program's state is reported throughout: a
+// module whose top-level await waits on a child's close is blocked on that
+// child as much as a callback would be. Once the evaluation settles, the
+// loop gives a settling chain its warm-up turns again; a rejected
+// evaluation is thrown once the loop ends.
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
-  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
-  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);
+  let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
+  let __failure = null;
+  let __grace = 0;
+  if (__evaluating) {
+    __entryResult.then(
+      () => { __evaluating = false; __grace = 4; },
+      (error) => { __evaluating = false; __failure = { error }; },
+    );
+  }
+  const __count = () => {
+    if (__failure) return 0;
+    if (__evaluating) return 1 + __nimbusLiveHandles();
+    if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
+    return __nimbusLiveHandles();
+  };
+  const __drain = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  if (__failure && (typeof __nimbusProcessExitCode === "undefined" || __nimbusProcessExitCode === null)) throw __failure.error;
+  return __drain;
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -982,7 +1005,11 @@ ${RESIDENCY_MISS_REPORT}
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
 
-      if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
+      // A program that ended on its own may still be reading stdin; one that
+      // called process.exit() has ended whatever it holds, its stdin included,
+      // as Node's does. Waiting for the pump there waited for a parent that
+      // keeps the pipe open to close it, which it need never do.
+      if (__nimbusLiveStdinPump && !__nimbusAttachedTty && __nimbusProcessExitCode === null) await __nimbusLiveStdinPump;
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
@@ -5775,6 +5802,10 @@ export class FacetManager {
       // its pid. At the top of the table it ran as the session user whoever
       // started it.
       entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { parentPid: opts.invokerPid });
+      // The command that ran it awaits it as that command's work (a shell
+      // line's `node x`), until it ends: the session tells a shell doing
+      // nothing but await its programs by it (SessionProcessSupervisor).
+      if (opts.invokerPid !== undefined) this.processes.beginAwait(opts.invokerPid, entry.pid);
       // Short foreground `node -e ...` helpers are quiet by design — only
       // notify for user-facing `node <file>` invocations, which covers the
       // real user intent (running scripts, wrangler, etc.).
@@ -5794,11 +5825,16 @@ export class FacetManager {
     const __bundleStart = diagOn ? Date.now() : 0;
     // Paced like a resident launch: a tree too large for one turn costs
     // turns, and the pacer's stillWanted check ends a build whose process was
-    // killed while it was suspended. The pacer is settled in the finally
-    // below and not before, because the invocation that granted the last
-    // chunk awaits `chunkEnded` (PacedWork.pump) and has to stay the one
-    // that owns the run: settling at the end of the build would release that
-    // turn with the facet still to load and run on it.
+    // killed while it was suspended. The invocation that granted the last
+    // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
+    // the pacer settles: once the program is loaded and about to be entered
+    // (_execViaLoader's onLoaded), as a resident launch settles once its
+    // process has booted, and in the finally below for a launch that ends
+    // sooner. Not at the end of the build, which would release that turn
+    // with the module map still to assemble and load on it; and not at the
+    // end of the run, which held the session's launch alarm for as long as
+    // the program ran, so a child it launched and waited on, needing a turn
+    // of its own, never got one.
     const pacer = this._launchPacer(entry.pid);
     let vfsState: FacetVfsState;
     try {
@@ -5902,6 +5938,14 @@ export class FacetManager {
       if (abortController.signal.aborted) {
         this.processes.kill(entry.pid);
         return { exitCode: 130, stdout: '', stderr: '' };
+      }
+      // The ledger refused to start it (EAGAIN): it never ran. That is its
+      // spawn failing, for whoever spawned it to report: a child_process
+      // parent as an 'error' event. A pid the caller allocated is the
+      // caller's to mark; one spawned here ends with status 1.
+      if (isDynamicWorkerDeadlock(err)) {
+        if (!opts.skipSpawn) this.processes.exit(entry.pid, 1);
+        throw err;
       }
       const exitCode = 1;
       const reason = `runtime worker error: ${errorMessage(err)}`;
@@ -6099,6 +6143,7 @@ export class FacetManager {
             writerActivated = true;
           },
           onLoaded: () => {
+            pacer.settle();
             if (!diagSink) return;
             diagSink.loadMs = Date.now() - __loadStart;
             __runStart = Date.now();

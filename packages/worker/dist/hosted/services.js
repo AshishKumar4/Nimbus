@@ -2,7 +2,7 @@ import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
-import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
+import { bindProcessTable, isDynamicWorkerDeadlock, issueProcessNews, withLaunchAdmission, } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
@@ -168,6 +168,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes('child_process: command registry unavailable\n'));
                 return 127;
             }
+            // Only a child the broker is still running is launched. One it has
+            // ended (killed before its program started) or forgotten is refused,
+            // never run apart from the parent that spawned it.
+            if (!self.facetProcessManager?.isRunning(payload.processPid)) {
+                hooks.onStderr(textBytes(`child_process: process ${payload.processPid} is not a running child\n`));
+                return 1;
+            }
             const commandName = normalizeCpCommandName(payload.command);
             const cred = self.processes.cred(payload.processPid);
             const vfs = processView(payload.processPid, cred);
@@ -187,31 +194,32 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 signal: ac.signal,
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
                 runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
-                // Reuse the broker's pid and let runtime RPC output reach its
-                // live queues. A direct inline invocation without a managed child
-                // still needs a captured result.
-                __nimbusCaptureOutput: !self.facetProcessManager?.isChild(payload.processPid),
-                ...(self.facetProcessManager?.isChild(payload.processPid) ? {
-                    __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
-                } : {}),
+                // The program runs as the broker's pid, and its output reaches the
+                // child's live queues over runtime RPC.
+                __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
             };
+            // Admitted once on the Dynamic Worker ledger, before its preparation:
+            // its transform, its prebundle and its program are that one worker,
+            // in turn (withLaunchAdmission). A kill while it waits for room ends
+            // the wait; the launch registers its own terminator once it runs, and
+            // aborting ctx.signal still reaches it.
+            self.processes.setTerminator(payload.processPid, () => ac.abort());
             try {
-                const code = await cmd(ctx);
+                const code = await withLaunchAdmission(runtimeContext.ctx, { pid: payload.processPid }, ac.signal, () => { hooks.onStarted?.(); return cmd(ctx); });
                 return typeof code === 'number' ? code : 0;
             }
             catch (e) {
+                // A program the ledger refused to start never ran: its spawn failed, for the broker to report.
+                if (isDynamicWorkerDeadlock(e))
+                    throw e;
+                // Killed while it waited for room: nothing ran, and the kill has said how it ended.
+                if (ac.signal.aborted)
+                    return 130;
                 hooks.onStderr(textBytes(`${payload.command}: ${e?.message || String(e)}\n`));
                 return 1;
             }
         },
-        abort: (facetName) => {
-            // Best-effort: relay to ctx.facets.abort, mirroring FacetManager.kill.
-            try {
-                runtimeContext.ctx.facets?.abort?.(facetName, new Error('SIGKILL'));
-            }
-            catch { }
-            return true;
-        },
+        kill: (pid, signal) => self.ensureFacetManager().manager.kill(pid, signal),
     };
     // Adapter for CommandRegistryLike. The shared shell registry is
     // attached to `this._cpRegistry` by the shell-init path (see
@@ -304,6 +312,10 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         if (!cmd)
             throw syscallError('ENOENT', 'execvp', name);
         const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
+        // Its starter awaits it, and its program is its own work (as the
+        // workspace's runAs counts them).
+        const endAwait = self.processes.beginAwait(parent.pid, child.pid);
+        const endWork = self.processes.beginWork(child.pid);
         let exitCode = 1;
         try {
             const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
@@ -311,29 +323,27 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             return ended;
         }
         finally {
+            endWork();
+            endAwait();
             self.processes.exit(child.pid, exitCode);
         }
     };
-    // Construct the child-process Loader pool when the binding is available.
-    // Unit-test hosts without LOADER continue through direct dispatch.
-    let spawnPool;
-    try {
-        const envAny = runtimeContext.env;
-        if (envAny?.LOADER && typeof envAny.LOADER.get === 'function') {
-            spawnPool = new ChildProcessSpawnPool(runtimeContext.env, runtimeContext.ctx);
-        }
-    }
-    catch {
-        spawnPool = undefined;
-    }
+    // The Dynamic Worker ledger's wait-for edges are the session's own
+    // account of its processes: the table's children, and what a shell line
+    // awaits (fabric ProcessWaitGraph); a change to either may let it tell a
+    // wait nothing can satisfy.
+    const ledgerCtx = runtimeContext.ctx;
+    bindProcessTable(ledgerCtx, self.processes);
     self.facetProcessManager = new FacetProcessManager({
         facetMgr: facetMgrAdapter,
         processes: self.processes,
         vfsForProcess: (pid) => new ProcessView(self.getFilesystemAuthority().bind({ pid, cred: self.processes.cred(pid) })),
         commandRegistry: cmdRegistryAdapter,
+        issueNews: (parentPid) => issueProcessNews(ledgerCtx, parentPid),
         shellExecutor: {
             execute: async (pid, commandLine, env, cwd, stdin, hooks) => {
-                if (!self.shell) {
+                const workspace = self.runtimeWorkspace;
+                if (!workspace) {
                     hooks.onStderr(textBytes('sh: shell unavailable\n'));
                     return 127;
                 }
@@ -341,21 +351,26 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 const setUmask = (mask) => { self.processes.setUmask(pid, mask); };
                 // The child inherits from the command that starts it: its pipes and redirections, and the directory a `cd` moved to.
                 const runAs = (parent, targetCred, argv) => spawnBuiltin(parent, targetCred, argv);
-                const result = await self.shell.execute(String(commandLine), {
-                    cwd: cwd || '/home/user',
-                    env: { ...self.shell.env, ...(env || {}) },
-                    onStdout: hooks.onStdout,
-                    onStderr: hooks.onStderr,
-                    stdin,
-                    isolateShellState: true,
-                    commandContext: { pid, cred, setUmask },
-                    runAs,
-                });
-                return typeof result?.exitCode === 'number' ? result.exitCode : 0;
+                // A shell of the child's own, from its cwd and environment. The
+                // session shell is the terminal's, and children run at once: two
+                // lines on it would each save and restore the shell's cwd and
+                // variables over the other's. Its descriptors close as it ends.
+                const shell = workspace.shellFor(pid, { cwd: cwd || '/home/user', env });
+                try {
+                    const result = await shell.execute(String(commandLine), {
+                        onStdout: hooks.onStdout,
+                        onStderr: hooks.onStderr,
+                        stdin,
+                        commandContext: { pid, cred, setUmask },
+                        runAs,
+                    });
+                    return typeof result?.exitCode === 'number' ? result.exitCode : 0;
+                }
+                finally {
+                    await shell.closeDescriptors();
+                }
             },
         },
-        ctx: runtimeContext.ctx,
-        spawnPool,
     });
     return self.facetProcessManager;
 }

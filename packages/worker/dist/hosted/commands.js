@@ -50,6 +50,7 @@ export async function registerHostedCommands(self, workspace) {
         get cred() { return self.processes.cred(pid); },
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: runAsProcess,
+        accountWork: (worker) => self.processes.beginWork(worker),
     });
     // `kill` is the shell's builtin; the session's own processes (resident
     // servers, the vite shim), numbered in this table's pid space, are reached
@@ -367,10 +368,11 @@ export async function registerHostedCommands(self, workspace) {
     //   - script-path flow with .ts/.tsx/.jsx auto-transform
     //   - BUN_SHIM_PREAMBLE prepend (handled inside runBunScript itself)
     //
-    // Bun does NOT use binSpawn ctx propagation today (its runFresh
-    // chain doesn't share PID state with the .bin handler — the .bin
-    // handler always dispatches through `node`, not `bun`). So
-    // supportsBinSpawn=false (default).
+    // binSpawn ctx propagation (supportsBinSpawn): a .bin handler always
+    // dispatches through `node`, but a child_process broker or a background
+    // job hands Bun the pid it already allocated, as it hands Node's: the
+    // program runs as that pid, so its output reaches the parent's queues and
+    // it runs on that child's launch admission.
     /** `scripts` from the cwd's package.json, read as the command's own view; empty when there is none. */
     const readPackageScripts = async (vfs, cwd) => {
         try {
@@ -394,6 +396,7 @@ export async function registerHostedCommands(self, workspace) {
             'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
             'Execution via DO Facets (isolated V8 isolate per call).',
         run: (code, opts) => runBunScript(facetMgr, code, opts),
+        supportsBinSpawn: true,
         routesServers: true,
         subcommands: {
             // bun install / i / add → npm install (same VFS, same R2 caches).
@@ -798,6 +801,8 @@ export async function registerHostedCommands(self, workspace) {
                 throw new Error('shell entrypoint requires a parent process');
             }
             const childProcess = self.processes.spawn('sh', ['sh'], options?.cwd || '/home/user', { parentPid });
+            // The command that runs the script (`sh x.sh`) awaits its shell.
+            const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
             let exitCode = 1;
             try {
                 const identity = commandIdentityFor(childProcess.pid);
@@ -821,6 +826,7 @@ export async function registerHostedCommands(self, workspace) {
                 return result;
             }
             finally {
+                endAwait();
                 self.processes.exit(childProcess.pid, exitCode);
             }
         },
@@ -860,9 +866,17 @@ export async function registerHostedCommands(self, workspace) {
                 catch { }
             };
         };
+        // The script runs as the wrapper, on a shell of its own (as npm runs a
+        // script under `sh -c`): the session shell is the terminal's, and scripts
+        // run at once, so two on it would each save and restore its state over the
+        // other's. The command that runs it (`npm run x`) awaits it, and its
+        // commands are its work (SessionProcessSupervisor): a chain of them doing
+        // nothing but await a program is told as such.
+        const scriptShell = workspace.shellFor(pid, { cwd: cmdCtx.cwd || '/home/user', env: cmdCtx.env });
+        const endAwait = self.processes.beginAwait(cmdCtx.pid, pid);
         let exitCode = 1;
         try {
-            const result = await shell.execute(cmd, {
+            const result = await scriptShell.execute(cmd, {
                 cwd: cmdCtx.cwd,
                 env: cmdCtx.env,
                 onStdout: tee('stdout', cmdCtx.stdout),
@@ -913,6 +927,11 @@ export async function registerHostedCommands(self, workspace) {
             exitCode = 1;
         }
         finally {
+            endAwait();
+            try {
+                await scriptShell.closeDescriptors();
+            }
+            catch { }
             // When a long-running script handed off to a live server (the registry
             // command adopted this pid and returned 0), the process stays running;
             // emitting an immediate exit would print a false `[shell exited]` and

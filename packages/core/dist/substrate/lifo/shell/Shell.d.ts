@@ -45,6 +45,13 @@ export interface ShellCommandIdentity {
     cred: VfsCred;
     setUmask(mask: number): void;
     runAs?: CommandRunAsHost;
+    /**
+     * A unit of process `pid`'s own work, while a command runs as it
+     * (interpreter CommandIdentity.beginWork; SessionProcessSupervisor.beginWork).
+     * Session-wide: every command counts for the pid it runs as, whichever
+     * shell runs it, so no command of a process goes uncounted.
+     */
+    accountWork?(pid: number): () => void;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;

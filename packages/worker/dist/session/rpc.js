@@ -29,7 +29,7 @@ import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom } from '@nimbus-sh/fabric/budgets.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -955,6 +955,11 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
     // also emits, so we dedupe on pid there. Include the command (when
     // available via ProcessTable) so the UI can surface a tab for pids
     // whose spawn event was suppressed (e.g. `node -e` short evals).
+    // A child_process child's end is its parent's to report, as its output
+    // is: the terminal hears nothing of it (the parent may not even read
+    // what it wrote, as a Node parent need not).
+    if (self.facetProcessManager?.isChild(pid))
+        return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
     // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
@@ -1100,10 +1105,14 @@ export function _reportExternalExit(self, pid, code, reason) {
         self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
     self.processes.markExit(pid, code, reason);
-    const cmdFromTable = self.processes.get(pid)?.command;
-    notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
-    if (self.terminal && self.processes.logSize(pid) > 0) {
-        self._emitExitDump(pid, code);
+    // A child_process child's end is its parent's to report, as its output
+    // is (routeOutput): the terminal hears nothing of it.
+    if (!self.facetProcessManager?.isChild(pid)) {
+        const cmdFromTable = self.processes.get(pid)?.command;
+        notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
+        if (self.terminal && self.processes.logSize(pid) > 0) {
+            self._emitExitDump(pid, code);
+        }
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero
     // code. The FacetManager already records its own exits inline via
@@ -1284,26 +1293,29 @@ export async function _rpcCpKill(self, childPid, signal) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.kill(childPid, signal);
 }
-export async function _rpcCpWait(self, childPid, waitMs, acquire, pid) {
-    const fpm = self._ensureFacetProcessManager();
-    const status = await fpm.wait(childPid, waitMs);
-    return withDeliveredAcquire(self, status, status.done, acquire, pid);
-}
 /**
- * child-process isolation gap #1: dispatch a single cp.spawn request inline using the
- * existing pure-builtin / facet-direct logic, returning final stdout/
- * stderr/exitCode rather than streaming via hooks. Called by
- * spawn-facet.ts:runSpawnInIsolate from inside a fresh Worker Loader
- * isolate (the per-spawn fresh-isolate envelope).
- *
- * The fpm exposes a `dispatchInline(req, kind)` that adapts the
- * existing _dispatch path (originally hook-based) into a string-result
- * shape. That adapter is responsible for ensuring stdout/stderr are
- * accumulated inline rather than streamed.
+ * Process `pid` says whether its only remaining work is waiting on its
+ * children, and how far it has applied its news (fabric setProcessBlocked).
+ * Who its children are is the session's to know, not its.
  */
-export async function _rpcCpDispatchInline(self, req, kind) {
+export async function _rpcCpBlocked(self, pid, report) {
+    if (!Number.isInteger(pid) || pid <= 0 || self.processes.get(pid)?.state !== 'running')
+        return;
+    if (!self.ctx || typeof self.ctx !== 'object')
+        return;
+    const said = (report ?? {});
+    if (!Number.isInteger(said.frontier) || !Number.isInteger(said.seq))
+        return;
+    setProcessBlocked(self.ctx, pid, {
+        blocked: said.blocked === true,
+        frontier: said.frontier,
+        seq: said.seq,
+    });
+}
+export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
     const fpm = self._ensureFacetProcessManager();
-    return fpm.dispatchInline(req, kind);
+    const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
+    return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
 // ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
 // Kept for backward compatibility with direct DO stub callers.

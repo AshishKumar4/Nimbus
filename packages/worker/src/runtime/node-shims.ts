@@ -42,6 +42,7 @@
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
+import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE } from '../loaders/generated-workers.js';
@@ -496,6 +497,27 @@ function __nimbusEmitExit(code) {
   __nimbusExitEmitted = true;
   try { __processEvents.emit("exit", code); } catch {}
 }
+// The news of this process's children, applied as each reply's effect is
+// (__nimbusApplyNews), and what it says of itself to the session as that
+// changes (facets/manager.ts __nimbusReportBlockedState): whether its only
+// remaining work is waiting on its children, at which frontier (child-news.ts).
+// A blocked program runs again only on news of a child (it has no timer,
+// socket or read of its own), so the session takes the report only while
+// the frontier is all the news it issued (fabric budgets.ts
+// setProcessBlocked). Sent unref'd, in order: saying it is not work, and
+// must not make the program look busy.
+let __nimbusBlockedChain = Promise.resolve();
+const __nimbusChildNews = (${CHILD_NEWS_SOURCE})((report) => {
+  __nimbusBlockedChain = __nimbusBlockedChain
+    .then(() => __nimbusUseRpcResultUnref(__supervisor.cpBlocked(report), () => undefined))
+    .catch(() => {});
+});
+globalThis.__nimbusApplyNews = (numbers) => __nimbusChildNews.apply(numbers);
+globalThis.__nimbusReportBlocked = (blocked) => {
+  if (__nimbusProgramStopped) return;
+  if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
+  __nimbusChildNews.say(blocked);
+};
 let __nimbusProcessExitResolve = null;
 let __nimbusProcessExitCode = null;
 const __nimbusProcessExitPromise = new Promise((resolve) => {
@@ -6763,16 +6785,33 @@ const __childProcessMod = (() => {
     if (typeof chunk === "string") return new TextEncoder().encode(chunk);
     return new TextEncoder().encode(String(chunk));
   }
+  /**
+   * RELEASE ahead of what the child observes this process by: its launch
+   * (it reads the files this process wrote, its own script among them) and
+   * what this process writes to its stdin. A synchronous
+   * write is only parked; without the barrier a child spawned right after
+   * \`writeFileSync\` could read the file before the write-back reached the
+   * authority, and a child told "ready" on stdin could read the pre-write
+   * bytes. Measured: a parent that wrote its child's module and spawned it
+   * at once had the child fail \`cannot find module\` (1 run in 5).
+   */
+  async function _releaseToChild() {
+    const release = globalThis.__nimbusVfsReleaseBarrier;
+    // A write-back that fails is retained and reported at exit (the write
+    // ledger's contract); the child is not the operation to blame for it.
+    if (typeof release === "function") { try { await release(); } catch {} }
+  }
+
   function _queueStdinWrite(child, data) {
-    if (!child.pid) {
+    if (!child._brokerPid) {
       child._pendingStdin = child._pendingStdin || [];
       child._pendingStdin.push(data);
       return Promise.resolve();
     }
     if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() =>
-      __nimbusUseRpcResult(__supervisor.cpStdinWrite(child.pid, data), () => undefined)
+    const next = prior.then(_releaseToChild).then(() =>
+      __nimbusUseRpcResult(__supervisor.cpStdinWrite(child._brokerPid, data), () => undefined)
     );
     child._stdinChain = next.catch(() => {});
     __pendingIO.push(next.catch(() => {}));
@@ -6780,11 +6819,11 @@ const __childProcessMod = (() => {
   }
   function _queueStdinEnd(child) {
     child._pendingStdinEnd = true;
-    if (!child.pid) return Promise.resolve();
+    if (!child._brokerPid) return Promise.resolve();
     if (!HAS_SUPERVISOR) return Promise.resolve();
     const prior = child._stdinChain || Promise.resolve();
-    const next = prior.then(() =>
-      __nimbusUseRpcResult(__supervisor.cpStdinEnd(child.pid), () => undefined)
+    const next = prior.then(_releaseToChild).then(() =>
+      __nimbusUseRpcResult(__supervisor.cpStdinEnd(child._brokerPid), () => undefined)
     );
     child._stdinChain = next.catch(() => {});
     __pendingIO.push(next.catch(() => {}));
@@ -6874,7 +6913,12 @@ const __childProcessMod = (() => {
   function _makeChild(opts) {
     const stdio = _normalizeStdio((opts || {}).stdio);
     const child = new __eventsMod();
-    child.pid = 0;
+    // Published once the child has started (_markSpawned), as Node's is only
+    // for a spawn that succeeded; the broker's pid for it is _brokerPid,
+    // known as soon as the broker has it (pending admission, or refused).
+    child.pid = undefined;
+    child._brokerPid = 0;
+    child._started = false;
     child.connected = false;
     child.killed = false;
     child.exitCode = null;
@@ -6901,7 +6945,9 @@ const __childProcessMod = (() => {
     const _trackCloseInterest = (event) => {
       if ((event === "close" || event === "exit") && !child._closeTracked) {
         child._closeTracked = true;
-        __pendingIO.push(child._closePromise.catch(() => {}));
+        // Keeps this process until the child closes, or until it exits:
+        // Node's process.exit() does not wait for its children.
+        __pendingIO.push(Promise.race([child._closePromise, __nimbusProcessExitPromise]).catch(() => {}));
       }
     };
     const _childOn = child.on.bind(child);
@@ -6930,17 +6976,16 @@ const __childProcessMod = (() => {
     }
 
     child.kill = function(signal) {
-      // Node semantics: kill() returns true even on already-exited
-      // children (it's a best-effort syscall). Reserve false for "no
-      // pid known" (kill called before spawn settled and we have
-      // nothing to queue).
+      // Node semantics: a child that has exited has no handle to signal,
+      // so kill() returns false and \`killed\` stays as it was. Before the
+      // pid is known the kill is queued, and counts as sent.
       const sig = signal || "SIGTERM";
+      if (child._exitFired) return false;
       child.killed = true;
-      if (child._exitFired) return true;
-      if (!child.pid) { child._pendingKill = { signal: sig }; return true; }
+      if (!child._brokerPid) { child._pendingKill = { signal: sig }; return true; }
       if (!HAS_SUPERVISOR) return true;
       __pendingIO.push(
-        __nimbusUseRpcResult(__supervisor.cpKill(child.pid, sig), () => undefined).catch(() => {}),
+        __nimbusUseRpcResult(__supervisor.cpKill(child._brokerPid, sig), () => undefined).catch(() => {}),
       );
       return true;
     };
@@ -6970,9 +7015,9 @@ const __childProcessMod = (() => {
       // close listeners that re-read child state see consistent values.
       queueMicrotask(() => {
         try {
-          if (child.pid) {
-            __cpChildren.delete(child.pid);
-            __cpExitedPids.add(child.pid);
+          if (child._brokerPid) {
+            __cpChildren.delete(child._brokerPid);
+            __cpExitedPids.add(child._brokerPid);
             if (__cpExitedPids.size > __CP_EXITED_PIDS_MAX) __cpExitedPids.delete(__cpExitedPids.values().next().value);
           }
         } catch {}
@@ -6991,6 +7036,23 @@ const __childProcessMod = (() => {
    * this process's ACQUIRE arguments and the reply carries the answer, so the
    * barrier costs no round trip of its own.
    */
+  /**
+   * One of a child's long polls (its output, its exit): ref'd work, as a
+   * Node child's pipes and handle are, and counted as waiting on a child
+   * (__nimbusChildOps), which is how the program's event loop tells that
+   * waiting on children is all it is doing (__nimbusReportBlockedState).
+   */
+  async function _childPoll(promise, use) {
+    globalThis.__nimbusChildOps = (globalThis.__nimbusChildOps || 0) + 1;
+    try { return await __nimbusUseRpcResult(promise, use); }
+    finally { globalThis.__nimbusChildOps--; }
+  }
+
+  /** A reply's news numbers, applied once its effect has been (__nimbusApplyNews). */
+  function _applyNews(r) {
+    if (r && Array.isArray(r.news)) globalThis.__nimbusApplyNews(r.news);
+  }
+
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
     // to 1500ms cap. Reset to 100ms whenever a chunk arrives. Caps
@@ -6999,16 +7061,19 @@ const __childProcessMod = (() => {
     // in-flight RPCs at 250ms intervals.
     let backoff = 100;
     const BACKOFF_MAX = 1500;
-    while (HAS_SUPERVISOR && child.pid && !child._streamsClosed) {
+    while (HAS_SUPERVISOR && child._brokerPid && !child._streamsClosed) {
       try {
-        const r = await __nimbusUseRpcResult(
-          __supervisor.cpReadOutput(child.pid, fd, sinceSeqRef.value, backoff, __nimbusVfsAcquireArgs()),
+        const r = await _childPoll(
+          __supervisor.cpReadOutput(child._brokerPid, fd, sinceSeqRef.value, backoff, __nimbusVfsAcquireArgs()),
           (result) => result,
         );
         const chunks = r && Array.isArray(r.chunks) ? r.chunks : [];
         if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier(r.acquired);
         if (chunks.length > 0) {
           backoff = 100;  // reset — child is producing
+          // A child that has output has started: 'spawn' and its pid come
+          // before its first byte, as in Node.
+          _markSpawned(child);
           for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
@@ -7020,8 +7085,9 @@ const __childProcessMod = (() => {
         } else {
           backoff = Math.min(backoff * 2, BACKOFF_MAX);
         }
+        if (r && r.closed) stream.end();
+        _applyNews(r);
         if (r && r.closed) {
-          stream.end();
           // _stdoutEnded / _stderrEnded flag is set in the stream's
           // 'end' listener (see _makeChild) so 'close' fires AFTER
           // actual data flushes.
@@ -7036,36 +7102,116 @@ const __childProcessMod = (() => {
   }
 
   /**
-   * Wait-loop: long-poll cpWait until the child reports exit. Emits
-   * 'exit' once stamped, behind the barrier: a child's exit is how a parent
-   * learns the files it wrote are there. Answered on the reply, as for the
-   * child's output.
+   * The child started (the broker admitted it): its pid is published and
+   * 'spawn' emitted, once, as Node does for a spawn that succeeded.
+   */
+  function _markSpawned(child) {
+    if (child._started) return;
+    child._started = true;
+    child.pid = child._brokerPid;
+    child.connected = true;
+    try { child.emit("spawn"); } catch {}
+  }
+
+  /**
+   * What a wait answered, applied: the child started; or it ended, by a
+   * status or a signal (a child that ended is one that started, so 'spawn'
+   * comes first); or its spawn failed, and it never ran. True once the
+   * child is settled. Shared by the wait loop and the exit-time drain, so a
+   * refusal is reported one way, whichever sees it.
+   */
+  /**
+   * After 'exit', as Node's ChildProcess does (flushStdio): any stdio stream
+   * the program has not read is resumed, so its buffered output drains, it
+   * ends, and 'close' can follow. On the next turn, so an 'exit' listener
+   * still has its chance to start reading. Without it a child that wrote to
+   * a stream its parent never read (an error on stderr) exited and never
+   * closed, and its parent, waiting for 'close', waited for good.
+   */
+  function _flushStdio(child) {
+    queueMicrotask(() => {
+      for (const stream of [child.stdout, child.stderr]) {
+        // A stream a consumer owns in readable mode (a 'readable' listener,
+        // an async iterator) is left to it, as Node's flushStdio leaves one
+        // whose readableListening is set: resuming it would hand its next
+        // chunks to no one.
+        if (!stream || stream._readableState?.readableListening) continue;
+        try { stream.resume(); } catch {}
+      }
+    });
+  }
+
+  function _applyWait(child, r) {
+    // Settled already (both the wait loop and the exit-time drain can hear
+    // of the same exit or refusal): nothing more to emit.
+    if (child._exitFired) return true;
+    if (!r) return false;
+    if (r.done && r.spawnError) {
+      _failSpawn(child, r.spawnError, r.exitCode);
+      return true;
+    }
+    if (r.started || r.done) _markSpawned(child);
+    if (!r.done) return false;
+    // Node's pair: a status and no signal, or the signal and no status.
+    child.exitCode = r.exitCode;
+    child.signalCode = r.signal || null;
+    child._exitFired = true;
+    try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
+    _flushStdio(child);
+    _maybeFireClose(child);
+    return true;
+  }
+
+  /**
+   * Wait-loop: long-poll cpWait until the child reports its start, then its
+   * exit. Applied behind the barrier: a child's exit is how a parent learns
+   * the files it wrote are there. Answered on the reply, as for the child's
+   * output.
    */
   async function _runWaitLoop(child) {
-    while (HAS_SUPERVISOR && child.pid && !child._exitFired) {
+    while (HAS_SUPERVISOR && child._brokerPid && !child._exitFired) {
       try {
-        const r = await __nimbusUseRpcResult(
-          __supervisor.cpWait(child.pid, 1000, __nimbusVfsAcquireArgs()),
+        const r = await _childPoll(
+          __supervisor.cpWait(child._brokerPid, 1000, __nimbusVfsAcquireArgs(), child._started),
           (result) => result,
         );
-        if (r && r.done) {
-          await __nimbusInboundBarrier(r.acquired);
-          child.exitCode = r.exitCode;
-          child.signalCode = r.signal;
-          child._exitFired = true;
-          try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
-          _maybeFireClose(child);
-          break;
-        }
+        if (r && (r.done || r.started)) await __nimbusInboundBarrier(r.acquired);
+        const settled = _applyWait(child, r);
+        _applyNews(r);
+        if (settled) break;
       } catch (e) {
         // Couldn't wait — synthesize an error exit.
         child.exitCode = 1;
         child._exitFired = true;
         try { child.emit("exit", 1, null); } catch {}
+        _flushStdio(child);
         _maybeFireClose(child);
         break;
       }
     }
+  }
+
+  /**
+   * The child never ran: its spawn failed with errno \`code\` (EAGAIN: the
+   * session had no room to start it, and never would). As Node reports a
+   * failed spawn: an 'error' event named for the file and the code, no
+   * 'exit', no pid, and 'close' with the negative errno as its status once
+   * the streams have ended.
+   */
+  function _failSpawn(child, code, errno) {
+    const err = new Error("spawn " + child.spawnfile + " " + code);
+    err.errno = errno;
+    err.code = code;
+    err.syscall = "spawn " + child.spawnfile;
+    err.path = child.spawnfile;
+    err.spawnargs = child.spawnargs.slice(1);
+    __cpChildren.delete(child._brokerPid);
+    child.exitCode = errno;
+    child._exitFired = true;
+    try { child.emit("error", err); } catch {}
+    try { child._stdoutSink && child._stdoutSink.end(); } catch {}
+    try { child._stderrSink && child._stderrSink.end(); } catch {}
+    _maybeFireClose(child);
   }
 
   /**
@@ -7078,6 +7224,19 @@ const __childProcessMod = (() => {
     args = args || [];
     opts = opts || {};
     const child = _makeChild(opts);
+    child.spawnfile = String(cmd);
+    child.spawnargs = [String(cmd), ...args.map(String)];
+    // \`timeout\`: ended with \`killSignal\` once it has run that long, as Node's spawn does.
+    if (opts.timeout > 0) {
+      let timer = setTimeout(() => {
+        timer = null;
+        child._timedOut = true;
+        child.kill(opts.killSignal);
+      }, opts.timeout);
+      const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+      child.once("exit", clear);
+      child.once("error", clear);
+    }
 
     if (!HAS_SUPERVISOR) {
       queueMicrotask(() => {
@@ -7100,6 +7259,7 @@ const __childProcessMod = (() => {
     // callers can attach 'data' listeners before any chunk arrives.
     __pendingIO.push((async () => {
       try {
+        await _releaseToChild();
         const r = await __nimbusUseRpcResult(
           __supervisor.cpSpawn({
             command: cmd,
@@ -7112,26 +7272,27 @@ const __childProcessMod = (() => {
           }),
           (result) => result,
         );
-        child.pid = r.childPid;
-        child.connected = true;
-        __cpChildren.set(child.pid, child);
-        try { child.emit("spawn"); } catch {}
+        // The broker has the child; it starts once it is admitted, and its
+        // wait loop says so (_markSpawned), or that it was refused.
+        child._brokerPid = r.childPid;
+        __cpChildren.set(child._brokerPid, child);
 
         // Flush any stdin written before pid was known, preserving
         // write-before-end ordering for common child.stdin.write();
         // child.stdin.end() patterns.
         if (child._pendingStdin && child._pendingStdin.length > 0) {
           const pending = child._pendingStdin.splice(0);
+          await _releaseToChild();
           for (const d of pending) {
             await __nimbusUseRpcResult(
-              __supervisor.cpStdinWrite(child.pid, d),
+              __supervisor.cpStdinWrite(child._brokerPid, d),
               () => undefined,
             ).catch(() => {});
           }
         }
         if (child._pendingStdinEnd) {
           await __nimbusUseRpcResult(
-            __supervisor.cpStdinEnd(child.pid),
+            __supervisor.cpStdinEnd(child._brokerPid),
             () => undefined,
           ).catch(() => {});
         }
@@ -7141,7 +7302,7 @@ const __childProcessMod = (() => {
           const sig = child._pendingKill.signal;
           child._pendingKill = null;
           __pendingIO.push(__nimbusUseRpcResult(
-            __supervisor.cpKill(child.pid, sig),
+            __supervisor.cpKill(child._brokerPid, sig),
             () => undefined,
           ).catch(() => {}));
         }
@@ -7156,6 +7317,12 @@ const __childProcessMod = (() => {
         if (child._stderrSink) void _runReadLoop(child, 2, child._stderrSink, stderrSeq);
         void _runWaitLoop(child);
       } catch (e) {
+        // The broker refused the spawn with an errno (EAGAIN at the depth
+        // cap): a failed spawn, reported as the session's refusal is.
+        if (e && typeof e.code === "string" && typeof e.errno === "number") {
+          _failSpawn(child, e.code, e.errno);
+          return;
+        }
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
         try { child.emit("exit", 1, null); } catch {}
@@ -7169,30 +7336,48 @@ const __childProcessMod = (() => {
   }
 
   /**
+   * The callback of exec and execFile, as Node's: once, with no error when
+   * the child exited 0, else an error saying how it ended (\`code\`, or
+   * \`signal\` and no code; \`killed\` when it was killed), and the spawn's
+   * own error when it never ran. \`cmd\` is the command line, as Node joins it.
+   */
+  function _execCallback(child, cmd, cb) {
+    let stdout = "", stderr = "";
+    if (child.stdout) child.stdout.on("data", (d) => { stdout += String(d); });
+    if (child.stderr) child.stderr.on("data", (d) => { stderr += String(d); });
+    let spawnError = null;
+    let done = false;
+    // Use 'close' (fires after exit AND both stdio streams ended) so all
+    // chunks have landed before cb resolves.
+    child.on("error", (e) => { spawnError = e; });
+    child.on("close", (code, signal) => {
+      if (done || !cb) return;
+      done = true;
+      if (spawnError) {
+        spawnError.cmd = cmd;
+        cb(spawnError, stdout, stderr);
+      } else if (code === 0 && signal === null) {
+        cb(null, stdout, stderr);
+      } else {
+        // stdout and stderr ride on it too, as util.promisify(exec)'s rejection carries them.
+        const err = Object.assign(new Error("Command failed: " + cmd + "\\n" + stderr), {
+          code, killed: child.killed, signal, cmd, stdout, stderr,
+        });
+        cb(err, stdout, stderr);
+      }
+    });
+  }
+
+  /**
    * exec(cmd, opts, cb) — Node semantics: passes cmd to a shell
-   * (we use 'sh -c'). Buffers stdout/stderr; cb fires once on exit.
+   * (we use 'sh -c'). Buffers stdout/stderr; cb fires once on close.
    */
   function exec(cmd, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = {}; }
     opts = opts || {};
     // Use sh -c so shell metacharacters work for husky/concurrently/etc.
     const child = _spawn("sh", ["-c", cmd], { ...opts, shell: true });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += String(d); });
-    child.stderr.on("data", (d) => { stderr += String(d); });
-    // Use 'close' (fires after exit AND both stdio streams ended) so all
-    // chunks have landed before cb resolves.
-    child.on("close", (code) => {
-      if (cb) {
-        if (code === 0) cb(null, stdout, stderr);
-        else {
-          const err = Object.assign(new Error("Command failed: " + cmd), {
-            code, cmd, stdout, stderr,
-          });
-          cb(err, stdout, stderr);
-        }
-      }
-    });
+    _execCallback(child, String(cmd), cb);
     return child;
   }
 
@@ -7203,21 +7388,9 @@ const __childProcessMod = (() => {
     if (typeof args === "function") { cb = args; args = []; opts = {}; }
     if (typeof opts === "function") { cb = opts; opts = {}; }
     opts = opts || {};
-    const child = _spawn(file, args || [], { ...opts, shell: false });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += String(d); });
-    child.stderr.on("data", (d) => { stderr += String(d); });
-    child.on("close", (code) => {
-      if (cb) {
-        if (code === 0) cb(null, stdout, stderr);
-        else {
-          const err = Object.assign(new Error("Command failed: " + file), {
-            code, stdout, stderr,
-          });
-          cb(err, stdout, stderr);
-        }
-      }
-    });
+    args = args || [];
+    const child = _spawn(file, args, { ...opts, shell: false });
+    _execCallback(child, [String(file), ...args.map(String)].join(" "), cb);
     return child;
   }
 
@@ -7253,14 +7426,38 @@ const __childProcessMod = (() => {
 
     const result = { pid: 0, stdout: "", stderr: "", status: null, signal: null, output: [null, "", ""] };
     let _done = false;
+    // A spawn that failed is the result's \`error\`, named for spawnSync, as Node's.
+    let spawnError = null;
+    child.on("error", (e) => {
+      spawnError = e;
+      e.syscall = "spawnSync " + child.spawnfile;
+      e.message = "spawnSync " + child.spawnfile + " " + e.code;
+    });
     result.__deferred = new Promise((resolve) => {
       child.on("close", (code, signal) => {
+        if (spawnError) {
+          result.error = spawnError;
+          result.output = null;
+          result.stdout = null;
+          result.stderr = null;
+          result.status = null;
+          _done = true;
+          resolve(result);
+          return;
+        }
         result.pid = child.pid;
         result.stdout = stdout;
         result.stderr = stderr;
         result.status = code;
         result.signal = signal;
         result.output = [null, stdout, stderr];
+        // \`timeout\` ended it: Node's spawnSync says so in \`error\` as well.
+        if (child._timedOut) {
+          result.error = Object.assign(new Error("spawnSync " + child.spawnfile + " ETIMEDOUT"), {
+            errno: -110, code: "ETIMEDOUT", syscall: "spawnSync " + child.spawnfile,
+            path: child.spawnfile, spawnargs: child.spawnargs.slice(1),
+          });
+        }
         _done = true;
         resolve(result);
       });
@@ -7384,6 +7581,8 @@ const __childProcessMod = (() => {
             __supervisor.cpDrainOutput(pid),
             (result) => result,
           );
+          // Output means it started: 'spawn' before its first byte.
+          if (r && ((r.stdout && r.stdout.byteLength > 0) || (r.stderr && r.stderr.byteLength > 0))) _markSpawned(child);
           if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout) {
             try { child.stdout.write(__BufferMod.from(r.stdout)); } catch {}
           }
@@ -7395,23 +7594,24 @@ const __childProcessMod = (() => {
           try { child.stdout && child.stdout.end(); } catch {}
           try { child.stderr && child.stderr.end(); } catch {}
           if (!child._exitFired) {
-            // No exit reported yet — wait briefly, then synthesize.
+            // No exit reported yet — wait briefly, then synthesize. A start,
+            // an exit or a refused spawn the wait reports is applied as the
+            // wait loop applies it (_applyWait).
+            let settled = false;
             try {
               const w = await __nimbusUseRpcResult(
-                __supervisor.cpWait(pid, 500),
+                __supervisor.cpWait(pid, 500, undefined, child._started),
                 (result) => result,
               );
-              if (w && w.done) {
-                child.exitCode = w.exitCode;
-                child.signalCode = w.signal;
-              } else {
-                child.exitCode = child.exitCode == null ? 0 : child.exitCode;
-              }
-            } catch {
+              settled = _applyWait(child, w);
+              _applyNews(w);
+            } catch { /* synthesized below */ }
+            if (!settled) {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
+              child._exitFired = true;
+              try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
+              _flushStdio(child);
             }
-            child._exitFired = true;
-            try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
           }
           _maybeFireClose(child);
         } catch { /* best-effort */ }
@@ -7469,18 +7669,21 @@ class __NimbusConsole {
     this.Console = __NimbusConsole;
   }
 }
+// The captured form (a program whose output is a pipe, a file, a shell
+// line's result): nothing after process.exit(), as the live form and the
+// process streams (stopped programs write nothing).
 const __consoleMod = {
-  log: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
-  error: (...a) => { stderr += __utilMod.format(...a) + "\\n"; },
-  warn: (...a) => { stderr += __utilMod.format(...a) + "\\n"; },
-  info: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
-  debug: (...a) => { stdout += __utilMod.format(...a) + "\\n"; },
-  dir: (o, opts) => { stdout += __utilMod.inspect(o, opts) + "\\n"; },
-  trace: (...a) => { stderr += "Trace: " + __utilMod.format(...a) + "\\n"; },
-  assert: (c, ...a) => { if (!c) stderr += "Assertion failed: " + __utilMod.format(...a) + "\\n"; },
+  log: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
+  error: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
+  warn: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
+  info: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
+  debug: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
+  dir: (o, opts) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(o, opts) + "\\n"; },
+  trace: (...a) => { if (!__nimbusProgramStopped) stderr += "Trace: " + __utilMod.format(...a) + "\\n"; },
+  assert: (c, ...a) => { if (!c && !__nimbusProgramStopped) stderr += "Assertion failed: " + __utilMod.format(...a) + "\\n"; },
   time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
   count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
-  table: (d) => { stdout += __utilMod.inspect(d) + "\\n"; },
+  table: (d) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(d) + "\\n"; },
   Console: __NimbusConsole,
 };
 
@@ -7748,7 +7951,8 @@ function __makeProcessStdin() {
   }
   async function pumpLiveStdin() {
     let readFailures = 0;
-    while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
+    // Until stdin ends or the program exits: an exited program reads nothing.
+    while (liveChildPid && !__nimbusProgramStopped && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       let packet;
       try {
         // Unref'd: this long-poll runs for the whole life of an attached

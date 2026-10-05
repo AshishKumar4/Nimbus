@@ -443,12 +443,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
     _rpcCpDrainOutput(childPid: number): Promise<any>;
     _rpcCpKill(childPid: number, signal: string): Promise<boolean>;
-    _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
-    _rpcCpDispatchInline(req: any, kind: string): Promise<{
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-    }>;
+    _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
+    _rpcCpBlocked(pid: number, report: unknown): Promise<void>;
     _rpcReady(options?: _programmatic.ProgrammaticReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];

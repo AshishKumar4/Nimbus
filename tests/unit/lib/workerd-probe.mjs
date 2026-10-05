@@ -109,10 +109,11 @@ async function putObjects(puts, persist, work) {
 }
 
 /**
- * Boot apps/probe on workerd with `runtimes` installable.
+ * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
+ * its config vars (`wrangler dev --var`).
  * @returns {Promise<{ base: string, token: string, stop: () => Promise<void> }>}
  */
-export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000 } = {}) {
+export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {} } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
@@ -148,6 +149,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       child = spawn(WRANGLER, [
         'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
+        ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
       child.stdout.on('data', (d) => { log += d; });
       child.stderr.on('data', (d) => { log += d; });

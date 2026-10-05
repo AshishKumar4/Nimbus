@@ -20,7 +20,7 @@
  *   Bun.write(dst, data)     — VFS write, accepts string|Uint8Array|
  *                               Response|BunFile|Blob.
  *   Bun.spawn(cmd, opts)     — node:child_process.spawn under the hood
- *                               (via the supervisor's cp-spawn pool).
+ *                               (via the supervisor's child_process broker).
  *   Bun.password.hash/verify — Web Crypto SHA-256 + PBKDF2-style
  *                               salt-or-bcrypt-compat surface.
  *   Bun.gunzip(bytes)        — DecompressionStream('gzip') wrapper.
