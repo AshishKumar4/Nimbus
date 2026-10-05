@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index 80a5167..ea99a25 100644
+index 80a5167..351bbfe 100644
 --- a/index.js
 +++ b/index.js
 @@ -906,0 +907,3 @@ class GitIndex {
@@ -382,7 +382,7 @@ index 80a5167..ea99a25 100644
 +        : `Your local changes to the following files would be overwritten by checkout: ${filepaths.join(
 +            ', '
 +          )}`
-@@ -3597 +3764,11 @@ class CheckoutConflictError extends BaseError {
+@@ -3597 +3764,18 @@ class CheckoutConflictError extends BaseError {
 -    this.data = { filepaths };
 +    this.data = { filepaths, ...refusal };
 +  }
@@ -395,14 +395,14 @@ index 80a5167..ea99a25 100644
 +  if (local.length > 0) {
 +    text += `error: Your local changes to the following files would be overwritten by ${operation}:\n${list(local)}` +
 +      `Please commit your changes or stash them before you ${action}.\n`;
-@@ -3598,0 +3776,8 @@ class CheckoutConflictError extends BaseError {
++  }
 +  if (directories.length > 0) {
 +    text += `error: Updating the following directories would lose untracked files in them:\n${list(directories)}\n`;
 +  }
 +  if (untracked.length > 0) {
 +    text += `error: The following untracked working tree files would be overwritten by ${operation}:\n${list(untracked)}` +
 +      `Please move or remove them before you ${action}.\n`;
-+  }
+@@ -3598,0 +3783 @@ class CheckoutConflictError extends BaseError {
 +  return `${text}Aborting`
 @@ -4478,0 +4664,9 @@ function TREE({ ref = 'HEAD' } = {}) {
 +/** Renew the stat data of the entries a walk refreshed, where the index still holds that blob. */
@@ -752,14 +752,14 @@ index 80a5167..ea99a25 100644
 +            if (workType === 'tree') {
 +              replaced.add(fullpath);
 +              return write('update-dir-to-blob', fullpath, commit, null)
-@@ -7091,0 +7405,6 @@ async function analyze({
+@@ -7091,0 +7405,2 @@ async function analyze({
 +            if (workdir && (await same(stage, commit)) && (await upToDate(workdir, stage))) return
 +            return write('update', fullpath, commit, workdir)
-+          }
+@@ -7092,0 +7408,5 @@ async function analyze({
 +          if ((await same(stage, commit)) || (oldBlob && (await same(oldBlob, commit)))) return
 +          if (oldBlob && (await same(stage, oldBlob)) && (await upToDate(workdir, stage))) {
 +            return write('update', fullpath, commit, workdir)
-@@ -7092,0 +7412 @@ async function analyze({
++          }
 +          return ['conflict', fullpath]
 @@ -7094,64 +7414,4 @@ async function analyze({
 -        // New entries but there is already something in the workdir there.
@@ -1480,13 +1480,160 @@ index 80a5167..ea99a25 100644
 +          // A reader that stores the pack as it arrives sets the pace:
 +          // at most 64 packets (4 MiB) wait for it.
 +          await packfile.drained(64);
-@@ -8862,0 +9438,16 @@ async function _fetch({
+@@ -8749,16 +9324,22 @@ async function _fetch({
+-  // Apply all the 'shallow' and 'unshallow' commands
+-  for (const oid of response.shallows) {
+-    if (!oids.has(oid)) {
+-      // this is in a try/catch mostly because my old test fixtures are missing objects
+-      try {
+-        // server says it's shallow, but do we have the parents?
+-        const { object } = await _readObject({ fs, cache, gitdir, oid });
+-        const commit = new GitCommit(object);
+-        const hasParents = await Promise.all(
+-          commit
+-            .headers()
+-            .parent.map(oid => hasObject({ fs, cache, gitdir, oid }))
+-        );
+-        const haveAllParents =
+-          hasParents.length === 0 || hasParents.every(has => has);
+-        if (!haveAllParents) {
++  // The shallow boundary and the remote refs name objects the pack brings:
++  // they change only once it is stored, so no reader sees a tip it lacks.
++  const updateRefs = async () => {
++    // Apply all the 'shallow' and 'unshallow' commands
++    for (const oid of response.shallows) {
++      if (!oids.has(oid)) {
++        // this is in a try/catch mostly because my old test fixtures are missing objects
++        try {
++          // server says it's shallow, but do we have the parents?
++          const { object } = await _readObject({ fs, cache, gitdir, oid });
++          const commit = new GitCommit(object);
++          const hasParents = await Promise.all(
++            commit
++              .headers()
++              .parent.map(oid => hasObject({ fs, cache, gitdir, oid }))
++          );
++          const haveAllParents =
++            hasParents.length === 0 || hasParents.every(has => has);
++          if (!haveAllParents) {
++            oids.add(oid);
++          }
++        } catch (err) {
+@@ -8767,2 +9347,0 @@ async function _fetch({
+-      } catch (err) {
+-        oids.add(oid);
+@@ -8771,50 +9350,50 @@ async function _fetch({
+-  }
+-  for (const oid of response.unshallows) {
+-    oids.delete(oid);
+-  }
+-  await GitShallowManager.write({ fs, gitdir, oids });
+-  // Update local remote refs
+-  if (singleBranch) {
+-    const refs = new Map([[fullref, oid]]);
+-    // But wait, maybe it was a symref, like 'HEAD'!
+-    // We need to save all the refs in the symref chain (sigh).
+-    const symrefs = new Map();
+-    let bail = 10;
+-    let key = fullref;
+-    while (bail--) {
+-      const value = remoteHTTP.symrefs.get(key);
+-      if (value === undefined) break
+-      symrefs.set(key, value);
+-      key = value;
+-    }
+-    // final value must not be a symref but a real ref
+-    const realRef = remoteRefs.get(key);
+-    // There may be no ref at all if we've fetched a specific commit hash
+-    if (realRef) {
+-      refs.set(key, realRef);
+-    }
+-    const { pruned } = await GitRefManager.updateRemoteRefs({
+-      fs,
+-      gitdir,
+-      remote,
+-      refs,
+-      symrefs,
+-      tags,
+-      prune,
+-    });
+-    if (prune) {
+-      response.pruned = pruned;
+-    }
+-  } else {
+-    const { pruned } = await GitRefManager.updateRemoteRefs({
+-      fs,
+-      gitdir,
+-      remote,
+-      refs: remoteRefs,
+-      symrefs: remoteHTTP.symrefs,
+-      tags,
+-      prune,
+-      pruneTags,
+-    });
+-    if (prune) {
+-      response.pruned = pruned;
++    for (const oid of response.unshallows) {
++      oids.delete(oid);
++    }
++    await GitShallowManager.write({ fs, gitdir, oids });
++    // Update local remote refs
++    if (singleBranch) {
++      const refs = new Map([[fullref, oid]]);
++      // But wait, maybe it was a symref, like 'HEAD'!
++      // We need to save all the refs in the symref chain (sigh).
++      const symrefs = new Map();
++      let bail = 10;
++      let key = fullref;
++      while (bail--) {
++        const value = remoteHTTP.symrefs.get(key);
++        if (value === undefined) break
++        symrefs.set(key, value);
++        key = value;
++      }
++      // final value must not be a symref but a real ref
++      const realRef = remoteRefs.get(key);
++      // There may be no ref at all if we've fetched a specific commit hash
++      if (realRef) {
++        refs.set(key, realRef);
++      }
++      const { pruned } = await GitRefManager.updateRemoteRefs({
++        fs,
++        gitdir,
++        remote,
++        refs,
++        symrefs,
++        tags,
++        prune,
++      });
++      if (prune) {
++        response.pruned = pruned;
++      }
++    } else {
++      const { pruned } = await GitRefManager.updateRemoteRefs({
++        fs,
++        gitdir,
++        remote,
++        refs: remoteRefs,
++        symrefs: remoteHTTP.symrefs,
++        tags,
++        prune,
++        pruneTags,
++      });
++      if (prune) {
++        response.pruned = pruned;
++      }
+@@ -8822 +9401 @@ async function _fetch({
+-  }
++  };
+@@ -8862,0 +9442,17 @@ async function _fetch({
 +  if (fs.packs && fs.packs.ingest) {
 +    // A filesystem that stores packs itself takes this one as it arrives,
 +    // indexes it in the same pass, and names it: never whole in memory.
 +    const getExternalRefDelta = oid => _readObject({ fs, cache, gitdir, oid });
 +    const packSha = await fs.packs.ingest(gitdir, response.packfile, getExternalRefDelta);
 +    if (raw.body.error) throw raw.body.error
++    await updateRefs();
 +    const res = {
 +      defaultBranch: response.HEAD,
 +      fetchHead: response.FETCH_HEAD.oid,
@@ -1497,22 +1644,30 @@ index 80a5167..ea99a25 100644
 +    if (packSha) res.packfile = `objects/pack/pack-${packSha}.pack`;
 +    return res
 +  }
-@@ -8893 +9484,3 @@ async function _fetch({
+@@ -8874,3 +9469,0 @@ async function _fetch({
+-  if (prune) {
+-    res.pruned = response.pruned;
+-  }
+@@ -8893 +9486,7 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -8933,0 +9527 @@ async function _init({
++  }
++  await updateRefs();
++  if (prune) {
++    res.pruned = response.pruned;
+@@ -8933,0 +9533 @@ async function _init({
 +  // What git init writes where files keep an exec bit, symlinks work and names are case-sensitive.
-@@ -8938 +9532 @@ async function _init({
+@@ -8938 +9538 @@ async function _init({
 -      '\tfilemode = false\n' +
 +      '\tfilemode = true\n' +
-@@ -8940,3 +9534 @@ async function _init({
+@@ -8940,3 +9540 @@ async function _init({
 -      (bare ? '' : '\tlogallrefupdates = true\n') +
 -      '\tsymlinks = false\n' +
 -      '\tignorecase = true\n'
 +      (bare ? '' : '\tlogallrefupdates = true\n')
-@@ -9036 +9628,11 @@ async function _clone({
+@@ -9036 +9634,11 @@ async function _clone({
 -    if (fetchHead === null) return
 +    if (fetchHead === null) {
 +      // An empty remote: git still tracks the branch HEAD will be born on, and a
@@ -1525,7 +1680,7 @@ index 80a5167..ea99a25 100644
 +      await GitConfigManager.save({ fs, gitdir, config });
 +      return
 +    }
-@@ -9052,0 +9655,14 @@ async function _clone({
+@@ -9052,0 +9661,14 @@ async function _clone({
 +    if (singleBranch) {
 +      // As git clone --single-branch: later fetches bring only the ref checked out.
 +      const fullref = await GitRefManager.expand({ fs, gitdir, ref });
@@ -1540,16 +1695,16 @@ index 80a5167..ea99a25 100644
 +        await GitConfigManager.save({ fs, gitdir, config });
 +      }
 +    }
-@@ -9239,0 +9856 @@ async function commit({
+@@ -9239,0 +9862 @@ async function commit({
 +  rawMessage = false,
-@@ -9265,0 +9883 @@ async function commit({
+@@ -9265,0 +9889 @@ async function commit({
 +      rawMessage,
-@@ -9546,0 +10165 @@ async function expandOidPacked({
+@@ -9546,0 +10171 @@ async function expandOidPacked({
 +  if (fs.packs) return fs.packs.expand(gitdir, short)
-@@ -9552 +10171 @@ async function expandOidPacked({
+@@ -9552 +10177 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -10441,2 +11060,5 @@ async function _pull({
+@@ -10441,2 +11066,5 @@ async function _pull({
 -    // Merge the remote tracking branch into the local one.
 -    await _merge({
 +    // Merge the remote tracking branch into the current one (HEAD, when detached), as git pull
@@ -1557,10 +1712,10 @@ index 80a5167..ea99a25 100644
 +    // overwritten by merge") leaves HEAD, index and worktree as they were.
 +    const ours = (await _currentBranch({ fs, gitdir, fullname: true })) || 'HEAD';
 +    const merged = await _merge({
-@@ -10446 +11068 @@ async function _pull({
+@@ -10446 +11074 @@ async function _pull({
 -      ours: ref,
 +      ours,
-@@ -10455,11 +11077 @@ async function _pull({
+@@ -10455,11 +11083 @@ async function _pull({
 -      noUpdateBranch: false,
 -    });
 -    await _checkout({
@@ -1573,7 +1728,7 @@ index 80a5167..ea99a25 100644
 -      remote,
 -      noCheckout: false,
 +      noUpdateBranch: true,
-@@ -10466,0 +11079,15 @@ async function _pull({
+@@ -10466,0 +11085,15 @@ async function _pull({
 +    if (!merged.alreadyMerged) {
 +      await _checkout({
 +        fs,
@@ -1589,15 +1744,15 @@ index 80a5167..ea99a25 100644
 +      });
 +      await GitRefManager.writeRef({ fs, gitdir, ref: ours, value: merged.oid });
 +    }
-@@ -14732 +15359 @@ async function readTree({
+@@ -14732 +15365 @@ async function readTree({
 - * @param {string} args.filepath - The path to the file to remove from the index
 + * @param {string|string[]} args.filepath - The path to the file to remove from the index, or paths removed under one index write
-@@ -14757 +15384,3 @@ async function remove({
+@@ -14757 +15390,3 @@ async function remove({
 -        index.delete({ filepath });
 +        for (const path of Array.isArray(filepath) ? filepath : [filepath]) {
 +          index.delete({ filepath: path });
 +        }
-@@ -14791,0 +15421,39 @@ async function remove({
+@@ -14791,0 +15427,39 @@ async function remove({
 +/**
 + * Stage in one index write, as git add does: the stat refreshes a
 + * statusMatrix({ deferRefresh }) under the same cache left pending, the
@@ -1637,16 +1792,16 @@ index 80a5167..ea99a25 100644
 +  }
 +}
 +
-@@ -16505,0 +17174 @@ async function statusMatrix({
+@@ -16505,0 +17180 @@ async function statusMatrix({
 +  deferRefresh = false,
-@@ -16511,0 +17181,3 @@ async function statusMatrix({
+@@ -16511,0 +17187,3 @@ async function statusMatrix({
 +    // The caller writes the index next (stage), so the walk's stat refreshes
 +    // ride in that write instead of one of their own.
 +    if (deferRefresh && !PendingRefresh.has(cache)) PendingRefresh.set(cache, []);
-@@ -16512,0 +17185,2 @@ async function statusMatrix({
+@@ -16512,0 +17191,2 @@ async function statusMatrix({
 +    const config = await GitConfigManager.get({ fs, gitdir });
 +    const filemode = (await config.get('core.filemode')) !== false;
-@@ -16575 +17249,15 @@ async function statusMatrix({
+@@ -16575 +17255,15 @@ async function statusMatrix({
 -        const entry = [undefined, headOid, workdirOid, stageOid];
 +        // A mode change is a change, as in git; the exec bit only where core.filemode
 +        // trusts it, else a file keeps its index mode (ce_mode_from_stat).
@@ -1663,6 +1818,6 @@ index 80a5167..ea99a25 100644
 +          workdirOid === '42' ? workdirOid : key(workdirOid, workdirMode),
 +          key(stageOid, stageMode),
 +        ];
-@@ -17576 +18264 @@ export default index;
+@@ -17576 +18270 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stage, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
