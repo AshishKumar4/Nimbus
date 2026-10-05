@@ -17,7 +17,10 @@ export interface StaticModuleSpecifierContext {
 
 export interface ModuleSourceRewriteOptions {
   staticSpecifier(specifier: string, context: StaticModuleSpecifierContext): string | undefined;
+  /** The text the whole `import(specifier)` expression becomes. */
   dynamicImport?(specifier: string): string | undefined;
+  /** The specifier an `import(specifier)` takes instead, the rest of the expression kept. */
+  dynamicImportSpecifier?(specifier: string): string | undefined;
   createRequireCallee?: string;
 }
 
@@ -69,13 +72,18 @@ function rewriteDynamicImport(
   options: ModuleSourceRewriteOptions,
   edits: MagicString,
 ): void {
-  if (!options.dynamicImport) return;
+  if (!options.dynamicImport && !options.dynamicImportSpecifier) return;
 
   const sourceNode = nodeProp(node, 'source');
   const specifier = literalStringValue(sourceNode);
   if (!specifier) return;
-  const replacement = options.dynamicImport(specifier);
-  if (replacement) overwriteNode(edits, node, replacement);
+  const replacement = options.dynamicImport?.(specifier);
+  if (replacement) {
+    overwriteNode(edits, node, replacement);
+    return;
+  }
+  const renamed = options.dynamicImportSpecifier?.(specifier);
+  if (renamed) overwriteNode(edits, sourceNode, JSON.stringify(renamed));
 }
 
 function rewriteCreateRequireCall(

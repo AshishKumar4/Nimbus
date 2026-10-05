@@ -58,6 +58,8 @@ function makeVfs() {
   const files = new Map([
     [`${ROOT}/index.html`, INDEX_HTML],
     [`${ROOT}/package.json`, JSON.stringify({ name: 'app', dependencies: {} })],
+    // Read again by a restored server `vite` started (case 9).
+    [`${ROOT}/vite.config.js`, "import react from '@vitejs/plugin-react';\nexport default { plugins: [react({ jsxImportSource: 'preact' })] };\n"],
   ]);
   const view = {
     exists: (p) => files.has(p),
@@ -228,16 +230,29 @@ function request(path) {
   console.log('  [8] a config that names no credential is not restored');
 }
 
-// 9. A server `vite` started reads its vite.config again after the restore,
-//    and what it reads is what the next restore starts from; one the config
-//    of which came with the request (no configDir) never re-reads.
+// 9. A server `vite` started starts from what was kept of its vite.config
+//    (its esbuild settings too), reads it again after the restore (it may
+//    have changed unwatched), and what it reads is what the next restore
+//    starts from; one the config of which came with the request (no
+//    configDir) never re-reads.
 {
-  const persisted = { ...HIBERNATED['vite-config'], configDir: ROOT, define: { __APP__: '"one"' } };
+  // Kept, with no directory to read again: the restored server compiles as it says.
+  const kept = { esbuild: { jsxDev: true, jsx: 'transform' }, hasConfig: true, unread: [] };
+  const plainKept = makeWokenSession({ 'vite-config': { ...HIBERNATED['vite-config'], viteEsbuild: kept } });
+  await handleFetch(plainKept, request('/preview/'));
+  assert.deepEqual(plainKept.viteDevServer.viteEsbuild, kept, 'the restored server compiles as the kept vite.config said');
+
+  const persisted = { ...HIBERNATED['vite-config'], configDir: ROOT, define: { __APP__: '"one"' }, viteEsbuild: kept };
   const self = makeWokenSession({ 'vite-config': persisted });
   const response = await handleFetch(self, request('/preview/'));
   assert.equal(response.status, 200);
   const server = self.viteDevServer;
   assert.equal(server.configDir, ROOT, 'the restored server re-reads the vite.config it was started from');
+  // The re-read after the restore: the project's vite.config says preact now.
+  await server.readConfigAgain();
+  const reread = { esbuild: { jsxDev: true, jsx: 'automatic', jsxImportSource: 'preact' }, hasConfig: true, unread: [] };
+  assert.deepEqual(server.viteEsbuild, reread, 'the restored server reads its vite.config again');
+  assert.deepEqual(self.store.get('vite-config').viteEsbuild, reread, 'and what it read is kept');
   server.onConfigChange({ alias: { '@': './src' }, define: { __APP__: '"two"' }, injectBasename: false });
   await new Promise((resolve) => setTimeout(resolve, 0));
   const stored = self.store.get('vite-config');

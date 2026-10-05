@@ -33,6 +33,7 @@ import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js
 import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
+import { isViteEsbuildSettings, viteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
 import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
@@ -172,11 +173,15 @@ export async function restorePersistedDevServer(self, onlyPort) {
         self.viteDevServer = new ViteDevServer({
             vfs: self.sqliteFs, cred: entry.cred, esbuild: self.esbuildService, root: config.root,
             aliases: config.aliases, define: config.define,
+            // What its vite.config sets for Vite's esbuild plugin, as `vite` read it (none before this was kept).
+            ...(isViteEsbuildSettings(config.viteEsbuild) ? { viteEsbuild: config.viteEsbuild } : {}),
             // A server `vite` started reads its vite.config again on an edit, as before the hibernation.
             ...(typeof config.configDir === 'string' ? {
                 configDir: config.configDir,
                 onConfigChange: (next) => {
-                    self.ctx.storage.put(VITE_CONFIG_KEY, { ...config, aliases: next.alias, define: next.define, injectBasename: next.injectBasename }).catch(() => { });
+                    self.ctx.storage.put(VITE_CONFIG_KEY, {
+                        ...config, aliases: next?.alias, define: next?.define, injectBasename: next?.injectBasename, viteEsbuild: viteEsbuildSettings(next),
+                    }).catch(() => { });
                 },
             } : {}),
             // The browser's reloads go where `vite`'s did: the session terminal's socket.
@@ -198,6 +203,9 @@ export async function restorePersistedDevServer(self, onlyPort) {
             processes: self.processes,
         });
         self.viteDevServer.start();
+        // Its vite.config may have changed while nothing watched it.
+        if (typeof config.configDir === 'string')
+            void self.viteDevServer.readConfigAgain();
         // Re-register the port so every port-addressed route reaches the
         // restored server across hibernation cycles.
         try {

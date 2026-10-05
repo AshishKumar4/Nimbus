@@ -20,6 +20,7 @@ import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { readViteConfigFile } from '../facets/vite-config-file.js';
+import { viteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { handKernelArtifact, projectEntryType, projectFs as viewFs } from '../runtime/project-fs.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
@@ -573,11 +574,13 @@ export function createViteCommand(self: ViteHost) {
     // none: the server then never reads it again), and what a restore starts
     // from, kept as the server reads the config again.
     const configDir = await engineKey(ctx.vfs, self.sqliteFs, '/' + cwd);
+    const viteEsbuild = viteEsbuildSettings(configFile.path ? viteConfig : null);
     const persisted = {
       root: servedRoot, aliases: viteConfig.alias, define: viteDefine,
       injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
       port: resolvedPort,
       identity: devServerIdentity(viteProcEntry),
+      viteEsbuild,
       ...(configDir !== null ? { configDir } : {}),
     };
     self.viteDevServer = new ViteDevServer({
@@ -594,6 +597,7 @@ export function createViteCommand(self: ViteHost) {
       },
       sql: self.ctx.storage.sql,
       injectBasename: viteConfig.injectBasename,
+      viteEsbuild,
       basePath: previewBasePath,
       env: self.env,
       ctx: self.ctx,
@@ -607,8 +611,10 @@ export function createViteCommand(self: ViteHost) {
       processes: self.processes,
       ...(configDir !== null ? {
         configDir,
-        onConfigChange: (config: ParsedViteConfig) => {
-          Object.assign(persisted, { aliases: config.alias, define: config.define, injectBasename: config.injectBasename });
+        onConfigChange: (config: ParsedViteConfig | null) => {
+          Object.assign(persisted, {
+            aliases: config?.alias, define: config?.define, injectBasename: config?.injectBasename, viteEsbuild: viteEsbuildSettings(config),
+          });
           self.ctx.storage.put(VITE_CONFIG_KEY, persisted).catch(() => {});
         },
       } : {}),

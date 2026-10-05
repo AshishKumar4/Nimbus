@@ -25,7 +25,15 @@
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
-import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildService, EsbuildTransformOptions } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { parseTsconfig, type TsconfckResult } from '@nimbus-sh/core/runtime/tsconfck.js';
+import {
+  viteEsbuildPluginOptions,
+  viteEsbuildSettings,
+  viteTransformOptions,
+  withJsxInject,
+  type ViteEsbuildSettings,
+} from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import {
   manifestsOf,
@@ -129,8 +137,14 @@ export interface ViteDevServerOptions {
    * Absent: the options are the caller's own (/api/start-vite), never re-read.
    */
   configDir?: string;
-  /** Told each config the server reads again, so a restore after hibernation starts from it. */
-  onConfigChange?: (config: ParsedViteConfig) => void;
+  /** Told each config the server reads again (null: no vite.config there now), so a restore after hibernation starts from it. */
+  onConfigChange?: (config: ParsedViteConfig | null) => void;
+  /**
+   * What the project's vite.config sets for Vite's esbuild plugin
+   * (core vite-esbuild-options.ts's viteEsbuildSettings of the config `vite`
+   * read). Absent: no vite.config, Vite's defaults and the server's own JSX.
+   */
+  viteEsbuild?: ViteEsbuildSettings;
 }
 
 interface BarrelModuleCacheInfo {
@@ -708,7 +722,8 @@ export function rewriteAllImports(
       const cssSideEffect = cssSideEffectModuleSpecifier(candidate, context);
       return cssSideEffect === specifier ? undefined : cssSideEffect || resolved || undefined;
     },
-    dynamicImport(specifier) {
+    // The specifier only: `import(x)` itself stays the browser's.
+    dynamicImportSpecifier(specifier) {
       return resolveBareSpecifier(specifier, aliases, basePath, importerCtx) || undefined;
     },
   });
@@ -1288,6 +1303,25 @@ function unwrapLayerBlocks(css: string): string {
 // ── ViteDevServer ───────────────────────────────────────────────────────
 
 /**
+ * The esbuild options of vite.config the built-in server honours (the rest are
+ * warned about once): the JSX settings, the tsconfig, define, `supported`,
+ * jsxInject; target, include and exclude are warned about where set
+ * otherwise; what Vite itself forces off (minification, keepNames,
+ * treeShaking) and charset change nothing that runs.
+ */
+const HONOURED_ESBUILD_OPTIONS = new Set([
+  'jsx', 'jsxFactory', 'jsxFragment', 'jsxImportSource', 'jsxDev', 'tsconfigRaw', 'define', 'supported', 'jsxInject',
+  'target', 'include', 'exclude', 'charset', 'minify', 'minifyIdentifiers', 'minifySyntax', 'minifyWhitespace',
+  'keepNames', 'treeShaking', 'sourcemap', 'loader',
+]);
+
+/** A tsconfig's JSX settings: where one is set, the project decides its JSX. */
+const TSCONFIG_JSX_FIELDS = ['jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource'];
+
+const isStringRecord = (value: unknown): value is Record<string, string> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every((v) => typeof v === 'string');
+
+/**
  * The options a pre-bundle is built with through the service's build(), the
  * path with no bundle pool: the installer's define, as the pooled build's.
  */
@@ -1358,7 +1392,7 @@ export class ViteDevServer {
 
   /** The vite.config directory the server re-reads (ViteDevServerOptions.configDir), or null. */
   private configDir: string | null;
-  private onConfigChange: ((config: ParsedViteConfig) => void) | null;
+  private onConfigChange: ((config: ParsedViteConfig | null) => void) | null;
   /**
    * Bumped each time the config the served modules depend on changes (a
    * vite.config read again, a tsconfig edited): a module a request began
@@ -1367,11 +1401,20 @@ export class ViteDevServer {
   private configGeneration = 0;
   /** The config re-read in flight, so edits in a burst read it once more, in order. */
   private configReload: Promise<void> = Promise.resolve();
+  /** What the project's vite.config sets for Vite's esbuild plugin. */
+  private viteEsbuild: ViteEsbuildSettings;
+  /** Each ts or tsx module's tsconfig, as tsconfck found it; forgotten with the modules. */
+  private tsconfigs = new Map<string, TsconfckResult>();
+  /** Every config file the tsconfigs were read from: an edit of one changes how modules compile. */
+  private tsconfigFiles = new Set<string>();
+  /** What has been said once (warnOnce). */
+  private warned = new Set<string>();
 
   constructor(opts: ViteDevServerOptions) {
     this.vfs = opts.vfs.as(opts.cred);
     this.configDir = opts.configDir ? opts.configDir.replace(/^\/+|\/+$/g, '') : null;
     this.onConfigChange = opts.onConfigChange ?? null;
+    this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
     this.vfsEvents = opts.vfs.events;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
@@ -1542,6 +1585,7 @@ export class ViteDevServer {
     if (this.running) return;
     this.running = true;
     this.moduleCache.clear();
+    for (const message of this.viteEsbuild.unread) this.warnOnce(message);
 
     // Subscribe to VFS events for HMR
     this.unsubVfs = this.vfsEvents.on((events) => {
@@ -1605,6 +1649,39 @@ export class ViteDevServer {
   private forgetModules(): void {
     this.configGeneration++;
     this.moduleCache.clear();
+    this.tsconfigs.clear();
+    this.tsconfigFiles.clear();
+  }
+
+  /** Log `message` as a warning, the first time only. */
+  private warnOnce(message: string): void {
+    if (this.warned.has(message)) return;
+    this.warned.add(message);
+    this.log('warn', `[vite-dev] ${message}`);
+  }
+
+  /** The tsconfig the module `id` (an absolute VFS path) compiles under, as tsconfck finds it for Vite. */
+  private tsconfigFor(id: string): TsconfckResult {
+    let result = this.tsconfigs.get(id);
+    if (!result) {
+      const files: string[] = [];
+      try {
+        result = parseTsconfig(id, {
+          isFile: (path) => {
+            try { return this.vfs.isFile(path); } catch { return false; }
+          },
+          readFileString: (path) => {
+            files.push(path);
+            return this.vfs.readFileString(path);
+          },
+        });
+      } finally {
+        // A config that failed to read is watched too: an edit may mend it.
+        for (const file of files) this.tsconfigFiles.add(file.replace(/^\/+/, ''));
+      }
+      this.tsconfigs.set(id, result);
+    }
+    return result;
   }
 
   /** moduleCache.set, unless the config changed since `generation` (the module was made under the old one). */
@@ -1621,9 +1698,18 @@ export class ViteDevServer {
    * port, outDir) is named in the log.
    */
   private reloadConfig(): void {
+    void this.readConfigAgain();
+  }
+
+  /**
+   * reloadConfig, for a caller that knows the config may have changed
+   * unseen (a server restored after hibernation, when no edit was watched):
+   * settled once the config is read.
+   */
+  readConfigAgain(): Promise<void> {
     const dir = this.configDir;
-    if (dir === null) return;
-    this.configReload = this.configReload.then(async () => {
+    if (dir === null) return Promise.resolve();
+    return this.configReload = this.configReload.then(async () => {
       const read = await readViteConfigFile(this.vfs, dir, async (source) => (await this.esbuild.transform(source, { loader: 'ts', format: 'esm' })).code);
       if (!this.running) return;
       if (read.error) {
@@ -1634,10 +1720,12 @@ export class ViteDevServer {
       this.aliases = config.alias || {};
       this.define = { ...VITE_DEV_DEFINE, ...(config.define || {}) };
       this.injectBasename = config.injectBasename !== false;
+      this.viteEsbuild = viteEsbuildSettings(read.path ? config : null);
+      for (const message of this.viteEsbuild.unread) this.warnOnce(message);
       this.forgetModules();
-      this.log('info', `[vite-dev] ${read.path ?? `no vite.config in /${dir}`}: read again (aliases, define, nimbusInjectBasename); `
+      this.log('info', `[vite-dev] ${read.path ?? `no vite.config in /${dir}`}: read again (aliases, define, esbuild, plugins, nimbusInjectBasename); `
         + 'root, base, port and outDir take a new `vite`');
-      try { this.onConfigChange?.(config); } catch { /* persistence is the caller's */ }
+      try { this.onConfigChange?.(read.path ? config : null); } catch { /* persistence is the caller's */ }
       this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
     }).catch((e: any) => {
       this.log('error', `[vite-dev] reading the vite.config again failed: ${e?.message || e}`);
@@ -1659,7 +1747,7 @@ export class ViteDevServer {
       const path = event.path;
       const touched = event.type === 'rename' && event.oldPath ? [path, event.oldPath] : [path];
       if (this.configDir !== null && touched.some((p) => isViteConfigPath(p, this.configDir!))) configChanged = true;
-      if (touched.some(isTsconfigPath)) tsconfigChanged = true;
+      if (touched.some((p) => isTsconfigPath(p) || this.tsconfigFiles.has(p.replace(/^\/+/, '')))) tsconfigChanged = true;
 
       // Cache keys are base-qualified (`<base>\x00<path>`), so a changed file
       // must be dropped across every base it was served under. Match on the
@@ -2891,6 +2979,24 @@ export class ViteDevServer {
 
   // ── TS/TSX/JSX transform ──────────────────────────────────────────────
 
+  /** A module that shows `e`, the transform's error, in the page's overlay, as Vite's does. */
+  private transformErrorModule(e: any, headers: Record<string, string>): Response {
+    const errMsg = (e?.message || String(e)).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+    const code = `
+console.error(\`[nimbus-vite] Transform error:\\n${errMsg}\`);
+if (!document.getElementById('nimbus-error-overlay')) {
+  const d = document.createElement('div');
+  d.id = 'nimbus-error-overlay';
+  d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);color:#ff6b6b;font-family:monospace;padding:32px;overflow:auto;white-space:pre-wrap;font-size:14px;line-height:1.6';
+  d.innerHTML = '<div style="max-width:800px;margin:0 auto"><h2 style="color:#ff6b6b;margin-bottom:16px">Transform Error</h2><pre style="color:#e4e4e7;background:#1a1a2e;padding:16px;border-radius:8px;overflow-x:auto">' + \`${errMsg}\`.replace(/</g,'&lt;') + '</pre><p style="color:#666;margin-top:16px">Fix the error and save. The page will reload.</p></div>';
+  d.onclick = () => d.remove();
+  document.body.appendChild(d);
+}\n`;
+    return new Response(code, {
+      headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
+    });
+  }
+
   /**
    * Everything a served .ts/.tsx/.jsx module is a function of, beside its
    * text and the engines: the transform's options (with the define, the
@@ -2901,13 +3007,60 @@ export class ViteDevServer {
    * is keyed on it whole (npm/cache-keys.ts).
    */
   private transformRequest(vfsPath: string, ext: string, base: string, code: string) {
+    const id = '/' + vfsPath.replace(/^\/+/, '');
+    const settings = this.viteEsbuild;
+    if (settings.esbuild === false) {
+      this.warnOnce('vite.config sets `esbuild: false`: Vite would leave TypeScript and JSX to a plugin; the built-in dev server compiles them with Vite\'s esbuild defaults');
+    }
+    const esbuild = settings.esbuild === false ? { jsxDev: true } : settings.esbuild;
+    for (const key of Object.keys(esbuild)) {
+      if (!HONOURED_ESBUILD_OPTIONS.has(key)) this.warnOnce(`vite.config's esbuild.${key} is not honoured by the built-in dev server`);
+    }
+    if ('include' in esbuild || 'exclude' in esbuild) {
+      this.warnOnce('vite.config\'s esbuild.include and esbuild.exclude are not honoured: the built-in dev server transforms every .ts, .tsx, .jsx, .mts and .cts module');
+    }
+    const pluginOptions = viteEsbuildPluginOptions(esbuild);
+    if (pluginOptions.target !== 'esnext') {
+      this.warnOnce(`vite.config's esbuild.target ${JSON.stringify(pluginOptions.target)} is not honoured: the built-in dev server compiles for esnext`);
+    }
     const loader = ext === '.tsx' ? 'tsx' as const : ext === '.jsx' ? 'jsx' as const : 'ts' as const;
-    const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
-    const jsx = hasPreact
-      ? { jsx: 'transform' as const, jsxFactory: 'h', jsxFragment: 'Fragment' }
-      : { jsx: 'automatic' as const };
+    // A ts or tsx module's tsconfig, as tsconfck finds it for Vite: throws a
+    // TsconfckParseError where it cannot be read, as Vite fails the module.
+    const tsconfig = loader === 'jsx' ? undefined : this.tsconfigFor(id).tsconfig.compilerOptions;
+    const vite = viteTransformOptions(id, { ...pluginOptions, loader }, tsconfig);
+    const tsconfigRaw = vite.tsconfigRaw as { compilerOptions: Record<string, unknown> };
+    // Of esbuild's `supported`, the transform takes import() and import.meta (what Vite sets).
+    const supported: Record<string, boolean> = {};
+    for (const [feature, value] of Object.entries(vite.supported as Record<string, unknown>)) {
+      if ((feature === 'dynamic-import' || feature === 'import-meta') && typeof value === 'boolean') supported[feature] = value;
+      else this.warnOnce(`vite.config's esbuild.supported[${JSON.stringify(feature)}] is not honoured by the built-in dev server`);
+    }
+    const pick = (key: string) => (vite[key] === undefined ? {} : { [key]: vite[key] });
+    let jsx: Record<string, unknown> = { ...pick('jsx'), ...pick('jsxFactory'), ...pick('jsxFragment'), ...pick('jsxImportSource'), ...pick('jsxDev') };
+    // The built-in server's own JSX defaults, where nothing of the project's
+    // decides (no vite.config, no tsconfig JSX setting): the automatic React
+    // runtime, or h and Fragment for a module importing preact. Vite would
+    // compile React.createElement there (decided 2026-10-05).
+    if (!settings.hasConfig && !TSCONFIG_JSX_FIELDS.some((field) => field in tsconfigRaw.compilerOptions)) {
+      const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
+      jsx = hasPreact
+        ? { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment', ...pick('jsxDev') }
+        : { jsx: 'automatic', ...pick('jsxDev') };
+    }
     return {
-      transform: { loader, format: 'esm' as const, target: 'esnext', ...jsx, define: this.defineFor(base), sourcemap: 'inline' as const },
+      transform: {
+        loader,
+        format: 'esm' as const,
+        target: 'esnext',
+        ...jsx,
+        tsconfigRaw,
+        // esbuild's define is applied before Vite's own define: it wins.
+        define: { ...this.defineFor(base), ...(isStringRecord(esbuild.define) ? esbuild.define : {}) },
+        supported,
+        sourcefile: id,
+        sourcemap: 'inline' as const,
+      },
+      jsxInject: typeof esbuild.jsxInject === 'string' ? esbuild.jsxInject : null,
       basename: this.injectBasename && shouldProcessForRouter(vfsPath) ? base : null,
       rewrite: this.hasImportmap ? null : {
         aliases: this.aliases,
@@ -2935,7 +3088,13 @@ export class ViteDevServer {
 
     const generation = this.configGeneration;
     let code = this.vfs.readFileString(vfsPath);
-    const request = this.transformRequest(vfsPath, ext, base, code);
+    let request: ReturnType<ViteDevServer['transformRequest']>;
+    try {
+      request = this.transformRequest(vfsPath, ext, base, code);
+    } catch (e: any) {
+      // A tsconfig that cannot be read fails the module, as in Vite.
+      return this.transformErrorModule(e, headers);
+    }
 
     // Persistent transform cache (survives DO hibernation; content-hashed
     // so a write whose VFS event was missed still invalidates). Keyed on
@@ -2972,23 +3131,14 @@ export class ViteDevServer {
     }
 
     try {
-      const result = await this.esbuild.transform(code, { ...request.transform, define: { ...request.transform.define } });
-      code = result.code;
+      const result = await this.esbuild.transform(code, {
+        ...request.transform,
+        define: { ...request.transform.define },
+        supported: { ...request.transform.supported },
+      } as EsbuildTransformOptions);
+      code = withJsxInject(result.code, '/' + vfsPath, request.jsxInject);
     } catch (e: any) {
-      const errMsg = (e?.message || String(e)).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
-      code = `
-console.error(\`[nimbus-vite] Transform error:\\n${errMsg}\`);
-if (!document.getElementById('nimbus-error-overlay')) {
-  const d = document.createElement('div');
-  d.id = 'nimbus-error-overlay';
-  d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);color:#ff6b6b;font-family:monospace;padding:32px;overflow:auto;white-space:pre-wrap;font-size:14px;line-height:1.6';
-  d.innerHTML = '<div style="max-width:800px;margin:0 auto"><h2 style="color:#ff6b6b;margin-bottom:16px">Transform Error</h2><pre style="color:#e4e4e7;background:#1a1a2e;padding:16px;border-radius:8px;overflow-x:auto">' + \`${errMsg}\`.replace(/</g,'&lt;') + '</pre><p style="color:#666;margin-top:16px">Fix the error and save. The page will reload.</p></div>';
-  d.onclick = () => d.remove();
-  document.body.appendChild(d);
-}\n`;
-      return new Response(code, {
-        headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
-      });
+      return this.transformErrorModule(e, headers);
     }
 
     // Rewrite all imports: CSS ?import, aliases, bare → /@modules/,

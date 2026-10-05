@@ -205,6 +205,7 @@ try {
     assert.notEqual(secret.body, SECRET, `the dev server serves no file its principal may not read (status ${secret.status})`);
     assert.deepEqual(stored.get('vite-config')?.identity?.cred, AGENT, 'and what a restore reads records who it ran as');
     assert.equal(stored.get('vite-config')?.configDir, 'home/user/v', 'and the directory whose vite.config it reads again on an edit');
+    assert.equal(typeof stored.get('vite-config')?.viteEsbuild?.hasConfig, 'boolean', 'and what its vite.config sets for esbuild');
     host.viteDevServer.stop();
   }
 

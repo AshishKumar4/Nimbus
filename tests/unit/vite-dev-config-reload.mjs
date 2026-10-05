@@ -5,8 +5,11 @@
 // made under the old one, tells the browser to reload, and tells the session
 // the new config (what a restore after hibernation starts from). A config
 // that cannot be read leaves the server on the one it has. An edit of a
-// tsconfig drops every transformed module and reloads, as Vite does. A
-// module a request began making under the old config is not remembered.
+// tsconfig, or of a file a tsconfig extends, drops every transformed module
+// and reloads, as Vite does; and its settings are what the next transform
+// compiles with. A module a request began making under the old config is
+// not remembered. vite.config's esbuild settings and its plugins' are read
+// again with the rest.
 // Before, the config was read once at `vite`: an edit changed nothing until
 // the next `vite`, and a tsconfig edit was a reload that served the same
 // modules from memory.
@@ -36,7 +39,10 @@ async function project({ sql = true } = {}) {
   write('package.json', JSON.stringify({ name: 'app', type: 'module' }));
   write('vite.config.js', config({ alias: { '@': './src' }, define: { __APP__: '"one"' } }));
   write('src/value.ts', "import { v } from '@/lib';\nexport const app: string = __APP__ + v;\n");
-  write('tsconfig.json', JSON.stringify({ compilerOptions: { strict: true } }));
+  write('src/view.tsx', 'export const view = <b>hi</b>;\n');
+  write('tsconfig.json', JSON.stringify({ extends: './tsconfig.base.json', compilerOptions: { strict: true } }));
+  write('base.json', JSON.stringify({ compilerOptions: {} }));
+  write('tsconfig.base.json', JSON.stringify({ extends: './base.json' }));
 
   const esbuild = new EsbuildService(undefined, { engine: esbuildEngine });
   // The transforms the server runs, each held until `release` when `hold` is set.
@@ -130,6 +136,36 @@ try {
     await p.get('/src/value.ts');
     check('an edited tsconfig drops the transformed modules', p.transforms.count === 2, `${p.transforms.count} transforms`);
     check('and reloads the browser', told, JSON.stringify(p.reloads));
+    p.server.stop();
+  }
+  // ── vite.config's esbuild settings and plugins ────────────────────────
+  {
+    const p = await project({ sql: false });
+    const before = await p.get('/src/view.tsx');
+    check('before: the server\'s own JSX default, with no vite.config esbuild settings', /react\/jsx/.test(before), before);
+    p.write('vite.config.js', "import react from '@vitejs/plugin-react';\nexport default { plugins: [react({ jsxImportSource: 'preact' })] };\n");
+    await p.reloaded(1);
+    const after = await p.get('/src/view.tsx');
+    check('a plugin added to vite.config compiles JSX as it says', /preact\/jsx-dev-runtime/.test(after), after);
+    p.write('vite.config.js', "export default { esbuild: { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment' } };\n");
+    await p.reloaded(2);
+    const classic = await p.get('/src/view.tsx');
+    check('and esbuild options in it as they say', /\bh\("b"/.test(classic), classic);
+    p.server.stop();
+  }
+
+  // ── A file a tsconfig extends ──────────────────────────────────────────
+  {
+    const p = await project({ sql: false });
+    p.write('vite.config.js', "import react from '@vitejs/plugin-react';\nexport default { plugins: [react()] };\n");
+    await p.reloaded(1);
+    const before = await p.get('/src/view.tsx');
+    assert.match(before, /react\/jsx-dev-runtime/, before);
+    // base.json is no tsconfig*.json by name: what tsconfck read is watched.
+    p.write('base.json', JSON.stringify({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: 'preact' } }));
+    const told = await p.reloaded(2);
+    const after = await p.get('/src/view.tsx');
+    check('an edit of a file the tsconfig extends drops the modules and reloads', told && /preact\/jsx-dev-runtime/.test(after), after);
     p.server.stop();
   }
 } finally {

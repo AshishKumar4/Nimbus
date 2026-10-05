@@ -168,6 +168,20 @@ function readViteConfig(ast) {
             }
             if (pluginNames.length > 0)
                 config.plugins = pluginNames;
+            const calls = pluginCalls(plugins, importSpecifiers);
+            if (calls.length > 0)
+                config.pluginCalls = calls;
+        }
+        const esbuild = getObjectProperty(configObject, 'esbuild');
+        if (esbuild) {
+            const computed = [];
+            const value = staticValue(esbuild, 'esbuild', computed);
+            if (value === false || isPlainObject(value))
+                config.esbuild = value;
+            else
+                computed.splice(0, computed.length, 'esbuild');
+            if (computed.length > 0)
+                config.esbuildComputed = computed;
         }
         if (parsedDefine && Object.keys(parsedDefine).length > 0)
             config.define = parsedDefine;
@@ -357,6 +371,84 @@ function defineValue(node) {
             return JSON.stringify(arg.value);
     }
     return undefined;
+}
+/** What `staticValue` gives a value it cannot read. */
+const COMPUTED = Symbol('computed');
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+/**
+ * A literal value: strings, numbers, booleans, null, template literals with
+ * nothing substituted, negated numbers, arrays and objects of them. An
+ * object keeps what it can read; each name it cannot (a computed value, a
+ * spread, a method, a computed key) is pushed on `computed` as
+ * `<path>.<name>`. Anything else is COMPUTED, its path pushed.
+ */
+function staticValue(node, path, computed) {
+    if (!node)
+        return COMPUTED;
+    switch (node.type) {
+        case 'Literal':
+            if ('regex' in node && node.regex)
+                break;
+            return node.value;
+        case 'TemplateLiteral':
+            if (nodeList(node, 'expressions').length === 0) {
+                const quasi = nodeList(node, 'quasis')[0];
+                const value = quasi !== null && typeof quasi === 'object' && 'value' in quasi ? quasi.value : undefined;
+                const cooked = value !== null && typeof value === 'object' && 'cooked' in value ? value.cooked : undefined;
+                if (typeof cooked === 'string')
+                    return cooked;
+            }
+            break;
+        case 'UnaryExpression': {
+            const argument = nodeProp(node, 'argument');
+            if (node.operator === '-' && argument?.type === 'Literal' && typeof argument.value === 'number')
+                return -argument.value;
+            break;
+        }
+        case 'Identifier':
+            if (stringField(node, 'name') === 'undefined')
+                return undefined;
+            break;
+        case 'ArrayExpression': {
+            const items = nodeList(node, 'elements').map((element, i) => staticValue(element, `${path}[${i}]`, []));
+            if (items.every((item) => item !== COMPUTED))
+                return items;
+            break;
+        }
+        case 'ObjectExpression': {
+            const out = {};
+            for (const property of nodeList(node, 'properties')) {
+                const name = property.type === 'Property' && !booleanField(property, 'computed') ? propertyKeyName(nodeProp(property, 'key')) : undefined;
+                if (!name || property.type !== 'Property' || property.kind !== 'init' || booleanField(property, 'method')) {
+                    computed.push(name ? `${path}.${name}` : `${path} (a spread or computed key)`);
+                    continue;
+                }
+                const value = staticValue(nodeProp(property, 'value'), `${path}.${name}`, computed);
+                if (value !== COMPUTED)
+                    out[name] = value;
+            }
+            return out;
+        }
+    }
+    computed.push(path);
+    return COMPUTED;
+}
+/** The `plugins` entries that call an imported factory, with their options as far as they are literal. */
+function pluginCalls(plugins, imports) {
+    const calls = [];
+    for (const element of nodeList(plugins, 'elements')) {
+        if (element?.type !== 'CallExpression')
+            continue;
+        const callee = nodeProp(element, 'callee');
+        const specifier = callee?.type === 'Identifier' ? imports.get(stringField(callee, 'name') || '') : undefined;
+        if (!specifier)
+            continue;
+        const argument = nodeList(element, 'arguments')[0];
+        const computed = [];
+        const options = argument ? staticValue(argument, 'options', computed) : {};
+        calls.push({ specifier, options: isPlainObject(options) ? options : {}, computed: isPlainObject(options) || !argument ? computed : ['options'] });
+    }
+    return calls;
 }
 function importsVitePlugin(ast) {
     for (const stmt of nodeList(ast, 'body')) {

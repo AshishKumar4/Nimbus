@@ -62,7 +62,8 @@ for (const [i, response] of responses.entries()) {
   compiled.set(`/src/components/${names[i]}`, (await transform(body, { format: 'cjs', loader: 'js' })).code);
 }
 const requireReact = createRequire(new URL('../../packages/react/package.json', import.meta.url));
-const jsx = requireReact('react/jsx-runtime');
+// The dev runtime: the dev server compiles JSX with jsxDev, as Vite does.
+const jsx = requireReact('react/jsx-dev-runtime');
 const cache = new Map();
 function load(path) {
   if (cache.has(path)) return cache.get(path).exports;
@@ -70,7 +71,7 @@ function load(path) {
   assert.ok(code !== undefined, `served graph is missing ${path}`);
   const module = { exports: {} };
   cache.set(path, module);
-  const require = (specifier) => specifier === '/preview/@modules/react/jsx-runtime'
+  const require = (specifier) => specifier === '/preview/@modules/react/jsx-dev-runtime'
     ? jsx
     : load(posix.resolve(posix.dirname(path), specifier));
   new Function('require', 'module', 'exports', code)(require, module, module.exports);

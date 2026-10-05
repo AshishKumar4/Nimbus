@@ -18,6 +18,7 @@ licenses remain in effect.
 | `@ashishkumar472/cf-git` / `isomorphic-git` fork | Cloudflare-compatible Git implementation. | MIT. |
 | `esbuild` / `esbuild-wasm` | TypeScript/JS transform and bundling in Worker Loader facets. | MIT. |
 | Oxc (`oxc` crates), rolldown, `@oxc-project/runtime` | The transform facet's wasm (`packages/worker/scripts/oxc-wasm`, built from Oxc, with esbuild's and @oxc-project/runtime's helpers it inlines into output), the build facet's rolldown binding. | MIT; @oxc-project/runtime's `decorate`, `decorateParam` and `decorateMetadata` are TypeScript's emit helpers, Apache-2.0. |
+| `tsconfck` (dominikg), `strip-json-comments` and `strip-bom` (Sindre Sorhus) | Finding and reading a module's tsconfig for the built-in Vite dev server as Vite does; tsconfck 3.1's parse, with the JSON helpers it carries, ported to `packages/core/src/runtime/tsconfck.ts`. | MIT, Copyright (c) 2021-present dominikg and tsconfck contributors; MIT, Copyright (c) Sindre Sorhus. |
 | `es-module-lexer` (Guy Bedford) | Finding `import()` and `import.meta` in Node cells; its CSP build is vendored in `packages/core/src/runtime/module-lexer.ts`. | MIT, Copyright (C) 2018-2022 Guy Bedford. |
 | `wabt` / wabt.js | Test and WASM tooling support. | Apache-2.0. |
 | Cloudflare `workerd`, Wrangler, and Workers types | Local development and Worker runtime compatibility. | Apache-2.0 and/or MIT, depending on package. |

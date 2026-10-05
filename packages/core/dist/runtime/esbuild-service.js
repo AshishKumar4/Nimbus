@@ -626,6 +626,15 @@ const __outputDecoder = new TextDecoder();
  * this function is serialized into the transform facet.
  */
 async function transformWithEsbuild(esbuildApi, code, options, lower) {
+    // What esbuild may keep as written: `import()` where the process's loader
+    // takes it, `import.meta` where it is bound; the caller's `supported` over
+    // that. (No helper function: this one is serialized into the transform
+    // facet, where a bundler's name-keeping wrapper is not defined.)
+    const supported = {
+        'dynamic-import': options?.dynamicImportParent !== undefined,
+        'import-meta': options?.moduleMetadata === true,
+        ...options?.supported,
+    };
     const format = options?.format || 'esm';
     const loader = options?.loader || 'ts';
     if (format === 'cjs') {
@@ -643,7 +652,8 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
                 jsxDev: options?.jsxDev,
                 tsconfigRaw: options?.tsconfigRaw,
                 define: options?.define,
-                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+                supported,
+                sourcefile: options?.sourcefile,
             });
             return {
                 code: direct.code,
@@ -679,7 +689,8 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
             jsxDev: options?.jsxDev,
             tsconfigRaw: options?.tsconfigRaw,
             define: options?.define,
-            supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+            supported,
+            sourcefile: options?.sourcefile,
         });
         return {
             code: lower(esm.code),
@@ -703,7 +714,8 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
         jsxDev: options?.jsxDev,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
+        supported,
+        sourcefile: options?.sourcefile,
     });
     return {
         code: result.code,

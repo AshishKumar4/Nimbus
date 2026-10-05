@@ -36,15 +36,20 @@ function rewriteStaticSpecifier(node, options, edits) {
         overwriteNode(edits, sourceNode, JSON.stringify(replacement));
 }
 function rewriteDynamicImport(node, options, edits) {
-    if (!options.dynamicImport)
+    if (!options.dynamicImport && !options.dynamicImportSpecifier)
         return;
     const sourceNode = nodeProp(node, 'source');
     const specifier = literalStringValue(sourceNode);
     if (!specifier)
         return;
-    const replacement = options.dynamicImport(specifier);
-    if (replacement)
+    const replacement = options.dynamicImport?.(specifier);
+    if (replacement) {
         overwriteNode(edits, node, replacement);
+        return;
+    }
+    const renamed = options.dynamicImportSpecifier?.(specifier);
+    if (renamed)
+        overwriteNode(edits, sourceNode, JSON.stringify(renamed));
 }
 function rewriteCreateRequireCall(node, options, edits) {
     if (!options.createRequireCallee || node.type !== 'CallExpression')

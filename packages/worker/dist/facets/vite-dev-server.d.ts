@@ -24,6 +24,7 @@
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type ViteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import type { BundlePoolProvider } from './prebundle-pool.js';
 import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 export interface ViteDevServerOptions {
@@ -88,8 +89,14 @@ export interface ViteDevServerOptions {
      * Absent: the options are the caller's own (/api/start-vite), never re-read.
      */
     configDir?: string;
-    /** Told each config the server reads again, so a restore after hibernation starts from it. */
-    onConfigChange?: (config: ParsedViteConfig) => void;
+    /** Told each config the server reads again (null: no vite.config there now), so a restore after hibernation starts from it. */
+    onConfigChange?: (config: ParsedViteConfig | null) => void;
+    /**
+     * What the project's vite.config sets for Vite's esbuild plugin
+     * (core vite-esbuild-options.ts's viteEsbuildSettings of the config `vite`
+     * read). Absent: no vite.config, Vite's defaults and the server's own JSX.
+     */
+    viteEsbuild?: ViteEsbuildSettings;
 }
 /**
  * esbuild, when bundling CJS source with `external` specifiers, leaves the
@@ -263,6 +270,14 @@ export declare class ViteDevServer {
     private configGeneration;
     /** The config re-read in flight, so edits in a burst read it once more, in order. */
     private configReload;
+    /** What the project's vite.config sets for Vite's esbuild plugin. */
+    private viteEsbuild;
+    /** Each ts or tsx module's tsconfig, as tsconfck found it; forgotten with the modules. */
+    private tsconfigs;
+    /** Every config file the tsconfigs were read from: an edit of one changes how modules compile. */
+    private tsconfigFiles;
+    /** What has been said once (warnOnce). */
+    private warned;
     constructor(opts: ViteDevServerOptions);
     /**
      * The session's pre-bundle pool for on-demand bundling of
@@ -348,6 +363,10 @@ export declare class ViteDevServer {
      * still in flight under the old one does not put its module back.
      */
     private forgetModules;
+    /** Log `message` as a warning, the first time only. */
+    private warnOnce;
+    /** The tsconfig the module `id` (an absolute VFS path) compiles under, as tsconfck finds it for Vite. */
+    private tsconfigFor;
     /** moduleCache.set, unless the config changed since `generation` (the module was made under the old one). */
     private cacheModule;
     /**
@@ -359,6 +378,12 @@ export declare class ViteDevServer {
      * port, outDir) is named in the log.
      */
     private reloadConfig;
+    /**
+     * reloadConfig, for a caller that knows the config may have changed
+     * unseen (a server restored after hibernation, when no edit was watched):
+     * settled once the config is read.
+     */
+    readConfigAgain(): Promise<void>;
     /** Handle VFS change events → trigger HMR. */
     private handleVfsEvents;
     /** Normalize and sanitize a preview pathname to prevent traversal. */
@@ -449,6 +474,8 @@ export declare class ViteDevServer {
      */
     private isModuleRequest;
     private serveFile;
+    /** A module that shows `e`, the transform's error, in the page's overlay, as Vite's does. */
+    private transformErrorModule;
     /**
      * Everything a served .ts/.tsx/.jsx module is a function of, beside its
      * text and the engines: the transform's options (with the define, the

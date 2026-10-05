@@ -48,6 +48,45 @@ published independently in the `@nimbus-sh` npm scope.
   restored after hibernation sends its reloads to the session terminal, as
   the server `vite` started did; before, it sent them nowhere, and the
   browser never reloaded on an edit.
+- The built-in Vite dev server compiles a module as Vite's esbuild plugin
+  (Vite 5, 6 and 7) does. A .ts or .tsx module's tsconfig is found and read
+  as tsconfck 3.1 reads it for Vite (the closest `tsconfig.json`; a
+  solution's reference that includes the module; `extends` of a path, a
+  package or an array; `${configDir}`; comments and dangling commas), and
+  its eleven compiler options Vite reads reach the transform:
+  `jsx`, `jsxFactory`, `jsxFragmentFactory`, `jsxImportSource`,
+  `experimentalDecorators`, `useDefineForClassFields` (false where neither
+  it nor `target` is set, as in Vite), `target`, `verbatimModuleSyntax`,
+  `preserveValueImports`, `importsNotUsedAsValues`, `alwaysStrict`.
+  vite.config's `esbuild` (read statically: a computed value is warned
+  about once and left out) and what @vitejs/plugin-react and
+  @preact/preset-vite set in it apply over the tsconfig's JSX settings, as
+  in Vite, with `jsxDev` on: React and Preact modules import the dev JSX
+  runtimes, as in Vite. `esbuild.define`, `supported`, `tsconfigRaw` and
+  `jsxInject` are honoured; options the server cannot (`target` other than
+  esnext, `include`, `exclude`, and the rest) are warned about once. Before,
+  every module compiled with the automatic React runtime (or h and Fragment
+  for one importing preact) and no tsconfig. With no vite.config and no
+  tsconfig JSX setting, the server keeps those defaults (Vite would compile
+  React.createElement).
+- A module's `import()` and `import.meta` are kept as written, as Vite
+  keeps them. Before, the transform made `import()` a `require()`, which
+  the browser has not (a lazy route failed), and emptied `import.meta`
+  (`import.meta.url` and `import.meta.hot` were undefined). And the import
+  rewrite of a dynamic `import("pkg")` replaced the whole call with the
+  module's URL, unquoted; it now rewrites the specifier.
+
+Checks: `vite-esbuild-differential` serves 44 modules of 27 projects
+(create-vite's react-ts, preact-ts, vanilla-ts and lit-ts templates as
+they are, and a project per setting) and compares each, run, with what
+real Vite 5.4.21 (esbuild 0.21.5) and 6.4.3 (esbuild 0.25.12) made of it,
+recorded by `tests/reference/record-vite.mjs` (which installs the pinned
+Vite, plugin-react, preset-vite and tsconfck outside the repository) in
+`tests/fixtures/vite-esbuild-reference.json`, and each module's tsconfig
+with what tsconfck 3.1.6 read. They differ in one project: Vite 5.4.21
+bundles a tsconfck that replaces `${configDir}` only in the config it
+finds, not in a solution's references; the server reads as Vite 6 does.
+On the server before this change 39 of the 44 modules differ.
 
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
