@@ -11,7 +11,9 @@
 // as Node's does (flushStdio resumes untouched streams): red on 84f4aba2f,
 // where the unread stderr held 'close' back for good. A stream an async
 // iterator owns is left to it: red on f5faea96e, where the drain resumed it
-// and its second chunk went to no one.
+// and its second chunk went to no one. One whose 'readable' listener was
+// removed is not owned any more: red on 857347754, where it stayed owned and
+// 'close' never came.
 //
 // Two races, red on 34f5b1e0e: the wait loop and the exit-time drain both
 // hearing the same refusal emitted 'error' twice; output that arrived before
@@ -168,6 +170,31 @@ const supervisorFor = (answer) => ({
     if (read.length === 1) { await exited; for (let i = 0; i < 10; i++) await tick(); }
   }
   assert.deepEqual(read, ['A', 'B'], "the iterator reads every chunk: the drain after 'exit' does not resume a stream it owns");
+}
+
+// ── a 'readable' listener attached, then removed: the drain resumes it ─────
+{
+  for (const remove of ['off', 'removeListener', 'removeAllListeners']) {
+    let polls = 0;
+    const supervisor = supervisorFor(() => (++polls < 3 ? { done: false, started: true } : { done: true, exitCode: 1, signal: null }));
+    const served = { 1: false, 2: false };
+    supervisor.cpReadOutput = async (_pid, fd) => {
+      await tick();
+      if (!served[fd]) { served[fd] = true; return { chunks: [{ seq: 1, data: new TextEncoder().encode(fd === 2 ? 'boom\n' : 'out\n') }], closed: true, maxSeq: 1 }; }
+      return { chunks: [], closed: true, maxSeq: 1 };
+    };
+    const { cp } = make(supervisor);
+    const child = cp.spawn('node', ['-e', 'throw 1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const events = [];
+    const onReadable = () => {};
+    child.stderr.on('readable', onReadable);
+    if (remove === 'removeAllListeners') child.stderr.removeAllListeners('readable');
+    else child.stderr[remove]('readable', onReadable);
+    child.on('exit', (code) => events.push(['exit', code]));
+    child.on('close', (code) => events.push(['close', code]));
+    for (let i = 0; i < 200 && !events.some((e) => e[0] === 'close'); i++) await tick();
+    assert.deepEqual(events, [['exit', 1], ['close', 1]], `a 'readable' listener ${remove}'d no longer owns the stream: 'close' follows 'exit'`);
+  }
 }
 
 // ── started: the pid and 'spawn' come with the start, not before ───────────

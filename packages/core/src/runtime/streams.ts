@@ -98,9 +98,11 @@ const __streamMod = (() => {
         destroyed: false,
         readableLength: 0,
         // A consumer reads it in readable mode: a 'readable' listener, or an
-        // async iterator, which owns it for its life. Node's flushStdio
-        // leaves such a stream to its consumer.
+        // async iterator, which owns it until it completes. Node's
+        // flushStdio leaves such a stream to its consumer. Kept current as
+        // listeners come and go (_updateReadableListening).
         readableListening: false,
+        iterating: false,
       };
       this.readable = true;
       if (opts?.read) this._read = opts.read.bind(this);
@@ -218,10 +220,28 @@ const __streamMod = (() => {
     on(event, listener) {
       const result = super.on(event, listener);
       if (event === 'data' && this._readableState.flowing !== false) this.resume();
-      else if (event === 'readable') this._readableState.readableListening = true;
+      else if (event === 'readable') this._updateReadableListening();
       return result;
     }
     addListener(event, listener) { return this.on(event, listener); }
+    // EventEmitter's off is its removeListener itself, not a call through
+    // the subclass, so both are overridden; once's wrapper removes itself
+    // through removeListener.
+    removeListener(event, listener) {
+      const result = super.removeListener(event, listener);
+      if (event === 'readable') this._updateReadableListening();
+      return result;
+    }
+    off(event, listener) { return this.removeListener(event, listener); }
+    removeAllListeners(...args) {
+      const result = super.removeAllListeners(...args);
+      if (args.length === 0 || args[0] === 'readable') this._updateReadableListening();
+      return result;
+    }
+    _updateReadableListening() {
+      const state = this._readableState;
+      state.readableListening = state.iterating === true || this.listenerCount('readable') > 0;
+    }
 
     pipe(dest, opts) {
       this.on('data', (chunk) => {
@@ -275,7 +295,13 @@ const __streamMod = (() => {
     [Symbol.asyncIterator]() {
       const self = this;
       const state = self._readableState;
-      state.readableListening = true;
+      // The iterator owns the stream until it completes.
+      state.iterating = true;
+      self._updateReadableListening();
+      const finish = () => {
+        state.iterating = false;
+        self._updateReadableListening();
+      };
       const iterator = {
         next() {
           return new Promise((resolve, reject) => {
@@ -284,15 +310,15 @@ const __streamMod = (() => {
               self._maybeEmitEnd();
               return resolve({ value: chunk, done: false });
             }
-            if (state.ended || state.destroyed) return resolve({ value: undefined, done: true });
+            if (state.ended || state.destroyed) { finish(); return resolve({ value: undefined, done: true }); }
             const cleanup = () => {
               self.off('data', onData);
               self.off('end', onEnd);
               self.off('error', onError);
             };
             const onData = (c) => { cleanup(); self.pause(); resolve({ value: c, done: false }); };
-            const onEnd = () => { cleanup(); resolve({ value: undefined, done: true }); };
-            const onError = (e) => { cleanup(); reject(e); };
+            const onEnd = () => { cleanup(); finish(); resolve({ value: undefined, done: true }); };
+            const onError = (e) => { cleanup(); finish(); reject(e); };
             self.once('data', onData);
             self.once('end', onEnd);
             self.once('error', onError);
@@ -300,6 +326,7 @@ const __streamMod = (() => {
           });
         },
         return() {
+          finish();
           self.destroy();
           return Promise.resolve({ value: undefined, done: true });
         },
