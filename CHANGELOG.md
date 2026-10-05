@@ -7,6 +7,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
+loom moves only its fabric range.
+
 - Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
 - The Vite dev server's persistent caches answer only the request that
   made a row. A transformed module (user_module_transforms) is keyed on
@@ -97,8 +99,6 @@ replaces `${configDir}` only in the config it finds, and Vite 5.4.21 and
 6.4.3 bundle one that resolves an `extends` of `.` as a directory (the
 module fails). On the server before this change 39 of the first 44
 modules differ.
-loom moves only its fabric range.
-
 - `experimentalDecorators` and `useDefineForClassFields: false` (or a
   `target` below es2022 that implies it) are honoured in `transform()` and
   `build()`, as 0.14.0's esbuild honoured them (0.15.0 refused every
