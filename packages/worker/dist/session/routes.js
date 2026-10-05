@@ -62,12 +62,18 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contr
 // uses (they did: the packument purge used a stale `/p/` segment).
 import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
 import { Fanout, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
+import { runWaveBench } from '../git/wave-bench.js';
 import { z } from 'zod/v4';
 // `SessionPortHost`, `routeToSessionPort` and `routeCapabilityPort` live in
 // session/port-capability.ts so the composed manager's `apps` surface can
 // call the one implementation without importing this file (which reaches
 // `cloudflare:workers` through fabric bindings). The session-only helpers
 // the route delegates to stay here and arrive on the host as fields.
+const W7BenchBodySchema = z.object({
+    producers: z.number().int().min(1).max(8),
+    files: z.number().int().min(1).max(50_000),
+    sizes: z.array(z.number().int().min(0).max(4 * 1024 * 1024)).min(1).max(64),
+});
 const TestSpawnEmitterBodySchema = z.object({
     lines: z.coerce.number().optional(),
     lineText: z.unknown().optional().transform((value) => value == null ? 'line' : String(value)),
@@ -912,6 +918,23 @@ async function routeFetch(self, request) {
             }
             catch (e) {
                 return Response.json({ error: e?.message }, { status: 400 });
+            }
+        }
+        // How fast the session takes a clone's writes from N producers
+        // (git/wave-bench.ts): files/s and MB/s into SQLite, end to end.
+        if (url.pathname === '/api/_test/w7-bench' && request.method === 'POST') {
+            const body = await parseJsonBody(request, W7BenchBodySchema);
+            const entry = self.processes.spawn('_test:w7-bench', ['_test'], '/');
+            try {
+                const result = await runWaveBench(self.ctx, self.env, {
+                    pid: entry.pid,
+                    root: `home/user/w7-bench-${Date.now()}`,
+                    ...body,
+                });
+                return Response.json({ ...result, vfs: self.ensureSqliteFs().getStats().sql.phases });
+            }
+            catch (e) {
+                return Response.json({ error: e?.message || String(e) }, { status: 500 });
             }
         }
         if (url.pathname === '/api/_test/log-tail' && request.method === 'GET') {

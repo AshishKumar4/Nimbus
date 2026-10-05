@@ -112,6 +112,20 @@ export interface GitNetworkPhaseDiagnostic {
     supervisorRpc: GitSupervisorRpcCounters;
     /** Whether clone-checkout started without module-local job state. */
     cold?: boolean;
+    /** The invocation's wave writer: what it published and how long it waited. */
+    waves?: GitWaveDiagnostic;
+}
+/** The facet's wave writer counters (git/wave-writer.ts WaveStats). */
+export interface GitWaveDiagnostic {
+    waves: number;
+    files: number;
+    bytes: number;
+    rpcWallMs: number;
+    maxRpcWallMs: number;
+    producerWaitMs: number;
+    ownershipVisits: number;
+    maxWavePaths: number;
+    maxWaveBytes: number;
 }
 export type GitNetworkErrorCode = 'GitCloneBudgetExceeded' | 'FreshCheckoutDirectoryLimitError';
 export interface GitNetworkResult {
