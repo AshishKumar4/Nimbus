@@ -48,6 +48,21 @@ pub struct Options {
     pub jsx: JsxMode,
     pub jsx_factory: Option<String>,
     pub jsx_fragment: Option<String>,
+    /// The automatic runtime's package (`<it>/jsx-runtime`), when not `react`.
+    pub jsx_import_source: Option<String>,
+    /// The automatic runtime's development variant: `jsxDEV`, with source locations.
+    pub jsx_dev: bool,
+    /// TypeScript's `verbatimModuleSyntax` / `preserveValueImports`: an
+    /// import is removed only when it is type-only, not when it is unused.
+    pub preserve_value_imports: bool,
+    /// TypeScript's `alwaysStrict`: CommonJS output begins with `"use strict"`.
+    pub always_strict: bool,
+    /// The error for a decorator in a TypeScript file (`experimentalDecorators`,
+    /// whose output this transform does not produce), naming that field.
+    pub refuse_decorators: Option<String>,
+    /// The error for a TypeScript class with a public or static field
+    /// (`useDefineForClassFields` false), naming the field that asks for it.
+    pub refuse_class_fields: Option<String>,
     /// `(expression, replacement)`, applied to unbound globals.
     pub define: Vec<(String, String)>,
     pub sourcemap: SourceMapMode,
@@ -67,6 +82,12 @@ impl Default for Options {
             jsx: JsxMode::Transform,
             jsx_factory: None,
             jsx_fragment: None,
+            jsx_import_source: None,
+            jsx_dev: false,
+            preserve_value_imports: false,
+            always_strict: false,
+            refuse_decorators: None,
+            refuse_class_fields: None,
             define: Vec::new(),
             sourcemap: SourceMapMode::None,
             sourcefile: None,
@@ -114,6 +135,12 @@ impl Options {
                 }
                 "jsxFactory" => options.jsx_factory = Some(value()?.to_string()),
                 "jsxFragment" => options.jsx_fragment = Some(value()?.to_string()),
+                "jsxImportSource" => options.jsx_import_source = Some(value()?.to_string()),
+                "jsxDev" => options.jsx_dev = flag(value()?)?,
+                "preserveValueImports" => options.preserve_value_imports = flag(value()?)?,
+                "alwaysStrict" => options.always_strict = flag(value()?)?,
+                "refuseDecorators" => options.refuse_decorators = Some(value()?.to_string()),
+                "refuseClassFields" => options.refuse_class_fields = Some(value()?.to_string()),
                 "define" => {
                     let name = value()?.to_string();
                     let replacement = value()?.to_string();

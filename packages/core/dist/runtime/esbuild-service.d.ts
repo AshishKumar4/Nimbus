@@ -87,7 +87,10 @@ export interface EsbuildTransformOptions {
     jsx?: 'transform' | 'preserve' | 'automatic';
     jsxFactory?: string;
     jsxFragment?: string;
-    tsconfigRaw?: string;
+    jsxImportSource?: string;
+    jsxDev?: boolean;
+    /** A tsconfig's text or object, read as esbuild 0.24 reads it (runtime/tsconfig-raw.ts). */
+    tsconfigRaw?: string | esbuild.TsconfigRaw;
     define?: Record<string, string>;
     /**
      * The URL of the module being transformed, when its dynamic `import()`
@@ -327,7 +330,14 @@ export declare class EsbuildService {
         external?: string[];
         define?: Record<string, string>;
         globalName?: string;
-        tsconfigRaw?: string;
+        /** esbuild's JSX options; a tsconfigRaw's JSX settings apply over them, as in esbuild. */
+        jsx?: 'transform' | 'preserve' | 'automatic';
+        jsxFactory?: string;
+        jsxFragment?: string;
+        jsxImportSource?: string;
+        jsxDev?: boolean;
+        /** A tsconfig's text or object, read as esbuild 0.24 reads it (runtime/tsconfig-raw.ts). */
+        tsconfigRaw?: string | esbuild.TsconfigRaw;
         alias?: Record<string, string>;
         keepNames?: boolean;
         entryNames?: string;

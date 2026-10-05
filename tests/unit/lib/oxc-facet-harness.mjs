@@ -37,6 +37,8 @@ const runtime = (await staged(OXC_FACET_ASSET_PATH)).toString('utf8');
 const NativeInstance = WebAssembly.Instance;
 function CountedInstance(module, imports) {
   const instance = new NativeInstance(module, imports);
+  // Another module (a build facet's binding in the same object) is not the facet's Oxc.
+  if (typeof instance.exports.nimbus_oxc_transform !== 'function') return instance;
   const allocated = instances.memories.reduce((bytes, memory) => bytes + memory.buffer.byteLength, instance.exports.memory.buffer.byteLength);
   if (allocated > instances.memoryLimitBytes) throw new RangeError('Worker exceeded memory limit.');
   instances.created++;

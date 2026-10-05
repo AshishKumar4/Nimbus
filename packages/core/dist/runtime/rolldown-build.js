@@ -23,15 +23,16 @@
  * `dataurl` exports a data URL (esbuild's encoding), `base64` the bytes in
  * base64, `text` the text, `binary` a Uint8Array.
  *
- * Self-contained but for types and css-bundle.ts: the build facet's runtime
- * bundles it (rolldown-facet/preamble.ts).
+ * Self-contained but for types, css-bundle.ts and tsconfig-raw.ts: the build
+ * facet's runtime bundles it (rolldown-facet/preamble.ts).
  */
 import { bundleCss, CssError, percentEscapedDataUrl } from './css-bundle.js';
+import { resolveTsSettings } from './tsconfig-raw.js';
 /** esbuild options a Nimbus build may pass; anything else is refused. */
 const SUPPORTED = new Set([
     'entryPoints', 'bundle', 'format', 'target', 'platform', 'outdir', 'outfile', 'sourcemap', 'minify', 'external',
     'define', 'globalName', 'tsconfigRaw', 'alias', 'keepNames', 'entryNames', 'chunkNames', 'assetNames', 'metafile',
-    'conditions', 'mainFields', 'logLevel',
+    'conditions', 'mainFields', 'logLevel', 'jsx', 'jsxFactory', 'jsxFragment', 'jsxImportSource', 'jsxDev',
 ]);
 const LOADER_MODULE_TYPES = {
     js: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', text: 'text', empty: 'empty',
@@ -406,15 +407,72 @@ export function esbuildFailureText(errors) {
 function refuse(text) {
     throw new BuildError([message(text)]);
 }
+/**
+ * The first decorator or class field in a TypeScript module that the build's
+ * tsconfig refuses (tsconfig-raw.ts, TsSettings.refuse), with the refusal:
+ * the Oxc transform's own check (oxc-wasm lib.rs, `refused`), on rolldown's
+ * parse. A class's private fields alone are left alone, as esbuild leaves
+ * them. A module whose text has no `@`, or no `class`, is not parsed for it,
+ * and one that does not parse is left to rolldown to report.
+ */
+function refusedIn(parse, text, lang, refuse) {
+    const decorators = refuse.decorators && text.includes('@') ? refuse.decorators : null;
+    const classFields = refuse.classFields && /\bclass\b/.test(text) ? refuse.classFields : null;
+    if (!decorators && !classFields)
+        return null;
+    let program;
+    try {
+        program = parse(text, { lang, astType: 'ts' });
+    }
+    catch {
+        return null;
+    }
+    let found = null;
+    const visit = (node) => {
+        if (found || node === null || typeof node !== 'object')
+            return;
+        if (Array.isArray(node)) {
+            for (const child of node)
+                visit(child);
+            return;
+        }
+        const n = node;
+        if (decorators && n.type === 'Decorator') {
+            found = { text: decorators, start: n.start ?? 0, end: n.end ?? 0 };
+            return;
+        }
+        if (classFields && n.type === 'PropertyDefinition' && n.declare !== true && n.key?.type !== 'PrivateIdentifier') {
+            found = { text: classFields, start: n.start ?? 0, end: n.end ?? 0 };
+            return;
+        }
+        for (const key of Object.keys(n))
+            if (key !== 'parent')
+                visit(n[key]);
+    };
+    visit(program);
+    return found;
+}
+/** esbuild's location of a span (UTF-16 offsets) in `source`: its line, and column and length in UTF-8 bytes on that line. */
+function spanLocation(file, source, start, end) {
+    const lineStart = Math.max(source.lastIndexOf('\n', start - 1), source.lastIndexOf('\r', start - 1)) + 1;
+    const line = (source.slice(0, lineStart).match(/\r\n|\r|\n/g)?.length ?? 0) + 1;
+    const lineEnd = source.slice(start).search(/\r|\n/);
+    const stop = lineEnd < 0 ? end : Math.min(end, start + lineEnd);
+    return locate(file, source, line, utf8Length(source.slice(lineStart, start)), utf8Length(source.slice(start, stop)));
+}
 /** The build failed with imports that did not resolve: they are placed once its bundle is closed. */
 class UnresolvedImports extends Error {
 }
 /**
  * The input options a build and its placement pass give rolldown alike:
  * everything that decides which imports a module has (platform, target,
- * define, JSX) and how it parses.
+ * define, JSX, which imports TypeScript keeps) and how it parses. JSX and
+ * TypeScript are esbuild's options and tsconfigRaw as esbuild reads them
+ * (tsconfig-raw.ts), which build() has already checked.
  */
-function inputOptionsOf(options) {
+function inputOptionsOf(options, settings = resolveTsSettings(options, 'build')) {
+    const { jsx } = settings;
+    const classic = !jsx.preserve && !jsx.automatic;
     return {
         cwd: '/',
         platform: options.platform ?? 'browser',
@@ -422,8 +480,20 @@ function inputOptionsOf(options) {
         transform: {
             target: typeof options.target === 'string' ? options.target : 'esnext',
             define: options.define,
-            // esbuild's default for JSX without a tsconfig: React.createElement.
-            jsx: { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' },
+            jsx: jsx.preserve
+                ? 'preserve'
+                : jsx.automatic
+                    ? { runtime: 'automatic', importSource: jsx.importSource ?? 'react', development: jsx.development }
+                    : { runtime: 'classic', pragma: jsx.factory ?? 'React.createElement', pragmaFrag: jsx.fragment ?? 'React.Fragment' },
+            typescript: {
+                // The import the classic factory keeps for the JSX that calls it. The
+                // automatic runtime and preserved JSX call nothing the file imports,
+                // so (as for esbuild) an import of React they leave unused is
+                // dropped: an empty pragma names no import.
+                jsxPragma: classic ? jsx.factory ?? 'React.createElement' : '',
+                jsxPragmaFrag: classic ? jsx.fragment ?? 'React.Fragment' : '',
+                onlyRemoveTypeImports: settings.preserveValueImports,
+            },
         },
         checks: { pluginTimings: false },
         // esbuild keeps an imported constant a reference: inlining its value
@@ -525,8 +595,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     }
     if (options.bundle === false)
         refuse('Nimbus\'s bundler only bundles (bundle: false is not supported)');
-    if (options.tsconfigRaw !== undefined && options.tsconfigRaw !== '' && JSON.stringify(options.tsconfigRaw) !== '{}') {
-        refuse('Nimbus\'s bundler does not support tsconfigRaw');
+    // JSX and tsconfigRaw as esbuild reads them; a field the bundler cannot honour is refused by name.
+    let settings;
+    try {
+        settings = resolveTsSettings(options, 'build');
+    }
+    catch (error) {
+        refuse(error instanceof Error ? error.message : String(error));
     }
     const entryPoints = Array.isArray(options.entryPoints) ? options.entryPoints : null;
     if (!entryPoints || entryPoints.some((e) => typeof e !== 'string'))
@@ -579,7 +654,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             .map((entry) => entry.record);
     };
     const css = new Map();
-    const warnings = [];
+    // esbuild reports its tsconfig's warnings at "<tsconfig.json>"; their place in it is not kept.
+    const warnings = settings.warnings.map((text) => message(text));
     const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, '[extname]');
     // Emitted assets (the `file` loader's, from JavaScript or a stylesheet's
     // url()), by output path. A name holds its bytes' hash before any script or
@@ -615,8 +691,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         const dir = names.slice(0, names.lastIndexOf('/') + 1);
         return dir.includes('[') ? null : dir;
     })();
-    const raise = (text, pluginName = '') => {
-        raised.push(message(text, null, pluginName));
+    const raise = (text, pluginName = '', location = null) => {
+        raised.push(message(text, location, pluginName));
         throw new Error(text);
     };
     // An import that did not resolve stays external so the build goes on to
@@ -743,6 +819,11 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             if (loader === 'binary') {
                 return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
             }
+            if ((loader === 'ts' || loader === 'tsx') && (settings.refuse.decorators || settings.refuse.classFields)) {
+                const found = refusedIn(this.parse, text, loader, settings.refuse);
+                if (found)
+                    raise(found.text, '', spanLocation(fileOf({ namespace, path }), text, found.start, found.end));
+            }
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)
                 raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`);
@@ -750,7 +831,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         },
     };
     const bundle = await api.rolldown({
-        ...inputOptionsOf(options),
+        ...inputOptionsOf(options, settings),
         input: entryPoints,
         plugins: [vfs],
         onLog(level, log) {
@@ -764,6 +845,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             name: options.globalName,
             minify: options.minify === true,
             keepNames: options.keepNames === true,
+            // tsconfig's alwaysStrict (else strict): "use strict" first in CommonJS and IIFE output, as esbuild puts it.
+            ...(settings.alwaysStrict ? { strict: true } : {}),
             sourcemap: options.sourcemap === true || options.sourcemap === 'external' ? true : options.sourcemap === 'inline' ? 'inline' : false,
             entryFileNames: options.outfile ? options.outfile.slice(options.outfile.lastIndexOf('/') + 1) : `${template(options.entryNames, '[name]')}.js`,
             chunkFileNames: `${template(options.chunkNames, '[name]-[hash]')}.js`,

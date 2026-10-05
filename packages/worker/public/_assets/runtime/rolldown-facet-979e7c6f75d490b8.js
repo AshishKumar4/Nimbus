@@ -14232,6 +14232,175 @@ ${body}`);
 ${legal.map((comment) => comment + "\n").join("")}`;
 }
 
+// ../core/src/runtime/tsconfig-raw.ts
+var TsconfigRefusal = class extends Error {
+};
+var REFUSED = {
+  experimentalDecorators: "TypeScript's experimental decorators compile to calls of runtime helpers that Nimbus does not serve",
+  useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments",
+  importsNotUsedAsValues: 'keeping an unused import as a bare `import "x"` is not something Nimbus\'s engines do'
+};
+function isIdentifier(text) {
+  return /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u.test(text);
+}
+function memberExpression(text, warnings) {
+  if (text === "") return null;
+  if (text.split(".").every(isIdentifier)) return text;
+  warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
+  return null;
+}
+function parseJsonc(text) {
+  let out = "";
+  for (let i2 = 0; i2 < text.length; i2++) {
+    const c3 = text[i2];
+    if (c3 === '"') {
+      const start = i2;
+      for (i2++; i2 < text.length && text[i2] !== '"'; i2++) if (text[i2] === "\\") i2++;
+      out += text.slice(start, i2 + 1);
+    } else if (c3 === "/" && text[i2 + 1] === "/") {
+      while (i2 < text.length && text[i2] !== "\n") i2++;
+      out += "\n";
+    } else if (c3 === "/" && text[i2 + 1] === "*") {
+      const end = text.indexOf("*/", i2 + 2);
+      i2 = end < 0 ? text.length : end + 1;
+      out += " ";
+    } else {
+      out += c3;
+    }
+  }
+  const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s2) => '"' + " ".repeat(s2.length - 2) + '"');
+  let result = "";
+  for (let i2 = 0; i2 < out.length; i2++) {
+    if (blanked[i2] === "," && /^\s*[}\]]/.test(blanked.slice(i2 + 1))) continue;
+    result += out[i2];
+  }
+  return JSON.parse(result);
+}
+var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var COMPILER_OPTION_KEYS = [
+  "alwaysStrict",
+  "baseUrl",
+  "experimentalDecorators",
+  "importsNotUsedAsValues",
+  "jsx",
+  "jsxFactory",
+  "jsxFragmentFactory",
+  "jsxImportSource",
+  "paths",
+  "preserveValueImports",
+  "strict",
+  "target",
+  "useDefineForClassFields",
+  "verbatimModuleSyntax"
+];
+function resolveTsSettings(inputs, call) {
+  const warnings = [];
+  const jsxMode = inputs.jsx ?? "transform";
+  if (jsxMode !== "transform" && jsxMode !== "automatic" && jsxMode !== "preserve") {
+    throw new Error(`Invalid JSX mode: ${JSON.stringify(jsxMode)}`);
+  }
+  const ownExpression = (text, what) => {
+    if (text === void 0 || text === "") return null;
+    if (!text.split(".").every(isIdentifier)) throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
+    return text;
+  };
+  const jsx = {
+    preserve: jsxMode === "preserve",
+    automatic: jsxMode === "automatic",
+    factory: ownExpression(inputs.jsxFactory, "factory"),
+    fragment: ownExpression(inputs.jsxFragment, "fragment"),
+    importSource: inputs.jsxImportSource || null,
+    development: inputs.jsxDev === true
+  };
+  const settings = {
+    jsx,
+    preserveValueImports: false,
+    alwaysStrict: false,
+    refuse: { decorators: null, classFields: null },
+    warnings
+  };
+  const raw = inputs.tsconfigRaw;
+  if (raw === void 0 || raw === "") return finish(settings);
+  let config;
+  if (typeof raw === "string") {
+    try {
+      config = parseJsonc(raw);
+    } catch (error2) {
+      throw new Error(`tsconfigRaw is not valid JSON: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    }
+  } else {
+    config = raw;
+  }
+  if (!isObject(config)) return finish(settings);
+  for (const key of Object.keys(config)) {
+    if (COMPILER_OPTION_KEYS.includes(key)) {
+      warnings.push(`Expected the ${JSON.stringify(key)} option to be nested inside a "compilerOptions" object`);
+      break;
+    }
+  }
+  if (call === "build" && config.extends !== void 0) {
+    throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
+  }
+  const options = config.compilerOptions;
+  if (!isObject(options)) return finish(settings);
+  const string2 = (key) => typeof options[key] === "string" ? options[key] : void 0;
+  const boolean2 = (key) => typeof options[key] === "boolean" ? options[key] : void 0;
+  switch (string2("jsx")?.toLowerCase()) {
+    case "react":
+      jsx.automatic = false;
+      jsx.development = false;
+      break;
+    case "react-jsx":
+      jsx.automatic = true;
+      break;
+    case "react-jsxdev":
+      jsx.automatic = true;
+      jsx.development = true;
+      break;
+    default:
+      break;
+  }
+  const factory = string2("jsxFactory");
+  if (factory !== void 0) jsx.factory = memberExpression(factory, warnings) ?? jsx.factory;
+  const fragment = string2("jsxFragmentFactory");
+  if (fragment !== void 0) jsx.fragment = memberExpression(fragment, warnings) ?? jsx.fragment;
+  const importSource = string2("jsxImportSource");
+  if (importSource !== void 0) jsx.importSource = importSource;
+  if (boolean2("experimentalDecorators") === true) {
+    settings.refuse.decorators = `tsconfigRaw compilerOptions.experimentalDecorators true is not supported for a TypeScript file with decorators: ${REFUSED.experimentalDecorators}`;
+  }
+  const target = string2("target");
+  let targetBelowEs2022;
+  if (target !== void 0) {
+    const lower = target.toLowerCase();
+    if (/^(es3|es5|es6|es2015|es2016|es2017|es2018|es2019|es2020|es2021)$/.test(lower)) targetBelowEs2022 = true;
+    else if (/^(es2022|es2023|es2024|esnext)$/.test(lower)) targetBelowEs2022 = false;
+    else warnings.push(`Unrecognized target environment ${JSON.stringify(target)}`);
+  }
+  const useDefine = boolean2("useDefineForClassFields");
+  if (useDefine === false) {
+    settings.refuse.classFields = `tsconfigRaw compilerOptions.useDefineForClassFields false is not supported for a TypeScript class with fields: ${REFUSED.useDefineForClassFields}`;
+  }
+  if (useDefine === void 0 && targetBelowEs2022 === true) {
+    settings.refuse.classFields = `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
+  }
+  if (boolean2("verbatimModuleSyntax") === true || boolean2("preserveValueImports") === true) settings.preserveValueImports = true;
+  const notUsed = string2("importsNotUsedAsValues");
+  if (notUsed === "preserve" || notUsed === "error") {
+    throw new TsconfigRefusal(`tsconfigRaw compilerOptions.importsNotUsedAsValues ${JSON.stringify(notUsed)} is not supported: ${REFUSED.importsNotUsedAsValues}`);
+  }
+  if (notUsed !== void 0 && notUsed !== "remove") warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
+  settings.alwaysStrict = boolean2("alwaysStrict") ?? boolean2("strict") ?? false;
+  return finish(settings);
+}
+function finish(settings) {
+  if (!settings.jsx.automatic) {
+    settings.jsx.development = false;
+    settings.jsx.importSource = null;
+  }
+  return settings;
+}
+
 // ../core/src/runtime/rolldown-build.ts
 var SUPPORTED = /* @__PURE__ */ new Set([
   "entryPoints",
@@ -14255,7 +14424,12 @@ var SUPPORTED = /* @__PURE__ */ new Set([
   "metafile",
   "conditions",
   "mainFields",
-  "logLevel"
+  "logLevel",
+  "jsx",
+  "jsxFactory",
+  "jsxFragment",
+  "jsxImportSource",
+  "jsxDev"
 ]);
 var LOADER_MODULE_TYPES = {
   js: "js",
@@ -14579,9 +14753,49 @@ ${lines.join("\n")}`;
 function refuse(text) {
   throw new BuildError([message(text)]);
 }
+function refusedIn(parse51, text, lang, refuse2) {
+  const decorators = refuse2.decorators && text.includes("@") ? refuse2.decorators : null;
+  const classFields = refuse2.classFields && /\bclass\b/.test(text) ? refuse2.classFields : null;
+  if (!decorators && !classFields) return null;
+  let program;
+  try {
+    program = parse51(text, { lang, astType: "ts" });
+  } catch {
+    return null;
+  }
+  let found = null;
+  const visit = (node) => {
+    if (found || node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const n5 = node;
+    if (decorators && n5.type === "Decorator") {
+      found = { text: decorators, start: n5.start ?? 0, end: n5.end ?? 0 };
+      return;
+    }
+    if (classFields && n5.type === "PropertyDefinition" && n5.declare !== true && n5.key?.type !== "PrivateIdentifier") {
+      found = { text: classFields, start: n5.start ?? 0, end: n5.end ?? 0 };
+      return;
+    }
+    for (const key of Object.keys(n5)) if (key !== "parent") visit(n5[key]);
+  };
+  visit(program);
+  return found;
+}
+function spanLocation(file, source, start, end) {
+  const lineStart = Math.max(source.lastIndexOf("\n", start - 1), source.lastIndexOf("\r", start - 1)) + 1;
+  const line = (source.slice(0, lineStart).match(/\r\n|\r|\n/g)?.length ?? 0) + 1;
+  const lineEnd = source.slice(start).search(/\r|\n/);
+  const stop = lineEnd < 0 ? end : Math.min(end, start + lineEnd);
+  return locate2(file, source, line, utf8Length2(source.slice(lineStart, start)), utf8Length2(source.slice(start, stop)));
+}
 var UnresolvedImports = class extends Error {
 };
-function inputOptionsOf(options) {
+function inputOptionsOf(options, settings = resolveTsSettings(options, "build")) {
+  const { jsx } = settings;
+  const classic = !jsx.preserve && !jsx.automatic;
   return {
     cwd: "/",
     platform: options.platform ?? "browser",
@@ -14589,8 +14803,16 @@ function inputOptionsOf(options) {
     transform: {
       target: typeof options.target === "string" ? options.target : "esnext",
       define: options.define,
-      // esbuild's default for JSX without a tsconfig: React.createElement.
-      jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" }
+      jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: jsx.fragment ?? "React.Fragment" },
+      typescript: {
+        // The import the classic factory keeps for the JSX that calls it. The
+        // automatic runtime and preserved JSX call nothing the file imports,
+        // so (as for esbuild) an import of React they leave unused is
+        // dropped: an empty pragma names no import.
+        jsxPragma: classic ? jsx.factory ?? "React.createElement" : "",
+        jsxPragmaFrag: classic ? jsx.fragment ?? "React.Fragment" : "",
+        onlyRemoveTypeImports: settings.preserveValueImports
+      }
     },
     checks: { pluginTimings: false },
     // esbuild keeps an imported constant a reference: inlining its value
@@ -14659,8 +14881,11 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     if (value !== void 0 && !SUPPORTED.has(key)) refuse(`Nimbus's bundler does not support the esbuild option "${key}"`);
   }
   if (options.bundle === false) refuse("Nimbus's bundler only bundles (bundle: false is not supported)");
-  if (options.tsconfigRaw !== void 0 && options.tsconfigRaw !== "" && JSON.stringify(options.tsconfigRaw) !== "{}") {
-    refuse("Nimbus's bundler does not support tsconfigRaw");
+  let settings;
+  try {
+    settings = resolveTsSettings(options, "build");
+  } catch (error2) {
+    refuse(error2 instanceof Error ? error2.message : String(error2));
   }
   const entryPoints = Array.isArray(options.entryPoints) ? options.entryPoints : null;
   if (!entryPoints || entryPoints.some((e3) => typeof e3 !== "string")) refuse("Nimbus's bundler takes entryPoints as a list of paths");
@@ -14704,7 +14929,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     return (importsOf.get(importer) ?? []).map((entry, i2) => ({ ...entry, i: i2 })).sort((a2, b2) => at(a2.id) - at(b2.id) || a2.record.kind.localeCompare(b2.record.kind) || a2.i - b2.i).map((entry) => entry.record);
   };
   const css = /* @__PURE__ */ new Map();
-  const warnings = [];
+  const warnings = settings.warnings.map((text) => message(text));
   const template = (names, fallback) => (names ?? fallback).replace(/\[ext\]/g, "[extname]");
   const assetFiles = /* @__PURE__ */ new Map();
   const assetNames = /* @__PURE__ */ new Map();
@@ -14731,8 +14956,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     const dir = names.slice(0, names.lastIndexOf("/") + 1);
     return dir.includes("[") ? null : dir;
   })();
-  const raise = (text, pluginName = "") => {
-    raised.push(message(text, null, pluginName));
+  const raise = (text, pluginName = "", location = null) => {
+    raised.push(message(text, location, pluginName));
     throw new Error(text);
   };
   const unresolvedImport = (text, importer, source, kind, pluginName) => {
@@ -14830,13 +15055,17 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (loader === "binary") {
         return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
       }
+      if ((loader === "ts" || loader === "tsx") && (settings.refuse.decorators || settings.refuse.classFields)) {
+        const found = refusedIn(this.parse, text, loader, settings.refuse);
+        if (found) raise(found.text, "", spanLocation(fileOf2({ namespace, path: path3 }), text, found.start, found.end));
+      }
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
       return { code: text, moduleType: moduleType2 };
     }
   };
   const bundle = await api.rolldown({
-    ...inputOptionsOf(options),
+    ...inputOptionsOf(options, settings),
     input: entryPoints,
     plugins: [vfs],
     onLog(level, log) {
@@ -14849,6 +15078,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       name: options.globalName,
       minify: options.minify === true,
       keepNames: options.keepNames === true,
+      // tsconfig's alwaysStrict (else strict): "use strict" first in CommonJS and IIFE output, as esbuild puts it.
+      ...settings.alwaysStrict ? { strict: true } : {},
       sourcemap: options.sourcemap === true || options.sourcemap === "external" ? true : options.sourcemap === "inline" ? "inline" : false,
       entryFileNames: options.outfile ? options.outfile.slice(options.outfile.lastIndexOf("/") + 1) : `${template(options.entryNames, "[name]")}.js`,
       chunkFileNames: `${template(options.chunkNames, "[name]-[hash]")}.js`,

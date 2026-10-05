@@ -215,9 +215,11 @@ try {
     const { ctx, env } = durableObject(BuildFacet);
     const project = PROJECTS['worker-routes'];
     const service = new EsbuildService(memoryFs('worker-routes', project.files), { buildHost: rolldownBuildHost(ctx, env) });
-    await assert.rejects(service.build([`/home/user/worker-routes/${project.entry}`], { ...project.options, tsconfigRaw: '{"compilerOptions":{"jsx":"react-jsx"}}' }),
-      /Nimbus's bundler does not support tsconfigRaw/);
-    console.log('  ok  an option the bundler does not implement is refused');
+    // tsconfigRaw is read as esbuild reads it (tsconfig-jsx-differential); a field it cannot honour is refused by name.
+    await assert.rejects(service.build([`/home/user/worker-routes/${project.entry}`], {
+      ...project.options, tsconfigRaw: '{"compilerOptions":{"jsx":"react-jsx","importsNotUsedAsValues":"preserve"}}',
+    }), /tsconfigRaw compilerOptions\.importsNotUsedAsValues "preserve" is not supported/);
+    console.log('  ok  a tsconfig field the bundler does not implement is refused by name');
   }
 
   // ── A binding that dies answers every build, and the next one is fresh ──────

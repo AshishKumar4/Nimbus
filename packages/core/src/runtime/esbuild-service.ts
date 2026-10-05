@@ -646,7 +646,10 @@ export interface EsbuildTransformOptions {
   jsx?: 'transform' | 'preserve' | 'automatic';
   jsxFactory?: string;
   jsxFragment?: string;
-  tsconfigRaw?: string;
+  jsxImportSource?: string;
+  jsxDev?: boolean;
+  /** A tsconfig's text or object, read as esbuild 0.24 reads it (runtime/tsconfig-raw.ts). */
+  tsconfigRaw?: string | esbuild.TsconfigRaw;
   define?: Record<string, string>;
   /**
    * The URL of the module being transformed, when its dynamic `import()`
@@ -717,6 +720,8 @@ async function transformWithEsbuild(
         jsx: options?.jsx,
         jsxFactory: options?.jsxFactory,
         jsxFragment: options?.jsxFragment,
+        jsxImportSource: options?.jsxImportSource,
+        jsxDev: options?.jsxDev,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
         supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
@@ -749,6 +754,8 @@ async function transformWithEsbuild(
       jsx: options?.jsx,
       jsxFactory: options?.jsxFactory,
       jsxFragment: options?.jsxFragment,
+      jsxImportSource: options?.jsxImportSource,
+      jsxDev: options?.jsxDev,
       tsconfigRaw: options?.tsconfigRaw,
       define: options?.define,
       supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
@@ -772,6 +779,8 @@ async function transformWithEsbuild(
     jsx: options?.jsx,
     jsxFactory: options?.jsxFactory,
     jsxFragment: options?.jsxFragment,
+    jsxImportSource: options?.jsxImportSource,
+    jsxDev: options?.jsxDev,
     tsconfigRaw: options?.tsconfigRaw,
     define: options?.define,
     supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
@@ -824,6 +833,7 @@ async function runTransformRequest(
     const javascript = await esbuildApi.transform(code, {
       loader: options.loader ?? 'js', target: 'esnext',
       jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
+      jsxImportSource: options.jsxImportSource, jsxDev: options.jsxDev,
       tsconfigRaw: options.tsconfigRaw, define: options.define,
       supported: { 'dynamic-import': true, 'import-meta': true },
     });
@@ -1248,7 +1258,14 @@ export class EsbuildService {
       external?: string[];
       define?: Record<string, string>;
       globalName?: string;
-      tsconfigRaw?: string;
+      /** esbuild's JSX options; a tsconfigRaw's JSX settings apply over them, as in esbuild. */
+      jsx?: 'transform' | 'preserve' | 'automatic';
+      jsxFactory?: string;
+      jsxFragment?: string;
+      jsxImportSource?: string;
+      jsxDev?: boolean;
+      /** A tsconfig's text or object, read as esbuild 0.24 reads it (runtime/tsconfig-raw.ts). */
+      tsconfigRaw?: string | esbuild.TsconfigRaw;
       alias?: Record<string, string>;
       keepNames?: boolean;
       entryNames?: string;
@@ -1291,6 +1308,11 @@ export class EsbuildService {
       external: options?.external,
       define: options?.define,
       globalName: options?.globalName,
+      jsx: options?.jsx,
+      jsxFactory: options?.jsxFactory,
+      jsxFragment: options?.jsxFragment,
+      jsxImportSource: options?.jsxImportSource,
+      jsxDev: options?.jsxDev,
       tsconfigRaw: options?.tsconfigRaw,
       alias: options?.alias,
       keepNames: options?.keepNames,

@@ -7,13 +7,16 @@
  * with the same output contract: the loaders `js`, `jsx`, `ts` and `tsx`;
  * `format` unset (module syntax kept), `esm` or `cjs` with esbuild's interop
  * helpers and `__esModule` marking; `define`; `supported['dynamic-import']`
- * and `supported['import-meta']`; JSX classic, automatic or preserved (for
- * ES module output only: preserved JSX in CommonJS would name imports that
- * conversion moved onto records, and nothing in Nimbus asks for it);
- * source maps returned or inlined; and esbuild's error message shape, down to
- * the top-level-await refusal the caller recognizes. Anything else a caller
- * asks for (another target, minify, a tsconfig, CSS) is refused rather than
- * ignored: there is no caller for it, and silently doing less would be wrong.
+ * and `supported['import-meta']`; JSX classic, automatic (with an import
+ * source and the development runtime) or preserved (for ES module output
+ * only: preserved JSX in CommonJS would name imports that conversion moved
+ * onto records, and nothing in Nimbus asks for it), from esbuild's own JSX
+ * options and from `tsconfigRaw` as esbuild applies them (tsconfig-raw.ts,
+ * which also decides each other tsconfig field); source maps returned or
+ * inlined; and esbuild's error message shape, down to the top-level-await
+ * refusal the caller recognizes. Anything else a caller asks for (another
+ * target, minify, CSS) is refused rather than ignored: there is no caller for
+ * it, and silently doing less would be wrong.
  *
  * The wasm imports nothing and keeps nothing between calls; its linear
  * memory, which only grows, is the largest module's working set. An instance
@@ -27,8 +30,10 @@
  * else; the transform facet carries it in the outcome, and its host sends such
  * a module to esbuild instead (facets/oxc-transform.ts).
  *
- * No imports: the transform facet's runtime bundles it (oxc-facet/preamble.ts).
+ * The transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
+
+import { resolveTsSettings } from './tsconfig-raw.js';
 
 /** Whether `error` is a transform's report that it ran out of native stack. */
 export function isOxcStackExhaustion(error: unknown): boolean {
@@ -45,6 +50,8 @@ export interface OxcTransformOptions {
   jsx?: string;
   jsxFactory?: string;
   jsxFragment?: string;
+  jsxImportSource?: string;
+  jsxDev?: boolean;
   tsconfigRaw?: string | object;
   define?: Record<string, string>;
   supported?: Record<string, boolean>;
@@ -121,10 +128,11 @@ export function createOxcTransform(
   let lastArena = { used: 0, reserved: 0 };
   const KNOWN: Record<string, true> = {
     loader: true, format: true, target: true, sourcemap: true, sourcefile: true, minify: true, jsx: true,
-    jsxFactory: true, jsxFragment: true, tsconfigRaw: true, define: true, supported: true,
+    jsxFactory: true, jsxFragment: true, jsxImportSource: true, jsxDev: true, tsconfigRaw: true, define: true, supported: true,
   };
 
-  function wire(options: OxcTransformOptions): string {
+  /** The options' wire form (abi.rs, options.rs), and esbuild's warnings about its tsconfig. */
+  function wire(options: OxcTransformOptions): { fields: string; warnings: OxcMessage[] } {
     for (const key of Object.keys(options)) {
       if (KNOWN[key] !== true && Reflect.get(options, key) !== undefined) throw new Error(`oxc transform: option "${key}" is not supported`);
     }
@@ -138,21 +146,30 @@ export function createOxcTransform(
       throw new Error(`oxc transform: target "${options.target}" is not supported; only esnext`);
     }
     if (options.minify) throw new Error('oxc transform: minify is not supported');
-    if (options.tsconfigRaw !== undefined && options.tsconfigRaw !== '' && JSON.stringify(options.tsconfigRaw) !== '{}') {
-      throw new Error('oxc transform: tsconfigRaw is not supported');
+    let settings;
+    try {
+      settings = resolveTsSettings(options, 'transform');
+    } catch (error) {
+      throw new Error(`oxc transform: ${error instanceof Error ? error.message : String(error)}`);
     }
     const sourcemap = options.sourcemap === undefined || options.sourcemap === false ? 'none'
       : options.sourcemap === true || options.sourcemap === 'external' ? 'external'
         : options.sourcemap === 'inline' ? 'inline' : null;
     if (sourcemap === null) throw new Error(`oxc transform: sourcemap "${String(options.sourcemap)}" is not supported`);
-    const jsx = options.jsx ?? 'transform';
-    if (jsx !== 'transform' && jsx !== 'automatic' && jsx !== 'preserve') throw new Error(`oxc transform: jsx "${jsx}" is not supported`);
+    const { jsx: jsxSettings } = settings;
+    const jsx = jsxSettings.preserve ? 'preserve' : jsxSettings.automatic ? 'automatic' : 'transform';
     if (jsx === 'preserve' && format === 'cjs' && (loader === 'jsx' || loader === 'tsx')) {
       throw new Error('oxc transform: jsx "preserve" is not supported with format "cjs"');
     }
     const fields = ['loader', loader, 'format', format, 'jsx', jsx, 'sourcemap', sourcemap];
-    if (options.jsxFactory) fields.push('jsxFactory', options.jsxFactory);
-    if (options.jsxFragment) fields.push('jsxFragment', options.jsxFragment);
+    if (jsx === 'transform' && jsxSettings.factory) fields.push('jsxFactory', jsxSettings.factory);
+    if (jsx === 'transform' && jsxSettings.fragment) fields.push('jsxFragment', jsxSettings.fragment);
+    if (jsx === 'automatic' && jsxSettings.importSource) fields.push('jsxImportSource', jsxSettings.importSource);
+    if (jsx === 'automatic' && jsxSettings.development) fields.push('jsxDev', '1');
+    if (settings.preserveValueImports) fields.push('preserveValueImports', '1');
+    if (settings.alwaysStrict) fields.push('alwaysStrict', '1');
+    if (settings.refuse.decorators) fields.push('refuseDecorators', settings.refuse.decorators);
+    if (settings.refuse.classFields) fields.push('refuseClassFields', settings.refuse.classFields);
     if (options.sourcefile) fields.push('sourcefile', options.sourcefile);
     for (const [name, value] of Object.entries(options.define ?? {})) fields.push('define', name, value);
     for (const [feature, supported] of Object.entries(options.supported ?? {})) {
@@ -163,7 +180,11 @@ export function createOxcTransform(
     for (const field of fields) {
       if (field.includes('\0')) throw new Error('oxc transform: an option contains a NUL character');
     }
-    return fields.join('\0');
+    // esbuild reports its tsconfig's warnings at "<tsconfig.json>"; their place in it is not kept.
+    const warnings = settings.warnings.map((text): OxcMessage => ({
+      id: '', pluginName: '', text, location: null, notes: [], detail: undefined,
+    }));
+    return { fields: fields.join('\0'), warnings };
   }
 
   /** abi.rs's diagnostics: seven fields each, every field `<byte length>:<bytes>`. */
@@ -245,9 +266,10 @@ export function createOxcTransform(
 
   return {
     async transform(code, options = {}) {
-      const optionsWire = wire(options);
+      const { fields: optionsWire, warnings } = wire(options);
       try {
-        return run(code, optionsWire);
+        const result = run(code, optionsWire);
+        return warnings.length ? { ...result, warnings: [...warnings, ...result.warnings] } : result;
       } catch (error) {
         if (error instanceof Error && Reflect.get(error, 'errors') !== undefined) throw error;
         // A trap, or the host's stack running out inside a deeply nested

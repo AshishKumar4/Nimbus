@@ -23,8 +23,8 @@
  * `dataurl` exports a data URL (esbuild's encoding), `base64` the bytes in
  * base64, `text` the text, `binary` a Uint8Array.
  *
- * Self-contained but for types and css-bundle.ts: the build facet's runtime
- * bundles it (rolldown-facet/preamble.ts).
+ * Self-contained but for types, css-bundle.ts and tsconfig-raw.ts: the build
+ * facet's runtime bundles it (rolldown-facet/preamble.ts).
  */
 import type * as esbuild from 'esbuild-wasm';
 import type { EsbuildBuildOutcome, EsbuildHostBuildOptions, EsbuildRemotePlugin } from './esbuild-service.js';

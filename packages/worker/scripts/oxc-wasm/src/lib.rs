@@ -94,6 +94,12 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             parsed = with_return;
         }
     }
+    if source_type.is_typescript()
+        && (options.refuse_decorators.is_some() || options.refuse_class_fields.is_some())
+        && let Some(error) = refused(&parsed.program, options)
+    {
+        return Output::failed(diagnostics::convert(source, sourcefile, vec![error]));
+    }
     let has_dynamic_import = !parsed.module_record.dynamic_imports.is_empty();
     let has_import_meta = !parsed.module_record.import_metas.is_empty();
     let mut program = parsed.program;
@@ -156,6 +162,9 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
         Err(errors) => return Output::failed(diagnostics::convert(source, sourcefile, errors)),
         Ok(pass_warnings) => warnings.extend(pass_warnings),
     }
+    if options.always_strict && options.format == options::Format::Cjs {
+        use_strict(allocator, &mut program);
+    }
 
     let (code, map) = generate(&program, scoping, options, sourcefile);
     Output { code, map, diagnostics: diagnostics::convert(source, sourcefile, warnings) }
@@ -203,12 +212,64 @@ fn generate(
     }
 }
 
+/// The first decorator or class field a TypeScript file's tsconfig makes this
+/// transform refuse (options.rs: `refuse_decorators`, `refuse_class_fields`),
+/// as an error at it carrying the refusal. A class's private fields alone
+/// stay fields under esbuild too; one public or static field moves them all.
+fn refused(program: &Program<'_>, options: &Options) -> Option<OxcDiagnostic> {
+    use oxc::ast::ast::{Decorator, PropertyDefinition, PropertyDefinitionType};
+    use oxc::ast_visit::{Visit, walk};
+
+    struct Find<'o> {
+        decorators: Option<&'o str>,
+        class_fields: Option<&'o str>,
+        found: Option<(Span, &'o str)>,
+    }
+    impl<'a> Visit<'a> for Find<'_> {
+        fn visit_decorator(&mut self, it: &Decorator<'a>) {
+            if let (None, Some(text)) = (self.found, self.decorators) {
+                self.found = Some((it.span, text));
+            }
+        }
+        fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
+            if let (None, Some(text)) = (self.found, self.class_fields)
+                && it.r#type == PropertyDefinitionType::PropertyDefinition
+                && !it.declare
+                && !it.key.is_private_identifier()
+            {
+                self.found = Some((it.span, text));
+            }
+            walk::walk_property_definition(self, it);
+        }
+    }
+    let mut find = Find {
+        decorators: options.refuse_decorators.as_deref(),
+        class_fields: options.refuse_class_fields.as_deref(),
+        found: None,
+    };
+    find.visit_program(program);
+    find.found.map(|(span, text)| OxcDiagnostic::error(text.to_string()).with_label(span))
+}
+
+/// esbuild's `alwaysStrict` for CommonJS output: `"use strict"` first, once.
+fn use_strict<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
+    if program.directives.iter().any(|d| d.directive.as_str() == "use strict") {
+        return;
+    }
+    let ast = oxc::ast::builder::AstBuilder::new(allocator);
+    let literal = oxc::ast::ast::StringLiteral::new(Span::default(), "use strict", None, &ast);
+    let directive = oxc::ast::ast::Directive::new(Span::default(), literal, "use strict", &ast);
+    program.directives.insert(0, directive);
+}
+
 fn transform_options(options: &Options) -> TransformOptions {
     let jsx = match options.jsx {
         JsxMode::Preserve => JsxOptions { jsx_plugin: false, display_name_plugin: false, ..JsxOptions::disable() },
         JsxMode::Automatic => JsxOptions {
             runtime: JsxRuntime::Automatic,
             display_name_plugin: false,
+            import_source: options.jsx_import_source.clone(),
+            development: options.jsx_dev,
             ..JsxOptions::default()
         },
         JsxMode::Transform => JsxOptions {
@@ -219,10 +280,22 @@ fn transform_options(options: &Options) -> TransformOptions {
             ..JsxOptions::default()
         },
     };
+    // The classic factory's import is kept for the JSX that will call it; the
+    // automatic runtime and preserved JSX call nothing the file imports, so
+    // (as for esbuild) an import of React they leave unused is dropped. An
+    // empty pragma names no import.
+    let (pragma, pragma_frag) = match options.jsx {
+        JsxMode::Transform => (
+            options.jsx_factory.clone().unwrap_or_else(|| "React.createElement".into()),
+            options.jsx_fragment.clone().unwrap_or_else(|| "React.Fragment".into()),
+        ),
+        JsxMode::Automatic | JsxMode::Preserve => (String::new(), String::new()),
+    };
     TransformOptions {
         typescript: TypeScriptOptions {
-            jsx_pragma: options.jsx_factory.clone().map(Into::into).unwrap_or_else(|| "React.createElement".into()),
-            jsx_pragma_frag: options.jsx_fragment.clone().map(Into::into).unwrap_or_else(|| "React.Fragment".into()),
+            jsx_pragma: pragma.into(),
+            jsx_pragma_frag: pragma_frag.into(),
+            only_remove_type_imports: options.preserve_value_imports,
             ..TypeScriptOptions::default()
         },
         jsx,

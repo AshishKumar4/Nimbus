@@ -7,13 +7,16 @@
  * with the same output contract: the loaders `js`, `jsx`, `ts` and `tsx`;
  * `format` unset (module syntax kept), `esm` or `cjs` with esbuild's interop
  * helpers and `__esModule` marking; `define`; `supported['dynamic-import']`
- * and `supported['import-meta']`; JSX classic, automatic or preserved (for
- * ES module output only: preserved JSX in CommonJS would name imports that
- * conversion moved onto records, and nothing in Nimbus asks for it);
- * source maps returned or inlined; and esbuild's error message shape, down to
- * the top-level-await refusal the caller recognizes. Anything else a caller
- * asks for (another target, minify, a tsconfig, CSS) is refused rather than
- * ignored: there is no caller for it, and silently doing less would be wrong.
+ * and `supported['import-meta']`; JSX classic, automatic (with an import
+ * source and the development runtime) or preserved (for ES module output
+ * only: preserved JSX in CommonJS would name imports that conversion moved
+ * onto records, and nothing in Nimbus asks for it), from esbuild's own JSX
+ * options and from `tsconfigRaw` as esbuild applies them (tsconfig-raw.ts,
+ * which also decides each other tsconfig field); source maps returned or
+ * inlined; and esbuild's error message shape, down to the top-level-await
+ * refusal the caller recognizes. Anything else a caller asks for (another
+ * target, minify, CSS) is refused rather than ignored: there is no caller for
+ * it, and silently doing less would be wrong.
  *
  * The wasm imports nothing and keeps nothing between calls; its linear
  * memory, which only grows, is the largest module's working set. An instance
@@ -27,7 +30,7 @@
  * else; the transform facet carries it in the outcome, and its host sends such
  * a module to esbuild instead (facets/oxc-transform.ts).
  *
- * No imports: the transform facet's runtime bundles it (oxc-facet/preamble.ts).
+ * The transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
 /** Whether `error` is a transform's report that it ran out of native stack. */
 export declare function isOxcStackExhaustion(error: unknown): boolean;
@@ -41,6 +44,8 @@ export interface OxcTransformOptions {
     jsx?: string;
     jsxFactory?: string;
     jsxFragment?: string;
+    jsxImportSource?: string;
+    jsxDev?: boolean;
     tsconfigRaw?: string | object;
     define?: Record<string, string>;
     supported?: Record<string, boolean>;

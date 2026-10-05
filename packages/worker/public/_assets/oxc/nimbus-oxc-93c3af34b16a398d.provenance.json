@@ -15,10 +15,10 @@
       "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
       "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
       "src/helpers.rs": "cf0da308d383ea902c44f55a9d1e04fcc991ce80d6c4f1c89a69901621be5d8f",
-      "src/lib.rs": "31d68d740f2621fa0da68abe5a5c14a4f917b3d18434b2c2cb888298f2a79b65",
+      "src/lib.rs": "e7124663f4b73ff95708eae8a0edf77bbac00e97baff0b5fbcd2eb0cd9d046a3",
       "src/module.rs": "3173e956253e6b1cacedbe009a9aa0cc335347e1bd42fda8f13062bfec2df45b",
       "src/names.rs": "4b475452c58d047f4536a255d5ee6871e3fd905fe21fc715b0e55b08e9f117d0",
-      "src/options.rs": "11a90f89d6cafc6a25e0786ef8d168469c42498d7ae09740387ad6957bf27bf2"
+      "src/options.rs": "ac4ea61c7be90c72eb16bdb05a01b3cebc1a00cd35157f78f13168c7818df3e3"
     }
   },
   "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
@@ -65,8 +65,8 @@
   },
   "outputs": {
     "nimbus-oxc.wasm": {
-      "bytes": 2276933,
-      "sha256": "1aa8c4c7057c6c28c5f11b7b6cd4dd66daae5653d79e8d17fabfdd1e7d1447b8"
+      "bytes": 2296353,
+      "sha256": "93c3af34b16a398d89be199ad5fc20c84ed8cd9f2d82a3196baf5864936b7a85"
     }
   }
 }

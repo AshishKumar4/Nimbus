@@ -1,5 +1,173 @@
 "use strict";
 (() => {
+  var TsconfigRefusal = class extends Error {
+  };
+  var REFUSED = {
+    experimentalDecorators: "TypeScript's experimental decorators compile to calls of runtime helpers that Nimbus does not serve",
+    useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments",
+    importsNotUsedAsValues: 'keeping an unused import as a bare `import "x"` is not something Nimbus\'s engines do'
+  };
+  function isIdentifier(text) {
+    return /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u.test(text);
+  }
+  function memberExpression(text, warnings) {
+    if (text === "") return null;
+    if (text.split(".").every(isIdentifier)) return text;
+    warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
+    return null;
+  }
+  function parseJsonc(text) {
+    let out = "";
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (c === '"') {
+        const start = i;
+        for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+        out += text.slice(start, i + 1);
+      } else if (c === "/" && text[i + 1] === "/") {
+        while (i < text.length && text[i] !== "\n") i++;
+        out += "\n";
+      } else if (c === "/" && text[i + 1] === "*") {
+        const end = text.indexOf("*/", i + 2);
+        i = end < 0 ? text.length : end + 1;
+        out += " ";
+      } else {
+        out += c;
+      }
+    }
+    const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s) => '"' + " ".repeat(s.length - 2) + '"');
+    let result = "";
+    for (let i = 0; i < out.length; i++) {
+      if (blanked[i] === "," && /^\s*[}\]]/.test(blanked.slice(i + 1))) continue;
+      result += out[i];
+    }
+    return JSON.parse(result);
+  }
+  var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  var COMPILER_OPTION_KEYS = [
+    "alwaysStrict",
+    "baseUrl",
+    "experimentalDecorators",
+    "importsNotUsedAsValues",
+    "jsx",
+    "jsxFactory",
+    "jsxFragmentFactory",
+    "jsxImportSource",
+    "paths",
+    "preserveValueImports",
+    "strict",
+    "target",
+    "useDefineForClassFields",
+    "verbatimModuleSyntax"
+  ];
+  function resolveTsSettings(inputs, call) {
+    const warnings = [];
+    const jsxMode = inputs.jsx ?? "transform";
+    if (jsxMode !== "transform" && jsxMode !== "automatic" && jsxMode !== "preserve") {
+      throw new Error(`Invalid JSX mode: ${JSON.stringify(jsxMode)}`);
+    }
+    const ownExpression = (text, what) => {
+      if (text === void 0 || text === "") return null;
+      if (!text.split(".").every(isIdentifier)) throw new Error(`Invalid JSX ${what}: ${JSON.stringify(text)}`);
+      return text;
+    };
+    const jsx = {
+      preserve: jsxMode === "preserve",
+      automatic: jsxMode === "automatic",
+      factory: ownExpression(inputs.jsxFactory, "factory"),
+      fragment: ownExpression(inputs.jsxFragment, "fragment"),
+      importSource: inputs.jsxImportSource || null,
+      development: inputs.jsxDev === true
+    };
+    const settings = {
+      jsx,
+      preserveValueImports: false,
+      alwaysStrict: false,
+      refuse: { decorators: null, classFields: null },
+      warnings
+    };
+    const raw = inputs.tsconfigRaw;
+    if (raw === void 0 || raw === "") return finish(settings);
+    let config;
+    if (typeof raw === "string") {
+      try {
+        config = parseJsonc(raw);
+      } catch (error) {
+        throw new Error(`tsconfigRaw is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else {
+      config = raw;
+    }
+    if (!isObject(config)) return finish(settings);
+    for (const key of Object.keys(config)) {
+      if (COMPILER_OPTION_KEYS.includes(key)) {
+        warnings.push(`Expected the ${JSON.stringify(key)} option to be nested inside a "compilerOptions" object`);
+        break;
+      }
+    }
+    if (call === "build" && config.extends !== void 0) {
+      throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
+    }
+    const options = config.compilerOptions;
+    if (!isObject(options)) return finish(settings);
+    const string = (key) => typeof options[key] === "string" ? options[key] : void 0;
+    const boolean = (key) => typeof options[key] === "boolean" ? options[key] : void 0;
+    switch (string("jsx")?.toLowerCase()) {
+      case "react":
+        jsx.automatic = false;
+        jsx.development = false;
+        break;
+      case "react-jsx":
+        jsx.automatic = true;
+        break;
+      case "react-jsxdev":
+        jsx.automatic = true;
+        jsx.development = true;
+        break;
+      default:
+        break;
+    }
+    const factory = string("jsxFactory");
+    if (factory !== void 0) jsx.factory = memberExpression(factory, warnings) ?? jsx.factory;
+    const fragment = string("jsxFragmentFactory");
+    if (fragment !== void 0) jsx.fragment = memberExpression(fragment, warnings) ?? jsx.fragment;
+    const importSource = string("jsxImportSource");
+    if (importSource !== void 0) jsx.importSource = importSource;
+    if (boolean("experimentalDecorators") === true) {
+      settings.refuse.decorators = `tsconfigRaw compilerOptions.experimentalDecorators true is not supported for a TypeScript file with decorators: ${REFUSED.experimentalDecorators}`;
+    }
+    const target = string("target");
+    let targetBelowEs2022;
+    if (target !== void 0) {
+      const lower = target.toLowerCase();
+      if (/^(es3|es5|es6|es2015|es2016|es2017|es2018|es2019|es2020|es2021)$/.test(lower)) targetBelowEs2022 = true;
+      else if (/^(es2022|es2023|es2024|esnext)$/.test(lower)) targetBelowEs2022 = false;
+      else warnings.push(`Unrecognized target environment ${JSON.stringify(target)}`);
+    }
+    const useDefine = boolean("useDefineForClassFields");
+    if (useDefine === false) {
+      settings.refuse.classFields = `tsconfigRaw compilerOptions.useDefineForClassFields false is not supported for a TypeScript class with fields: ${REFUSED.useDefineForClassFields}`;
+    }
+    if (useDefine === void 0 && targetBelowEs2022 === true) {
+      settings.refuse.classFields = `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
+    }
+    if (boolean("verbatimModuleSyntax") === true || boolean("preserveValueImports") === true) settings.preserveValueImports = true;
+    const notUsed = string("importsNotUsedAsValues");
+    if (notUsed === "preserve" || notUsed === "error") {
+      throw new TsconfigRefusal(`tsconfigRaw compilerOptions.importsNotUsedAsValues ${JSON.stringify(notUsed)} is not supported: ${REFUSED.importsNotUsedAsValues}`);
+    }
+    if (notUsed !== void 0 && notUsed !== "remove") warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
+    settings.alwaysStrict = boolean("alwaysStrict") ?? boolean("strict") ?? false;
+    return finish(settings);
+  }
+  function finish(settings) {
+    if (!settings.jsx.automatic) {
+      settings.jsx.development = false;
+      settings.jsx.importSource = null;
+    }
+    return settings;
+  }
+
   function bindExports(instance) {
     const exports = instance.exports;
     const memory = exports.memory;
@@ -35,6 +203,8 @@
       jsx: true,
       jsxFactory: true,
       jsxFragment: true,
+      jsxImportSource: true,
+      jsxDev: true,
       tsconfigRaw: true,
       define: true,
       supported: true
@@ -53,19 +223,28 @@
         throw new Error(`oxc transform: target "${options.target}" is not supported; only esnext`);
       }
       if (options.minify) throw new Error("oxc transform: minify is not supported");
-      if (options.tsconfigRaw !== void 0 && options.tsconfigRaw !== "" && JSON.stringify(options.tsconfigRaw) !== "{}") {
-        throw new Error("oxc transform: tsconfigRaw is not supported");
+      let settings;
+      try {
+        settings = resolveTsSettings(options, "transform");
+      } catch (error) {
+        throw new Error(`oxc transform: ${error instanceof Error ? error.message : String(error)}`);
       }
       const sourcemap = options.sourcemap === void 0 || options.sourcemap === false ? "none" : options.sourcemap === true || options.sourcemap === "external" ? "external" : options.sourcemap === "inline" ? "inline" : null;
       if (sourcemap === null) throw new Error(`oxc transform: sourcemap "${String(options.sourcemap)}" is not supported`);
-      const jsx = options.jsx ?? "transform";
-      if (jsx !== "transform" && jsx !== "automatic" && jsx !== "preserve") throw new Error(`oxc transform: jsx "${jsx}" is not supported`);
+      const { jsx: jsxSettings } = settings;
+      const jsx = jsxSettings.preserve ? "preserve" : jsxSettings.automatic ? "automatic" : "transform";
       if (jsx === "preserve" && format === "cjs" && (loader === "jsx" || loader === "tsx")) {
         throw new Error('oxc transform: jsx "preserve" is not supported with format "cjs"');
       }
       const fields = ["loader", loader, "format", format, "jsx", jsx, "sourcemap", sourcemap];
-      if (options.jsxFactory) fields.push("jsxFactory", options.jsxFactory);
-      if (options.jsxFragment) fields.push("jsxFragment", options.jsxFragment);
+      if (jsx === "transform" && jsxSettings.factory) fields.push("jsxFactory", jsxSettings.factory);
+      if (jsx === "transform" && jsxSettings.fragment) fields.push("jsxFragment", jsxSettings.fragment);
+      if (jsx === "automatic" && jsxSettings.importSource) fields.push("jsxImportSource", jsxSettings.importSource);
+      if (jsx === "automatic" && jsxSettings.development) fields.push("jsxDev", "1");
+      if (settings.preserveValueImports) fields.push("preserveValueImports", "1");
+      if (settings.alwaysStrict) fields.push("alwaysStrict", "1");
+      if (settings.refuse.decorators) fields.push("refuseDecorators", settings.refuse.decorators);
+      if (settings.refuse.classFields) fields.push("refuseClassFields", settings.refuse.classFields);
       if (options.sourcefile) fields.push("sourcefile", options.sourcefile);
       for (const [name, value] of Object.entries(options.define ?? {})) fields.push("define", name, value);
       for (const [feature, supported] of Object.entries(options.supported ?? {})) {
@@ -76,7 +255,15 @@
       for (const field of fields) {
         if (field.includes("\0")) throw new Error("oxc transform: an option contains a NUL character");
       }
-      return fields.join("\0");
+      const warnings = settings.warnings.map((text) => ({
+        id: "",
+        pluginName: "",
+        text,
+        location: null,
+        notes: [],
+        detail: void 0
+      }));
+      return { fields: fields.join("\0"), warnings };
     }
     function messages(bytes) {
       const errors = [];
@@ -148,9 +335,10 @@ ${lines.join("\n")}`), { errors, warnings });
     }
     return {
       async transform(code, options = {}) {
-        const optionsWire = wire(options);
+        const { fields: optionsWire, warnings } = wire(options);
         try {
-          return run(code, optionsWire);
+          const result = run(code, optionsWire);
+          return warnings.length ? { ...result, warnings: [...warnings, ...result.warnings] } : result;
         } catch (error) {
           if (error instanceof Error && Reflect.get(error, "errors") !== void 0) throw error;
           instance = null;
