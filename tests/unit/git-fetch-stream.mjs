@@ -10,7 +10,9 @@
 //   - after git pull: the same worktree, HEAD and objects as host git's;
 //   - git fsck --full clean throughout;
 //   - in a depth-1 clone, git fetch --deepen 2 then --unshallow leave the
-//     shallow file, objects and history host git's do (a single stream).
+//     shallow file, objects and history host git's do (a single stream);
+//   - refs and the shallow file change only after the pack is stored: while
+//     it is still arriving, another command sees the old tip and boundary.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -60,7 +62,23 @@ try {
     const packsBefore = new Set(readdirSync(join(session.materialize('home/user/repo', mkdtempSync(join(work, 'before-')), '.git'), '.git/objects/pack')));
 
     const writesBefore = session.requests.rangeWrites.length;
+    // What another command sees while the pack arrives: the refs and shallow file as they were.
+    const durable = (path) => (session.kernel.exists(path) ? session.kernel.readFileString(path) : null);
+    const seenDuringIngest = (repo) => {
+      const seen = [];
+      session.requests.onRangeWrite = (path) => {
+        if (!path.includes('/objects/pack/tmp_pack_')) return;
+        seen.push({ ref: durable(repo + '/.git/refs/remotes/origin/main'), shallow: durable(repo + '/.git/shallow') });
+      };
+      return seen;
+    };
+    const tipBefore = durable('home/user/repo/.git/refs/remotes/origin/main');
+    const duringFetch = seenDuringIngest('home/user/repo');
     const fetched = await session.git('/home/user/repo', ['fetch']);
+    session.requests.onRangeWrite = undefined;
+    assert.ok(duringFetch.length >= 2, 'the fetch stored its pack in pieces');
+    assert.ok(duringFetch.every((seen) => seen.ref === tipBefore),
+      'refs/remotes/origin/main moved before the pack holding its commit was stored');
     assert.equal(fetched.code, 0, fetched.stderr);
     hostGit(host, ['fetch', '-q']);
     const afterFetch = session.materialize('home/user/repo', mkdtempSync(join(work, 'fetch-')), '.git');
@@ -97,8 +115,13 @@ try {
     const hostShallow = join(work, 'host-shallow');
     hostGit(work, ['clone', '-q', '--depth', '1', '--single-branch', 'file://' + bare, hostShallow]);
     const step = async (args, label) => {
+      const shallowBefore = durable('home/user/shallow/.git/shallow');
+      const during = seenDuringIngest('home/user/shallow');
       const ran = await session.git('/home/user/shallow', ['fetch', ...args]);
+      session.requests.onRangeWrite = undefined;
       assert.equal(ran.code, 0, label + ': ' + ran.stderr);
+      assert.ok(during.length > 0 && during.every((seen) => seen.shallow === shallowBefore),
+        label + ': .git/shallow changed before the pack holding the new parents was stored');
       hostGit(hostShallow, ['fetch', '-q', ...args]);
       const ours = session.materialize('home/user/shallow', mkdtempSync(join(work, 'deepen-')), '.git');
       assert.deepEqual(hostObjects(ours), hostObjects(hostShallow), label + ': the objects git holds');

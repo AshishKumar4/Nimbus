@@ -2488,13 +2488,8 @@ export async function runGitCommand(
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
               mutationOwner: mutationLease.owner,
-              // Verification/tuning knob: force a small per-chunk entry bound
-              // so ordinary repos exercise the multi-invocation chunked
-              // checkout path. Unset in production → the 10k default applies.
-              checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
-                ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
-                : undefined,
-              // The same, for the fast clone's blob batches.
+              // Verification/tuning knobs: smaller pieces make ordinary repos
+              // exercise many batches, history pieces and continuations.
               blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
               batchConcurrency: Number(ctx.env.NIMBUS_GIT_BATCH_CONCURRENCY) || undefined,
               historyBlobsPerBatch: Number(ctx.env.NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH) || undefined,
