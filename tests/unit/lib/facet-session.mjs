@@ -57,7 +57,8 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   let owner;
   const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
   const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
-  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeWrites: [] };
+  // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
+  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeWrites: [], waves: 0, failWaveAt: 0 };
   const supervisor = {
     async stat(path) { try { return bridge.stat(path); } catch { return null; } },
     async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
@@ -72,7 +73,13 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     async fsTruncate(path, size) { return bridge.truncate(path, size, lease()); },
     async rename(from, to) { return bridge.rename(from, to, lease()); },
     async unlink(path) { return bridge.unlink(path); },
-    async writeBatchStream(stream) { return kernel.writeStream(stream, lease()); },
+    async writeBatchStream(stream) {
+      if (++requests.waves === requests.failWaveAt) {
+        await stream.cancel();
+        throw new Error('Network connection lost.');
+      }
+      return kernel.writeStream(stream, lease());
+    },
     async stdout() {},
   };
   // Each execGitNetwork mints its binding with the lease it holds (a clone's), as SupervisorRPC props carry it.

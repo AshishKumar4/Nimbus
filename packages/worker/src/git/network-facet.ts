@@ -775,12 +775,22 @@ async function runPool<T>(items: readonly T[], concurrency: number, run: (item: 
 }
 
 /**
- * Attempts at a batch or history piece whose request failed in transit (a
- * server that stopped sending: measured once on react's batches, a 240 s
- * hang). Each piece is a fresh request for the same objects, so a retry is
- * the same piece again.
+ * Attempts at a batch or history piece that failed in transit: its request
+ * (UploadPackError), its writes to the session ("Network connection lost":
+ * Linux depth 1, twice, the session itself healthy by GraphQL), or the
+ * piece as a whole, hung (react's first batch, three times in five clones,
+ * with no stall from its request). A piece writes the same files and a pack
+ * under its own name each time, so a retry is the same piece again.
  */
 const CLONE_PIECE_ATTEMPTS = 3;
+/** A piece takes seconds (Linux's batches ~17 s, react's largest history piece 51 s): one hung this long is retried. */
+const CLONE_PIECE_TIMEOUT_MS = 150_000;
+
+function transientPieceFailure(diagnostic: GitNetworkPhaseDiagnostic, error: string): boolean {
+  return diagnostic.outcome === 'timeout' ||
+    error.startsWith('git upload-pack: ') ||
+    error.includes('Network connection lost');
+}
 
 /** One fast-clone facet invocation after prepare; its failure is the clone's. */
 async function invokeClonePhase(
@@ -797,13 +807,13 @@ async function invokeClonePhase(
       crypto.randomUUID(),
       { ...opts, attempt } as Omit<GitNetworkOpts, 'mutationOwner'>,
       run.outerDeadline,
-      CLONE_PHASE_TIMEOUT_MS,
+      phase === 'clone-finish' ? CLONE_PHASE_TIMEOUT_MS : CLONE_PIECE_TIMEOUT_MS,
       run.budgetContext,
     );
     run.phases.push(invocation.diagnostic);
     run.accountResult(invocation.result);
     const error = typeof invocation.result.error === 'string' ? invocation.result.error : '';
-    if (invocation.result.success === true || phase === 'clone-finish' || !error.startsWith('git upload-pack: ')) break;
+    if (invocation.result.success === true || phase === 'clone-finish' || !transientPieceFailure(invocation.diagnostic, error)) break;
     if (run.progress) {
       await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
     }

@@ -11,7 +11,8 @@
 //   - the same objects as host git's clone, and git fsck --full clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
-//   - one blobs request broken off mid-pack is retried as a fresh piece.
+//   - one blobs request broken off mid-pack, and one batch whose write to
+//     the session is lost, are each retried as a fresh piece.
 
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -81,6 +82,8 @@ try {
       },
     }), { status: response.status, headers: response.headers });
   };
+  // A wave of the first batch (prepare publishes three) loses its connection.
+  session.requests.failWaveAt = 5;
   try {
     const cloned = await session.git('/home/user', ['clone', '--no-shallow', server.url + '/repo.git', 'repo'], {
       NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK: '7',
@@ -95,7 +98,9 @@ try {
     assert.equal(count('clone-history:plan'), 1);
     assert.equal(posts > 4, true);
     const attempts = session.requests.attempts;
-    assert.ok(attempts.some((attempt) => attempt === 2), 'a broken piece was attempted again');
+    assert.ok(attempts.filter((attempt) => attempt === 2).length >= 2, 'both broken pieces were attempted again: ' + attempts);
+    assert.ok(session.requests.phases.indexOf('clone-batch') !== session.requests.phases.lastIndexOf('clone-batch'),
+      'the batch whose wave was lost ran again');
 
     const out = session.materialize('home/user/repo', join(work, 'out'));
     assert.deepEqual(hostObjects(out), hostObjects(host), 'the objects git clone holds');
