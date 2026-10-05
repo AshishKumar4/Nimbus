@@ -63,3 +63,29 @@ assert.ok(inodeSelects <= FILES + 1 + 10,
   `${inodeSelects} inode lookups published ${FILES + 1} new files`);
 
 console.log('sqlite vfs write stream receipts: ok');
+
+// A stream authorises its files one by one, but a directory it places files
+// into is checked once while nothing commits, not once per file.
+{
+  const checks = { count: 0 };
+  const original = SqliteVFS.prototype.checkAccess;
+  SqliteVFS.prototype.checkAccess = function (...args) {
+    checks.count++;
+    return original.apply(this, args);
+  };
+  try {
+    const many = [{ path: 'home/user/flat', parentPath: 'home/user', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
+    const manyChunks = [];
+    for (let index = 0; index < 500; index++) {
+      const data = enc.encode(`f${index}`);
+      many.push({ path: `home/user/flat/f${index}`, parentPath: 'home/user/flat', kind: 'file', isDir: false, size: data.byteLength, mtime: 1, mode: 0o644, chunkCount: 1 });
+      manyChunks.push({ path: `home/user/flat/f${index}`, chunkId: 0, data });
+    }
+    const flat = await vfs.writeStream(encodeWriteBatchStream({ inodes: many, chunks: manyChunks }));
+    assert.equal(flat.ok, true, flat.error?.message);
+    assert.ok(checks.count < 100, `${checks.count} access checks placed 500 files in one directory`);
+  } finally {
+    SqliteVFS.prototype.checkAccess = original;
+  }
+}
+console.log('sqlite vfs write stream authorisation memo: ok');

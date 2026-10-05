@@ -653,6 +653,18 @@ interface StoredInodeEntry {
   knownPrior?: KnownPrior;
 }
 
+/**
+ * What authorising one batch learned that the next can reuse while no
+ * transaction has committed since (`gen`): where each name was placed, and
+ * which committed directories were found writable to place into. A stream
+ * authorises file by file; this makes its directories cost once each.
+ */
+interface AuthorizationMemo {
+  gen: number;
+  placed: Map<string, string>;
+  placedParents: Set<string>;
+}
+
 /** A path's committed inode (undefined: none) as read at generation `gen`. */
 interface KnownPrior {
   inode: INode | undefined;
@@ -7865,8 +7877,9 @@ export class SqliteVFS {
     payload: BatchWritePayload,
     cred: VfsCred,
     priors: Map<string, INode | undefined> = new Map(),
+    memo?: AuthorizationMemo,
   ): BatchWritePayload {
-    const placed = new Map<string, string>();
+    const placed = memo?.placed ?? new Map<string, string>();
     const staged = new Map<string, { mode: number; gid: number; defaultAcl: number | null }>();
     const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
     const pending = new Map(inodes.map((entry) => [entry.path, entry]));
@@ -7878,7 +7891,7 @@ export class SqliteVFS {
     // keep the rule they had: they remove rows, wherever they were left.
     const unplaceable = (key: string): Error => vfsError('ENOTDIR', key, 'not a directory the entry can be placed in');
     const checkedParents = new Set<string>();
-    const placedParents = new Set<string>();
+    const placedParents = memo?.placedParents ?? new Set<string>();
     const checkParent = (path: string, placing: boolean): void => {
       const parent = this.parentPath(path);
       if (parent === '') { this.checkRootWritable(path, cred); return; }
@@ -8221,6 +8234,7 @@ export class SqliteVFS {
     // committed inode tree for its parent, so directories flush before the
     // first file record rather than sharing the file group.
     let pendingDirectories: BatchInodeEntry[] = [];
+    let authorization: AuthorizationMemo = { gen: -1, placed: new Map(), placedParents: new Set() };
 
     const flushGroup = (): void => {
       if (group.empty) return;
@@ -8420,8 +8434,12 @@ export class SqliteVFS {
             // The file lands where its name resolves (links followed, as a
             // batch places it), and that is the path its lease is checked on.
             const priors = new Map<string, INode | undefined>();
+            if (authorization.gen !== this._gen) {
+              authorization = { gen: this._gen, placed: new Map(), placedParents: new Set() };
+            }
+            const memo = authorization;
             const placedInode = this.withMutationOwner(options.mutationOwner, () => {
-              const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
+              const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors, memo).inodes;
               this.assertMutationsAllowed([placed!.path]);
               return placed!;
             });
