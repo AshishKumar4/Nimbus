@@ -1047,6 +1047,29 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
             while (!(await reader.read()).done) { /* drain */ }
           }
         });
+        // As the network delivers a wave: its bytes in large chunks.
+        const wire = async (prefix: string, from: number): Promise<ReadableStream<Uint8Array>> => {
+          const bytes = new Uint8Array(await new Response(encodeWriteBatchStream(payload(prefix, from))).arrayBuffer());
+          return new ReadableStream<Uint8Array>({
+            type: 'bytes',
+            start(controller: ReadableByteStreamController) {
+              for (let offset = 0; offset < bytes.byteLength; offset += 64 * 1024) {
+                controller.enqueue(bytes.slice(offset, offset + 64 * 1024));
+              }
+              controller.close();
+            },
+          } as never);
+        };
+        await phase('w7EncodeBytes', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) await wire('bytes', i);
+        });
+        vfs.mkdir(`${root}/wire`, { recursive: true });
+        await phase('vfsWriteStreamWire', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) {
+            const result = await vfs.writeStream(await wire('wire', i));
+            if (!result.ok) throw new Error(result.error.message);
+          }
+        });
         vfs.mkdir(`${root}/stream`, { recursive: true });
         await phase('vfsWriteStream', async () => {
           for (let i = 0; i < body.files; i += body.perWave) {
