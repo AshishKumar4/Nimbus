@@ -487,41 +487,125 @@ const FIELD_CASES = {
 };
 
 // A module that binds WeakMap (or WeakSet) where useDefineForClassFields
-// false lowers a private member into one: each binding position, which a
-// transform renames by its symbol and a build refuses by name. Types,
-// signatures and \`declare\` bind nothing at run time: not refused.
-const LOWERED_PRIVATE = 'export class C { #p = 1; get p() { return this.#p; } }\nexport const made = new C().p;\n';
-const LOWERED_PRIVATE_METHOD = 'export class C { #m() { return 1; } get p() { return this.#m(); } }\nexport const made = new C().p;\n';
+// false lowers a private member into a new one: each binding position
+// twice. In `shadow` the lowered class is in the binding's scope: a
+// transform renames the binding by its symbol, as esbuild renames it, and a
+// build refuses it by name. In `apart` it is not (a function's, a block's,
+// a class expression's own name): both compile it the same as esbuild.
+// Each module exports `made` (the lowered member's value) and `bound` (the
+// binding's), both 1. An import binds the module's scope, which every class
+// sees: it has no `apart`. Types, signatures and `declare` bind nothing at
+// run time: never refused.
+const PRIVATE = 'class C { #p = 1; get p() { return this.#p; } }';
+const PRIVATE_METHOD = 'class C { #m() { return 1; } get p() { return this.#m(); } }';
+/** `code`, with the lowered class after it, at the top. */
+const beside = (code, lowered = PRIVATE) => `${code}\n${lowered}\nexport const made = new C().p;\n`;
+/** A declaration and the lowered class in one block. */
+const inBlock = (declaration, value, lowered = PRIVATE) =>
+  `let made = 0, bound = 0;\n{\n  ${declaration}\n  ${lowered}\n  made = new C().p;\n  bound = ${value};\n}\nexport { made, bound };\n`;
+/** A declaration in a block, the lowered class outside it. */
+const outsideBlock = (declaration, value, lowered = PRIVATE) =>
+  beside(`let bound = 0;\n{\n  ${declaration}\n  bound = ${value};\n}\nexport { bound };`, lowered);
+const declared = (declaration, value, lowered) => ({ shadow: inBlock(declaration, value, lowered), apart: outsideBlock(declaration, value, lowered) });
 const BINDING_POSITIONS = {
-  'an object pattern': { code: 'const { WeakMap } = { WeakMap: 1 };\nexport const bound = WeakMap;\n' },
-  'an object pattern, renamed property': { code: 'const { a: WeakMap } = { a: 1 };\nexport const bound = WeakMap;\n' },
-  'an object rest': { code: 'const { ...WeakMap } = { a: 1 };\nexport const bound = WeakMap.a;\n' },
-  'an array pattern': { code: 'const [WeakMap] = [1];\nexport const bound = WeakMap;\n' },
-  'an array rest': { code: 'const [...WeakMap] = [1];\nexport const bound = WeakMap[0];\n' },
-  'a default value': { code: 'const { a: WeakMap = 1 } = {} as { a?: number };\nexport const bound = WeakMap;\n' },
-  'a nested pattern': { code: 'const { a: [{ b: WeakMap }] } = { a: [{ b: 1 }] };\nexport const bound = WeakMap;\n' },
-  'a for-of declaration': { code: 'let last = 0;\nfor (const WeakMap of [1]) last = WeakMap;\nexport const bound = last;\n' },
-  'a function parameter': { code: 'function f(WeakMap: number) { return WeakMap; }\nexport const bound = f(1);\n' },
-  'a destructured parameter': { code: 'function f({ WeakMap }: { WeakMap: number }) { return WeakMap; }\nexport const bound = f({ WeakMap: 1 });\n' },
-  'an arrow parameter': { code: 'const f = (WeakMap: number) => WeakMap;\nexport const bound = f(1);\n' },
-  'a method parameter': { code: 'const o = { m(WeakMap: number) { return WeakMap; } };\nexport const bound = o.m(1);\n' },
-  'a parameter property': { code: 'class K { constructor(public WeakMap: number) {} }\nexport const bound = new K(1).WeakMap;\n' },
-  'a catch clause': { code: 'let caught = 0;\ntry { throw 1; } catch (WeakMap) { caught = WeakMap as number; }\nexport const bound = caught;\n' },
-  'a destructured catch clause': { code: 'let caught = 0;\ntry { throw { WeakMap: 1 }; } catch ({ WeakMap }) { caught = WeakMap; }\nexport const bound = caught;\n' },
-  'a class declaration': { code: 'class WeakMap { static v() { return 1; } }\nexport const bound = WeakMap.v();\n' },
-  'a class expression': { code: 'const K = class WeakMap { static v() { return WeakMap === K ? 1 : 0; } };\nexport const bound = K.v();\n' },
-  'a function declaration': { code: 'function WeakMap() { return 1; }\nexport const bound = WeakMap();\n' },
-  'a function expression': { code: 'const f = function WeakMap(n: number): number { return n ? 1 : WeakMap(1); };\nexport const bound = f(0);\n' },
-  'a default import': { code: "import WeakMap from './a';\nexport const bound = WeakMap ? 1 : 0;\n" },
-  'a named import': { code: "import { used as WeakMap } from './a';\nexport const bound = WeakMap === 'a' ? 1 : 0;\n" },
-  'a namespace import': { code: "import * as WeakMap from './a';\nexport const bound = WeakMap.used === 'a' ? 1 : 0;\n" },
-  // \`require\` is CommonJS's.
-  'an import equals': { code: "import WeakMap = require('./a');\nexport const bound = WeakMap.used === 'a' ? 1 : 0;\n", formats: ['cjs'] },
-  'an enum': { code: 'enum WeakMap { A = 1 }\nexport const bound = WeakMap.A;\n' },
-  'a namespace': { code: 'namespace WeakMap { export const v = 1; }\nexport const bound = WeakMap.v;\n' },
-  'an object pattern, beside a private method': { code: 'const { WeakSet } = { WeakSet: 1 };\nexport const bound = WeakSet;\n', lowered: LOWERED_PRIVATE_METHOD, name: 'WeakSet' },
+  'an object pattern': declared('const { WeakMap } = { WeakMap: 1 };', 'WeakMap'),
+  'an object pattern, renamed property': declared('const { a: WeakMap } = { a: 1 };', 'WeakMap'),
+  'an object rest': declared('const { ...WeakMap } = { a: 1 };', 'WeakMap.a'),
+  'an array pattern': declared('const [WeakMap] = [1];', 'WeakMap'),
+  'an array rest': declared('const [...WeakMap] = [1];', 'WeakMap[0]'),
+  'a default value': declared('const { a: WeakMap = 1 } = {} as { a?: number };', 'WeakMap'),
+  'a nested pattern': declared('const { a: [{ b: WeakMap }] } = { a: [{ b: 1 }] };', 'WeakMap'),
+  'a top-level declaration': {
+    shadow: beside('const WeakMap = 1;\nexport const bound = WeakMap;'),
+    apart: beside('function g() { const WeakMap = 1; return WeakMap; }\nexport const bound = g();'),
+  },
+  // `var` is the function's, wherever in it.
+  'a var in a nested block': {
+    shadow: `function f(): number[] {\n  ${PRIVATE}\n  if (Math.random() >= 0) { var WeakMap: any = 1; }\n  return [new C().p, WeakMap];\n}\nexport const [made, bound] = f();\n`,
+    apart: beside('function g(): number {\n  if (Math.random() >= 0) { var WeakMap: any = 1; }\n  return WeakMap;\n}\nexport const bound = g();'),
+  },
+  'a for-of declaration': {
+    shadow: `let made = 0, bound = 0;\nfor (const WeakMap of [1]) {\n  ${PRIVATE}\n  made = new C().p;\n  bound = WeakMap;\n}\nexport { made, bound };\n`,
+    apart: beside('let last = 0;\nfor (const WeakMap of [1]) last = WeakMap;\nexport const bound = last;'),
+  },
+  'a for declaration': {
+    shadow: `let made = 0, bound = 0;\nfor (let WeakMap = 1, i = 0; i < 1; i++) {\n  ${PRIVATE}\n  made = new C().p;\n  bound = WeakMap;\n}\nexport { made, bound };\n`,
+    apart: beside('let last = 0;\nfor (let WeakMap = 1, i = 0; i < 1; i++) last = WeakMap;\nexport const bound = last;'),
+  },
+  'a function parameter': {
+    shadow: `function f(WeakMap: number) {\n  ${PRIVATE}\n  return [new C().p, WeakMap];\n}\nexport const [made, bound] = f(1);\n`,
+    apart: beside('function f(WeakMap: number) { return WeakMap; }\nexport const bound = f(1);'),
+  },
+  'a destructured parameter': {
+    shadow: `function f({ WeakMap }: { WeakMap: number }) {\n  ${PRIVATE}\n  return [new C().p, WeakMap];\n}\nexport const [made, bound] = f({ WeakMap: 1 });\n`,
+    apart: beside('function f({ WeakMap }: { WeakMap: number }) { return WeakMap; }\nexport const bound = f({ WeakMap: 1 });'),
+  },
+  'an arrow parameter': {
+    shadow: `const f = (WeakMap: number) => {\n  ${PRIVATE}\n  return [new C().p, WeakMap];\n};\nexport const [made, bound] = f(1);\n`,
+    apart: beside('const f = (WeakMap: number) => WeakMap;\nexport const bound = f(1);'),
+  },
+  'a method parameter': {
+    shadow: `const o = {\n  m(WeakMap: number) {\n    ${PRIVATE}\n    return [new C().p, WeakMap];\n  },\n};\nexport const [made, bound] = o.m(1);\n`,
+    apart: beside('const o = { m(WeakMap: number) { return WeakMap; } };\nexport const bound = o.m(1);'),
+  },
+  'a parameter property': {
+    shadow: `class K {\n  constructor(public WeakMap: number) {\n    ${PRIVATE}\n    (this as any).made = new C().p;\n  }\n}\nconst k: any = new K(1);\nexport const made = k.made, bound = k.WeakMap;\n`,
+    apart: beside('class K { constructor(public WeakMap: number) {} }\nexport const bound = new K(1).WeakMap;'),
+  },
+  'a catch clause': {
+    shadow: `let made = 0, bound = 0;\ntry { throw 1; } catch (WeakMap) {\n  ${PRIVATE}\n  made = new C().p;\n  bound = WeakMap as number;\n}\nexport { made, bound };\n`,
+    apart: beside('let caught = 0;\ntry { throw 1; } catch (WeakMap) { caught = WeakMap as number; }\nexport const bound = caught;'),
+  },
+  'a destructured catch clause': {
+    shadow: `let made = 0, bound = 0;\ntry { throw { WeakMap: 1 }; } catch ({ WeakMap }) {\n  ${PRIVATE}\n  made = new C().p;\n  bound = WeakMap;\n}\nexport { made, bound };\n`,
+    apart: beside('let caught = 0;\ntry { throw { WeakMap: 1 }; } catch ({ WeakMap }) { caught = WeakMap; }\nexport const bound = caught;'),
+  },
+  'a class declaration': {
+    shadow: beside('class WeakMap { static v() { return 1; } }\nexport const bound = WeakMap.v();'),
+    apart: beside('function g() { class WeakMap { static v() { return 1; } } return WeakMap.v(); }\nexport const bound = g();'),
+  },
+  // Its name is its body's alone.
+  'a class expression': {
+    shadow: `const K = class WeakMap {\n  static v(): number[] {\n    ${PRIVATE}\n    return [new C().p, WeakMap === K ? 1 : 0];\n  }\n};\nexport const [made, bound] = K.v();\n`,
+    apart: beside('const K = class WeakMap { static v() { return WeakMap === K ? 1 : 0; } };\nexport const bound = K.v();'),
+  },
+  'a function declaration': {
+    shadow: beside('function WeakMap() { return 1; }\nexport const bound = WeakMap();'),
+    apart: beside('function g() { function WeakMap() { return 1; } return WeakMap(); }\nexport const bound = g();'),
+  },
+  'a function expression': {
+    shadow: `const f = function WeakMap(n: number): number[] {\n  ${PRIVATE}\n  return n ? [new C().p, 1] : WeakMap(1);\n};\nexport const [made, bound] = f(0);\n`,
+    apart: beside('const f = function WeakMap(n: number): number { return n ? 1 : WeakMap(1); };\nexport const bound = f(0);'),
+  },
+  'a default import': { shadow: beside("import WeakMap from './a';\nexport const bound = WeakMap ? 1 : 0;") },
+  'a named import': { shadow: beside("import { used as WeakMap } from './a';\nexport const bound = WeakMap === 'a' ? 1 : 0;") },
+  'a namespace import': { shadow: beside("import * as WeakMap from './a';\nexport const bound = WeakMap.used === 'a' ? 1 : 0;") },
+  // `require` is CommonJS's; an alias in a namespace is the namespace's.
+  'an import equals': {
+    shadow: beside("import WeakMap = require('./a');\nexport const bound = WeakMap.used === 'a' ? 1 : 0;"),
+    shadowFormats: ['cjs'],
+    apart: beside('namespace Lib { export const v = 1; }\nnamespace Inner { import WeakMap = Lib.v; export const v = WeakMap; }\nexport const bound = Inner.v;'),
+  },
+  'an enum': {
+    shadow: beside('enum WeakMap { A = 1 }\nexport const bound = WeakMap.A;'),
+    apart: beside('function g() { enum WeakMap { A = 1 } return WeakMap.A; }\nexport const bound = g();'),
+  },
+  'a namespace': {
+    shadow: beside('namespace WeakMap { export const v = 1; }\nexport const bound = WeakMap.v;'),
+    apart: beside('namespace Outer { namespace WeakMap { export const v = 1; } export const v = WeakMap.v; }\nexport const bound = Outer.v;'),
+  },
+  'a static block': {
+    shadow: `class S {\n  static made = 0;\n  static bound = 0;\n  static {\n    const WeakMap = 1;\n    ${PRIVATE}\n    S.made = new C().p;\n    S.bound = WeakMap;\n  }\n}\nexport const made = S.made, bound = S.bound;\n`,
+    apart: beside('class S {\n  static bound = 0;\n  static { const WeakMap = 1; S.bound = WeakMap; }\n}\nexport const bound = S.bound;'),
+  },
+  // The lowering creates a class expression's beside it, where it stands.
+  'a block, beside a class expression': {
+    shadow: 'let made = 0, bound = 0;\n{\n  const WeakMap = 1;\n  const D = class { #p = 1; get p() { return this.#p; } };\n  made = new D().p;\n  bound = WeakMap;\n}\nexport { made, bound };\n',
+    apart: 'let bound = 0;\n{\n  const WeakMap = 1;\n  bound = WeakMap;\n}\nconst D = class { #p = 1; get p() { return this.#p; } };\nexport const made = new D().p;\nexport { bound };\n',
+  },
+  'an object pattern, beside a private method': { ...declared('const { WeakSet } = { WeakSet: 1 };', 'WeakSet', PRIVATE_METHOD), name: 'WeakSet' },
   'types and ambient declarations': {
-    code: `declare const WeakMap: WeakMapConstructor;
+    apart: beside(`declare const WeakMap: WeakMapConstructor;
 declare function WeakSet(): void;
 import type W from './a';
 interface I { f(WeakMap: number): void; }
@@ -530,9 +614,7 @@ abstract class B { abstract h(WeakMap: number): void; }
 function g<WeakMap>(x: WeakMap): WeakMap { return x; }
 function o(WeakMap: string): void;
 function o(x: unknown) { return x; }
-export const bound: W | 1 = g(new WeakMap().has({}) ? 0 : 1);
-`,
-    ambient: true,
+export const bound: W | 1 = g(new WeakMap().has({}) ? 0 : 1);`),
   },
 };
 const boundExpect = (o) => ran(o) && o.runs.exports.made === 1 && o.runs.exports.bound === 1;
@@ -801,22 +883,22 @@ try {
       differences.push(`build ts ${format}: useDefineForClassFields false: a binding named WeakMap: refused by name${show(theirs, ours)}`);
     }
   }
-  for (const [position, { code, formats = ['esm', 'cjs'], lowered = LOWERED_PRIVATE, name = 'WeakMap', ambient = false }] of Object.entries(BINDING_POSITIONS)) {
-    const source = lowered + code;
+  for (const [position, { shadow, apart, shadowFormats = ['esm', 'cjs'], name = 'WeakMap' }] of Object.entries(BINDING_POSITIONS)) {
     const options = { tsconfigRaw: tc({ useDefineForClassFields: false }) };
-    for (const format of formats) {
-      const label = `ts ${format}: useDefineForClassFields false: ${name} bound by ${position}`;
-      await same(`transform ${label}`, (engine) => transformOutcome(engine, source, 'ts', format, options), boundExpect);
-      if (ambient) {
-        await same(`build ${label}`, (engine) => buildOutcome(engine, source, 'ts', format, options), boundExpect);
-        continue;
-      }
-      const theirs = await buildOutcome('esbuild', source, 'ts', format, options);
-      const ours = await buildOutcome('nimbus', source, 'ts', format, options);
+    for (const format of shadow ? shadowFormats : []) {
+      const label = `ts ${format}: useDefineForClassFields false: ${name} bound by ${position}, in the lowered class's scope`;
+      await same(`transform ${label}`, (engine) => transformOutcome(engine, shadow, 'ts', format, options), boundExpect);
+      const theirs = await buildOutcome('esbuild', shadow, 'ts', format, options);
+      const ours = await buildOutcome('nimbus', shadow, 'ts', format, options);
       counts.refused++;
       if (!boundExpect(theirs) || !new RegExp(`declares its own ${name}`).test(ours.failure ?? '')) {
         differences.push(`build ${label}: refused by name${show(theirs, ours)}`);
       }
+    }
+    for (const format of apart ? ['esm', 'cjs'] : []) {
+      const label = `ts ${format}: useDefineForClassFields false: ${name} bound by ${position}, apart from the lowered class`;
+      await same(`transform ${label}`, (engine) => transformOutcome(engine, apart, 'ts', format, options), boundExpect);
+      await same(`build ${label}`, (engine) => buildOutcome(engine, apart, 'ts', format, options), boundExpect);
     }
   }
   // A helper import the module wrote is its own, in a transform (a build

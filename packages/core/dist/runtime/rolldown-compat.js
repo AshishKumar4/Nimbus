@@ -779,28 +779,170 @@ function* boundNames(value) {
         if (!TYPE_KEYS.has(key))
             yield* boundNames(item);
 }
+const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+/** The names a list of statements binds lexically: let, const, class, function and import. */
+function* lexicalNames(statements) {
+    for (const statement of statements) {
+        const node = statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportDefaultDeclaration' ? child(statement, 'declaration') : statement;
+        if (node?.type === 'VariableDeclaration' && node.kind !== 'var') {
+            for (const declarator of list(node, 'declarations'))
+                yield* patternNames(child(declarator, 'id'));
+        }
+        if (node?.type === 'FunctionDeclaration' || node?.type === 'ClassDeclaration')
+            yield* patternNames(child(node, 'id'));
+        if (node?.type === 'ImportDeclaration')
+            for (const specifier of list(node, 'specifiers'))
+                yield* patternNames(child(specifier, 'local'));
+    }
+}
+/**
+ * The names `var` binds in `value` for the function (or program, or static
+ * block) it is in, not entering nested ones; in sloppy code, a function
+ * declared in a block is one of them too (Annex B).
+ */
+function* varNames(value, sloppy, top = true) {
+    if (Array.isArray(value)) {
+        for (const item of value)
+            yield* varNames(item, sloppy, top);
+        return;
+    }
+    if (!isNode(value))
+        return;
+    if (value.type === 'FunctionDeclaration' && sloppy && !top)
+        yield* patternNames(child(value, 'id'));
+    if (FUNCTIONS.has(value.type) || value.type === 'StaticBlock')
+        return;
+    if (value.type === 'VariableDeclaration' && value.kind === 'var') {
+        for (const declarator of list(value, 'declarations'))
+            yield* patternNames(child(declarator, 'id'));
+    }
+    for (const [key, item] of Object.entries(value))
+        if (key !== 'parent')
+            yield* varNames(item, sloppy, false);
+}
+/**
+ * The scope `node`'s children are in, given the one it is in. A function's
+ * parameters are in a scope of their own, its body's `var`s in its body's
+ * (a parameter's default value does not see them).
+ */
+function scopeOf(node, scope, sloppy, functionBody) {
+    const within = (names) => ({ names: new Set(names), parent: scope });
+    switch (node.type) {
+        case 'Program':
+        case 'StaticBlock':
+            return within([...varNames(list(node, 'body'), sloppy), ...lexicalNames(list(node, 'body'))]);
+        case 'FunctionDeclaration':
+        case 'FunctionExpression':
+        case 'ArrowFunctionExpression':
+            return within([
+                ...(node.type === 'FunctionExpression' ? patternNames(child(node, 'id')) : []),
+                ...list(node, 'params').flatMap((parameter) => [...patternNames(parameter)]),
+            ]);
+        case 'BlockStatement':
+            return within([...(functionBody ? varNames(list(node, 'body'), sloppy) : []), ...lexicalNames(list(node, 'body'))]);
+        case 'SwitchStatement':
+            return within(lexicalNames(list(node, 'cases').flatMap((c) => list(c, 'consequent'))));
+        case 'ForStatement':
+        case 'ForInStatement':
+        case 'ForOfStatement': {
+            const head = child(node, node.type === 'ForStatement' ? 'init' : 'left');
+            return within(head?.type === 'VariableDeclaration' && head.kind !== 'var'
+                ? list(head, 'declarations').flatMap((declarator) => [...patternNames(child(declarator, 'id'))])
+                : []);
+        }
+        case 'CatchClause':
+            return within(patternNames(child(node, 'param')));
+        // A class's name is its body's too (an expression's, only its body's).
+        case 'ClassDeclaration':
+        case 'ClassExpression':
+            return within(patternNames(child(node, 'id')));
+        default:
+            return scope;
+    }
+}
+/** Every node under `value`, each with the scope it is in. */
+function* scoped(value, scope, sloppy, functionBody = false) {
+    if (Array.isArray(value)) {
+        for (const item of value)
+            yield* scoped(item, scope, sloppy);
+        return;
+    }
+    if (!isNode(value))
+        return;
+    yield [value, scope];
+    const inner = scopeOf(value, scope, sloppy, functionBody);
+    const isFunction = FUNCTIONS.has(value.type);
+    for (const [key, item] of Object.entries(value))
+        if (key !== 'parent')
+            yield* scoped(item, inner, sloppy, isFunction && key === 'body');
+}
+function binds(scope, name) {
+    for (let at = scope; at; at = at.parent)
+        if (at.names.has(name))
+            return true;
+    return false;
+}
+/**
+ * The global a `new WeakMap()` or `new WeakSet()` of the lowering's reads,
+ * where `node` stores one: the lowering keeps each in a name of its own
+ * (`var _p = new WeakMap()`, or `_p = new WeakMap()` beside a class
+ * expression, `var _p` hoisted), which no binding of the source has (Oxc
+ * makes its names apart from the module's) and the compiled module binds.
+ */
+function loweringStore(node, sourceNames, outputNames) {
+    const [store, value] = node.type === 'VariableDeclarator' ? [child(node, 'id'), child(node, 'init')]
+        : node.type === 'AssignmentExpression' && node.operator === '=' ? [child(node, 'left'), child(node, 'right')]
+            : [null, null];
+    const callee = child(value, 'callee');
+    const global = callee?.type === 'Identifier' ? stringOf(callee, 'name') : null;
+    const name = store?.type === 'Identifier' ? stringOf(store, 'name') : null;
+    if (value?.type !== 'NewExpression' || list(value, 'arguments').length !== 0 || global === null || !LOWERING_GLOBALS.includes(global))
+        return null;
+    return name !== null && !sourceNames.has(name) && outputNames.has(name) ? global : null;
+}
+/** Whether a program's code is sloppy: a script without "use strict". */
+function isSloppy(program) {
+    if (program.sourceType === 'module')
+        return false;
+    return !list(program, 'body').some((statement) => statement.type === 'ExpressionStatement' && statement.directive === 'use strict');
+}
 /**
  * A TypeScript module whose class fields are lowered (useDefineForClassFields
  * false) keeps lowered private members in `new WeakMap()` and `new WeakSet()`,
- * read as globals; a binding of the module's by either name, wherever it
- * binds it, would take them (the Oxc crate renames that binding, `WeakMap2`,
- * by its symbol; here the compiled module is rolldown's transform's text,
- * whose generated references are not told from the module's). Such a module
- * is refused, naming the binding, rather than compiled to code that calls
- * the module's own WeakMap.
+ * read as globals, which the lowering puts beside the class (before a class
+ * declaration, inline with a class expression). A binding of the module's
+ * by either name in scope there takes them (the Oxc crate renames that
+ * binding, `WeakMap2`, by its symbol; here the compiled module is rolldown's
+ * transform's text). So each the lowering made is resolved in the compiled
+ * module's scopes, and where a binding of the module's reaches it, the
+ * module is refused, naming the binding, rather than compiled to code that
+ * calls the module's own WeakMap; a binding elsewhere (a function's
+ * parameter, a block's, a class expression's name) is left alone. Were the
+ * compiled module to create more of them than the source and those
+ * recognised (a lowering this does not know), it is refused rather than
+ * guessed.
  */
 function shadowedLowering(module, source, output) {
-    const declared = new Set();
-    for (const name of boundNames(source))
-        if (LOWERING_GLOBALS.includes(name))
-            declared.add(name);
-    if (declared.size === 0)
+    const sourceNames = new Set(boundNames(source));
+    if (!LOWERING_GLOBALS.some((name) => sourceNames.has(name)))
         return;
+    const outputNames = new Set(boundNames(output));
+    const made = new Map();
+    for (const [node, scope] of scoped(output, { names: new Set(), parent: null }, isSloppy(output))) {
+        const name = loweringStore(node, sourceNames, outputNames);
+        if (name === null)
+            continue;
+        made.set(name, (made.get(name) ?? 0) + 1);
+        if (binds(scope, name)) {
+            throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name} where a class with private members `
+                + `sees it and useDefineForClassFields is false (${module.path}): lowering them reads the global ${name}, which the module's binding shadows there`);
+        }
+    }
     const created = (program, name) => [...nodes(program)].filter((node) => node.type === 'NewExpression' && stringOf(child(node, 'callee'), 'name') === name).length;
-    for (const name of declared) {
-        if (created(output, name) > created(source, name)) {
-            throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name} where useDefineForClassFields is false `
-                + `and a class has private members (${module.path}): lowering them reads the global ${name}, which the module's binding would shadow`);
+    for (const name of LOWERING_GLOBALS) {
+        if (created(output, name) - created(source, name) > (made.get(name) ?? 0)) {
+            throw new Error(`Nimbus's bundler cannot tell the ${name} the lowering of private members creates from the module's own (${module.path}), `
+                + `which declares its own ${name}, with useDefineForClassFields false`);
         }
     }
 }

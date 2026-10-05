@@ -15018,14 +15018,107 @@ function* boundNames(value) {
   }
   for (const [key, item] of Object.entries(value)) if (!TYPE_KEYS.has(key)) yield* boundNames(item);
 }
+var FUNCTIONS = /* @__PURE__ */ new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+function* lexicalNames(statements) {
+  for (const statement of statements) {
+    const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? child(statement, "declaration") : statement;
+    if (node?.type === "VariableDeclaration" && node.kind !== "var") {
+      for (const declarator of list(node, "declarations")) yield* patternNames(child(declarator, "id"));
+    }
+    if (node?.type === "FunctionDeclaration" || node?.type === "ClassDeclaration") yield* patternNames(child(node, "id"));
+    if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
+  }
+}
+function* varNames(value, sloppy, top = true) {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* varNames(item, sloppy, top);
+    return;
+  }
+  if (!isNode(value)) return;
+  if (value.type === "FunctionDeclaration" && sloppy && !top) yield* patternNames(child(value, "id"));
+  if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return;
+  if (value.type === "VariableDeclaration" && value.kind === "var") {
+    for (const declarator of list(value, "declarations")) yield* patternNames(child(declarator, "id"));
+  }
+  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* varNames(item, sloppy, false);
+}
+function scopeOf(node, scope, sloppy, functionBody) {
+  const within = (names) => ({ names: new Set(names), parent: scope });
+  switch (node.type) {
+    case "Program":
+    case "StaticBlock":
+      return within([...varNames(list(node, "body"), sloppy), ...lexicalNames(list(node, "body"))]);
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression":
+      return within([
+        ...node.type === "FunctionExpression" ? patternNames(child(node, "id")) : [],
+        ...list(node, "params").flatMap((parameter) => [...patternNames(parameter)])
+      ]);
+    case "BlockStatement":
+      return within([...functionBody ? varNames(list(node, "body"), sloppy) : [], ...lexicalNames(list(node, "body"))]);
+    case "SwitchStatement":
+      return within(lexicalNames(list(node, "cases").flatMap((c3) => list(c3, "consequent"))));
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement": {
+      const head = child(node, node.type === "ForStatement" ? "init" : "left");
+      return within(head?.type === "VariableDeclaration" && head.kind !== "var" ? list(head, "declarations").flatMap((declarator) => [...patternNames(child(declarator, "id"))]) : []);
+    }
+    case "CatchClause":
+      return within(patternNames(child(node, "param")));
+    // A class's name is its body's too (an expression's, only its body's).
+    case "ClassDeclaration":
+    case "ClassExpression":
+      return within(patternNames(child(node, "id")));
+    default:
+      return scope;
+  }
+}
+function* scoped(value, scope, sloppy, functionBody = false) {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* scoped(item, scope, sloppy);
+    return;
+  }
+  if (!isNode(value)) return;
+  yield [value, scope];
+  const inner = scopeOf(value, scope, sloppy, functionBody);
+  const isFunction = FUNCTIONS.has(value.type);
+  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* scoped(item, inner, sloppy, isFunction && key === "body");
+}
+function binds(scope, name50) {
+  for (let at = scope; at; at = at.parent) if (at.names.has(name50)) return true;
+  return false;
+}
+function loweringStore(node, sourceNames, outputNames) {
+  const [store, value] = node.type === "VariableDeclarator" ? [child(node, "id"), child(node, "init")] : node.type === "AssignmentExpression" && node.operator === "=" ? [child(node, "left"), child(node, "right")] : [null, null];
+  const callee = child(value, "callee");
+  const global2 = callee?.type === "Identifier" ? stringOf(callee, "name") : null;
+  const name50 = store?.type === "Identifier" ? stringOf(store, "name") : null;
+  if (value?.type !== "NewExpression" || list(value, "arguments").length !== 0 || global2 === null || !LOWERING_GLOBALS.includes(global2)) return null;
+  return name50 !== null && !sourceNames.has(name50) && outputNames.has(name50) ? global2 : null;
+}
+function isSloppy(program) {
+  if (program.sourceType === "module") return false;
+  return !list(program, "body").some((statement) => statement.type === "ExpressionStatement" && statement.directive === "use strict");
+}
 function shadowedLowering(module, source, output) {
-  const declared = /* @__PURE__ */ new Set();
-  for (const name50 of boundNames(source)) if (LOWERING_GLOBALS.includes(name50)) declared.add(name50);
-  if (declared.size === 0) return;
+  const sourceNames = new Set(boundNames(source));
+  if (!LOWERING_GLOBALS.some((name50) => sourceNames.has(name50))) return;
+  const outputNames = new Set(boundNames(output));
+  const made = /* @__PURE__ */ new Map();
+  for (const [node, scope] of scoped(output, { names: /* @__PURE__ */ new Set(), parent: null }, isSloppy(output))) {
+    const name50 = loweringStore(node, sourceNames, outputNames);
+    if (name50 === null) continue;
+    made.set(name50, (made.get(name50) ?? 0) + 1);
+    if (binds(scope, name50)) {
+      throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name50} where a class with private members sees it and useDefineForClassFields is false (${module.path}): lowering them reads the global ${name50}, which the module's binding shadows there`);
+    }
+  }
   const created = (program, name50) => [...nodes(program)].filter((node) => node.type === "NewExpression" && stringOf(child(node, "callee"), "name") === name50).length;
-  for (const name50 of declared) {
-    if (created(output, name50) > created(source, name50)) {
-      throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name50} where useDefineForClassFields is false and a class has private members (${module.path}): lowering them reads the global ${name50}, which the module's binding would shadow`);
+  for (const name50 of LOWERING_GLOBALS) {
+    if (created(output, name50) - created(source, name50) > (made.get(name50) ?? 0)) {
+      throw new Error(`Nimbus's bundler cannot tell the ${name50} the lowering of private members creates from the module's own (${module.path}), which declares its own ${name50}, with useDefineForClassFields false`);
     }
   }
 }
@@ -15894,9 +15987,9 @@ async function prebundleSlice(spec2, build3) {
   };
   const resolveBarePkg = (specifier, fromDir, conditions) => {
     const parts = specifier.split("/");
-    const scoped = specifier.startsWith("@");
-    const pkgName = parts.slice(0, scoped ? 2 : 1).join("/");
-    const subpath = parts.slice(scoped ? 2 : 1).join("/");
+    const scoped2 = specifier.startsWith("@");
+    const pkgName = parts.slice(0, scoped2 ? 2 : 1).join("/");
+    const subpath = parts.slice(scoped2 ? 2 : 1).join("/");
     for (let dir = fromDir.replace(/^\/+/, ""); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
       const nm = "/" + dir + "/node_modules/" + pkgName;
       if (!dirExists(nm)) continue;
