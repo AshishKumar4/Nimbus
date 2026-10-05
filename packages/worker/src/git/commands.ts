@@ -14,7 +14,8 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
-import { packsSeam } from './pack/store.js';
+import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
+import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
@@ -83,7 +84,7 @@ function wantsUtf8(options: unknown): boolean {
  * through it. Components above the top are followed, as git follows them.
  * Commands that only read the worktree or write `.git` pass no worktree.
  */
-function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
+function createGitFs(vfs: ProjectFs, worktree: string | null = null, promisor?: PromisorFetch) {
   // Path normalization is shared with esbuild-service via @nimbus-sh/core/vfs/path.js.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
@@ -159,7 +160,7 @@ function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
         try { return (await vfs.readdir(normalizePath(dir))).map((entry) => entry.name); }
         catch { return []; }
       },
-    }),
+    }, { promisor }),
     promises: {
       async readFile(filepath: string, opts?: any): Promise<Uint8Array | string> {
         const p = normalizePath(filepath);
@@ -482,6 +483,8 @@ interface CfGit {
   writeRef(args: { fs: unknown; dir: string; ref: string; value: string; force: boolean }): Promise<void>;
   readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'parsed' | 'content' }): Promise<{ type: string; object: unknown }>;
   listFiles(args: { fs: unknown; dir: string; cache?: object }): Promise<string[]>;
+  readCommit(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ commit: { tree: string } }>;
+  readTree(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ tree: { type: string; oid: string }[] }>;
   walk(args: {
     fs: unknown;
     dir: string;
@@ -539,6 +542,36 @@ async function stageTracked(git: CfGit, fs: unknown, dir: string): Promise<void>
     else added.push(filepath);
   }
   await git.stage({ fs, dir, cache, add: added, remove: removed, parallel: false });
+}
+
+type GitFs = ReturnType<typeof createGitFs>;
+
+/**
+ * Before a command reads the trees and blobs of `commits` (a checkout, a
+ * reset, a merge), fetch what a partial clone lacks in two requests, as git
+ * prefetches a checkout's blobs: the commits' root trees with their subtrees
+ * (a tree:<depth> clone has neither), then every blob of those trees the
+ * repository does not hold. Nothing is walked outside a partial clone.
+ */
+async function prefetchCommits(git: CfGit, fs: GitFs, gitdir: string, commits: readonly string[], partial: (gitdir: string) => Promise<boolean>): Promise<void> {
+  if (commits.length === 0 || !await partial(gitdir)) return;
+  const cache = {};
+  const roots: string[] = [];
+  for (const oid of commits) roots.push((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree);
+  await fs.packs.prefetch(gitdir, roots);
+  const blobs = new Set<string>();
+  const pending = [...roots];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const tree = pending.pop()!;
+    if (seen.has(tree)) continue;
+    seen.add(tree);
+    for (const entry of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
+      if (entry.type === 'tree') pending.push(entry.oid);
+      else if (entry.type === 'blob') blobs.add(entry.oid);
+    }
+  }
+  await fs.packs.prefetch(gitdir, blobs);
 }
 
 // ── Repository discovery ─────────────────────────────────────────────────
@@ -1696,7 +1729,7 @@ const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
   + '   or: git diff --no-index [--] <path> <path>\n'
   + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
 
-async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function diffCommand(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let cached = false;
   let noIndex = false;
   let dashdash = false;
@@ -1802,6 +1835,11 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, ar
     ? { kind: 'tree', ref: revs[0] ?? 'HEAD', cached: true }
     : revs.length ? { kind: 'tree', ref: revs[0], cached: false } : { kind: 'index' };
   const pending = await changedPairs(git, fs, root, cache, base, repoPaths(pathArgs, ctx.cwd, root));
+  // The blobs this diff reads, fetched together where a partial clone lacks them (git's diff_queued_diff_prefetch).
+  if (output.format === 'patch' || output.format === 'stat' || minimumScore !== null) {
+    await fs.packs.prefetch(repo.gitdir, pending.flatMap(({ one, two }) => [one, two]).flatMap((side) =>
+      side && !side.worktree ? [side.oid] : []));
+  }
   const read = async (side: PendingSide): Promise<Uint8Array> => {
     if (!side.worktree) return (await git.readBlob({ fs, dir: root, oid: side.oid, cache })).blob;
     const key = normalizeVfsPath(`${root}/${side.path}`);
@@ -1894,7 +1932,39 @@ export async function runGitCommand(
     // The repository through the command's view of the namespace, as its
     // credential: SQLite paths reach the engine, mounted ones their mount.
     const repoVfs = projectFs(ctx.vfs);
-    const fs = createGitFs(repoVfs);
+    // A partial clone's promisor remote, by git directory, read once per command.
+    const promisorRemotes = new Map<string, Promise<{ name: string; url: string } | null>>();
+    const promisorRemote = (gitdir: string): Promise<{ name: string; url: string } | null> => {
+      let found = promisorRemotes.get(gitdir);
+      if (found === undefined) {
+        promisorRemotes.set(gitdir, found = (async () => {
+          for (const { remote, url } of await git.listRemotes({ fs, gitdir })) {
+            const promisor = await git.getConfig({ fs, gitdir, path: `remote.${remote}.promisor` });
+            if (promisor === true || promisor === 'true') return { name: remote, url };
+          }
+          return null;
+        })());
+      }
+      return found;
+    };
+    const partial = async (gitdir: string): Promise<boolean> => doCtx !== undefined && await promisorRemote(gitdir) !== null;
+    const promisor: PromisorFetch = async (gitdir, oids) => {
+      const remote = await promisorRemote(gitdir);
+      if (remote === null || !doCtx || !doEnv) return false;
+      const top = gitdir.endsWith('/.git') ? gitdir.slice(0, -'/.git'.length) : gitdir;
+      const target = await onEngine(top || '/');
+      if (target === null) return false;
+      await fetchMissingObjects(doCtx, doEnv, {
+        pid: ctx.pid,
+        dir: target,
+        remote: remote.name,
+        url: remote.url,
+        oids,
+        auth: { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' },
+      });
+      return true;
+    };
+    const fs = createGitFs(repoVfs, null, promisor);
     // The network commands write through the engine's streamed batches, at
     // the repository's engine key; a mounted repository has none.
     const onEngine = async (target: string): Promise<string | null> => {
@@ -2137,10 +2207,12 @@ export async function runGitCommand(
         // `git checkout` and `git checkout HEAD` switch to where HEAD already is: nothing changes.
         if ((!ref || ref === 'HEAD') && !options.includes('-b')) return 0;
         if (!ref) { ctx.stderr.write("error: switch `b' requires a value\n"); return 129; }
-        const worktreeFs = createGitFs(repoVfs, dir);
+        const worktreeFs = createGitFs(repoVfs, dir, promisor);
         const create = options.includes('-b');
         if (create) await git.branch({ fs, dir, ref });
         try {
+          const target = await resolveRevision(git, fs, `${dir}/.git`, ref, {});
+          if (target !== null) await prefetchCommits(git, worktreeFs, `${dir}/.git`, [target], partial);
           await git.checkout({ fs: worktreeFs, dir, ref });
         } catch (e) {
           return await refusal(ctx, e);
@@ -2273,6 +2345,12 @@ export async function runGitCommand(
         const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
         const mergeIdents = await commitIdents(ctx, git, fs, dir);
         if ('error' in mergeIdents) { await ctx.stderr.write(mergeIdents.error); return 128; }
+        if (await partial(`${dir}/.git`)) {
+          const theirsOid = await git.resolveRef({ fs, dir, ref: theirs });
+          const oursOid = await git.resolveRef({ fs, dir, ref: ours });
+          const bases = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
+          await prefetchCommits(git, fs, `${dir}/.git`, [theirsOid, ...bases], partial);
+        }
         const merged = await git.merge({
           fs, dir, ours, theirs,
           ...mergeIdents,
@@ -2280,7 +2358,7 @@ export async function runGitCommand(
         });
         if (!merged.alreadyMerged) {
           try {
-            await git.checkout({ fs: createGitFs(repoVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
+            await git.checkout({ fs: createGitFs(repoVfs, dir, promisor), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
           } catch (e) {
             return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
           }
@@ -2299,7 +2377,8 @@ export async function runGitCommand(
         if (hard) {
           // The index and worktree become the target's, as a forced checkout from the old index
           // makes them (type changes included), before the branch moves: a failed write leaves it.
-          await git.checkout({ fs: createGitFs(repoVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
+          await prefetchCommits(git, fs, `${dir}/.git`, [oid], partial);
+          await git.checkout({ fs: createGitFs(repoVfs, dir, promisor), dir, ref: oid, force: true, noUpdateHead: true });
         }
 
         // Move the current branch, or a detached HEAD, to the target OID

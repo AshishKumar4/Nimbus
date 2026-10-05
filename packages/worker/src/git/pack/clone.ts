@@ -568,3 +568,35 @@ export async function cloneFinish(
 }
 
 export { oidFromHex };
+
+export interface FetchObjectsResult {
+  /** Ids the new pack holds. */
+  fetched: number;
+  pack: PackSummary | null;
+}
+
+/**
+ * A promisor remote's missing objects, fetched by id in one request, as
+ * git's lazy fetch does (promisor-remote.c fetch_objects: --filter=blob:none,
+ * so a tree brings its subtrees but no blobs, while a wanted blob is always
+ * sent). The pack is stored with its idx and a .promisor naming the ids.
+ */
+export async function fetchObjects(
+  context: CloneContext,
+  request: { oids: readonly string[]; jobId: string },
+): Promise<FetchObjectsResult> {
+  const transport = { url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress };
+  const advertisement = await discover(transport);
+  if (!advertisement.capabilities.has('allow-reachable-sha1-in-want') && !advertisement.capabilities.has('allow-any-sha1-in-want')) {
+    throw new Error('fatal: the promisor remote does not take wants by object id');
+  }
+  const wanted = [...new Set(request.oids)];
+  const response = await requestPack(transport, advertisement.capabilities, { wants: wanted, filter: 'blob:none' });
+  if (response.pack === null) return { fetched: 0, pack: null };
+  const writer = context.writer();
+  const { summary } = await storePack(context, writer, response.pack, 'tmp_pack_' + request.jobId, {
+    promisor: wanted.map((oid) => oid + ' ' + oid + '\n').join(''),
+  });
+  await writer.flush();
+  return { fetched: summary.objects, pack: summary };
+}

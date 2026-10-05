@@ -13,4 +13,4 @@ export { encodeIdxV2, ENTRY_BYTES } from './idx.js';
 export { discover, requestPack, UploadPackError } from './upload-pack.js';
 export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
-export { cloneFast, cloneBatch, cloneFinish } from './clone.js';
+export { cloneFast, cloneBatch, cloneFinish, fetchObjects } from './clone.js';

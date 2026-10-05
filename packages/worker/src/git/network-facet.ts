@@ -38,7 +38,7 @@ import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import type { CloneBatchResult, ClonePrepared } from './pack/clone.js';
 
-export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
+export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push' | 'fetch-objects';
 
 /**
  * The clone's job marker, in its git directory from prepare until the clone
@@ -84,6 +84,8 @@ export interface GitNetworkOpts {
   checkoutChunkMaxWallMs?: number;
   /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
   filter?: string;
+  /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
+  oids?: string[];
   /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
   blobsPerBatch?: number;
   /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
@@ -186,6 +188,8 @@ export interface GitNetworkResult {
   errorCode?: GitNetworkErrorCode;
   budget?: GitCloneBudgetDiagnostic;
   cleanupError?: string;
+  /** fetch-objects: objects the promisor pack holds. */
+  fetchedObjects?: number;
 }
 
 export interface GitCloneBudgetDiagnostic {
@@ -214,6 +218,7 @@ interface FacetInvocationResult {
   indexEntries?: unknown;
   errorCode?: unknown;
   cold?: unknown;
+  fetched?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -1153,6 +1158,9 @@ export async function execGitNetwork(
         supervisorRpc: parseSupervisorRpcCounters(result.supervisorRpc),
         metadataOverlay: parseMetadataOverlayStats(result.metadataOverlay),
         phases: [diagnostic],
+        fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
+          ? nonNegativeCounter(result.fetched.fetched)
+          : undefined,
       };
     } finally {
       // Tear down the facet's RPC stubs regardless of success / timeout.
@@ -1695,7 +1703,7 @@ function emptyMetadataOverlayStats() {
  * (under the clone's lease, which the binding presents), and wave writers
  * rooted at the clone that report each published wave's receipts.
  */
-function gitPackContext(supervisor, stats, opts, root, deadline, log) {
+function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRoot = null) {
   const dir = normalizePath(opts.dir);
   const counted = (name, call) => {
     stats.supervisorRpc[name]++;
@@ -1717,6 +1725,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log) {
           },
         },
         root,
+        worktreeRoot,
         base: dir,
         deadline,
         onWave(report) {
@@ -2910,6 +2919,13 @@ export default {
         await flushWave();
         await fs.promises.rmdir(cloneRoot + '/.git', { recursive: true });
         await flushWave();
+      } else if (opts.op === 'fetch-objects') {
+        // A partial clone's missing objects (git/promisor.ts): one request,
+        // stored as a promisor pack. Writes land below the repository only.
+        const root = normalizePath(opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
+        const fetched = await __nimbusGitPack.fetchObjects(context, { oids: opts.oids, jobId: invocationId });
+        return respond(true, { fetched, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch') {
         await git.fetch({
           fs, http,
