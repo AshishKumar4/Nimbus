@@ -37,6 +37,8 @@ const __nimbusStopReplay = (() => {
   const QUIET = ${JSON.stringify(Object.fromEntries(SUPERVISOR_CALLS_WITHOUT_EFFECTS.map((name) => [name, true])))};
   const OBSERVATIONS = ${JSON.stringify(Object.fromEntries(REPLAY_OBSERVATION_CALLS.map((name) => [name, true])))};
   const PromiseThen = Promise.prototype.then;
+  const PromiseResolve = Promise.resolve;
+  const PromiseCtor = Promise;
   const ObjectHasOwn = Object.hasOwn;
   const PREFIX = ${JSON.stringify(STOP_RECORD_PREFIX)};
   const PREFIX_MAX = ${REPLAY_PREFIX_MAX_BYTES};
@@ -139,7 +141,15 @@ const __nimbusStopReplay = (() => {
           const writes = name === "fsOpen" ? !!(flags && (flags.write || flags.append || flags.create || flags.truncate)) : !ObjectHasOwn(QUIET, name);
           const path = args.find((a) => typeof a === "string");
           if (writes) effect(name + (path ? " " + path : ""));
-          const result = ReflectApply(value, target, args);
+          // The guest crossed fd 0 synchronously, but the session learns
+          // that over RPC. Keep every post-read call behind the notice's
+          // acknowledgement: neither a read nor an effect may overtake it
+          // and be mistaken for a pre-read call. The notice itself opens
+          // this one gate. No ordering cost on an ordinary first run.
+          const notice = run && run.boundaryNotice;
+          const invoke = () => ReflectApply(value, target, args);
+          const result = notice && name !== "replayBoundary"
+            ? ReflectApply(PromiseThen, notice, [invoke]) : invoke();
           if (!writes && ObjectHasOwn(OBSERVATIONS, name) && result && typeof result.then === "function") {
             return ReflectApply(PromiseThen, Promise.resolve(result), [
               (answer) => { observed(name); return answer; },
@@ -288,11 +298,23 @@ const __nimbusStopReplay = (() => {
       }
     }
     run.boundaryPassed = true;
-    if (run.onBoundary) run.onBoundary();
+    if (run.onBoundary) {
+      const current = run;
+      const notice = ReflectApply(PromiseResolve, PromiseCtor, [run.onBoundary()]);
+      current.boundaryNotice = notice;
+      ReflectApply(PromiseThen, notice, [
+        () => { current.boundaryNotice = null; },
+        // Keep a refused notice installed: every later call refuses too.
+        () => {},
+      ]);
+    }
   }
 
   return {
     ledger,
+    // Outbound fetch uses a separate binding, not ledger's supervisor
+    // proxy; it joins the same gate before dispatching a post-read request.
+    afterBoundary() { return run && run.boundaryNotice; },
     observed,
     bodyStarted(what) { const id = run.bodies.length; run.bodies[id] = what; return id; },
     bodyFinished(id) { run.bodies[id] = null; },
@@ -317,6 +339,7 @@ const __nimbusStopReplay = (() => {
         whyNot: null,
         why: null,
         boundaryPassed: replay === null,
+        boundaryNotice: null,
         prefix: replay && replay.prefix && !launch.captured
           ? { stdout: fromBase64(replay.prefix.stdout), stderr: fromBase64(replay.prefix.stderr) } : null,
         sent: { stdout: 0, stderr: 0 },

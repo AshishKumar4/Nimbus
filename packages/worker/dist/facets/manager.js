@@ -43,7 +43,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
+import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -670,7 +670,7 @@ export default {
       outbound: args.outbound === true,
       // The session holds what it answers past the read the run before
       // stopped at until the replay gets there.
-      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; if (typeof b === "function") Reflect.apply(b, __supervisor, []).catch(() => {}); },
+      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
     });
     // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
     const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
@@ -1127,7 +1127,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       abort: __ctxAbort ? (reason) => __apply(__ctxAbort, workerCtx, [reason]) : null,
       captured: !!captureOutput || !workerEnv?.SUPERVISOR,
       nonce: __startArgs && __startArgs.stopNonce,
-      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; if (typeof b === "function") Reflect.apply(b, __supervisor, []).catch(() => {}); },
+      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
@@ -5291,6 +5291,11 @@ export class FacetManager {
                 if (outcome.stop.kind === 'stdin' && outcome.stop.captured)
                     acceptedCapture = outcome.stop.captured;
                 journal?.stopped();
+                // runOneShot released the stopped Worker's nested hold. The child's
+                // outer launch admission must go too: only the session waits on its
+                // stdin now, and keeping that slot could prevent the parent starting
+                // the child whose exit tells it to close this stdin.
+                const resumeAdmission = suspendLaunchAdmission(this.ctx);
                 // The stopped run's descriptors go with it: the next run opens its
                 // own, numbered as the stopped run's were.
                 await this.hooks.rewindProcessFiles?.(entry.pid);
@@ -5299,6 +5304,9 @@ export class FacetManager {
                     result = resumed.exit;
                     break;
                 }
+                // The replay is a new Worker in flight. Rejoin the admission queue
+                // before rebuilding its module map or asking a preparation helper.
+                await resumeAdmission?.(abortController.signal);
                 this.processes.setUmask(entry.pid, startUmask);
                 launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
                 // The stopped run's module map was released once it loaded, unless

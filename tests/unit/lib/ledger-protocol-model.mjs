@@ -646,3 +646,196 @@ export async function replay(production, topology, path, { focus = null } = {}) 
   for (const move of path) await run.play(move);
   return run;
 }
+
+/**
+ * The stdin-stop interleaving: a root owns the ledger's remaining workers,
+ * `width` children each hold one launch admission, and B queues behind
+ * them. The root closes their inputs only on hearing B's exit. The children
+ * can stop in any order relative to B running/exiting and its news arriving;
+ * their replays can finish in any order, or be killed while stopped/queued.
+ * Uses the production launch context, nested run claims and suspend/resume,
+ * not a second implementation of admission accounting.
+ */
+class StoppedAdmissions {
+  constructor({ width, suspend, kills }) {
+    this.ctx = {};
+    this.processes = new SessionProcessSupervisor();
+    this.root = this.processes.spawn('root', [], '/');
+    this.width = width;
+    this.suspend = suspend;
+    this.kills = kills;
+    this.children = [];
+    this.reports = [];
+    this.pendingNews = [];
+    this.decisions = [];
+    this.violations = [];
+    this.news = PRODUCTION.createChildNews((report) => this.reports.push(report));
+    this.done = [];
+    this.closed = false;
+  }
+
+  deferred() {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  async settle() { for (let i = 0; i < 40; i++) await null; }
+
+  child(label) {
+    const process = this.processes.spawn(label, [], '/', { parentPid: this.root.pid });
+    const kill = new AbortController();
+    const aborted = new Promise((resolve) => kill.signal.addEventListener('abort', resolve, { once: true }));
+    return { label, pid: process.pid, state: 'queued', kill, aborted, stop: this.deferred(), input: this.deferred(), finish: this.deferred() };
+  }
+
+  issued(p, kind) {
+    if (this.closed) return;
+    this.pendingNews.push({ label: `${p.label}:${kind}`, child: p.label, kind, number: issueProcessNews(this.ctx, this.root.pid) });
+    this.news.say(true);
+  }
+
+  launch(p, body) {
+    const done = budgets.withLaunchAdmission(this.ctx, { pid: p.pid }, p.kill.signal, body).then(
+      () => this.ended(p),
+      (error) => {
+        if (!p.kill.signal.aborted) this.violations.push(`refused or failed ${p.label} while B or a replay could still progress: ${error.message}`);
+        this.ended(p);
+      },
+    );
+    this.done.push(done);
+  }
+
+  ended(p) {
+    p.state = 'done';
+    this.processes.exit(p.pid, 0);
+    this.issued(p, 'exit');
+  }
+
+  async setup() {
+    bindProcessTable(this.ctx, this.processes, (decide) => this.decisions.push(decide));
+    this.rootHolds = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT - this.width }, (_, i) => beginLoaderFetch(this.ctx, `root-${i}`, undefined, this.root.pid));
+    for (let i = 0; i < this.width; i++) {
+      const p = this.child(`C${i}`);
+      this.children.push(p);
+      this.launch(p, async () => {
+        p.state = 'running';
+        let end = budgets.claimAdmission(this.ctx, p.pid);
+        try {
+          await Promise.race([p.stop.promise, p.aborted]);
+          end(); end = undefined;
+          if (p.kill.signal.aborted) throw p.kill.signal.reason;
+          const resume = this.suspend(this.ctx);
+          p.state = 'stopped';
+          await Promise.race([p.input.promise, p.aborted]);
+          if (p.kill.signal.aborted) throw p.kill.signal.reason;
+          p.state = 'queued';
+          await resume(p.kill.signal);
+          p.state = 'replaying';
+          end = budgets.claimAdmission(this.ctx, p.pid);
+          await Promise.race([p.finish.promise, p.aborted]);
+        } finally { end?.(); }
+      });
+    }
+    await this.settle();
+    this.b = this.child('B');
+    this.launch(this.b, async () => {
+      this.b.state = 'running';
+      this.issued(this.b, 'start');
+      await Promise.race([this.b.finish.promise, this.b.aborted]);
+    });
+    this.news.say(true);
+    await this.settle();
+  }
+
+  moves() {
+    const moves = [];
+    if (this.decisions.length > 0) moves.push(['decide']);
+    if (this.reports.length > 0) moves.push(['report']);
+    for (const news of this.pendingNews) moves.push(['news', news.label]);
+    if (this.b.state === 'running') moves.push(['exitB']);
+    for (const p of this.children) {
+      if (p.state === 'running') moves.push(['stop', p.label]);
+      if (p.state === 'replaying') moves.push(['finish', p.label]);
+      if (this.kills && p.state !== 'done') moves.push(['kill', p.label]);
+    }
+    return moves;
+  }
+
+  async play([kind, label]) {
+    const p = this.children.find((c) => c.label === label);
+    switch (kind) {
+      case 'stop': p.stop.resolve(); break;
+      case 'finish': p.finish.resolve(); break;
+      case 'kill': p.kill.abort(new Error('SIGTERM')); break;
+      case 'exitB': this.b.finish.resolve(); break;
+      case 'report': setProcessBlocked(this.ctx, this.root.pid, this.reports.shift()); break;
+      case 'decide': this.decisions.shift()(); break;
+      case 'news': {
+        const [n] = this.pendingNews.splice(this.pendingNews.findIndex((m) => m.label === label), 1);
+        this.news.apply([n.number]);
+        if (n.child === 'B' && n.kind === 'exit') for (const c of this.children) c.input.resolve();
+        this.news.say(true);
+        break;
+      }
+      default: throw new Error(`unknown stopped-admission move ${kind}`);
+    }
+    await this.settle();
+    const stats = loaderLedgerStats(this.ctx);
+    if (stats.inFlightWorkers.length > stats.limit) this.violations.push(`admission exceeded the limit: ${stats.inFlightWorkers.length}`);
+    // Once every child's exit has been heard, the root ends too. The
+    // terminal-state check below is the independent liveness oracle.
+    if (this.b.state === 'done' && this.children.every((c) => c.state === 'done') && this.pendingNews.length === 0) {
+      for (const end of this.rootHolds) end();
+      this.rootHolds = [];
+      this.processes.exit(this.root.pid, 0);
+      this.reports.length = 0;
+    }
+  }
+
+  key() {
+    const stats = loaderLedgerStats(this.ctx);
+    return JSON.stringify([
+      this.b.state, this.children.map((p) => p.state), this.pendingNews,
+      this.reports, this.news.inspect(), stats.holders, stats.waiters, stats.news, this.decisions.length,
+    ]);
+  }
+
+  async close() {
+    this.closed = true;
+    for (const p of [...this.children, this.b]) p.kill.abort(new Error('model cleanup'));
+    for (const end of this.rootHolds) end();
+    await Promise.all(this.done);
+    const stats = loaderLedgerStats(this.ctx);
+    if (stats.inFlightWorkers.length > 0 || stats.waiting > 0) throw new Error('stopped-admission model cleanup leaked a hold or waiter');
+  }
+}
+
+/** Every order of stops, B's news, replay admissions/completions and kills. */
+export async function exploreStoppedAdmissions({ width = 2, kills = false, suspend = budgets.suspendLaunchAdmission, maxStates = 20_000 } = {}) {
+  const seen = new Set();
+  const stack = [[]];
+  let finals = 0;
+  while (stack.length > 0) {
+    const path = stack.pop();
+    const run = new StoppedAdmissions({ width, kills, suspend });
+    try {
+      await run.setup();
+      for (const move of path) await run.play(move);
+      if (run.violations.length > 0) return { states: seen.size, finals, found: [{ violation: run.violations[0], path }] };
+      const key = run.key();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (seen.size > maxStates) throw new Error(`stopped admissions exceeded ${maxStates} states`);
+      const moves = run.moves();
+      if (moves.length === 0) {
+        finals++;
+        if (run.b.state !== 'done' || run.children.some((c) => c.state !== 'done')) {
+          return { states: seen.size, finals, found: [{ violation: 'B never ran: stopped children retained the full ledger and the parent could not close stdin', path }] };
+        }
+      }
+      for (const move of moves.reverse()) stack.push([...path, move]);
+    } finally { await run.close(); }
+  }
+  return { states: seen.size, finals, found: [] };
+}

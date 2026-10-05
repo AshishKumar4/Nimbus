@@ -225,9 +225,11 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             };
             // Admitted once on the Dynamic Worker ledger, before its preparation:
             // its transform, its prebundle and its program are that one worker,
-            // in turn (withLaunchAdmission). A kill while it waits for room ends
-            // the wait; the launch registers its own terminator once it runs, and
-            // aborting ctx.signal still reaches it.
+            // in turn (withLaunchAdmission). A synchronous-stdin stop gives its
+            // admission back while it waits, and requeues before preparing the
+            // replay. A kill while it waits for room ends the wait; the launch
+            // registers its own terminator once it runs, and aborting ctx.signal
+            // still reaches it.
             self.processes.setTerminator(payload.processPid, () => ac.abort());
             try {
                 const code = await withLaunchAdmission(runtimeContext.ctx, { pid: payload.processPid }, ac.signal, () => { hooks.onStarted?.(); return cmd(ctx); });

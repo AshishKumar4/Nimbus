@@ -406,6 +406,52 @@ const floatingRace = guest(`
 assert.equal(floatingRace.consumed, false);
 assert.match(floatingRace.stopped.why, /before the recorded answer to stat was delivered/);
 
+// The other side of the boundary: a post-read observation or effect must
+// not reach the session before its boundary notice. Force the notice to
+// wait on an explicit gate, then issue fsAcquire first, with no timer race.
+const postBoundary = guest(`
+  let delivered;
+  const notice = new Promise((resolve) => { delivered = resolve; });
+  const events = [];
+  let passed = false;
+  const supervisor = sr.ledger({
+    replayBoundary: async () => { events.push('notice sent'); await notice; passed = true; events.push('notice delivered'); },
+    fsAcquire: async () => { events.push('fsAcquire'); return passed; },
+    writeFile: async () => { events.push('writeFile'); return passed; },
+  });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
+  sr.arm(false);
+  sr.readAll(1);
+  const read = supervisor.fsAcquire('epoch', 0);
+  const write = supervisor.writeFile('/after-read', 'x');
+  await Promise.resolve(); await Promise.resolve();
+  const during = events.slice();
+  delivered();
+  const answers = await Promise.all([read, write]);
+  console.log(JSON.stringify({ during, events, answers }));
+`);
+assert.deepEqual(postBoundary.during, ['notice sent'], 'post-boundary calls cannot overtake the delayed boundary notice');
+assert.deepEqual(postBoundary.events, ['notice sent', 'notice delivered', 'fsAcquire', 'writeFile']);
+assert.deepEqual(postBoundary.answers, [true, true], 'every post-read call uses the post-boundary session rule');
+
+const refusedBoundary = guest(`
+  let refused;
+  const notice = new Promise((resolve, reject) => { refused = reject; });
+  let calls = 0;
+  const supervisor = sr.ledger({ replayBoundary: () => notice, fsAcquire: async () => { calls++; } });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
+  sr.arm(false);
+  sr.readAll(1);
+  const read = supervisor.fsAcquire('epoch', 0);
+  const outbound = sr.afterBoundary();
+  refused(new Error('boundary refused'));
+  let error, later;
+  try { await read; } catch (e) { error = e.message; }
+  try { await supervisor.fsAcquire('epoch', 1); } catch (e) { later = e.message; }
+  console.log(JSON.stringify({ calls, error, later, sameGate: outbound === notice }));
+`);
+assert.deepEqual(refusedBoundary, { calls: 0, error: 'boundary refused', later: 'boundary refused', sameGate: true }, 'a refused boundary never dispatches a post-read call; outbound joins the same gate');
+
 // A run that did something outside itself cannot stop; reads, a read-only
 // open and its own output do not count, nor does anything before it started.
 const ledgered = guest(`

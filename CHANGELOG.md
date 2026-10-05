@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a child stopped at a synchronous stdin read releases its Dynamic
+  Worker launch admission while it waits. A replay queues fairly to regain
+  admission before preparation, so stopped children cannot prevent a
+  sibling from running; killing a wait or a queued replay leaves no hold.
+  Post-read supervisor calls and outbound requests wait for the replay
+  boundary acknowledgement, so they cannot be mistaken for pre-read work.
+
 - Fixed: synchronous-stdin replay is fail-closed at the session boundary.
   Every supervisor operation has an explicit observation, effect, or
   input/output-protocol classification; unknown operations forbid a later

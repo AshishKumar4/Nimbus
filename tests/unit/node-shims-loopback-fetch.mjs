@@ -32,8 +32,10 @@ const code = generateShimsCode();
 const nativeGetReader = ReadableStream.prototype.getReader;
 const nativeRead = ReadableStreamDefaultReader.prototype.read;
 const nativeClone = Response.prototype.clone;
+let boundaryNotice = null;
+const replay = { armed: false, outbound: false, afterBoundary: () => boundaryNotice };
 const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusStopReplay',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return null;',
 );
 factory(
@@ -46,6 +48,7 @@ factory(
   {},
   '/home/user/main.mjs',
   '/home/user',
+  replay,
 );
 assert.equal(ReadableStream.prototype.getReader, nativeGetReader, 'a non-stoppable launch installs no journal reader wrapper');
 assert.equal(ReadableStreamDefaultReader.prototype.read, nativeRead);
@@ -81,6 +84,24 @@ assert.equal(Response.prototype.clone, nativeClone);
   assert.equal(res.status, 299, 'external fetch went to the origin, not the loopback router');
   assert.equal(originCalls.at(-1).ua, 'node', 'Node default UA injected on the passthrough');
   assert.equal(routed.length, 3, 'external host was NOT routed as loopback');
+}
+
+// An outbound fetch has its own binding rather than the guest's supervisor
+// proxy. It must join the SAME boundary-notice gate before dispatch, both
+// for an external GET and an in-session request. Delay it deterministically.
+{
+  let delivered;
+  boundaryNotice = new Promise((resolve) => { delivered = resolve; });
+  const before = [routed.length, originCalls.length];
+  const external = globalThis.fetch('https://example.test/after-stdin');
+  const loopback = globalThis.fetch('http://127.0.0.1:4096/after-stdin');
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual([routed.length, originCalls.length], before, 'no request dispatches before its replay boundary is acknowledged');
+  delivered();
+  const answers = await Promise.all([external, loopback]);
+  assert.deepEqual(answers.map((r) => r.status), [299, 200]);
+  assert.deepEqual([routed.length, originCalls.length], before.map((n) => n + 1));
+  boundaryNotice = null;
 }
 
 console.log('ok: fetch shim routes loopback via SUPERVISOR.routeLoopback, passes external through');

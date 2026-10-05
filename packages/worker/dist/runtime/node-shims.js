@@ -494,6 +494,10 @@ function __nimbusWasmDigest(bytes) {
       if (!__nimbusReplay.outbound) __nimbusReplay.effect("used the network (" + method + " " + __fetchUrl(input) + "), which Nimbus does not record for this process");
       else if (method !== "GET" && method !== "HEAD") __nimbusReplay.effect(method + " " + __fetchUrl(input));
     }
+    // The outbound uses its own supervisor binding. Like post-read calls
+    // through the guest's proxy, it cannot pass the replay boundary notice.
+    const afterRead = __nimbusReplay && __nimbusReplay.afterBoundary();
+    if (afterRead) await afterRead;
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
     const pending = __resumeCoherent(__dispatch(input, init));
