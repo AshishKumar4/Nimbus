@@ -147,15 +147,16 @@ let __wasiResident = null;
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
-    __residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-    __residentSetStorage(undefined, supervisor);
+    const store = __wasiResidentStore;
+    store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+    store.__residentSetStorage(undefined, supervisor);
     let view = null;
     void (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
-        if (root === null || !(await __residentBootLazy(supervisor)))
+        if (root === null || !(await store.__residentBootLazy(supervisor)))
             return;
-        view = __residentNamespaceView(supervisor, root.dev, cred);
+        view = store.__residentNamespaceView(supervisor, root.dev, cred);
     })().catch(() => { view = null; });
     const booting = {
         get device() { return view === null ? -1 : view.device; },

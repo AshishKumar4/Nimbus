@@ -282,14 +282,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * holding it: the descriptor is the session's again, at the position the
    * program left it at.
    */
-  const release = async (held: HeldWrite): Promise<void> => {
+  const release = async (held: HeldWrite, closing = false): Promise<void> => {
     writes.delete(held.id);
     heldBytes -= held.bytes.byteLength;
     try {
       for (let at = 0; at < held.length; at += WRITE_PIECE_BYTES) {
         await authority.write(held.id, at, held.bytes.slice(at, Math.min(held.length, at + WRITE_PIECE_BYTES)));
       }
-      if (held.position !== 0) await authority.seek(held.id, held.position, 'set');
+      // A descriptor about to close has no position to keep: one trip fewer per file.
+      if (!closing && held.position !== 0) await authority.seek(held.id, held.position, 'set');
     } catch (error) {
       // Reported once: by this descriptor's close or fsync, or by the run's end.
       unsettled.set(held.id, { path: held.path, error });
@@ -646,7 +647,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const failure = takeUnsettled(handleId);
       if (failure !== undefined) throw failure;
     });
-    if (held !== undefined) return release(held).then(closing, closing);
+    if (held !== undefined) return release(held, true).then(closing, closing);
     if (unsettled.has(handleId)) return closing();
     const handle = local(handleId);
     if (handle === undefined) return changing('close', () => authority.close(handleId));
