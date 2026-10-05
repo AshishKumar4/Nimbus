@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6557509dac19beb530f99507d45faa5e3b425078522c4e22aad0d1975eaef578",
+  "fingerprint": "f9330ab59190e322b427043d5aa4394ac0f4a1b075b2335aeadb934775d3d4bf",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1838,8 +1838,8 @@
     "packages/worker/dist/git/commands.d.ts.map": "4351435b201c0699529137343f6d332c38ee3708ff24ac210ba09ada710a835d",
     "packages/worker/dist/git/commands.js": "171297cb2bec11c6c67aa5cb94261d2ac1d568dd51a2239b7f87ec8cf2b8acb8",
     "packages/worker/dist/git/network-facet.d.ts": "51dff5abf27097e51babf69d050f65749792962bd0529bf9522e324970ad845c",
-    "packages/worker/dist/git/network-facet.d.ts.map": "da0b2728c1394d60ab63289d4242c5346b4998e7dae4d85d94693a75c8c80747",
-    "packages/worker/dist/git/network-facet.js": "9d8df93cd686b692bfa440c76bda5eb82741e2a3580b076941c701a4bff23f4e",
+    "packages/worker/dist/git/network-facet.d.ts.map": "06a3c66144e848c6da360a3a449190637ce35e401a63a9a8017227085178a106",
+    "packages/worker/dist/git/network-facet.js": "49add04cb24c2d42ea40013e7bc34f1088fb14fa4533ecb8378024637266bf73",
     "packages/worker/dist/git/pack/byte-lru.d.ts": "7da8c195c4b406516551b44d0ad7f4dba6ebf0d160d71e99d6fd446a107b6cbd",
     "packages/worker/dist/git/pack/byte-lru.d.ts.map": "7acb918a16b8cea431f8cf7a15eb93de25ce0d918f634a9f7c3d058d1c2aab2e",
     "packages/worker/dist/git/pack/byte-lru.js": "c7694480dc8b33401bc80fd7e9d6989f5c349e63f913dba7bb24c2e2e3e1db41",
@@ -2409,7 +2409,7 @@
     "packages/worker/src/facets/ws-terminal.ts": "3a04326928698a0a6d5978ac64aecf059d785a3b390ae73e2cb1e83156c0c6b3",
     "packages/worker/src/git-bundle.generated.ts": "e7e2e74ce0bc22d1ccbe6af6f98bcf4751460601f2a0dd6674e50d35ff130d26",
     "packages/worker/src/git/commands.ts": "feb07cf7e4fe8d4fc80b6a2ccc2fe17ee277918318eb642451ea904302a20c39",
-    "packages/worker/src/git/network-facet.ts": "9fba4ff001f32fd4dfa47a5aea940ebcc15827009521c57f684d6dbe1415134e",
+    "packages/worker/src/git/network-facet.ts": "7db4ba3b74c54ef748fe3f39f24581c95ec5f42ed51926958a5bea79cad72fcb",
     "packages/worker/src/git/pack/byte-lru.ts": "a5018edc4b41b80fb0e099913e9b58a0fbf2b58b6ef6fc7c25adf119dc2e9782",
     "packages/worker/src/git/pack/clone.ts": "eaf1289becb9ce18dcb056fa2fcb7df1842163c0be8803a01bc5236bbc157556",
     "packages/worker/src/git/pack/facet-packs.ts": "c834973056477ea7b54e29ade49eeff8e4416291831dd19aefa8c09db3094b1b",
