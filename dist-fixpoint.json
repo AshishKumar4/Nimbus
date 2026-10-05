@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "864e60c0cea4f45400952c132bf3193d22c6c6382c04c4ac13193afaaa5094f7",
+  "fingerprint": "b8f36a4a913f20387433408b45d44e9cde07354b74ce4e8eabac01a5da94f6cb",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1900,9 +1900,9 @@
     "packages/worker/dist/git/worktree/checkout.d.ts": "0258672f6e41388b135df6f2522500c4417abb2b3520e90120960932205c6883",
     "packages/worker/dist/git/worktree/checkout.d.ts.map": "c4141ea9f80fb04fc9f84cec393d73afc09ad7512e483882129c824d0aa55bf5",
     "packages/worker/dist/git/worktree/checkout.js": "544a74134f50c0bdb326dc69cdeaabd6dc2454ed83b799e6354c9e6222916979",
-    "packages/worker/dist/git/worktree/dircache.d.ts": "1e9f622e44cfd735681c886d49b5da60aed7dbabbe8e7fcaaa398fb9edcb1adc",
+    "packages/worker/dist/git/worktree/dircache.d.ts": "a16a34bed153850456bd30384f1501f32e646c63109386e7c0a4a223c9c08cd8",
     "packages/worker/dist/git/worktree/dircache.d.ts.map": "20085616d17571c3e24ec688b2d5af2cf5babf406e55283e80502f8aa9a8843a",
-    "packages/worker/dist/git/worktree/dircache.js": "e3f1b9132740436970180326f6881d3a087b0ec2624d616479b8df0443ff5538",
+    "packages/worker/dist/git/worktree/dircache.js": "8348bf40baf9041201e9a8040db9378fb26767676df61b1374232e8a79508cec",
     "packages/worker/dist/git/worktree/excludes.d.ts": "5beaa93cbe6a47470097a2cfa549422f777eb454708a350101742aa29a54defb",
     "packages/worker/dist/git/worktree/excludes.d.ts.map": "73bbb6c4c2416a7feecd59c9a5c9a09ad4c8ea3352203d98174000289e16d38d",
     "packages/worker/dist/git/worktree/excludes.js": "a9a88d04728225929fbc2271c29176ed7414ce85b5ae0578b10317bb8d0780dd",
@@ -2457,7 +2457,7 @@
     "packages/worker/src/git/wave-writer.ts": "319489c8b60650db91f682b65c90421dadf60ab1ae4bd4c4d845972815453d57",
     "packages/worker/src/git/worktree/cachetree.ts": "2a620d3ed6832d9c885c96af62697bfc8bdde7f429fb408a5f203e68b0c11057",
     "packages/worker/src/git/worktree/checkout.ts": "f52988312e0675a200920d6f4ee85352a4b2129d425b46b32e3e07e033f24fa4",
-    "packages/worker/src/git/worktree/dircache.ts": "2c32aed35418f2f03bdc3753e5a0624f920ff654cae3cf6b354d9b696a3fb572",
+    "packages/worker/src/git/worktree/dircache.ts": "2f300bfdba046af7d3d72b706daef4c7c0440fe05ed40cfcecc573c119a86875",
     "packages/worker/src/git/worktree/excludes.ts": "cd9cad470d50a3eb5923c891eccfe9100d6f6f7dfb466f36cd0a6abdce29add2",
     "packages/worker/src/git/worktree/repo.ts": "b5d44fe12baca2c106b538609184fbff9ed6acb82d0523ae6fea8e2f6cebe5e9",
     "packages/worker/src/git/worktree/status.ts": "82c6ead02ec4deabfad5016b12ce475064d39be6921036a7ce6d854e10188a46",

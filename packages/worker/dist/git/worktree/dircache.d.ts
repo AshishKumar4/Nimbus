@@ -15,7 +15,7 @@ export declare const S_IFREG = 32768;
 export declare const S_IFLNK = 40960;
 export declare const S_IFGITLINK = 57344;
 /** The empty blob's id: a size-0 entry naming it is not racily smudged (read-cache.c). */
-export declare const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775a2c2a1b9fb8ef";
+export declare const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 /** The stat an entry records: the session's lstat, times in ms. */
 export interface EntryStat {
     ctimeMs: number;
