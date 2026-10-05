@@ -23,6 +23,8 @@ export interface UploadPackOptions {
     onProgress?(line: string): void;
     /** For tests: the fetch to use. */
     fetch?: typeof fetch;
+    /** How long a response may send nothing (STALL_MS). */
+    stallMs?: number;
     signal?: AbortSignal;
 }
 export interface Advertisement {
@@ -52,6 +54,12 @@ export declare class UploadPackError extends Error {
     readonly status?: number | undefined;
     constructor(message: string, status?: number | undefined);
 }
+/**
+ * A response that sends nothing for this long has stalled: git's own
+ * http.lowSpeedTime is the same idea. Measured: a GitHub batch on react
+ * hung 240 s with no bytes; a healthy one never pauses for more than a few.
+ */
+export declare const STALL_MS = 45000;
 export declare function discover(options: UploadPackOptions): Promise<Advertisement>;
 /** One request, and the pack it answers with. */
 export declare function requestPack(options: UploadPackOptions, advertised: Set<string>, request: PackRequest): Promise<PackResponse>;

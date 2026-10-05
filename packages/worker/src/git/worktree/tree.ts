@@ -21,6 +21,8 @@ export interface ObjectStore {
   has(oid: string): Promise<boolean>;
   /** Write an object the repository does not hold yet; its id either way. */
   write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
+  /** Fetch in one request those of `oids` a partial clone lacks, before they are read one at a time. */
+  prefetch(oids: Iterable<string>): Promise<void>;
 }
 
 export interface TreeEntry {

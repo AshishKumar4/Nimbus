@@ -24,7 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
+export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push' | 'fetch-objects';
 /**
  * The clone's job marker, in its git directory from prepare until the clone
  * is whole: the proof an abort needs that the destination is the clone's,
@@ -79,6 +79,18 @@ export interface GitNetworkOpts {
     checkoutChunkMaxDecodedBytes?: number;
     /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
     checkoutChunkMaxWallMs?: number;
+    /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
+    filter?: string;
+    /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
+    historyBlobsPerBatch?: number;
+    /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
+    historyCommitsPerChunk?: number;
+    /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
+    historyBudgetUnits?: number;
+    /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
+    attempt?: number;
+    /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
+    oids?: string[];
     /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
     blobsPerBatch?: number;
     /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
@@ -105,7 +117,7 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-finish' | 'clone-checkout' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-checkout' | 'clone-abort';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
@@ -154,6 +166,8 @@ export interface GitNetworkResult {
     errorCode?: GitNetworkErrorCode;
     budget?: GitCloneBudgetDiagnostic;
     cleanupError?: string;
+    /** fetch-objects: objects the promisor pack holds. */
+    fetchedObjects?: number;
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;

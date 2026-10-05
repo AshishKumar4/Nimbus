@@ -74,9 +74,9 @@ export class PackObjectStore {
     this.pages = new ByteLru(options.pageCacheBytes ?? DEFAULT_PAGE_CACHE_BYTES);
   }
 
-  /** Whether some pack holds `oid`. */
+  /** Whether some pack holds `oid`; no rescan on a miss (a prefetch asks of many it lacks). */
   async has(oid: string): Promise<boolean> {
-    return (await this.locate(oid)) !== null;
+    return (await this.locate(oid, true)) !== null;
   }
 
   /** The object, its deltas applied; null when no pack holds it. */
@@ -228,18 +228,47 @@ export interface GitPacksSeam {
   read(gitdir: string, oid: string): Promise<StoredObject | null>;
   has(gitdir: string, oid: string): Promise<boolean>;
   expand(gitdir: string, prefix: string): Promise<string[]>;
+  /**
+   * Fetch, in one request, those of `oids` a partial clone lacks (git batches
+   * a checkout's, a diff's, a merge's); a no-op where nothing is missing or
+   * the repository has no promisor remote.
+   */
+  prefetch(gitdir: string, oids: Iterable<string>): Promise<void>;
 }
 
-export function packsSeam(fs: PackStoreFs, options: PackStoreOptions = {}): GitPacksSeam {
+/**
+ * A partial clone's promisor remote: fetches `oids` into a new pack, or
+ * declines (false) when `gitdir` has none, as git reads a missing object as
+ * absent outside a partial clone.
+ */
+export type PromisorFetch = (gitdir: string, oids: string[]) => Promise<boolean>;
+
+export function packsSeam(fs: PackStoreFs, options: PackStoreOptions & { promisor?: PromisorFetch } = {}): GitPacksSeam {
   const stores = new Map<string, PackObjectStore>();
   const store = (gitdir: string): PackObjectStore => {
     let found = stores.get(gitdir);
     if (found === undefined) stores.set(gitdir, found = new PackObjectStore(fs, gitdir, options));
     return found;
   };
+  const fetchMissing = async (gitdir: string, oids: string[]): Promise<boolean> => {
+    if (options.promisor === undefined || oids.length === 0) return false;
+    if (!await options.promisor(gitdir, oids)) return false;
+    store(gitdir).refresh();
+    return true;
+  };
   return {
-    read: (gitdir, oid) => store(gitdir).read(oid),
+    async read(gitdir, oid) {
+      const found = await store(gitdir).read(oid);
+      if (found !== null) return found;
+      // A read the command did not prefetch: git's lazy fetch of one object.
+      return await fetchMissing(gitdir, [oid]) ? await store(gitdir).read(oid) : null;
+    },
     has: (gitdir, oid) => store(gitdir).has(oid),
     expand: (gitdir, prefix) => store(gitdir).expand(prefix),
+    async prefetch(gitdir, oids) {
+      const missing: string[] = [];
+      for (const oid of new Set(oids)) if (!await store(gitdir).has(oid)) missing.push(oid);
+      await fetchMissing(gitdir, missing);
+    },
   };
 }

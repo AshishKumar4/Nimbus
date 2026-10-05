@@ -14,7 +14,8 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
-import { packsSeam } from './pack/store.js';
+import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
+import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
@@ -38,7 +39,7 @@ import {
 } from './unified-diff.js';
 import { CheckoutRefused, switchTrees, type CheckoutWriter } from './worktree/checkout.js';
 import { DirCache, comparePaths, objectId, type IndexEdit, type NewEntry } from './worktree/dircache.js';
-import { WorktreeRepo, configBool, type GitFs } from './worktree/repo.js';
+import { WorktreeRepo, configBool } from './worktree/repo.js';
 import { collectStatus, formatShortStatus, inSpecs, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
 import { modeFromStat, scanWorktree, worktreeBlob, type Dirty } from './worktree/walk.js';
@@ -90,7 +91,7 @@ function wantsUtf8(options: unknown): boolean {
  * through it. Components above the top are followed, as git follows them.
  * Commands that only read the worktree or write `.git` pass no worktree.
  */
-function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
+function createGitFs(vfs: ProjectFs, worktree: string | null = null, promisor?: PromisorFetch) {
   // Path normalization is shared with esbuild-service via @nimbus-sh/core/vfs/path.js.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
@@ -166,7 +167,7 @@ function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
         try { return (await vfs.readdir(normalizePath(dir))).map((entry) => entry.name); }
         catch { return []; }
       },
-    }),
+    }, { promisor }),
     promises: {
       async readFile(filepath: string, opts?: any): Promise<Uint8Array | string> {
         const p = normalizePath(filepath);
@@ -318,10 +319,28 @@ export interface ParsedCloneArgs {
   branch: string | undefined;
   /** `-q`/`--quiet`: no progress on stdout; errors still reach stderr. */
   quiet: boolean;
+  /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
+  filter: string | undefined;
 }
 
 export const CLONE_USAGE =
-  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+
+const SIZE_SUFFIX: Record<string, number> = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+
+/**
+ * A partial clone's filter (list-objects-filter-options.c), normalized as
+ * git normalizes it: blob:limit's size in bytes. The filters Nimbus
+ * fetches with; any other is refused by name rather than ignored.
+ */
+export function parseCloneFilter(spec: string): string {
+  if (spec === 'blob:none') return spec;
+  const limit = /^blob:limit=(\d+)([kmg]?)$/i.exec(spec);
+  if (limit) return 'blob:limit=' + Number(limit[1]) * SIZE_SUFFIX[limit[2].toLowerCase()];
+  const tree = /^tree:(\d+)$/.exec(spec);
+  if (tree) return 'tree:' + Number(tree[1]);
+  throw new Error(`invalid filter-spec '${spec}': git clone here takes blob:none, blob:limit=<n>[kmg] or tree:<depth>`);
+}
 
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
@@ -335,6 +354,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   let noShallow = false;
   let isBg = false;
   let quiet = false;
+  let filter: string | undefined;
   const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -356,13 +376,8 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     else if (arg === '-q' || arg === '--quiet') quiet = true;
     // Progress is already the default; there is no more of it to ask for.
     else if (arg === '-v' || arg === '--verbose') { /* accepted */ }
-    else if (name === '--filter') {
-      throw new Error(
-        "clone does not support '--filter': the bundled isomorphic-git has no " +
-        'partial-clone support, so a filter would silently download every object. ' +
-        'Use --depth <n> to bound history instead.',
-      );
-    } else if (arg.startsWith('-')) {
+    else if (name === '--filter') filter = parseCloneFilter(takeValue());
+    else if (arg.startsWith('-')) {
       throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
     } else {
       positionals.push(arg);
@@ -377,6 +392,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     isBg,
     branch,
     quiet,
+    filter,
   };
 }
 
@@ -456,6 +472,8 @@ interface CfGit {
   writeObject(args: { fs: unknown; dir: string; type: 'blob' | 'tree' | 'commit' | 'tag'; object: Uint8Array; format: 'content' }): Promise<string>;
   writeRef(args: { fs: unknown; dir: string; ref: string; value: string; force: boolean; symbolic?: boolean }): Promise<void>;
   readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'parsed' | 'content' }): Promise<{ type: string; object: unknown }>;
+  readCommit(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ commit: { tree: string } }>;
+  readTree(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ tree: { type: string; oid: string }[] }>;
   hashBlob(args: { object: Uint8Array }): Promise<{ oid: string }>;
   resolveRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
   expandOid(args: { fs: unknown; gitdir: string; oid: string; cache: object }): Promise<string>;
@@ -482,9 +500,9 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
 
 // ── Staging ──────────────────────────────────────────────────────────────
 
-/** The repository at `root` as the worktree commands read it: its index, worktree and objects. */
-function worktreeRepo(ctx: Ctx, git: CfGit, vfs: ProjectFs, gitdir: string, root: string): WorktreeRepo {
-  return new WorktreeRepo(vfs, git, createGitFs(vfs) as GitFs, root, gitdir, ctx.env);
+/** The repository at `root` as the worktree commands read it: its index, worktree and objects (through `fs`'s pack store). */
+function worktreeRepo(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, gitdir: string, root: string): WorktreeRepo {
+  return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env);
 }
 
 /**
@@ -522,6 +540,36 @@ async function stageTracked(wrepo: WorktreeRepo, git: CfGit): Promise<void> {
     else removed.add(i);
   }
   if (removed.size || added.length || dc.refreshed) await wrepo.writeIndex(dc, { removed, added });
+}
+
+type GitFs = ReturnType<typeof createGitFs>;
+
+/**
+ * Before a command reads the trees and blobs of `commits` (a checkout, a
+ * reset, a merge), fetch what a partial clone lacks in two requests, as git
+ * prefetches a checkout's blobs: the commits' root trees with their subtrees
+ * (a tree:<depth> clone has neither), then every blob of those trees the
+ * repository does not hold. Nothing is walked outside a partial clone.
+ */
+async function prefetchCommits(git: CfGit, fs: GitFs, gitdir: string, commits: readonly string[], partial: (gitdir: string) => Promise<boolean>): Promise<void> {
+  if (commits.length === 0 || !await partial(gitdir)) return;
+  const cache = {};
+  const roots: string[] = [];
+  for (const oid of commits) roots.push((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree);
+  await fs.packs.prefetch(gitdir, roots);
+  const blobs = new Set<string>();
+  const pending = [...roots];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const tree = pending.pop()!;
+    if (seen.has(tree)) continue;
+    seen.add(tree);
+    for (const entry of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
+      if (entry.type === 'tree') pending.push(entry.oid);
+      else if (entry.type === 'blob') blobs.add(entry.oid);
+    }
+  }
+  await fs.packs.prefetch(gitdir, blobs);
 }
 
 // ── Repository discovery ─────────────────────────────────────────────────
@@ -703,7 +751,7 @@ const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--pa
  * pathspec that matches nothing fails before anything is staged; one that
  * names an ignored path is reported (exit 1) unless -f, the rest still added.
  */
-async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[]): Promise<number> {
   let dryRun = false;
   let verbose = false;
   let force = false;
@@ -757,7 +805,7 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly s
     return 0;
   }
   const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [''];
-  const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
   const dc = await wrepo.readIndex();
   const excludes = await wrepo.excludes(dc);
   // -u updates what the index holds and nothing else; -f takes the ignored files below each pathspec as well.
@@ -1303,7 +1351,7 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, arg
 const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-s | --stage] [-o | --others] [-m | --modified] [-d | --deleted] '
   + '[--exclude-standard] [-z] [--] [<path>...]\n';
 
-async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[]): Promise<number> {
   let cached = false;
   let others = false;
   let modified = false;
@@ -1351,7 +1399,7 @@ async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly stri
   }
   // Without pathspecs ls-files covers the cwd's subtree.
   const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [repo.prefix];
-  const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
   const dc = await wrepo.readIndex();
   const scan = others || modified || deleted
     ? await scanWorktree(await wrepo.worktree(), dc, {
@@ -1439,10 +1487,10 @@ function checkoutWriter(vfs: ProjectFs, root: string): CheckoutWriter {
  * CheckoutConflictError, whose message is git's.
  */
 async function moveWorktree(
-  ctx: Ctx, git: CfGit, vfs: ProjectFs, repo: GitRepo, oid: string,
+  ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, repo: GitRepo, oid: string,
   { force = false, operation = 'checkout' }: { force?: boolean; operation?: 'checkout' | 'merge' } = {},
 ): Promise<void> {
-  const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, repo.worktree!);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree!);
   const dc = await wrepo.readIndex();
   const head = force ? null : await wrepo.headTree();
   let edit: IndexEdit;
@@ -1469,10 +1517,9 @@ async function moveWorktree(
  * only origin has as a branch becomes a local branch that tracks it, as
  * git's checkout DWIM makes one.
  */
-async function switchBranch(ctx: Ctx, git: CfGit, vfs: ProjectFs, dir: string, ref: string): Promise<void> {
+async function switchBranch(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, dir: string, ref: string): Promise<void> {
   const repo = await discoverRepo(vfs, dir);
   if (!repo?.worktree) throw new Error('this operation must be run in a work tree');
-  const fs = createGitFs(vfs);
   const { gitdir } = repo;
   let oid: string;
   try {
@@ -1484,7 +1531,7 @@ async function switchBranch(ctx: Ctx, git: CfGit, vfs: ProjectFs, dir: string, r
     await git.setConfig({ fs, gitdir, path: `branch.${ref}.merge`, value: `refs/heads/${ref}` });
     await git.writeRef({ fs, dir, ref: `refs/heads/${ref}`, value: oid, force: true });
   }
-  await moveWorktree(ctx, git, vfs, repo, oid);
+  await moveWorktree(ctx, git, vfs, fs, repo, oid);
   let full = '';
   try { full = await git.expandRef({ fs, gitdir, ref }); } catch { /* a commit, not a ref */ }
   if (full.startsWith('refs/heads/')) {
@@ -1511,6 +1558,7 @@ async function checkoutPaths(
   ctx: Ctx,
   git: CfGit,
   vfs: ProjectFs,
+  fs: GitFs,
   source: string | null,
   pathArgs: readonly string[],
 ): Promise<number> {
@@ -1527,7 +1575,7 @@ async function checkoutPaths(
   const specs = repoPaths(pathArgs, ctx.cwd, root);
   // A pathspec ending in '/' names a directory: it matches what is below it, never a file or link there.
   const dirOnly = pathArgs.map((arg, i) => arg.endsWith('/') && specs[i] !== '');
-  const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
   const dc = await wrepo.readIndex();
   const files: { path: string; oid: string; mode: number }[] = [];
   const matched = new Set<number>();
@@ -1562,6 +1610,7 @@ async function checkoutPaths(
     return 1;
   }
   const writer = checkoutWriter(vfs, root);
+  await wrepo.store.prefetch(files.map(({ oid }) => oid));
   const added: NewEntry[] = [];
   for (const { path, oid, mode } of files) {
     const file = `${root}/${path}`;
@@ -1717,7 +1766,7 @@ const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
   + '   or: git diff --no-index [--] <path> <path>\n'
   + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
 
-async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function diffCommand(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let cached = false;
   let noIndex = false;
   let dashdash = false;
@@ -1819,7 +1868,7 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, ar
     await ctx.stderr.write('fatal: diff between two commits is not supported; compare one commit with the worktree or the index\n');
     return 128;
   }
-  const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
   const dc = await wrepo.readIndex();
   const base: DiffBase = cached
     ? { kind: 'tree', tree: revs.length ? await treeOf(wrepo.store, revs[0]) : await wrepo.headTree(), cached: true }
@@ -1827,6 +1876,11 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, ar
   const pending = await changedPairs(wrepo, dc, base, repoPaths(pathArgs, ctx.cwd, root));
   // git diff writes back the stat it found stale on files whose content had not changed.
   if (dc.refreshed) await wrepo.writeIndex(dc);
+  // The blobs this diff reads, fetched together where a partial clone lacks them (git's diff_queued_diff_prefetch).
+  if (output.format === 'patch' || output.format === 'stat' || minimumScore !== null) {
+    await wrepo.store.prefetch(pending.flatMap(({ one, two }) => [one, two]).flatMap((side) =>
+      side && !side.worktree ? [side.oid] : []));
+  }
   const tree = await wrepo.worktree();
   const read = async (side: PendingSide): Promise<Uint8Array> => side.worktree
     ? await worktreeBlob(tree, side.path, side.mode === 0o120000 ? 'symlink' : 'file')
@@ -1869,7 +1923,7 @@ const STATUS_UNSUPPORTED = new Set(['b', 'v', '--branch', '--long', '--verbose',
  * working tree clean" when there is nothing to show. Like git, it writes the
  * index back when it refreshed stat data or the index has racy entries.
  */
-async function statusCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function statusCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[]): Promise<number> {
   let format: 'nimbus' | 'short' | 'porcelain' = 'nimbus';
   let z = false;
   let untracked: 'no' | 'normal' | 'all' | null = null;
@@ -1940,7 +1994,7 @@ async function statusCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonl
     await ctx.stderr.write(NOT_A_WORK_TREE);
     return 128;
   }
-  const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
   if (untracked === null) {
     const configured = await wrepo.config('status.showuntrackedfiles');
     const flag = configBool(configured);
@@ -2035,7 +2089,10 @@ const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>
   + '   or: git reset [-q] [<tree-ish>] [--] <pathspec>...\n';
 
 /** `git reset`: --soft moves HEAD, --mixed (the default) the index with it, --hard the worktree too; paths reset index entries. */
-async function resetCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function resetCommand(
+  ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[],
+  prefetch: (gitdir: string, commits: string[]) => Promise<void>,
+): Promise<number> {
   let mode = 'mixed' as 'soft' | 'mixed' | 'hard';
   let quiet = false;
   const dashdash = args.indexOf('--');
@@ -2054,7 +2111,6 @@ async function resetCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
   }
-  const fs = createGitFs(vfs);
   // Before `--` the first word is a revision when it names one; the rest are paths.
   let rev = 'HEAD';
   let oid = words.length ? await resolveRevision(git, fs, repo.gitdir, words[0], {}) : null;
@@ -2080,7 +2136,7 @@ async function resetCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly
       await ctx.stderr.write(NOT_A_WORK_TREE);
       return 128;
     }
-    const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root);
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
     await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), repoPaths(pathArgs, ctx.cwd, root), quiet);
     return 0;
   }
@@ -2094,9 +2150,12 @@ async function resetCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, args: readonly
     return 128;
   }
   // The index and worktree become the target's (a forced checkout, type changes included) before the branch moves.
-  if (mode === 'hard') await moveWorktree(ctx, git, vfs, repo, oid, { force: true });
+  if (mode === 'hard') {
+    await prefetch(repo.gitdir, [oid]);
+    await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
+  }
   else if (mode === 'mixed') {
-    const wrepo = worktreeRepo(ctx, git, vfs, repo.gitdir, root!);
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root!);
     await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), [], quiet);
   }
   const branch = await git.currentBranch({ fs, gitdir: repo.gitdir, fullname: true });
@@ -2172,7 +2231,39 @@ export async function runGitCommand(
     // The repository through the command's view of the namespace, as its
     // credential: SQLite paths reach the engine, mounted ones their mount.
     const repoVfs = projectFs(ctx.vfs);
-    const fs = createGitFs(repoVfs);
+    // A partial clone's promisor remote, by git directory, read once per command.
+    const promisorRemotes = new Map<string, Promise<{ name: string; url: string } | null>>();
+    const promisorRemote = (gitdir: string): Promise<{ name: string; url: string } | null> => {
+      let found = promisorRemotes.get(gitdir);
+      if (found === undefined) {
+        promisorRemotes.set(gitdir, found = (async () => {
+          for (const { remote, url } of await git.listRemotes({ fs, gitdir })) {
+            const promisor = await git.getConfig({ fs, gitdir, path: `remote.${remote}.promisor` });
+            if (promisor === true || promisor === 'true') return { name: remote, url };
+          }
+          return null;
+        })());
+      }
+      return found;
+    };
+    const partial = async (gitdir: string): Promise<boolean> => doCtx !== undefined && await promisorRemote(gitdir) !== null;
+    const promisor: PromisorFetch = async (gitdir, oids) => {
+      const remote = await promisorRemote(gitdir);
+      if (remote === null || !doCtx || !doEnv) return false;
+      const top = gitdir.endsWith('/.git') ? gitdir.slice(0, -'/.git'.length) : gitdir;
+      const target = await onEngine(top || '/');
+      if (target === null) return false;
+      await fetchMissingObjects(doCtx, doEnv, {
+        pid: ctx.pid,
+        dir: target,
+        remote: remote.name,
+        url: remote.url,
+        oids,
+        auth: { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' },
+      });
+      return true;
+    };
+    const fs = createGitFs(repoVfs, null, promisor);
     // The network commands write through the engine's streamed batches, at
     // the repository's engine key; a mounted repository has none.
     const onEngine = async (target: string): Promise<string | null> => {
@@ -2205,7 +2296,7 @@ export async function runGitCommand(
       }
 
       case 'clone': {
-        const { url, dest: destArg, depth, isBg, branch, quiet } = parseCloneArgs(subArgs);
+        const { url, dest: destArg, depth, isBg, branch, quiet, filter } = parseCloneArgs(subArgs);
         const progress = quiet ? { write() {} } : ctx.stdout;
         if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
         // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
@@ -2253,6 +2344,7 @@ export async function runGitCommand(
               url,
               ref: branch,
               depth,
+              filter,
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
@@ -2266,6 +2358,9 @@ export async function runGitCommand(
               // The same, for the fast clone's blob batches.
               blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
               batchConcurrency: Number(ctx.env.NIMBUS_GIT_BATCH_CONCURRENCY) || undefined,
+              historyBlobsPerBatch: Number(ctx.env.NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH) || undefined,
+              historyCommitsPerChunk: Number(ctx.env.NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK) || undefined,
+              historyBudgetUnits: Number(ctx.env.NIMBUS_GIT_HISTORY_BUDGET_UNITS) || undefined,
               auth: {
                 username: ctx.env.GIT_USERNAME || '',
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
@@ -2296,10 +2391,10 @@ export async function runGitCommand(
       }
 
       case 'status':
-        return await statusCommand(ctx, git, repoVfs, subArgs);
+        return await statusCommand(ctx, git, repoVfs, fs, subArgs);
 
       case 'add':
-        return await addCommand(ctx, git, repoVfs, subArgs);
+        return await addCommand(ctx, git, repoVfs, fs, subArgs);
 
       case 'commit': {
         const { messages, quiet, all, cleanup, allowEmptyMessage } = parseCommitArgs(subArgs);
@@ -2320,7 +2415,7 @@ export async function runGitCommand(
         const repo = await discoverRepo(repoVfs, dir);
         if (!repo) { await ctx.stderr.write(NOT_A_REPOSITORY); return 128; }
         if (!repo.worktree) { await ctx.stderr.write(NOT_A_WORK_TREE); return 128; }
-        const wrepo = worktreeRepo(ctx, git, repoVfs, repo.gitdir, repo.worktree);
+        const wrepo = worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree);
         if (all) await stageTracked(wrepo, git);
         const idents = await commitIdents(ctx, git, fs, dir);
         if ('error' in idents) { await ctx.stderr.write(idents.error); return 128; }
@@ -2334,7 +2429,7 @@ export async function runGitCommand(
         return await revParse(ctx, git, fs, repoVfs, subArgs);
 
       case 'ls-files':
-        return await lsFiles(ctx, git, repoVfs, subArgs);
+        return await lsFiles(ctx, git, repoVfs, fs, subArgs);
 
       case 'log': {
         const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
@@ -2397,7 +2492,7 @@ export async function runGitCommand(
         const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
         if (dashdash >= 0 && dashdash < subArgs.length - 1) {
           const source = options.find(a => !a.startsWith('-'));
-          return await checkoutPaths(ctx, git, repoVfs, source ?? null, subArgs.slice(dashdash + 1));
+          return await checkoutPaths(ctx, git, repoVfs, fs, source ?? null, subArgs.slice(dashdash + 1));
         }
         const quiet = options.includes('-q') || options.includes('--quiet');
         const ref = options.find(a => !a.startsWith('-'));
@@ -2407,7 +2502,9 @@ export async function runGitCommand(
         const create = options.includes('-b');
         if (create) await git.branch({ fs, dir, ref });
         try {
-          await switchBranch(ctx, git, repoVfs, dir, ref);
+          const target = await resolveRevision(git, fs, `${dir}/.git`, ref, {});
+          if (target !== null) await prefetchCommits(git, fs, `${dir}/.git`, [target], partial);
+          await switchBranch(ctx, git, repoVfs, fs, dir, ref);
         } catch (e) {
           return await refusal(ctx, e);
         }
@@ -2539,6 +2636,12 @@ export async function runGitCommand(
         const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
         const mergeIdents = await commitIdents(ctx, git, fs, dir);
         if ('error' in mergeIdents) { await ctx.stderr.write(mergeIdents.error); return 128; }
+        if (await partial(`${dir}/.git`)) {
+          const theirsOid = await git.resolveRef({ fs, dir, ref: theirs });
+          const oursOid = await git.resolveRef({ fs, dir, ref: ours });
+          const bases = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
+          await prefetchCommits(git, fs, `${dir}/.git`, [theirsOid, ...bases], partial);
+        }
         const merged = await git.merge({
           fs, dir, ours, theirs,
           ...mergeIdents,
@@ -2548,7 +2651,7 @@ export async function runGitCommand(
           try {
             const repo = await discoverRepo(repoVfs, dir);
             if (!repo?.worktree) { await ctx.stderr.write(NOT_A_WORK_TREE); return 128; }
-            await moveWorktree(ctx, git, repoVfs, repo, merged.oid, { operation: 'merge' });
+            await moveWorktree(ctx, git, repoVfs, fs, repo, merged.oid, { operation: 'merge' });
           } catch (e) {
             return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
           }
@@ -2559,7 +2662,7 @@ export async function runGitCommand(
       }
 
       case 'reset':
-        return await resetCommand(ctx, git, repoVfs, subArgs);
+        return await resetCommand(ctx, git, repoVfs, fs, subArgs, (gitdir, commits) => prefetchCommits(git, fs, gitdir, commits, partial));
 
       case 'tag':
         return await tagCommand(ctx, git, fs, repoVfs, subArgs);

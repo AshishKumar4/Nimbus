@@ -17,6 +17,10 @@ import { pathToFileURL } from 'node:url';
 
 import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
+import { answerPlainDiscovery } from './lib/plain-git-server.mjs';
+
+// The clones here take the single-stream path: their server offers no filter.
+answerPlainDiscovery();
 
 const FILES = 3_000;
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-wave-pipeline-'));

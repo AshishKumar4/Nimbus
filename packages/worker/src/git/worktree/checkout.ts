@@ -342,6 +342,8 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
   for (const op of ops) {
     if (op.method === 'mkdir' || op.method === 'mkdir-index' || op.method === 'update-blob-to-tree') await writer.mkdir(file(op.path));
   }
+  // The blobs to write, fetched in one request where a partial clone lacks them.
+  await store.prefetch(ops.flatMap((op) => (op.method === 'create' || op.method === 'update' || op.method === 'update-dir-to-blob' ? [op.oid] : [])));
   const added: NewEntry[] = [];
   for (const op of ops) {
     if (op.method !== 'create' && op.method !== 'update' && op.method !== 'update-dir-to-blob' && op.method !== 'mkdir-index') continue;

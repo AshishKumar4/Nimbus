@@ -64,19 +64,46 @@ function backoff(attempt) {
     // The executor form: the worker's ES2022 lib has no Promise.withResolvers.
     return new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
 }
+/**
+ * A response that sends nothing for this long has stalled: git's own
+ * http.lowSpeedTime is the same idea. Measured: a GitHub batch on react
+ * hung 240 s with no bytes; a healthy one never pauses for more than a few.
+ */
+export const STALL_MS = 45_000;
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
 class PktReader {
     reader;
+    stallMs;
     buffer = new Uint8Array(0);
     done = false;
-    constructor(reader) {
+    constructor(reader, stallMs = STALL_MS) {
         this.reader = reader;
+        this.stallMs = stallMs;
+    }
+    /** The next chunk, or a stall error when none comes in time (the read is cancelled). */
+    read() {
+        let timer = null;
+        const stalled = new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                reject(new UploadPackError('the server sent nothing for ' + Math.round(this.stallMs / 1000) + ' s'));
+                void this.reader.cancel().catch(() => undefined);
+            }, this.stallMs);
+        });
+        const read = this.reader.read().catch((error) => {
+            // A response cut off mid-stream is the transport's failure, as a stall is.
+            throw error instanceof UploadPackError ? error
+                : new UploadPackError('the response broke off: ' + (error instanceof Error ? error.message : String(error)));
+        });
+        return Promise.race([read, stalled]).finally(() => {
+            if (timer !== null)
+                clearTimeout(timer);
+        });
     }
     async fill(needed) {
         while (this.buffer.byteLength < needed) {
             if (this.done)
                 return false;
-            const { done, value } = await this.reader.read();
+            const { done, value } = await this.read();
             if (done) {
                 this.done = true;
                 return this.buffer.byteLength >= needed;
@@ -133,7 +160,7 @@ export async function discover(options) {
         await response.body?.cancel();
         throw new UploadPackError('discovery answered HTTP ' + response.status, response.status);
     }
-    const reader = new PktReader(response.body.getReader());
+    const reader = new PktReader(response.body.getReader(), options.stallMs);
     const first = await reader.next();
     if (!first || text(first) !== '# service=git-upload-pack')
         throw new UploadPackError('not a smart HTTP server');
@@ -231,7 +258,7 @@ export async function requestPack(options, advertised, request) {
         const detail = response.body ? (await response.text()).slice(0, 300) : '';
         throw new UploadPackError('the request answered HTTP ' + response.status + (detail ? ': ' + detail : ''), response.status);
     }
-    const reader = new PktReader(response.body.getReader());
+    const reader = new PktReader(response.body.getReader(), options.stallMs);
     const result = { shallows: [], unshallows: [], pack: null };
     // shallow-info (after deepen or shallow lines), then ACK/NAK.
     for (;;) {

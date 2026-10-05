@@ -37,8 +37,9 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import type { CloneBatchResult, ClonePrepared } from './pack/clone.js';
+import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 
-export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
+export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push' | 'fetch-objects';
 
 /**
  * The clone's job marker, in its git directory from prepare until the clone
@@ -82,6 +83,18 @@ export interface GitNetworkOpts {
   checkoutChunkMaxDecodedBytes?: number;
   /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
   checkoutChunkMaxWallMs?: number;
+  /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
+  filter?: string;
+  /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
+  historyBlobsPerBatch?: number;
+  /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
+  historyCommitsPerChunk?: number;
+  /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
+  historyBudgetUnits?: number;
+  /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
+  attempt?: number;
+  /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
+  oids?: string[];
   /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
   blobsPerBatch?: number;
   /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
@@ -114,6 +127,7 @@ export interface GitMetadataOverlayStats {
 export type GitCloneInvocationPhase =
   | 'clone-prepare'
   | 'clone-batch'
+  | 'clone-history'
   | 'clone-finish'
   | 'clone-checkout'
   | 'clone-abort';
@@ -184,6 +198,8 @@ export interface GitNetworkResult {
   errorCode?: GitNetworkErrorCode;
   budget?: GitCloneBudgetDiagnostic;
   cleanupError?: string;
+  /** fetch-objects: objects the promisor pack holds. */
+  fetchedObjects?: number;
 }
 
 export interface GitCloneBudgetDiagnostic {
@@ -212,6 +228,7 @@ interface FacetInvocationResult {
   indexEntries?: unknown;
   errorCode?: unknown;
   cold?: unknown;
+  fetched?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -416,6 +433,7 @@ function parsePhaseDiagnostic(
     : {};
   const phase = diagnostic.phase === 'clone-prepare' ||
       diagnostic.phase === 'clone-batch' ||
+      diagnostic.phase === 'clone-history' ||
       diagnostic.phase === 'clone-finish' ||
       diagnostic.phase === 'clone-checkout' ||
       diagnostic.phase === 'clone-abort' ||
@@ -685,7 +703,8 @@ async function writeClonePhaseProgress(
     const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(
       `\n[git] ${diagnostic.phase} ${status} ` +
       `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
-      `w7=${diagnostic.w7Waves} rpc=${rpcCount})\n`,
+      `w7=${diagnostic.w7Waves} rpc=${rpcCount})` +
+      (diagnostic.outcome === 'success' || !diagnostic.error ? '' : `: ${diagnostic.error}`) + '\n',
     ));
     disposeRpcResource(result);
   } catch {
@@ -734,80 +753,171 @@ interface CloneBatchRun {
 }
 
 /**
- * The fast clone after prepare: its blob batches, CLONE_BATCH_CONCURRENCY at
- * a time, then finish. A failed batch stops new ones; those in flight are
- * awaited before the failure is thrown, so an abort never races a writer.
+ * Run `items` through `run`, `concurrency` at a time. A failure stops new
+ * items; those in flight are awaited before it is thrown, so an abort never
+ * races a writer.
  */
+async function runPool<T>(items: readonly T[], concurrency: number, run: (item: T, index: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  let failure: unknown = null;
+  const worker = async (): Promise<void> => {
+    while (failure === null && next < items.length) {
+      const index = next++;
+      try {
+        await run(items[index], index);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  if (failure !== null) throw failure;
+}
+
+/**
+ * Attempts at a batch or history piece whose request failed in transit (a
+ * server that stopped sending: measured once on react's batches, a 240 s
+ * hang). Each piece is a fresh request for the same objects, so a retry is
+ * the same piece again.
+ */
+const CLONE_PIECE_ATTEMPTS = 3;
+
+/** One fast-clone facet invocation after prepare; its failure is the clone's. */
+async function invokeClonePhase(
+  entrypoint: GitFacetEntrypoint,
+  phase: 'clone-batch' | 'clone-history' | 'clone-finish',
+  opts: Record<string, unknown>,
+  run: CloneBatchRun,
+): Promise<{ result: FacetInvocationResult; diagnostic: GitNetworkPhaseDiagnostic }> {
+  let invocation!: { result: FacetInvocationResult; diagnostic: GitNetworkPhaseDiagnostic };
+  for (let attempt = 1; attempt <= CLONE_PIECE_ATTEMPTS; attempt++) {
+    invocation = await invokeFacet(
+      entrypoint,
+      phase,
+      crypto.randomUUID(),
+      { ...opts, attempt } as Omit<GitNetworkOpts, 'mutationOwner'>,
+      run.outerDeadline,
+      CLONE_PHASE_TIMEOUT_MS,
+      run.budgetContext,
+    );
+    run.phases.push(invocation.diagnostic);
+    run.accountResult(invocation.result);
+    const error = typeof invocation.result.error === 'string' ? invocation.result.error : '';
+    if (invocation.result.success === true || phase === 'clone-finish' || !error.startsWith('git upload-pack: ')) break;
+    if (run.progress) {
+      await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
+    }
+  }
+  if (invocation.result.success !== true) {
+    throw new GitClonePhaseError(
+      phase,
+      typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed',
+      invocation.diagnostic,
+    );
+  }
+  return invocation;
+}
+
+/** The fast clone after prepare: its blob batches, CLONE_BATCH_CONCURRENCY at a time. Returns the index shares. */
 async function runCloneBatches(
   entrypoint: GitFacetEntrypoint,
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
   identity: { jobId: string; optionsHash: string },
   fast: ClonePrepared,
   run: CloneBatchRun,
-): Promise<void> {
-  const shares: { name: string; bytes: number }[] = [{ name: 'index-gitlinks', bytes: fast.gitlinkIndexBytes }];
-  const queue = [...fast.batches];
-  let failure: unknown = null;
+): Promise<{ name: string; bytes: number }[]> {
+  const shares: { name: string; bytes: number }[] = [...fast.shares];
   let completed = 0;
-  const worker = async (): Promise<void> => {
-    while (failure === null) {
-      const batch = queue.shift();
-      if (batch === undefined) return;
-      try {
-        const invocation = await invokeFacet(
-          entrypoint,
-          'clone-batch',
-          crypto.randomUUID(),
-          { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities },
-          run.outerDeadline,
-          CLONE_PHASE_TIMEOUT_MS,
-          run.budgetContext,
-        );
-        run.phases.push(invocation.diagnostic);
-        run.accountResult(invocation.result);
-        const result = (invocation.result as { batch?: CloneBatchResult }).batch;
-        if (invocation.result.success !== true || result === undefined) {
-          throw new GitClonePhaseError(
-            'clone-batch',
-            typeof invocation.result.error === 'string' ? invocation.result.error : 'clone-batch failed',
-            invocation.diagnostic,
-          );
-        }
-        shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
-        completed++;
-        run.budgetContext.processedEntries += result.files;
-        if (run.progress) {
-          await writeCloneProgressLine(run.progress,
-            `\n[git] clone-batch ${completed}/${fast.batches.length} complete (blobs=${result.blobs} files=${result.files} ` +
-            `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB wall=${invocation.diagnostic.elapsed}ms ` +
-            `w7=${invocation.diagnostic.w7Waves})\n`);
-        }
-      } catch (error) {
-        failure ??= error;
-      }
-    }
-  };
   const concurrency = positiveSafeInteger(facetOpts.batchConcurrency, CLONE_BATCH_CONCURRENCY, 'batch concurrency');
-  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
-  if (failure !== null) throw failure;
-  const finish = await invokeFacet(
-    entrypoint,
-    'clone-finish',
-    crypto.randomUUID(),
-    { ...facetOpts, ...identity, shares },
-    run.outerDeadline,
-    CLONE_PHASE_TIMEOUT_MS,
-    run.budgetContext,
-  );
-  run.phases.push(finish.diagnostic);
-  run.accountResult(finish.result);
-  if (finish.result.success !== true) {
-    throw new GitClonePhaseError(
-      'clone-finish',
-      typeof finish.result.error === 'string' ? finish.result.error : 'clone-finish failed',
-      finish.diagnostic,
-    );
+  await runPool(fast.batches, concurrency, async (batch) => {
+    const invocation = await invokeClonePhase(entrypoint, 'clone-batch', {
+      ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities, partial: fast.partial,
+    }, run);
+    const result = (invocation.result as { batch?: CloneBatchResult }).batch;
+    if (result === undefined) throw new GitClonePhaseError('clone-batch', 'clone-batch returned no batch', invocation.diagnostic);
+    shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
+    completed++;
+    run.budgetContext.processedEntries += result.files;
+    if (run.progress) {
+      await writeCloneProgressLine(run.progress,
+        `\n[git] clone-batch ${completed}/${fast.batches.length} complete (blobs=${result.blobs} files=${result.files} ` +
+        `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB wall=${invocation.diagnostic.elapsed}ms ` +
+        `w7=${invocation.diagnostic.w7Waves})\n`);
+    }
+  });
+  return shares;
+}
+
+/**
+ * History pieces run one at a time: each holds a base cache and a window of
+ * stored bytes (~30 MB), and facets count against the session's memory.
+ */
+const CLONE_HISTORY_CONCURRENCY = 1;
+
+/** A full clone's history (git/pack/history.ts): commits, then trees, then blobs. */
+async function runCloneHistory(
+  entrypoint: GitFacetEntrypoint,
+  facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
+  identity: { jobId: string; optionsHash: string },
+  fast: ClonePrepared,
+  run: CloneBatchRun,
+): Promise<void> {
+  const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
+  let pieces = 0;
+  let packBytes = 0;
+  const invoke = async (history: Record<string, unknown>): Promise<{ step: HistoryStepResult; elapsed: number }> => {
+    const invocation = await invokeClonePhase(entrypoint, 'clone-history', { ...base, history }, run);
+    const step = (invocation.result as { history?: HistoryStepResult }).history;
+    if (step === undefined) throw new GitClonePhaseError('clone-history', 'clone-history returned nothing', invocation.diagnostic);
+    return { step, elapsed: invocation.diagnostic.elapsed };
+  };
+  /** A piece, and its continuations while its decoding runs past a budget. */
+  const piece = async (kind: HistoryKind, name: string, request: Record<string, unknown>): Promise<StagedFile[]> => {
+    let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request });
+    const lists = [...step.lists];
+    for (let part = 1; step.pending !== null; part++) {
+      ({ step, elapsed } = await invoke({ step: 'resume', kind, piece: name, part, pending: step.pending }));
+      lists.push(...step.lists);
+    }
+    pieces++;
+    packBytes += step.pack?.packBytes ?? 0;
+    if (run.progress) {
+      await writeCloneProgressLine(run.progress,
+        `\n[git] clone-history ${name} complete (objects=${step.pack?.objects ?? 0} ` +
+        `pack=${((step.pack?.packBytes ?? 0) / 1048576).toFixed(1)}MB wall=${elapsed}ms)\n`);
+    }
+    return lists;
+  };
+  const roots = await piece('commits', 'commits', { head: fast.commit });
+  const blobLists: StagedFile[] = [];
+  const commitsPerChunk = positiveSafeInteger(facetOpts.historyCommitsPerChunk, COMMITS_PER_CHUNK, 'history commits per chunk');
+  await runPool(treeSlices(roots, commitsPerChunk), CLONE_HISTORY_CONCURRENCY, async (source, index) => {
+    blobLists.push(...await piece('trees', 'trees-' + index, { source }));
+  });
+  const plan = await invokeClonePhase(entrypoint, 'clone-history', {
+    ...base,
+    history: { step: 'plan', lists: blobLists, present: fast.batches.map((batch) => ({ name: 'batch-' + batch.index, bytes: batch.bytes })) },
+  }, run);
+  const batches = (plan.result as { history?: { batches: StagedFile[] } }).history?.batches ?? [];
+  await runPool(batches, CLONE_HISTORY_CONCURRENCY, async (source, index) => {
+    await piece('blobs', 'blobs-' + index, { source });
+  });
+  if (run.progress) {
+    await writeCloneProgressLine(run.progress,
+      `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`);
   }
+}
+
+/** The index from the shares; a full clone's shallow file goes; then the marker. */
+async function runCloneFinish(
+  entrypoint: GitFacetEntrypoint,
+  facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
+  identity: { jobId: string; optionsHash: string },
+  shares: { name: string; bytes: number }[],
+  full: boolean,
+  run: CloneBatchRun,
+): Promise<void> {
+  const finish = await invokeClonePhase(entrypoint, 'clone-finish', { ...facetOpts, ...identity, shares, full }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
 
@@ -953,13 +1063,17 @@ export async function execGitNetwork(
 
           const fast = (prepare.result.prepared as { fast?: ClonePrepared }).fast;
           if (fast !== undefined) {
-            await runCloneBatches(entrypoint, facetOpts, { jobId, optionsHash }, fast, {
+            const run: CloneBatchRun = {
               outerDeadline,
               budgetContext,
               phases,
               accountResult,
               progress: opts.quiet ? null : supervisorBinding,
-            });
+            };
+            const shares = await runCloneBatches(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
+            const full = facetOpts.depth === undefined;
+            if (full) await runCloneHistory(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
+            await runCloneFinish(entrypoint, facetOpts, { jobId, optionsHash }, shares, full, run);
             return {
               success: true,
               elapsed: Date.now() - start,
@@ -1151,6 +1265,9 @@ export async function execGitNetwork(
         supervisorRpc: parseSupervisorRpcCounters(result.supervisorRpc),
         metadataOverlay: parseMetadataOverlayStats(result.metadataOverlay),
         phases: [diagnostic],
+        fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
+          ? nonNegativeCounter(result.fetched.fetched)
+          : undefined,
       };
     } finally {
       // Tear down the facet's RPC stubs regardless of success / timeout.
@@ -1693,7 +1810,7 @@ function emptyMetadataOverlayStats() {
  * (under the clone's lease, which the binding presents), and wave writers
  * rooted at the clone that report each published wave's receipts.
  */
-function gitPackContext(supervisor, stats, opts, root, deadline, log) {
+function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRoot = null) {
   const dir = normalizePath(opts.dir);
   const counted = (name, call) => {
     stats.supervisorRpc[name]++;
@@ -1715,6 +1832,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log) {
           },
         },
         root,
+        worktreeRoot,
         base: dir,
         deadline,
         onWave(report) {
@@ -2384,6 +2502,7 @@ export default {
 
     const phase = opts.phase === 'clone-prepare' ||
         opts.phase === 'clone-batch' ||
+        opts.phase === 'clone-history' ||
         opts.phase === 'clone-finish' ||
         opts.phase === 'clone-checkout' ||
         opts.phase === 'clone-abort'
@@ -2508,7 +2627,7 @@ export default {
       const phaseDeadline = phase === 'operation'
         ? null
         : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
-      if (phase === 'clone-batch' || phase === 'clone-finish') {
+      if (phase === 'clone-batch' || phase === 'clone-history' || phase === 'clone-finish') {
         if (opts.op !== 'clone') throw protocolError(phase + ' requires clone operation');
         requireProtocolString(opts.jobId, 'job id', 128);
         requireProtocolString(opts.optionsHash, 'options hash', 128);
@@ -2518,14 +2637,39 @@ export default {
         mutated = true;
         if (phase === 'clone-batch') {
           const batch = await __nimbusGitPack.cloneBatch(context, {
-            jobId: opts.jobId,
+            jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
             index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
             batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
             capabilities: opts.capabilities,
+            partial: opts.partial === true,
           });
           return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
         }
-        const finished = await __nimbusGitPack.cloneFinish(context, { shares: opts.shares });
+        if (phase === 'clone-history') {
+          const history = opts.history || {};
+          let step;
+          if (history.step === 'plan') {
+            step = await __nimbusGitPack.historyPlan(context, {
+              lists: history.lists,
+              present: history.present,
+              blobsPerBatch: opts.historyBlobsPerBatch,
+            });
+          } else if (history.step === 'resume') {
+            step = await __nimbusGitPack.historyResume(context, { ...history, budgetUnits: opts.historyBudgetUnits });
+          } else {
+            step = await __nimbusGitPack.historyStep(context, {
+              jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
+              kind: history.kind,
+              piece: history.piece,
+              head: history.head,
+              source: history.source,
+              capabilities: opts.capabilities,
+              budgetUnits: opts.historyBudgetUnits,
+            });
+          }
+          return respond(true, { history: step, metadataOverlay: emptyMetadataOverlayStats() });
+        }
+        const finished = await __nimbusGitPack.cloneFinish(context, { shares: opts.shares, full: opts.full === true });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();
         await writer.remove('.git/' + CLONE_JOB_MARKER);
@@ -2681,12 +2825,17 @@ export default {
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
         await flushWave();
-        if (opts.depth !== undefined && opts.exclusiveDestination === true) {
+        if (opts.filter !== undefined && opts.depth === undefined) {
+          throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
+        }
+        if (opts.exclusiveDestination === true) {
+          // A full clone starts as a depth-1 one: its worktree first, its history after (clone-history).
           const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
           const fast = await __nimbusGitPack.cloneFast(context, {
             ref: opts.ref || undefined,
-            depth: opts.depth,
+            depth: opts.depth === undefined ? 1 : opts.depth,
             jobId: opts.jobId,
+            filter: opts.filter,
             blobsPerBatch: opts.blobsPerBatch,
           });
           if (!fast.unsupported) {
@@ -2903,6 +3052,13 @@ export default {
         await flushWave();
         await fs.promises.rmdir(cloneRoot + '/.git', { recursive: true });
         await flushWave();
+      } else if (opts.op === 'fetch-objects') {
+        // A partial clone's missing objects (git/promisor.ts): one request,
+        // stored as a promisor pack. Writes land below the repository only.
+        const root = normalizePath(opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
+        const fetched = await __nimbusGitPack.fetchObjects(context, { oids: opts.oids, jobId: invocationId });
+        return respond(true, { fetched, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch') {
         await git.fetch({
           fs, http,

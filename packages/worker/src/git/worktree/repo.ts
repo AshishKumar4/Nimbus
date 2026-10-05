@@ -99,6 +99,7 @@ export class WorktreeRepo {
         if (await this.store.has(oid)) return oid;
         return await git.writeObject({ fs: gitFs, dir: root, type, object: data, format: 'content' });
       },
+      prefetch: async (oids) => await gitFs.packs.prefetch(gitdir, oids),
     };
   }
 

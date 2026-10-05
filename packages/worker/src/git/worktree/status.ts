@@ -120,9 +120,12 @@ export async function collectStatus(
     }
     if (leaf || entry) queue.push({ one: leaf, two: entry });
   });
-  const { queue: paired } = options.renames && queue.length > 1
-    ? await detectRenames(queue, async (side) => (await store.read(side.oid)).data)
-    : { queue };
+  let paired = queue;
+  if (options.renames && queue.some((pair) => pair.one) && queue.some((pair) => pair.two)) {
+    // Rename detection reads the blobs on both sides: a partial clone fetches them in one request.
+    await store.prefetch(queue.flatMap((pair) => [pair.one?.oid, pair.two?.oid].filter((oid) => oid !== undefined)));
+    paired = (await detectRenames(queue, async (side) => (await store.read(side.oid)).data)).queue;
+  }
   for (const pair of paired) {
     if (pair.one && pair.two) {
       const found = change(pair.two.path);

@@ -51,8 +51,14 @@ const DEFAULT_CACHE_BYTES = 8 * 1024 * 1024;
 const FIRST_INFLATE_ATTEMPT_BYTES = 64 * 1024;
 /** Stored bytes go out in pieces of this size: the VFS appends one in place below 512 KiB. */
 const APPEND_PIECE_BYTES = 512 * 1024 - 64 * 1024;
-/** Sent pieces kept readable for base lookups, beyond what the cache holds. */
-const RECENT_PIECES = 4;
+/**
+ * Stored bytes kept readable for base lookups, beyond what the cache holds:
+ * a base evicted from the cache is re-inflated from these before any read of
+ * the store. Packed bytes are several times denser than resolved ones.
+ * Measured on react's full history in self-contained batches (8 MiB cache):
+ * 39,950 base reads reach further back than 8 MiB, 9,620 past 16 MiB.
+ */
+const DEFAULT_RECENT_BYTES = 2 * 1024 * 1024;
 /** A continuation reads the stored pack ahead in windows this long. */
 const READ_AHEAD_BYTES = 8 * 1024 * 1024;
 /** A growable byte buffer whose front is consumed. */
@@ -106,6 +112,7 @@ class StreamBuffer {
  */
 class PackOutput {
     store;
+    recentBytes;
     piece = new Uint8Array(APPEND_PIECE_BYTES);
     filled = 0;
     inFlight = null;
@@ -114,8 +121,9 @@ class PackOutput {
     /** Recently sent pieces, oldest first, with their pack offsets. */
     sent = [];
     window = null;
-    constructor(store, written = 0) {
+    constructor(store, written = 0, recentBytes = DEFAULT_RECENT_BYTES) {
         this.store = store;
+        this.recentBytes = recentBytes;
         this.written = written;
     }
     /** Copy `bytes` out; a promise only when a full piece must wait for the one in flight. */
@@ -178,7 +186,7 @@ class PackOutput {
     send() {
         const full = this.piece.subarray(0, this.filled);
         this.sent.push({ offset: this.written - this.filled, bytes: full });
-        if (this.sent.length > RECENT_PIECES)
+        while (this.sent.length > 1 && (this.sent.length - 1) * APPEND_PIECE_BYTES >= this.recentBytes)
             this.sent.shift();
         this.piece = new Uint8Array(APPEND_PIECE_BYTES);
         this.filled = 0;
@@ -277,7 +285,7 @@ export class PackStreamProcessor {
     }
     /** Consume a whole pack stream: decode within budget, store all of it. */
     async run(source) {
-        this.output = new PackOutput(this.options.store);
+        this.output = new PackOutput(this.options.store, 0, this.options.recentBytes);
         const packHash = createHash('sha1');
         const buffer = new StreamBuffer();
         const iterator = source[Symbol.asyncIterator]();
@@ -364,7 +372,7 @@ export class PackStreamProcessor {
     }
     /** Continue decoding a stored pack of `packBytes` bytes from a checkpoint. */
     async resume(checkpoint, packBytes) {
-        this.output = new PackOutput(this.options.store, packBytes);
+        this.output = new PackOutput(this.options.store, packBytes, this.options.recentBytes);
         const dataEnd = packBytes - PACK_TRAILER_BYTES;
         const { objects } = parsePackHeader(await this.options.store.read(0, PACK_HEADER_BYTES));
         this.records = new RecordList(checkpoint.records, objects);
@@ -391,7 +399,7 @@ export class PackStreamProcessor {
             throw new PackFormatError('entries end at ' + offset + ', the trailer starts at ' + dataEnd);
         if (next === null && this.externalBases.size > 0) {
             await this.options.store.truncate(dataEnd);
-            this.output = new PackOutput(this.options.store, dataEnd);
+            this.output = new PackOutput(this.options.store, dataEnd, this.options.recentBytes);
             return await this.completeThin(objects, dataEnd);
         }
         const packSha = await this.options.store.read(dataEnd, PACK_TRAILER_BYTES);

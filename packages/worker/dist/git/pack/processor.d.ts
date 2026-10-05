@@ -71,6 +71,8 @@ export interface PackProcessorOptions {
     external?: ExternalObjects;
     /** Delta-base cache budget, bytes. */
     cacheBytes?: number;
+    /** Newest stored bytes kept readable without a store read (DEFAULT_RECENT_BYTES). */
+    recentBytes?: number;
     /** Decode no more than this many work units; the rest of the stream is only stored. */
     budgetUnits?: number;
 }
