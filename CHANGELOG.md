@@ -9,6 +9,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 loom moves only its fabric range.
 
+- A session the platform could not reach answers 503 with a named code, not an opaque 500. When Cloudflare reports a Durable Object overloaded, or reset because its code was updated, the router and the remote API answer 503 with `E_NIMBUS_DO_OVERLOADED` or `E_NIMBUS_DO_CODE_UPDATED` and `Retry-After: 5`. Nimbus does not retry these calls itself.
 - Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
 - The Vite dev server's persistent caches answer only the request that
   made a row. A transformed module (user_module_transforms) is keyed on
