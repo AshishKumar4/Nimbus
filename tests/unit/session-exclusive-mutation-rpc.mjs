@@ -24,7 +24,7 @@ const { SupervisorRPC } = await import('../../packages/worker/src/session/superv
     const processes = new SessionProcessSupervisor();
     const process = processes.spawn('node', [], '/', { cred: CRED_KERNEL });
     const ops = buildSessionSupervisorOps({ sqliteFs, processes, ensureSqliteFs() {} });
-    const rpc = new SupervisorRPC({ props: { doId: 'session', pid: process.pid } }, {
+    const rpc = new SupervisorRPC({ props: { doId: 'session', pid: process.pid, writerId: 'exclusive-run' } }, {
       NIMBUS_SESSION: {
         idFromName: (id) => ({ toString: () => id }),
         idFromString: (id) => ({ toString: () => id }),

@@ -163,7 +163,7 @@ try {
     NIMBUS_SESSION: { idFromName: (name) => name, idFromString: (id) => id, get: () => sessionStub },
   };
   const supervisor = Object.create(SupervisorRPC.prototype);
-  supervisor.ctx = { props: { pid: userParent.pid, doId: 'session-do' } };
+  supervisor.ctx = { props: { pid: userParent.pid, doId: 'session-do', writerId: 'builtin-run' } };
   supervisor.env = sessionBinding;
   assert.deepEqual(
     await supervisor.cpSpawn({
