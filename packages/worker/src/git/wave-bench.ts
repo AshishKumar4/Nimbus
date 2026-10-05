@@ -27,9 +27,13 @@ export interface WaveBenchOptions {
   files: number;
   /** File sizes, cycled. */
   sizes: number[];
+  /** One-file waves each producer sends first, flushed one at a time: the per-wave round trip. */
+  pings?: number;
 }
 
 export interface WaveBenchProducer {
+  /** Mean wall of a one-file wave, sent and published alone. */
+  pingMs: number;
   files: number;
   bytes: number;
   wallMs: number;
@@ -65,8 +69,14 @@ interface BenchEnv {
 const PRODUCER_SOURCE = GIT_WAVE_WRITER_SRC + `
 export default {
   async fetch(request, env) {
-    const { root, base, files, sizes } = await request.json();
+    const { root, base, files, sizes, pings } = await request.json();
     const writer = __nimbusGitWaveWriter.createWaveWriter({ supervisor: env.SUPERVISOR, root, base });
+    const pingStarted = Date.now();
+    for (let index = 0; index < pings; index++) {
+      await writer.file('ping/p' + index, 0o644, new Uint8Array([index & 0xff]));
+      await writer.flush();
+    }
+    const pingMs = pings > 0 ? (Date.now() - pingStarted) / pings : 0;
     const started = Date.now();
     let bytes = 0;
     for (let index = 0; index < files; index++) {
@@ -81,7 +91,7 @@ export default {
     await writer.flush();
     const stats = writer.stats();
     return Response.json({
-      files, bytes, wallMs: Date.now() - started, waves: stats.waves,
+      pingMs, files, bytes, wallMs: Date.now() - started, waves: stats.waves,
       rpcWallMs: stats.rpcWallMs, maxRpcWallMs: stats.maxRpcWallMs, producerWaitMs: stats.producerWaitMs,
     });
   },
@@ -125,6 +135,7 @@ export async function runWaveBench(
             base: `${options.root}/p${index}`,
             files: options.files,
             sizes: options.sizes,
+            pings: options.pings ?? 0,
           }),
         }));
         try {
