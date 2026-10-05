@@ -284,6 +284,8 @@ declare global {
     }
     var __nimbusWasiLastSocketError: string;
     var __wasiAdoptSupervisor: ((sup: WasiSupervisorStub | null) => void) | undefined;
+    /** Send the process's held writes to the session at the end of a run: null, or what to report (wasi/preamble.ts). */
+    var __wasiSettleWrites: (() => Promise<string | null>) | undefined;
     var __nimbusVirtualSockets: VirtualSocketKernel | undefined;
 }
 export {};

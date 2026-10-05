@@ -120,6 +120,8 @@ export function residentFilesystem(session, resident) {
     /** Writes held for the session's descriptors, by descriptor; and their total, against FACET_OWN_WRITE_MEMORY_BYTES. */
     const writes = new Map();
     let heldBytes = 0;
+    /** Held writes the session refused, by descriptor, until reported. */
+    const unsettled = new Map();
     /** The latest held write of `key`, if this process is writing it. */
     const heldAt = (key) => {
         let found;
@@ -145,12 +147,29 @@ export function residentFilesystem(session, resident) {
     const release = async (held) => {
         writes.delete(held.id);
         heldBytes -= held.bytes.byteLength;
-        for (let at = 0; at < held.length; at += WRITE_PIECE_BYTES) {
-            await authority.write(held.id, at, held.bytes.slice(at, Math.min(held.length, at + WRITE_PIECE_BYTES)));
+        try {
+            for (let at = 0; at < held.length; at += WRITE_PIECE_BYTES) {
+                await authority.write(held.id, at, held.bytes.slice(at, Math.min(held.length, at + WRITE_PIECE_BYTES)));
+            }
+            if (held.position !== 0)
+                await authority.seek(held.id, held.position, 'set');
         }
-        if (held.position !== 0)
-            await authority.seek(held.id, held.position, 'set');
-        owed = true;
+        catch (error) {
+            // Reported once: by this descriptor's close or fsync, or by the run's end.
+            unsettled.set(held.id, { path: held.path, error });
+            throw error;
+        }
+        finally {
+            owed = true;
+        }
+    };
+    /** A failure an earlier release left on `handleId`, now reported (and forgotten). */
+    const takeUnsettled = (handleId) => {
+        const failure = unsettled.get(handleId);
+        if (failure === undefined)
+            return undefined;
+        unsettled.delete(handleId);
+        return failure.error;
     };
     /**
      * One walk over what the store knows: the resolved key, ELOOP (null), a
@@ -323,6 +342,18 @@ export function residentFilesystem(session, resident) {
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
     fs.inbound = () => { owed = true; };
+    fs.holding = () => writes.size > 0;
+    fs.settle = async () => {
+        for (const held of [...writes.values()]) {
+            try {
+                await release(held);
+            }
+            catch { /* recorded in unsettled */ }
+        }
+        const failures = [...unsettled.values()];
+        unsettled.clear();
+        return failures;
+    };
     fs.stats = () => ({ ...counts, delegated: { ...counts.delegated } });
     fs.stat = (path, options = {}) => answer('stat', () => {
         const follow = options.followSymlinks !== false;
@@ -533,8 +564,16 @@ export function residentFilesystem(session, resident) {
     };
     fs.close = (handleId) => {
         const held = writes.get(handleId);
+        // The descriptor closes either way; a write the session refused is the close's error, as on a network filesystem.
+        const closing = () => after(changing('close', () => authority.close(handleId)), () => {
+            const failure = takeUnsettled(handleId);
+            if (failure !== undefined)
+                throw failure;
+        });
         if (held !== undefined)
-            return release(held).then(() => changing('close', () => authority.close(handleId)));
+            return release(held).then(closing, closing);
+        if (unsettled.has(handleId))
+            return closing();
         const handle = local(handleId);
         if (handle === undefined)
             return changing('close', () => authority.close(handleId));
@@ -569,9 +608,22 @@ export function residentFilesystem(session, resident) {
         if (handleId !== undefined && local(handleId) !== undefined)
             return;
         // Synced means in the session: what is held goes now, and the descriptor writes through after.
-        const held = handleId === undefined ? undefined : writes.get(handleId);
+        if (handleId === undefined) {
+            return fs.settle().then((failures) => {
+                if (failures.length > 0)
+                    throw failures[0].error;
+                return authority.fsync();
+            });
+        }
+        const held = writes.get(handleId);
+        const reported = () => {
+            const failure = takeUnsettled(handleId);
+            if (failure !== undefined)
+                throw failure;
+        };
         if (held !== undefined)
-            return release(held).then(() => authority.fsync(handleId));
+            return release(held).then(() => { reported(); return authority.fsync(handleId); }, () => reported());
+        reported();
         delegated('fsync');
         return authority.fsync(handleId);
     };

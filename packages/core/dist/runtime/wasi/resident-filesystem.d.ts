@@ -83,8 +83,22 @@ export interface ResidentNamespace {
 export interface ResidentFilesystem extends RuntimeFsBridge {
     /** Input from outside the process arrived: the barrier is owed before the next answer. */
     inbound(): void;
+    /** Whether writes are held that the session does not have yet. */
+    holding(): boolean;
+    /**
+     * Send every held write to the session: before anything leaves the process
+     * (a socket send) and when its run ends, so what it did is in the session
+     * before anyone can learn it happened. Returns the files whose bytes did not
+     * all arrive, none reported before (by their close or fsync).
+     */
+    settle(): Promise<UnsettledWrite[]>;
     /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
     stats(): ResidentFilesystemStats;
+}
+/** A held file the session refused part of: what a run reports, naming the file. */
+export interface UnsettledWrite {
+    path: string;
+    error: unknown;
 }
 /** Counts since the process started. Every `delegated` call is a round trip to the session. */
 export interface ResidentFilesystemStats {
